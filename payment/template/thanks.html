@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>お支払いありがとうございました</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="container py-5" style="max-width:720px;">
+  <h1 class="h4 mb-3">お支払いありがとうございました</h1>
+
+  <div class="mb-3">
+    <div><strong>イベント:</strong> {{ event.title }}</div>
+  </div>
+
+  {% if payment %}
+    <div class="alert alert-success">
+      <div class="mb-1"><strong>ステータス:</strong> {{ payment.square_status }}</div>
+      <div class="mb-1"><strong>お支払い金額:</strong> ¥{{ payment.amount_yen }}</div>
+      {% if payment.card_brand or payment.card_last4 %}
+      <div class="mb-1"><strong>カード:</strong> {{ payment.card_brand or '-' }} **** {{ payment.card_last4 or '' }}</div>
+      {% endif %}
+    </div>
+
+    {% if payment.square_receipt_url %}
+      <div class="card border-primary mb-3">
+        <div class="card-body">
+          <h2 class="h6 card-title">📄 レシートが必要な方へ</h2>
+          <p class="card-text mb-3">
+            公式レシートは Square のサイトでご確認いただけます。<br>
+            保存や印刷をしたい場合は以下のボタンからアクセスしてください。<br>
+            ※インボイスには非対応です。ご了承下さい。<br>
+
+          </p>
+          <a class="btn btn-primary" href="{{ payment.square_receipt_url }}" target="_blank" rel="noopener">レシートを開く</a>
+        </div>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="alert alert-info">
+      決済情報の取得が完了していません。しばらくしてからページを再読み込みしてください。
+      （Sandbox ではレシートメールは送信されません）
+    </div>
+  {% endif %}
+
+</body>
+</html>

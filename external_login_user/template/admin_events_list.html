@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block title %}外部ログイン 管理 - イベント一覧{% endblock %}
+
+{% block content %}
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg|safe }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">イベント一覧</h1>
+
+  {# ==== admin だけ操作ボタン表示 ==== #}
+  {% if session.get('user') == 'admin' %}
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-sm btn-primary"
+         href="{{ url_for('external_login_user.admin_event_new') }}">
+        新規作成
+      </a>
+      {# NOTE: エンドポイント解決エラー回避のため、既知のURLを直接指定 #}
+      <a class="btn btn-sm btn-outline-secondary"
+         href="/external-login/admin/ext-users">
+        ログインユーザー管理
+      </a>
+    </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-body">
+    {% if events|length == 0 %}
+      <div class="text-muted">イベントがありません。</div>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>開始日</th>
+            <th>タイトル</th>
+            <th>支払開始日</th>
+            <th>支払終了日</th>
+            <th>参加人数</th>
+            <th>詳細</th>
+            <th>権限一覧</th>
+            <th>コピー</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in events %}
+          <tr>
+            <td>{{ e.id }}</td>
+            <td>{{ e.starts_at or '—' }}</td>
+            <td class="fw-bold">{{ e.title }}</td>
+            <td>{{ e.pay_from or '—' }}</td>
+            <td>{{ e.pay_until or '—' }}</td>
+            <td>{{ e.members }}</td>
+            <td>
+              <a class="btn btn-sm btn-outline-primary"
+                 href="{{ url_for('external_login_user.admin_event_view', event_id=e.id) }}">
+                詳細
+              </a>
+            </td>
+            <td>
+              {% if session.get('user') == 'admin' %}
+                <a class="btn btn-sm btn-outline-dark"
+                   href="{{ url_for('external_login_user.admin_event_acl', event_id=e.id) }}">
+                  権限一覧
+                </a>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if session.get('user') == 'admin' %}
+                <form method="post"
+                      action="{{ url_for('external_login_user.admin_event_copy', event_id=e.id) }}"
+                      style="display:inline;"
+                      onsubmit="return confirm('イベント「{{ e.title|e }}」をコピーしますか？');">
+                  <input type="hidden" name="csrf_token" value="{{ session.get('admin_csrf') }}">
+                  <button type="submit" class="btn btn-sm btn-outline-secondary">
+                    コピー
+                  </button>
+                </form>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>子アルバム一覧</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .child-actions{ gap:.5rem; }
+    .badge-mode{ font-weight:700; }
+    .badge-normal{ background:#e9f7ef; color:#0f5132; }
+    .badge-movie{ background:#e7f1ff; color:#084298; }
+    .badge-process{ background:#fff3cd; color:#664d03; }
+  </style>
+</head>
+<body class="container py-4">
+
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">📂 {{ meta.album_name }}</h2>
+  </div>
+
+  {% if is_admin %}
+    <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
+  {% elif is_owner %}
+    <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+  {% endif %}
+
+  {# ★HDD保管中（読み取り専用）向けの注意喚起。is_readonly はビュー側で True を渡す #}
+  {% if is_readonly %}
+    <div class="alert alert-warning text-center mb-3">
+      このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、子アルバムの新規作成はできません。
+    </div>
+  {% endif %}
+
+  {% if processing_list %}
+  <div class="alert alert-warning mt-3">
+    <div class="fw-bold">⏳ 現在加工中の子アルバム：</div>
+    <ul class="mb-0">
+      {% for p in processing_list %}
+        <li>
+          <b>{{ p.child_name }}</b>
+          ： {{ p.username }} さん が加工中（〜{{ p.expires_at }}）
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ★HDD保管時は作成UIを非表示 #}
+  {% if not is_readonly %}
+  <!-- 作成フォーム表示トグルボタン -->
+  <div class="mb-3">
+    <button id="toggleCreateFormBtn"
+            class="btn btn-success w-100"
+            type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="#createChildCollapse"
+            aria-expanded="false"
+            aria-controls="createChildCollapse">
+      ＋ 子アルバムを作成
+    </button>
+  </div>
+
+  <!-- 子アルバム作成フォーム（初期は非表示） -->
+  <div id="createChildCollapse" class="collapse mb-4">
+    <form id="createChildForm" method="post" action="{{ url_for('album.create_child', album_id=album_id) }}">
+      <!-- 名前テンプレート -->
+      <div class="mb-3">
+        <label class="form-label">名前テンプレート</label>
+        <div class="btn-group w-100" role="group" aria-label="child name template">
+          <input type="radio" class="btn-check" name="child_name_template" id="tplNone" value="" checked>
+          <label class="btn btn-outline-secondary" for="tplNone">指定なし</label>
+
+          <input type="radio" class="btn-check" name="child_name_template" id="tplKouzu" value="kouzu">
+          <label class="btn btn-outline-secondary" for="tplKouzu">【構図】</label>
+
+          <input type="radio" class="btn-check" name="child_name_template" id="tplOffshot" value="offshot">
+          <label class="btn btn-outline-secondary" for="tplOffshot">【オフショ】</label>
+
+          <input type="radio" class="btn-check" name="child_name_template" id="tplDouga" value="douga">
+          <label class="btn btn-outline-secondary" for="tplDouga">【動画】</label>
+
+          <input type="radio" class="btn-check" name="child_name_template" id="tplKakou" value="kakou">
+          <label class="btn btn-outline-secondary" for="tplKakou">【加工回し】</label>
+        </div>
+        <div class="form-text mt-1">
+          上のテンプレートと下の名前を組み合わせて保存します（例：<code>【構図】七五三_原版</code>）。
+        </div>
+      </div>
+
+      <!-- タイトル -->
+      <div class="mb-3">
+        <label for="childName" class="form-label">ご自身のお名前or新しい子アルバム名</label>
+        <input id="childName" type="text" name="child_name" class="form-control" placeholder="例：いおりん" required>
+      </div>
+
+      <!-- モード選択 -->
+      <div class="mb-2">
+        <label class="form-label">モード</label>
+        <div class="btn-group w-100" role="group" aria-label="child mode">
+          <input type="radio" class="btn-check" name="child_mode" id="modePhoto" value="normal" checked>
+          <label class="btn btn-outline-success" for="modePhoto">📸 写真</label>
+
+          <input type="radio" class="btn-check" name="child_mode" id="modeMovie" value="movie">
+          <label class="btn btn-outline-primary" for="modeMovie">🎬 動画</label>
+
+          <input type="radio" class="btn-check" name="child_mode" id="modeProcess" value="process">
+          <label class="btn btn-outline-warning" for="modeProcess">🛠️ 加工回し</label>
+        </div>
+        <div id="modeHelp" class="form-text mt-1"></div>
+      </div>
+
+      <!-- 作成ボタン -->
+      <div class="mt-3">
+        <button id="createChildBtn" class="btn btn-success w-100" type="submit">＋ 子アルバムを作成</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
+  <!-- 凡例 -->
+  <div class="mb-2">
+    <span class="badge badge-mode badge-normal">📸 写真</span>
+    <span class="badge badge-mode badge-movie">🎬 動画</span>
+    <span class="badge badge-mode badge-process">🛠️ 加工回し</span>
+  </div>
+
+  {# 加工ロック中の child_id 一覧を生成（processing_list はビューから渡ってくる前提） #}
+  {% set locked_ns = namespace(ids=[]) %}
+  {% if processing_list %}
+    {% for p in processing_list %}
+      {% set locked_ns.ids = locked_ns.ids + [p.child_id] %}
+    {% endfor %}
+  {% endif %}
+
+  {# 子アルバム描画用マクロ #}
+  {% macro render_child_item(child) %}
+    {% set badge_class = 'badge-normal' if child.mode == 'normal' else ('badge-process' if child.mode == 'process' else 'badge-movie') %}
+
+    {# この子アルバムが加工ロック中かどうか #}
+    {% set is_locked = child.folder in locked_ns.ids %}
+
+    <div class="list-group-item">
+      <div class="d-flex justify-content-between align-items-center flex-wrap">
+        <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child.folder) }}"
+           class="btn btn-outline-primary flex-grow-1 me-3 text-start">
+          {% if is_locked %}
+            🔏
+          {% else %}
+            {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
+          {% endif %}
+          &nbsp;{{ child.name }}
+        </a>
+
+        <span class="badge badge-mode {{ badge_class }} me-3">
+          {% if child.mode == 'process' %}加工回し{% elif child.mode == 'movie' %}動画{% else %}写真{% endif %}
+        </span>
+
+        {% if is_admin or is_owner %}
+        <div class="d-flex align-items-center child-actions">
+          <!-- ✏️ 名前変更 -->
+          <form id="rename-child-form-{{ child.folder }}"
+                method="post"
+                action="{{ url_for('album.rename_child', album_id=album_id, child_id=child.folder) }}"
+                class="d-none">
+            <input type="hidden" name="child_name" value="{{ child.name }}">
+          </form>
+          <button type="button" class="btn btn-sm btn-outline-primary"
+            onclick="
+              (function(){
+                var current='{{ child.name|e }}';
+                var next = prompt('新しい子アルバム名を入力してください', current);
+                if (next === null) return;
+                next = next.trim();
+                if (!next) { alert('子アルバム名は必須です'); return; }
+                var f = document.getElementById('rename-child-form-{{ child.folder }}');
+                f.querySelector('input[name=child_name]').value = next;
+                f.submit();
+              })();
+            ">
+            ✏️ 名前変更
+          </button>
+
+          <!-- 🗑️ 削除 -->
+          <form method="post"
+                action="{{ url_for('album.delete_child', album_id=album_id, child_id=child.folder) }}"
+                onsubmit="return confirm('本当にこの子アルバムを削除しますか？');">
+            <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  {% endmacro %}
+
+  <!-- 子アルバム一覧（カテゴリ別展開方式） -->
+  {% if not meta.children %}
+    <div class="text-muted">まだ子アルバムが作成されていません。</div>
+  {% else %}
+
+    {# 先頭の【○○】を自動抽出してラベル一覧を作成 #}
+    {% set ns = namespace(labels=[], others_count=0) %}
+    {% for child in meta.children %}
+      {% set name = child.name or '' %}
+      {% if name and name.startswith('【') %}
+        {% set end = name.find('】') %}
+        {% if end != -1 %}
+          {% set label = name[:end+1] %}
+          {% if label not in ns.labels %}
+            {% set ns.labels = ns.labels + [label] %}
+          {% endif %}
+        {% else %}
+          {# 「【」はあるけど「】」が無い → その他扱い #}
+          {% set ns.others_count = ns.others_count + 1 %}
+        {% endif %}
+      {% else %}
+        {% set ns.others_count = ns.others_count + 1 %}
+      {% endif %}
+    {% endfor %}
+
+    <div class="accordion" id="childAccordion">
+
+      {# ラベルごとのアコーディオン #}
+      {% for label in ns.labels %}
+        <div class="accordion-item">
+          <h2 class="accordion-header" id="heading{{ loop.index }}">
+            <button class="accordion-button collapsed"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#collapse{{ loop.index }}"
+                    aria-expanded="false"
+                    aria-controls="collapse{{ loop.index }}">
+              {{ label }}（
+                {# このラベルに属する件数を数える #}
+                {% set c = namespace(count=0) %}
+                {% for child in meta.children %}
+                  {% set name = child.name or '' %}
+                  {% if name.startswith(label) %}
+                    {% set c.count = c.count + 1 %}
+                  {% endif %}
+                {% endfor %}
+                {{ c.count }}
+              ）
+            </button>
+          </h2>
+
+          <div id="collapse{{ loop.index }}"
+               class="accordion-collapse collapse"
+               aria-labelledby="heading{{ loop.index }}">
+            <div class="accordion-body p-0">
+              <div class="list-group list-group-flush">
+                {% for child in meta.children %}
+                  {% set name = child.name or '' %}
+                  {% if name.startswith(label) %}
+                    {{ render_child_item(child) }}
+                  {% endif %}
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+
+      {# ラベル無し（先頭が【○○】で始まっていないもの）を「その他」にまとめる #}
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="headingOthers">
+          <button class="accordion-button collapsed"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#collapseOthers"
+                  aria-expanded="false"
+                  aria-controls="collapseOthers">
+            その他（{{ ns.others_count }}）
+          </button>
+        </h2>
+
+        <div id="collapseOthers"
+             class="accordion-collapse collapse"
+             aria-labelledby="headingOthers">
+          <div class="accordion-body p-0">
+            {% if ns.others_count > 0 %}
+              <div class="list-group list-group-flush">
+                {% for child in meta.children %}
+                  {% set name = child.name or '' %}
+                  {% if not (name and name.startswith('【') and name.find('】') != -1) %}
+                    {{ render_child_item(child) }}
+                  {% endif %}
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="text-muted small p-3">該当する子アルバムはありません。</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    {# 一括展開／一括閉じるボタン（一覧の一番下） #}
+    <div class="d-flex justify-content-end gap-2 mt-3">
+      <button type="button" id="expandAllChildren" class="btn btn-sm btn-outline-secondary">
+        一括展開
+      </button>
+      <button type="button" id="collapseAllChildren" class="btn btn-sm btn-outline-secondary">
+        一括閉じる
+      </button>
+    </div>
+
+  {% endif %}
+
+  <!-- Bootstrap JS（Collapseに必要） -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    // 「加工回し」選択時だけ注意文を表示
+    (function(){
+      const help = document.getElementById('modeHelp');
+      const radios = document.querySelectorAll('input[name="child_mode"]');
+      const update = () => {
+        const v = document.querySelector('input[name="child_mode"]:checked')?.value;
+        if (v === 'process') {
+          help.innerHTML = '※加工回しする用のモードです。このモードはアップロードが<strong>１枚制限</strong>となります。';
+        } else {
+          help.textContent = '';
+        }
+      };
+      radios.forEach(r => r.addEventListener('change', update));
+      update();
+    })();
+
+    // ===== 作成ボタン以外では送信させない（Enter対策 + IME確定Enter無視）＋確認ダイアログ =====
+    (function(){
+      const form = document.getElementById('createChildForm');
+      if (!form) return; // 権限なし/読み取り専用でフォーム自体が無い場合
+
+      const input = document.getElementById('childName');
+      const createBtn = document.getElementById('createChildBtn');
+
+      // 名前テンプレを反映したフルタイトルを組み立て
+      const buildTitle = () => {
+        const raw = (input?.value || '').trim();
+        const tpl = form.querySelector('input[name="child_name_template"]:checked')?.value || '';
+        let prefix = '';
+        if (tpl === 'kouzu') {
+          prefix = '【構図】';
+        } else if (tpl === 'offshot') {
+          prefix = '【オフショ】';
+        } else if (tpl === 'douga') {
+          prefix = '【動画】';
+        } else if (tpl === 'kakou') {
+          prefix = '【加工回し】';
+        }
+        if (!raw) {
+          return prefix || '(無題)';
+        }
+        return prefix + raw;
+      };
+
+      // テンプレ選択に応じてモードを自動切り替え
+      const syncModeWithTemplate = () => {
+        const tpl = form.querySelector('input[name="child_name_template"]:checked')?.value || '';
+        const modePhoto  = document.getElementById('modePhoto');
+        const modeMovie  = document.getElementById('modeMovie');
+        const modeProcess = document.getElementById('modeProcess');
+
+        if (!modePhoto || !modeMovie || !modeProcess) return;
+
+        if (tpl === 'douga') {
+          // 【動画】 → 動画モード
+          modeMovie.checked = true;
+        } else if (tpl === 'kakou') {
+          // 【加工回し】 → 加工回しモード
+          modeProcess.checked = true;
+        } else if (tpl === 'kouzu' || tpl === 'offshot' || tpl === '') {
+          // 【構図】【オフショ】or 指定なし → 写真モード
+          modePhoto.checked = true;
+        }
+      };
+
+      // テンプレラジオに変更イベントを仕込む
+      const tplRadios = form.querySelectorAll('input[name="child_name_template"]');
+      tplRadios.forEach(r => {
+        r.addEventListener('change', syncModeWithTemplate);
+      });
+      // 初期状態も反映
+      syncModeWithTemplate();
+
+      let createRequested = false;
+      createBtn?.addEventListener('click', () => { createRequested = true; });
+
+      form.addEventListener('submit', (e) => {
+        // 作成ボタン以外からの submit は弾く
+        if (!createRequested) {
+          e.preventDefault();
+          return;
+        }
+
+        // タイトルとモードを拾って確認ダイアログを表示
+        const title = buildTitle();
+        const modeVal = form.querySelector('input[name="child_mode"]:checked')?.value;
+        let modeLabel = '写真';
+        if (modeVal === 'movie') {
+          modeLabel = '動画';
+        } else if (modeVal === 'process') {
+          modeLabel = '加工回し';
+        }
+
+        const msg = `タイトル：${title}\nモード：${modeLabel}\n\nにて作成しますか？`;
+        if (!window.confirm(msg)) {
+          e.preventDefault();
+          createRequested = false;
+          return;
+        }
+
+        // 実際に送る値として、テンプレ込みのタイトルを反映
+        if (input) {
+          input.value = title;
+        }
+
+        // 確認OKならフラグをリセットしてそのまま送信
+        createRequested = false;
+      });
+
+      form.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) e.preventDefault();
+      });
+      input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) e.preventDefault();
+      });
+    })();
+
+    // ===== 作成フォームの開閉に応じてボタン文言を変更 =====
+    (function(){
+      const collapseEl = document.getElementById('createChildCollapse');
+      const btn = document.getElementById('toggleCreateFormBtn');
+      if (!collapseEl || !btn) return;
+
+      const collapse = new bootstrap.Collapse(collapseEl, { toggle: false });
+
+      const setLabel = (expanded) => {
+        btn.textContent = expanded ? '－ 展開を閉じる' : '＋ 子アルバムを作成';
+      };
+
+      collapseEl.addEventListener('show.bs.collapse', () => setLabel(true));
+      collapseEl.addEventListener('hide.bs.collapse', () => setLabel(false));
+
+      // URLパラメータやハッシュで初期展開したい場合（従来互換用）
+      const params = new URLSearchParams(location.search);
+      if (location.hash === '#create' || params.get('open') === 'create') {
+        collapse.show();
+        setLabel(true);
+      } else {
+        setLabel(false);
+      }
+    })();
+
+    // ===== 子アルバム アコーディオン 一括展開/一括閉じる =====
+    (function(){
+      const acc = document.getElementById('childAccordion');
+      const btnExpand = document.getElementById('expandAllChildren');
+      const btnCollapse = document.getElementById('collapseAllChildren');
+      if (!acc || !btnExpand || !btnCollapse) return;
+
+      // album_id ごとにキーを分けて保存
+      const STORAGE_KEY = 'childAccordionState_{{ album_id }}';
+
+      // 現在「開いている」パネルの ID を保存
+      const saveState = () => {
+        try {
+          const openIds = Array.from(
+            acc.querySelectorAll('.accordion-collapse.show')
+          ).map(el => el.id);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(openIds));
+        } catch (e) {
+          // localStorage が使えない場合は諦める
+        }
+      };
+
+      // 保存していた開閉状態を復元
+      const restoreState = () => {
+        let openIds;
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return;
+          openIds = JSON.parse(raw);
+          if (!Array.isArray(openIds)) return;
+        } catch (e) {
+          return;
+        }
+
+        acc.querySelectorAll('.accordion-collapse').forEach(el => {
+          const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+          if (openIds.includes(el.id)) {
+            inst.show();
+          } else {
+            inst.hide();
+          }
+        });
+      };
+
+      // 一括展開
+      btnExpand.addEventListener('click', () => {
+        acc.querySelectorAll('.accordion-collapse').forEach(el => {
+          const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+          inst.show();
+        });
+        saveState();
+      });
+
+      // 一括閉じる
+      btnCollapse.addEventListener('click', () => {
+        acc.querySelectorAll('.accordion-collapse').forEach(el => {
+          const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+          inst.hide();
+        });
+        saveState();
+      });
+
+      // 個別の開閉でも状態を保存
+      acc.addEventListener('shown.bs.collapse', saveState);
+      acc.addEventListener('hidden.bs.collapse', saveState);
+
+      // 初期表示時に前回状態を復元
+      restoreState();
+    })();
+  </script>
+</body>
+</html>

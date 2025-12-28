@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}参加削除の確認{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">参加削除の確認</h1>
+  <div>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u_id) }}">編集に戻る</a>
+  </div>
+</div>
+
+<div class="alert alert-warning">
+  このユーザーを次のイベントの「参加中」から削除します。よろしいですか？
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-sm-3">イベントID</dt><dd class="col-sm-9">#{{ m.event_id }}</dd>
+      <dt class="col-sm-3">タイトル</dt><dd class="col-sm-9">{{ m.title or '(無題イベント)' }}</dd>
+      <dt class="col-sm-3">開催日時</dt><dd class="col-sm-9">{{ m.starts_at or '-' }}</dd>
+      <dt class="col-sm-3">参加状態</dt><dd class="col-sm-9">{{ m.status }}</dd>
+      <dt class="col-sm-3">支払状態</dt><dd class="col-sm-9">{{ m.payment_status }}</dd>
+    </dl>
+  </div>
+</div>
+
+<form method="post"
+      action="{{ url_for('external_login_user.admin_ext_users_member_delete', user_id=u_id, member_id=m.member_id) }}">
+  <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary"
+       href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u_id) }}">キャンセル</a>
+    <button class="btn btn-danger" type="submit">削除する</button>
+  </div>
+</form>
+{% endblock %}

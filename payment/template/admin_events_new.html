@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>イベント新規作成（管理）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="container py-4">
+  <h1 class="h4 mb-3">イベント新規作成</h1>
+
+  <form action="/payment/admin/events/new" method="post" class="row gy-3">
+    <div class="col-12">
+      <label class="form-label">タイトル</label>
+      <input name="title" type="text" class="form-control" required>
+    </div>
+    <div class="col-12 col-md-4">
+      <label class="form-label">日付（任意）</label>
+      <input name="date" type="date" class="form-control">
+    </div>
+    <div class="col-12 col-md-4">
+      <label class="form-label">既定金額（円）</label>
+      <input name="default_amount" type="number" min="1" step="1" value="1000" class="form-control">
+    </div>
+    <div class="col-12">
+      <label class="form-label">メモ（任意）</label>
+      <textarea name="notes" class="form-control" rows="3"></textarea>
+    </div>
+    <div class="col-12">
+      <button class="btn btn-primary">作成</button>
+      <a class="btn btn-outline-secondary" href="/payment/admin/events">戻る</a>
+    </div>
+  </form>
+</body>
+</html>

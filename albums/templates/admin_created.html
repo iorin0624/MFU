@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}アルバム作成完了{% endblock %}
+
+{% block content %}
+<div class="container d-flex justify-content-center">
+  <div class="card p-4 shadow-sm w-100" style="max-width: 600px;">
+    <h2 class="text-center mb-4 text-success">✅ アルバム作成完了</h2>
+
+    <div class="alert alert-success">
+      <p><strong>UUID:</strong> <code>{{ album_id }}</code></p>
+      <p><strong>参加者パスワード:</strong> <code>{{ password }}</code></p>
+    </div>
+
+    <form class="mt-4">
+      <h5 class="mb-2">この内容を参加者に共有してください：</h5>
+      <div class="input-group">
+        <textarea id="copy-content" class="form-control" rows="2" readonly style="resize:none;">http://{{ domain }}/album/access/{{ album_id }}
+パスワード：{{ password }}</textarea>
+        <button type="button" class="btn btn-outline-secondary" onclick="copyToClipboard()">📋 コピー</button>
+      </div>
+    </form>
+
+<div class="text-center mt-4">
+  <a href="{{ url_for('album.admin_create_album') }}" class="btn btn-primary">
+    アルバム作成・管理に戻る
+  </a>
+</div>
+  </div>
+</div>
+
+<script>
+  function copyToClipboard() {
+    const textarea = document.getElementById("copy-content");
+    textarea.select();
+    textarea.setSelectionRange(0, 99999); // iOS対応
+    navigator.clipboard.writeText(textarea.value).then(() => {
+      alert("URLとパスワードをコピーしました！");
+    }).catch(() => {
+      alert("コピーに失敗しました");
+    });
+  }
+</script>
+{% endblock %}

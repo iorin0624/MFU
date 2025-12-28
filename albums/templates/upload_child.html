@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ meta.album_name }}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    /* プレビュー（写真） */
+    #preview img {
+      width: 100px; height: 100px; object-fit: contain;
+      background-color: #f8f9fa; border-radius: 6px; margin: 4px; border: 1px solid #ccc;
+    }
+    /* 選択ファイル一覧（動画） */
+    #fileList { list-style: none; padding: 0; margin: .5rem 0 0; }
+    #fileList li { display: flex; justify-content: space-between; gap: .75rem;
+      border: 1px solid #e5e5e5; border-radius: 8px; padding: .5rem .75rem; margin-bottom: .5rem; }
+
+    /* ドロップゾーン */
+    #dropzone {
+      border: 2px dashed #aaa; border-radius: 8px; padding: 2em; text-align: center;
+      color: #777; margin-bottom: 1em; transition: background-color .2s, border-color .2s;
+    }
+    #dropzone.dragover { background-color: #e9f5ff; border-color: #3399ff; }
+
+    /* 100%後のメッセージを読みやすく */
+    .progress .progress-bar { font-weight: 700; }
+  </style>
+</head>
+<body class="container py-4">
+  <h2 class="mb-3">
+    📤 アップロード（{{ meta.album_name }} /
+    {% for child in meta.children %}
+      {% if child.folder == child_id %}
+        {{ child.name }}
+      {% endif %}
+    {% endfor %}）
+  </h2>
+
+  {% if mode == 'movie' %}
+    <div class="alert alert-info">
+      🎥 <strong>動画専用</strong>です。変換完了まで一覧で「変換中…」と表示されます。
+      <br>※ 目安: ファイル最大 2GB、対応拡張子: mp4 / mov / m4v / webm
+    </div>
+  {% elif mode == 'process' %}
+    <div class="alert alert-danger text-center">
+      🔁 <strong>加工回し</strong>は常に<strong>1枚のみ</strong>です。アップロードすると最新に置き換えられ、ロックは自動解除されます。
+      複数選んだ場合も<strong>先頭の1枚のみ</strong>適用されます。
+    </div>
+  {% else %}
+    <div class="alert alert-warning text-center">
+      📸 <strong>写真専用</strong>です。アップロード後の削除は管理者のみ可能です。選択ミスにご注意ください（アップロード前なら選び直し可）。
+    </div>
+  {% endif %}
+
+  {% if mode != 'movie' %}
+  <!-- ▼ サムネイルプレビュー切り替え（写真/加工のみ） -->
+  <div class="mb-3">
+    <label class="form-label me-3">サムネイルプレビュー</label>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="radio" name="previewToggle" id="previewOn" value="on" checked>
+      <label class="form-check-label" for="previewOn">オン</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="radio" name="previewToggle" id="previewOff" value="off">
+      <label class="form-check-label" for="previewOff">オフ</label>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- プレビュー領域（写真） / ファイル一覧（動画） -->
+  <div id="preview" class="mb-3 d-flex flex-wrap gap-2" {% if mode=='movie' %}style="display:none"{% endif %}></div>
+  <ul id="fileList" class="mb-3" {% if mode!='movie' %}style="display:none"{% endif %}></ul>
+
+  <div id="dropzone">
+    {% if mode == 'movie' %}
+      ここに<strong>動画</strong>をドロップ、または下から選択
+    {% else %}
+      ここに<strong>画像</strong>をドロップ、または下から選択
+    {% endif %}
+  </div>
+
+  <form id="uploadForm" method="post" enctype="multipart/form-data">
+    <div class="mb-3">
+      <input
+        id="fileInput"
+        class="form-control"
+        type="file"
+        name="file"
+        {% if mode == 'movie' %}accept="video/*"{% else %}accept="image/*"{% endif %}
+        {% if mode != 'process' %}multiple{% endif %}
+        required>
+    </div>
+
+    <div class="progress mb-3" style="height: 24px;">
+      <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100">0%</div>
+    </div>
+
+    <div class="d-flex gap-2">
+      <button id="submitBtn" type="submit" class="btn btn-primary">アップロード</button>
+      <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child_id) }}" class="btn btn-secondary">戻る</a>
+    </div>
+  </form>
+
+  <script>
+    const MODE = "{{ mode }}"; // 'normal' | 'process' | 'movie'
+    const albumId = "{{ album_id }}";
+    const childId = "{{ child_id }}";
+
+    // DOM
+    const fileInput   = document.getElementById('fileInput');
+    const dropzone    = document.getElementById('dropzone');
+    const preview     = document.getElementById('preview');
+    const fileListUL  = document.getElementById('fileList');
+    const form        = document.getElementById('uploadForm');
+    const progressBar = document.getElementById('progressBar');
+    const submitBtn   = document.getElementById('submitBtn');
+
+    // 画像プレビュー切替（写真/加工のみ）
+    let previewEnabled = (MODE !== 'movie'); // movieはプレビュー非表示
+    const MAX_PREVIEW_FILES = 50;
+
+    const previewOn  = document.getElementById('previewOn');
+    const previewOff = document.getElementById('previewOff');
+
+    if (previewOn && previewOff) {
+      document.querySelectorAll('input[name="previewToggle"]').forEach(radio => {
+        radio.addEventListener('change', function () {
+          previewEnabled = this.value === 'on';
+          if (MODE === 'movie') return;
+          if (!previewEnabled) {
+            preview.innerHTML = '';
+          } else if (fileInput.files && fileInput.files.length > 0) {
+            renderImagePreview(fileInput.files, { fromToggle: true });
+          }
+        });
+      });
+    }
+
+    // ドロップゾーン
+    dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', e => {
+      e.preventDefault(); dropzone.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (files && files.length) {
+        setFilesToInput(files);
+      }
+    });
+
+    // ファイル選択
+    fileInput.addEventListener('change', () => {
+      const files = fileInput.files;
+      if (!files || !files.length) return;
+      if (MODE === 'movie') {
+        renderMovieList(files);
+      } else {
+        renderImagePreview(files);
+      }
+    });
+
+    function setFilesToInput(files) {
+      // process は先頭のみ
+      if (MODE === 'process' && files.length > 1) {
+        const dt = new DataTransfer();
+        dt.items.add(files[0]);
+        fileInput.files = dt.files;
+      } else {
+        fileInput.files = files;
+      }
+      if (MODE === 'movie') {
+        renderMovieList(fileInput.files);
+      } else {
+        renderImagePreview(fileInput.files);
+      }
+    }
+
+    // 画像プレビュー
+    function renderImagePreview(files, opts) {
+      opts = opts || {};
+      const fromToggle = !!opts.fromToggle;
+      preview.style.display = '';
+      fileListUL.style.display = 'none';
+      preview.innerHTML = '';
+
+      // しきい値超えたら自動OFF（ユーザーがONに戻せば描画）
+      if (MODE !== 'process' && !fromToggle && files.length > MAX_PREVIEW_FILES) {
+        previewEnabled = false;
+        if (previewOff) previewOff.checked = true;
+        if (previewOn)  previewOn.checked  = false;
+        showAutoOffNote();
+        return;
+      } else {
+        removeAutoOffNote();
+      }
+      if (!previewEnabled) return;
+
+      Array.from(files).forEach(file => {
+        if (file.type.startsWith('image/')) {
+          const reader = new FileReader();
+          reader.onload = e => {
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            preview.appendChild(img);
+          };
+          reader.readAsDataURL(file);
+        }
+      });
+    }
+
+    function showAutoOffNote() {
+      let n = document.getElementById('autoOffNote');
+      if (!n) {
+        n = document.createElement('div');
+        n.id = 'autoOffNote';
+        n.className = 'alert alert-warning py-2';
+        n.textContent = `選択が${MAX_PREVIEW_FILES}枚を超えたため、サムネイルプレビューを自動でオフにしました。右上の切替で再度オンにできます。`;
+        form.insertAdjacentElement('beforebegin', n);
+      }
+    }
+    function removeAutoOffNote() {
+      const n = document.getElementById('autoOffNote');
+      if (n) n.remove();
+    }
+
+    // 動画の選択一覧表示
+    function renderMovieList(files) {
+      fileListUL.style.display = '';
+      preview.style.display = 'none';
+      fileListUL.innerHTML = '';
+      Array.from(files).forEach(f => {
+        const li = document.createElement('li');
+        const left = document.createElement('div');
+        const right = document.createElement('div');
+        left.textContent = f.name;
+        right.textContent = bytesPretty(f.size);
+        li.append(left, right);
+        fileListUL.appendChild(li);
+      });
+    }
+
+    function bytesPretty(n){
+      if (n == null) return '-';
+      const u = ['B','KB','MB','GB','TB'];
+      let i = 0; let v = Number(n);
+      while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+      return (Math.round(v * 10) / 10) + ' ' + u[i];
+    }
+
+    // 送信
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      const files = fileInput.files;
+      if (!files || !files.length) { alert('ファイルを選択してください'); return; }
+
+      const fd = new FormData();
+      if (MODE === 'process') {
+        fd.append('file', files[0]);
+      } else {
+        for (let i = 0; i < files.length; i++) fd.append('file', files[i]);
+      }
+
+      // UI lock
+      submitBtn.classList.add('disabled');
+      submitBtn.setAttribute('aria-disabled', 'true');
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '', true);
+
+      xhr.upload.addEventListener('progress', function (ev) {
+        if (!ev.lengthComputable) return;
+        const percent = Math.round((ev.loaded / ev.total) * 100);
+        progressBar.style.width = percent + '%';
+        progressBar.textContent = percent >= 100
+          ? (MODE === 'movie'
+              ? '100%（処理中… 変換が必要な場合は一覧で「変換中…」と表示されます）'
+              : '100%（処理中…）このままページでお待ちください')
+          : percent + '%';
+      });
+
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== XMLHttpRequest.DONE) return;
+        // 完了表示 & リダイレクト
+        submitBtn.textContent = '完了しました';
+        submitBtn.classList.remove('btn-primary'); submitBtn.classList.add('btn-success');
+        setTimeout(() => {
+          window.location.href = "{{ url_for('album.view_child', album_id=album_id, child_id=child_id) }}";
+        }, 800);
+      };
+
+      xhr.send(fd);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ meta.album_name }}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
+  <style>
+    .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+    .gallery .item { position: relative; display: inline-block; text-align: center; }
+    img.thumb { width: 100px; height: auto; border-radius: 6px; }
+
+    /* ✅ チェックUI帯（通常モードのみ selectable が付与される） */
+    .gallery.selectable .item { padding-top: 56px; }
+    .file-check { position: absolute; opacity: 0; pointer-events: none; }
+    .tapbox{
+      position: absolute; top: 6px; left: 6px;
+      width: 48px; height: 48px; border-radius: 10px;
+      background: rgba(255,255,255,.9); border: 1px solid #ddd;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; font-weight: 700; user-select: none; cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      -webkit-tap-highlight-color: transparent;
+      z-index: 2;
+    }
+    .item.selected .tapbox{ background:#0d6efd; color:#fff; border-color:#0d6efd; }
+    .item.selected .thumb{ outline:3px solid #0d6efd; outline-offset:2px; }
+
+    @media (pointer:coarse){ img.thumb{ width:120px; } }
+
+    /* ===== 下部固定ツールバー（通常モードのみ表示） ===== */
+    .zip-toolbar{
+      display:flex; flex-wrap:wrap; gap:.6em; justify-content:center; align-items:center;
+      background:rgba(255,255,255,.94);
+      -webkit-backdrop-filter:saturate(180%) blur(8px); backdrop-filter:saturate(180%) blur(8px);
+      border:1px solid #e6e6e6; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
+      padding:.6em .8em; position:fixed; left:50%; transform:translateX(-50%);
+      width:calc(min(100vw - 1.2rem, 980px));
+      bottom:max(8px, env(safe-area-inset-bottom)); z-index:1000;
+    }
+    .zip-toolbar.hidden{ display:none !important; }
+    #zip-bottom-spacer{ height:0; }
+
+    .zip-toolbar .btn{ font-weight:700; }
+    .sel-count{
+      font-weight:700; font-size:.95rem; color:#333;
+      background:#f0f0f0; padding:.35em .7em; border-radius:999px;
+    }
+
+    /* 進行率バー */
+    .zip-progress{ flex:1 1 100%; display:flex; align-items:center; gap:.6em; margin-top:.1em; }
+    .zip-progress[hidden]{ display:none; }
+    .zip-progress .bar{ flex:1 1 auto; height:10px; background:#e9ecef; border-radius:999px; overflow:hidden; }
+    .zip-progress .fill{ display:block; height:100%; width:0%; background:#28a745; transition:width .2s ease; }
+    .zip-progress .txt{ min-width:12em; font-size:.9rem; color:#333; text-align:right; white-space:nowrap; }
+
+    /* 連打ガード（スピナー） */
+    .btn-busy{ opacity:.7; pointer-events:none; position:relative; }
+    .btn-busy::after{
+      content:""; display:inline-block; width:1em; height:1em;
+      border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+      margin-left:.5em; vertical-align:-2px; animation:zipspin .7s linear infinite;
+    }
+    @keyframes zipspin{ to{ transform:rotate(360deg); } }
+
+    @media (max-width:480px){
+      .zip-toolbar{ gap:.5em; padding:.5em .6em; border-radius:8px; }
+      .zip-progress .bar{ height:8px; }
+      .zip-progress .txt{ font-size:.8rem; }
+      .sel-count{ font-size:.9rem; padding:.3em .6em; }
+    }
+  </style>
+</head>
+<body class="container py-4">
+
+<h2 class="mb-3">
+  📂 {{ meta.album_name }} /
+  {% for child in meta.children %}
+    {% if child.folder == child_id %}
+      {{ child.name }}
+      <small class="text-muted ms-2">（{{ image_count }}枚）</small>
+    {% endif %}
+  {% endfor %}
+</h2>
+
+{% if lock and not lock_expired %}
+  <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
+    <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
+    <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
+      <button class="btn btn-outline-danger btn-sm" type="submit"
+              onclick="return confirm('本当にロックを解除しますか？');">
+        🔓 ロックを解除
+      </button>
+    </form>
+  </div>
+{% endif %}
+
+{% if is_admin %}
+  <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
+{% elif is_owner and session.user %}
+  <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+{% endif %}
+
+{% if mode == 'process' %}
+  <div class="alert alert-danger text-center">
+    加工専用モードではアップロード枚数は常に1枚のみになります。アップロードすると、最新の画像に切り替わります。
+  </div>
+{% endif %}
+
+{% if process_message %}
+  <div class="alert alert-info text-center">🔁 {{ process_message }}</div>
+{% endif %}
+
+<a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
+
+{% if not is_readonly %}
+<a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}"
+   class="btn btn-primary mb-3 ms-2">
+  <span aria-hidden="true">⬆</span> 写真を追加
+</a>
+{% else %}
+<div class="alert alert-warning d-inline-block ms-2 mb-3">
+  このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
+</div>
+{% endif %}
+
+<!-- ✅ ギャラリー（通常モードは selectable 付与でチェックUIが出る） -->
+<div class="gallery{% if mode != 'process' %} selectable{% endif %}">
+  {% if files %}
+    {% for file in files %}
+      {% set fname = file.name if file.name else file %}
+      <div class="item">
+        {% if mode != 'process' %}
+          <input id="chk-{{ loop.index0 }}" class="file-check" type="checkbox"
+                 data-filename="{{ fname }}"
+                 data-path="{{ 'albums/' ~ album_id ~ '/' ~ child_id ~ '/' ~ fname }}">
+          <label class="tapbox" for="chk-{{ loop.index0 }}" aria-label="選択">✓</label>
+        {% endif %}
+        <a class="preview" href="{{ url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
+           data-caption="{{ fname }}">
+          <img class="thumb"
+               src="{{ file.thumb if file.thumb else url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
+               alt="{{ fname }}">
+        </a>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="text-muted">まだ写真がアップロードされていません。</p>
+  {% endif %}
+</div>
+
+{% if mode != 'process' and files %}
+  <!-- 下部バーに隠れない余白 -->
+  <div id="zip-bottom-spacer" aria-hidden="true"></div>
+
+  <!-- ▼ 下部固定ツールバー（通常モードのみ） -->
+  <div class="zip-toolbar" aria-label="選択式ダウンロードツールバー（下部固定）" role="group">
+    <button id="btn-all"  type="button" class="btn btn-outline-primary btn-sm">全選択</button>
+    <button id="btn-none" type="button" class="btn btn-outline-secondary btn-sm">全解除</button>
+    <span id="sel-count" class="sel-count" aria-live="polite">選択中: 0枚</span>
+    <button id="btn-zip"  type="button" class="btn btn-success btn-sm" aria-describedby="zip-status" disabled>
+      選択した写真をZIPダウンロード
+    </button>
+
+    <div id="zip-progress" class="zip-progress" hidden>
+      <div class="bar"><span id="zip-progress-fill" class="fill"></span></div>
+      <div id="zip-progress-txt" class="txt">0%</div>
+    </div>
+    <span id="zip-status" class="visually-hidden" aria-live="polite"></span>
+  </div>
+{% endif %}
+
+{% if mode == 'process' %}
+<div class="mt-5 text-center">
+  {% if not lock or lock_expired %}
+    <!-- ★ テキストボックスのみ（ログイン誤認を避ける） -->
+    <form id="pinDownloadForm" class="mt-3 text-center" autocomplete="off">
+      <div class="mb-2" style="max-width:520px;margin-inline:auto">
+        <input
+          type="text"
+          id="displayName"
+          name="display_name"
+          class="form-control"
+          placeholder="お名前"
+          value="{{ session.user or '' }}"
+          required
+          minlength="1"
+          autocomplete="nickname"
+          autocapitalize="none"
+          spellcheck="false"
+          inputmode="text">
+        <div class="form-text">※加工履歴に表示するだけの名前です。ID/パスワードとは無関係です。</div>
+      </div>
+
+      <!-- ★ 送信ボタンを <a> に変更（レイアウト崩れ防止） -->
+      <a href="#" id="btn-process-download" class="btn btn-primary mb-3 ms-2">
+        <span aria-hidden="true">⏬</span> 加工用画像をダウンロード
+      </a>
+    </form>
+
+    <!-- 🔽 ポップアップブロッカー時のリンク提示先 -->
+    <div id="process-hint" class="text-center small text-muted"></div>
+
+    <p class="text-muted mt-2" style="user-select:text;">
+      ※使用方法<br>
+     1️⃣ 上で「加工用画像をダウンロード」を押す<br><br>
+      2️⃣ 最新画像が<strong>別タブ</strong>で開くので、右クリック等で<strong>手動保存</strong>して加工<br><br>
+      {% if not is_readonly %}
+      3️⃣ 「写真を追加」からアップロード（加工した写真をアップでロック解除）<br><br>
+      {% else %}
+      3️⃣ <strong>HDD保管中のためアップロードはできません。</strong>（解除や差し替えはできない状態です）<br><br>
+      {% endif %}
+      4️⃣ 30分経過でも自動解除。間違えてしまった場合でも解除可能
+    </p>
+
+    {% if history_list %}
+    <hr>
+    <h5 class="mt-4">📜 加工履歴（１番上が最新）</h5>
+    <div class="table-responsive">
+      <table class="table table-sm table-striped table-bordered text-center align-middle">
+        <thead class="table-light">
+          <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
+        </thead>
+        <tbody>
+          {% for record in history_list|reverse %}
+            <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    {% if lock and lock_expired %}
+      <div class="alert alert-warning mt-2">
+        ⏳ <strong>{{ lock.user }}</strong> さんのロックは30分を過ぎました。再取得が可能です。
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="alert alert-danger">
+      ⚠️ 現在 <strong>{{ lock.user }}</strong> さんが加工中です。終了までお待ちください。<br>
+      30分経過しても加工済み写真がアップロードされない場合は、ロックが解除されます。
+    </div>
+    <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
+      <button class="btn btn-outline-danger btn-sm" type="submit"
+              onclick="return confirm('本当にロックを解除しますか？');">
+        🔓 ロックを解除
+      </button>
+    </form>
+  {% endif %}
+</div>
+{% endif %}
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+<script>
+  /* ====== processモード：リンククリックで開始（空タブ先開きでポップアップ回避） ====== */
+  const pinForm = document.getElementById("pinDownloadForm");
+  const btnProcess = document.getElementById("btn-process-download");
+  if (pinForm && btnProcess) {
+    btnProcess.addEventListener("click", async function(event) {
+      event.preventDefault();
+
+      const nameInput   = document.getElementById("displayName");
+      const displayName = (nameInput.value || "").trim();
+      if (!displayName) { alert("加工者名を入力してください。"); nameInput.focus(); return; }
+
+      // ユーザー操作直後に空タブを開く（同期ジェスチャ内）
+      const preWin = window.open('about:blank', '_blank');
+
+      // サーバ互換のため、送信時だけ username キーに詰め替える
+      const formData = new FormData();
+      formData.append("username", displayName);
+
+      try {
+        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", {
+          method: "POST",
+          body: formData
+        });
+
+        if (response.status === 409) {
+          if (preWin && !preWin.closed) preWin.close();
+          alert("他の方が加工中です。\n" + await response.text());
+          return;
+        }
+        if (!response.ok) {
+          if (preWin && !preWin.closed) preWin.close();
+          const text = await response.text().catch(()=>response.statusText);
+          alert("❌ 開始に失敗しました:\n" + text);
+          return;
+        }
+
+        const data = await response.json();
+
+        // トースト
+        const toast = document.createElement("div");
+        toast.textContent = data.message || `🔒 ${displayName} さんとして加工ロックを開始しました（30分）`;
+        toast.style.position="fixed"; toast.style.top="20px"; toast.style.left="50%"; toast.style.transform="translateX(-50%)";
+        toast.style.background="#0d6efd"; toast.style.color="#fff"; toast.style.padding="10px 20px"; toast.style.borderRadius="8px";
+        toast.style.zIndex="1000"; toast.style.boxShadow="0 2px 8px rgba(0,0,0,.2)";
+        document.body.appendChild(toast);
+        setTimeout(()=>toast.remove(), 2500);
+
+        // 別タブURL（キャッシュ避け）
+        const openUrl = (data.image_url || "") + (data.image_url?.includes("?") ? "&" : "?") + "v=" + Date.now();
+
+        if (preWin && !preWin.closed) {
+          preWin.location.href = openUrl;
+        } else {
+          // フォールバック
+          const a = document.createElement('a');
+          a.href = openUrl;
+          a.target = '_blank';
+          a.rel = 'noopener';
+          document.body.appendChild(a); a.click(); a.remove();
+
+          const hint = document.getElementById("process-hint");
+          if (hint) {
+            hint.innerHTML = `<p class="mt-3">ポップアップがブロックされた可能性があります。<a href="${openUrl}" target="_blank" rel="noopener">こちらをタップ</a>してください。</p>`;
+          }
+        }
+
+        // 軽く再読込（ロック表示の反映）
+        setTimeout(()=>location.reload(), 400);
+
+      } catch (err) {
+        if (preWin && !preWin.closed) preWin.close();
+        alert("⚠️ 通信エラー: " + err.message);
+      }
+    });
+  }
+
+  /* ====== Lightbox（全モードで起動） ====== */
+  window.addEventListener('DOMContentLoaded', ()=>{
+    // まず起動（通常モードでも加工モードでもギャラリー表示可能に）
+    baguetteBox.run('.gallery',{ animation:'fadeIn', noScrollbars:true });
+
+    // 加工中ロックがある場合はクリック無効化（拡大禁止）
+    {% if lock and not lock_expired %}
+      document.querySelectorAll('.gallery a.preview').forEach(el => {
+        el.addEventListener('click', e => e.preventDefault(), true);
+        el.style.pointerEvents = 'none';
+        el.style.opacity = '0.6';
+        el.style.cursor = 'not-allowed';
+        // キーボード操作も防ぐ
+        el.addEventListener('keydown', e => { e.preventDefault(); e.stopPropagation(); }, true);
+      });
+    {% endif %}
+  });
+</script>
+
+{% if mode != 'process' and files %}
+<script>
+  /* ====== 選択 & ZIP（通常モードのみ） ====== */
+  const $$ = (s, c=document) => Array.from(c.querySelectorAll(s));
+  const checks = $$('.file-check');
+  const countEl = document.getElementById('sel-count');
+  const btnAll  = document.getElementById('btn-all');
+  const btnNone = document.getElementById('btn-none');
+  const btnZip  = document.getElementById('btn-zip');
+  const statusEl = document.getElementById('zip-status');
+
+  /* ラベル（✓）タップで確実にトグル＋UI更新 */
+  document.addEventListener('click', (e)=>{
+    const tb = e.target.closest('.tapbox');
+    if (!tb) return;
+    e.preventDefault(); e.stopPropagation();
+    const forId = tb.getAttribute('for');
+    const chk = document.getElementById(forId);
+    if (chk) {
+      chk.checked = !chk.checked;
+      chk.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+  });
+
+  function currentSelectionPaths(){
+    return checks.filter(c=>c.checked).map(c=>c.dataset.path).filter(Boolean);
+  }
+  function updateSelectionUI(){
+    const sel = checks.filter(c=>c.checked);
+    if (countEl) countEl.textContent = `選択中: ${sel.length}枚`;
+    const inflight = btnZip?.classList.contains('btn-busy');
+    if (btnZip)  btnZip.disabled = !!inflight || sel.length === 0;
+    checks.forEach(c => c.closest('.item')?.classList.toggle('selected', c.checked));
+  }
+  checks.forEach(c => c.addEventListener('change', updateSelectionUI));
+  btnAll?.addEventListener('click', ()=>{ checks.forEach(c=>c.checked=true); updateSelectionUI(); });
+  btnNone?.addEventListener('click', ()=>{ checks.forEach(c=>c.checked=false); updateSelectionUI(); });
+  updateSelectionUI();
+
+  /* 進行率UI */
+  let pollTimer=null;
+  function fmtBytes(n){ if(!n&&n!==0) return "-"; const u=["B","KB","MB","GB","TB"]; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (Math.round(n*10)/10)+' '+u[i]; }
+  function showProgress(){ document.getElementById('zip-progress')?.removeAttribute('hidden'); setupBottomSpacer(); }
+  function hideProgress(){ document.getElementById('zip-progress')?.setAttribute('hidden',''); setProgress(0,"0%"); setupBottomSpacer(); }
+  function setProgress(pct,text){ const f=document.getElementById('zip-progress-fill'); const t=document.getElementById('zip-progress-txt'); if(f) f.style.width=Math.max(0,Math.min(100,pct))+'%'; if(t) t.textContent=text; }
+
+  function startProgressPolling(key){
+    const q=encodeURIComponent(key); showProgress(); stopProgressPolling();
+    pollTimer=setInterval(async()=>{
+      try{
+        const res=await fetch(`/api/zip-progress?key=${q}`,{cache:'no-store'}); if(!res.ok) return;
+        const d=await res.json();
+
+        let pct = (typeof d.percent === 'number') ? d.percent : 0;
+        if (typeof d.percent !== 'number') {
+          const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
+          const totalF=d.total_files||0, doneF=d.processed_files||0;
+          pct = totalB?Math.floor(doneB*100/totalB):(totalF?Math.floor(doneF*100/totalF):0);
+        }
+        if (d.status === 'done') pct = 100;
+
+        const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
+        const totalF=d.total_files||0, doneF=d.processed_files||0;
+        const remain=(d.eta_seconds!=null&&isFinite(d.eta_seconds))?`・残り約${Math.max(0,Math.round(d.eta_seconds))}秒`:``;
+        setProgress(pct, `${pct}%（${doneF}/${totalF}・${fmtBytes(doneB)}/${fmtBytes(totalB)}${remain}）`);
+      }catch(_){}
+    },500);
+  }
+  function stopProgressPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+
+  async function forceProgress100(key){
+    try{
+      const res=await fetch(`/api/zip-progress?key=${encodeURIComponent(key)}`,{cache:'no-store'});
+      if (res.ok) {
+        const d=await res.json();
+        setProgress(100, `100%（${d.processed_files||d.total_files||'-'}/${d.total_files||'-'}・${fmtBytes(d.processed_bytes)||'-'}/${fmtBytes(d.total_bytes)||'-'}）`);
+      } else {
+        setProgress(100, "100%（完了）");
+      }
+    }catch(_){
+      setProgress(100, "100%（完了）");
+    }
+  }
+
+  /* トグル文言 */
+  const defaultZipText = btnZip?.textContent || '選択した写真をZIPダウンロード';
+  let resetTimer=null;
+  const setBtnText = (t)=>{ if(btnZip){ btnZip.textContent=t; if(statusEl) statusEl.textContent=t; requestAnimationFrame(setupBottomSpacer);} };
+  const scheduleReset=(ms=5000)=>{ if(resetTimer) clearTimeout(resetTimer); resetTimer=setTimeout(()=>setBtnText(defaultZipText),ms); };
+
+  btnZip?.addEventListener('click', async ()=>{
+    if(btnZip.classList.contains('btn-busy')) return;
+    const paths=currentSelectionPaths();
+    if(!paths.length){ alert('ファイルを選択してください'); return; }
+
+    btnZip.classList.add('btn-busy');
+    [btnAll, btnNone].forEach(b=>{ if(b) b.disabled=true; });
+    btnZip.disabled = true;
+    setBtnText('ZIP生成中…');
+
+    const idKey=(crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
+    startProgressPolling(idKey);
+
+    const hideAfterMs = 1200;
+
+    try{
+      const res=await fetch('/api/zip-stream',{
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'X-Idempotency-Key': idKey },
+        body: JSON.stringify({ paths })
+      });
+
+      if(res.status===409){ setBtnText('既にZIP生成中です…'); scheduleReset(5000); return; }
+      if(!res.ok){
+        const text=await res.text().catch(()=>res.statusText);
+        console.error('ZIP error:', text);
+        setBtnText('エラーが発生しました'); scheduleReset(4000); return;
+      }
+
+      await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
+      setBtnText('生成完了—ダウンロードが始まります');
+
+      const cd=res.headers.get('Content-Disposition')||'';
+      const m=cd.match(/filename=([^;]+)/i);
+      const fn=(m? m[1].trim().replace(/^["']|["']$/g,'') : (idKey+'.zip'));
+      const blob=await res.blob();
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a'); a.href=url; a.download=fn;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      scheduleReset(5000);
+
+    }catch(e){
+      console.error(e);
+      setBtnText('通信エラーが発生しました'); scheduleReset(4000);
+    }finally{
+      setTimeout(()=>{ stopProgressPolling(); hideProgress(); }, hideAfterMs);
+      btnZip.classList.remove('btn-busy');
+      [btnAll, btnNone].forEach(b=>{ if(b) b.disabled=false; });
+      btnZip.disabled=false;
+      updateSelectionUI();
+    }
+  });
+
+  /* 下部バー余白確保＆拡大時は隠す */
+  function setupBottomSpacer(){
+    const bottomBar=document.querySelector('.zip-toolbar');
+    const bottomSp=document.getElementById('zip-bottom-spacer');
+    if(!bottomBar||!bottomSp) return;
+    bottomSp.style.height=(bottomBar.offsetHeight+12)+'px';
+  }
+  function setupToolbarVisibilityWithLightbox(){
+    const bar=document.querySelector('.zip-toolbar'); if(!bar) return;
+    const hide=()=>bar.classList.add('hidden');
+    const show=()=>{ bar.classList.remove('hidden'); setupBottomSpacer(); };
+    document.querySelector('.gallery')?.addEventListener('click', (e)=>{ if(e.target.closest('a')) hide(); });
+    const applyOverlayObserver=(overlay)=>{
+      const toggle=()=>{
+        const visible=overlay.classList.contains('visible') && overlay.style.display!=='none';
+        if(visible) hide(); else show();
+      };
+      toggle();
+      const mo=new MutationObserver(toggle);
+      mo.observe(overlay,{ attributes:true, attributeFilter:['class','style'] });
+    };
+    const tryAttach=()=>{ const overlay=document.getElementById('baguetteBox-overlay'); if(overlay){ applyOverlayObserver(overlay); return true; } return false; };
+    if(!tryAttach()){
+      const bodyMO=new MutationObserver(()=>{ if(tryAttach()) bodyMO.disconnect(); });
+      bodyMO.observe(document.body,{ childList:true, subtree:true });
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', ()=>{
+    setupBottomSpacer();
+    setupToolbarVisibilityWithLightbox();
+    const recalc=()=>requestAnimationFrame(setupBottomSpacer);
+    window.addEventListener('resize',recalc);
+    window.addEventListener('orientationchange',recalc);
+  });
+</script>
+{% endif %}
+
+</body>
+</html>

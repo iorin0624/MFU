@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ meta.album_name }}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .gallery { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
+    .gallery .item { position:relative; display:inline-block; text-align:center; }
+    .caption { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .poster { width: 220px; aspect-ratio: 16/9; border-radius: 8px; background:#000; object-fit: cover; cursor: pointer; display:block; }
+    video.thumb { width: 220px; max-height: 160px; border-radius: 8px; background:#000; display:none; }
+
+    .play-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
+      background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
+      border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
+
+    /* 変換中バッジ */
+    .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
+      background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
+      border:1px solid rgba(255,255,255,.5); user-select:none; }
+
+    @media (pointer:coarse){ .poster, video.thumb { width: 260px; } }
+  </style>
+</head>
+<body class="container py-4">
+
+  <h2 class="mb-3">
+    📂 {{ meta.album_name }} /
+    {% for child in meta.children %}
+      {% if child.folder == child_id %}
+        🎥 {{ child.name }}
+        <small class="text-muted ms-2">（{{ videos|length }}本）</small>
+      {% endif %}
+    {% endfor %}
+  </h2>
+
+  <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
+  <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-secondary mb-3 ms-2">⬆️ 動画を追加</a>
+
+  {% set any_converting = videos|selectattr('converting')|list|length > 0 %}
+  {% if any_converting %}
+    <div class="alert alert-info py-2">⏳ 一部の動画をブラウザ互換に変換中です。準備でき次第、自動で再生可能になります。</div>
+  {% endif %}
+
+  <div class="gallery">
+    {% if videos %}
+      {% for v in videos %}
+        {# 再生URLの拡張子からMIME推定（typeは必須ではないが、正しければ付与） #}
+        {% set raw_url = v.raw|lower %}
+        {% if raw_url.endswith('.webm') %}
+          {% set mime = 'video/webm' %}
+        {% elif raw_url.endswith('.mp4') or raw_url.endswith('.m4v') %}
+          {% set mime = 'video/mp4' %}
+        {% elif raw_url.endswith('.mov') %}
+          {% set mime = 'video/quicktime' %}
+        {% else %}
+          {% set mime = '' %}
+        {% endif %}
+
+        <div class="item"
+             data-raw="{{ v.raw }}"
+             data-web="{{ v.web }}"
+             data-mime="{{ mime }}"
+             data-converting="{{ 'true' if v.converting else 'false' }}">
+          {% if v.poster %}
+            <img src="{{ v.poster }}" class="poster" alt="poster" loading="lazy">
+          {% endif %}
+
+          {% if v.converting %}
+            <span class="conv-badge">⏳ 変換中…</span>
+          {% else %}
+            <button type="button" class="play-badge">▶ 再生</button>
+          {% endif %}
+
+          <video class="thumb" controls preload="none" playsinline>
+            <!-- src は遅延で設定 -->
+          </video>
+
+          <div class="small text-muted caption mt-1" title="{{ v.name }}">{{ v.name }}</div>
+          <div class="mt-1 d-flex justify-content-center gap-2">
+            <a class="btn btn-sm btn-outline-secondary"
+               href="{{ url_for('album.movie_download', album_id=album_id, child_id=child_id, filename=v.name) }}">
+              ⬇️ ダウンロード
+            </a>
+            <a class="btn btn-sm btn-outline-primary" href="{{ v.raw }}" target="_blank" rel="noopener">🔗 直接リンク</a>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <p class="text-muted">まだ動画がアップロードされていません。</p>
+    {% endif %}
+  </div>
+
+  <script>
+    function setVideoSrcIfEmpty(videoEl, raw, mime){
+      if (!videoEl) return;
+      if (videoEl.currentSrc) return;
+      if (videoEl.querySelector('source')) return;
+      const src = document.createElement('source');
+      src.src = raw;
+      if (mime && (mime === 'video/mp4' || mime === 'video/webm' || mime === 'video/quicktime')) {
+        src.type = mime;
+      }
+      videoEl.appendChild(src);
+      try { videoEl.load(); } catch(_){}
+    }
+
+    function startPlayback(item){
+      const video = item.querySelector('video.thumb');
+      const raw   = item.dataset.raw;
+      const mime  = item.dataset.mime;
+      const poster= item.querySelector('img.poster');
+      const badge = item.querySelector('.play-badge');
+
+      if (badge)  badge.style.display  = 'none';
+      if (poster) poster.style.display = 'none';
+      video.style.display = 'block';
+
+      setVideoSrcIfEmpty(video, raw, mime);
+      const p = video.play(); if (p && p.catch) p.catch(()=>{});
+    }
+
+    // 再生ボタン/ポスタークリック
+    document.addEventListener('click', (e)=>{
+      const item = e.target.closest('.item');
+      if (!item) return;
+
+      // 変換中は再生させない
+      if (item.dataset.converting === 'true') return;
+
+      if (e.target.closest('.play-badge') || e.target.closest('img.poster')) {
+        startPlayback(item);
+      }
+    }, true);
+
+    // ポスターが無いものは画面内に入ったら src セット
+    const items = Array.from(document.querySelectorAll('.item'));
+    const io = new IntersectionObserver((entries)=>{
+      for(const e of entries){
+        if(!e.isIntersecting) continue;
+        const item = e.target;
+        if (item.dataset.converting === 'true') { io.unobserve(item); continue; }
+        const poster = item.querySelector('img.poster');
+        const video  = item.querySelector('video.thumb');
+        if (video && !poster) {
+          setVideoSrcIfEmpty(video, item.dataset.raw, item.dataset.mime);
+          video.style.display = 'block';
+        }
+        io.unobserve(item);
+      }
+    }, { rootMargin:'200px' });
+    items.forEach(el=>io.observe(el));
+
+    // ===== 変換完了ポーリング（.web.mp4 のHEAD） =====
+    const pollingItems = items.filter(it => it.dataset.converting === 'true');
+    if (pollingItems.length){
+      const tick = async () => {
+        for (const it of pollingItems) {
+          if (it.dataset.converting !== 'true') continue;
+          const web = it.dataset.web;
+          try {
+            const res = await fetch(web, { method:'HEAD', cache:'no-store' });
+            if (res.ok) {
+              // 変換完了！UIを切り替え
+              it.dataset.converting = 'false';
+              it.dataset.raw = web;
+              const conv = it.querySelector('.conv-badge');
+              if (conv) conv.remove();
+
+              // 再生ボタンを出す
+              if (!it.querySelector('.play-badge')) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'play-badge';
+                btn.textContent = '▶ 再生';
+                it.appendChild(btn);
+              }
+
+              // ポスターが無ければ即表示
+              const poster = it.querySelector('img.poster');
+              const video  = it.querySelector('video.thumb');
+              if (video && !poster) {
+                setVideoSrcIfEmpty(video, it.dataset.raw, it.dataset.mime || 'video/mp4');
+                video.style.display = 'block';
+              }
+            }
+          } catch(_) { /* ネットワークエラーは無視 */ }
+        }
+      };
+      // 少し間隔をあけてチェック（負荷軽減）
+      setInterval(tick, 3000);
+      // 初回すぐにもチェック
+      tick();
+    }
+  </script>
+</body>
+</html>

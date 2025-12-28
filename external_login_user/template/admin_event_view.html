@@ -1,0 +1,450 @@
+{% extends "base.html" %}
+
+{% block title %}イベント管理（参加者・支払い）{% endblock %}
+
+{% block content %}
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h5 mb-0">イベント管理</h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('external_login_user.admin_events_list') }}">一覧へ</a>
+    <a class="btn btn-sm btn-outline-primary"
+       href="{{ url_for('external_login_user.admin_event_edit', event_id=ev.id) }}">編集</a>
+<a class="btn btn-sm btn-outline-secondary"
+   href="{{ url_for('external_login_user.admin_event_export_csv', event_id=ev.id) }}">
+  CSVダウンロード
+</a>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="fw-bold h5 mb-2">{{ ev.title }}</div>
+    <div class="row g-2">
+      <div class="col-md-4"><strong>開始:</strong> {{ ev.starts_at or '—' }}</div>
+      <div class="col-md-4">
+        <strong>参加費:</strong>
+        {% if ev.fee_yen is not none %}¥{{ "{:,}".format(ev.fee_yen) }}{% else %}—{% endif %}
+      </div>
+      <div class="col-md-4"><strong>作成:</strong> {{ ev.created_at or '—' }}</div>
+
+      <div class="col-md-4"><strong>会場:</strong> {{ ev.place_name or '—' }}</div>
+      <div class="col-md-8"><strong>住所:</strong> {{ ev.address or '—' }}</div>
+
+      <div class="col-md-6">
+        <strong>支払開始:</strong>
+        {% if ev.pay_from %}{{ ev.pay_from }}{% else %}<span class="text-muted">未設定</span>{% endif %}
+      </div>
+      <div class="col-md-6">
+        <strong>支払終了:</strong>
+        {% if ev.pay_until %}{{ ev.pay_until }}{% else %}<span class="text-muted">未設定</span>{% endif %}
+      </div>
+      <div class="col-12">
+        {% if ev.pay_from or ev.pay_until %}
+          <span class="badge bg-light text-dark">支払期間は「開始前/終了後は決済不可」</span>
+        {% else %}
+          <span class="badge bg-secondary">期間制限なし</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- ===== リンク群（順番指定） ===== -->
+    <hr class="my-3">
+    <div class="row g-2">
+      <!-- 1) マップ -->
+      <div class="col-md-6">
+        <strong>マップ:</strong>
+        {% if maps_link %}
+          <a href="{{ maps_link }}" target="_blank" rel="noopener">開く</a>
+        {% else %}
+          <span class="text-muted">—</span>
+        {% endif %}
+      </div>
+
+      <!-- 2) 招待リンク（コピーボタン） -->
+      <div class="col-md-6">
+        <strong>招待リンク:</strong>
+        <a href="{{ join_url }}" target="_blank" rel="noopener">{{ join_url }}</a>
+        <button class="btn btn-sm btn-outline-secondary ms-2"
+                onclick="copyText('{{ join_url|e }}', this)">コピー</button>
+      </div>
+
+      <!-- 3) アルバム -->
+      <div class="col-md-6">
+        <strong>アルバム:</strong>
+        {% if album_url %}
+          <a href="{{ album_url }}" target="_blank" rel="noopener">{{ ev.album_id }}</a>
+        {% else %}
+          <span class="text-muted">未設定</span>
+        {% endif %}
+      </div>
+
+      <!-- 4) 決済管理 -->
+      <div class="col-md-6">
+        <strong>決済管理:</strong>
+        {% if pay_admin_url %}
+          <a href="{{ pay_admin_url }}" target="_blank" rel="noopener">{{ pay_admin_url }}</a>
+        {% else %}
+          <span class="text-muted">未設定</span>
+        {% endif %}
+      </div>
+
+      <!-- 5) LINEオープンチャット -->
+      <div class="col-md-6">
+        <strong>LINEオープンチャット:</strong>
+        {% if line_openchat_url %}
+          <a href="{{ line_openchat_url }}" target="_blank" rel="noopener">{{ line_openchat_url }}</a>
+          <button class="btn btn-sm btn-outline-secondary ms-2"
+                  onclick="copyText('{{ line_openchat_url|e }}', this)">コピー</button>
+          {% if line_openchat_pass %}
+            <div class="small text-muted mt-1">パス: {{ line_openchat_pass }}</div>
+          {% endif %}
+        {% else %}
+          <span class="text-muted">準備中（URL未設定）</span>
+        {% endif %}
+      </div>
+
+      <!-- 6) アンケートGoogleフォーム -->
+      <div class="col-md-6">
+        <strong>アンケートGoogleフォーム:</strong>
+        {% if google_form_url %}
+          <a href="{{ google_form_url }}" target="_blank" rel="noopener">{{ google_form_url }}</a>
+        {% else %}
+          <span class="text-muted">未設定</span>
+        {% endif %}
+      </div>
+
+      {% if ev.memo_all %}
+        <div class="card mt-3">
+          <div class="card-body">
+            <h2 class="h6 mb-2">全体メモ（参加者に表示）</h2>
+            <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">{{- ev.memo_all | trim | linkify -}}</div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+    <!-- ===== /リンク群 ===== -->
+
+    <div class="mt-2 small text-muted">
+      UUID: {{ ev.event_uuid_str }}
+      {% if ev.payment_uuid %}
+        <span class="ms-3">決済UUID: <code class="text-mono">{{ ev.payment_uuid }}</code></span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- ===== メモ一覧（個別連絡メモ／管理者備考） ===== -->
+<div class="card mt-3">
+  <div class="card-body">
+    <h2 class="h6 mb-3">メモ一覧</h2>
+
+    {% set ns = namespace(has_any_memo=false) %}
+    {% for m in members %}
+      {% set cm = (m.contact_memo or '')|trim %}
+      {% set an = (m.admin_note or '')|trim %}
+      {% if cm or an %}{% set ns.has_any_memo = true %}{% endif %}
+    {% endfor %}
+
+    {% if not ns.has_any_memo %}
+      <div class="text-muted">表示できるメモはまだありません。</div>
+    {% else %}
+      <div class="accordion accordion-flush" id="memoAccordion">
+        {% for m in members %}
+          {% set cm = (m.contact_memo or '')|trim %}
+          {% set an = (m.admin_note or '')|trim %}
+          {% if cm or an %}
+            {% set key = 'mem-' ~ m.user_id %}
+            <div class="accordion-item border rounded mb-2">
+              <h2 class="accordion-header" id="{{ key }}-h">
+                <button class="accordion-button collapsed" type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#{{ key }}-c"
+                        aria-expanded="false" aria-controls="{{ key }}-c">
+                  <span class="d-flex align-items-center gap-2">
+                    {% set _src = None %}
+                    {% if m.avatar_file %}
+                      {% set ver = (m.updated_at.timestamp() if m.updated_at else '' ) %}
+                      {% set _src = url_for('external_login_user.avatar_file', name=m.avatar_file) ~ ('?v=' ~ ver) %}
+                    {% elif m.avatar_url %}
+                      {% set ver = (m.updated_at.timestamp() if m.updated_at else '' ) %}
+                      {% if '?' in m.avatar_url %}
+                        {% set _src = m.avatar_url ~ '&v=' ~ ver %}
+                      {% else %}
+                        {% set _src = m.avatar_url ~ '?v=' ~ ver %}
+                      {% endif %}
+                    {% endif %}
+                    <img src="{{ _src or 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' }}"
+                         alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover">
+                    <strong class="me-2">{{ m.nickname }}</strong>
+                    <span class="badge bg-info text-dark me-1" {% if not cm %}style="opacity:.35"{% endif %}>個別連絡</span>
+                    <span class="badge bg-secondary" {% if not an %}style="opacity:.35"{% endif %}>管理備考</span>
+                  </span>
+                </button>
+              </h2>
+              <div id="{{ key }}-c" class="accordion-collapse collapse" aria-labelledby="{{ key }}-h" data-bs-parent="#memoAccordion">
+                <div class="accordion-body">
+                  {% if cm %}
+                    <div class="mb-3">
+                      <div class="small text-muted mb-1">個別連絡メモ（参加者にも表示）</div>
+                      <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">{{- cm | linkify -}}</div>
+                    </div>
+                  {% endif %}
+                  {% if an %}
+                    <div>
+                      <div class="small text-muted mb-1">管理者備考（非公開）</div>
+                      <div class="p-2 border rounded" style="white-space:pre-line; word-break:break-word;">{{- an -}}</div>
+                    </div>
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+<!-- ===== /メモ一覧 ===== -->
+
+<div class="card mt-3">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-center">
+      <h2 class="h6 mb-3">参加者一覧</h2>
+      <!-- 凡例 -->
+      <div class="small">
+        凡例：
+        <span class="badge bg-danger">未</span>
+        <span class="badge bg-warning text-dark">確認</span>
+        <span class="badge bg-success">済</span>
+      </div>
+    </div>
+
+    {% if members|length == 0 %}
+      <div class="text-muted">参加者はまだいません。</div>
+    {% else %}
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead>
+            <tr>
+              <th>ユーザー</th>
+              <th>承認</th>
+              <th>役割（衣装）</th>
+              <th>メモ</th>
+              <th class="nowrap">要支払い</th>
+              <th>支払状況</th>
+              <th class="text-end">支払金額(円)</th>
+              <th>領収</th>
+              <th>参加</th>
+              <th class="text-end">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for m in members %}
+            {% set pr = (m.participant_role if m.participant_role is defined else None) %}
+            {% set cm = (m.contact_memo or '')|trim %}
+            {% set an = (m.admin_note or '')|trim %}
+            <tr>
+<td>
+  <div class="d-flex align-items-center gap-2">
+    {% set _src = None %}
+    {% if m.avatar_file %}
+      {% set ver = (m.updated_at.timestamp() if m.updated_at else '' ) %}
+      {% set _src = url_for('external_login_user.avatar_file', name=m.avatar_file) ~ ('?v=' ~ ver) %}
+    {% elif m.avatar_url %}
+      {% set ver = (m.updated_at.timestamp() if m.updated_at else '' ) %}
+      {% if '?' in m.avatar_url %}
+        {% set _src = m.avatar_url ~ '&v=' ~ ver %}
+      {% else %}
+        {% set _src = m.avatar_url ~ '?v=' ~ ver %}
+      {% endif %}
+    {% endif %}
+    <img src="{{ _src or 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' }}"
+          alt="" style="width:60px;height:60px;border-radius:50%;object-fit:cover;box-shadow:0 1px 4px rgba(0,0,0,.1);">
+    <div>
+      <div class="fw-bold">
+        {% if m.is_host %}👑👑{% elif m.is_subhost %}👑{% endif %}
+        <a href="https://mfu.iori0624.jp/external-login/admin/ext-users/{{ m.user_id }}/edit"
+           target="_blank" rel="noopener"
+           class="link-underline link-underline-opacity-0 link-dark">
+          {{ m.nickname }}
+        </a>
+      </div>
+
+      {% if m.x_id or m.instagram_id %}
+        {# 表示は元の文字列そのまま／リンクは@を除去してプロフィールへ #}
+        {% set xid_raw = m.x_id or '' %}
+        {% set igid_raw = m.instagram_id or '' %}
+        {% set xid = xid_raw.lstrip('@') %}
+        {% set igid = igid_raw.lstrip('@') %}
+        <div class="text-mono small text-muted">
+          {% if m.x_id %}
+            X:
+            <a href="https://x.com/{{ xid }}" target="_blank" rel="noopener" class="text-reset">
+              {{ xid_raw }}
+            </a>
+          {% endif %}
+          {% if m.x_id and m.instagram_id %}<br>{% endif %}
+          {% if m.instagram_id %}
+            Instagram:
+            <a href="https://www.instagram.com/{{ igid }}/" target="_blank" rel="noopener" class="text-reset">
+              {{ igid_raw }}
+            </a>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</td>
+
+              <td>
+                {% if m.status == 'approved' %}
+                  <span class="badge bg-success">承認</span>
+                {% elif m.status == 'pending' %}
+                  <span class="badge bg-secondary">保留</span>
+                {% elif m.status == 'rejected' %}
+                  <span class="badge bg-danger">拒否</span>
+                {% else %}
+                  <span class="badge bg-light text-dark">—</span>
+                {% endif %}
+              </td>
+
+              <td>
+                {% if pr %}{{ my_role_label(pr) }}{% else %}—{% endif %}
+                {% if m.costume_label %}
+                  <span class="text-muted small">（{{ m.costume_label }}）</span>
+                {% endif %}
+              </td>
+
+              <!-- ★ メモ列（有無バッジ＋折りたたみトグル） -->
+              <td class="text-end">
+                <div class="d-flex align-items-center justify-content-end gap-2">
+                  <span class="badge bg-info text-dark" {% if not cm %}style="opacity:.35"{% endif %}>個</span>
+                  <span class="badge bg-secondary" {% if not an %}style="opacity:.35"{% endif %}>管</span>
+                  <button class="btn btn-sm btn-outline-secondary"
+                          type="button"
+                          data-bs-toggle="collapse"
+                          data-bs-target="#memo-{{ m.user_id }}"
+                          aria-expanded="false"
+                          aria-controls="memo-{{ m.user_id }}">
+                    表示
+                  </button>
+                </div>
+              </td>
+
+              <td class="nowrap">
+                {% if m.require_payment == 1 %}
+                  <span class="badge bg-warning text-dark">要</span>
+                {% else %}
+                  <span class="badge bg-light text-dark">不要</span>
+                {% endif %}
+              </td>
+
+              <!-- ★ 支払状況（未／確認／済） -->
+{# 支払状況セル - ここだけ置き換え #}
+<td>
+  {% if m.require_payment != 1 %}
+    <span class="badge bg-secondary">無</span>
+  {% else %}
+    {% if m.pay_status_html %}
+      {{ m.pay_status_html|safe }}
+    {% else %}
+      {% if m.payment_status == 'paid' %}
+        <span class="badge bg-success">済</span>
+      {% elif m.payment_status == 'checking' %}
+        <span class="badge bg-warning text-dark">確認</span>
+      {% else %}
+        <span class="badge bg-danger">未</span>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+</td>
+              <td class="text-end">
+                {% if m.paid_amount_yen is not none %}
+                  ¥{{ "{:,}".format(m.paid_amount_yen|int) }}
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+
+              <td>
+                {% if m.receipt_url %}
+                  <a href="{{ m.receipt_url }}" target="_blank" rel="noopener">レシート</a>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+
+              <td class="small">{{ m.joined_at or '—' }}</td>
+
+              <td class="text-end">
+                <a class="btn btn-sm btn-outline-primary"
+                   href="{{ url_for('external_login_user.admin_member_edit', event_id=ev.id, user_id=m.user_id) }}">
+                  編集
+                </a>
+              </td>
+            </tr>
+
+            <!-- ★ メモ詳細行（折りたたみ） -->
+            <tr>
+              <td colspan="10" class="p-0">
+                <div id="memo-{{ m.user_id }}" class="collapse">
+                  <div class="p-3 border-top bg-body">
+                    {% if cm %}
+                      <div class="mb-3">
+                        <div class="small text-muted mb-1">個別連絡メモ（参加者にも表示）</div>
+                        <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">{{- cm | linkify -}}</div>
+                      </div>
+                    {% endif %}
+                    {% if an %}
+                      <div>
+                        <div class="small text-muted mb-1">管理者備考（非公開）</div>
+                        <div class="p-2 border rounded" style="white-space:pre-line; word-break:break-word;">{{- an -}}</div>
+                      </div>
+                    {% endif %}
+                    {% if not cm and not an %}
+                      <div class="text-muted">メモはありません。</div>
+                    {% endif %}
+                  </div>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ★ 依存：Bootstrap JS（折りたたみ使用のため） -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+  // クリップボードコピー
+  async function copyText(text, btn){
+    try{
+      await navigator.clipboard.writeText(text);
+      var old = btn.textContent;
+      btn.textContent = 'コピーしました';
+      btn.classList.remove('btn-outline-secondary');
+      btn.classList.add('btn-success');
+      setTimeout(function(){
+        btn.textContent = old;
+        btn.classList.add('btn-outline-secondary');
+        btn.classList.remove('btn-success');
+      }, 1500);
+    }catch(e){
+      alert('コピーに失敗しました');
+    }
+  }
+</script>
+
+{% endblock %}

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ ev.title }} - イベント詳細</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="container py-4" style="max-width:900px;">
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h5 mb-0">
+      SNS用タグ一覧
+      <small class="text-muted d-block d-sm-inline">
+        （イベント: {{ ev.title or ev.name or ("ID " ~ ev.id) }}）
+      </small>
+    </h1>
+  </div>
+
+  <div class="alert alert-info small">
+    X / Instagram にそのまま貼り付けできる形式で<br>
+    「衣装/役割名　ニックネームさん　@ID」を自動生成しています。
+    <br>各ボックス右上の「コピー」ボタンで、内容をクリップボードにコピーできます。
+  </div>
+
+  <div class="row g-3">
+
+    <!-- Instagram用 -->
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <strong>Instagram用</strong>
+          <button type="button"
+                  class="btn btn-sm btn-outline-primary"
+                  onclick="copySnsText('snsIgText')">
+            コピー
+          </button>
+        </div>
+        <div class="card-body">
+          <p class="small text-muted mb-2">
+            Instagramの投稿本文にコピペしてください。
+          </p>
+          <textarea id="snsIgText"
+                    class="form-control"
+                    rows="16"
+                    readonly
+                    onclick="this.select();"
+                    style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; white-space: pre;">{% for line in ig_lines %}{{ line }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- X用 -->
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header py-2 d-flex align-items-center justify-content-between">
+          <strong>X用</strong>
+          <button type="button"
+                  class="btn btn-sm btn-outline-primary"
+                  onclick="copySnsText('snsXText')">
+            コピー
+          </button>
+        </div>
+        <div class="card-body">
+          <p class="small text-muted mb-2">
+            X のポスト本文にコピペしてください。
+          </p>
+          <textarea id="snsXText"
+                    class="form-control"
+                    rows="16"
+                    readonly
+                    onclick="this.select();"
+                    style="font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; white-space: pre;">{% for line in x_lines %}{{ line }}{% if not loop.last %}{{ "\n" }}{% endif %}{% endfor %}</textarea>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+<div class="mt-3">
+  <a href="{{ '/external-login/events/view/' ~ event_uuid }}"
+     class="btn btn-sm btn-outline-secondary">
+    イベント詳細に戻る
+  </a>
+</div>
+
+  <script>
+  function copySnsText(textareaId) {
+    const ta = document.getElementById(textareaId);
+    if (!ta) return;
+
+    ta.focus();
+    ta.select();
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(ta.value).catch(function () {
+        document.execCommand('copy');
+      });
+    } else {
+      document.execCommand('copy');
+    }
+  }
+  </script>
+
+</body>
+</html>

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{{ ev.title }} | 参加証</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --fg: #111; --fg-dim: #333; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; color: var(--fg);
+      overflow: hidden;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
+      text-align: center;
+    }
+    .bg-anim {
+      position: fixed; inset: 0; z-index: -3;
+      background: linear-gradient(120deg, #fff, #f0f4ff, #fff);
+      background-size: 300% 300%;
+      animation: slide 12s ease-in-out infinite;
+    }
+    @keyframes slide { 0%{background-position:0% 50%} 50%{background-position:100% 50%} 100%{background-position:0% 50%} }
+    .watermark {
+      position: fixed; inset: 0; pointer-events: none; z-index: -2;
+      font-weight: 700; letter-spacing: .1em; color: rgba(0,0,0,.06);
+      display: grid; place-items: center; white-space: pre-line;
+      animation: wm 8s linear infinite;
+    }
+    @keyframes wm { 0%{transform:translateY(0) rotate(-8deg)} 50%{transform:translateY(-6px) rotate(-8deg)} 100%{transform:translateY(0) rotate(-8deg)} }
+    .wrap { min-height: 100%; display: grid; place-items: center; padding: 10px; }
+    .card-pass {
+      width: min(680px, 96vw);
+      border-radius: 24px;
+      background: rgba(255,255,255,.75);
+      backdrop-filter: blur(6px);
+      box-shadow: 0 12px 30px rgba(0,0,0,.08);
+      padding: 20px 18px 22px;
+    }
+    .title { font-size: clamp(20px, 4.8vw, 28px); font-weight: 700; }
+    .nickname { font-size: clamp(36px, 10vw, 56px); font-weight: 900; line-height: 1.2; }
+    .meta { font-size: clamp(16px, 4vw, 20px); color: var(--fg-dim); }
+    .pill { display:inline-block; padding:8px 14px; border-radius:999px; font-size:clamp(16px,4.6vw,22px); font-weight:800; }
+    .pill.paid{ background:#def7e7; color:#0c7a43 } .pill.unpaid{ background:#ffe7e7; color:#9a0020 } .pill.free{ background:#eef1ff; color:#3344cc }
+    .grid { display: grid; gap: 16px; }
+    .lbl { font-size: 14px; opacity: .65; }
+    .footer-hint { font-size: 12px; opacity: .6; margin-top: 1rem; }
+    .nowtime { font-size: 12px; opacity: .7; margin-top: .35rem; }
+    body:active .card-pass { background: rgba(255,255,255,.98); }
+    .float-emo { position: fixed; inset: 0; z-index: -3; pointer-events: none; overflow: hidden; }
+    .float-emo span { position: absolute; bottom: -10vh; font-size: clamp(18px, 6vw, 42px); filter: blur(.2px); animation: rise linear infinite; will-change: transform; user-select: none; }
+    @keyframes rise { 0%{transform:translateY(0) rotate(0)} 100%{transform:translateY(-120vh) rotate(360deg)} }
+  </style>
+</head>
+<body>
+  <div class="bg-anim"></div>
+  <div class="float-emo" id="float-emo" aria-hidden="true"></div>
+
+  <!-- 改行は実改行で。white-space: pre-line で反映されます -->
+  <div class="watermark">
+MFU PASS
+{{ ev.title }}
+{{ me.nickname }}
+{{ now_str }}
+  </div>
+
+  <div class="wrap">
+    <div class="card-pass">
+      <div class="grid">
+
+        {# --- アバター：avatar_src のみ使用。cache bust 付与 --- #}
+        {% if avatar_src %}
+          {% set sep = '&' if '?' in avatar_src else '?' %}
+          <img
+            src="{{ avatar_src }}{{ sep }}v={{ cache_bust|default(0) }}"
+            alt="avatar"
+            class="d-block mx-auto mb-3"
+            style="width:128px;height:128px;border-radius:50%;object-fit:cover;box-shadow:0 6px 18px rgba(0,0,0,.15);"
+            referrerpolicy="no-referrer"
+            crossorigin="anonymous"
+            decoding="async"
+            loading="eager"
+            onerror="this.onerror=null;this.src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';"
+          >
+        {% else %}
+          <img
+            src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+            alt="avatar"
+            class="d-block mx-auto mb-3"
+            style="width:128px;height:128px;border-radius:50%;object-fit:cover;box-shadow:0 6px 18px rgba(0,0,0,.15);">
+        {% endif %}
+
+        <div>
+          <div class="lbl">ニックネーム</div>
+          <div class="nickname">{{ me.nickname }}</div>
+        </div>
+
+        <div>
+          <div class="lbl">会場名と開催日</div>
+          <div class="title">{{ ev.place_name or '会場未設定' }}</div>
+          <div class="meta">
+            {% if ev.starts_at %}
+              {% if ev.starts_at.__class__.__name__ == 'datetime' %}
+                {{ ev.starts_at.strftime("%Y年%m月%d日 %H:%M") }}
+              {% elif ev.starts_at.__class__.__name__ == 'date' %}
+                {{ ev.starts_at.strftime("%Y年%m月%d日") }}
+              {% else %}
+                {{ ev.starts_at }}
+              {% endif %}
+            {% else %}
+              日時未設定
+            {% endif %}
+          </div>
+        </div>
+
+        {# --- 受付ボタン（状態表示一体型） --- #}
+        <div>
+          <div class="lbl">受付（GPSチェックイン）</div>
+
+          {% if gps_checkin_enabled|default(true) %}
+            <button
+              id="btn-checkin"
+              class="btn w-100 btn-lg {% if checked_in|default(false) %}btn-primary{% else %}btn-danger{% endif %}"
+              {% if checked_in|default(false) %}disabled{% endif %}
+            >
+              {% if checked_in|default(false) %}
+                ✅ チェックイン完了
+              {% else %}
+                📍 この場所でチェックインする
+              {% endif %}
+            </button>
+            <div class="nowtime" id="nowtime" aria-live="polite"></div>
+            <div id="checkin-message" class="mt-2 small text-muted"></div>
+          {% else %}
+            <div class="mt-2 small text-muted">
+              このイベントではGPSチェックインは利用できません。
+            </div>
+            <div class="nowtime" id="nowtime" aria-live="polite"></div>
+          {% endif %}
+        </div>
+
+        <div class="footer-hint">
+          画面は常時動作する背景を含みます。提示中は明るさを上げてご提示ください。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 現在時刻（毎秒更新）
+    (function(){
+      const el = document.getElementById('nowtime');
+      if (!el) return;
+      const fmt = new Intl.DateTimeFormat('ja-JP', {
+        year:'numeric', month:'2-digit', day:'2-digit',
+        hour:'2-digit', minute:'2-digit', second:'2-digit',
+        hour12:false
+      });
+      function tick(){ el.textContent = '現在時刻：' + fmt.format(new Date()); }
+      tick(); setInterval(tick, 1000);
+    })();
+
+    // GPSチェックイン
+    (function(){
+      const btn = document.getElementById('btn-checkin');
+      if (!btn) return;
+
+      const msgEl = document.getElementById('checkin-message');
+
+      // /external-login/events/pass/<uuid> から <uuid> を抜いて URL を組み立てる
+      const pathParts = window.location.pathname.split('/').filter(Boolean);
+      // ... ["external-login","events","pass","<uuid>"]
+      const eventUuid = pathParts[pathParts.length - 1];
+      const checkinUrl = `/external-login/events/pass/${eventUuid}/checkin`;
+      console.log("checkinUrl =", checkinUrl);
+
+      function setMessage(text, isError) {
+        if (!msgEl) return;
+        msgEl.textContent = text || '';
+        msgEl.classList.toggle('text-danger', !!isError);
+        msgEl.classList.toggle('text-success', !isError && !!text);
+      }
+
+      btn.addEventListener('click', function () {
+        if (!navigator.geolocation) {
+          setMessage('この端末では位置情報が利用できません。受付スタッフにお声がけください。', true);
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = '位置情報を取得中…';
+        setMessage('', false);
+
+        navigator.geolocation.getCurrentPosition(function (pos) {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          console.log("got position:", lat, lng);
+
+          // JSON ではなく URL エンコードの form データで送る
+          const params = new URLSearchParams();
+          params.append('lat', String(lat));
+          params.append('lng', String(lng));
+
+          fetch(checkinUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'X-Requested-With': 'XMLHttpRequest'
+            },
+            credentials: 'same-origin',
+            body: params.toString()
+          })
+          .then(async r => {
+            console.log("checkin response status =", r.status);
+            const ct = r.headers.get('content-type') || '';
+
+            if (!ct.includes('application/json')) {
+              const text = await r.text();
+              console.error('non-JSON response:', text);
+              throw { nonJson: true, status: r.status, body: text };
+            }
+
+            const data = await r.json();
+            console.log("checkin response json =", data);
+
+            if (!data.ok) {
+              // 失敗 → 赤ボタンに戻す
+              btn.disabled = false;
+              btn.textContent = '📍 この場所でチェックインする';
+              btn.classList.remove('btn-primary');
+              btn.classList.add('btn-danger');
+
+              let msg = data.error || '受付に失敗しました。';
+              if (data.distance_m && data.radius_m) {
+                msg += `（距離 約 ${data.distance_m}m / 許容 ${data.radius_m}m）`;
+              }
+              setMessage(msg, true);
+              return;
+            }
+
+            // 正常受付 → 青ボタン＋完了表示
+            btn.disabled = true;
+            btn.textContent = '✅ チェックイン完了';
+            btn.classList.remove('btn-danger');
+            btn.classList.add('btn-primary');
+
+            setMessage(data.message || '受付が完了しました。', false);
+          })
+          .catch(err => {
+            console.error('checkin fetch error', err);
+            btn.disabled = false;
+            btn.textContent = '📍 この場所でチェックインする';
+            btn.classList.remove('btn-primary');
+            btn.classList.add('btn-danger');
+
+            if (err && err.nonJson) {
+              setMessage(
+                'サーバー側でエラーが発生しました。（HTTP ' + err.status + '） 時間をおいて再度お試しください。',
+                true
+              );
+            } else {
+              setMessage('通信エラーが発生しました。時間をおいて再度お試しください。', true);
+            }
+          });
+        }, function (err) {
+          console.error('geolocation error', err);
+          btn.disabled = false;
+          btn.textContent = '📍 この場所でチェックインする';
+          btn.classList.remove('btn-primary');
+          btn.classList.add('btn-danger');
+
+          switch (err.code) {
+            case err.PERMISSION_DENIED:
+              setMessage('位置情報の利用が拒否されました。ブラウザや端末の設定を確認してください。', true);
+              break;
+            case err.POSITION_UNAVAILABLE:
+              setMessage('現在位置を取得できませんでした。屋外などで再度お試しください。', true);
+              break;
+            case err.TIMEOUT:
+              setMessage('位置情報の取得がタイムアウトしました。再度お試しください。', true);
+              break;
+            default:
+              setMessage('位置情報取得中にエラーが発生しました。', true);
+          }
+        }, {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0
+        });
+      });
+    })();
+
+    // 絵文字フロート
+    (function(){
+      const EMOJIS = ['📸','✨','🎉','🪄','⭐','🎈'];
+      const container = document.getElementById('float-emo');
+      const baseCount = 28;
+      const width = Math.max(window.innerWidth, screen.width || 0);
+      const dpr = window.devicePixelRatio || 1;
+      const densityBoost = width > 768 ? 1.6 : 1.2;
+      const count = Math.floor(baseCount * densityBoost * (dpr > 1 ? 1.1 : 1));
+      for (let i=0; i<count; i++){ spawnEmoji(i * 200); }
+      setInterval(()=> spawnEmoji(), 1800);
+      function spawnEmoji(delay=0){
+        const span = document.createElement('span');
+        span.textContent = EMOJIS[(Math.random()*EMOJIS.length)|0];
+        const left = Math.random() * 100;
+        const sizePx = rndBetween(18, 42);
+        const duration = rndBetween(9, 18);
+        const startDelay = rndBetween(0, 6);
+        const rotStart = rndBetween(-40, 40);
+        span.style.left = left + '%';
+        span.style.fontSize = sizePx + 'px';
+        span.style.animationDuration = duration + 's';
+        span.style.animationDelay = (delay/1000 + startDelay) + 's';
+        span.style.transform = `translateY(0) rotate(${rotStart}deg)`;
+        container.appendChild(span);
+        const total = (delay/1000) + startDelay + duration;
+        setTimeout(() => { if (span.parentNode) span.parentNode.removeChild(span); }, total * 1000 + 500);
+      }
+      function rndBetween(min, max){ return Math.random()*(max-min)+min; }
+    })();
+  </script>
+</body>
+</html>

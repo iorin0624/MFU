@@ -1,0 +1,136 @@
+{# 共通：イベントの自動承認（トークン）UI + JS #}
+{# 前提: ev = { id, event_uuid_str, auto_approve_by_invite, invite_token } / admin_csrf #}
+
+<div class="card mb-3" id="invite-card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span>参加承認（自動／手動）</span>
+    <div class="form-check form-switch m-0">
+      <input class="form-check-input" type="checkbox" id="autoApproveSwitch" {{ 'checked' if ev.auto_approve_by_invite else '' }}>
+      <label class="form-check-label ms-2" for="autoApproveSwitch">
+        {{ ev.auto_approve_by_invite and '自動承認（招待リンク一致時）' or '手動承認（従来どおり）' }}
+      </label>
+    </div>
+  </div>
+
+  <div class="card-body d-grid gap-3">
+    <div class="text-muted small">
+      自動承認をONにすると、<code>iv=招待トークン</code> が一致した招待リンク経由の参加は<strong>即時承認</strong>されます。通常アクセスは従来どおり <code>pending</code> です。
+    </div>
+
+    {% set baseJoin = url_for('external_login_user.join_event', event_uuid=ev.event_uuid_str, _external=True) %}
+    {% set token = ev.invite_token or '' %}
+    {% set invite_url = token and (baseJoin ~ '?iv=' ~ token) or baseJoin %}
+
+    <div>
+      <label class="form-label fw-bold mb-1">招待リンク</label>
+      <div class="input-group">
+        <input type="text" class="form-control" id="inviteUrl" value="{{ invite_url }}" readonly>
+        <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+        <a class="btn {{ token and 'btn-outline-primary' or 'btn-outline-secondary disabled' }}"
+           id="openLinkBtn" target="_blank" rel="noopener" href="{{ invite_url }}"
+           {{ '' if token else 'tabindex="-1" aria-disabled="true"' }}>
+          開く
+        </a>
+      </div>
+      <div class="form-text">
+        トークン：<code id="inviteToken">{{ token or '-' }}</code>
+        {% if not token %}
+          <span class="text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</span>
+        {% endif %}
+      </div>
+      <div class="mt-2 d-flex gap-2">
+        <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
+          {{ token and 'トークン再発行' or 'トークン発行' }}
+        </button>
+        <span class="align-self-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>#inviteUrl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;}</style>
+<script>
+(function(){
+  // --- 依存値（両テンプレから同じキーで渡される前提） ---
+  const csrf     = {{ admin_csrf|tojson }};
+  const baseJoin = {{ url_for('external_login_user.join_event', event_uuid=ev.event_uuid_str, _external=True)|tojson }};
+  const toggleUrl= {{ url_for('external_login_user.admin_toggle_auto_approve', event_id=ev.id)|tojson }};
+  const rotateUrl= {{ url_for('external_login_user.admin_rotate_invite_token', event_id=ev.id)|tojson }};
+
+  // --- 要素 ---
+  const switchEl = document.getElementById('autoApproveSwitch');
+  const labelEl  = document.querySelector('label[for="autoApproveSwitch"]');
+  const inviteUrlInput = document.getElementById('inviteUrl');
+  const inviteTokenEl  = document.getElementById('inviteToken');
+  const copyBtn  = document.getElementById('copyInviteBtn');
+  const openBtn  = document.getElementById('openLinkBtn');
+  const issueBtn = document.getElementById('issueOrRotateTokenBtn');
+
+  function uiSetToken(token){
+    const has = !!token;
+    const u = has ? (baseJoin + '?iv=' + token) : baseJoin;
+    inviteTokenEl.textContent = has ? token : '-';
+    inviteUrlInput.value = u;
+    copyBtn.disabled = !has;
+    if (has) {
+      openBtn.href = u;
+      openBtn.classList.remove('disabled','btn-outline-secondary');
+      openBtn.classList.add('btn-outline-primary');
+      openBtn.removeAttribute('aria-disabled');
+      openBtn.removeAttribute('tabindex');
+      issueBtn.textContent = 'トークン再発行';
+    } else {
+      openBtn.href = baseJoin;
+      openBtn.classList.add('disabled','btn-outline-secondary');
+      openBtn.classList.remove('btn-outline-primary');
+      openBtn.setAttribute('aria-disabled','true');
+      openBtn.setAttribute('tabindex','-1');
+      issueBtn.textContent = 'トークン発行';
+    }
+  }
+
+  async function post(url, body){
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'X-CSRF-Token': csrf },
+      body: body instanceof URLSearchParams ? body : new URLSearchParams(body||{})
+    });
+    let js; try{ js = await res.json(); }catch(e){ js = { ok:false, status:res.status, error:'invalid json' }; }
+    if(!js.ok){ console.error('API error', url, js); }
+    return js;
+  }
+
+  switchEl?.addEventListener('change', async (e)=>{
+    const enable = e.target.checked ? '1' : '0';
+    const js = await post(toggleUrl, { enable });
+    if(!js.ok){
+      alert('切り替えに失敗しました。ページを更新してやり直してください。');
+      e.target.checked = !e.target.checked;
+      return;
+    }
+    labelEl.textContent = (enable === '1') ? '自動承認（招待リンク一致時）' : '手動承認（従来どおり）';
+    if (enable === '1' && js.invite_token) uiSetToken(js.invite_token);
+  });
+
+  document.getElementById('copyInviteBtn')?.addEventListener('click', async ()=>{
+    try{
+      inviteUrlInput.select(); inviteUrlInput.setSelectionRange(0, 99999);
+      await navigator.clipboard.writeText(inviteUrlInput.value);
+      copyBtn.textContent = 'コピー済み';
+      setTimeout(()=>copyBtn.textContent='コピー', 1200);
+    }catch(_){ alert('コピーできませんでした。手動で選択してください。'); }
+  });
+
+  document.getElementById('issueOrRotateTokenBtn')?.addEventListener('click', async ()=>{
+    const js = await post(rotateUrl);
+    if(!js.ok || !js.invite_token){
+      alert('発行/再発行に失敗しました。ページを更新してやり直してください。');
+      return;
+    }
+    uiSetToken(js.invite_token);
+  });
+
+  // 初期同期（テンプレ値を反映）
+  uiSetToken({{ (ev.invite_token or '')|tojson }});
+})();
+</script>

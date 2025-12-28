@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{{ ev.title }} | PayPay友だち送金</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap 5.3.2 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --fg:#111; --muted:#6c757d; }
+    body { color:var(--fg); background:#f8f9fa; }
+    .page-wrap{ max-width:720px; margin:0 auto; padding:24px 16px; }
+    .card { border-radius:14px; }
+    .pay-url-input{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .help{ color:var(--muted); font-size:.95rem; }
+    .footer-links a{ text-decoration:none; }
+  </style>
+</head>
+<body>
+  <!-- ★ 初回ポップアップ（毎回表示） -->
+  <div class="modal fade" id="firstNoticeModal" tabindex="-1" aria-labelledby="firstNoticeModalLabel" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h1 class="modal-title fs-6" id="firstNoticeModalLabel">PayPay友だち送金のお願い</h1>
+        </div>
+        <div class="modal-body">
+          <p class="mb-2">
+            PayPayで<strong>送金した後</strong>は、必ずこのページに戻って
+            <span class="text-decoration-underline">「振込元名（PayPayの表示名）」</span>を入力し、
+            <strong>「送金しました」ボタン</strong>を押してください。
+          </p>
+          <p class="mb-0 small text-muted">
+            ※押さない場合、主催側で入金照合ができず、支払い完了になりません。
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">了解しました</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main class="page-wrap">
+    <!-- フラッシュメッセージ -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="mb-3">
+          {% for cat, msg in messages %}
+            <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-2" role="alert">{{ msg }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <!-- ヘッダ -->
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h1 class="h5 mb-0">PayPay友だち送金</h1>
+      <span class="badge text-bg-secondary">イベント支払い</span>
+    </div>
+
+    <!-- イベント概要 -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex flex-column flex-sm-row align-items-sm-center justify-content-between gap-2">
+          <div>
+            <div class="text-muted small">イベント</div>
+            <div class="fw-bold">{{ ev.title }}</div>
+          </div>
+          <div class="text-sm-end">
+            <div class="text-muted small">参加費</div>
+            <div class="fs-5 fw-bold">¥{{ (ev.fee_yen or 0) | int }}</div>
+          </div>
+        </div>
+        {% if ev.pay_until %}
+          <hr>
+          <div class="small text-muted">
+            支払い期限：{{ ev.pay_until }}
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- 送金リンクの提示 -->
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 mb-3">1. 送金先リンクを開く</h2>
+
+        <label class="form-label">PayPay 送金用URL</label>
+        <div class="input-group mb-2">
+          <input type="text" id="payUrl" class="form-control pay-url-input" value="{{ paypay_url }}" readonly>
+          <button type="button" class="btn btn-outline-secondary" id="copyBtn">コピー</button>
+        </div>
+        <div class="help mb-3">上記URLをコピーするか、下のボタンからPayPayアプリを開いてください。</div>
+
+        <a class="btn btn-primary w-100" href="{{ paypay_url }}" target="_blank" rel="noopener">
+          PayPayアプリで開く
+        </a>
+      </div>
+    </div>
+
+    <!-- 送金後の申告フォーム -->
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 mb-3">2. 送金後の申告</h2>
+        <form method="post" id="confirmForm">
+          <div class="mb-3">
+            <label for="remitter_name" class="form-label">振込元名（PayPayの表示名）<span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="remitter_name" name="remitter_name" placeholder="例：イオリ" required>
+            <div class="form-text">主催側が入金確認するための照合に使います。</div>
+          </div>
+
+          <button type="submit" class="btn btn-success w-100" id="submitBtn">
+            送金しました（主催確認待ちにする）
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- 補足・注意 -->
+    <div class="alert alert-warning small" role="alert">
+      <div class="fw-bold mb-1">ご注意</div>
+      ・この画面で「送金しました」を押しても、即時に「支払い完了」にはなりません。<br>
+      ・主催側の確認後に支払いステータスが「完了」に更新されます。
+    </div>
+
+    <!-- 戻るリンク -->
+    <div class="footer-links mt-4 text-center">
+      <a class="link-secondary" href="{{ url_for('external_login_user.view_event', event_uuid=ev.event_uuid_str) }}">
+        &larr; イベントページに戻る
+      </a>
+    </div>
+  </main>
+
+  <!-- Bootstrap JS（モーダル用） -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // ページ表示時にモーダルを開く
+    document.addEventListener('DOMContentLoaded', function () {
+      var modalEl = document.getElementById('firstNoticeModal');
+      if (modalEl) {
+        var m = new bootstrap.Modal(modalEl);
+        m.show();
+      }
+    });
+
+    // URLコピー
+    (function(){
+      var btn = document.getElementById('copyBtn');
+      var inp = document.getElementById('payUrl');
+      btn && btn.addEventListener('click', function(){
+        try{
+          inp.select();
+          document.execCommand('copy');
+          btn.textContent = 'コピー済み';
+          btn.classList.remove('btn-outline-secondary');
+          btn.classList.add('btn-success');
+          setTimeout(function(){
+            btn.textContent = 'コピー';
+            btn.classList.add('btn-outline-secondary');
+            btn.classList.remove('btn-success');
+          }, 1600);
+        }catch(e){
+          alert('コピーに失敗しました。手動で選択してください。');
+        }
+      });
+    })();
+
+    // 二重送信防止
+    (function(){
+      var form = document.getElementById('confirmForm');
+      var submitBtn = document.getElementById('submitBtn');
+      form && form.addEventListener('submit', function(){
+        submitBtn.disabled = true;
+        submitBtn.textContent = '送信中…';
+      });
+    })();
+  </script>
+</body>
+</html>

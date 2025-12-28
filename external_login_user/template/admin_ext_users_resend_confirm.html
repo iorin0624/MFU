@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}確認メールの再送確認 #{{ u.id }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">確認メールの再送確認 <span class="text-muted">#{{ u.id }}</span></h1>
+  <div>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u.id) }}">編集に戻る</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <p>以下のメールアドレスに確認メールを再送します。よろしいですか？</p>
+    <p class="fs-5"><strong>{{ u.email }}</strong></p>
+    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_resend_verify', user_id=u.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+      <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u.id) }}">キャンセル</a>
+        <button class="btn btn-primary" type="submit">再送する</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
