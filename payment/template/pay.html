@@ -209,6 +209,7 @@
   const precheckUrl = "{{ url_for('payment.api_precheck', event_uuid=event.uuid) }}";
   const thanksUrl = "{{ url_for('payment.pay_thanks', event_uuid=event.uuid) }}";
   const squareJsUrl = "{{ square_js_url }}";
+  const paymentToken = {{ (payment_token or '') | tojson }};
 
   /* 表示専用の固定値（サーバから埋め込み） */
   const AUTOFILL = {
@@ -330,7 +331,7 @@
     try{
       const { nickname, x_id, instagram_id } = getFixedUserInputs();
       const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ nickname: nickname || '（未設定）', x_id, instagram_id }) });
+        body: JSON.stringify({ nickname: nickname || '（未設定）', x_id, instagram_id, payment_token: paymentToken }) });
       const pj = await pre.json().catch(()=>({}));
       if (pre.ok && pj && pj.amount_yen) setAmount(pj.amount_yen); else setAmount(0);
     }catch(e){ setAmount(0); }
@@ -409,7 +410,7 @@
       }
 
       const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ nickname, x_id, instagram_id }) });
+        body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
       const preData = await pre.json().catch(() => ({}));
       if (!pre.ok || preData.ok === false) {
         setBusy(false);
@@ -420,6 +421,7 @@
 
       // walletType: GOOGLE_PAY
       const payload = { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'GOOGLE_PAY' };
+      payload.payment_token = paymentToken;
       const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       const data = await res.json().catch(()=> ({}));
 
@@ -469,7 +471,7 @@
         setBusy(true); // tokenize成功後にロック開始
         try{
           const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ nickname, x_id, instagram_id }) });
+            body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
           const preData = await pre.json().catch(() => ({}));
           if (!pre.ok || preData.ok === false) {
             showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
@@ -479,6 +481,7 @@
 
           // walletType: APPLE_PAY
           const payload = { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'APPLE_PAY' };
+          payload.payment_token = paymentToken;
           const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
           const data = await res.json().catch(()=> ({}));
 
@@ -503,7 +506,7 @@
       setBusy(true);
       try {
         const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ nickname, x_id, instagram_id }) });
+          body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
         const preData = await pre.json().catch(() => ({}));
         if (!pre.ok || preData.ok === false) {
           showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
@@ -525,6 +528,7 @@
 
         // カードは walletType を送らない（サーバ側でNULL保存）
         const payload = { nickname, x_id, instagram_id, sourceId: tk.token };
+        payload.payment_token = paymentToken;
         const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         const data = await res.json().catch(()=> ({}));
 

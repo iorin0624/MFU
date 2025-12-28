@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS mfu_event_member (
   payment_row_id     BIGINT UNSIGNED NULL,
   receipt_url        VARCHAR(512) NULL,
   paid_amount_yen    INT UNSIGNED NULL,
+  custom_fee_yen     INT UNSIGNED NULL,
   joined_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uniq_member (event_id, user_id),
@@ -74,6 +75,23 @@ CREATE TABLE IF NOT EXISTS mfu_event_member (
   KEY idx_status (status),
   KEY idx_pstatus (payment_status),
   KEY idx_em_require_payment (require_payment)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+DDL_PAYMENT_REQUEST = """
+CREATE TABLE IF NOT EXISTS mfu_payment_request (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  token          CHAR(36) NOT NULL,
+  event_id       BIGINT UNSIGNED NOT NULL,
+  user_id        BIGINT UNSIGNED NOT NULL,
+  amount_yen     INT UNSIGNED NOT NULL,
+  status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
+  created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  used_at        DATETIME NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uniq_token (token),
+  KEY idx_evt_user (event_id, user_id),
+  KEY idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
@@ -100,6 +118,7 @@ def _on_bp_registered(state) -> None:
             cur.execute(DDL_EXTERNAL)
             cur.execute(DDL_EVENT)
             cur.execute(DDL_EVENT_MEMBER)
+            cur.execute(DDL_PAYMENT_REQUEST)
 
             # 後方互換ALTER（存在しなければADD）
             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
@@ -120,6 +139,7 @@ def _on_bp_registered(state) -> None:
 
             # 既存のゆるいALTER群
             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
+            _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
 
             # ★ 追加：支払期間 列（後方互換で追加）
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
