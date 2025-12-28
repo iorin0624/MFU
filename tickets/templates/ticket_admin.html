@@ -1,0 +1,185 @@
+{% extends 'base.html' %}
+{% block title %}チケット管理{% endblock %}
+{% block head_extra %}
+  <style>
+.small-muted{font-size:.9rem;opacity:.8}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .item-actions{gap:.5rem}
+    .nowrap{white-space:nowrap}
+  </style>
+{% endblock %}
+{% block content %}
+  <div class="py-4">
+<h2 class="mb-3">🎟 チケット管理</h2>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for cat,msg in messages %}
+        <div class="alert alert-{{ 'danger' if cat=='danger' else 'success' if cat=='success' else 'info' }}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- 1) バッチ発行フォーム -->
+  <h4 class="mb-2">バッチ発行</h4>
+  <form method="post" class="row g-3 border rounded p-3 mb-4" autocomplete="off">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <div class="col-12">
+      <label class="form-label fw-bold">イベント名（必須）</label>
+      <input name="event_name" class="form-control" required placeholder="例：夏イベント2025">
+    </div>
+
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">発行枚数</label>
+      <input name="count" type="number" min="1" max="2000" value="100" class="form-control" required>
+    </div>
+
+    <!-- 順番：撮影日 → 閲覧開始日 → 閲覧終了日 -->
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">撮影日（管理用）</label>
+      <input name="shoot_date" type="date" class="form-control">
+      <div class="small-muted">バッチ管理向けのメモ項目</div>
+    </div>
+
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">閲覧開始日</label>
+      <input name="view_start" type="date" class="form-control">
+      <div class="small-muted">開始日を入れて終了日が空なら、自動で「開始＋30日（23:59:59）」</div>
+    </div>
+
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">閲覧終了日（有効期限）</label>
+      <input name="expires_at" type="date" class="form-control">
+      <div class="small-muted">未指定でもOK（開始日入力時は自動補完）</div>
+    </div>
+
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">最大DL回数</label>
+      <input name="max_downloads" type="number" min="1" value="10" class="form-control">
+    </div>
+
+    <!-- 1日DL上限は廃止（UI削除） -->
+
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">クールダウン(秒)</label>
+      <input name="cooldown_secs" type="number" min="0" value="60" class="form-control">
+    </div>
+    <div class="col-6 col-md-3">
+      <label class="form-label fw-bold">ZIP枚数上限</label>
+      <input name="zip_limit_files" type="number" min="1" value="100" class="form-control">
+    </div>
+    <div class="col-12 col-md-6">
+      <label class="form-label fw-bold">ZIP容量上限(MB)</label>
+      <input name="zip_limit_mb" type="number" min="10" step="10" value="1000" class="form-control">
+      <div class="small-muted">1000 MB ≒ 1 GB（保存時はサーバ側で bytes へ換算）</div>
+    </div>
+
+    <div class="col-12">
+      <button class="btn btn-primary" type="submit">✅ 発行する</button>
+    </div>
+  </form>
+
+  <!-- 2) 発行サマリ / 直近発行チケット（PRG後のGETで表示） -->
+  {% if summary %}
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-2">発行サマリ</h5>
+          <a class="btn btn-sm btn-outline-secondary"
+             href="{{ url_for('tickets.tickets_csv', batch_id=summary.batch_id) }}">
+            ⬇️ UUIDをCSVでダウンロード
+          </a>
+        </div>
+        <div class="row">
+          <div class="col-md-6">
+            <div>バッチID: <span class="mono">{{ summary.batch_id }}</span></div>
+            <div>イベント名: {{ summary.event_name }}</div>
+            <div>撮影日: {{ summary.shoot_date }}</div>
+          </div>
+          <div class="col-md-6">
+            <div>閲覧開始日: {{ summary.view_start }}</div>
+            <div>閲覧終了日（有効期限）: {{ summary.expires_at }}</div>
+            <div>最大DL回数: {{ summary.max_downloads }} / 1日上限: {{ summary.daily_limit and summary.daily_limit or '制限なし' }}</div>
+            <div>CD: {{ summary.cooldown_secs }} 秒 / 枚数上限: {{ summary.zip_limit_files }} / 容量上限: {{ summary.zip_limit_mb }} MB（{{ summary.zip_limit_bytes }} bytes）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if created and created|length %}
+    <div class="d-flex justify-content-between align-items-center">
+      <h5 class="mb-2">直近で発行したチケット</h5>
+      <a class="btn btn-sm btn-outline-secondary"
+         href="{{ url_for('tickets.tickets_csv', batch_id=summary.batch_id) }}">
+        ⬇️ 全件CSVダウンロード
+      </a>
+    </div>
+    <div class="table-responsive mb-4">
+      <table class="table table-sm table-striped align-middle">
+        <thead><tr><th>No.</th><th>UUID</th></tr></thead>
+        <tbody>
+        {% for t in created %}
+          <tr>
+            <td class="mono">{{ t.ticket_no }}</td>
+            <td class="mono">{{ t.uuid }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <div class="small-muted">※ 表示は先頭500件まで。CSVは全件出力します。</div>
+    </div>
+  {% endif %}
+
+  <!-- 3) バッチ一覧（アップロード & CSV & 削除 & 編集導線） -->
+  <h4 class="mb-2">バッチ一覧</h4>
+
+  {% if batches and batches|length %}
+    <div class="list-group">
+      {% for b in batches %}
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between align-items-start flex-wrap">
+            <div class="me-3">
+              <div class="fw-bold">{{ b.event_name }}</div>
+              <div class="text-muted small">
+                ID: <span class="mono">{{ b.id }}</span>
+                <span class="mx-2">/</span>
+                撮影: {{ b.shoot_date or '未設定' }}
+                <span class="mx-2">/</span>
+                閲覧: {{ b.view_start or '未設定' }} → {{ b.expires_at or '未設定' }}
+                <span class="mx-2">/</span>
+                作成: {{ b.created_at }}
+              </div>
+            </div>
+            <div class="d-flex align-items-center item-actions">
+              <span class="badge bg-secondary rounded-pill me-2">{{ b.file_count or 0 }} 枚</span>
+
+              <!-- ✅ 追加：編集導線 -->
+              <a class="btn btn-sm btn-outline-primary nowrap"
+                 href="{{ url_for('tickets.tickets_batch_edit', batch_id=b.id) }}">編集</a>
+
+              <a class="btn btn-sm btn-outline-primary nowrap"
+                 href="{{ url_for('tickets.tickets_upload', batch_id=b.id) }}">画像アップロード</a>
+
+              <a class="btn btn-sm btn-outline-secondary nowrap"
+                 href="{{ url_for('tickets.tickets_csv', batch_id=b.id) }}">CSV</a>
+
+              <form method="post" class="ms-1"
+                    action="{{ url_for('tickets.tickets_batch_delete', batch_id=b.id) }}"
+                    onsubmit="return confirm('本当に削除しますか？\n画像とサムネイルも物理的に削除されます。');">
+                <button class="btn btn-sm btn-outline-danger nowrap" type="submit">削除</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="alert alert-info">バッチがありません。上のフォームから発行してください。</div>
+  {% endif %}
+
+  <p class="small-muted mt-3">
+    ※ 発行後は再読み込み・戻るをしても重複作成されません（ワンタイムトークン＋PRG対応済み）。
+  </p>
+  </div>
+{% endblock %}
