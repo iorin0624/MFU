@@ -1,0 +1,532 @@
+--- payment/__init__.py
++++ payment/__init__.py
+@@ -249,106 +249,113 @@ DDL_EVENTS = """
+ CREATE TABLE IF NOT EXISTS events (
+   id              BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+   uuid            CHAR(22) NOT NULL UNIQUE,
+   title           VARCHAR(200) NOT NULL,
+   date            DATE NULL,
+   default_amount  INT UNSIGNED NOT NULL DEFAULT 1000,
+   is_active       TINYINT(1) NOT NULL DEFAULT 1,
+   notes           TEXT NULL,
+   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ """
+ 
+ DDL_PAYMENTS = """
+ CREATE TABLE IF NOT EXISTS event_payments (
+   id                   BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+   event_id             BIGINT UNSIGNED NOT NULL,
+   created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+ 
+   nickname             VARCHAR(120) NOT NULL,
+   x_id                 VARCHAR(120) NULL,
+   instagram_id         VARCHAR(120) NULL,
+   receipt_email        VARCHAR(255) NULL,
+   amount_yen           INT UNSIGNED NOT NULL,
+   memo                 VARCHAR(255) NULL,
++  payment_token        CHAR(36) NULL,
+ 
+   idempotency_key      CHAR(36) NOT NULL,
+   square_payment_id    VARCHAR(64) NULL UNIQUE,
+   square_status        ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING',
+   square_receipt_url   VARCHAR(512) NULL,
+   card_brand           VARCHAR(32) NULL,
+   card_last4           CHAR(4) NULL,
+   card_exp_mm          TINYINT NULL,
+   card_exp_yyyy        SMALLINT NULL,
+ 
+   error_code           VARCHAR(64) NULL,
+   error_detail         TEXT NULL,
+ 
+   discord_notified     TINYINT(1) NOT NULL DEFAULT 0,
+ 
+   CONSTRAINT fk_event_payments_event
+     FOREIGN KEY (event_id) REFERENCES events(id)
+     ON DELETE CASCADE,
+ 
+   KEY ix_event_created (event_id, created_at),
+-  KEY ix_status (square_status)
++  KEY ix_status (square_status),
++  KEY ix_payment_token (payment_token)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ """
+ 
+ DDL_REFUNDS = """
+ CREATE TABLE IF NOT EXISTS event_refunds (
+   id                BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+   payment_row_id    BIGINT UNSIGNED NOT NULL,
+   square_refund_id  VARCHAR(64) NULL UNIQUE,
+   amount_yen        INT UNSIGNED NOT NULL,
+   status            ENUM('PENDING','APPROVED','REJECTED','FAILED','CANCELED') NOT NULL DEFAULT 'PENDING',
+   reason            VARCHAR(255) NULL,
+   error_code        VARCHAR(64) NULL,
+   error_detail      TEXT NULL,
+   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+   CONSTRAINT fk_event_refunds_payment
+     FOREIGN KEY (payment_row_id) REFERENCES event_payments(id)
+     ON DELETE CASCADE,
+   KEY ix_payment_status (payment_row_id, status)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ """
+ 
+ def _ensure_schema():
+     conn = _get_db()
+     try:
+         cur = conn.cursor()
+         cur.execute(DDL_EVENTS)
+         cur.execute(DDL_PAYMENTS)
+         cur.execute(DDL_REFUNDS)
+         # 既存環境向けの微調整（存在すれば失敗→ロールバック）
+         try:
+             cur.execute("ALTER TABLE event_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0")
+             conn.commit()
+         except Exception:
+             conn.rollback()
++        try:
++            cur.execute("ALTER TABLE event_payments ADD COLUMN payment_token CHAR(36) NULL")
++            conn.commit()
++        except Exception:
++            conn.rollback()
+         try:
+             cur.execute("ALTER TABLE event_payments MODIFY square_status ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING'")
+             conn.commit()
+         except Exception:
+             conn.rollback()
+         conn.commit()
+     finally:
+         try: conn.close()
+         except Exception: pass
+ 
+ # ───────────────────────────────────────────────────────────
+ # MFUイベント連携
+ # ───────────────────────────────────────────────────────────
+ def _autoprovision_event_from_mfu(event_uuid: str) -> None:
+     """
+     初アクセス時、payment.events に行が無ければ
+     MFUの mfu_event.payment_uuid に基づいて自動作成。
+     """
+     try:
+         conn = _get_db()
+         cur = conn.cursor()
+         cur.execute("SELECT id FROM events WHERE uuid=%s", (event_uuid,))
+         if _fetchone_dict(cur):
+             conn.close(); return
+ 
+@@ -409,144 +416,215 @@ def _get_live_amount_and_sync(conn, event_uuid: str) -> tuple[int, dict|None]:
+         conn.rollback()
+     return (fee, ev)
+ 
+ def _mfu_event_by_payment_uuid(event_uuid: str) -> dict | None:
+     """
+     mfu_event を payment_uuid で1件取得（必要カラムのみ）
+     返り値: { id, title, fee_yen } or None
+     """
+     conn = _get_db()
+     try:
+         cur = conn.cursor()
+         cur.execute("""
+             SELECT id, title, fee_yen
+               FROM mfu_event
+              WHERE payment_uuid=%s
+              LIMIT 1
+         """, (event_uuid,))
+         row = _fetchone_dict(cur)
+         if not row:
+             return None
+         return {"id": row["id"], "title": row["title"], "fee_yen": row["fee_yen"]}
+     finally:
+         try: conn.close()
+         except Exception: pass
+ 
++def _resolve_payment_token(event_uuid: str) -> str | None:
++    try:
++        token = (request.args.get("payment_token") or "").strip()
++        if token:
++            return token
++    except Exception:
++        pass
++    try:
++        ctx = session.get("pay_ctx") or {}
++        token = (ctx.get("payment_token") or "").strip()
++        return token or None
++    except Exception:
++        return None
++
++def _fetch_payment_request(conn, event_uuid: str, token: str | None) -> dict | None:
++    if not token:
++        return None
++    me = _mfu_event_by_payment_uuid(event_uuid) or {}
++    event_id = me.get("id")
++    if not event_id:
++        return None
++    cur = conn.cursor()
++    try:
++        cur.execute("""
++            SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
++              FROM mfu_payment_request
++             WHERE token=%s AND event_id=%s AND status='pending'
++             LIMIT 1
++        """, (token, event_id))
++        row = _fetchone_dict(cur)
++        return row
++    finally:
++        try: cur.close()
++        except Exception: pass
++
++def _amount_for_payment(conn, event_uuid: str, token: str | None) -> int | None:
++    if token:
++        row = _fetch_payment_request(conn, event_uuid, token)
++        if row:
++            try:
++                return int(row.get("amount_yen") or 0)
++            except Exception:
++                return None
++    return None
++
+ # ───────────────────────────────────────────────────────────
+ # 事前チェック API（重複決済/最新金額の確認）
+ # ───────────────────────────────────────────────────────────
+ @bp.post("/api/precheck/<event_uuid>")
+ def api_precheck(event_uuid: str):
+     """
+     決済前の事前チェック:
+       - 入力バリデーション（ニックネーム、X/Instagram のどちらか必須）
+       - 現在の金額（fee_yen）をDBから取得して返却（デフォ値に依存しない）
+       - ※ 重複決済チェックは payment 側では行わない
+     レスポンス: { ok: bool, message?: str, amount_yen?: int }
+     """
+     data = (request.get_json(silent=True) or {})
+     nickname = (data.get("nickname") or "").strip()
+     x_id = _normalize_handle(data.get("x_id"))
+     instagram_id = _normalize_handle(data.get("instagram_id"))
++    token = (data.get("payment_token") or request.args.get("payment_token") or "").strip() or None
+ 
+     me = _mfu_event_by_payment_uuid(event_uuid)
+     if not me:
+         return jsonify(ok=False, message="イベントが見つかりません。"), 404
+ 
++    conn = _get_db()
++    try:
++        token_row = _fetch_payment_request(conn, event_uuid, token)
++        token_amount = int(token_row.get("amount_yen") or 0) if token_row else None
++        if token_row:
++            nickname = nickname or (token_row.get("nickname") or "")
++            x_id = x_id or _normalize_handle(token_row.get("x_id"))
++            instagram_id = instagram_id or _normalize_handle(token_row.get("instagram_id"))
++    finally:
++        try: conn.close()
++        except Exception: pass
++
+     if not nickname:
+         return jsonify(ok=False, message="ニックネームは必須です。"), 400
+     if not x_id and not instagram_id:
+         return jsonify(ok=False, message="X ID または Instagram ID を入力してください。"), 400
+ 
+-    amount = int(me["fee_yen"] or 0)
++    amount = int(token_amount or me["fee_yen"] or 0)
+     if amount <= 0:
+         return jsonify(ok=False, message="このイベントには参加費が設定されていません。"), 400
+ 
+     # ★ 重複決済チェックはイベント管理システム側で実施するため、ここでは常に金額だけ返す
+     return jsonify(ok=True, amount_yen=amount)
+ 
+ # ───────────────────────────────────────────────────────────
+ # 参加者向け：決済フォーム & サンクス
+ # ───────────────────────────────────────────────────────────
+ @bp.get("/e/<event_uuid>")
+ def pay_form(event_uuid: str):
+     _ensure_schema()
+     _autoprovision_event_from_mfu(event_uuid)
+ 
++    payment_token = _resolve_payment_token(event_uuid)
+     conn = _get_db()
+     try:
+         amount, evrow = _get_live_amount_and_sync(conn, event_uuid)
++        token_row = _fetch_payment_request(conn, event_uuid, payment_token)
++        token_amount = int(token_row.get("amount_yen") or 0) if token_row else None
++        if token_amount is not None and token_amount > 0:
++            amount = token_amount
+     finally:
+         try: conn.close()
+         except Exception: pass
+ 
+     if not evrow or amount <= 0:
+         return "この決済リンクは無効です。", 404
+ 
+     # 画面表示用イベント（タイトルは mfu_event に合わせる）
+     me = _mfu_event_by_payment_uuid(event_uuid) or {}
+     event = {
+         "uuid": event_uuid,
+         "title": me.get("title") or evrow.get("title") or "イベント",
+         "default_amount": int(evrow.get("default_amount") or amount),
+     }
+ 
+     # ★ セッションからプリフィル（決済UUID一致 or 後方互換で mfu_event_uuid がある場合も許可）
+     autofill = {}
+     return_url = None
+     try:
+         ctx = session.get("pay_ctx") or {}
+         if ctx and (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")):
+             autofill = {
+                 "nickname": ctx.get("nickname") or "",
+                 "x_id": ctx.get("x_id") or "",
+                 "instagram_id": ctx.get("instagram_id") or "",
+             }
+             return_url = ctx.get("return_url")
+     except Exception:
+         logging.exception("read pay_ctx failed")
+ 
++    if token_row:
++        autofill = {
++            "nickname": token_row.get("nickname") or "",
++            "x_id": token_row.get("x_id") or "",
++            "instagram_id": token_row.get("instagram_id") or "",
++        }
++
+     # クエリがあれば上書き
+     qs_n = (request.args.get("nickname") or "").strip()
+     qs_x = _sanitize_handle(request.args.get("x_id"))
+     qs_i = _sanitize_handle(request.args.get("instagram_id"))
+     if qs_n or qs_x or qs_i:
+         autofill = {
+             "nickname": qs_n or autofill.get("nickname", ""),
+             "x_id": (qs_x or "") or autofill.get("x_id", ""),
+             "instagram_id": (qs_i or "") or autofill.get("instagram_id", ""),
+         }
+ 
+     return render_template(
+         "pay.html",
+         event=event,
+         event_amount=amount,               # ← 互換のため“明示の金額”も渡す
+         square_js_url=_square_js_url(),
+         app_id=os.environ.get("SQUARE_APPLICATION_ID"),
+         location_id=os.environ.get("SQUARE_LOCATION_ID"),
+         autofill=autofill,                 # ← テンプレはこの3項目を参照
+         return_url=return_url,
++        payment_token=payment_token,
+     )
+ 
+ @bp.get("/e/<event_uuid>/thanks")
+ def pay_thanks(event_uuid: str):
+     _ensure_schema()
+     pid = request.args.get("pid")
+ 
+     conn = _get_db()
+     event, payment = None, None
+     try:
+         # 表示用にeventsを取得（amountはthanksでは使用しない）
+         cur = conn.cursor()
+         cur.execute("SELECT * FROM events WHERE uuid=%s LIMIT 1", (event_uuid,))
+         event = _fetchone_dict(cur)
+ 
+         if pid:
+             cur.execute("SELECT * FROM event_payments WHERE square_payment_id=%s LIMIT 1", (pid,))
+             payment = _fetchone_dict(cur)
+             if payment:
+                 status_now = (payment.get("square_status") or "").upper()
+                 if status_now not in ("APPROVED", "COMPLETED", "AUTHORIZED"):
+                     access_token = os.environ.get("SQUARE_ACCESS_TOKEN")
+                     if access_token:
+                         try:
+                             resp = requests.get(
+@@ -571,163 +649,189 @@ def pay_thanks(event_uuid: str):
+                                     card.get("card_brand"), card.get("last_4"),
+                                     card.get("exp_month"), card.get("exp_year"),
+                                     pid
+                                 ))
+                                 conn.commit()
+                                 cur.execute("SELECT * FROM event_payments WHERE square_payment_id=%s LIMIT 1", (pid,))
+                                 payment = _fetchone_dict(cur)
+                         except Exception:
+                             logging.exception("thanks: refresh payment status failed")
+ 
+                 # Discord通知（必要時）
+                 try:
+                     _notify_discord_payment_if_needed(conn, pid)
+                 except Exception:
+                     logging.exception("thanks: notify failed")
+ 
+     finally:
+         try: conn.close()
+         except Exception: pass
+ 
+     # 外部ログインへの自動戻り（セッションにreturn_urlがある場合）
+     try:
+         ctx = session.get("pay_ctx") or {}
+         if (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")) and ctx.get("return_url"):
+             ret = ctx.get("return_url")
++            payment_token = _resolve_payment_token(event_uuid)
+             ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED","APPROVED","COMPLETED"))
+             q = {
+                 "status": "ok" if ok else "ng",
+                 "payment_id": pid or "",
+-                "receipt": (payment or {}).get("square_receipt_url") or ""
++                "receipt": (payment or {}).get("square_receipt_url") or "",
++                "payment_token": payment_token or "",
+             }
+             u = urlparse(ret)
+             merged = dict(parse_qsl(u.query)); merged.update({k:v for k,v in q.items() if v})
+             new_q = urlencode(merged)
+             new_url = urlunparse((u.scheme, u.netloc, u.path, u.params, new_q, u.fragment))
+             return redirect(new_url)
+     except Exception:
+         logging.exception("thanks: external redirect failed")
+ 
+     if not event:
+         return "この決済リンクは無効です。", 404
+ 
+     return render_template("thanks.html", event=event, payment=payment)
+ 
+ # ───────────────────────────────────────────────────────────
+ # 課金API
+ # ───────────────────────────────────────────────────────────
+ @bp.post("/api/charge/<event_uuid>")
+ def api_charge(event_uuid: str):
+     _ensure_schema()
+     data = request.get_json(force=True)
+ 
+     nickname      = (data.get("nickname") or "").strip()
+     x_id          = _sanitize_handle(data.get("x_id"))
+     instagram_id  = _sanitize_handle(data.get("instagram_id"))
+     source_id     = data.get("sourceId")
++    payment_token = (data.get("payment_token") or request.args.get("payment_token") or "").strip() or None
+ 
+     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
+     _wt_in = data.get("walletType", data.get("wallet_type"))
+     if isinstance(_wt_in, str):
+         _wt_in = _wt_in.strip().upper()
+     else:
+         _wt_in = ""
+     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
+ 
+-    if not nickname or not source_id or (not x_id and not instagram_id):
+-        return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
+-
+     conn = _get_db()
+     try:
+-        # ★ 常に最新金額を取得
++        token_row = _fetch_payment_request(conn, event_uuid, payment_token)
++        if payment_token and not token_row:
++            return jsonify({"message": "支払いトークンが無効です"}), 400
++
++        if token_row:
++            nickname = nickname or (token_row.get("nickname") or "")
++            x_id = x_id or _sanitize_handle(token_row.get("x_id"))
++            instagram_id = instagram_id or _sanitize_handle(token_row.get("instagram_id"))
++
++        if not nickname or not source_id or (not x_id and not instagram_id):
++            return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
++
++        # ★ 常に最新金額を取得（トークンがあれば優先）
+         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
+         if not ev or amount <= 0:
+             return jsonify({"message": "イベントが見つからない/無効です"}), 404
++        token_amount = int(token_row.get("amount_yen") or 0) if token_row else None
++        if token_amount is not None and token_amount > 0:
++            amount = token_amount
+ 
+         # 二重決済ブロック（event_payments に対して）—削除
+         cur = conn.cursor()
+ 
+         access_token = os.environ.get("SQUARE_ACCESS_TOKEN")
+         location_id  = os.environ.get("SQUARE_LOCATION_ID")
+         if not access_token or not location_id:
+             return jsonify({"message": "Square設定が未完了です"}), 500
+ 
+         idemp = str(uuid.uuid4())
+ 
+         # ★ 先にPENDINGで1行作成（wallet_type を保存）
+         cur.execute("""
+             INSERT INTO event_payments
+               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
+-               idempotency_key, square_status, wallet_type)
+-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s)
+-        """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type))
++               idempotency_key, square_status, wallet_type, payment_token)
++            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
++        """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type, payment_token))
+         pay_row_id = cur.lastrowid
+         conn.commit()
+ 
+         # 顧客ID
+         try:
+             customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
+         except Exception:
+             return jsonify({"message": "顧客の作成に失敗しました"}), 500
+ 
+         # CreatePayment
+         body = {
+             "idempotency_key": idemp,
+             "source_id": source_id,
+             "amount_money": {"amount": int(amount), "currency": "JPY"},
+             "location_id": location_id,
+             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
+             "customer_id": customer_id,
+         }
+ 
+         resp = requests.post(
+             f"{_square_api_base()}/v2/payments",
+             headers={"Authorization": f"Bearer {access_token}",
+                      "Content-Type":"application/json", "Accept":"application/json"},
+             json=body, timeout=25
+         )
+         ok = resp.status_code < 400
+         try:
+             payload = resp.json()
+         except Exception:
+             payload = {}
+ 
+         if ok:
+             p = payload.get("payment", {}) or {}
+             status  = p.get("status") or "AUTHORIZED"
+             details = p.get("card_details") or {}
+             card    = details.get("card") or {}
+             cur.execute("""
+                 UPDATE event_payments
+                    SET square_payment_id=%s, square_status=%s,
+                        card_brand=%s, card_last4=%s, card_exp_mm=%s, card_exp_yyyy=%s,
+                        square_receipt_url=%s,
+                        error_code=NULL, error_detail=NULL
+                  WHERE id=%s
+             """, (p.get("id"), status, card.get("card_brand"), card.get("last_4"),
+                   card.get("exp_month"), card.get("exp_year"), p.get("receipt_url"), pay_row_id))
+             conn.commit()
++            if payment_token:
++                try:
++                    cur.execute("""
++                        UPDATE mfu_payment_request
++                           SET status='used', used_at=NOW()
++                         WHERE token=%s AND event_id=%s
++                         LIMIT 1
++                    """, (payment_token, ev["id"]))
++                    conn.commit()
++                except Exception:
++                    conn.rollback()
+             return jsonify({
+                 "payment_id": p.get("id"),
+                 "status": p.get("status"),
+                 "amount": p.get("amount_money"),
+                 "receipt_url": p.get("receipt_url"),
+             })
+         else:
+             errs = (payload.get("errors") or [])
+             code = errs[0].get("code") if errs else None
+             detail = errs[0].get("detail") if errs else resp.text
+             cur.execute("""
+                 UPDATE event_payments
+                    SET square_status='FAILED', error_code=%s, error_detail=%s
+                  WHERE id=%s
+             """, (code, detail, pay_row_id))
+             conn.commit()
+             return jsonify({"message": "Square API error", "errors": errs}), 400
+ 
+     finally:
+         try: conn.close()
+         except Exception: pass
+ 
+ # ───────────────────────────────────────────────────────────
+ # Webhooks
+ # ───────────────────────────────────────────────────────────

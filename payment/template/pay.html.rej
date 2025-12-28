@@ -1,0 +1,274 @@
+--- payment/template/pay.html
++++ payment/template/pay.html
+@@ -187,50 +187,51 @@
+         </div>
+         <div class="modal-body" id="msgModalBody"></div>
+         <div class="modal-footer">
+           <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
+         </div>
+       </div>
+     </div>
+   </div>
+ 
+   <div class="loading-backdrop" id="loading">
+     <div class="loading-card">
+       <span class="spinner"></span>
+       <span>処理中です。しばらくお待ちください…</span>
+     </div>
+   </div>
+ 
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+ 
+ <script>
+   const appId = "{{ app_id }}";
+   const locationId = "{{ location_id }}";
+   const chargeUrl = "{{ url_for('payment.api_charge', event_uuid=event.uuid) }}";
+   const precheckUrl = "{{ url_for('payment.api_precheck', event_uuid=event.uuid) }}";
+   const thanksUrl = "{{ url_for('payment.pay_thanks', event_uuid=event.uuid) }}";
+   const squareJsUrl = "{{ square_js_url }}";
++  const paymentToken = {{ (payment_token or '') | tojson }};
+ 
+   /* 表示専用の固定値（サーバから埋め込み） */
+   const AUTOFILL = {
+     nickname: {{ ((autofill.get('nickname','') if autofill else '') | tojson) }},
+     x_id: {{ ((autofill.get('x_id','') if autofill else '') | tojson) }},
+     instagram_id: {{ ((autofill.get('instagram_id','') if autofill else '') | tojson) }},
+   };
+ 
+   function getFixedUserInputs(){
+     const nickname = (AUTOFILL.nickname || '').trim();
+     const x_id = sanitizeHandle(AUTOFILL.x_id || '');
+     const instagram_id = sanitizeHandle(AUTOFILL.instagram_id || '');
+     return { nickname, x_id, instagram_id };
+   }
+ 
+   // ラジオ
+   const $radioG = document.getElementById('radio-gpay');
+   const $radioA = document.getElementById('radio-apple');
+   const $radioC = document.getElementById('radio-card');
+   const $labelG = document.getElementById('radio-gpay-label');
+   const $labelA = document.getElementById('radio-apple-label');
+   const $labelC = document.getElementById('radio-card-label');
+ 
+   // セクション
+   const $secG = document.getElementById('section-gpay');
+@@ -308,51 +309,51 @@
+       gHost.style.borderRadius = `${r}px`;
+       gHost.style.display = 'block';
+       gHost.style.overflow = 'hidden';
+     }
+     // Apple Pay button
+     const aBtn = document.getElementById('apple-pay-button');
+     if (aBtn){
+       aBtn.style.width  = `${w}px`;
+       aBtn.style.height = `${h}px`;
+       aBtn.style.borderRadius = `${r}px`;
+       aBtn.style.display = 'block';
+     }
+   }
+ 
+   // ---------- Square 初期化 ----------
+   async function main() {
+     if (!window.Square) { showError('Square.jsの読み込みに失敗しました'); log('Square.js not found:', squareJsUrl); return; }
+     let payments;
+     try { payments = window.Square.payments(appId, locationId); log('Square.payments init OK'); }
+     catch (e) { showError('appId/locationIdエラー: ' + (e?.message || e)); return; }
+ 
+     // 初回 precheck（AUTOFILLを送る）
+     try{
+       const { nickname, x_id, instagram_id } = getFixedUserInputs();
+       const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
+-        body: JSON.stringify({ nickname: nickname || '（未設定）', x_id, instagram_id }) });
++        body: JSON.stringify({ nickname: nickname || '（未設定）', x_id, instagram_id, payment_token: paymentToken }) });
+       const pj = await pre.json().catch(()=>({}));
+       if (pre.ok && pj && pj.amount_yen) setAmount(pj.amount_yen); else setAmount(0);
+     }catch(e){ setAmount(0); }
+ 
+     // カード欄
+     try{
+       const card = await payments.card();
+       await card.attach('#card-container');
+       setupCardFlow(card);
+     }catch(e){ log('card.attach FAILED:', e); }
+ 
+     // Google Pay
+     initGooglePay(payments);
+ 
+     // Apple Pay
+     initApplePay_NoAttach(payments);
+ 
+     switchSection();
+     sizeWalletButtons();
+     window.addEventListener('resize', sizeWalletButtons);
+   }
+ 
+   // ---------- Google Pay ----------
+   async function initGooglePay(payments){
+     let gpay;
+@@ -387,160 +388,163 @@
+         padding:'10px 22px', background:'#000', color:'#fff', cursor:'pointer', borderRadius:'12px'
+       });
+       if (wrap) { wrap.style.display = 'flex'; wrap.style.opacity = '1'; }
+       $radioG.disabled = false; $labelG.classList.remove('disabled');
+       sizeWalletButtons();
+       btnHost.addEventListener('click', async () => { await handleGooglePayTokenize(gpay); });
+     }
+   }
+ 
+   async function handleGooglePayTokenize(gpay){
+     const { nickname, x_id, instagram_id } = getFixedUserInputs();
+     if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
+     if (!x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
+ 
+     setBusy(true); // クリック直後からロック
+     try {
+       const tokenResult = await gpay.tokenize();
+       if (tokenResult.status !== 'OK') {
+         setBusy(false);
+         showModal('Google Pay に失敗しました',
+           `<pre class="small text-muted mb-0">${escapeHtml(JSON.stringify(tokenResult, null, 2))}</pre>`);
+         return;
+       }
+ 
+       const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
+-        body: JSON.stringify({ nickname, x_id, instagram_id }) });
++        body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
+       const preData = await pre.json().catch(() => ({}));
+       if (!pre.ok || preData.ok === false) {
+         setBusy(false);
+         showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
+         return;
+       }
+       setAmount(preData.amount_yen);
+ 
+       // walletType: GOOGLE_PAY
+       const payload = { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'GOOGLE_PAY' };
++      payload.payment_token = paymentToken;
+       const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+       const data = await res.json().catch(()=> ({}));
+ 
+       if (res.ok && data.payment_id) { location.href = `${thanksUrl}?pid=${encodeURIComponent(data.payment_id)}`; return; }
+       setBusy(false);
+       if (res.status === 409) showModal('二重決済はできません', 'このX/Instagram IDは既にお支払い済みです。');
+       else showModal('支払いに失敗しました', escapeHtml(data.message || 'エラーが発生しました。'));
+     } catch (err) {
+       setBusy(false); showError(err?.message || String(err));
+     }
+   }
+ 
+   // ---------- Apple Pay ----------
+   async function initApplePay_NoAttach(payments){
+     let applePay;
+     try {
+       const paymentRequest = payments.paymentRequest({
+         countryCode: "JP",
+         currencyCode: "JPY",
+         total: { amount: String(window.__amountYen || {{ event_amount|int }}), label: "{{ event.title|e }}" }
+       });
+       applePay = await payments.applePay(paymentRequest);
+       $radioA.disabled = false; $labelA.classList.remove('disabled');
+     } catch (e) {
+       $radioA.disabled = true; $labelA.classList.add('disabled'); switchSection(); return;
+     }
+ 
+     const wrap = document.getElementById('applepay-wrap');
+     const btn  = document.getElementById('apple-pay-button');
+     if (!btn) return;
+     if (wrap) { wrap.style.display = 'flex'; wrap.style.opacity = '1'; }
+     sizeWalletButtons();
+ 
+     btn.addEventListener('click', async () => {
+       const { nickname, x_id, instagram_id } = getFixedUserInputs();
+       if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
+       if (!x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
+ 
+       try {
+         const tokenResult = await applePay.tokenize();
+         if (tokenResult.status !== 'OK') {
+           showModal('Apple Pay に失敗しました',
+             `<pre class="small text-muted mb-0">${escapeHtml(JSON.stringify(tokenResult, null, 2))}</pre>`);
+           return;
+         }
+ 
+         setBusy(true); // tokenize成功後にロック開始
+         try{
+           const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
+-            body: JSON.stringify({ nickname, x_id, instagram_id }) });
++            body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
+           const preData = await pre.json().catch(() => ({}));
+           if (!pre.ok || preData.ok === false) {
+             showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
+             setBusy(false); return;
+           }
+           setAmount(preData.amount_yen);
+ 
+           // walletType: APPLE_PAY
+           const payload = { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'APPLE_PAY' };
++          payload.payment_token = paymentToken;
+           const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+           const data = await res.json().catch(()=> ({}));
+ 
+           if (res.ok && data.payment_id) { location.href = `${thanksUrl}?pid=${encodeURIComponent(data.payment_id)}`; return; }
+           if (res.status === 409) showModal('二重決済はできません', 'このX/Instagram IDは既にお支払い済みです。');
+           else showModal('支払いに失敗しました', escapeHtml(data.message || 'エラーが発生しました。'));
+         } finally { setBusy(false); }
+       } catch (err) { showError(err?.message || String(err)); }
+     });
+   }
+ 
+   // ---------- カード（「支払う」ボタンはカード内のみ） ----------
+   function setupCardFlow(card){
+     const payBtn = document.querySelector('#pay');
+     payBtn?.addEventListener('click', async () => {
+       if (!document.getElementById('radio-card').checked) return; // 保険
+ 
+       const { nickname, x_id, instagram_id } = getFixedUserInputs();
+       if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
+       if (!x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
+ 
+       setBusy(true);
+       try {
+         const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
+-          body: JSON.stringify({ nickname, x_id, instagram_id }) });
++          body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
+         const preData = await pre.json().catch(() => ({}));
+         if (!pre.ok || preData.ok === false) {
+           showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
+           setBusy(false); return;
+         }
+         setAmount(preData.amount_yen);
+ 
+         const verificationDetails = {
+           amount: String(window.__amountYen || preData.amount_yen || 0),
+           currencyCode: 'JPY', intent: 'CHARGE',
+           customerInitiated: true, sellerKeyedIn: false, billingContact: { countryCode: 'JP' }
+         };
+         const tk = await card.tokenize(verificationDetails);
+         if (tk.status !== 'OK') {
+           showModal('カード認証に失敗しました',
+             `<pre class="small text-muted mb-0">${escapeHtml(JSON.stringify(tk, null, 2))}</pre>`);
+           setBusy(false); return;
+         }
+ 
+         // カードは walletType を送らない（サーバ側でNULL保存）
+         const payload = { nickname, x_id, instagram_id, sourceId: tk.token };
++        payload.payment_token = paymentToken;
+         const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+         const data = await res.json().catch(()=> ({}));
+ 
+         if (res.ok && data.payment_id) { location.href = `${thanksUrl}?pid=${encodeURIComponent(data.payment_id)}`; return; }
+         if (res.status === 409) showModal('二重決済はできません', 'このX/Instagram IDは既にお支払い済みです。');
+         else showModal('支払いに失敗しました', escapeHtml(data.message || 'エラーが発生しました。'));
+       } catch (err) { showError(err?.message || String(err)); }
+       finally { setBusy(false); }
+     });
+   }
+ 
+   (async ()=>{ try{
+     if (!window.Square) { console.error('Square.js missing'); }
+     await main();
+   }catch(e){ log('main failed', e); } })();
+ </script>
+ 
+ </body>
+ </html>

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import base64
-import uuid
 from datetime import datetime, timedelta
 
 from flask import (
@@ -152,68 +151,6 @@ def _is_lecture_event(ev: dict) -> bool:
         return str(ev.get("title") or "").startswith("【講座】")
     except Exception:
         return False
-
-def _resolve_member_fee(event_id: int, user_id: int, default_fee: int) -> int:
-    """ユーザー別の金額があれば優先し、なければイベント金額を返す。"""
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            SELECT custom_fee_yen
-              FROM mfu_event_member
-             WHERE event_id=%s AND user_id=%s
-             ORDER BY id DESC
-             LIMIT 1
-        """, (event_id, user_id))
-        row = cur.fetchone() or {}
-    finally:
-        try: cur.close(); db.close()
-        except Exception: pass
-
-    custom_fee = row.get("custom_fee_yen") if isinstance(row, dict) else None
-    try:
-        custom_fee_int = int(custom_fee) if custom_fee is not None else None
-    except Exception:
-        custom_fee_int = None
-    if custom_fee_int is not None and custom_fee_int > 0:
-        return custom_fee_int
-    return int(default_fee or 0)
-
-def _create_payment_request(event_id: int, user_id: int, amount_yen: int) -> str:
-    """支払いリクエストを発行し、トークンを返す。"""
-    token = str(uuid.uuid4())
-    db = get_db(); cur = db.cursor()
-    try:
-        cur.execute("""
-            INSERT INTO mfu_payment_request (token, event_id, user_id, amount_yen)
-            VALUES (%s, %s, %s, %s)
-        """, (token, event_id, user_id, int(amount_yen)))
-        db.commit()
-    finally:
-        try: cur.close(); db.close()
-        except Exception: pass
-    return token
-
-def _amount_from_payment_token(event_id: int, user_id: int, token: str | None) -> int | None:
-    if not token:
-        return None
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            SELECT amount_yen
-              FROM mfu_payment_request
-             WHERE token=%s AND event_id=%s AND user_id=%s
-               AND status='pending'
-             ORDER BY id DESC
-             LIMIT 1
-        """, (token, event_id, user_id))
-        row = cur.fetchone() or {}
-    finally:
-        try: cur.close(); db.close()
-        except Exception: pass
-    try:
-        return int(row.get("amount_yen")) if row.get("amount_yen") is not None else None
-    except Exception:
-        return None
 
 # ============================================================
 # users.py を踏襲した 通知系ヘルパ
@@ -463,7 +400,7 @@ def pay_start(event_uuid: str):
         flash("このイベントはあなたは『支払い不要』に設定されています。", "info")
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
-    fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
+    fee = ev.get("fee_yen") or 0
     if not fee or int(fee) <= 0:
         flash("このイベントに参加費は設定されていません。", "info")
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
@@ -527,7 +464,6 @@ def pay_start(event_uuid: str):
                 flash("このイベントではクレジットカード決済は利用できません。", "warning")
                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
             pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-            payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
             session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
                 "mfu_event_uuid": event_uuid,
@@ -538,9 +474,8 @@ def pay_start(event_uuid: str):
                 "email": me.get("email"),
                 "expected_amount_yen": int(fee) if fee else None,
                 "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
-                "payment_token": payment_token,
             }
-            dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+            dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1"
             return redirect(dest)
 
         if picked == "paypay":
@@ -567,7 +502,6 @@ def pay_start(event_uuid: str):
         return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
 
     pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-    payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
     session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
         "mfu_event_uuid": event_uuid,
@@ -578,9 +512,8 @@ def pay_start(event_uuid: str):
         "email": me.get("email"),
         "expected_amount_yen": int(fee) if fee else None,
         "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
-        "payment_token": payment_token,
     }
-    dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+    dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1"
     return redirect(dest)
 
 # ============================================================
@@ -617,19 +550,12 @@ def pay_return(event_uuid: str):
     except Exception:
         payment_row_id = None
     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
-    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
-    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
 
-    # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
+    # ①URL → ②セッション → ③イベントfee_yen（既存のまま）
     paid_amount_yen = None
     if amt_raw is not None and str(amt_raw).strip() != "":
         try:
             paid_amount_yen = int(str(amt_raw).strip())
-        except Exception:
-            paid_amount_yen = None
-    if paid_amount_yen is None:
-        try:
-            paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
         except Exception:
             paid_amount_yen = None
     if paid_amount_yen is None:
@@ -858,7 +784,7 @@ def pay_paypay(event_uuid: str):
             return render_template("pay_paypay.html", ev=ev, paypay_url=p2p_url, paypay_display=(ev.get("paypay_display") or ""))
 
         # ★ その時点の参加費を保存
-        fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
+        fee = int(ev.get("fee_yen") or 0)
 
         _ensure_payment_notice_table()
         db = get_db(); cur = db.cursor()
@@ -1019,7 +945,7 @@ def pay_bank(event_uuid: str):
 
         dest_name = (sel.get("bank_name") or sel.get("label") or "").strip()
         # ★ その時点の参加費を保存
-        fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
+        fee = int(ev.get("fee_yen") or 0)
 
         _ensure_payment_notice_table()
         db = get_db(); cur = db.cursor()
@@ -1159,7 +1085,11 @@ def lecture_pay_start(event_uuid: str):
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
     # 参加費チェック
-    fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
+    fee = ev.get("fee_yen") or 0
+    try:
+        fee = int(fee or 0)
+    except Exception:
+        fee = 0
     if fee <= 0:
         flash("この講座イベントに参加費が設定されていません。主催へお問い合わせください。", "warning")
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
@@ -1204,7 +1134,6 @@ def lecture_pay_start(event_uuid: str):
                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
             # Square へ（戻りは講座専用の return へ）
             pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-            payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
             session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
                 "mfu_event_uuid": event_uuid,
@@ -1215,9 +1144,8 @@ def lecture_pay_start(event_uuid: str):
                 "email": me.get("email"),
                 "expected_amount_yen": fee,
                 "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
-                "payment_token": payment_token,
             }
-            dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+            dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1"
             return redirect(dest)
 
         if picked == "paypay":
@@ -1247,7 +1175,6 @@ def lecture_pay_start(event_uuid: str):
 
     # ここまで来たらカードのみ → Squareへ
     pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-    payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
     session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
         "mfu_event_uuid": event_uuid,
@@ -1258,9 +1185,8 @@ def lecture_pay_start(event_uuid: str):
         "email": me.get("email"),
         "expected_amount_yen": fee,
         "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
-        "payment_token": payment_token,
     }
-    dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+    dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1"
     return redirect(dest)
 
 
@@ -1292,16 +1218,11 @@ def lecture_return(event_uuid: str):
 
     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
 
-    # ①URL → ②トークン → ③セッション → ④イベントfee_yen の順に解決
+    # ①URL → ②セッション → ③イベントfee_yen の順に解決
     paid_amount_yen = None
     if amt_raw is not None and str(amt_raw).strip() != "":
         try:
             paid_amount_yen = int(str(amt_raw).strip())
-        except Exception:
-            paid_amount_yen = None
-    if paid_amount_yen is None:
-        try:
-            paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
         except Exception:
             paid_amount_yen = None
     if paid_amount_yen is None:
