@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+
+{% block title %}バッチ設定の編集{% endblock %}
+
+{% block content %}
+<div class="container py-4" id="top">
+
+  <h2 class="mb-3">🛠 バッチ設定の編集</h2>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for cat,msg in messages %}
+        <div class="alert alert-{{ 'danger' if cat=='danger' else 'success' if cat=='success' else 'info' }}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- バッチ情報ヘッダ -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">バッチID</label>
+          <div class="form-control mono" readonly>{{ form.batch_id }}</div>
+        </div>
+        <div class="col-md-8">
+          <label class="form-label">イベント名</label>
+          <div class="form-control" readonly>{{ form.event_name }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 設定フォーム -->
+  <form method="post" class="card mb-5" autocomplete="off">
+    <input type="hidden" name="_token" value="{{ token }}"/>
+
+    <div class="card-body">
+      <div class="row g-3">
+
+        <div class="col-md-6">
+          <label class="form-label">閲覧終了日（日時）</label>
+          <input type="datetime-local" name="expires_at" class="form-control"
+                 value="{{ form.expires_at }}"
+                 placeholder="例) 2025-10-04T23:59">
+          <div class="form-text">
+            空欄の場合は無期限。保存時は <span class="mono">expires_at</span> に保存されます。
+          </div>
+        </div>
+
+        <div class="col-md-6">
+          <label class="form-label">最大DL回数</label>
+          <input type="number" name="max_downloads" class="form-control" min="0"
+                 value="{{ form.max_downloads }}">
+          <div class="form-text">0 で無制限。</div>
+        </div>
+
+        <div class="col-md-6">
+          <label class="form-label">クールダウン（秒）</label>
+          <input type="number" name="cooldown_secs" class="form-control" min="0"
+                 value="{{ form.cooldown_secs }}">
+        </div>
+
+        <div class="col-md-6">
+          <label class="form-label">ZIP枚数上限（枚）</label>
+          <input type="number" name="zip_limit_files" class="form-control" min="0"
+                 value="{{ form.zip_limit_files }}">
+          <div class="form-text">0 で制限なし。</div>
+        </div>
+
+        <div class="col-md-6">
+          <label class="form-label">ZIP容量上限（MB）</label>
+          <input type="number" name="zip_limit_mb" class="form-control" min="0"
+                 value="{{ form.zip_limit_mb }}">
+          <div class="form-text">
+            変換は <strong>1MB = 1024 × 1024 bytes</strong>（MiB）。内部保存は <span class="mono">zip_limit_bytes</span>。
+          </div>
+        </div>
+
+        <!-- ★ 利用者向けメッセージ -->
+        <div class="col-12">
+          <label class="form-label">利用者向けメッセージ（“使い方”に表示）</label>
+          <textarea name="public_usage_message" class="form-control" rows="5"
+            placeholder="例）選んだ写真をZIPで保存できます。まとめて保存は最大100枚まで。&#10;ダウンロード後はしばらく間隔を空けてください。">{{ form.public_usage_message }}</textarea>
+          <div class="form-text">
+            改行可。絵文字可。HTMLタグは使えません（自動的にエスケープし、改行は&lt;br&gt;に変換）。
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="card-footer d-flex justify-content-between">
+      <a class="btn btn-outline-secondary" href="{{ url_for('tickets.tickets_admin') }}">一覧に戻る</a>
+      <button class="btn btn-primary" type="submit">保存する</button>
+    </div>
+  </form>
+
+  <!-- 🎫 チケット使用状況 -->
+  <div id="usage" class="d-flex align-items-center justify-content-between mb-2">
+    <h4 class="mb-0">🎫 チケット使用状況（先頭500件）</h4>
+    <a class="btn btn-sm btn-outline-secondary" href="#top">▲ トップへ</a>
+  </div>
+
+  {% if not usage_supported %}
+    <div class="alert alert-warning">
+      この環境では <span class="mono">tickets.download_count / last_download_at</span> が存在しないため、
+      使用状況の詳細は表示できません（UUID一覧のみ表示）。必要なら列を追加してください。
+    </div>
+  {% endif %}
+
+  {% if tickets and tickets|length %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle table-usage">
+        <thead class="table-light">
+          <tr>
+            <th class="w-70 text-center nowrap">No.</th>
+            <!-- ★ 追加：短縮コード -->
+            <th class="nowrap">短縮コード</th>
+            <th class="nowrap">UUID</th>
+            {% if usage_supported %}
+              <th class="w-90 text-end nowrap">使用回数</th>
+              {% if form.max_downloads and form.max_downloads > 0 %}
+                <th class="w-160 nowrap">残り/進捗</th>
+              {% endif %}
+              <th class="w-140 nowrap">最終利用</th>
+              <th class="w-140 nowrap">CD解除時刻</th>
+              <th class="w-120 text-center nowrap">操作</th>
+            {% else %}
+              <th class="w-120 text-center nowrap">操作</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in tickets %}
+            <tr>
+              <td class="mono text-center">{{ t.ticket_no }}</td>
+
+              <!-- ★ 短縮コード表示（存在しない場合は '—'）/ クリックで /s/<code> を別タブ -->
+              <td class="mono">
+                {% if t.short_code %}
+                  <a href="{{ url_for('tickets.ticket_public_short', short_code=t.short_code) }}"
+                     target="_blank" rel="noopener"
+                     class="text-decoration-none">{{ t.short_code }}</a>
+                {% else %}
+                  — 
+                {% endif %}
+              </td>
+
+              <!-- UUIDは省略表示（ホバーで全量） -->
+              <td class="mono"><span class="uuid-cell" title="{{ t.uuid }}">{{ t.uuid }}</span></td>
+
+              {% if usage_supported %}
+                <td class="text-end num">{{ t.used }}</td>
+
+                {% if form.max_downloads and form.max_downloads > 0 %}
+                  <td class="num">
+                    <div class="d-flex justify-content-between small">
+                      <span>残り {{ t.remaining }}</span>
+                      <span>/ {{ form.max_downloads }}</span>
+                    </div>
+                    <div class="progress" role="progressbar" aria-label="usage progress" aria-valuemin="0" aria-valuemax="100"
+                         aria-valuenow="{{ t.progress_pct or 0 }}">
+                      <div class="progress-bar" style="width: {{ t.progress_pct or 0 }}%"></div>
+                    </div>
+                  </td>
+                {% endif %}
+
+                <td class="mono nowrap">{{ t.last_str or '—' }}</td>
+                <td class="mono nowrap">{{ t.next_at_str or '—' }}</td>
+
+                <td class="text-center">
+                  <form method="post"
+                        action="{{ url_for('tickets.tickets_ticket_reset', ticket_id=t.id) }}"
+                        onsubmit="return confirm('このチケットの使用回数を0にリセットします。よろしいですか？');">
+                    <input type="hidden" name="_token" value="{{ token }}">
+                    <button class="btn btn-sm btn-outline-warning">リセット</button>
+                  </form>
+                  {% if t.reset_count is not none and t.reset_count > 0 %}
+                    <div class="small-muted">リセット {{ t.reset_count }} 回</div>
+                  {% endif %}
+                </td>
+              {% else %}
+                <td class="text-center">
+                  <form method="post"
+                        action="{{ url_for('tickets.tickets_ticket_reset', ticket_id=t.id) }}"
+                        onsubmit="return confirm('このチケットの使用回数を0にリセットします。よろしいですか？');">
+                    <input type="hidden" name="_token" value="{{ token }}">
+                    <button class="btn btn-sm btn-outline-warning">リセット</button>
+                  </form>
+                </td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="small-muted mt-1">※ 表示は先頭500件まで。</div>
+  {% else %}
+    <div class="alert alert-info">このバッチのチケットはありません。</div>
+  {% endif %}
+
+  <div class="mt-4">
+    <a class="btn btn-link" href="{{ url_for('tickets.tickets_admin') }}">&larr; バッチ一覧へ</a>
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ ctx.event_name or '写真ダウンロード' }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
+  <style>
+    :root { --thumb-size: 120px; }
+    body { background: #f8f9fa; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .muted { opacity: .8; }
+    /* 可変メッセージ：改行そのまま、インデントはJinjaでtrim */
+    .user-msg { white-space: pre-wrap; }
+
+    /* ←上部バーは固定せず通常フロー */
+    .toolbar { background: #fff; border-bottom: 1px solid #e9ecef; }
+
+    .status-col{ flex:1 1 100%; min-width:320px; }
+    .cd-wrap, .tl-wrap { margin-top:.5rem }
+    .cd-head, .tl-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:.25rem; }
+    .cd-badge { font-weight:600; }
+    .cd-badge.on { color:#b58100; }
+    .cd-badge.off { color:#198754; }
+    .cd-progress .progress, .tl-progress .progress { height:10px; width:100%; }
+    .cd-progress .progress-bar, .tl-progress .progress-bar { transition: width .25s linear; }
+
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--thumb-size), 1fr)); gap: 12px; }
+    .gallery .item { position: relative; display: inline-block; text-align: center; }
+    img.thumb {
+      width: var(--thumb-size); height: var(--thumb-size); object-fit: cover;
+      border-radius: 8px; user-select: none; -webkit-user-drag: none; border: 2px solid transparent;
+    }
+    .file-check { position: absolute; opacity: 0; pointer-events: none; }
+    .tapbox{
+      position: absolute; top: 6px; left: 6px; width: 48px; height: 48px; border-radius: 10px;
+      background: rgba(255,255,255,.9); border: 1px solid #ddd;
+      display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700;
+      user-select: none; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,.08); -webkit-tap-highlight-color: transparent; z-index: 2;
+    }
+    .item.selected .tapbox{ background:#0d6efd; color:#fff; border-color:#0d6efd; }
+    .item.selected .thumb{ outline:3px solid #0d6efd; outline-offset:2px; }
+
+    .zip-toolbar{
+      display:flex; flex-wrap:wrap; gap:.6em; justify-content:center; align-items:center;
+      background:rgba(255,255,255,.94); -webkit-backdrop-filter:saturate(180%) blur(8px); backdrop-filter:saturate(180%) blur(8px);
+      border:1px solid #e6e6e6; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
+      padding:.6em .8em; position:fixed; left:50%; transform:translateX(-50%);
+      width:calc(min(100vw - 1.2rem, 980px)); bottom:max(8px, env(safe-area-inset-bottom)); z-index:21;
+    }
+    .zip-toolbar.hidden{ display:none !important; }
+    #zip-bottom-spacer{ height:0; }
+    .zip-toolbar .btn{ font-weight:700; }
+    .sel-count{ font-weight:700; font-size:.95rem; color:#333; background:#f0f0f0; padding:.35em .7em; border-radius:999px; }
+    .btn-busy{ opacity:.7; pointer-events:none; position:relative; }
+    .btn-busy::after{ content:""; display:inline-block; width:1em; height:1em; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; margin-left:.5em; vertical-align:-2px; animation:zipspin .7s linear infinite; }
+    @keyframes zipspin{ to{ transform:rotate(360deg); } }
+
+    #baguetteBox-overlay img {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    .sel-meter { display:flex; align-items:center; gap:.5rem; min-width: 220px; }
+    .sel-meter .progress { width: 220px; height: 8px; }
+
+    @media (pointer:coarse){
+      img.thumb{ width:140px; height:140px; }
+      .sel-meter .progress { width: 180px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 上部バー（固定なし） -->
+  <div class="toolbar py-2">
+    <div class="container-fluid">
+      <div class="d-flex flex-wrap align-items-start gap-2">
+        <div class="status-col">
+          <div class="fw-bold">{{ ctx.event_name or '写真ダウンロード' }}</div>
+          <div class="text-muted small">
+            閲覧終了日：
+            <span class="mono" id="top-exp">{{ ctx.expires_at.strftime('%Y年%-m月%-d日 %H:%M') if ctx.expires_at else '設定なし（期限なし）' }}</span>
+          </div>
+
+          <!-- クールダウン -->
+          <div id="cooldownPanel" class="cd-wrap">
+            <div class="cd-head">
+              <span id="cdState" class="cd-badge off">✅ DL可能</span>
+              <span class="mono small">残り <span id="cdRemainSec">0</span> 秒 / <span id="cdTotalSec">0</span> 秒</span>
+            </div>
+            <div class="cd-progress">
+              <div class="progress">
+                <div id="cdProgress" class="progress-bar bg-warning" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" style="width:100%"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 残りDL回数（総上限>0のとき表示） -->
+          <div id="totalPanel" class="tl-wrap" style="display:none">
+            <div class="tl-head">
+              <span class="fw-semibold">📦 残りDL回数</span>
+              <span class="mono small">残り <span id="tlRemain">—</span> / <span id="tlLimit">—</span></span>
+            </div>
+            <div class="tl-progress">
+              <div class="progress">
+                <div id="tlProgress" class="progress-bar bg-primary" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width:0%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- 上部はステータスのみ -->
+      </div>
+    </div>
+  </div>
+
+  <div class="container my-3">
+
+    <!-- 可変メッセージ（改行そのまま・余白trim） -->
+    {% if ctx.public_usage_message %}
+      <div class="alert alert-info user-msg" role="note">{{- ctx.public_usage_message | trim -}}</div>
+    {% endif %}
+
+    <div id="grid" class="gallery"></div>
+
+    <!-- 手動読み込み -->
+    <div class="text-center py-3">
+      <button id="btn-more" type="button" class="btn btn-outline-secondary btn-sm">さらに読み込む</button>
+      <div id="load-status" class="text-muted small mt-2"></div>
+    </div>
+
+    <div id="zip-bottom-spacer" aria-hidden="true"></div>
+  </div>
+
+  <div class="zip-toolbar" role="group">
+    <button id="btn-all"  type="button" class="btn btn-outline-primary btn-sm">全選択</button>
+    <button id="btn-none" type="button" class="btn btn-outline-secondary btn-sm">全解除</button>
+
+    <!-- 選択状況表示＋プログレス -->
+    <span id="sel-count" class="sel-count" aria-live="polite">選択 0 枚</span>
+    <div class="sel-meter" aria-hidden="false" aria-label="選択状況メーター">
+      <div class="progress">
+        <div id="sel-meter-bar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- ZIP -->
+    <button id="btn-zip" type="button" class="btn btn-success btn-sm" aria-describedby="zip-status" disabled>
+      選択をZIPでDL
+    </button>
+    <small class="text-muted d-none d-md-inline ms-1">※原寸写真をまとめたファイル</small>
+
+    <!-- 使い方 -->
+    <button type="button" class="btn btn-outline-dark btn-sm ms-2"
+            data-bs-toggle="modal" data-bs-target="#helpModal">使い方</button>
+
+    <span id="zip-status" class="visually-hidden" aria-live="polite"></span>
+  </div>
+
+<!-- 使い方モーダル -->
+<div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 id="helpTitle" class="modal-title">ダウンロードの使い方</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+      </div>
+
+      <div class="modal-body">
+        <!-- 上段：概要 -->
+        <div class="mb-3">
+          <table class="table table-sm align-middle mb-0">
+            <tbody>
+              <tr>
+                <th style="width:12em;">タイトル名</th>
+                <td><span id="help-title">{{ ctx.event_name or '写真ダウンロード' }}</span></td>
+              </tr>
+              <tr>
+                <th>閲覧終了日</th>
+                <td><span id="help-exp">{{ ctx.expires_at.strftime('%Y年%-m月%-d日 %H:%M') if ctx.expires_at else '設定なし（期限なし）' }}</span></td>
+              </tr>
+              <tr>
+                <th>総ダウンロード上限回数</th>
+                <td><span id="help-limit-count">判定中…</span></td>
+              </tr>
+              <tr>
+                <th>1回のダウンロード上限サイズ</th>
+                <td><span id="help-limit-size">判定中…</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 可変メッセージ -->
+        {% if ctx.public_usage_message %}
+          <div class="alert alert-primary user-msg">{{- ctx.public_usage_message | trim -}}</div>
+        {% endif %}
+
+        <!-- 中段：各ブラウザの使い方（タブ） -->
+        <ul class="nav nav-tabs" id="helpTabs" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="ios-tab" data-bs-toggle="tab" data-bs-target="#ios" type="button" role="tab">iPhone / iPad（Safari）</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="android-tab" data-bs-toggle="tab" data-bs-target="#android" type="button" role="tab">Android（Chrome）</button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button class="nav-link" id="pc-tab" data-bs-toggle="tab" data-bs-target="#pc" type="button" role="tab">PC（Windows / Mac）</button>
+          </li>
+        </ul>
+
+        <div class="tab-content pt-3">
+          <!-- iOS -->
+          <div class="tab-pane fade show active" id="ios" role="tabpanel" aria-labelledby="ios-tab">
+            <ol class="mb-3">
+              <li>写真を選んで<strong>「選択をZIPでDL」</strong>をタップ。</li>
+              <li>Safari右上の<strong>ダウンロードボタン（↓）</strong>をタップ → <span class="mono">photos.zip</span> を開く。</li>
+              <li><strong>「内容を展開」</strong>をタップ（自動で展開されることもあります）。<br>
+                  「ファイル」アプリが開き、<span class="mono">photos</span> というフォルダができます。</li>
+              <li><strong>写真アプリに保存</strong>したい場合：<br>
+                  フォルダ内で右上<strong>「…」</strong>→<strong>「すべて選択」</strong>→<strong>「共有」</strong>→<strong>「画像を保存」</strong>。<br>
+                  1枚ずつなら写真を<strong>長押し→共有→画像を保存</strong>。</li>
+            </ol>
+            <div class="small text-muted">
+              ● 保存場所が見つからないとき：<br>
+              「ファイル」アプリ → 画面下部<strong>「ブラウズ」</strong> → <strong>iCloud Drive の「ダウンロード」</strong> または
+              <strong>このiPhone内 &gt; ダウンロード</strong> にあります（Safariの設定で保存先が異なる場合があります）。<br>
+              ● ZIPはプレビュー用ではなく<strong>原寸の写真</strong>が入っています。
+            </div>
+          </div>
+
+          <!-- Android -->
+          <div class="tab-pane fade" id="android" role="tabpanel" aria-labelledby="android-tab">
+            <ol class="mb-3">
+              <li>写真を選んで<strong>「選択をZIPでDL」</strong>。</li>
+              <li>ダウンロード完了通知、またはChromeの<strong>︙→ダウンロード</strong>から <span class="mono">photos.zip</span> を開く。</li>
+              <li><strong>「展開」/「解凍」</strong>を選ぶ（Files by Google などのファイルアプリ）。</li>
+              <li>フォルダ内の写真を<strong>共有→フォト/ギャラリーに保存</strong>。</li>
+            </ol>
+          </div>
+
+          <!-- PC -->
+          <div class="tab-pane fade" id="pc" role="tabpanel" aria-labelledby="pc-tab">
+            <ol class="mb-3">
+              <li><strong>「選択をZIPでDL」</strong>で保存。</li>
+              <li><span class="mono">photos.zip</span> を<strong>ダブルクリック</strong>して展開。</li>
+              <li>できたフォルダ内に写真が入っています。</li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- 下段：ヘルプ -->
+        <hr>
+        <div class="small">
+          ダウンロードが始まらない場合： ブラウザのダウンロード許可/ブロック設定をご確認ください。<br>
+          容量オーバー： 選択枚数を減らすか、複数回に分けてDLしてください。<br>
+          クールダウン中： 上部のカウントが0になると再開できます。
+        </div>
+      </div>
+
+      <div class="modal-footer d-flex justify-content-between align-items-center">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="help-hide-next">
+          <label class="form-check-label" for="help-hide-next">次回から表示しない</label>
+        </div>
+        <button type="button" class="btn btn-light" data-bs-dismiss="modal">閉じる</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ライブラリ -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+
+<!-- メインスクリプト -->
+<script>
+(() => {
+  const uuid = "{{ ctx.uuid }}";
+  const limits = { files: {{ ctx.zip_limit_files }}, bytes: {{ ctx.zip_limit_bytes }} };
+  const NEAR_THRESHOLD = 0.80;
+
+  const grid = document.getElementById('grid');
+  const btnMore = document.getElementById('btn-more');
+  const loadStatus = document.getElementById('load-status');
+
+  const cdState = document.getElementById('cdState');
+  const cdRemainSec = document.getElementById('cdRemainSec');
+  const cdTotalSec = document.getElementById('cdTotalSec');
+  const cdProgress = document.getElementById('cdProgress');
+  let cdTicker = null, cdRemain = 0, cdTotal = 0;
+
+  const totalPanel = document.getElementById('totalPanel');
+  const tlRemain = document.getElementById('tlRemain');
+  const tlLimit = document.getElementById('tlLimit');
+  const tlProgress = document.getElementById('tlProgress');
+  let totalLimit = 0, remainTotal = null;
+
+  const $$ = (s, c=document) => Array.from(c.querySelectorAll(s));
+  const countEl = document.getElementById('sel-count');
+  const meterBar = document.getElementById('sel-meter-bar');
+  const btnAll  = document.getElementById('btn-all');
+  const btnNone = document.getElementById('btn-none');
+  const btnZip  = document.getElementById('btn-zip');
+
+  let page = 1, size = 60, loading = false, done = false;
+  let seq = 0, lbInited = false;
+
+  function fmtBytes(n){
+    const kb = 1024, mb = kb*1024, gb = mb*1024;
+    if (n >= gb) return (n/gb).toFixed(1) + 'GB';
+    if (n >= mb) return (n/mb).toFixed(1) + 'MB';
+    if (n >= kb) return (n/kb).toFixed(1) + 'KB';
+    return n + 'B';
+  }
+
+  function updateHelpLimitsDisplay(totalCountLimit, bytesLimit){
+    const elCount = document.getElementById('help-limit-count');
+    const elSize  = document.getElementById('help-limit-size');
+    if (elCount) elCount.textContent = (totalCountLimit > 0) ? `${totalCountLimit} 回` : '制限なし';
+    if (elSize)  elSize.textContent  = (bytesLimit > 0) ? fmtBytes(bytesLimit) : '制限なし';
+  }
+
+  function currentSelection(){
+    const sel = $$('.file-check').filter(c=>c.checked);
+    const files = sel.map(c=>c.dataset.filename);
+    const bytes = sel.reduce((a,c)=>a+Number(c.dataset.size||0),0);
+    return {count: sel.length, files, bytes};
+  }
+
+  function setMeter(ratioPct, cls){
+    meterBar.style.width = Math.max(0, Math.min(100, ratioPct)) + '%';
+    meterBar.setAttribute('aria-valuenow', Math.round(Math.max(0, Math.min(100, ratioPct))));
+    meterBar.classList.remove('bg-primary','bg-warning','bg-danger');
+    meterBar.classList.add(cls);
+  }
+
+  function updateSelectionUI(){
+    const {count, bytes} = currentSelection();
+
+    const countLimit = Number(limits.files) || 0;
+    const bytesLimit = Number(limits.bytes) || 0;
+
+    const overCount = (countLimit > 0 && count > countLimit);
+    const overBytes = (bytesLimit > 0 && bytes > bytesLimit);  // ← typo修正
+    const out = overCount || overBytes;
+
+    let mode = 'count';
+    if (out) {
+      const countRatio = (countLimit > 0) ? (count / countLimit) : 0;
+      const bytesRatio = (bytesLimit > 0) ? (bytes / bytesLimit) : 0;
+      if (overBytes && (!overCount || bytesRatio >= countRatio)) mode = 'bytes';
+      else mode = 'count';
+    } else {
+      const nearBytes = (bytesLimit > 0) && ((bytes / bytesLimit) >= NEAR_THRESHOLD);
+      if ((countLimit <= 0 && bytesLimit > 0) || nearBytes) mode = 'bytes';
+      else mode = 'count';
+    }
+
+    if (mode === 'bytes' && bytesLimit > 0) {
+      countEl.textContent = out
+        ? `容量 ${fmtBytes(bytes)} / ${fmtBytes(bytesLimit)}（超過）`
+        : `容量 ${fmtBytes(bytes)} / ${fmtBytes(bytesLimit)}`;
+      const pct = Math.min(100, Math.round(bytes * 100 / bytesLimit));
+      setMeter(pct, out ? 'bg-danger' : 'bg-warning');
+    } else {
+      if (countLimit > 0) {
+        countEl.textContent = out
+          ? `選択 ${count} / ${countLimit} 枚（超過）`
+          : `選択 ${count} / ${countLimit} 枚`;
+        const pct = Math.min(100, Math.round(count * 100 / countLimit));
+        setMeter(pct, out ? 'bg-danger' : 'bg-primary');
+      } else {
+        countEl.textContent = `選択 ${count} 枚`;
+        setMeter(0, 'bg-primary');
+      }
+    }
+
+    const noRemain = (totalLimit > 0 && (remainTotal ?? 1) <= 0);
+    btnZip.disabled = (count===0) || overCount || overBytes || (cdRemain > 0) || noRemain;
+  }
+
+  function addCard(it){
+    const wrap = document.createElement('div');
+    wrap.className = 'item';
+
+    const chkId = `chk-${seq++}`;
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.id = chkId;
+    chk.className = 'file-check';
+    chk.dataset.filename = it.filename;
+    chk.dataset.size = it.size_bytes || 0;
+    wrap.appendChild(chk);
+
+    const tap = document.createElement('label');
+    tap.className = 'tapbox';
+    tap.setAttribute('for', chkId);
+    tap.textContent = '✓';
+    wrap.appendChild(tap);
+
+    const a = document.createElement('a');
+    a.className = 'preview';
+    a.href = it.view_url;
+    a.setAttribute('data-caption', it.filename);
+
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.src = it.thumb_url;
+    img.alt = it.filename;
+    img.className = 'thumb';
+
+    a.appendChild(img);
+    wrap.appendChild(a);
+
+    chk.addEventListener('change', ()=>{
+      wrap.classList.toggle('selected', chk.checked);
+      updateSelectionUI();
+    });
+
+    grid.appendChild(wrap);
+  }
+
+  function bindLightbox(){
+    if (!lbInited) { baguetteBox.run('#grid', { animation:'fadeIn', noScrollbars:true }); lbInited = true; }
+    else { baguetteBox.run('#grid', { animation:'fadeIn', noScrollbars:true }); }
+  }
+
+  // プレビューは常にオーバーレイ表示
+  document.addEventListener('click', (e)=>{
+    const link = e.target.closest('#grid a.preview');
+    if (!link) return;
+    e.preventDefault();
+    const anchors = Array.from(document.querySelectorAll('#grid a.preview'));
+    const idx = anchors.indexOf(link);
+    if (typeof baguetteBox?.show === 'function' && idx >= 0) baguetteBox.show(idx, '#grid');
+  }, true);
+
+  // Lightbox内の保存系操作抑止
+  document.addEventListener('contextmenu', (e)=>{
+    const ov = document.getElementById('baguetteBox-overlay');
+    if (ov && ov.contains(e.target)) e.preventDefault();
+  });
+  document.addEventListener('dragstart', (e)=>{
+    const ov = document.getElementById('baguetteBox-overlay');
+    if (ov && ov.contains(e.target)) e.preventDefault();
+  });
+  document.addEventListener('keydown', (e)=>{
+    if ((e.ctrlKey || e.metaKey) && ['s','p'].includes(e.key.toLowerCase())) {
+      e.preventDefault(); e.stopPropagation();
+    }
+  });
+
+  function triggerDownload(url){
+    if (!url) return;
+    const ua = navigator.userAgent;
+    const isIOS = /iP(hone|ad|od)/.test(ua);
+    const isSafari = /Safari/i.test(ua) && !/Chrome|CriOS|FxiOS|OPiOS|EdgiOS/i.test(ua);
+    if (isIOS && isSafari) { window.location.assign(url); return; }
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+
+  async function requestZipAndDownload(files){
+    const res = await fetch(`/tickets/api/zip/${uuid}`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+      body: JSON.stringify({ files })
+    });
+    let js = {}; try { js = await res.json(); } catch (_) {}
+    if (!res.ok || !js.ok) throw new Error(js.message || js.error || `ZIP作成に失敗しました（HTTP ${res.status}）`);
+    const url = js.zip_url || js.url || js.href || js.zip_path;
+    if (!url) throw new Error('ZIPのURLが返却されませんでした');
+    triggerDownload(url);
+  }
+
+  async function loadMore(){
+    if (loading || done) return;
+    loading = true; btnMore.disabled = true; loadStatus.textContent = '読み込み中…';
+    try{
+      const r = await fetch(`/tickets/api/files/${uuid}?page=${page}&size=${size}`, { credentials: 'same-origin' });
+      const js = await r.json();
+      if (!js.ok) throw new Error(js.message || '読み込み失敗');
+      if (js.items.length === 0) { done = true; btnMore.style.display = 'none'; loadStatus.textContent = '以上です'; return; }
+      js.items.forEach(addCard); bindLightbox(); page++; loadStatus.textContent = '';
+    }catch(e){ loadStatus.textContent = '読み込みエラー'; console.error(e);
+    }finally{ loading = false; if (!done) btnMore.disabled = false; updateSelectionUI(); }
+  }
+
+  btnMore.addEventListener('click', loadMore);
+
+  btnZip.addEventListener('click', async ()=>{
+    const sel = currentSelection();
+    if (sel.count===0 || cdRemain>0 || (totalLimit>0 && (remainTotal??1)<=0)) return;
+    btnZip.classList.add('btn-busy'); btnZip.disabled = true;
+    try{ await requestZipAndDownload(sel.files); setTimeout(refreshStatus, 1500);
+    }catch(e){ alert('エラー: ' + (''+e.message)); console.error(e);
+    }finally{ btnZip.classList.remove('btn-busy'); btnZip.disabled = false; updateSelectionUI(); }
+  });
+
+  btnAll.addEventListener('click', ()=>{ $$('.file-check').forEach(c=>{ c.checked=true; c.dispatchEvent(new Event('change',{bubbles:true})); }); });
+  btnNone.addEventListener('click', ()=>{ $$('.file-check').forEach(c=>{ c.checked=false; c.dispatchEvent(new Event('change',{bubbles:true})); }); });
+  document.addEventListener('click', (e)=>{
+    const tb = e.target.closest('.tapbox'); if(!tb) return;
+    e.preventDefault(); e.stopPropagation();
+    const forId = tb.getAttribute('for'); const chk = document.getElementById(forId);
+    if (chk) { chk.checked = !chk.checked; chk.dispatchEvent(new Event('change', {bubbles:true})); }
+  });
+
+  function stopCooldownTicker(){ if (cdTicker) { clearInterval(cdTicker); cdTicker = null; } }
+  function showCooldown(remain, total){
+    cdRemain = Math.max(0, remain|0); cdTotal = Math.max(0, total|0);
+    cdTotalSec.textContent = cdTotal; cdRemainSec.textContent = cdRemain;
+    const pct = (cdTotal > 0) ? (cdRemain > 0 ? Math.min(100, Math.floor(cdRemain * 100 / cdTotal)) : 100) : 100;
+    cdProgress.style.width = pct + '%'; cdProgress.setAttribute('aria-valuenow', pct);
+    if (cdRemain > 0) { cdState.textContent = '⏳ クールダウン中'; cdState.classList.remove('off'); cdState.classList.add('on'); }
+    else { cdState.textContent = '✅ DL可能'; cdState.classList.remove('on'); cdState.classList.add('off'); }
+  }
+  function startCooldownTicker(remain, total){
+    stopCooldownTicker(); showCooldown(remain, total);
+    if (cdRemain > 0 && cdTotal > 0) {
+      cdTicker = setInterval(()=>{
+        cdRemain -= 1;
+        if (cdRemain <= 0) { stopCooldownTicker(); showCooldown(0, cdTotal); refreshStatus(); }
+        else { showCooldown(cdRemain, cdTotal); }
+        updateSelectionUI();
+      }, 1000);
+    } else { updateSelectionUI(); }
+  }
+
+  function renderTotalLimit(limit, remain){
+    totalLimit = limit|0; remainTotal = (remain==null ? null : Math.max(0, remain|0));
+    if (totalLimit > 0) {
+      totalPanel.style.display = '';
+      tlLimit.textContent = totalLimit; tlRemain.textContent = (remainTotal ?? '—');
+      const pct = (remainTotal!=null) ? Math.min(100, Math.floor(remainTotal * 100 / totalLimit)) : 0;
+      tlProgress.style.width = pct + '%'; tlProgress.setAttribute('aria-valuenow', pct);
+    } else { totalPanel.style.display = 'none'; }
+    updateSelectionUI();
+  }
+
+  async function refreshStatus(){
+    try{
+      const r = await fetch(`/tickets/api/status/${uuid}`, { credentials: 'same-origin' });
+      const js = await r.json();
+      if (!js.ok) return;
+
+      startCooldownTicker(js.usage?.cooldown_remain_secs ?? 0, Math.max(0, js.limits?.cooldown_secs ?? 0));
+
+      const lim = js.limits?.total_limit ?? 0;
+      const rem = (lim > 0) ? (js.usage?.remain_total ?? null) : null;
+      renderTotalLimit(lim, rem);
+
+      updateHelpLimitsDisplay(lim, Number(limits.bytes) || 0);
+    }catch(e){
+      startCooldownTicker(0, 0);
+      renderTotalLimit(0, null);
+      updateHelpLimitsDisplay(0, Number(limits.bytes) || 0);
+      console.error(e);
+    }
+  }
+
+  function setupBottomSpacer(){
+    const bottomBar=document.querySelector('.zip-toolbar'); const bottomSp=document.getElementById('zip-bottom-spacer');
+    if(!bottomBar||!bottomSp) return; bottomSp.style.height=(bottomBar.offsetHeight+12)+'px';
+  }
+  function setupToolbarVisibilityWithLightbox(){
+    const bar=document.querySelector('.zip-toolbar'); if(!bar) return;
+    const hide=()=>bar.classList.add('hidden'); const show=()=>{ bar.classList.remove('hidden'); setupBottomSpacer(); };
+    document.addEventListener('click', (e)=>{ if(e.target.closest('#grid a.preview')) hide(); });
+    const tryAttach=()=>{ const ov=document.getElementById('baguetteBox-overlay'); if(!ov) return false;
+      const toggle=()=>{ const vis=ov.classList.contains('visible') && ov.style.display!=='none'; if(vis) hide(); else show(); };
+      toggle(); new MutationObserver(toggle).observe(ov,{ attributes:true, attributeFilter:['class','style'] }); return true; };
+    if(!tryAttach()){ const mo=new MutationObserver(()=>{ if(tryAttach()) mo.disconnect(); }); mo.observe(document.body,{ childList:true, subtree:true }); }
+  }
+
+  function init(){
+    baguetteBox.run('#grid',{ animation:'fadeIn', noScrollbars:true });
+    setupBottomSpacer(); setupToolbarVisibilityWithLightbox();
+    window.addEventListener('resize', setupBottomSpacer); window.addEventListener('orientationchange', setupBottomSpacer);
+
+    updateHelpLimitsDisplay(0, Number(limits.bytes) || 0);
+    refreshStatus();
+    loadMore();
+    updateSelectionUI();
+  }
+  init();
+})();
+</script>
+
+<!-- 使い方モーダル：初回自動表示＆「次回から表示しない」（UUID単位） -->
+<script>
+  (() => {
+    const ua = navigator.userAgent;
+    const target = /iPhone|iPad|iPod/i.test(ua) ? '#ios' : (/Android/i.test(ua) ? '#android' : '#pc');
+
+    const helpModalEl = document.getElementById('helpModal');
+    const helpModal   = new bootstrap.Modal(helpModalEl);
+    const chkHide     = document.getElementById('help-hide-next');
+
+    helpModalEl.addEventListener('shown.bs.modal', () => {
+      const btn = document.querySelector(`#helpTabs [data-bs-target="${target}"]`);
+      if (btn) new bootstrap.Tab(btn).show();
+    });
+
+    const key = `mfu.ticket.help.hide.${encodeURIComponent('{{ ctx.uuid }}')}`;
+    try {
+      const hide = localStorage.getItem(key) === '1';
+      if (!hide) helpModal.show();
+    } catch (e) {}
+
+    helpModalEl.addEventListener('hidden.bs.modal', () => {
+      try {
+        if (chkHide.checked) localStorage.setItem(key, '1');
+        else localStorage.removeItem(key);
+      } catch (e) {}
+    });
+    chkHide?.addEventListener('change', (e)=>{
+      try {
+        if (!e.target.checked) localStorage.removeItem(key);
+      } catch (e) {}
+    });
+  })();
+</script>
+
+</body>
+</html>

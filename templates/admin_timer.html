@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>タイマー設定</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    fieldset { border: 1px solid #ccc; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; }
+    legend { font-weight: 700; }
+    label { display:block; margin: .4rem 0 .2rem; }
+    input, select, button { padding: .5rem .6rem; font-size: 1rem; }
+    .row { display:flex; gap:1rem; flex-wrap: wrap; align-items: center; }
+    .row > * { flex: 1 1 220px; }
+    .hint { color:#555; font-size:.9rem; }
+    .ok { color: #0a7; }
+    .err { color: #c00; }
+    .muted { color:#777; font-size:.9rem; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
+  </style>
+</head>
+<body>
+  <h1>タイマー設定（チャイム＋VOICEVOX）</h1>
+
+  <fieldset>
+    <legend>モード</legend>
+    <div class="grid">
+      <label><input type="radio" name="mode" value="chime_vv"> 指定チャイム + VOICEVOX</label>
+      <label><input type="radio" name="mode" value="vv_only"> VOICEVOXだけ</label>
+      <label><input type="radio" name="mode" value="chime_only"> 指定チャイムだけ</label>
+    </div>
+    <p class="hint">VOICEVOXの接続先は <code>VOICEVOX_URL</code>（既定: <code>http://127.0.0.1:50021</code>）。</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>指定チャイム</legend>
+    <div class="row">
+      <div>
+        <label>ファイル</label>
+        <select id="chime_path"></select>
+      </div>
+      <div>
+        <label>回数（1〜20）</label>
+        <input id="chime_repeat" type="number" value="3" min="1" max="20"/>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>VOICEVOX</legend>
+    <div class="row">
+      <div>
+        <label>話者ID</label>
+        <input id="speaker_id" type="number" value="108" min="0" step="1"/>
+        <div class="muted">下の一覧から選ぶと自動反映</div>
+      </div>
+      <div>
+        <label>話者一覧（名前で選択）</label>
+        <select id="speaker_select"><option value="">取得中…</option></select>
+      </div>
+      <div>
+        <label>回数（1〜20）</label>
+        <input id="tts_repeat" type="number" value="3" min="1" max="20"/>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>テスト発声</legend>
+    <div class="row">
+      <input id="test_text" type="text" placeholder="テストです。"/>
+      <button id="test_speak">テスト実行</button>
+      <span class="muted">※ 入力テキストを読み上げ、モードどおりに出力します（テスト時は各回数最大5）。</span>
+    </div>
+  </fieldset>
+
+  <div class="row">
+    <button id="save">保存</button>
+    <span id="status"></span>
+  </div>
+
+  <script>
+    const $ = sel => document.querySelector(sel);
+    const $$ = sel => Array.from(document.querySelectorAll(sel));
+    function clampInt(v, lo, hi, fb){ const n = parseInt(v,10); return Number.isNaN(n)? fb : Math.min(hi, Math.max(lo, n)); }
+    function setStatus(msg, ok=true){ const el = $('#status'); el.textContent = msg; el.className = ok?'ok':'err'; if(ok) setTimeout(()=>{el.textContent=''; el.className='';},1500); }
+
+    async function loadSpeakers(currentId){
+      try{
+        const res = await fetch('/api/timer/voicevox/speakers');
+        const arr = await res.json();
+        const sel = $('#speaker_select');
+        sel.innerHTML = '';
+        if(!Array.isArray(arr) || arr.length===0){
+          sel.innerHTML = '<option value="">（取得不可）</option>';
+          return;
+        }
+        const flat=[];
+        arr.forEach(sp=> (sp.styles||[]).forEach(st=> flat.push({id:st.id,label:`${sp.name}／${st.name}（id:${st.id}）`})));
+        flat.sort((a,b)=>a.id-b.id).forEach(x=>{
+          const o=document.createElement('option'); o.value=x.id; o.textContent=x.label; sel.appendChild(o);
+        });
+        if(currentId!=null){
+          const m=[...sel.options].find(o=>parseInt(o.value,10)===parseInt(currentId,10));
+          if(m) sel.value=String(currentId);
+        }
+      }catch(e){
+        $('#speaker_select').innerHTML = '<option value="">（取得エラー）</option>';
+      }
+    }
+
+    async function loadSounds(){
+      try{
+        const res = await fetch('/api/timer/available-sounds');
+        const obj = await res.json();
+        const ap = $('#chime_path');
+        ap.innerHTML='';
+        (obj.sounds||[]).forEach(p => { const o=document.createElement('option'); o.value=p; o.textContent=p; ap.appendChild(o); });
+      }catch(e){
+        $('#chime_path').innerHTML='<option value="">（取得エラー）</option>';
+      }
+    }
+
+    function currentMode(){
+      const r = $$('input[name="mode"]');
+      const f = r.find(x=>x.checked);
+      return f ? f.value : 'chime_vv';
+    }
+    function setMode(v){
+      const r = $$('input[name="mode"]');
+      (r.find(x=>x.value===v) || r[0]).checked = true;
+      onModeChange();
+    }
+    function onModeChange(){
+      const m = currentMode();
+      const vv = (m!=="chime_only");
+      const ch = (m!=="vv_only");
+      $('#speaker_id').disabled = !vv;
+      $('#speaker_select').disabled = !vv;
+      $('#tts_repeat').disabled = !vv;
+      $('#chime_path').disabled = !ch;
+      $('#chime_repeat').disabled = !ch;
+    }
+    $$('input[name="mode"]').forEach(el=> el.addEventListener('change', onModeChange));
+    $('#speaker_select').addEventListener('change', e=>{
+      const v = parseInt(e.target.value,10);
+      if(!Number.isNaN(v)) $('#speaker_id').value = v;
+    });
+
+    async function loadSettings(){
+      const st = await fetch('/api/timer/settings').then(r=>r.json());
+      await Promise.all([loadSounds(), loadSpeakers(st.speaker_id ?? 108)]);
+
+      // 互換: sound_mode しか無い場合の推定
+      const fallbackMode = (st.sound_mode==='wav') ? 'chime_only' : 'vv_only';
+      setMode(st.mode || fallbackMode);
+
+      $('#speaker_id').value = st.speaker_id ?? 108;
+      $('#tts_repeat').value = st.tts_repeat ?? st.repeat ?? 3;
+
+      if(st.chime_path || st.alarm_path){
+        const cp = st.chime_path || st.alarm_path;
+        const ap = $('#chime_path');
+        const found = [...ap.options].some(o=>o.value===cp);
+        if(!found){ const o=document.createElement('option'); o.value=cp; o.textContent=cp+'（存在しない可能性）'; ap.appendChild(o); }
+        ap.value = cp;
+      }
+      $('#chime_repeat').value = st.chime_repeat ?? st.repeat ?? 3;
+
+      onModeChange();
+    }
+
+    $('#save').addEventListener('click', async ()=>{
+      const mode = currentMode();
+      const speaker_id = clampInt($('#speaker_id').value, 0, 10000, 108);
+      const tts_repeat = clampInt($('#tts_repeat').value, 1, 20, 3);
+      const chime_path = $('#chime_path').value;
+      const chime_repeat = clampInt($('#chime_repeat').value, 1, 20, 3);
+
+      // 互換キーも同梱しておく（旧実装が読んでも破綻しない）
+      const compat = {
+        sound_mode: (mode==='chime_only') ? 'wav' : 'voicevox',
+        alarm_path: chime_path,
+        repeat: Math.max(tts_repeat, chime_repeat),
+      };
+
+      const payload = { mode, speaker_id, tts_repeat, chime_path, chime_repeat, ...compat };
+
+      try{
+        const res = await fetch('/api/timer/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        await res.json();
+        setStatus('保存しました', true);
+      }catch(e){ setStatus('保存に失敗しました', false); }
+    });
+
+    // ★ 修正点：テストは /api/timer/preview を叩く（組み合わせ再生に対応）
+    $('#test_speak').addEventListener('click', async ()=>{
+      const payload = {
+        mode: currentMode(),
+        text: ($('#test_text').value || 'テストです。'),
+        speaker_id: clampInt($('#speaker_id').value, 0, 10000, 108),
+        tts_repeat: clampInt($('#tts_repeat').value, 1, 5, 1),     // テストは最大5
+        chime_path: $('#chime_path').value,
+        chime_repeat: clampInt($('#chime_repeat').value, 1, 5, 1), // テストは最大5
+      };
+      try{
+        const res = await fetch('/api/timer/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        const data = await res.json();
+        if(data && data.ok) setStatus('テスト発声しました', true);
+        else setStatus('テスト発声に失敗しました', false);
+      }catch(e){ setStatus('テスト発声に失敗しました', false); }
+    });
+
+    loadSettings();
+  </script>
+</body>
+</html>

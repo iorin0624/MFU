@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>短縮コード入力 | MFU</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .num  { font-variant-numeric: tabular-nums; }
+    .card { max-width: 560px; margin: 6vh auto; }
+    .token-sep { opacity:.5; padding-top:2.45rem; }
+  </style>
+</head>
+<body class="bg-light">
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title mb-3">短縮コードで開く</h5>
+      <p class="text-muted small mb-4">
+        受け取った短縮コード（例 <span class="mono">12-3f9a1b2c</span>）を入力してください。<br>
+        <span class="mono">/t/&lt;uuid&gt;</span> のURLが分かる場合は、直接アクセスしても構いません。
+      </p>
+
+      {% if error %}
+        <div class="alert alert-danger py-2">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="{{ url_for('tickets.ticket_short_resolve') }}" class="needs-validation" novalidate>
+        <div class="row g-2 align-items-end">
+          <div class="col-5">
+            <label class="form-label">最初の2桁</label>
+            <input type="text"
+                   name="batch_id"
+                   inputmode="numeric"
+                   pattern="^[0-9]+$"
+                   class="form-control num"
+                   placeholder="例: 12"
+                   required
+                   value="{{ last_batch or '' }}">
+            <div class="invalid-feedback">数字で入力してください。</div>
+          </div>
+
+          <div class="col-1 token-sep text-center">-</div>
+
+          <div class="col-6">
+            <label class="form-label">最後の8桁</label>
+            <input type="text"
+                   name="token8"
+                   inputmode="latin"
+                   pattern="^[0-9a-f]{8}$"
+                   class="form-control mono"
+                   placeholder="例: 3f9a1b2c"
+                   required
+                   value="{{ last_token or '' }}">
+            <div class="invalid-feedback">8桁の16進（小文字）で入力してください。</div>
+          </div>
+        </div>
+
+        <div class="d-flex justify-content-end mt-4">
+          <button class="btn btn-primary" type="submit">開く</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+  // Bootstrap 5 フォーム検証 + 小文字化補助
+  (function(){
+    const form = document.querySelector('form.needs-validation');
+    const token = form.querySelector('input[name="token8"]');
+    token.addEventListener('input', () => { token.value = token.value.toLowerCase(); });
+
+    form.addEventListener('submit', (e) => {
+      if (!form.checkValidity()) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      form.classList.add('was-validated');
+    });
+  })();
+  </script>
+</body>
+</html>
