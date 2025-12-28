@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ ev.title }} - ご案内</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root{ --brand:#2563eb; }
+    .flow li{ border-left:4px solid #e5e7eb; padding-left:.75rem; }
+    .flow li strong{ color:#111827; }
+  </style>
+</head>
+<body class="container py-4" style="max-width:900px;">
+  <h1 class="h4 mb-3">{{ ev.title }}</h1>
+
+  <div class="alert alert-info">
+    このイベントは <strong>【講座】</strong> です。<br>
+    参加申請の前に、まずお支払いをお願いします（支払い不要の方はこのままお待ちください）。
+  </div>
+
+  <ol class="flow list-unstyled mb-4">
+    <li class="mb-2"><span class="badge text-bg-secondary me-2">1</span>ご案内（このページ）</li>
+    <li class="mb-2"><span class="badge text-bg-secondary me-2">2</span><strong>お支払い</strong></li>
+    <li class="mb-2"><span class="badge text-bg-secondary me-2">3</span>参加申請（役割/衣装の入力）</li>
+    <li class="mb-2"><span class="badge text-bg-secondary me-2">4</span>自動承認（招待リンク経由の方）または主催の承認</li>
+  </ol>
+
+  <a class="btn btn-primary btn-lg w-100" href="{{ pay_url }}">お支払いに進む</a>
+
+  <p class="text-muted mt-3 mb-0">
+    支払い完了後、もう一度この「参加申請」へ進めます。<br>
+    招待リンク（自動承認）でお越しの方は、リンク情報を保持してあります。支払い後の申請で自動承認されます。
+  </p>
+</body>
+</html>

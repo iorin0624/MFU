@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>子アルバム一覧</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .child-actions{ gap:.5rem; }
+    .badge-mode{ font-weight:700; }
+    .badge-normal{ background:#e9f7ef; color:#0f5132; }
+    .badge-movie{ background:#e7f1ff; color:#084298; }
+    .badge-process{ background:#fff3cd; color:#664d03; }
+  </style>
+</head>
+<body class="container py-4">
+
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h2 class="mb-0">📂 {{ meta.album_name }}</h2>
+  </div>
+
+  {% if is_admin %}
+    <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
+  {% elif is_owner %}
+    <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+  {% endif %}
+
+  {# ★HDD保管中（読み取り専用）向けの注意喚起。is_readonly はビュー側で True を渡す #}
+  {% if is_readonly %}
+    <div class="alert alert-warning text-center mb-3">
+      このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、子アルバムの新規作成はできません。
+    </div>
+  {% endif %}
+
+  {# ★HDD保管時は作成UIを非表示 #}
+  {% if not is_readonly %}
+  <!-- 作成フォーム表示トグルボタン -->
+  <div class="mb-3">
+    <button id="toggleCreateFormBtn"
+            class="btn btn-success w-100"
+            type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="#createChildCollapse"
+            aria-expanded="false"
+            aria-controls="createChildCollapse">
+      ＋ 子アルバムを作成
+    </button>
+  </div>
+
+  <!-- 子アルバム作成フォーム（初期は非表示） -->
+  <div id="createChildCollapse" class="collapse mb-4">
+    <form id="createChildForm" method="post" action="{{ url_for('album.create_child', album_id=album_id) }}">
+      <!-- タイトル -->
+      <div class="mb-3">
+        <label for="childName" class="form-label">新しい子アルバム名</label>
+        <input id="childName" type="text" name="child_name" class="form-control" placeholder="例：七五三_原版" required>
+      </div>
+
+      <!-- モード選択 -->
+      <div class="mb-2">
+        <label class="form-label">モード</label>
+        <div class="btn-group w-100" role="group" aria-label="child mode">
+          <input type="radio" class="btn-check" name="child_mode" id="modePhoto" value="normal" checked>
+          <label class="btn btn-outline-success" for="modePhoto">📸 写真</label>
+
+          <input type="radio" class="btn-check" name="child_mode" id="modeMovie" value="movie">
+          <label class="btn btn-outline-primary" for="modeMovie">🎬 動画</label>
+
+          <input type="radio" class="btn-check" name="child_mode" id="modeProcess" value="process">
+          <label class="btn btn-outline-warning" for="modeProcess">🛠️ 加工回し</label>
+        </div>
+        <div id="modeHelp" class="form-text mt-1"></div>
+      </div>
+
+      <!-- 作成ボタン -->
+      <div class="mt-3">
+        <button id="createChildBtn" class="btn btn-success w-100" type="submit">＋ 子アルバムを作成</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
+  <!-- 凡例 -->
+  <div class="mb-2">
+    <span class="badge badge-mode badge-normal">📸 写真</span>
+    <span class="badge badge-mode badge-movie">🎬 動画</span>
+    <span class="badge badge-mode badge-process">🛠️ 加工回し</span>
+  </div>
+
+  <!-- 子アルバム一覧 -->
+  <div class="list-group">
+    {% for child in meta.children %}
+      {% set badge_class = 'badge-normal' if child.mode == 'normal' else ('badge-process' if child.mode == 'process' else 'badge-movie') %}
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-center flex-wrap">
+          <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child.folder) }}"
+             class="btn btn-outline-primary flex-grow-1 me-3 text-start">
+            {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
+            &nbsp;{{ child.name }}
+          </a>
+
+          <span class="badge badge-mode {{ badge_class }} me-3">
+            {% if child.mode == 'process' %}加工回し{% elif child.mode == 'movie' %}動画{% else %}写真{% endif %}
+          </span>
+
+          {% if is_admin or is_owner %}
+          <div class="d-flex align-items-center child-actions">
+            <!-- ✏️ 名前変更 -->
+            <form id="rename-child-form-{{ child.folder }}"
+                  method="post"
+                  action="{{ url_for('album.rename_child', album_id=album_id, child_id=child.folder) }}"
+                  class="d-none">
+              <input type="hidden" name="child_name" value="{{ child.name }}">
+            </form>
+            <button type="button" class="btn btn-sm btn-outline-primary"
+              onclick="
+                (function(){
+                  var current='{{ child.name|e }}';
+                  var next = prompt('新しい子アルバム名を入力してください', current);
+                  if (next === null) return;
+                  next = next.trim();
+                  if (!next) { alert('子アルバム名は必須です'); return; }
+                  var f = document.getElementById('rename-child-form-{{ child.folder }}');
+                  f.querySelector('input[name=child_name]').value = next;
+                  f.submit();
+                })();
+              ">
+              ✏️ 名前変更
+            </button>
+
+            <!-- 🗑️ 削除 -->
+            <form method="post"
+                  action="{{ url_for('album.delete_child', album_id=album_id, child_id=child.folder) }}"
+                  onsubmit="return confirm('本当にこの子アルバムを削除しますか？');">
+              <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    {% else %}
+      <div class="text-muted">まだ子アルバムが作成されていません。</div>
+    {% endfor %}
+  </div>
+
+  <!-- Bootstrap JS（Collapseに必要） -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    // 「加工回し」選択時だけ注意文を表示
+    (function(){
+      const help = document.getElementById('modeHelp');
+      const radios = document.querySelectorAll('input[name="child_mode"]');
+      const update = () => {
+        const v = document.querySelector('input[name="child_mode"]:checked')?.value;
+        if (v === 'process') {
+          help.innerHTML = '※加工回しする用のモードです。このモードはアップロードが<strong>１枚制限</strong>となります。';
+        } else {
+          help.textContent = '';
+        }
+      };
+      radios.forEach(r => r.addEventListener('change', update));
+      update();
+    })();
+
+    // ===== 作成ボタン以外では送信させない（Enter対策 + IME確定Enter無視）＋確認ダイアログ =====
+    (function(){
+      const form = document.getElementById('createChildForm');
+      if (!form) return; // 権限なし/読み取り専用でフォーム自体が無い場合
+
+      const input = document.getElementById('childName');
+      const createBtn = document.getElementById('createChildBtn');
+
+      let createRequested = false;
+      createBtn?.addEventListener('click', () => { createRequested = true; });
+
+      form.addEventListener('submit', (e) => {
+        // 作成ボタン以外からの submit は弾く
+        if (!createRequested) {
+          e.preventDefault();
+          return;
+        }
+
+        // タイトルとモードを拾って確認ダイアログを表示
+        const title = (input?.value || '').trim() || '(無題)';
+        const modeVal = form.querySelector('input[name="child_mode"]:checked')?.value;
+        let modeLabel = '写真';
+        if (modeVal === 'movie') {
+          modeLabel = '動画';
+        } else if (modeVal === 'process') {
+          modeLabel = '加工回し';
+        }
+
+        const msg = `タイトル：${title}\nモード：${modeLabel}\n\nにて作成しますか？`;
+        if (!window.confirm(msg)) {
+          e.preventDefault();
+          createRequested = false;
+          return;
+        }
+
+        // 確認OKならフラグをリセットしてそのまま送信
+        createRequested = false;
+      });
+
+      form.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) e.preventDefault();
+      });
+      input?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.isComposing) e.preventDefault();
+      });
+    })();
+
+    // ===== Collapse開閉に合わせてボタン文言を切り替え／フォーカス移動 =====
+    (function(){
+      const collapseEl = document.getElementById('createChildCollapse');
+      const btn = document.getElementById('toggleCreateFormBtn');
+      if (!collapseEl || !btn) return;
+
+      const collapse = new bootstrap.Collapse(collapseEl, { toggle: false });
+
+      collapseEl.addEventListener('show.bs.collapse', () => {
+        btn.textContent = '－ 作成フォームを閉じる';
+      });
+      collapseEl.addEventListener('shown.bs.collapse', () => {
+        document.getElementById('childName')?.focus();
+      });
+      collapseEl.addEventListener('hide.bs.collapse', () => {
+        btn.textContent = '＋ 子アルバムを作成';
+      });
+
+      const params = new URLSearchParams(location.search);
+      if (location.hash === '#create' || params.get('open') === 'create') {
+        collapse.show();
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Square 決済テスト（Payment Links）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>.mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}</style>
+</head>
+<body class="container py-4">
+  <h1 class="mb-3">Square 決済テスト</h1>
+
+  <form action="{{ url_for('payment.start') }}" method="post" class="row gy-3">
+    <div class="col-12 col-md-6">
+      <label class="form-label">金額（円）</label>
+      <input name="amount" type="number" min="1" step="1" value="100" required class="form-control">
+      <div class="form-text">※ 1円単位／税込想定</div>
+    </div>
+
+    <div class="col-12 col-md-6">
+      <label class="form-label">表示名（任意）</label>
+      <input name="name" type="text" class="form-control" placeholder="テスト決済">
+      <div class="form-text">※ Squareの決済ページに表示される名称</div>
+    </div>
+
+    <div class="col-12 col-md-6">
+      <label class="form-label">メール（任意・事前入力用）</label>
+      <input name="email" type="email" class="form-control" placeholder="[email protected]">
+      <div class="form-text">※ Squareの決済ページに自動入力されます</div>
+    </div>
+
+    <div class="col-12 col-md-6">
+      <label class="form-label">電話番号（任意・事前入力用）</label>
+      <input name="phone" type="tel" class="form-control" placeholder="+819012345678">
+      <div class="form-text">※ E.164形式（+81の国番号＋先頭0なし）。国内表記 090... は自動で +81 形式へ変換します</div>
+    </div>
+
+    <div class="col-12">
+      <button class="btn btn-primary">Squareの決済ページへ</button>
+    </div>
+  </form>
+
+  <hr class="my-4">
+  <div class="text-muted mono">
+    <div>POST → /payment/start → Square Payment Link 作成 → 302リダイレクト</div>
+    <div>住所は表示しません（ask_for_shipping_address を付与しない）。</div>
+    <div>メール/電話は pre_populated_data で事前入力（電話はE.164形式）。</div>
+    <div>決済後は /payment/thanks に戻ります（Webhookは /payment/webhooks）。</div>
+  </div>
+</body>
+</html>

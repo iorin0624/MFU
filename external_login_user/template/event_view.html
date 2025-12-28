@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ ev.title }} - イベント詳細</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="container py-4" style="max-width:900px;">
+
+  {# 日付表示（YYYY年MM月DD日） #}
+  {% macro ymd(d) -%}
+    {%- if not d -%}—{%- else -%}
+      {%- if d.__class__.__name__ in ('datetime','date') -%}
+        {{ d.strftime('%Y年%m月%d日') }}
+      {%- else -%}
+        {%- set s = (d|string)[:10] -%}
+        {%- set p = s.split('-') -%}
+        {%- if p|length == 3 -%}{{ p[0] }}年{{ p[1] }}月{{ p[2] }}日{%- else -%}{{ s }}{%- endif -%}
+      {%- endif -%}
+    {%- endif -%}
+  {%- endmacro %}
+
+  {# 0/1 正規化（BIT/TINYINT/str/Noneを吸収） #}
+  {% macro norm01(v, default_=1) -%}
+    {%- if v is none -%}
+      {{ default_ }}
+    {%- elif v is number -%}
+      {{ 0 if (v|int) == 0 else 1 }}
+    {%- elif v is string -%}
+      {%- set s = v|trim|lower -%}
+      {{ 1 if s in ['1','true','on','yes','y'] else 0 }}
+    {%- else -%} {# bytes 等 #}
+      {%- set s = (v|string) -%}
+      {{ 1 if ('\\x01' in s or s.endswith('1')) else 0 }}
+    {%- endif -%}
+  {%- endmacro %}
+
+  {# === ここでテンプレ側フォールバックを定義（キー揺れ対策） === #}
+  {% set oc_url  = (openchat_url if openchat_url is defined and openchat_url else (line_openchat_url if line_openchat_url is defined else None)) %}
+  {% set oc_pass = (openchat_pass if openchat_pass is defined and openchat_pass else (line_openchat_pass if line_openchat_pass is defined else None)) %}
+  {% set gf_url  = (google_form_url if google_form_url is defined and google_form_url else (survey_url if survey_url is defined else None)) %}
+  {% set memo_all = ev.memo_all if ev.memo_all is defined else None %}
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if view_mode == 'admin' %}
+    <div class="alert alert-info">管理者ビューです。参加者・支払いの詳細は管理画面から操作してください。</div>
+    <a class="btn btn-outline-primary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">管理画面へ</a>
+  {% elif view_mode == 'member' %}
+    <div class="alert alert-success">承認済みの参加者として閲覧中です。</div>
+  {% elif view_mode == 'member_limited' %}
+    <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
+  {% endif %}
+
+  <a class="btn btn-sm btn-outline-secondary mb-3" href="{{ url_for('external_login_user.index') }}">← マイページ</a>
+
+  <h1 class="h4 mb-1">{{ ev.title }}</h1>
+  <div class="text-muted">
+    {% if ev.starts_at %}
+      {% if ev.starts_at.__class__.__name__ in ('datetime','date') %}
+        {{ ev.starts_at.strftime('%Y/%m/%d %H:%M') if ev.starts_at.__class__.__name__ == 'datetime' else ev.starts_at.strftime('%Y/%m/%d') }}
+      {% else %}
+        {{ ev.starts_at }}
+      {% endif %}
+    {% else %}—{% endif %}
+  </div>
+
+  {% if me %}
+    <div class="mt-2">
+      <div class="mb-1">
+        <strong>承認状態：</strong>
+        {% if my_status == 'approved' %}
+          <span class="btn btn-sm btn-success">承認</span>
+        {% elif my_status == 'pending' %}
+          <span class="btn btn-sm btn-secondary">保留</span>
+        {% elif my_status == 'rejected' %}
+          <span class="btn btn-sm btn-danger">拒否</span>
+        {% else %}
+          <span class="btn btn-sm btn-outline-secondary">未申請</span>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if view_mode == "member" %}
+    <div class="mt-3">
+      <a class="btn btn-lg btn-primary w-100"
+         href="{{ url_for('external_login_user.event_pass', event_uuid=ev.event_uuid_str) }}">
+        参加証を開く（主催提示用）
+      </a>
+    </div>
+  {% endif %}
+
+  <!-- ===== カード郡 ===== -->
+  <div class="row g-3 my-3">
+
+    <!-- イベント詳細 -->
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6 mb-3">イベント詳細</h2>
+          <div><strong>参加費:</strong> {% if ev.fee_yen is not none %}¥{{ "{:,}".format(ev.fee_yen|int) }}{% else %}—{% endif %}</div>
+          <div><strong>場所:</strong> {{ ev.place_name or '—' }}</div>
+          <div class="small text-muted mb-2">{{ ev.address or '' }}</div>
+          {% if maps_link %}
+            <a class="btn btn-sm btn-outline-primary" href="{{ maps_link }}" target="_blank" rel="noopener">地図を開く</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    {% if memo_all %}
+      <div class="col-12">
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-2">連絡メモ（全体向け）</h2>
+            <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">
+              {{- ev.memo_all | trim | linkify -}}
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+    <!-- 各種リンク -->
+    <div class="col-md-6">
+      <div class="card h-100">
+        <div class="card-body">
+          <h2 class="h6 mb-3">各種リンク</h2>
+
+          <!-- 参加者一覧 -->
+          <div class="mb-2">
+            <a class="btn btn-sm btn-outline-dark w-100 text-start"
+               href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
+              参加者一覧を開く
+            </a>
+          </div>
+
+          <!-- LINEオープンチャット -->
+          <div class="mb-2">
+            {% if oc_url %}
+              {% if oc_pass %}
+                {# パスあり: まずモーダルを出してから参加 #}
+                <button type="button"
+                        class="btn btn-sm btn-outline-primary w-100 text-start"
+                        data-bs-toggle="modal"
+                        data-bs-target="#ocPassModal">
+                  LINEオープンチャットに参加する
+                </button>
+              {% else %}
+                {# パスなし: そのまま遷移 #}
+                <a class="btn btn-sm btn-outline-primary w-100 text-start"
+                   href="{{ oc_url }}" target="_blank" rel="noopener">
+                  LINEオープンチャットに参加する
+                </a>
+              {% endif %}
+            {% else %}
+              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+                LINEオープンチャット（準備中）
+              </button>
+            {% endif %}
+          </div>
+
+          <!-- SNS貼付用 -->
+          <div class="mb-2">
+            <a class="btn btn-sm btn-outline-info w-100 text-start"
+               href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
+              SNS貼付用
+            </a>
+          </div>
+
+          <!-- アルバム -->
+          <div class="mb-2">
+            {% if album_url %}
+              <a class="btn btn-sm btn-outline-success w-100 text-start"
+                 href="{{ album_url }}" target="_blank" rel="noopener">
+                アルバムを開く
+              </a>
+            {% else %}
+              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+                アルバム未設定
+              </button>
+            {% endif %}
+          </div>
+
+          <!-- アンケート -->
+          <div class="mb-2">
+            {% if gf_url %}
+              <a class="btn btn-sm btn-outline-success w-100 text-start"
+                 href="{{ gf_url }}" target="_blank" rel="noopener">
+                アンケートに回答する
+              </a>
+            {% else %}
+              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+                アンケート（準備中）
+              </button>
+            {% endif %}
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    {% if me %}
+      <!-- 支払状況（拡張表示） -->
+      <div class="col-md-6">
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-3">支払状況</h2>
+
+            {# ★ require_payment を厳密に 0/1 へ正規化してから判定 #}
+            {% set rp = norm01(my_require_payment, 1)|int %}
+            {% set fee = ev.fee_yen|default(0)|int %}
+            {% set needs_pay = (rp == 1) and (fee > 0) %}
+
+            {# 受け取りの揺れ: my_paid_amount_yen / my_paid_amount のどちらでもOKに #}
+            {% set paid_amt = (my_paid_amount_yen if my_paid_amount_yen is defined else my_paid_amount) %}
+            {# レシートURLの揺れ: my_receipt_url / receipt_url #}
+            {% set rcpt_url = (my_receipt_url if my_receipt_url is defined else (receipt_url if receipt_url is defined else None)) %}
+
+            <!-- 上段：現在の状況 / 日付 / 金額 / リンク -->
+            <div class="mb-1"><strong>支払状況：</strong>
+              {% if my_payment_status == 'paid' %}支払済{% elif needs_pay %}未支払{% else %}支払不要{% endif %}
+            </div>
+
+            <div class="mb-1"><strong>支払日：</strong>
+              {% if my_payment_status == 'paid' and my_paid_at %}
+                {{ ymd(my_paid_at) }}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </div>
+
+            <div class="mb-1"><strong>支払金額：</strong>
+              {% if my_payment_status == 'paid' and paid_amt is not none %}
+                ¥{{ "{:,}".format(paid_amt|int) }}
+              {% elif my_payment_status == 'paid' and paid_amt is none and ev.fee_yen %}
+                ¥{{ "{:,}".format(ev.fee_yen|int) }}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </div>
+
+            <div class="mb-3"><strong>リンク：</strong>
+              {% if my_payment_status == 'paid' and rcpt_url %}
+                <a href="{{ rcpt_url }}" target="_blank" rel="noopener">レシート</a>
+              {% elif needs_pay and my_status == 'approved' %}
+                <a href="{{ url_for('external_login_user.pay_start', event_uuid=ev.event_uuid_str) }}">支払ページ</a>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </div>
+
+            <div class="mb-1"><strong>支払開始日：</strong>{{ ymd(ev.pay_from) }}</div>
+            <div><strong>支払終了日：</strong>{{ ymd(ev.pay_until) }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 役割（衣装／その他メモ） -->
+      <div class="col-md-6">
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-3">役割（衣装／その他メモ）</h2>
+
+            <div class="mb-2">
+              <strong>現在：</strong>
+              {{ my_role_label(my_participant_role or 'none') if (my_participant_role is defined) else '—' }}
+              {% if my_costume_label %}<span class="text-muted small">（{{ my_costume_label }}）</span>{% endif %}
+            </div>
+
+            {% if my_status == 'approved' %}
+              <form method="post" action="{{ url_for('external_login_user.update_my_role', event_uuid=ev.event_uuid_str) }}" class="d-flex flex-wrap gap-2 align-items-end" id="roleForm">
+                <div>
+                  <label class="form-label mb-1">役割</label>
+                  {% set cur = (my_participant_role or 'none') if (my_participant_role is defined) else 'none' %}
+                  <select name="participant_role" class="form-select form-select-sm" id="participant_role">
+                    <option value="none"      {{ 'selected' if cur=='none' else '' }}>—（未設定）</option>
+                    <option value="camera"    {{ 'selected' if cur=='camera' else '' }}>カメラマン</option>
+                    <option value="assistant" {{ 'selected' if cur=='assistant' else '' }}>アシスタント</option>
+                    <option value="cosplayer" {{ 'selected' if cur=='cosplayer' else '' }}>衣装</option>
+                    <!-- ★ 追加：その他 -->
+                    <option value="other"     {{ 'selected' if cur=='other' else '' }}>その他</option>
+                  </select>
+                </div>
+                <div class="flex-grow-1">
+                  <label class="form-label mb-1">衣装／その他メモ（任意）</label>
+                  <input type="text" name="costume_label" maxlength="120" class="form-control form-control-sm"
+                         id="costume_label" value="{{ my_costume_label or '' }}"
+                         placeholder="例）白雪姫/アナ（戴冠式）/ベル（黄色） 等">
+                  <div class="form-text" id="memo_help">「衣装」または「その他」を選んだときのみ入力してください（最大120文字）。</div>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary">保存</button>
+              </form>
+
+              <script>
+                (function(){
+                  const roleSel = document.getElementById('participant_role');
+                  const memo = document.getElementById('costume_label');
+                  const help = document.getElementById('memo_help');
+                  function sync(){
+                    const v = (roleSel && roleSel.value) || 'none';
+                    if (v === 'cosplayer' || v === 'other') {
+                      memo.removeAttribute('disabled');
+                      help.textContent = '「衣装」または「その他」を選んだときのみ入力してください（最大120文字）。';
+                    } else {
+                      memo.value = '';
+                      memo.setAttribute('disabled','disabled');
+                      help.textContent = 'カメラマン／アシスタント／未設定のときは入力不要です（サーバでも空にします）。';
+                    }
+                  }
+                  if (roleSel) {
+                    roleSel.addEventListener('change', sync);
+                    // 初期状態
+                    sync();
+                  }
+                })();
+              </script>
+            {% else %}
+              <div class="text-muted small">承認後に編集できます。</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+  </div>
+  <!-- ===== /カード郡 ===== -->
+
+  {# オープンチャット用パス確認モーダル #}
+  {% if oc_url and oc_pass %}
+  <div class="modal fade" id="ocPassModal" tabindex="-1"
+       aria-labelledby="ocPassModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="ocPassModalLabel">オープンチャット参加前の確認</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-2">
+            下記のパスコードを控えてから、オープンチャットに参加してください。
+          </p>
+          <p class="fw-bold fs-5 text-center">{{ oc_pass }}</p>
+          <p class="small text-muted mb-0">
+            ※ パスコードをコピーしてから「参加する」ボタンを押すとスムーズです。
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">
+            閉じる
+          </button>
+          <a href="{{ oc_url }}" target="_blank" rel="noopener" class="btn btn-primary">
+            パスを確認して参加する
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

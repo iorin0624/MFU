@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+
+{% block title %}イベント編集{% endblock %}
+
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 mb-0">イベント編集</h1>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">戻る</a>
+</div>
+
+{# ▼▼ 人数上限（タイトル直下） ▼▼ #}
+<div class="card mb-3" id="cap-editor-card">
+  <div class="card-body d-flex flex-wrap align-items-center gap-2">
+    <div class="fw-semibold me-2">人数上限</div>
+    <input
+      type="number" min="1" step="1"
+      class="form-control"
+      style="max-width:160px"
+      id="cap-input"
+      placeholder="未設定=無制限"
+      value="{% if ev.max_participants %}{{ ev.max_participants }}{% endif %}">
+    <button type="button" class="btn btn-primary" id="cap-save">保存</button>
+    <button type="button" class="btn btn-outline-secondary" id="cap-clear">上限解除</button>
+    <span class="small text-muted ms-2" id="cap-msg"></span>
+  </div>
+</div>
+{# ▲▲ 人数上限 ▲▲ #}
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+  {% endfor %}
+{% endwith %}
+
+{% if errors and errors|length %}
+  <div class="alert alert-warning">
+    入力に誤りがあります。確認してください。
+    <ul class="mb-0">
+      {% for k, v in errors.items() %}
+        <li>{{ v }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+{% endif %}
+
+<form method="post" class="row gy-3" autocomplete="off" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+
+  <!-- タイトル -->
+  <div class="col-12">
+    <label class="form-label">タイトル <span class="text-danger">*</span></label>
+    <input type="text" name="title" class="form-control" maxlength="100"
+           value="{{ (form.title or ev.title or '')|e }}" required>
+    {% if errors.title %}<div class="text-danger small mt-1">{{ errors.title }}</div>{% endif %}
+  </div>
+
+  <!-- 開始日時：datetime-local -->
+  <div class="col-md-6">
+    <label class="form-label">開始日時（任意）</label>
+    <input type="datetime-local" name="starts_at" class="form-control"
+           value="{{ (form_iso.starts_at or '')|e }}">
+    <div class="hint">端末のカレンダー／時刻ピッカーで入力できます。</div>
+  </div>
+
+  <!-- 参加費 -->
+  <div class="col-md-6">
+    <label class="form-label">参加費（円・任意）</label>
+    <input type="number" name="fee_yen" class="form-control" inputmode="numeric" min="0" step="1"
+           value="{% if form.fee_yen is not none %}{{ form.fee_yen }}{% elif ev.fee_yen is not none %}{{ ev.fee_yen }}{% endif %}">
+    {% if errors.fee_yen %}<div class="text-danger small mt-1">{{ errors.fee_yen }}</div>{% endif %}
+  </div>
+
+  <!-- 支払期間：開始 -->
+  <div class="col-md-6">
+    <label class="form-label">支払開始（任意）</label>
+    <input type="datetime-local" name="pay_from" class="form-control"
+           value="{{ (form_iso.pay_from or '')|e }}">
+    <div class="hint">未設定なら開始制限なし。</div>
+  </div>
+
+  <!-- 支払期間：終了 -->
+  <div class="col-md-6">
+    <label class="form-label">支払終了（任意）</label>
+    <input type="datetime-local" name="pay_until" class="form-control"
+           value="{{ (form_iso.pay_until or '')|e }}">
+    <div class="hint">未設定なら終了制限なし。</div>
+  </div>
+
+  <!-- 会場・住所・マップ -->
+  <div class="col-md-6">
+    <label class="form-label">会場名（任意）</label>
+    <input type="text" name="place_name" class="form-control"
+           value="{{ (form.place_name or ev.place_name or '')|e }}">
+  </div>
+
+  <div class="col-12">
+    <label class="form-label">住所（任意）</label>
+    <input type="text" name="address" class="form-control"
+           value="{{ (form.address or ev.address or '')|e }}">
+  </div>
+
+  <div class="col-12">
+    <label class="form-label">GoogleマップURL（任意）</label>
+    <input type="url" name="maps_url" class="form-control"
+           value="{{ (form.maps_url or ev.maps_url or '')|e }}">
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">LINEオープンチャットURL（任意）</label>
+    <input type="url" name="line_openchat_url" class="form-control"
+           value="{{ (form.line_openchat_url or ev.line_openchat_url or '') | e }}"
+           placeholder="https://line.me/ti/g2/....">
+    <div class="form-text">参加者の連絡用オープンチャットがあれば設定します。</div>
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">LINEオープンチャット入室パス（8桁・任意）</label>
+    <input type="text" name="line_openchat_pass" maxlength="8" class="form-control"
+           value="{{ (form.line_openchat_pass or ev.line_openchat_pass or '') | e }}" pattern="\d{8}"
+           placeholder="例）12345678">
+    {% if errors.line_openchat_pass %}
+      <div class="text-danger small mt-1">{{ errors.line_openchat_pass }}</div>
+    {% else %}
+      <div class="form-text">数字8桁。未設定でも可。</div>
+    {% endif %}
+  </div>
+
+  <div class="mb-3">
+    <label class="form-label">アンケート用GoogleフォームURL</label>
+    <input type="url" name="google_form_url" class="form-control"
+           value="{{ (form.google_form_url or ev.google_form_url or '') | e }}"
+           placeholder="https://docs.google.com/forms/...">
+    <div class="form-text">イベント後のアンケート用Googleフォームがあれば設定してください。</div>
+  </div>
+
+  {# ============================== #}
+  {# ▼▼ 自動承認（招待トークン）：共通パーシャル ▼▼ #}
+  {# ============================== #}
+  {% include "_event_invite_block.html" %}
+
+  <!-- ▼▼ アルバムUUID（編集可） ▼▼ -->
+  <div class="mb-3">
+    <label class="form-label">アルバムUUID（任意／編集可）</label>
+    <input type="text" name="album_id" class="form-control"
+           value="{{ (form.album_id or ev.album_id or '') | e }}"
+           placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+    <div class="form-text">MFUアルバムのID（UUID）を貼り付けて紐付けできます。</div>
+  </div>
+
+  <!-- ▼▼ 決済UUID（表示のみ・保持） ▼▼ -->
+  <div class="mb-3">
+    <label class="form-label">決済UUID（表示のみ）</label>
+    <input type="text" name="payment_uuid" class="form-control"
+           value="{{ (form.payment_uuid or ev.payment_uuid or '') | e }}" readonly>
+    <div class="form-text">
+      決済エントリURLの識別子です。未設定で保存しても既存値は消えません（未設定時は自動発行されます）。
+    </div>
+  </div>
+
+<!-- ============================= -->
+<!-- ▼▼ 支払い方法（統一デザイン） ▼▼ -->
+<!-- ============================= -->
+<div class="col-12">
+  <div class="card">
+    <div class="card-header">支払い方法</div>
+    <div class="card-body d-grid gap-3">
+
+      <!-- Square（枠付きに統一） -->
+      <div class="border rounded p-3">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="allow_square" id="allow_square"
+                 {% if form.allow_square or ev.allow_square %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="allow_square">
+            Square（クレジットカード）を受け付ける
+          </label>
+        </div>
+        <div class="text-muted small">
+          ※ Square 側の商品/決済設定は別途ご用意ください。
+        </div>
+      </div>
+
+      <!-- PayPay（友だち送金） -->
+      <div class="border rounded p-3">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="allow_paypay" id="allow_paypay"
+                 {% if form.allow_paypay or ev.allow_paypay %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="allow_paypay">
+            PayPay（友だち送金）を受け付ける
+          </label>
+        </div>
+        <label class="form-label">PayPay 案内テキスト（任意）</label>
+        <input class="form-control" type="text" name="paypay_display" id="paypay_display"
+               value="{{ (form.paypay_display or ev.paypay_display or '')|e }}"
+               placeholder="例：PayPay ID: iorin-1234／QRは当日提示 など">
+        <div class="form-text">
+          ここに入力した案内を参加者に表示します。
+          <span class="text-danger fw-semibold">リンク（案内）を保存した日から13日間で自動的に無効</span>になります。必要に応じて再設定してください。
+        </div>
+      </div>
+
+      <!-- 銀行振込（複数口座） -->
+      <div class="border rounded p-3">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="allow_bank" id="allow_bank"
+                 {% if form.allow_bank or ev.allow_bank %}checked{% endif %}>
+          <label class="form-check-label fw-semibold" for="allow_bank">
+            銀行振込を受け付ける（複数口座に対応）
+          </label>
+        </div>
+
+        <div class="d-flex gap-2">
+          <a class="btn btn-outline-secondary btn-sm"
+             href="{{ url_for('external_login_user.admin_event_banks', event_id=ev.id) }}">
+            振込口座を管理する
+          </a>
+          <span class="align-self-center text-muted small">※ 口座の追加・削除・表示順は別画面で行います。</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+<!-- ▲▲ 支払い方法（統一デザイン） ▲▲ -->
+
+  <div class="mb-3">
+    <label class="form-label">全体メモ（参加者全員に表示）</label>
+    <textarea name="memo_all" id="memo_all" rows="5" class="form-control"
+              style="overflow:hidden; resize:none;"
+              placeholder="例）当日の集合は10:00に正門前です。雨天決行。">{{ (form.memo_all or ev.memo_all or '') | e }}</textarea>
+    <div class="form-text">参加者ビューのイベント詳細ページに表示されます。</div>
+  </div>
+
+  <!-- 操作 -->
+  <div class="col-12 d-grid d-md-flex gap-2">
+    <button class="btn btn-primary">保存する</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">キャンセル</a>
+  </div>
+</form>
+
+<hr class="my-4">
+
+<div class="small text-muted">
+  支払期間は参加者の決済入口（<code>/pay/start/&lt;event_uuid&gt;</code>）でサーバ側ガードがかかります（期間外は進めません）。<br>
+  この管理モジュールは <code>external_login_user</code> Blueprint 配下で提供されています。
+</div>
+
+{# ===== ここからJS（このページ内に直置き：人数上限＋メモ自動リサイズ） ===== #}
+<script>
+(function(){
+  // --- メモ自動リサイズ ---
+  const memo = document.getElementById('memo_all');
+  function autosize(t){ t.style.height='auto'; t.style.height = (t.scrollHeight)+'px'; }
+  if(memo){ autosize(memo); memo.addEventListener('input', ()=>autosize(memo)); }
+
+  // --- 人数上限エディタ（同一ルートへ JSON POST） ---
+  const $input = document.getElementById('cap-input');
+  const $save  = document.getElementById('cap-save');
+  const $clear = document.getElementById('cap-clear');
+  const $msg   = document.getElementById('cap-msg');
+
+  function setMsg(text, ok){
+    if(!$msg) return;
+    $msg.textContent = text || '';
+    $msg.style.color = ok ? '#2e7d32' : '#b71c1c';
+    if(text){ setTimeout(()=>{ $msg.textContent=''; }, 3500); }
+  }
+
+  async function postCap(val /* number|null */){
+    const res = await fetch(location.pathname, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ max_participants: val })
+    });
+    let j = {};
+    try { j = await res.json(); } catch(e){}
+    if(!res.ok || !j.ok){
+      throw new Error((j && j.error) || ('HTTP '+res.status));
+    }
+    return j;
+  }
+
+  if($save){
+    $save.addEventListener('click', async ()=>{
+      const v = ($input.value || '').trim();
+      if(!v){
+        setMsg('値を入力してください。', false);
+        return;
+      }
+      const n = parseInt(v, 10);
+      if(isNaN(n) || n <= 0){
+        setMsg('1以上の整数を入力してください。', false);
+        return;
+      }
+      $save.disabled = true; $clear.disabled = true;
+      try{
+        await postCap(n);
+        setMsg('保存しました。', true);
+      }catch(e){
+        setMsg('保存に失敗しました: ' + (e && e.message ? e.message : e), false);
+      }finally{
+        $save.disabled = false; $clear.disabled = false;
+      }
+    });
+  }
+
+  if($clear){
+    $clear.addEventListener('click', async ()=>{
+      $save.disabled = true; $clear.disabled = true;
+      try{
+        await postCap(null); // NULL=無制限
+        if($input) $input.value = '';
+        setMsg('上限を解除しました。', true);
+      }catch(e){
+        setMsg('解除に失敗しました: ' + (e && e.message ? e.message : e), false);
+      }finally{
+        $save.disabled = false; $clear.disabled = false;
+      }
+    });
+  }
+})();
+</script>
+{% endblock %}

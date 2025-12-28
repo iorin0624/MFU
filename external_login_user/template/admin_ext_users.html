@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title %}外部ログインユーザー一覧{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">外部ログインユーザー一覧</h1>
+  <div class="d-flex gap-2">
+    <span class="text-muted small">総件数: <span id="totalCount">{{ initial_total }}</span></span>
+  </div>
+</div>
+
+<meta name="x-csrf-token" content="{{ admin_csrf }}">
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="row g-2 align-items-center">
+      <div class="col-sm-6 col-md-5">
+        <input id="searchInput" type="search" class="form-control" placeholder="ニックネーム / X / Instagram / メール / social_id を検索">
+      </div>
+      <div class="col-auto">
+        <button id="searchBtn" class="btn btn-outline-primary">検索</button>
+      </div>
+      <div class="col-auto">
+        <button id="clearBtn" class="btn btn-outline-secondary">クリア</button>
+      </div>
+      <div class="col-auto">
+        <div class="btn-group" role="group" aria-label="Sort buttons">
+          <button id="sortIdBtn" type="button" class="btn btn-outline-secondary btn-sm">
+            ID順
+          </button>
+          <button id="sortNickBtn" type="button" class="btn btn-outline-secondary btn-sm">
+            ニックネーム順
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-sm align-middle">
+    <thead class="table-light">
+      <tr>
+        <th style="width:72px;">ID</th>
+        <th style="width:72px;">Avatar</th>
+        <th>ニックネーム</th>
+        <th>メール</th>
+        <th style="min-width:180px;">SNS</th>
+        <th style="min-width:200px;">通知状態</th>
+        <th style="width:140px;">クレカ登録（将来用）</th>
+        <th style="width:120px;"></th>
+      </tr>
+    </thead>
+    <tbody id="userTbody">
+      {% for it in initial_items %}
+      <tr data-id="{{ it.id }}">
+        <td class="text-muted">#{{ it.id }}</td>
+        <td>
+          {% set avatar = it.avatar_file and ("/external-login/avatars/" ~ it.avatar_file) or it.avatar_url or "https://via.placeholder.com/48?text=—" %}
+          <img src="{{ avatar }}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">
+        </td>
+        <td>
+          <div class="fw-semibold">{{ it.nickname }}</div>
+          <div class="small text-muted">social_id: {{ it.social_id or '-' }}</div>
+        </td>
+        <td>
+          {% if it.email %}
+            <div>{{ it.email }}</div>
+            <div class="small mt-1">
+              {% if it.email_verified_at %}
+                <span class="badge bg-success">確認済</span>
+                <span class="text-muted ms-1">{{ it.email_verified_at }}</span>
+              {% else %}
+                <span class="badge bg-secondary">未確認</span>
+              {% endif %}
+            </div>
+          {% else %}
+            <span class="text-muted">-</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if it.x_id %}
+            <a href="https://x.com/{{ it.x_id|e }}" target="_blank" rel="noopener">X: @{{ it.x_id }}</a>{% if it.instagram_id %}<br>{% endif %}
+          {% endif %}
+          {% if it.instagram_id %}
+            <a href="https://www.instagram.com/{{ it.instagram_id|e }}/" target="_blank" rel="noopener">IG: @{{ it.instagram_id }}</a>
+          {% endif %}
+          {% if not it.x_id and not it.instagram_id %}
+            <span class="text-muted">-</span>
+          {% endif %}
+        </td>
+        <td>
+          <div>
+            アップ
+            {% if it.notify_album_upload %}
+              🔵
+            {% else %}
+              🔴
+            {% endif %}
+          </div>
+          <div>
+            加工
+            {% if it.notify_album_process %}
+              🔵
+            {% else %}
+              🔴
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          {% if it.card_count and it.card_count|int > 0 %}
+            登録あり
+          {% else %}
+            未登録
+          {% endif %}
+        </td>
+        <td class="text-end">
+          <a class="btn btn-sm btn-outline-primary"
+             href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=it.id) }}">編集</a>
+        </td>
+      </tr>
+      {% endfor %}
+
+      {% if not initial_items %}
+      <tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mt-3">
+  <div class="small text-muted">
+    <span id="pageInfo">1</span> / <span id="pageTotal">{{ (initial_total // initial_per_page) + (1 if (initial_total % initial_per_page) else 0) or 1 }}</span> ページ
+  </div>
+  <div class="btn-group">
+    <button id="prevBtn" class="btn btn-outline-secondary btn-sm" disabled>前へ</button>
+    <button id="nextBtn" class="btn btn-outline-secondary btn-sm"
+      {% if initial_total <= initial_per_page %}disabled{% endif %}>次へ</button>
+  </div>
+</div>
+
+{# 初期化用データ（JSが無効でも初期表示はサーバー側でOK） #}
+<script>
+  window.__EXT_USERS__ = {
+    total: {{ initial_total|int }},
+    perPage: {{ initial_per_page|int }},
+    page: {{ initial_page|int }},
+    dataUrl: "{{ url_for('external_login_user.admin_ext_users_data') }}"
+  };
+</script>
+
+{# フロント側並び替え用スクリプト #}
+<script>
+  (function () {
+    const tbody = document.getElementById('userTbody');
+    if (!tbody) return;
+
+    function sortRows(compareFn) {
+      const rows = Array.from(tbody.querySelectorAll('tr[data-id]'));
+      if (!rows.length) return;
+      rows.sort(compareFn);
+      rows.forEach(row => tbody.appendChild(row));
+    }
+
+    // ID昇順
+    const sortIdBtn = document.getElementById('sortIdBtn');
+    if (sortIdBtn) {
+      sortIdBtn.addEventListener('click', function () {
+        sortRows((a, b) => {
+          const ida = Number(a.dataset.id || '0');
+          const idb = Number(b.dataset.id || '0');
+          return ida - idb;
+        });
+      });
+    }
+
+    // ニックネーム昇順（日本語対応）
+    const sortNickBtn = document.getElementById('sortNickBtn');
+    if (sortNickBtn) {
+      sortNickBtn.addEventListener('click', function () {
+        function getName(tr) {
+          const el = tr.querySelector('.fw-semibold');
+          return (el ? el.textContent : '').trim();
+        }
+        sortRows((a, b) => {
+          const na = getName(a);
+          const nb = getName(b);
+          return na.localeCompare(nb, 'ja');
+        });
+      });
+    }
+  })();
+</script>
+
+{# 一覧の検索/ページング用スクリプト（存在すれば読み込む） #}
+<script src="{{ url_for('static', filename='external_login_user/admin_ext_users.js') }}"></script>
+{% endblock %}

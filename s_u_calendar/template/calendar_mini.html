@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>予定（直近30日）</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; margin:0; }
+    header { padding:12px 16px; border-bottom:1px solid #eee; position:sticky; top:0; background:#fff; }
+    ul { list-style:none; padding:0; margin:0; }
+    li { padding:12px 16px; border-bottom:1px solid #f0f0f0; display:flex; justify-content:space-between; gap:12px; }
+    .date { font-weight:600; }
+    .status.busy { color:#e35; }
+    .status.free { color:#1a9b3f; }
+    small { color:#666; }
+  </style>
+</head>
+<body>
+  <header><strong>直近30日</strong></header>
+  <ul>
+    {% for it in items %}
+      <li>
+        <div class="date">{{ it.date }}（{{ it.weekday }}）</div>
+        <div class="status {{ it.status }}">
+          {% if it.status == "busy" %}
+            予定あり{% if it.label %} <small>（{{ it.label }}）</small>{% endif %}
+          {% else %}
+            空き
+          {% endif %}
+        </div>
+      </li>
+    {% endfor %}
+  </ul>
+</body>
+</html>

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ ev.title }} - 参加者一覧</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .card-person { min-height: 132px; }
+    .name-line { font-weight: 600; }
+    .role-line .badge { font-size: .9rem; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace; }
+
+    /* アバター表示 */
+    .avatar-48{
+      width:48px;height:48px;border-radius:50%;object-fit:cover;flex:0 0 48px;
+      box-shadow:0 2px 8px rgba(0,0,0,.10);
+      background:#f3f4f6;
+    }
+  </style>
+</head>
+<body class="container py-4" style="max-width:1000px;">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h5 mb-0">{{ ev.title }} - 参加者一覧</h1>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('external_login_user.view_event', event_uuid=ev.event_uuid_str) }}">← イベントへ戻る</a>
+  </div>
+
+  {% if members|length == 0 %}
+    <div class="card">
+      <div class="card-body text-muted">参加者はいません。</div>
+    </div>
+  {% else %}
+    <div class="row g-3">
+      {% for m in members %}
+        <div class="col-12 col-md-6">
+          <div class="card card-person h-100">
+            <div class="card-body">
+
+              <!-- 上段：アイコン + 名前/役割 -->
+              <div class="d-flex align-items-start gap-3 mb-3">
+                <img class="avatar-48"
+                     src="{{ m.avatar_src or 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' }}"
+                     alt="avatar">
+
+                <div class="flex-grow-1">
+                  <!-- ✅ + ニックネーム + 主催マーク -->
+                  <div class="name-line mb-1">
+                    {% if m.checked_in %}✅ {% endif %}
+                    {% if m.is_host %} 👑👑 {% elif m.is_subhost %} 👑 {% endif %}
+                    {{ m.nickname }}
+                  </div>
+
+                  <!-- 役割（衣装） -->
+                  <div class="role-line">
+                    {% set role_now = m.participant_role or 'none' %}
+                    <span class="badge bg-light text-dark">
+                      {{ my_role_label(role_now) }}
+                    </span>
+                    {% if m.costume_label %}
+                      <span class="text-muted small">（{{ m.costume_label }}）</span>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+
+              <!-- X／Instagram：テキスト表示 + 別ボタン -->
+              <div class="d-flex flex-column gap-2 mono small">
+                <!-- X -->
+                <div class="d-flex align-items-center gap-2">
+                  <div>
+                    X：{% if m.x_id %}@{{ m.x_id }}{% else %}<span class="text-muted">—</span>{% endif %}
+                  </div>
+                  <div class="ms-auto">
+                    {% if m.x_id %}
+                      <a class="btn btn-sm btn-outline-primary"
+                         href="https://x.com/{{ m.x_id|e }}" target="_blank" rel="noopener">
+                        リンク
+                      </a>
+                    {% else %}
+                      <button class="btn btn-sm btn-outline-secondary" disabled>リンク</button>
+                    {% endif %}
+                  </div>
+                </div>
+
+                <!-- Instagram -->
+                <div class="d-flex align-items-center gap-2">
+                  <div>
+                    Instagram：{% if m.instagram_id %}@{{ m.instagram_id }}{% else %}<span class="text-muted">—</span>{% endif %}
+                  </div>
+                  <div class="ms-auto">
+                    {% if m.instagram_id %}
+                      <a class="btn btn-sm btn-outline-success"
+                         href="https://www.instagram.com/{{ m.instagram_id|e }}/" target="_blank" rel="noopener">
+                        リンク
+                      </a>
+                    {% else %}
+                      <button class="btn btn-sm btn-outline-secondary" disabled>リンク</button>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+
+</body>
+</html>

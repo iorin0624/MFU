@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ onboarding and '初回プロフィール登録' or 'プロフィール編集' }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.css" rel="stylesheet">
+  <style>
+    .avatar-preview{
+      width:120px;height:120px;border-radius:50%;object-fit:cover;
+      box-shadow:0 4px 14px rgba(0,0,0,.12);
+    }
+
+    /* ====== トリミング領域（スマホ余白を無くす） ====== */
+    :root { --vh: 1vh; }
+    .cropper-wrap{
+      width:100%;
+      height: calc(var(--vh) * 80);
+      max-height: 90vh;
+      display:flex; align-items:center; justify-content:center;
+      overflow:hidden; background:#00000008; border-radius:12px;
+    }
+    .cropper-wrap img{
+      display:block;
+      max-width:none;
+      width:auto; height:100%;
+    }
+
+    @media (max-width: 576px){
+      #cropperModal .modal-dialog{ margin:0; max-width:100%; }
+      #cropperModal .modal-content{ border-radius:0; height:100dvh; }
+      #cropperModal .modal-body{ padding:12px; }
+      .cropper-wrap{ height: calc(var(--vh) * 86); }
+    }
+  </style>
+</head>
+<body class="container py-4" style="max-width:720px;">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <h1 class="h4 mb-3">{{ onboarding and '初回プロフィール登録' or 'プロフィール編集' }}</h1>
+
+  <!-- プレビュー -->
+  <div class="d-flex align-items-center gap-3 mb-3">
+    {% set _avatar_src = None %}
+    {% if me.avatar_file %}
+      {% set _avatar_src = url_for('external_login_user.avatar_file', name=me.avatar_file) %}
+    {% elif me.avatar_url %}
+      {% set _avatar_src = me.avatar_url %}
+    {% endif %}
+    <img class="avatar-preview" id="avatarPreview"
+         src="{{ _avatar_src or 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' }}"
+         alt="avatar">
+    <div>
+      <div class="text-muted small">現在のアイコン</div>
+      <div class="fw-bold">{{ me.nickname }}</div>
+    </div>
+  </div>
+
+   <form method="post" class="row gy-3" autocomplete="off" enctype="multipart/form-data" id="profileForm">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <!-- ▼ 基本情報カード ▼ -->
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 card-title mb-3">基本情報</h2>
+
+          {# ★ 初回のみの案内ブロック（ニックネームの上） #}
+          {% if onboarding %}
+            <div class="alert alert-secondary mb-3 small">
+              <p class="mb-2">この度はご参加頂きありがとうございます。<br>初回だけプロフィール作成をお願い致します。</p>
+              <p class="mb-2">初回はLINEで設定しているアイコンとニックネームを取得しております。<br>
+              変更する場合は、ニックネーム欄にニックネームを設定してください。<br>
+              （XやInstagramで設定しているニックネーム推奨）</p>
+              <p class="mb-2">X、InstagramIDはどちらか入力<strong>必須</strong>です。<br>
+              <strong>メールアドレスも必須</strong>です。承認通知などを送るために使用します。</p>
+              <p class="mb-0">アイコン変更される場合は、画像を選択しトリミングしてご使用ください。</p>
+            </div>
+          {% endif %}
+
+          <div class="mb-3">
+            <label class="form-label">ニックネーム</label>
+            <input
+              name="nickname"
+              class="form-control {% if errors and errors.get('nickname') %}is-invalid{% endif %}"
+              value="{{ (form.nickname if form else me.nickname) or '' }}"
+              required
+            >
+            {% if errors and errors.get('nickname') %}
+              <div class="invalid-feedback">{{ errors['nickname'] }}</div>
+            {% endif %}
+          </div>
+
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">X（@なし）</label>
+              <input
+                name="x_id"
+                class="form-control {% if errors and errors.get('x_id') %}is-invalid{% endif %}"
+                value="{{ (form.x_id if form else me.x_id) or '' }}"
+              >
+              {% if errors and errors.get('x_id') %}
+                <div class="invalid-feedback">{{ errors['x_id'] }}</div>
+              {% endif %}
+            </div>
+
+            <div class="col-md-6">
+              <label class="form-label">Instagram（@なし）</label>
+              <input
+                name="instagram_id"
+                class="form-control {% if errors and errors.get('instagram_id') %}is-invalid{% endif %}"
+                value="{{ (form.instagram_id if form else me.instagram_id) or '' }}"
+              >
+              {% if errors and errors.get('instagram_id') %}
+                <div class="invalid-feedback">{{ errors['instagram_id'] }}</div>
+              {% endif %}
+            </div>
+          </div>
+
+          {% if onboarding %}
+            <div class="alert alert-info py-2 mt-3 mb-0 small">
+              初回登録では <strong>X ID</strong> と <strong>Instagram ID</strong> の<strong>どちらか一方は必須</strong>です。<br>
+              さらに<strong>メールアドレスも必須</strong>です。
+            </div>
+            {% if errors and errors.get('x_or_ig') %}
+              <div class="text-danger small mt-1">{{ errors['x_or_ig'] }}</div>
+            {% endif %}
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- ▼ 連絡先カード ▼ -->
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 card-title mb-3">連絡先</h2>
+
+          <div class="mb-2">
+            <label class="form-label" for="email">メール（必須）</label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              class="form-control {% if errors and errors.get('email') %}is-invalid{% endif %}"
+              value="{{ (form.email if form else me.email) or '' }}"
+              aria-describedby="emailHelp"
+              required
+            >
+            {% if errors and errors.get('email') %}
+              <div class="invalid-feedback">{{ errors['email'] }}</div>
+            {% endif %}
+          </div>
+          <div id="emailHelp" class="form-text small">
+            ※メールアドレスは<strong>必須</strong>です。参加承認やお知らせの更新をお送りします。<br>
+            @mail.iori0624.jp より確認メールを送信します。受信できるよう設定をご確認ください🙇
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ▼ 決済方法カード ▼ -->
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 card-title mb-3">決済方法</h2>
+
+          {% set _pm = (form.payment_mode if form else (me.payment_mode or 'manual')) %}
+
+          <div class="mb-2">
+            <div class="form-check form-check-inline">
+              <input class="form-check-input"
+                     type="radio"
+                     name="payment_mode"
+                     id="pm_manual"
+                     value="manual"
+                     {% if _pm != 'auto' %}checked{% endif %}>
+              <label class="form-check-label" for="pm_manual">手動決済</label>
+            </div>
+
+            <div class="form-check form-check-inline">
+              <input class="form-check-input"
+                     type="radio"
+                     name="payment_mode"
+                     id="pm_auto"
+                     value="auto"
+                     {% if _pm == 'auto' %}checked{% endif %}>
+              <label class="form-check-label" for="pm_auto">自動決済</label>
+            </div>
+          </div>
+
+          {% if card_summary %}
+            <div class="form-text mt-1">
+              自動決済用カード：{{ card_summary }}
+            </div>
+          {% else %}
+            <div class="form-text text-muted mt-1">
+              ※自動決済は現在ご利用頂けないです。手動決済のままでお願いいたします。利用出来るようになりましたら、お知らせ致します。
+            </div>
+          {% endif %}
+
+          {% if errors and errors.get('payment_mode') %}
+            <div class="text-danger small mt-1">{{ errors['payment_mode'] }}</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- ▼ アルバム通知カード ▼ -->
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 card-title mb-3">共有アルバム通知</h2>
+
+          {% set _upload_on  = (form.notify_album_upload  | default(me.notify_album_upload  | default(1, true), true) | int) == 1 %}
+          {% set _process_on = (form.notify_album_process | default(me.notify_album_process | default(1, true), true) | int) == 1 %}
+
+          <p class="form-text mb-2 small">
+            共有アルバムに写真が追加されたとき／加工が完了したときに通知するかどうかを選べます。
+          </p>
+
+          <div class="form-check form-check-inline">
+            <input class="form-check-input"
+                   type="checkbox"
+                   id="notify_album_upload"
+                   name="notify_album_upload"
+                   {% if _upload_on %}checked{% endif %}>
+            <label class="form-check-label" for="notify_album_upload">アップロード通知</label>
+          </div>
+
+          <div class="form-check form-check-inline">
+            <input class="form-check-input"
+                   type="checkbox"
+                   id="notify_album_process"
+                   name="notify_album_process"
+                   {% if _process_on %}checked{% endif %}>
+            <label class="form-check-label" for="notify_album_process">加工終了通知</label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ▼ アイコン画像カード ▼ -->
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 card-title mb-3">アイコン画像</h2>
+
+          <div class="mb-2">
+            <label class="form-label">アイコン画像をアップロード（任意）</label>
+            <input
+              id="avatar_file"
+              name="avatar_file"
+              type="file"
+              accept="image/*"
+              class="form-control {% if errors and errors.get('avatar_file') %}is-invalid{% endif %}"
+            >
+            {% if errors and errors.get('avatar_file') %}
+              <div class="invalid-feedback">{{ errors['avatar_file'] }}</div>
+            {% endif %}
+          </div>
+          <div class="form-text small">PNG/JPEG/WEBP/GIF をサポート</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ▼ ボタン行 ▼ -->
+    <div class="col-12 d-flex justify-content-end gap-2">
+      {% if not onboarding %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
+      {% endif %}
+      <button class="btn btn-primary" id="saveBtn" type="submit">保存する</button>
+    </div>
+  </form>
+
+  <!-- 1:1 トリミング用モーダル（スマホはフルスクリーン） -->
+  <div class="modal fade" id="cropperModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg modal-fullscreen-sm-down">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">アイコンをトリミング（1:1）</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+        </div>
+        <div class="modal-body">
+          <div class="cropper-wrap">
+            <img id="cropperImage" alt="crop-target">
+          </div>
+          <div class="form-text mt-2">ピンチ/ドラッグで位置とズームを調整できます。</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" id="applyCrop" class="btn btn-primary">切り取り適用</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 必要スクリプト -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cropperjs@1.6.2/dist/cropper.min.js"></script>
+  <script>
+  (() => {
+    // ===== モバイルの「見かけのvh」対策 =====
+    function setVH() {
+      const vh = window.innerHeight * 0.01;
+      document.documentElement.style.setProperty('--vh', `${vh}px`);
+    }
+    setVH();
+    window.addEventListener('resize', setVH);
+    window.addEventListener('orientationchange', setVH);
+
+    const fileInput   = document.getElementById('avatar_file');
+    const previewImg  = document.getElementById('avatarPreview');
+    const form        = document.getElementById('profileForm');
+    const saveBtn     = document.getElementById('saveBtn');
+
+    const modalEl     = document.getElementById('cropperModal');
+    const cropImgEl   = document.getElementById('cropperImage');
+    const bsModal     = new bootstrap.Modal(modalEl, { backdrop: 'static' });
+    const applyBtn    = document.getElementById('applyCrop');
+
+    let cropper = null;
+    let croppedBlob = null;
+    let croppedName = 'avatar.webp';
+
+    // ===== Enter キーでの送信を抑止（保存ボタンのみ許可） =====
+    form.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        // テキスト入力などでのEnter送信を全ブロック
+        e.preventDefault();
+      }
+    });
+
+    // submitが走っても、保存ボタン経由以外は止める
+    form.addEventListener('submit', async (e) => {
+      const submitter = e.submitter || document.activeElement; // 互換フォールバック
+      if (!submitter || submitter.id !== 'saveBtn') {
+        e.preventDefault();
+        return;
+      }
+
+      // ここからは「保存する」ボタン経由のときのみ
+      if (!croppedBlob) return; // そのままネイティブ送信
+
+      // 画像トリミング適用時はfetchで送信
+      e.preventDefault();
+
+      const action = form.getAttribute('action') || window.location.href;
+      const method = (form.getAttribute('method') || 'POST').toUpperCase();
+
+      const fd = new FormData(form);
+      fd.delete('avatar_file');
+      fd.append('avatar_file', croppedBlob, croppedName);
+
+      try {
+        const resp = await fetch(action, { method, body: fd, credentials: 'same-origin' });
+        if (resp.redirected) {
+          window.location.href = resp.url;
+        } else {
+          const html = await resp.text();
+          document.open(); document.write(html); document.close();
+        }
+      } catch (err) {
+        console.error(err);
+        alert('送信に失敗しました。通信環境をご確認ください。');
+      }
+    });
+
+    // モーダル表示時にコンテナサイズで再レイアウト
+    modalEl.addEventListener('shown.bs.modal', () => {
+      setTimeout(() => {
+        if (cropper) cropper.resize();
+      }, 0);
+    });
+
+    // ファイル選択 → モーダル
+    fileInput.addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+
+      const url = URL.createObjectURL(f);
+      cropImgEl.src = url;
+
+      if (cropper) { cropper.destroy(); cropper = null; }
+      cropImgEl.onload = () => {
+        cropper = new Cropper(cropImgEl, {
+          aspectRatio: 1,
+          viewMode: 2,
+          autoCropArea: 1,
+          dragMode: 'move',
+          background: false,
+          movable: true,
+          zoomable: true,
+          responsive: true,
+          wheelZoomRatio: 0.1,
+          zoomOnTouch: true,
+          zoomOnWheel: true,
+          guides: true,
+          ready() {
+            const c = this.cropper;
+            const relayout = () => {
+              const cont = c.getContainerData();
+              const img  = c.getImageData();
+              const coverRatio = Math.max(cont.width / img.naturalWidth, cont.height / img.naturalHeight);
+              c.zoomTo(coverRatio);
+              const box = Math.min(cont.width, cont.height);
+              c.setCropBoxData({
+                left: (cont.width  - box) / 2,
+                top:  (cont.height - box) / 2,
+                width: box,
+                height: box
+              });
+            };
+            relayout();
+            setTimeout(relayout, 50);
+          }
+        });
+      };
+
+      bsModal.show();
+    });
+
+    // 適用
+    applyBtn.addEventListener('click', () => {
+      if (!cropper) return;
+      const canvas = cropper.getCroppedCanvas({ width: 1024, height: 1024 });
+      if (!canvas) return;
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        croppedBlob = blob;
+        croppedName = 'avatar-' + Date.now() + '.webp';
+        previewImg.src = URL.createObjectURL(blob);
+        bsModal.hide();
+      }, 'image/webp', 0.92);
+    });
+  })();
+  </script>
+</body>
+</html>

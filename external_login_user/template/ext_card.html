@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>カード情報の登録・変更</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <!-- Square Web Payments SDK（sandbox 用。切り替え時は production 用 URL に変更） -->
+  <script src="https://sandbox.web.squarecdn.com/v1/square.js"></script>
+</head>
+<body class="container py-4" style="max-width:720px;">
+
+  {# フラッシュメッセージ #}
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'warning' if cat == 'error' else cat }} mb-3">
+        {{ msg }}
+      </div>
+    {% endfor %}
+  {% endwith %}
+
+  <h1 class="h4 mb-3">カード情報の登録・変更</h1>
+
+  <p class="text-muted">
+    自動決済に利用するカードを登録します。<br>
+    下のフォームは Square が提供する安全なカード入力フォームです。<br>
+    当サイト側ではカード番号そのものは保持せず、Square から返ってきた「ID」と「下4桁」だけを保存します。
+  </p>
+
+  <div class="mb-3">
+    <div class="fw-bold">現在のユーザー</div>
+    <div>{{ me.nickname }}</div>
+  </div>
+
+  {# 既存カードの表示 #}
+  <div class="mb-3">
+    {% if has_card and card_summary %}
+      <div class="alert alert-info mb-0">
+        現在登録されているカード：<br>
+        <span class="fw-bold">{{ card_summary }}</span>
+      </div>
+    {% else %}
+      <div class="alert alert-secondary mb-0">
+        現在登録されているカードはありません。
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- CSRF -->
+  <input type="hidden" id="csrf_token" value="{{ csrf_token }}">
+
+  <!-- Square Web Payments SDK がここにカードフォームをレンダリングする -->
+  <div class="mb-3">
+    <label class="form-label">クレジットカード</label>
+    <div id="card-container" class="border rounded p-3"></div>
+    <div id="card-errors" class="form-text text-danger mt-1" style="display:none;"></div>
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center mt-3">
+    <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.profile') }}">
+      プロフィールに戻る
+    </a>
+
+    <button id="card-submit" class="btn btn-primary">
+      カードを登録する
+    </button>
+  </div>
+
+  <div id="card-status" class="mt-3 small text-muted"></div>
+
+  <script>
+    (async () => {
+      const appId = "{{ square_app_id or '' }}";
+      const locationId = "{{ square_location_id or '' }}";
+      const statusEl = document.getElementById('card-status');
+      const errorEl = document.getElementById('card-errors');
+      const submitBtn = document.getElementById('card-submit');
+      const csrfToken = document.getElementById('csrf_token').value;
+
+      function setStatus(message) {
+        if (statusEl) statusEl.textContent = message || '';
+      }
+      function setError(message) {
+        if (!errorEl) return;
+        if (message) {
+          errorEl.textContent = message;
+          errorEl.style.display = 'block';
+        } else {
+          errorEl.textContent = '';
+          errorEl.style.display = 'none';
+        }
+      }
+
+      // AppId / LocationId 未設定時
+      if (!appId || !locationId) {
+        setError('カード登録の設定が未完了です。（AppId / LocationId 未設定）');
+        submitBtn.disabled = true;
+        return;
+      }
+
+      // Square SDK 読み込み失敗
+      if (!window.Square) {
+        setError('決済フォームの読み込みに失敗しました。時間をおいて再度お試しください。');
+        submitBtn.disabled = true;
+        return;
+      }
+
+      let payments;
+      let card;
+
+      try {
+        payments = window.Square.payments(appId, locationId);
+        card = await payments.card();
+        await card.attach('#card-container');
+      } catch (err) {
+        console.error(err);
+        setError('カード入力フォームの初期化に失敗しました。');
+        submitBtn.disabled = true;
+        return;
+      }
+
+      submitBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        setError('');
+        setStatus('カード情報を確認しています…');
+        submitBtn.disabled = true;
+
+        try {
+          const result = await card.tokenize();
+          if (result.status !== 'OK') {
+            console.error(result);
+            setError('カード情報の確認に失敗しました。入力内容をご確認ください。');
+            setStatus('');
+            submitBtn.disabled = false;
+            return;
+          }
+
+          const token = result.token;
+
+          const resp = await fetch("{{ url_for('external_login_user.card_token') }}", {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              token: token,
+              csrf_token: csrfToken
+            })
+          });
+
+          if (!resp.ok) {
+            let msg = 'サーバーとの通信に失敗しました。時間をおいて再度お試しください。';
+            try {
+              const data = await resp.json();
+              if (data && data.message) msg = data.message;
+            } catch (_) {}
+            setError(msg);
+            setStatus('');
+            submitBtn.disabled = false;
+            return;
+          }
+
+          const data = await resp.json();
+          if (!data.ok) {
+            setError(data.message || 'カード登録に失敗しました。');
+            setStatus('');
+            submitBtn.disabled = false;
+            return;
+          }
+
+          setStatus('カードを登録しました。プロフィール画面に戻ります…');
+          window.location.href = "{{ url_for('external_login_user.profile') }}";
+
+        } catch (err) {
+          console.error(err);
+          setError('予期しないエラーが発生しました。');
+          setStatus('');
+          submitBtn.disabled = false;
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

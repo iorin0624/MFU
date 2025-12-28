@@ -1,0 +1,387 @@
+{% extends "base.html" %}
+{% block title %}
+  {% if session.get('user') == 'admin' %}
+    親アルバム作成（管理者）
+  {% else %}
+    親アルバム作成
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="container d-flex justify-content-center">
+  <form method="post" class="card p-4 shadow-sm w-100" style="max-width: 500px;">
+    <h2 class="text-center mb-4">
+      {% if session.get('user') == 'admin' %}
+        🛠️ 親アルバム作成（管理者）
+      {% else %}
+        🛠️ 親アルバム作成
+      {% endif %}
+    </h2>
+    <div class="mb-3">
+      <label class="form-label">アルバム名</label>
+      <input type="text" name="album_name" class="form-control" required>
+    </div>
+    <button class="btn btn-primary w-100" type="submit">作成</button>
+  </form>
+</div>
+
+<hr class="my-5">
+
+<div class="container">
+  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <h5 class="mb-3 mb-0">📚 現在の親アルバム一覧</h5>
+    {% if session.get('user') == 'admin' %}
+    <div class="text-muted small">
+      💡 写真は <code>/mnt/mfu/mfu_albums</code>（SSD）⇄<code>/mnt/maildata/mfu_albums</code>（HDD）に
+      <b>物理移動</b>します。<u>外部リンク（URL）は変わりません</u>。動画は <code>/mnt/maildata/mfu_album_movie</code> 固定です。
+    </div>
+    {% endif %}
+  </div>
+
+  <ul class="list-group mt-3">
+    {% for album in album_list %}
+      <li class="list-group-item d-flex justify-content-between align-items-start flex-column flex-md-row">
+        <div class="mb-2 mb-md-0 pe-md-3">
+          <strong class="me-2">{{ album.name }}</strong>
+          {% if session.get('user') == 'admin' %}
+            <!-- 保存先バッジ -->
+            <span id="storage-badge-{{ album.id }}" class="badge text-bg-secondary align-middle">読み込み中…</span>
+          {% endif %}
+          <br>
+          <small class="text-muted">👤 作成者: {{ album.owner }}</small><br>
+          🔗 アクセスURL:
+          <a href="{{ url_for('album.album_access', album_id=album.id) }}?token={{ album.access_token }}" target="_blank" rel="noopener">
+            <code>{{ url_for('album.album_access', album_id=album.id, _external=True) }}?token={{ album.access_token }}</code>
+          </a><br>
+          🆔 UUID: <code>{{ album.id }}</code><br>
+        </div>
+
+        <div class="d-flex flex-column align-items-end gap-2 w-100" style="max-width: 420px;">
+          {% if session.get('user') == 'admin' %}
+          <!-- 📦 ストレージ移動：写真のみ（SSD/HDD） -->
+          <div class="d-flex gap-2 w-100 justify-content-end">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              id="btn-to-hdd-{{ album.id }}"
+              onclick="moveStorageWithProgress('{{ album.id }}','hdd')"
+            >📦 HDDへ移動（安全・進捗表示）</button>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              id="btn-to-ssd-{{ album.id }}"
+              onclick="moveStorageWithProgress('{{ album.id }}','ssd')"
+            >⚡ SSDへ戻す（安全・進捗表示）</button>
+          </div>
+
+          <!-- 🧰 全体ZIP（静止画＋動画） -->
+          <div class="d-flex gap-2 w-100 justify-content-end">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-primary"
+              id="btn-zip-{{ album.id }}"
+              onclick="startZipWithProgress('{{ album.id }}')"
+            >🧰 全体ZIP（静止画+動画）</button>
+          </div>
+          {% endif %}
+
+          {% if session.get('user') == 'admin' or session.get('user') == album.owner %}
+          <!-- ✏️ 名前変更（ブラウザ標準ダイアログ + 隠しフォーム） -->
+          <form id="rename-form-{{ album.id }}" method="post" action="{{ url_for('album.rename_album', album_id=album.id) }}" class="d-none">
+            <input type="hidden" name="album_name" value="{{ album.name }}">
+            <input type="hidden" name="from_admin_list" value="1">
+          </form>
+          <div class="d-flex gap-2 w-100 justify-content-end">
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-primary"
+              onclick="
+                (function(){
+                  var current='{{ album.name|e }}';
+                  var next = prompt('新しいアルバム名を入力してください', current);
+                  if (next === null) return;
+                  next = next.trim();
+                  if (!next) { alert('アルバム名は必須です'); return; }
+                  var f = document.getElementById('rename-form-{{ album.id }}');
+                  f.querySelector('input[name=album_name]').value = next;
+                  f.submit();
+                })();
+              "
+            >✏️ 名前変更</button>
+
+            <form method="post" action="{{ url_for('album.regenerate_token', album_id=album.id) }}"
+                  onsubmit="return confirm('このアルバムのアクセストークンを再発行します。既存のURLは無効になります。よろしいですか？');">
+              <button type="submit" class="btn btn-sm btn-warning">♻️ トークン再発行</button>
+            </form>
+
+            <form method="post" action="{{ url_for('album.delete_album', album_id=album.id) }}"
+                  onsubmit="return confirm('この親アルバムとすべての子アルバムを削除します。よろしいですか？');">
+              <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+      </li>
+    {% else %}
+      <li class="list-group-item text-muted">親アルバムがまだ存在しません</li>
+    {% endfor %}
+  </ul>
+</div>
+
+{% if session.get('user') == 'admin' %}
+<!-- ===== 進捗ポップアップ（画面ロック・写真移動） ===== -->
+<style>
+  #move-overlay, #zip-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 2000; display: none; }
+  #move-dialog,  #zip-dialog  { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw); }
+  .progress { height: 20px; }
+</style>
+<div id="move-overlay" aria-modal="true" role="dialog" aria-labelledby="move-title" aria-hidden="true">
+  <div id="move-dialog" class="card shadow-lg">
+    <div class="card-body">
+      <div class="d-flex align-items-center justify-content-between">
+        <h5 id="move-title" class="card-title mb-0">📦 写真を移動中…</h5>
+        <span id="move-dest-badge" class="badge text-bg-secondary">準備中</span>
+      </div>
+      <p class="text-muted mb-3 small">コピー→検証→原子的切替の順で実行します。完了まで他の操作はできません。</p>
+
+      <div class="mb-2">
+        <div class="progress" role="progressbar" aria-label="move progress" aria-valuemin="0" aria-valuemax="100">
+          <div id="move-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%">0%</div>
+        </div>
+      </div>
+      <div class="d-flex justify-content-between small">
+        <div>
+          <span id="move-status" class="me-2">準備中…</span>
+          <span id="move-count" class="text-muted"></span>
+        </div>
+        <div id="move-eta" class="text-muted"></div>
+      </div>
+
+      <hr>
+      <div class="d-flex justify-content-end gap-2">
+        <button id="move-close" type="button" class="btn btn-secondary" disabled>閉じる</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ZIP進捗ポップアップ（画面ロック・全体ZIP） ===== -->
+<div id="zip-overlay" aria-modal="true" role="dialog" aria-labelledby="zip-title" aria-hidden="true">
+  <div id="zip-dialog" class="card shadow-lg">
+    <div class="card-body">
+      <div class="d-flex align-items-center justify-content-between">
+        <h5 id="zip-title" class="card-title mb-0">🧰 全体ZIPを作成中…</h5>
+        <span id="zip-badge" class="badge text-bg-info">圧縮中</span>
+      </div>
+      <p class="text-muted mb-3 small">静止画と動画（.web.mp4 やポスター含む）をまとめています。完了後に自動でダウンロードが開始されます。</p>
+
+      <div class="mb-2">
+        <div class="progress" role="progressbar" aria-label="zip progress" aria-valuemin="0" aria-valuemax="100">
+          <div id="zip-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%">0%</div>
+        </div>
+      </div>
+      <div class="d-flex justify-content-between small">
+        <div>
+          <span id="zip-status" class="me-2">準備中…</span>
+          <span id="zip-count" class="text-muted"></span>
+        </div>
+        <div id="zip-eta" class="text-muted"></div>
+      </div>
+
+      <hr>
+      <div class="d-flex justify-content-end gap-2">
+        <button id="zip-close" type="button" class="btn btn-secondary" disabled>閉じる</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  // ---- 既存: 保存先バッジ ----
+  function setBadge(albumId, storage, exists) {
+    const el = document.getElementById('storage-badge-' + albumId);
+    if (!el) return;
+    let text = '';
+    let cls = 'badge ';
+    if (storage === 'hdd') { text = 'HDD（長期保管）'; cls += exists ? 'text-bg-success' : 'text-bg-secondary'; }
+    else if (storage === 'ssd') { text = 'SSD（高速）'; cls += exists ? 'text-bg-primary' : 'text-bg-secondary'; }
+    else { text = '不明'; cls += 'text-bg-secondary'; }
+    el.textContent = text; el.className = cls;
+  }
+  async function fetchStatus(albumId) {
+    try {
+      const url = "{{ url_for('album.api_storage_status') }}" + "?album_id=" + encodeURIComponent(albumId);
+      const res = await fetch(url, { credentials: 'same-origin' });
+      const data = await res.json();
+      if (data && data.ok) setBadge(albumId, data.storage, data.exists);
+      else setBadge(albumId, 'unknown', false);
+    } catch { setBadge(albumId, 'unknown', false); }
+  }
+
+  // ---- 既存: 移動オーバーレイ（そのまま） ----
+  const overlay   = document.getElementById('move-overlay');
+  const bar       = document.getElementById('move-bar');
+  const statusEl  = document.getElementById('move-status');
+  const countEl   = document.getElementById('move-count');
+  const etaEl     = document.getElementById('move-eta');
+  const closeBtn  = document.getElementById('move-close');
+  const destBadge = document.getElementById('move-dest-badge');
+
+  function openOverlay(dest){
+    overlay.style.display = 'block';
+    document.body.style.overflow = 'hidden';
+    closeBtn.disabled = true;
+    bar.style.width = '0%'; bar.textContent = '0%';
+    statusEl.textContent = '準備中…'; countEl.textContent = ''; etaEl.textContent = '';
+    destBadge.textContent = (dest === 'hdd' ? '→ HDD' : '→ SSD');
+    destBadge.className = 'badge ' + (dest === 'hdd' ? 'text-bg-success' : 'text-bg-primary');
+  }
+  function closeOverlay(){ overlay.style.display = 'none'; document.body.style.overflow = ''; }
+  closeBtn.addEventListener('click', closeOverlay);
+
+  function renderProgress(albumId, p){
+    const pct = Math.max(0, Math.min(100, p.percent||0));
+    bar.style.width = pct + '%'; bar.textContent = pct + '%'; bar.setAttribute('aria-valuenow', pct);
+    const status = p.status || ''; statusEl.textContent = (status === 'running' ? 'コピー中…' : status);
+    const totalF = p.total_files ?? 0, doneF = p.processed_files ?? 0;
+    const totalB = p.total_bytes ?? 0, doneB = p.processed_bytes ?? 0;
+    const fmtB = (n)=> n>=1024*1024 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
+    countEl.textContent = `${doneF}/${totalF} ファイル ・ ${fmtB(doneB)}/${fmtB(totalB)}`;
+    etaEl.textContent = (p.eta_seconds != null && p.status === 'running') ? `残り ~${p.eta_seconds}s` : '';
+    if (status === 'done'){ statusEl.textContent = '完了'; closeBtn.disabled = false; fetchStatus(albumId).finally(()=> setTimeout(()=> location.reload(), 800)); }
+    if (status === 'error'){ statusEl.textContent = 'エラー: ' + (p.message || '失敗しました'); closeBtn.disabled = false; }
+  }
+
+  async function pollProgress(albumId){
+    const url = "{{ url_for('album.api_storage_progress') }}" + '?album_id=' + encodeURIComponent(albumId);
+    let timer = null;
+    async function once(){
+      try{
+        const res = await fetch(url, { cache:'no-store', credentials: 'same-origin' });
+        const j = await res.json();
+        if(!j.ok){ throw new Error(j.error||res.status); }
+        const p = j.progress || {};
+        renderProgress(albumId, p);
+        if(p.status === 'done' || p.status === 'error' || (p.percent||0) >= 100){ clearInterval(timer); timer = null; return; }
+      }catch(_){}
+    }
+    await once(); timer = setInterval(once, 1000);
+  }
+
+  window.moveStorageWithProgress = async function(albumId, dest){
+    const msg = dest === 'hdd'
+      ? '写真をHDDへ物理移動します。処理中はこのアルバムの書き込みを行わないでください。よろしいですか？'
+      : '写真をSSDへ戻します。よろしいですか？';
+    if(!confirm(msg)) return;
+    openOverlay(dest);
+    try{
+      const res = await fetch("{{ url_for('album.api_storage_move_async') }}",{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        credentials:'same-origin',
+        body: JSON.stringify({ album_id: albumId, dest: dest })
+      });
+      const j = await res.json();
+      if(!j.ok){
+        renderProgress(albumId, { status:'error', message:(j.error||'開始に失敗しました') , percent:0 });
+        return;
+      }
+      if(j.already_running && j.progress){ renderProgress(albumId, j.progress); }
+      pollProgress(albumId);
+    }catch(_){
+      renderProgress(albumId, { status:'error', message:'通信エラーが発生しました', percent:0 });
+    }
+  }
+
+  // ===== 全体ZIP：オーバーレイ & 進捗 =====
+  const zipOverlay = document.getElementById('zip-overlay');
+  const zipBar     = document.getElementById('zip-bar');
+  const zipStatus  = document.getElementById('zip-status');
+  const zipCount   = document.getElementById('zip-count');
+  const zipEta     = document.getElementById('zip-eta');
+  const zipClose   = document.getElementById('zip-close');
+
+  function openZipOverlay(){
+    zipOverlay.style.display = 'block';
+    document.body.style.overflow = 'hidden';
+    zipClose.disabled = true;
+    zipBar.style.width = '0%'; zipBar.textContent = '0%';
+    zipStatus.textContent = '準備中…'; zipCount.textContent = ''; zipEta.textContent = '';
+  }
+  function closeZipOverlay(){ zipOverlay.style.display = 'none'; document.body.style.overflow = ''; }
+  zipClose.addEventListener('click', closeZipOverlay);
+
+  function renderZipProgress(p){
+    const pct = Math.max(0, Math.min(100, p.percent||0));
+    zipBar.style.width = pct + '%'; zipBar.textContent = pct + '%'; zipBar.setAttribute('aria-valuenow', pct);
+    const status = p.status || '';
+    zipStatus.textContent = (status === 'running' ? '圧縮中…' : (status||''));
+    const totalF = p.total_files ?? 0, doneF = p.processed_files ?? 0;
+    const totalB = p.total_bytes ?? 0, doneB = p.processed_bytes ?? 0;
+    const fmtB = (n)=> n>=1024*1024 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
+    zipCount.textContent = `${doneF}/${totalF} ファイル ・ ${fmtB(doneB)}/${fmtB(totalB)}`;
+    zipEta.textContent = (p.eta_seconds != null && p.status === 'running') ? `残り ~${p.eta_seconds}s` : '';
+
+    if (status === 'done'){ zipStatus.textContent = '完了'; zipClose.disabled = false; }
+    if (status === 'error'){ zipStatus.textContent = 'エラー: ' + (p.message || '失敗しました'); zipClose.disabled = false; }
+  }
+
+  let currentZipKey = null;
+  async function pollZipProgress(albumId){
+    if(!currentZipKey) return;
+    const url = "{{ url_for('album.admin_zip_all_progress', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId))
+            + '?key=' + encodeURIComponent(currentZipKey);
+    let timer = null;
+
+    async function once(){
+      try{
+        const res = await fetch(url, { cache:'no-store', credentials:'same-origin' });
+        const j = await res.json();
+        if(!j.ok) throw new Error(j.error||'progress error');
+        renderZipProgress(j.progress||{});
+
+        if (j.download_ready) {
+          // 自動ダウンロード開始
+          const dl = "{{ url_for('album.admin_zip_all_download', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId))
+                   + '?key=' + encodeURIComponent(currentZipKey);
+          // 同タブ遷移でダウンロード（ポップアップ抑止）
+          window.location.href = dl;
+        }
+
+        const st = (j.progress||{}).status;
+        if (st === 'done' || st === 'error' || (j.progress||{}).percent >= 100) {
+          clearInterval(timer); timer = null; return;
+        }
+      }catch(_){}
+    }
+    await once(); timer = setInterval(once, 1000);
+  }
+
+  window.startZipWithProgress = async function(albumId){
+    if(!confirm('この親アルバム全体（静止画＋動画）をZIP化します。処理中は書き込みを行わないでください。実行しますか？')) return;
+    openZipOverlay();
+    try{
+      const url = "{{ url_for('album.admin_zip_all_async', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId));
+      const res = await fetch(url, { method:'POST', credentials:'same-origin' });
+      const j = await res.json();
+      if(!j.ok){ renderZipProgress({ status:'error', message:(j.error||'開始に失敗しました'), percent:0 }); return; }
+      currentZipKey = j.key;
+      if (j.already_running && j.progress) renderZipProgress(j.progress);
+      pollZipProgress(albumId);
+    }catch(_){
+      renderZipProgress({ status:'error', message:'通信エラーが発生しました', percent:0 });
+    }
+  }
+
+  // ---- 初期化：一覧の全アルバムについてステータス取得 ----
+  const albumIds = [
+    {% for album in album_list %}
+      "{{ album.id }}"{% if not loop.last %},{% endif %}
+    {% endfor %}
+  ];
+  albumIds.forEach(id => fetchStatus(id));
+})();
+</script>
+{% endif %}
+{% endblock %}

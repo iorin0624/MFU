@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+{% block title %}外部ログインユーザー編集 #{{ u.id }}{% endblock %}
+
+{% block content %}
+<meta name="x-csrf-token" content="{{ admin_csrf }}">
+
+{# ---- フラッシュ/通知 ---- #}
+{% if request.args.get('sent') %}
+  <div class="alert alert-success" role="alert">確認メールを送信しました。</div>
+{% elif request.args.get('assigned') %}
+  <div class="alert alert-success" role="alert">イベントに参加として追加しました。</div>
+{% elif request.args.get('duplicated') %}
+  <div class="alert alert-info" role="alert">このユーザーは既にそのイベントに参加しています。</div>
+{% elif request.args.get('error') == 'csrf' %}
+  <div class="alert alert-danger" role="alert">CSRFエラーのため処理できませんでした。もう一度お試しください。</div>
+{% elif request.args.get('error') == 'no_email' %}
+  <div class="alert alert-warning" role="alert">メールアドレスが未設定のため送信できませんでした。</div>
+{% elif request.args.get('error') == 'smtp' %}
+  <div class="alert alert-danger" role="alert">メール送信に失敗しました（SMTP）。時間をおいて再度お試しください。</div>
+{% elif request.args.get('error') == 'bad_event' %}
+  <div class="alert alert-warning" role="alert">イベントの指定が不正です。</div>
+{% elif request.args.get('error') == 'not_found' %}
+  <div class="alert alert-warning" role="alert">対象のデータが見つかりません。</div>
+{% endif %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">外部ログインユーザー編集 <span class="text-muted">#{{ u.id }}</span></h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">一覧へ戻る</a>
+  </div>
+</div>
+
+{# ---- 基本情報 ---- #}
+<div class="card mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_update', user_id=u.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+      <div class="row g-3">
+        <div class="col-md-8">
+          <div class="mb-3">
+            <label class="form-label">ニックネーム</label>
+            <input type="text" class="form-control" name="nickname" value="{{ u.nickname or '' }}" required>
+          </div>
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">X（@不要）</label>
+              <input type="text" class="form-control" name="x_id" value="{{ u.x_id or '' }}" placeholder="example">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Instagram（@不要）</label>
+              <input type="text" class="form-control" name="instagram_id" value="{{ u.instagram_id or '' }}" placeholder="example">
+            </div>
+          </div>
+          <div class="mt-3">
+            <label class="form-label">メール</label>
+            <input type="email" class="form-control" name="email" value="{{ u.email or '' }}" placeholder="name@example.com">
+            <div class="form-text mt-1">
+              {% if u.email_verified_at %}
+                <span class="badge bg-success">確認済</span>
+                <small class="text-muted ms-2">{{ u.email_verified_at }}</small>
+              {% else %}
+                <span class="badge bg-secondary">未確認</span>
+              {% endif %}
+            </div>
+          </div>
+
+          {# ★ 共有アルバム通知有無の確認 #}
+          <div class="mt-3">
+            <label class="form-label">共有アルバム通知</label>
+            <div>
+              <span class="badge bg-outline-secondary text-dark me-2">
+                アップロード通知:
+                {% if u.notify_album_upload %}
+                  ON
+                {% else %}
+                  OFF
+                {% endif %}
+              </span>
+              <span class="badge bg-outline-secondary text-dark">
+                加工完了通知:
+                {% if u.notify_album_process %}
+                  ON
+                {% else %}
+                  OFF
+                {% endif %}
+              </span>
+            </div>
+            <div class="form-text mt-1 text-muted">
+              外部ユーザー本人のプロフィール画面で設定された通知フラグの現在値です（管理画面からは変更できません）。
+            </div>
+          </div>
+
+          {# ★ 内部メモ（管理者用） #}
+          <div class="mt-3">
+            <label class="form-label">内部メモ（管理者用）</label>
+            <textarea
+              class="form-control"
+              name="admin_note"
+              rows="4"
+              placeholder="このユーザーに関する注意点やメモを記入">{{ u.admin_note or '' }}</textarea>
+            <div class="form-text mt-1 text-muted">
+              ※このメモは管理画面のみで使用され、ユーザー本人には表示されません。
+            </div>
+          </div>
+        </div>
+
+        <div class="col-md-4">
+          {% set avatar = u.avatar_file and ("/external-login/avatars/" ~ u.avatar_file) or u.avatar_url or "https://via.placeholder.com/120?text=—" %}
+          <div class="text-center">
+            <img src="{{ avatar }}" width="120" height="120" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;" alt="avatar">
+            <div class="small text-muted mt-2">social_id: {{ u.social_id or '-' }}</div>
+            <div class="d-grid gap-2 mt-3">
+              <a
+                class="btn btn-outline-primary btn-sm {% if not u.email %}disabled{% endif %}"
+                {% if u.email %}
+                  href="{{ url_for('external_login_user.admin_ext_users_resend_confirm', user_id=u.id) }}"
+                {% else %}
+                  href="#"
+                {% endif %}
+              >確認メールを再送</a>
+              {% if not u.email %}
+                <div class="small text-muted">※メール未設定のため送信できません。</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <hr class="my-4">
+      <div class="d-flex justify-content-between">
+        <div class="small text-muted">
+          作成: {{ u.created_at }} / 更新: {{ u.updated_at }}
+        </div>
+        <div class="d-flex gap-2">
+          <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">キャンセル</a>
+          <button class="btn btn-primary" type="submit">保存</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# =========================================
+   参加中イベント一覧（直近→遠い順 & タイトルに管理リンク）
+   日本語表示: 参加状態/支払状態
+   ========================================= #}
+{% set status_map = {
+  'approved':'承認済', 'pending':'保留', 'rejected':'拒否',
+  'confirmed':'参加', 'cancelled':'キャンセル', 'canceled':'キャンセル',
+  'owner':'主催', 'guest':'ゲスト'
+} %}
+{% set pay_map = {
+  'unpaid':'未払い', 'pending':'確認中', 'paid':'支払済み',
+  'refunded':'返金済み', 'failed':'失敗', 'canceled':'取消', 'cancelled':'取消'
+} %}
+
+<div class="card mb-4">
+  <div class="card-header">
+    <strong>参加中イベント</strong>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0 align-middle">
+        <thead class="table-light">
+          <tr>
+            <th style="width:80px;">ID</th>
+            <th>タイトル</th>
+            <th style="width:180px;">開催日時</th>
+            <th style="width:120px;">参加状態</th>
+            <th style="width:120px;">支払状態</th>
+            <th style="width:120px;">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if memberships and memberships|length %}
+            {# 開催日時ありを昇順（直近→遠い）、未設定は最後 #}
+            {% set mm_has = memberships | selectattr('starts_at') | list %}
+            {% set mm_none = memberships | rejectattr('starts_at') | list %}
+
+            {% for m in mm_has|sort(attribute='starts_at') %}
+              <tr>
+                <td class="text-muted">#{{ m.event_id }}</td>
+                <td>
+                  <a href="https://mfu.iori0624.jp/external-login/admin/events/{{ m.event_id }}">
+                    {{ m.title or '(無題イベント)' }}
+                  </a>
+                </td>
+                <td class="text-muted">{{ m.starts_at }}</td>
+                <td>
+                  <span class="badge bg-outline-secondary text-dark">
+                    {{ status_map.get(m.status|string, m.status) }}
+                  </span>
+                </td>
+                <td>
+                  <span class="badge bg-outline-secondary text-dark">
+                    {{ pay_map.get(m.payment_status|string, m.payment_status) }}
+                  </span>
+                </td>
+                <td>
+                  <a class="btn btn-sm btn-outline-danger"
+                     href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
+                                      user_id=u.id, member_id=m.member_id) }}">
+                    削除
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+
+            {% for m in mm_none %}
+              <tr>
+                <td class="text-muted">#{{ m.event_id }}</td>
+                <td>
+                  <a href="https://mfu.iori0624.jp/external-login/admin/events/{{ m.event_id }}">
+                    {{ m.title or '(無題イベント)' }}
+                  </a>
+                </td>
+                <td class="text-muted">-</td>
+                <td>
+                  <span class="badge bg-outline-secondary text-dark">
+                    {{ status_map.get(m.status|string, m.status) }}
+                  </span>
+                </td>
+                <td>
+                  <span class="badge bg-outline-secondary text-dark">
+                    {{ pay_map.get(m.payment_status|string, m.payment_status) }}
+                  </span>
+                </td>
+                <td>
+                  <a class="btn btn-sm btn-outline-danger"
+                     href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
+                                      user_id=u.id, member_id=m.member_id) }}">
+                    削除
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-3">参加中のイベントはありません。</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# =========================================
+   別イベントに参加させる（直近→遠い順のプルダウン）
+   ========================================= #}
+<div class="card mb-5">
+  <div class="card-header">
+    <strong>このユーザーを別のイベントに参加させる</strong>
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+
+      <div class="col-md-6">
+        <label class="form-label">イベント</label>
+
+        {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
+        {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
+
+        <select name="event_id" class="form-select" required>
+          <option value="">選択してください</option>
+
+          {% for ev in ev_has|sort(attribute='starts_at') %}
+            <option value="{{ ev.id }}">
+              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
+            </option>
+          {% endfor %}
+
+          {% for ev in ev_none %}
+            <option value="{{ ev.id }}">
+              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
+            </option>
+          {% endfor %}
+        </select>
+
+        {% if not assignable_events or assignable_events|length == 0 %}
+          <div class="form-text text-muted">未参加のイベントがありません。</div>
+        {% endif %}
+      </div>
+
+      <div class="col-auto">
+        <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
+          参加として追加
+        </button>
+      </div>
+    </form>
+    <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
+  </div>
+</div>
+{% endblock %}

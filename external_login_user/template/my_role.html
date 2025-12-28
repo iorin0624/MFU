@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>あなたの役割 - {{ event.title }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="container py-4" style="max-width:720px;">
+  {% if not login %}
+    <div class="alert alert-warning">この操作にはLINEログインが必要です。</div>
+  {% endif %}
+
+  <h1 class="h5 mb-3">あなたの役割 - <span class="fw-normal">{{ event.title }}</span></h1>
+
+  <form method="post" class="vstack gap-3">
+    {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+
+    <div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" id="is_camera" name="is_camera" value="1" {{ 'checked' if role.is_camera else '' }}>
+      <label class="form-check-label" for="is_camera">カメラマン</label>
+    </div>
+    <div class="form-check form-switch">
+      <input class="form-check-input" type="checkbox" id="is_assistant" name="is_assistant" value="1" {{ 'checked' if role.is_assistant else '' }}>
+      <label class="form-check-label" for="is_assistant">アシスタント</label>
+    </div>
+    <div>
+      <label class="form-label" for="costume">衣装</label>
+      <input class="form-control" id="costume" name="costume" value="{{ role.costume }}" maxlength="120" placeholder="例）A衣装 / B衣装">
+    </div>
+
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
+      <button class="btn btn-primary">保存</button>
+    </div>
+  </form>
+</body>
+</html>

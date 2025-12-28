@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{{ ev.title }} | 銀行振込</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap 5.3.2 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    :root { --fg:#111; --muted:#6c757d; }
+    body { color:var(--fg); background:#f8f9fa; }
+    .page-wrap{ max-width:860px; margin:0 auto; padding:24px 16px; }
+    .card { border-radius:14px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .bank-detail .row + .row { margin-top:.25rem; }
+  </style>
+</head>
+<body>
+
+  <!-- ★ 初回ポップアップ（毎回表示） -->
+  <div class="modal fade" id="bankNoticeModal" tabindex="-1" aria-labelledby="bankNoticeModalLabel"
+       aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h1 class="modal-title fs-6" id="bankNoticeModalLabel">銀行振込のお願い</h1>
+        </div>
+        <div class="modal-body">
+          <p class="mb-2">
+            銀行で<strong>振込を行った後</strong>は、必ずこのページに戻って
+            <span class="text-decoration-underline">「振込元名」</span>と
+            <span class="text-decoration-underline">「振込先着金日」</span>を入力し、
+            <strong>「振込を申告する」ボタン</strong>を押してください。
+          </p>
+          <p class="mb-0 small text-muted">
+            ※申告がない場合、主催側で入金照合ができず、支払い完了になりません。
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">了解しました</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <main class="page-wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="mb-3">
+          {% for cat, msg in messages %}
+            <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-2" role="alert">{{ msg }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h1 class="h5 mb-0">銀行振込</h1>
+      <span class="badge text-bg-secondary">イベント支払い</span>
+    </div>
+
+    <!-- イベント概要 -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex flex-column flex-sm-row align-items-sm-center justify-content-between gap-2">
+          <div>
+            <div class="text-muted small">イベント</div>
+            <div class="fw-bold">{{ ev.title }}</div>
+          </div>
+          <div class="text-sm-end">
+            <div class="text-muted small">参加費</div>
+            <div class="fs-5 fw-bold">¥{{ (ev.fee_yen or 0) | int }}</div>
+          </div>
+        </div>
+        {% if ev.pay_until %}
+          <hr>
+          <div class="small text-muted">支払い期限：{{ ev.pay_until }}</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- 1) 銀行の選択（表示は銀行名だけ） -->
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 mb-3">1. 振込先の銀行を選択</h2>
+
+        <div class="mb-3">
+          <label for="bankSelect" class="form-label">振込先（銀行口座）</label>
+          <select id="bankSelect" class="form-select">
+            {% for b in banks %}
+              <option value="{{ b.id }}" {{ 'selected' if (selected_bank_id|string) == (b.id|string) else '' }}>
+                {{ b.bank_name }}
+              </option>
+            {% endfor %}
+          </select>
+          <div class="form-text">選択すると下に詳細が表示されます。</div>
+        </div>
+
+        <!-- 詳細表示（選択に同期） -->
+        {% for b in banks %}
+          <div class="bank-detail" id="bank-{{ b.id }}" style="{{ '' if (selected_bank_id|string)==(b.id|string) else 'display:none' }}">
+            <div class="alert alert-light border">
+              <div class="row">
+                <div class="col-4 text-muted small">銀行名</div><div class="col-8 fw-semibold">{{ b.bank_name }}</div>
+              </div>
+              <div class="row">
+                <div class="col-4 text-muted small">支店名</div><div class="col-8">{{ b.branch_name }}</div>
+              </div>
+              <div class="row">
+                <div class="col-4 text-muted small">種別</div><div class="col-8">{{ b.account_kind }}</div>
+              </div>
+              <div class="row">
+                <div class="col-4 text-muted small">口座番号</div><div class="col-8 mono">{{ b.account_number }}</div>
+              </div>
+              <div class="row">
+                <div class="col-4 text-muted small">口座名義</div><div class="col-8">{{ b.account_holder }}</div>
+              </div>
+              {% if b.memo %}
+                <div class="row">
+                  <div class="col-4 text-muted small">備考</div><div class="col-8">{{ b.memo }}</div>
+                </div>
+              {% endif %}
+            </div>
+            <div class="d-grid d-sm-flex gap-2">
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-copy="{{ b.bank_name }}">銀行名コピー</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-copy="{{ b.account_kind }}">種別コピー</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-copy="{{ b.account_number }}">口座番号コピー</button>
+              <button type="button" class="btn btn-outline-secondary btn-sm" data-copy="{{ b.account_holder }}">名義コピー</button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- 2) 送金後の申告（振込元名・着金日） -->
+    <div class="card mb-4">
+      <div class="card-body">
+        <h2 class="h6 mb-3">2. 振込後の申告</h2>
+        <form method="post" id="bankForm">
+          <!-- 選択した bank_id を送る隠しフィールド -->
+          <input type="hidden" name="bank_id" id="bankIdHidden" value="{{ selected_bank_id }}">
+
+          <div class="mb-3">
+            <label for="remitter_name" class="form-label">振込元名<span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="remitter_name" name="remitter_name" placeholder="例：ヤマダ　タロウ" required>
+            <div class="form-text">通帳明細に表示される氏名（または名義）を入力してください。</div>
+          </div>
+
+          <div class="mb-3">
+            <label for="deposit_date" class="form-label">振込先着金日<span class="text-danger">*</span></label>
+            <input type="date" class="form-control" id="deposit_date" name="deposit_date" required>
+            <div class="form-text">着金予定日または着金した日を入力してください。</div>
+          </div>
+
+          <button type="submit" class="btn btn-success w-100" id="submitBtn">
+            振込を申告する（主催確認待ちにする）
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <div class="alert alert-warning small" role="alert">
+      <div class="fw-bold mb-1">ご注意</div>
+      ・この画面で「申告」しても即時に「支払い完了」にはなりません。<br>
+      ・主催側の確認後に支払いステータスが「完了」に更新されます。
+    </div>
+
+    <div class="mt-4 text-center">
+      <a class="link-secondary" href="{{ url_for('external_login_user.view_event', event_uuid=ev.event_uuid_str) }}">
+        &larr; イベントページに戻る
+      </a>
+    </div>
+  </main>
+
+  <!-- Bootstrap JS（モーダル用） -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // ページ表示時にモーダルを開く
+    document.addEventListener('DOMContentLoaded', function () {
+      var el = document.getElementById('bankNoticeModal');
+      if (el) {
+        var m = new bootstrap.Modal(el);
+        m.show();
+      }
+    });
+
+    // 銀行選択に応じて詳細切り替え＋hidden更新
+    (function(){
+      var sel = document.getElementById('bankSelect');
+      var hidden = document.getElementById('bankIdHidden');
+      if(!sel || !hidden) return;
+      sel.addEventListener('change', function(){
+        var id = sel.value;
+        hidden.value = id;
+        var boxes = document.querySelectorAll('.bank-detail');
+        boxes.forEach(function(el){ el.style.display = 'none'; });
+        var t = document.getElementById('bank-' + id);
+        if(t) t.style.display = '';
+      });
+    })();
+
+    // コピー（クリックしたボタンの data-copy をコピー）
+    (function(){
+      document.addEventListener('click', function(e){
+        var btn = e.target.closest('[data-copy]');
+        if(!btn) return;
+        var text = btn.getAttribute('data-copy') || '';
+        if(!text) return;
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch (_) {}
+        document.body.removeChild(ta);
+        if(ok){
+          btn.classList.remove('btn-outline-secondary');
+          btn.classList.add('btn-success');
+          btn.textContent = 'コピー済み';
+          setTimeout(function(){
+            btn.classList.add('btn-outline-secondary');
+            btn.classList.remove('btn-success');
+            btn.textContent = 'コピー';
+          }, 1600);
+        }else{
+          alert('コピーに失敗しました。手動で選択してください。');
+        }
+      });
+    })();
+
+    // 二重送信防止
+    (function(){
+      var form = document.getElementById('bankForm');
+      var submitBtn = document.getElementById('submitBtn');
+      if(!form || !submitBtn) return;
+      form.addEventListener('submit', function(){
+        submitBtn.disabled = true;
+        submitBtn.textContent = '送信中…';
+      });
+    })();
+  </script>
+</body>
+</html>

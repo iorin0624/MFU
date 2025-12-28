@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}銀行口座管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h5 mb-0">{{ ev.title }} - 銀行口座管理</h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('external_login_user.admin_event_edit', event_id=ev.id) }}">イベント編集へ戻る</a>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">イベント詳細へ</a>
+  </div>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+  {% endfor %}
+{% endwith %}
+
+<!-- 追加フォーム -->
+<form method="post" class="card mb-3" autocomplete="off" novalidate>
+  <input type="hidden" name="action" value="add">
+  <!-- ▼ CSRF -->
+  <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+  <div class="card-header">振込口座を追加</div>
+  <div class="card-body row g-2">
+    <div class="col-sm-4">
+      <label class="form-label">表示名 <span class="text-danger">*</span></label>
+      <input class="form-control" name="label" placeholder="例：三井住友（撮影用）" required>
+    </div>
+    <div class="col-sm-3">
+      <label class="form-label">銀行名 <span class="text-danger">*</span></label>
+      <input class="form-control" name="bank_name" placeholder="例：三井住友銀行" required>
+    </div>
+    <div class="col-sm-3">
+      <label class="form-label">支店名</label>
+      <input class="form-control" name="branch_name" placeholder="例：渋谷支店">
+    </div>
+    <div class="col-sm-2">
+      <label class="form-label">種別</label>
+      <select class="form-select" name="account_type">
+        <option>普通</option>
+        <option>当座</option>
+        <option>貯蓄</option>
+        <option>その他</option>
+      </select>
+    </div>
+    <div class="col-sm-3">
+      <label class="form-label">口座番号 <span class="text-danger">*</span></label>
+      <input class="form-control" name="account_no" inputmode="numeric" placeholder="例：1234567" required>
+    </div>
+    <div class="col-sm-4">
+      <label class="form-label">名義 <span class="text-danger">*</span></label>
+      <input class="form-control" name="holder" placeholder="例：ｲｵﾘ ﾀﾛｳ" required>
+    </div>
+    <div class="col-sm-5">
+      <label class="form-label">備考</label>
+      <input class="form-control" name="note" placeholder="例：振込名義：参加者名／期限：開催前日まで">
+    </div>
+  </div>
+  <div class="card-footer text-end">
+    <button class="btn btn-primary btn-sm">追加</button>
+  </div>
+</form>
+
+<!-- 一覧 -->
+<div class="table-responsive">
+  <table class="table align-middle">
+    <thead>
+      <tr>
+        <th style="width:4rem;">ID</th>
+        <th>表示名</th>
+        <th>銀行</th>
+        <th>支店</th>
+        <th>種別</th>
+        <th>口座番号</th>
+        <th>名義</th>
+        <th>備考</th>
+        <th style="width:8rem;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in banks %}
+      {# b は dict を想定（admin.py 側で dict 化） #}
+      <tr>
+        <td>{{ b.id or b["id"] }}</td>
+        <td>{{ b.label or b["label"] }}</td>
+        <td>{{ b.bank_name or b["bank_name"] }}</td>
+        <td>{{ (b.branch_name or b["branch_name"]) or '-' }}</td>
+        <td>{{ b.account_kind or b["account_kind"] }}</td>
+        <td><code>{{ b.account_number or b["account_number"] }}</code></td>
+        <td>{{ b.account_holder or b["account_holder"] }}</td>
+        <td>{{ (b.memo or b["memo"]) or '' }}</td>
+        <td class="text-end">
+          <form method="post" class="d-inline" onsubmit="return confirm('この口座を削除しますか？');">
+            <input type="hidden" name="action" value="del">
+            <!-- ▼ CSRF -->
+            <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+            <input type="hidden" name="bank_id" value="{{ b.id or b['id'] }}">
+            <button class="btn btn-sm btn-outline-danger">削除</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="text-muted">登録された口座はありません。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="small text-muted mt-3">
+  ※ 表示順（sort_order）や表示/非表示の切替は将来拡張で対応できます。現在は追加と削除のみ。<br>
+  ※ 参加者画面の「銀行振込」ページでは、ここで有効（is_active=1）の口座が一覧表示されます。
+</div>
+{% endblock %}

@@ -1,0 +1,34 @@
+{% extends "base_extlogin.html" %}
+{% block title %}プロフィール設定 - MFU{% endblock %}
+{% block content %}
+  <h1 class="h4 mb-3">プロフィール設定</h1>
+  <form method="post" class="row gy-3" autocomplete="off">
+    <div class="col-12">
+      <label class="form-label">ニックネーム <span class="text-danger">*</span></label>
+      <input type="text" name="nickname" value="{{ (form.nickname or '')|e }}" class="form-control" maxlength="50" required>
+      {% if errors.nickname %}<div class="text-danger small mt-1">{{ errors.nickname }}</div>{% endif %}
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">X ID（@不要）</label>
+      <input type="text" name="x_id" value="{{ (form.x_id or '')|e }}" class="form-control" maxlength="15">
+      {% if errors.x_id %}<div class="text-danger small mt-1">{{ errors.x_id }}</div>{% endif %}
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">Instagram ID（@不要）</label>
+      <input type="text" name="instagram_id" value="{{ (form.instagram_id or '')|e }}" class="form-control" maxlength="30">
+      {% if errors.instagram_id %}<div class="text-danger small mt-1">{{ errors.instagram_id }}</div>{% endif %}
+    </div>
+
+{% if errors.get('x_or_ig') %}<div class="text-danger small mt-1">{{ errors['x_or_ig'] }}</div>{% endif %}
+
+
+    <div class="col-12">
+      <label class="form-label">メールアドレス（任意）</label>
+      <input type="email" name="email" value="{{ (form.email or '')|e }}" class="form-control" maxlength="191">
+    </div>
+    <div class="col-12 d-grid d-md-flex gap-2">
+      <button class="btn btn-primary">保存する</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.me') }}">キャンセル</a>
+    </div>
+  </form>
+{% endblock %}

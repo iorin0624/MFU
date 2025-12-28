@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>外部ログイン（利用者）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    /* LINEボタン */
+    .btn-line { background:#06C755; border-color:#06C755; color:#fff; }
+    .btn-line:hover { background:#05b84d; border-color:#05b84d; color:#fff; }
+    /* 未ログイン時の案内ボックス */
+    .line-login-cta{
+      background:#f3fff6; border:1px solid #d8f2df;
+      border-radius:.75rem; padding:1rem;
+    }
+    .line-login-cta .lead{ font-weight:600; }
+  </style>
+</head>
+<body class="container py-4" style="max-width:900px;">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg|safe }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <h1 class="h4 mb-3">外部ログイン（LINE）</h1>
+
+  {# === require_payment を 0/1 に正規化するマクロ === #}
+  {% macro rp_of(e) -%}
+    {%- set v = e.member_require_payment if e.member_require_payment is defined
+              else (e.my_require_payment if e.my_require_payment is defined
+                    else e.require_payment) -%}
+    {%- if v is none -%}
+      1
+    {%- elif v is number -%}
+      {{ 1 if (v|int) != 0 else 0 }}
+    {%- elif v is string -%}
+      {%- set s = v|trim|lower -%}
+      {{ 1 if s in ['1','true','on','yes','y'] else 0 }}
+    {%- else -%}
+      {# bytes 等の表現を文字列化して \x01 / 末尾1 で判定 #}
+      {%- set s = (v|string) -%}
+      {{ 1 if ('\\x01' in s or s.endswith('1')) else 0 }}
+    {%- endif -%}
+  {%- endmacro %}
+
+  {% if login and me %}
+    <div class="alert alert-success">ログイン中：<strong>{{ me.nickname }}</strong></div>
+    <div class="d-flex flex-wrap gap-2 mb-3">
+      <a class="btn btn-primary" href="{{ url_for('external_login_user.profile') }}">プロフィール編集</a>
+      <a class="btn btn-outline-danger" href="{{ url_for('external_login_user.logout') }}">ログアウト</a>
+    </div>
+
+    {# ★ メール登録 促し（プロフィールから登録・変更） ★ #}
+    {% set _email = (me.email if (me is defined and me.email is defined) else '') %}
+    {% if (_email or '')|trim == '' %}
+      <div class="alert alert-warning d-flex justify-content-between align-items-center mb-4" role="alert">
+        <div class="me-3">
+          以前は任意登録のメールアドレスですが、決済や連絡のため、<strong>プロフィール編集</strong>から登録をお願いします。
+        </div>
+        <a class="btn btn-sm btn-warning" href="{{ url_for('external_login_user.profile') }}">
+          プロフィールで登録
+        </a>
+      </div>
+    {% else %}
+    {% endif %}
+
+{# ★ 未払いアラート：支払期限が近い順。支払不要はサーバ側で除外済み #}
+{% set _unpaid = unpaid_notices or [] %}
+{% if _unpaid|length > 0 %}
+  <div class="alert alert-danger d-flex align-items-start justify-content-between mb-4" role="alert">
+    <div class="me-3">
+      <div class="fw-bold mb-1">未払いのイベントがあります</div>
+      <ul class="mb-0 ps-3">
+        {# 期日→タイトル→金額→リンク #}
+        {% for it in _unpaid %}
+          <li class="mb-1">
+            {% if it.due_at %}
+              <span class="badge bg-danger-subtle text-danger border border-danger-subtle me-1">
+                期日 {{ it.due_at.strftime('%Y/%m/%d') }}
+              </span>
+            {% else %}
+              <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle me-1">
+                期日未設定
+              </span>
+            {% endif %}
+            <a class="link-dark text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=it.event_uuid_str) }}">
+              {{ it.title }}
+            </a>
+            <span class="text-muted small ms-1">（{{ (it.fee_yen or 0)|int }} 円）</span>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {# 先頭の支払ページへショートカット #}
+    <div class="text-end">
+      <a class="btn btn-sm btn-primary" href="{{ _unpaid[0].pay_url }}">支払ページへ</a>
+    </div>
+  </div>
+{% endif %}
+
+
+
+    <div class="card">
+      <div class="card-body">
+        <!-- 見出し -->
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h2 class="h5 mb-0">参加イベント一覧</h2>
+          <!-- 終了イベントの折りたたみトグル -->
+          <button class="btn btn-outline-secondary btn-sm"
+                  id="pastToggleBtn"
+                  type="button"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#pastCollapse"
+                  aria-expanded="false"
+                  aria-controls="pastCollapse">
+            終了イベントを表示
+          </button>
+        </div>
+
+        <!-- ========= 開催予定（開催日が近い順＝昇順） ========= -->
+        <h3 class="h6 text-muted mb-2">開催予定</h3>
+
+        {% set upcoming = events_upcoming or [] %}
+        {% if upcoming|length == 0 %}
+          <div class="text-muted">現在、開催予定のイベントはありません。</div>
+        {% else %}
+          <!-- PC/スマホ共通：カード表示に統一 -->
+          <div class="d-flex flex-column gap-3">
+            {% for e in upcoming %}
+              {% set rp = rp_of(e)|int %}
+              {% set fee = e.fee_yen|default(0)|int %}
+              {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
+              {% set ps  = ps0 if ps0 else 'unpaid' %}
+              {% set rcpt = (e.my_receipt_url if e.my_receipt_url is defined else e.receipt_url) %}
+              {% set needs_pay = (rp == 1) and (fee > 0) %}
+              {% set start = e.starts_at %}
+              {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
+              {% set album_url = e.album_url %}
+              <div class="card">
+                <div class="card-body">
+                  <div class="fw-bold">
+                    <a class="text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">
+                      {{ e.title }}
+                    </a>
+                  </div>
+                  <div class="text-muted small mb-2">
+                    {% if start %}
+                      {% if start is string %}
+                        {{ start }}
+                      {% else %}
+                        {{ start.strftime("%Y/%m/%d %H:%M") }}
+                      {% endif %}
+                    {% else %}—{% endif %}
+                  </div>
+
+                  <div class="d-flex flex-wrap gap-2">
+                    {% if ps == 'paid' and rcpt %}
+                      <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
+                    {% elif ps == 'paid' %}
+                      <button class="btn btn-sm btn-success" disabled>支払済</button>
+                    {% elif needs_pay %}
+                      <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払ページへ</a>
+                    {% else %}
+                      <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
+                    {% endif %}
+
+                    {% if album_url %}
+                      <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
+                    {% else %}
+                      <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
+                    {% endif %}
+
+                    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <!-- ========= 終了イベント（折りたたみ） ========= -->
+        <div class="collapse mt-4" id="pastCollapse">
+          <h3 class="h6 text-muted mb-2">終了イベント</h3>
+          {% set past = events_past or [] %}
+
+          {% if past|length == 0 %}
+            <div class="text-muted">終了イベントはありません。</div>
+          {% else %}
+            <!-- PC/スマホ共通：カード表示に統一 -->
+            <div class="d-flex flex-column gap-3">
+              {% for e in past %}
+                {% set rp = rp_of(e)|int %}
+                {% set fee = e.fee_yen|default(0)|int %}
+                {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
+                {% set ps  = ps0 if ps0 else 'unpaid' %}
+                {% set rcpt = (e.my_receipt_url if e.my_receipt_url is defined else e.receipt_url) %}
+                {% set needs_pay = (rp == 1) and (fee > 0) %}
+                {% set start = e.starts_at %}
+                {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
+                {% set album_url = e.album_url %}
+                <div class="card">
+                  <div class="card-body">
+                    <div class="fw-bold">
+                      <a class="text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">
+                        {{ e.title }}
+                      </a>
+                    </div>
+                    <div class="text-muted small mb-2">
+                      {% if start %}
+                        {% if start is string %}
+                          {{ start }}
+                        {% else %}
+                          {{ start.strftime("%Y/%m/%d %H:%M") }}
+                        {% endif %}
+                      {% else %}—{% endif %}
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2">
+                      {% if ps == 'paid' and rcpt %}
+                        <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
+                      {% elif ps == 'paid' %}
+                        <button class="btn btn-sm btn-success" disabled>支払済</button>
+                      {% elif needs_pay %}
+                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払ページへ</a>
+                      {% else %}
+                        <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
+                      {% endif %}
+
+                      {% if album_url %}
+                        <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
+                      {% else %}
+                        <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
+                      {% endif %}
+
+                      <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <div class="line-login-cta mb-3">
+      <p class="lead mb-2">はじめるには LINE ログインが必要です</p>
+      <ul class="mb-3 ps-3">
+        <li>参加イベントの確認・支払い・アルバム共有に使います</li>
+        <li>通知や連絡のため、ログイン後にプロフィールでメールも登録できます</li>
+      </ul>
+      <a class="btn btn-line btn-lg w-100 mb-2" href="{{ url_for('external_login_user.line_login') }}">
+        <span class="me-2" aria-hidden="true">💬</span> LINEでログイン
+      </a>
+
+      {# トグルリンク（必要な時だけ展開） #}
+      <p class="text-center mb-0">
+        <a class="small link-secondary" data-bs-toggle="collapse" href="#pinLoginCollapse" role="button" aria-expanded="false" aria-controls="pinLoginCollapse">
+          LINEが使えない / 使わない場合はこちら（メールのPINでログイン）
+        </a>
+      </p>
+    </div>
+
+    {# === PIN ログイン（折りたたみ） =================== #}
+    <div class="collapse{% if session and session.get('pin_email') %} show{% endif %}" id="pinLoginCollapse">
+      <div class="card mb-4">
+        <div class="card-body">
+          <h2 class="h5 mb-3">メールのPINコードでログイン</h2>
+
+          <div class="row g-3">
+            <!-- PIN送信フォーム -->
+            <div class="col-12 col-md-6">
+              <form action="{{ url_for('external_login_user.pin_request') }}" method="post" class="border rounded p-3 h-100">
+                <div class="mb-2 fw-semibold">1) PINコードを送る</div>
+                <div class="mb-3">
+                  <label for="pinReqEmail" class="form-label">メールアドレス</label>
+                  <input type="email" class="form-control" id="pinReqEmail" name="email" inputmode="email" autocomplete="email" required>
+                  <div class="form-text">有効期限：10分。短時間の連続送信は制限されます。</div>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">PINコードを送信</button>
+              </form>
+            </div>
+
+            <!-- PINログインフォーム -->
+            <div class="col-12 col-md-6">
+              <form action="{{ url_for('external_login_user.pin_login') }}" method="post" class="border rounded p-3 h-100">
+                <div class="mb-2 fw-semibold">2) 受信したPINでログイン</div>
+
+                {# 右フォーム：メールアドレス欄（session に保存済みなら hidden へ） #}
+                {% set _pin_email = (session.get('pin_email') if session else '') or '' %}
+                {% if _pin_email %}
+                  <input type="hidden" name="email" value="{{ _pin_email }}">
+                  <div class="mb-3">
+                    <label class="form-label">メールアドレス</label>
+                    <input type="email" class="form-control" value="{{ _pin_email }}" readonly>
+                    <div class="form-text">PIN送信先のメールに固定されています。</div>
+                  </div>
+                {% else %}
+                  <div class="mb-3">
+                    <label for="pinLoginEmail" class="form-label">メールアドレス</label>
+                    <input type="email" class="form-control" id="pinLoginEmail" name="email" inputmode="email" autocomplete="email" required>
+                  </div>
+                {% endif %}
+
+                <div class="mb-3">
+                  <label for="pinCode" class="form-label">PINコード（6桁）</label>
+                  <input type="text" class="form-control" id="pinCode" name="pin" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+                </div>
+
+                <button type="submit" class="btn btn-success w-100">PINでログイン</button>
+              </form>
+            </div>
+          </div>
+
+          <script>
+            // 使い勝手向上：左で入力したメールを右にも反映
+            (function(){
+              const a = document.getElementById('pinReqEmail');
+              const b = document.getElementById('pinLoginEmail');
+              if(a && b){
+                a.addEventListener('change', ()=>{ if(!b.value) b.value = a.value; });
+              }
+            })();
+          </script>
+        </div>
+      </div>
+    </div>
+    {# === /PIN ログイン ================================== #}
+  {% endif %}
+
+  <!-- ▼ アップデート情報リンク（特商法の「上あたり」に配置） -->
+  <div class="text-end mb-2">
+    <a href="#" id="linkUpdateInfo" class="link-primary small">アップデート情報</a>
+  </div>
+
+  <!-- === 特定商取引法：リンク → 折りたたみ本体 ================= -->
+  <hr class="my-4">
+  <p class="text-center mb-2">
+    <a href="#tokushohoCollapse"
+       class="link-secondary"
+       data-bs-toggle="collapse"
+       role="button"
+       aria-expanded="false"
+       aria-controls="tokushohoCollapse">
+      特定商取引法に基づく表記（クリックで表示）
+    </a>
+  </p>
+
+  <div class="collapse" id="tokushohoCollapse">
+    <section id="tokushoho" class="mt-3">
+      <h2 class="h5 mb-3">特定商取引法に基づく表記</h2>
+
+      {% if login and me %}
+        <!-- ログイン後：フルオープン -->
+        <div class="card">
+          <div class="card-body">
+            <dl class="row mb-0">
+              <dt class="col-sm-4 col-md-3">販売業者</dt>
+              <dd class="col-sm-8 col-md-9">小松　伊織</dd>
+
+              <dt class="col-sm-4 col-md-3">運営責任者</dt>
+              <dd class="col-sm-8 col-md-9">小松　伊織</dd>
+
+              <dt class="col-sm-4 col-md-3">所在地</dt>
+              <dd class="col-sm-8 col-md-9">290-0023　千葉県市原市惣社79-2</dd>
+
+              <dt class="col-sm-4 col-md-3">電話番号</dt>
+              <dd class="col-sm-8 col-md-9">050-6874-1025</dd>
+
+              <dt class="col-sm-4 col-md-3">メールアドレス</dt>
+              <dd class="col-sm-8 col-md-9">admin@mail.iori0624.jp</dd>
+
+              <dt class="col-sm-4 col-md-3">サイトURL</dt>
+              <dd class="col-sm-8 col-md-9">
+                {{ request.url_root.rstrip('/') if request else '' }}
+              </dd>
+
+              <dt class="col-sm-4 col-md-3">販売価格</dt>
+              <dd class="col-sm-8 col-md-9">各イベントページに表示（消費税込）</dd>
+
+              <dt class="col-sm-4 col-md-3">代金の支払時期・方法</dt>
+              <dd class="col-sm-8 col-md-9">
+                クレジットカード決済（Square）、Apple&nbsp;Pay、Google&nbsp;Pay（申込時に即時決済）<br>
+                ※銀行振込も対応しますが、振込手数料はご負担お願い致します。（例外対応）<br>
+              </dd>
+
+              <dt class="col-sm-4 col-md-3">商品の引渡し時期・役務の提供時期</dt>
+              <dd class="col-sm-8 col-md-9">
+                決済確認後、イベント当日または案内に従い提供・共有（デジタルコンテンツは即時または準備完了後に提供）
+              </dd>
+
+              <dt class="col-sm-4 col-md-3">追加費用（手数料・送料など）</dt>
+              <dd class="col-sm-8 col-md-9">なし（通信費はお客様負担）</dd>
+
+              <dt class="col-sm-4 col-md-3">キャンセル・返金</dt>
+              <dd class="col-sm-8 col-md-9">
+                主催者都合（天候等含む）による中止時は全額返金します。<br>
+                参加者都合のキャンセルは、各イベントの募集要項に定めるキャンセルポリシーに従います。<br>
+                必要に応じて部分返金（差額返金）に対応します。
+              </dd>
+
+              <dt class="col-sm-4 col-md-3">動作環境</dt>
+              <dd class="col-sm-8 col-md-9">
+                最新の主要ブラウザを推奨。アルバム閲覧・ダウンロード時のデータ通信料はお客様負担。
+              </dd>
+
+              <dt class="col-sm-4 col-md-3">問い合わせ窓口</dt>
+              <dd class="col-sm-8 col-md-9">
+                上記メールアドレス、X（@iorin0624）のDM、Instagram（@iorin0624）のDMよりお問い合わせください。
+              </dd>
+            </dl>
+          </div>
+        </div>
+      {% else %}
+        <!-- 未ログイン：最小限 -->
+        <div class="alert alert-info mb-0">
+          <div><strong>販売業者：</strong> 小松　伊織</div>
+          <div class="small text-muted mt-1">
+            そのほかの住所・電話番号・連絡先等の情報は、<u>請求があれば開示</u>します。<br>
+            ログイン後に、上記の全項目を確認できます。
+          </div>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+  <!-- /特商法（折りたたみ） ================================= -->
+
+  <!-- ▼▼▼ アップデート情報モーダル ▼▼▼ -->
+  <div class="modal fade" id="updateInfoModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">アップデート情報</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+        </div>
+        <div class="modal-body">
+          <div id="updateText" style="white-space:pre-wrap; word-break:break-word;"></div>
+          <div class="form-check mt-3">
+            <input class="form-check-input" type="checkbox" id="updateDontShow">
+            <label class="form-check-label" for="updateDontShow">次回以降は表示しない</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="updateOkBtn" type="button" class="btn btn-primary" data-bs-dismiss="modal">閉じる</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- ▲▲▲ アップデート情報モーダルここまで ▲▲▲ -->
+
+  <!-- Bootstrap JS（collapse用） -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  {% if session and session.get('pin_email') %}
+  <script>
+    // サーバ側で pin_email があれば PIN ログイン欄を自動で展開
+    try {
+      var el = document.getElementById('pinLoginCollapse');
+      if (el) new bootstrap.Collapse(el, {toggle:false}).show();
+    } catch(e){}
+  </script>
+  {% endif %}
+
+  <!-- 終了イベントトグルのボタン文言切り替え -->
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var collapseEl = document.getElementById('pastCollapse');
+      var btn = document.getElementById('pastToggleBtn');
+      if (!collapseEl || !btn) return;
+
+      collapseEl.addEventListener('show.bs.collapse', function () {
+        btn.textContent = '終了イベントを非表示';
+      });
+      collapseEl.addEventListener('hide.bs.collapse', function () {
+        btn.textContent = '終了イベントを表示';
+      });
+    });
+  </script>
+
+  <!-- ▼ アップデート情報：自動チェック＋再確認リンク（既読状態をチェックに反映） -->
+  <script>
+  (() => {
+    const modalEl = document.getElementById('updateInfoModal');
+    const bsModal  = new bootstrap.Modal(modalEl);
+    const updateTextEl = document.getElementById('updateText');
+    const dontShowEl   = document.getElementById('updateDontShow');
+    const okBtn        = document.getElementById('updateOkBtn');
+    const linkEl       = document.getElementById('linkUpdateInfo');
+
+    let showedAuto = false;
+
+    async function fetchCheckAndMaybeShow() {
+      try {
+        const r = await fetch('/external-login/updates/check', { credentials: 'same-origin' });
+        if (!r.ok) return;
+        const js = await r.json();
+        if (js.show && !showedAuto) {
+          updateTextEl.textContent = js.text || '';
+          // DB既読状態に合わせてチェック（通常 show===true の時は未既読 → false）
+          dontShowEl.checked = !!js.seen;
+          bsModal.show();
+          showedAuto = true;
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    // 再確認リンク：チェック状態も含めて取得（/updates/check を使い、失敗時は /updates/text フォールバック）
+    linkEl?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const r = await fetch('/external-login/updates/check', { credentials: 'same-origin' });
+        if (r.ok) {
+          const js = await r.json();
+          updateTextEl.textContent = (js && js.text) ? js.text : '（現在、アップデート情報はありません）';
+          dontShowEl.checked = !!(js && js.seen);
+          bsModal.show();
+          return;
+        }
+      } catch (e2) {
+        console.warn('updates/check failed, fallback to text', e2);
+      }
+      try {
+        const tx = await fetch('/external-login/updates/text', { credentials: 'same-origin' }).then(r => r.text());
+        updateTextEl.textContent = tx || '（現在、アップデート情報はありません）';
+        // フォールバック時は既読状態不明なので未チェックにする
+        dontShowEl.checked = false;
+        bsModal.show();
+      } catch (e3) { console.error(e3); }
+    });
+
+    // 閉じる時、「次回以降表示しない」チェックなら既読化
+    okBtn.addEventListener('click', async () => {
+      if (!dontShowEl.checked) return;
+      try {
+        await fetch('/external-login/updates/ack', {
+          method: 'POST',
+          credentials: 'same-origin'
+        });
+      } catch (e) { console.error(e); }
+    });
+
+    // ログイン時のみサーバが show:true を返すので、常に呼んでOK
+    document.addEventListener('DOMContentLoaded', fetchCheckAndMaybeShow);
+  })();
+  </script>
+</body>
+</html>

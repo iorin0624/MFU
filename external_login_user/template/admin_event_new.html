@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}イベント新規作成{% endblock %}
+
+
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 mb-0">イベント新規作成</h1>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_events_list') }}">一覧へ</a>
+  </div>
+
+  <form method="post" class="row gy-3" autocomplete="off">
+    <div class="col-12">
+      <label class="form-label">タイトル <span class="text-danger">*</span></label>
+      <input type="text" name="title" class="form-control" maxlength="100"
+             value="{{ (form.title or '')|e }}" required>
+      {% if errors.title %}<div class="text-danger small mt-1">{{ errors.title }}</div>{% endif %}
+    </div>
+
+    <div class="col-md-6">
+      <label class="form-label">開始日時（任意・YYYY-MM-DD hh:mm:ss）</label>
+      <input type="text" name="starts_at" class="form-control"
+             value="{{ (form.starts_at or '')|e }}">
+    </div>
+
+    <div class="col-md-6">
+      <label class="form-label">参加費（円・任意）</label>
+      <input type="text" name="fee_yen" class="form-control" inputmode="numeric"
+             value="{{ (form.fee_yen or '')|e }}">
+      {% if errors.fee_yen %}<div class="text-danger small mt-1">{{ errors.fee_yen }}</div>{% endif %}
+    </div>
+
+    <div class="col-md-6">
+      <label class="form-label">会場名（任意）</label>
+      <input type="text" name="place_name" class="form-control"
+             value="{{ (form.place_name or '')|e }}">
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">住所（任意）</label>
+      <input type="text" name="address" class="form-control"
+             value="{{ (form.address or '')|e }}">
+    </div>
+
+    <div class="col-12">
+      <label class="form-label">GoogleマップURL（任意）</label>
+      <input type="url" name="maps_url" class="form-control"
+             value="{{ (form.maps_url or '')|e }}">
+    </div>
+
+    <div class="col-12 d-grid d-md-flex gap-2">
+      <button class="btn btn-primary">作成する</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_events_list') }}">キャンセル</a>
+    </div>
+  </form>
+
+{% endblock %}

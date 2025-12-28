@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>イベント参加申請</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="container py-4" style="max-width:720px;">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for cat, msg in messages %}
+      <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <h1 class="h5 mb-3">イベント参加</h1>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="fw-bold mb-1">{{ ev.title }}</div>
+      <div class="small text-muted mb-2">UUID：{{ ev.event_uuid_str }}</div>
+      <div><strong>開始:</strong> {{ ev.starts_at or '—' }}</div>
+      <div><strong>参加費:</strong> {% if ev.fee_yen is not none %}¥{{ "{:,}".format(ev.fee_yen) }}{% else %}—{% endif %}</div>
+      <div><strong>場所:</strong> {{ ev.place_name or '—' }}</div>
+      <div class="small text-muted">{{ ev.address or '' }}</div>
+    </div>
+  </div>
+
+  {% if status == 'approved' %}
+    <div class="alert alert-success">すでに承認済みです。イベントページを開けます。</div>
+    <a class="btn btn-primary" href="{{ url_for('external_login_user.view_event', event_uuid=ev.event_uuid_str) }}">イベントページへ</a>
+
+  {% elif status == 'pending' %}
+    <div class="alert alert-info">申請は承認待ちです。承認後にイベントページを閲覧できます。</div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
+
+  {% elif status == 'rejected' %}
+    <div class="alert alert-danger">申請は拒否されています。主催者にお問い合わせください。</div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
+
+  {% else %}
+    {% set default_role = form_role if form_role in ['camera','assistant','cosplayer','other'] else 'cosplayer' %}
+
+    <!-- ✅ 単一フォーム：役割・（衣装／その他）メモ + 参加申請 -->
+    <form method="post" class="row gy-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token or session.csrf_token or '' }}">
+
+      <div class="col-12">
+        <h2 class="h6 mb-2">参加される役割の入力をお願い致します</h2>
+        <p class="mb-2 small text-muted">衣装またはその他の方は、下の入力欄にメモ（衣装名など）の入力をお願い致します。</p>
+
+        <!-- 役割（ボタン式） -->
+        <div class="btn-group mb-2" role="group" aria-label="participant role">
+          <input type="radio" class="btn-check" name="participant_role" id="role_camera" value="camera"
+                 {% if default_role == 'camera' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-primary" for="role_camera">カメラマン</label>
+
+          <input type="radio" class="btn-check" name="participant_role" id="role_assistant" value="assistant"
+                 {% if default_role == 'assistant' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-primary" for="role_assistant">アシスタント</label>
+
+          <input type="radio" class="btn-check" name="participant_role" id="role_cosplayer" value="cosplayer"
+                 {% if default_role == 'cosplayer' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-primary" for="role_cosplayer">衣装</label>
+
+          <!-- ★ 追加：その他 -->
+          <input type="radio" class="btn-check" name="participant_role" id="role_other" value="other"
+                 {% if default_role == 'other' %}checked{% endif %} autocomplete="off">
+          <label class="btn btn-outline-primary" for="role_other">その他</label>
+        </div>
+        <div class="form-text">※カメラマン／アシスタントのときは、下の入力欄は自動で無効化（サーバー側でも空にします）。</div>
+      </div>
+
+      <div class="col-12">
+        <label class="form-label" for="costume_label">【衣装／その他のメモ】</label>
+        <input type="text" class="form-control" id="costume_label" name="costume_label"
+               maxlength="120" value="{{ form_costume or '' }}" placeholder="例：アナ（雪山）／受付補助／進行補助 など">
+        <div class="form-text" id="costume_help">
+          「衣装」または「その他」を選択した方は入力してください（最大120文字）。
+        </div>
+      </div>
+
+      <div class="col-12 d-flex gap-2">
+        <button class="btn btn-primary">参加を申請する</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">キャンセル</a>
+      </div>
+    </form>
+
+    <!-- 役割→メモ入力の有効/無効 切替（衣装／その他のときON） -->
+    <script>
+      (function () {
+        function sync() {
+          const r = document.querySelector('input[name="participant_role"]:checked');
+          const role = r ? r.value : 'cosplayer';
+          const memo = document.getElementById('costume_label');
+          const help = document.getElementById('costume_help');
+          if (role === 'cosplayer' || role === 'other') {
+            memo.removeAttribute('disabled');
+            help.textContent = '「衣装」または「その他」を選択した方は入力してください（最大120文字）。';
+          } else {
+            memo.value = '';
+            memo.setAttribute('disabled', 'disabled');
+            help.textContent = 'カメラマン／アシスタントの場合、入力は不要です（サーバー側でも空にします）。';
+          }
+        }
+        document.querySelectorAll('input[name="participant_role"]').forEach(el => {
+          el.addEventListener('change', sync);
+        });
+        // 初期状態
+        sync();
+      })();
+    </script>
+  {% endif %}
+</body>
+</html>
