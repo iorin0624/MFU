@@ -84,6 +84,9 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
   token          CHAR(36) NOT NULL,
   event_id       BIGINT UNSIGNED NOT NULL,
   user_id        BIGINT UNSIGNED NOT NULL,
+  nickname       VARCHAR(50)     NULL,
+  x_id           VARCHAR(15)     NULL,
+  instagram_id   VARCHAR(30)     NULL,
   amount_yen     INT UNSIGNED NOT NULL,
   status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -144,6 +147,10 @@ def _on_bp_registered(state) -> None:
             # ★ 追加：支払期間 列（後方互換で追加）
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+
+            _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
+            _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
+            _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
 
             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
             _ensure_col("mfu_event", "line_openchat_url",

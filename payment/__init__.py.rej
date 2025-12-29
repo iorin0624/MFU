@@ -115,7 +115,7 @@
          if _fetchone_dict(cur):
              conn.close(); return
  
-@@ -409,144 +416,215 @@ def _get_live_amount_and_sync(conn, event_uuid: str) -> tuple[int, dict|None]:
+@@ -409,144 +416,229 @@ def _get_live_amount_and_sync(conn, event_uuid: str) -> tuple[int, dict|None]:
          conn.rollback()
      return (fee, ev)
  
@@ -165,7 +165,8 @@
 +    cur = conn.cursor()
 +    try:
 +        cur.execute("""
-+            SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
++            SELECT id, event_id, user_id, amount_yen, status,
++                   nickname, x_id, instagram_id, email
 +              FROM mfu_payment_request
 +             WHERE token=%s AND event_id=%s AND status='pending'
 +             LIMIT 1
@@ -175,16 +176,6 @@
 +    finally:
 +        try: cur.close()
 +        except Exception: pass
-+
-+def _amount_for_payment(conn, event_uuid: str, token: str | None) -> int | None:
-+    if token:
-+        row = _fetch_payment_request(conn, event_uuid, token)
-+        if row:
-+            try:
-+                return int(row.get("amount_yen") or 0)
-+            except Exception:
-+                return None
-+    return None
 +
  # ───────────────────────────────────────────────────────────
  # 事前チェック API（重複決済/最新金額の確認）
@@ -279,12 +270,35 @@
      except Exception:
          logging.exception("read pay_ctx failed")
  
-+    if token_row:
-+        autofill = {
-+            "nickname": token_row.get("nickname") or "",
-+            "x_id": token_row.get("x_id") or "",
-+            "instagram_id": token_row.get("instagram_id") or "",
-+        }
++    if payment_token and token_row and not (autofill.get("nickname") or autofill.get("x_id") or autofill.get("instagram_id")):
++        n = (token_row.get("nickname") or "").strip()
++        x = (token_row.get("x_id") or "").strip()
++        i = (token_row.get("instagram_id") or "").strip()
++        if n or x or i:
++            autofill = {"nickname": n, "x_id": x, "instagram_id": i}
++        else:
++            uid = token_row.get("user_id")
++            if uid:
++                conn2 = _get_db()
++                try:
++                    cur2 = conn2.cursor()
++                    cur2.execute("""
++                        SELECT nickname, x_id, instagram_id
++                          FROM external_login_user
++                         WHERE id=%s
++                         LIMIT 1
++                    """, (uid,))
++                    u = _fetchone_dict(cur2) or {}
++                    autofill = {
++                        "nickname": (u.get("nickname") or ""),
++                        "x_id": (u.get("x_id") or ""),
++                        "instagram_id": (u.get("instagram_id") or ""),
++                    }
++                except Exception:
++                    logging.exception("prefill from payment_token failed")
++                finally:
++                    try: conn2.close()
++                    except Exception: pass
 +
      # クエリがあれば上書き
      qs_n = (request.args.get("nickname") or "").strip()
@@ -332,7 +346,7 @@
                      if access_token:
                          try:
                              resp = requests.get(
-@@ -571,163 +649,189 @@ def pay_thanks(event_uuid: str):
+@@ -571,163 +663,189 @@ def pay_thanks(event_uuid: str):
                                      card.get("card_brand"), card.get("last_4"),
                                      card.get("exp_month"), card.get("exp_year"),
                                      pid
@@ -407,7 +421,6 @@
 -
      conn = _get_db()
      try:
--        # ★ 常に最新金額を取得
 +        token_row = _fetch_payment_request(conn, event_uuid, payment_token)
 +        if payment_token and not token_row:
 +            return jsonify({"message": "支払いトークンが無効です"}), 400
@@ -420,7 +433,7 @@
 +        if not nickname or not source_id or (not x_id and not instagram_id):
 +            return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
 +
-+        # ★ 常に最新金額を取得（トークンがあれば優先）
+         # ★ 常に最新金額を取得
          amount, ev = _get_live_amount_and_sync(conn, event_uuid)
          if not ev or amount <= 0:
              return jsonify({"message": "イベントが見つからない/無効です"}), 404
@@ -494,14 +507,14 @@
              """, (p.get("id"), status, card.get("card_brand"), card.get("last_4"),
                    card.get("exp_month"), card.get("exp_year"), p.get("receipt_url"), pay_row_id))
              conn.commit()
-+            if payment_token:
++            if payment_token and token_row and token_row.get("id"):
 +                try:
 +                    cur.execute("""
 +                        UPDATE mfu_payment_request
 +                           SET status='used', used_at=NOW()
-+                         WHERE token=%s AND event_id=%s
++                         WHERE id=%s AND status='pending'
 +                         LIMIT 1
-+                    """, (payment_token, ev["id"]))
++                    """, (token_row["id"],))
 +                    conn.commit()
 +                except Exception:
 +                    conn.rollback()

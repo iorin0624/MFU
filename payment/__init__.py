@@ -854,6 +854,42 @@ def webhooks():
                 p.get("id")
             ))
             conn.commit()
+            if (p.get("status") or "").upper() in ("AUTHORIZED", "APPROVED", "COMPLETED"):
+                cur.execute("""
+                    SELECT id, payment_token, amount_yen, square_receipt_url
+                      FROM event_payments
+                     WHERE square_payment_id=%s
+                     LIMIT 1
+                """, (p.get("id"),))
+                pay_row = cur.fetchone()
+                if pay_row:
+                    pay_row_id = pay_row[0] if isinstance(pay_row, tuple) else pay_row.get("id")
+                    payment_token = pay_row[1] if isinstance(pay_row, tuple) else pay_row.get("payment_token")
+                    amount_yen = pay_row[2] if isinstance(pay_row, tuple) else pay_row.get("amount_yen")
+                    receipt_url = pay_row[3] if isinstance(pay_row, tuple) else pay_row.get("square_receipt_url")
+                    if payment_token:
+                        cur.execute("""
+                            SELECT event_id, user_id
+                              FROM mfu_payment_request
+                             WHERE token=%s
+                             ORDER BY id DESC
+                             LIMIT 1
+                        """, (payment_token,))
+                        pr = cur.fetchone()
+                        if pr:
+                            event_id = pr[0] if isinstance(pr, tuple) else pr.get("event_id")
+                            user_id = pr[1] if isinstance(pr, tuple) else pr.get("user_id")
+                            cur.execute("""
+                                UPDATE mfu_event_member
+                                   SET payment_status='paid',
+                                       paid_at=NOW(),
+                                       paid_amount_yen=%s,
+                                       receipt_url=COALESCE(%s, receipt_url),
+                                       payment_row_id=%s
+                                 WHERE event_id=%s AND user_id=%s
+                                   AND COALESCE(payment_status,'unpaid') <> 'paid'
+                            """, (amount_yen, receipt_url, pay_row_id, event_id, user_id))
+                            conn.commit()
             _notify_discord_payment_if_needed(conn, p.get("id"))
         finally:
             try: conn.close()
