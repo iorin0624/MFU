@@ -1,0 +1,132 @@
+--- external_login_user/schema.py
++++ external_login_user/schema.py
+@@ -45,103 +45,129 @@ CREATE TABLE IF NOT EXISTS mfu_event (
+   place_name      VARCHAR(200)    NULL,
+   address         VARCHAR(255)    NULL,
+   maps_url        VARCHAR(512)    NULL,
+   google_form_url VARCHAR(512)    NULL,
+   album_id        CHAR(36)        NULL,
+   payment_uuid    CHAR(32)        NULL,
+   created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uniq_event_uuid (event_uuid)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ DDL_EVENT_MEMBER = """
+ CREATE TABLE IF NOT EXISTS mfu_event_member (
+   id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   event_id           BIGINT UNSIGNED NOT NULL,
+   user_id            BIGINT UNSIGNED NOT NULL,
+   role               ENUM('viewer','editor') NOT NULL DEFAULT 'viewer',
+   status             ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+   payment_status     ENUM('unpaid','pending','paid','refunded') NOT NULL DEFAULT 'unpaid',
+   require_payment    TINYINT(1) NOT NULL DEFAULT 1,
+   paid_at            DATETIME NULL,
+   payment_row_id     BIGINT UNSIGNED NULL,
+   receipt_url        VARCHAR(512) NULL,
+   paid_amount_yen    INT UNSIGNED NULL,
++  custom_fee_yen     INT UNSIGNED NULL,
+   joined_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uniq_member (event_id, user_id),
+   KEY idx_event (event_id),
+   KEY idx_status (status),
+   KEY idx_pstatus (payment_status),
+   KEY idx_em_require_payment (require_payment)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
++DDL_PAYMENT_REQUEST = """
++CREATE TABLE IF NOT EXISTS mfu_payment_request (
++  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
++  token          CHAR(36) NOT NULL,
++  event_id       BIGINT UNSIGNED NOT NULL,
++  user_id        BIGINT UNSIGNED NOT NULL,
++  nickname       VARCHAR(120) NOT NULL,
++  x_id           VARCHAR(120) NULL,
++  instagram_id   VARCHAR(120) NULL,
++  amount_yen     INT UNSIGNED NOT NULL,
++  status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
++  created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  used_at        DATETIME NULL,
++  PRIMARY KEY (id),
++  UNIQUE KEY uniq_token (token),
++  KEY idx_evt_user (event_id, user_id),
++  KEY idx_status (status)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
++"""
++
+ def _ensure_index(cur, check_sql: str, create_sql: str):
+     try:
+         cur.execute(check_sql)
+         has = cur.fetchone()[0]
+     except Exception:
+         has = 0
+     if not has:
+         try:
+             cur.execute(create_sql)
+         except Exception as e:
+             if not (mysql_errors and getattr(e, "errno", None) == 1061):
+                 pass
+ 
+ @bp.record_once
+ def _on_bp_registered(state) -> None:
+     app = state.app
+     with app.app_context():
+         try:
+             db = get_db(); cur = db.cursor()
+             # ベースDDL
+             cur.execute(DDL_EXTERNAL)
+             cur.execute(DDL_EVENT)
+             cur.execute(DDL_EVENT_MEMBER)
++            cur.execute(DDL_PAYMENT_REQUEST)
+ 
+             # 後方互換ALTER（存在しなければADD）
+             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COUNT(*) FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                     """, (table, col))
+                     has = cur.fetchone()[0]
+                 except Exception:
+                     has = 0
+                 if not has:
+                     try:
+                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl_after_add}")
+                     except Exception as e:
+                         if not (mysql_errors and getattr(e, "errno", None) == 1060):
+                             raise
+ 
+             # 既存のゆるいALTER群
+             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
++            _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
++            _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(120) NOT NULL AFTER user_id")
++            _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(120) NULL AFTER nickname")
++            _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(120) NULL AFTER x_id")
+ 
+             # ★ 追加：支払期間 列（後方互換で追加）
+             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
+             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+ 
+             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
+             _ensure_col("mfu_event", "line_openchat_url",
+                         "line_openchat_url VARCHAR(512) NULL AFTER maps_url")
+             _ensure_col("mfu_event", "line_openchat_pass",
+                         "line_openchat_pass VARCHAR(120) NULL AFTER line_openchat_url")
+             _ensure_col("mfu_event", "google_form_url",
+                         "google_form_url VARCHAR(512) NULL AFTER line_openchat_pass")
+             _ensure_col("mfu_event", "memo_all",
+                         "memo_all TEXT NULL AFTER google_form_url")
+ # === 支払方法の記録列（後方互換で追加）===
+             _ensure_col("mfu_event_member", "bank_transfer",
+                         "bank_transfer TINYINT(1) NOT NULL DEFAULT 0 AFTER payment_status")
+             _ensure_col("mfu_event_member", "bank_dest_name",
+                         "bank_dest_name VARCHAR(120) NULL AFTER bank_transfer")
+             _ensure_col("mfu_event_member", "bank_remitter_name",
+                         "bank_remitter_name VARCHAR(120) NULL AFTER bank_dest_name")
+             _ensure_col("mfu_event_member", "bank_deposit_date",
+                         "bank_deposit_date DATE NULL AFTER bank_remitter_name")
+ 
+             _ensure_col("mfu_event_member", "paypay_transfer",
