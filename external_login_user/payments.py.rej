@@ -1,38 +1,6 @@
 --- external_login_user/payments.py
 +++ external_login_user/payments.py
-@@ -1,30 +1,31 @@
- # /mnt/mfu/app/external_login_user/payments.py
- from __future__ import annotations
- 
- import os
- import base64
-+import uuid
- from datetime import datetime, timedelta
- 
- from flask import (
-     request, session, redirect, url_for, flash, abort, render_template, current_app
- )
- 
- from . import bp
- from .utils import (
-     _require_ext_login, _get_ext_user_by_social, _event_by_uuid_str,
-     _membership_status, _member_payment_status, _get_member_require_payment,
-     PAYMENT_ENTRY_BASE,
- )
- from app.utils.db import get_db
- from app.utils.mail import send_mail
- from flask import current_app
- from app.utils.mail import send_mail
- 
- import requests  # Discord通知で使用（存在しなければ無視されるよう例外処理）
- 
- # ============================================================
- # ヘルパ
- # ============================================================
- 
- def _ensure_payment_uuid_for_event(event_id: int) -> str:
-     """イベントに payment_uuid が無ければ発行して保存、返す"""
-@@ -124,56 +125,168 @@ def _enabled_methods(ev: dict) -> dict[str, bool]:
+@@ -124,50 +124,174 @@ def _enabled_methods(ev: dict) -> dict[str, bool]:
  def _ensure_payment_notice_table():
      """支払通知ログを格納するテーブルを自動作成"""
      db = get_db(); cur = db.cursor()
@@ -68,9 +36,10 @@
 +              token          CHAR(36) NOT NULL,
 +              event_id       BIGINT UNSIGNED NOT NULL,
 +              user_id        BIGINT UNSIGNED NOT NULL,
-+              nickname       VARCHAR(120) NOT NULL,
-+              x_id           VARCHAR(120) NULL,
-+              instagram_id   VARCHAR(120) NULL,
++              nickname       VARCHAR(50)     NULL,
++              x_id           VARCHAR(15)     NULL,
++              instagram_id   VARCHAR(30)     NULL,
++              email          VARCHAR(191)    NULL,
 +              amount_yen     INT UNSIGNED NOT NULL,
 +              status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
 +              created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -97,9 +66,10 @@
 +                except Exception:
 +                    pass
 +
-+        _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(120) NOT NULL AFTER user_id")
-+        _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(120) NULL AFTER nickname")
-+        _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(120) NULL AFTER x_id")
++        _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
++        _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
++        _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
++        _ensure_col("mfu_payment_request", "email", "email VARCHAR(191) NULL AFTER instagram_id")
 +        db.commit()
 +    finally:
 +        try:
@@ -107,12 +77,54 @@
 +        except Exception:
 +            pass
 +
- def _is_lecture_event(ev: dict) -> bool:
-     try:
-         return str(ev.get("title") or "").startswith("【講座】")
-     except Exception:
-         return False
- 
++def _fetch_ext_user_snapshot(user_id: int) -> dict:
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT nickname, x_id, instagram_id, email
++              FROM external_login_user
++             WHERE id=%s
++             LIMIT 1
++        """, (user_id,))
++        row = cur.fetchone() or {}
++        return row if isinstance(row, dict) else {}
++    except Exception:
++        return {}
++    finally:
++        try: cur.close(); db.close()
++        except Exception: pass
++
++def _create_payment_request(event_id: int, user_id: int, amount_yen: int) -> str:
++    """支払いリクエストを発行し、トークンを返す。"""
++    token = str(uuid.uuid4())
++    _ensure_payment_request_table()
++    snap = _fetch_ext_user_snapshot(user_id)
++    db = get_db(); cur = db.cursor()
++    try:
++        try:
++            cur.execute("""
++                INSERT INTO mfu_payment_request
++                  (token, event_id, user_id, nickname, x_id, instagram_id, email, amount_yen)
++                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
++            """, (
++                token, event_id, user_id,
++                snap.get("nickname"), snap.get("x_id"), snap.get("instagram_id"), snap.get("email"),
++                int(amount_yen),
++            ))
++        except Exception as e:
++            if getattr(e, "errno", None) == 1054 or "Unknown column" in str(e):
++                cur.execute("""
++                    INSERT INTO mfu_payment_request (token, event_id, user_id, amount_yen)
++                    VALUES (%s, %s, %s, %s)
++                """, (token, event_id, user_id, int(amount_yen)))
++            else:
++                raise
++        db.commit()
++    finally:
++        try: cur.close(); db.close()
++        except Exception: pass
++    return token
++
 +def _resolve_member_fee(event_id: int, user_id: int, default_fee: int) -> int:
 +    """ユーザー別の金額があれば優先し、なければイベント金額を返す。"""
 +    db = get_db(); cur = db.cursor(dictionary=True)
@@ -138,44 +150,12 @@
 +        return custom_fee_int
 +    return int(default_fee or 0)
 +
-+def _create_payment_request(event_id: int, user_id: int, amount_yen: int, *, nickname: str, x_id: str | None, instagram_id: str | None) -> str:
-+    """支払いリクエストを発行し、トークンを返す。"""
-+    token = str(uuid.uuid4())
-+    _ensure_payment_request_table()
-+    db = get_db(); cur = db.cursor()
-+    try:
-+        cur.execute("""
-+            INSERT INTO mfu_payment_request (token, event_id, user_id, nickname, x_id, instagram_id, amount_yen)
-+            VALUES (%s, %s, %s, %s, %s, %s, %s)
-+        """, (token, event_id, user_id, nickname, x_id, instagram_id, int(amount_yen)))
-+        db.commit()
-+    finally:
-+        try: cur.close(); db.close()
-+        except Exception: pass
-+    return token
-+
-+def _amount_from_payment_token(event_id: int, user_id: int, token: str | None) -> int | None:
-+    if not token:
-+        return None
-+    db = get_db(); cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute("""
-+            SELECT amount_yen
-+              FROM mfu_payment_request
-+             WHERE token=%s AND event_id=%s AND user_id=%s
-+               AND status='pending'
-+             ORDER BY id DESC
-+             LIMIT 1
-+        """, (token, event_id, user_id))
-+        row = cur.fetchone() or {}
-+    finally:
-+        try: cur.close(); db.close()
-+        except Exception: pass
-+    try:
-+        return int(row.get("amount_yen")) if row.get("amount_yen") is not None else None
-+    except Exception:
-+        return None
-+
+ def _is_lecture_event(ev: dict) -> bool:
+     try:
+         return str(ev.get("title") or "").startswith("【講座】")
+     except Exception:
+         return False
+ 
  # ============================================================
  # users.py を踏襲した 通知系ヘルパ
  # ============================================================
@@ -195,13 +175,7 @@
      except Exception:
          pass
      finally:
-         try: cur.close(); db.close()
-         except Exception: pass
-     return cols
- 
- 
- def _fetch_admin_contacts() -> tuple[str | None, str | None]:
-@@ -378,51 +491,51 @@ def pay_start(event_uuid: str):
+@@ -378,51 +502,51 @@ def pay_start(event_uuid: str):
          db_tmp = get_db(); cur_tmp = db_tmp.cursor()
          try:
              cur_tmp.execute("""
@@ -254,7 +228,7 @@
      if cur_ps not in ("unpaid", "pending", "paid"):
          cur_ps = "unpaid"
  
-@@ -442,144 +555,169 @@ def pay_start(event_uuid: str):
+@@ -442,100 +566,104 @@ def pay_start(event_uuid: str):
              try: cur2.close()
              except Exception: pass
  
@@ -280,14 +254,7 @@
                  flash("このイベントではクレジットカード決済は利用できません。", "warning")
                  return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
              pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-+            payment_token = _create_payment_request(  # type: ignore
-+                ev["id"],
-+                me["id"],
-+                int(fee),
-+                nickname=me.get("nickname") or "",
-+                x_id=me.get("x_id"),
-+                instagram_id=me.get("instagram_id"),
-+            )
++            payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
              session["pay_ctx"] = {
                  "mfu_event_id": ev["id"],
                  "mfu_event_uuid": event_uuid,
@@ -328,14 +295,7 @@
          return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
  
      pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-+    payment_token = _create_payment_request(  # type: ignore
-+        ev["id"],
-+        me["id"],
-+        int(fee),
-+        nickname=me.get("nickname") or "",
-+        x_id=me.get("x_id"),
-+        instagram_id=me.get("instagram_id"),
-+    )
++    payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
      session["pay_ctx"] = {
          "mfu_event_id": ev["id"],
          "mfu_event_uuid": event_uuid,
@@ -375,59 +335,7 @@
          if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
              flash("承認済み参加者のみ完了処理が可能です。", "warning")
              return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     # --- Square 戻り値の受け口（既存のまま） ---
-     q = request.args
-     status = (q.get("status") or q.get("square_status") or "").strip().lower()
-     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
-     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
-     try:
-         payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
-     except Exception:
-         payment_row_id = None
-     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
-+    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
-+    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
- 
--    # ①URL → ②セッション → ③イベントfee_yen（既存のまま）
-+    # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
-     paid_amount_yen = None
-     if amt_raw is not None and str(amt_raw).strip() != "":
-         try:
-             paid_amount_yen = int(str(amt_raw).strip())
-         except Exception:
-             paid_amount_yen = None
-+    if paid_amount_yen is None:
-+        try:
-+            paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
-+        except Exception:
-+            paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
-             if sess_amt is not None and int(sess_amt) > 0:
-                 paid_amount_yen = int(sess_amt)
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             base_fee = ev.get("fee_yen")
-             if base_fee is not None and int(base_fee) > 0:
-                 paid_amount_yen = int(base_fee)
-         except Exception:
-             paid_amount_yen = None
- 
-     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
- 
-     # 既存の paid 冪等チェック
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT COALESCE(payment_status,'unpaid') AS payment_status
-               FROM mfu_event_member
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-@@ -762,51 +900,51 @@ def pay_paypay(event_uuid: str):
+@@ -762,51 +890,51 @@ def pay_paypay(event_uuid: str):
          for key in ("paypay_p2p_url", "paypay_qr_url"):
              v = ev.get(key)
              if isinstance(v, str) and v.strip():
@@ -480,7 +388,7 @@
              db.commit()
          finally:
              try: cur.close(); db.close()
-@@ -923,51 +1061,51 @@ def pay_bank(event_uuid: str):
+@@ -923,51 +1051,51 @@ def pay_bank(event_uuid: str):
  
      selected_bank_id = request.args.get("bank_id") or str(banks[0]["id"])
  
@@ -533,7 +441,7 @@
              """, (ev["id"], me["id"], bank_id, note))  # type: ignore
  
              db.commit()
-@@ -1063,190 +1201,209 @@ def lecture_pay_start(event_uuid: str):
+@@ -1063,152 +1191,152 @@ def lecture_pay_start(event_uuid: str):
      if guard:
          return guard
  
@@ -609,14 +517,7 @@
                  return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
              # Square へ（戻りは講座専用の return へ）
              pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-+            payment_token = _create_payment_request(  # type: ignore
-+                ev["id"],
-+                me["id"],
-+                int(fee),
-+                nickname=me.get("nickname") or "",
-+                x_id=me.get("x_id"),
-+                instagram_id=me.get("instagram_id"),
-+            )
++            payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
              session["pay_ctx"] = {
                  "mfu_event_id": ev["id"],
                  "mfu_event_uuid": event_uuid,
@@ -660,14 +561,7 @@
  
      # ここまで来たらカードのみ → Squareへ
      pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
-+    payment_token = _create_payment_request(  # type: ignore
-+        ev["id"],
-+        me["id"],
-+        int(fee),
-+        nickname=me.get("nickname") or "",
-+        x_id=me.get("x_id"),
-+        instagram_id=me.get("instagram_id"),
-+    )
++    payment_token = _create_payment_request(ev["id"], me["id"], int(fee))  # type: ignore
      session["pay_ctx"] = {
          "mfu_event_id": ev["id"],
          "mfu_event_uuid": event_uuid,
@@ -707,47 +601,3 @@
  
      pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
      try:
-         payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
-     except Exception:
-         payment_row_id = None
- 
-     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
- 
--    # ①URL → ②セッション → ③イベントfee_yen の順に解決
-+    # ①URL → ②トークン → ③セッション → ④イベントfee_yen の順に解決
-     paid_amount_yen = None
-     if amt_raw is not None and str(amt_raw).strip() != "":
-         try:
-             paid_amount_yen = int(str(amt_raw).strip())
-         except Exception:
-             paid_amount_yen = None
-+    if paid_amount_yen is None:
-+        try:
-+            paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
-+        except Exception:
-+            paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
-             if sess_amt is not None and int(sess_amt) > 0:
-                 paid_amount_yen = int(sess_amt)
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             base_fee = ev.get("fee_yen")
-             if base_fee is not None and int(base_fee) > 0:
-                 paid_amount_yen = int(base_fee)
-         except Exception:
-             paid_amount_yen = None
- 
-     # 成功判定（空=OK を含む）
-     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
- 
-     # すでに paid なら冪等（再反映しない）
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             SELECT COALESCE(payment_status,'unpaid') AS ps
-               FROM mfu_event_member
-              WHERE event_id=%s AND user_id=%s
