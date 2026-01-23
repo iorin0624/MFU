@@ -283,7 +283,6 @@ def admin_ext_users_resend_verify(user_id: int):
                 subject=subject,
                 body=body,
                 event_uuid=None,   # From: noreply@mail.iori0624.jp
-                reply_to=None,
                 # 必要なら smtp_host / smtp_port / timeout をここで明示
                 # smtp_host="localhost", smtp_port=25, timeout=10,
             )
