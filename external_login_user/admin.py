@@ -583,6 +583,7 @@ def admin_event_edit(event_id: int):
               starts_at, fee_yen,
               pay_from, pay_until,
               place_name, address, maps_url,
+              sns_hashtag,
               line_openchat_url, line_openchat_pass,
               google_form_url,
               album_id, payment_uuid,
@@ -621,6 +622,7 @@ def admin_event_edit(event_id: int):
         "place_name": ev.get("place_name"),
         "address": ev.get("address"),
         "maps_url": ev.get("maps_url"),
+        "sns_hashtag": ev.get("sns_hashtag"),
         "line_openchat_url": ev.get("line_openchat_url"),
         "line_openchat_pass": ev.get("line_openchat_pass"),
         "google_form_url": ev.get("google_form_url"),
@@ -648,6 +650,7 @@ def admin_event_edit(event_id: int):
         place_name  = (request.form.get("place_name") or "").strip() or None
         address     = (request.form.get("address") or "").strip() or None
         maps_url    = (request.form.get("maps_url") or "").strip() or None
+        sns_hashtag = (request.form.get("sns_hashtag") or "").strip() or None
 
         auto_lat, auto_lng = extract_lat_lng_from_maps_url(maps_url) if maps_url else (None, None)
 
@@ -684,6 +687,7 @@ def admin_event_edit(event_id: int):
         form.update({
             "title": title, "fee_yen": fee_yen_in,
             "place_name": place_name or "", "address": address or "", "maps_url": maps_url or "",
+            "sns_hashtag": sns_hashtag or "",
             "line_openchat_url": line_openchat_url or "", "line_openchat_pass": line_openchat_pass or "",
             "google_form_url": google_form_url or "", "album_id": album_id or "", "memo_all": memo_all or "",
             "allow_square": allow_square, "allow_paypay": allow_paypay, "allow_bank": allow_bank,
@@ -703,14 +707,14 @@ def admin_event_edit(event_id: int):
                 UPDATE mfu_event
                    SET title=%s, starts_at=%s, fee_yen=%s,
                        pay_from=%s, pay_until=%s,
-                       place_name=%s, address=%s, maps_url=%s,
+                       place_name=%s, address=%s, maps_url=%s, sns_hashtag=%s,
                        line_openchat_url=%s, line_openchat_pass=%s, google_form_url=%s,
                        album_id=%s, memo_all=%s,
                        allow_square=%s, allow_paypay=%s, allow_bank=%s, paypay_display=%s
                  WHERE id=%s
                  LIMIT 1
             """, (title, starts_at, fee_yen, pay_from, pay_until,
-                  place_name, address, maps_url,
+                  place_name, address, maps_url, sns_hashtag,
                   line_openchat_url, line_openchat_pass, google_form_url,
                   album_id, memo_all,
                   allow_square, allow_paypay, allow_bank, paypay_display,
@@ -2268,4 +2272,3 @@ def admin_event_copy(event_id: int):
 
     flash("イベントをコピーしました。日時だけ設定してください。", "success")
     return redirect(url_for("external_login_user.admin_event_edit", event_id=new_event_id))
-
