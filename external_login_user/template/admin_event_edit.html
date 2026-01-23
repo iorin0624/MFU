@@ -106,6 +106,14 @@
            value="{{ (form.maps_url or ev.maps_url or '')|e }}">
   </div>
 
+  <div class="col-12">
+    <label class="form-label">SNSハッシュタグ（任意）</label>
+    <input type="text" name="sns_hashtag" class="form-control" maxlength="255"
+           value="{{ (form.sns_hashtag or ev.sns_hashtag or '')|e }}"
+           placeholder="#mfu_event">
+    <div class="form-text">X / Instagram 共通で使うハッシュタグを設定できます。</div>
+  </div>
+
   <div class="mb-3">
     <label class="form-label">LINEオープンチャットURL（任意）</label>
     <input type="url" name="line_openchat_url" class="form-control"

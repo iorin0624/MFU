@@ -68,6 +68,16 @@
         {% endif %}
       </div>
 
+      <!-- 1.5) ハッシュタグ -->
+      <div class="col-md-6">
+        <strong>ハッシュタグ:</strong>
+        {% if ev.sns_hashtag %}
+          <span>{{ ev.sns_hashtag }}</span>
+        {% else %}
+          <span class="text-muted">未設定</span>
+        {% endif %}
+      </div>
+
       <!-- 2) 招待リンク（コピーボタン） -->
       <div class="col-md-6">
         <strong>招待リンク:</strong>

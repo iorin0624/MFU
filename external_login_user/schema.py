@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS mfu_event (
   place_name      VARCHAR(200)    NULL,
   address         VARCHAR(255)    NULL,
   maps_url        VARCHAR(512)    NULL,
+  sns_hashtag     VARCHAR(255)    NULL,
   google_form_url VARCHAR(512)    NULL,
   album_id        CHAR(36)        NULL,
   payment_uuid    CHAR(32)        NULL,
@@ -157,6 +158,8 @@ def _on_bp_registered(state) -> None:
                         "line_openchat_url VARCHAR(512) NULL AFTER maps_url")
             _ensure_col("mfu_event", "line_openchat_pass",
                         "line_openchat_pass VARCHAR(120) NULL AFTER line_openchat_url")
+            _ensure_col("mfu_event", "sns_hashtag",
+                        "sns_hashtag VARCHAR(255) NULL AFTER maps_url")
             _ensure_col("mfu_event", "google_form_url",
                         "google_form_url VARCHAR(512) NULL AFTER line_openchat_pass")
             _ensure_col("mfu_event", "memo_all",
