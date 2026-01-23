@@ -2338,6 +2338,12 @@ def member_sns_clip(event_uuid: str):
         ig_lines.append(_build_line(m, "instagram"))
         x_lines.append(_build_line(m, "x"))
 
+    sns_tag_raw = (ev.get("sns_hashtag") or "").strip()
+    sns_tag = f"#{sns_tag_raw.lstrip('#')}" if sns_tag_raw else ""
+    if sns_tag:
+        ig_lines = [sns_tag, ""] + ig_lines
+        x_lines = [sns_tag, ""] + x_lines
+
     return render_template(
         "event_members_sns.html",
         ev=ev,
