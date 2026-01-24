@@ -207,9 +207,9 @@
   const locationId = "{{ location_id }}";
   const chargeUrl = "{{ url_for('payment.api_charge', event_uuid=event.uuid) }}";
   const precheckUrl = "{{ url_for('payment.api_precheck', event_uuid=event.uuid) }}";
-  const thanksUrl = "{{ url_for('payment.pay_thanks', event_uuid=event.uuid) }}";
   const squareJsUrl = "{{ square_js_url }}";
   const paymentToken = {{ (payment_token or '') | tojson }};
+  const returnUrl = {{ (return_url or '') | tojson }};
 
   /* 表示専用の固定値（サーバから埋め込み） */
   const AUTOFILL = {
@@ -256,6 +256,32 @@
     const payBtn = document.querySelector('#pay'); // カードセクション内
     if (payBtn) { payBtn.disabled = b; payBtn.textContent = b ? '処理中…' : '支払う'; }
     $loading.style.display = b ? 'flex' : 'none';
+  }
+  function redirectAfterPayment(data){
+    if (!returnUrl) {
+      const receipt = data?.receipt_url ? `<a href="${escapeHtml(data.receipt_url)}" target="_blank" rel="noopener">レシートを表示</a>` : 'レシート情報が取得できませんでした。';
+      showModal('お支払いが完了しました', receipt);
+      return;
+    }
+    try{
+      const url = new URL(returnUrl);
+      const params = {
+        status: 'ok',
+        payment_id: data?.payment_id,
+        receipt: data?.receipt_url,
+        payment_token: paymentToken,
+        amount_yen: data?.amount_yen,
+        payment_row_id: data?.payment_row_id,
+      };
+      Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && String(value).trim() !== '') {
+          url.searchParams.set(key, String(value));
+        }
+      });
+      location.href = url.toString();
+    }catch(e){
+      showError(e?.message || String(e));
+    }
   }
 
   // ラジオUI切替
@@ -425,7 +451,7 @@
       const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       const data = await res.json().catch(()=> ({}));
 
-      if (res.ok && data.payment_id) { location.href = `${thanksUrl}?pid=${encodeURIComponent(data.payment_id)}`; return; }
+      if (res.ok && data.payment_id) { redirectAfterPayment(data); return; }
       setBusy(false);
       if (res.status === 409) showModal('二重決済はできません', 'このX/Instagram IDは既にお支払い済みです。');
       else showModal('支払いに失敗しました', escapeHtml(data.message || 'エラーが発生しました。'));
@@ -485,7 +511,7 @@
           const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
           const data = await res.json().catch(()=> ({}));
 
-          if (res.ok && data.payment_id) { location.href = `${thanksUrl}?pid=${encodeURIComponent(data.payment_id)}`; return; }
+          if (res.ok && data.payment_id) { redirectAfterPayment(data); return; }
           if (res.status === 409) showModal('二重決済はできません', 'このX/Instagram IDは既にお支払い済みです。');
           else showModal('支払いに失敗しました', escapeHtml(data.message || 'エラーが発生しました。'));
         } finally { setBusy(false); }
@@ -532,7 +558,7 @@
         const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         const data = await res.json().catch(()=> ({}));
 
-        if (res.ok && data.payment_id) { location.href = `${thanksUrl}?pid=${encodeURIComponent(data.payment_id)}`; return; }
+        if (res.ok && data.payment_id) { redirectAfterPayment(data); return; }
         if (res.status === 409) showModal('二重決済はできません', 'このX/Instagram IDは既にお支払い済みです。');
         else showModal('支払いに失敗しました', escapeHtml(data.message || 'エラーが発生しました。'));
       } catch (err) { showError(err?.message || String(err)); }

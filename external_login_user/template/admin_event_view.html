@@ -131,6 +131,15 @@
         {% endif %}
       </div>
 
+      <!-- 7) SNS貼付用 -->
+      <div class="col-md-6">
+        <strong>SNS貼付用:</strong>
+        <a href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}"
+           target="_blank" rel="noopener">
+          開く
+        </a>
+      </div>
+
       {% if ev.memo_all %}
         <div class="card mt-3">
           <div class="card-body">
