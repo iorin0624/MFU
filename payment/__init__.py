@@ -222,7 +222,7 @@ def _notify_discord_payment_if_needed(conn, square_payment_id: str):
             JOIN events e
               ON e.id = p.event_id
             LEFT JOIN mfu_event me
-              ON me.payment_uuid = e.uuid
+              ON me.payment_uuid COLLATE utf8mb4_unicode_ci = e.uuid COLLATE utf8mb4_unicode_ci
            WHERE p.square_payment_id=%s
            LIMIT 1
         """, (square_payment_id,))
@@ -292,7 +292,7 @@ def _notify_mfu_payment_completion(
 
     cur = conn.cursor()
     cur.execute("""
-        SELECT id, title, event_uuid
+        SELECT id, title, event_uuid, payment_uuid
           FROM mfu_event
          WHERE id=%s
          LIMIT 1
@@ -303,7 +303,12 @@ def _notify_mfu_payment_completion(
     if isinstance(ev_row, dict):
         ev = dict(ev_row)
     else:
-        ev = {"id": ev_row[0], "title": ev_row[1], "event_uuid": ev_row[2]}
+        ev = {
+            "id": ev_row[0],
+            "title": ev_row[1],
+            "event_uuid": ev_row[2],
+            "payment_uuid": ev_row[3],
+        }
     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid"))
     if ev_uuid_str:
         ev["event_uuid_str"] = ev_uuid_str
@@ -324,7 +329,11 @@ def _notify_mfu_payment_completion(
 
     admin_base = _app_base_url().rstrip("/")
     admin_link = f"{admin_base}/external-login/admin/events/{event_id}"
-    pay_admin_link = f"{admin_base}/payment/admin/events/{event_id}"
+    payment_uuid = ev.get("payment_uuid")
+    if payment_uuid:
+        pay_admin_link = f"{admin_base}/payment/admin/events/uuid/{payment_uuid}"
+    else:
+        pay_admin_link = f"{admin_base}/payment/admin/events/{event_id}"
     event_view_link = f"{admin_base}/external-login/events/view/{ev_uuid_str}" if ev_uuid_str else ""
     amount_line = f"{amount_yen:,} 円" if isinstance(amount_yen, int) else "(未取得)"
 
@@ -1322,4 +1331,3 @@ def admin_event_detail_by_uuid(event_uuid: str):
 
     # 既存のIDルートへリダイレクトして再利用
     return redirect(f"/payment/admin/events/{row['id']}")
-
