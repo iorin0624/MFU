@@ -39,6 +39,7 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
     if new_status not in ("approved", "rejected", "pending"):
         return False, "invalid status", new_status
 
+    starts_at = None
     db = get_db(); cur = db.cursor()
 
     # イベント基本情報（件名/From生成）
@@ -445,8 +446,8 @@ def admin_event_view(event_id: int):
         CASE
           WHEN COALESCE(m.is_host, 0)=1 THEN 0
           WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
-          WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 2
-          WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 3
+          WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 2
+          WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 3
           WHEN LOWER(COALESCE(m.participant_role,''))='cosplayer' THEN 4
           ELSE 5
         END AS role_rank
@@ -817,6 +818,10 @@ def admin_event_export_csv(event_id: int):
 
     db = get_db(); cur = db.cursor()
     try:
+        cur.execute("SELECT starts_at FROM mfu_event WHERE id=%s", (event_id,))
+        ev_row = cur.fetchone()
+        starts_at = ev_row[0] if isinstance(ev_row, tuple) else (ev_row.get("starts_at") if ev_row else None)
+
         cur.execute("""
           SELECT
             u.nickname,
@@ -829,11 +834,22 @@ def admin_event_export_csv(event_id: int):
             m.paid_at,
             m.paid_amount_yen,
             m.contact_memo,
-            m.admin_note
+            m.admin_note,
+            COALESCE(m.is_host, 0)               AS is_host,
+            COALESCE(m.is_subhost, 0)            AS is_subhost,
+            m.joined_at,
+            CASE
+              WHEN COALESCE(m.is_host, 0)=1 THEN 0
+              WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
+              WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 2
+              WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 3
+              WHEN LOWER(COALESCE(m.participant_role,''))='cosplayer' THEN 4
+              ELSE 5
+            END AS role_rank
           FROM mfu_event_member m
           JOIN external_login_user u ON u.id = m.user_id
          WHERE m.event_id=%s
-         ORDER BY m.joined_at ASC
+         ORDER BY role_rank ASC, u.nickname ASC, m.joined_at ASC
         """, (event_id,))
         rows = cur.fetchall() or []
     finally:
@@ -903,7 +919,18 @@ def admin_event_export_csv(event_id: int):
 
     resp = make_response(csv_data)
     resp.headers["Content-Type"] = "text/csv; charset=utf-8"
-    resp.headers["Content-Disposition"] = f'attachment; filename="event_{event_id}_members.csv"'
+    filename_date = None
+    if starts_at:
+        try:
+            filename_date = starts_at.strftime("%Y%m%d")
+        except Exception:
+            from datetime import datetime as _dt
+            filename_date = _dt.fromisoformat(str(starts_at).replace(" ", "T")).strftime("%Y%m%d")
+    if filename_date:
+        filename = f"event_{filename_date}_members.csv"
+    else:
+        filename = f"event_{event_id}_members.csv"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return resp
 
 @bp.post("/admin/events/<int:event_id>/members/<int:user_id>/toggle-payment")

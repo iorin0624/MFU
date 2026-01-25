@@ -2168,7 +2168,21 @@ def member_list(event_uuid: str):
             "checked_in": bool(checkin_at),
         })
 
-    return render_template("event_members.html", ev=ev, members=members)
+    # --- 並び順：主催 → 副主催 → カメラ → アシ → それ以外（各グループ内はニックネーム昇順） ---
+    def _members_sort_group(m: dict) -> int:
+        if m["is_host"]:
+            return 0
+        if m["is_subhost"]:
+            return 1
+        if m["participant_role"] == "camera":
+            return 2
+        if m["participant_role"] == "assistant":
+            return 3
+        return 4  # cosplayer / other / none など
+
+    members_sorted = sorted(members, key=lambda m: (_members_sort_group(m), m["nickname"]))
+
+    return render_template("event_members.html", ev=ev, members=members_sorted)
 
 @bp.route("/events/view/<event_uuid>/sns_clip")
 def member_sns_clip(event_uuid: str):
