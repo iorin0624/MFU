@@ -468,6 +468,8 @@ def admin_event_view(event_id: int):
     }
 
     members = []
+    require_payment_count = 0
+    paid_count = 0
     for r in rows:
         if isinstance(r, tuple):
             (user_id, nickname, x_id, instagram_id, email,
@@ -509,6 +511,12 @@ def admin_event_view(event_id: int):
         else:
             pay_status_html = _badge("未", "danger")
 
+        require_payment_flag = 1 if (require_payment is None) else int(require_payment)
+        if require_payment_flag == 1:
+            require_payment_count += 1
+            if paid_at or status_s == "paid":
+                paid_count += 1
+
         members.append({
             "user_id": user_id,
             "nickname": nickname,
@@ -523,7 +531,7 @@ def admin_event_view(event_id: int):
             "paid_at": paid_at,
             "receipt_url": receipt_url,
             "joined_at": joined_at,
-            "require_payment": 1 if (require_payment is None) else int(require_payment),
+            "require_payment": require_payment_flag,
             "is_host": 1 if is_host else 0,
             "is_subhost": 1 if is_subhost else 0,
             "participant_role": (participant_role or "none"),
@@ -543,6 +551,8 @@ def admin_event_view(event_id: int):
         line_openchat_url=ev.get("line_openchat_url"),
         line_openchat_pass=ev.get("line_openchat_pass"),
         google_form_url=ev.get("google_form_url"),
+        require_payment_count=require_payment_count,
+        paid_count=paid_count,
         admin_csrf=admin_csrf
     )
 

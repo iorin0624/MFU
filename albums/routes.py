@@ -1621,8 +1621,9 @@ def view_child(album_id, child_id):
             current_app.logger.warning("加工履歴読み込みエラー: %s", e)
 
     # 画像ビュー（通常/加工）
+    template_name = "view_child_process.html" if mode == "process" else "view_child.html"
     return render_template(
-        "view_child.html",
+        template_name,
         album_id=album_id,
         child_id=child_id,
         files=files,
