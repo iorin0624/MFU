@@ -27,6 +27,9 @@ from flask import (
     Blueprint, render_template, request, redirect, jsonify,
     session, abort, Response
 )
+from app.utils.mail import send_mail
+from app.external_login_user.payments import _notify_payment_to_admin_and_acl
+from app.external_login_user.utils import _uuid_bytes_to_str
 
 # ------------------------------------------------------------
 # .env を読み込む（/mnt/mfu/app/payment/.env）
@@ -203,12 +206,25 @@ def _notify_discord_payment_if_needed(conn, square_payment_id: str):
     try:
         cur = conn.cursor()
         cur.execute("""
-          SELECT p.id, p.nickname, p.amount_yen, p.square_receipt_url,
-                 p.square_status, p.discord_notified,
-                 e.title AS event_title
+          SELECT
+                 p.id                  AS payment_row_id,
+                 p.nickname,
+                 p.amount_yen,
+                 p.square_receipt_url,
+                 p.square_status,
+                 p.discord_notified,
+
+                 e.title               AS event_title,
+                 e.uuid                AS event_uuid,     -- ←決済管理はこれを使う
+
+                 me.id                 AS mfu_event_id    -- ←管理画面はこれを使う
             FROM event_payments p
-            JOIN events e ON e.id = p.event_id
+            JOIN events e
+              ON e.id = p.event_id
+            LEFT JOIN mfu_event me
+              ON me.payment_uuid = e.uuid
            WHERE p.square_payment_id=%s
+           LIMIT 1
         """, (square_payment_id,))
         row = cur.fetchone()
         if not row:
@@ -228,6 +244,10 @@ def _notify_discord_payment_if_needed(conn, square_payment_id: str):
         if not webhook:
             return
 
+        admin_base = _app_base_url().rstrip("/")
+        mfu_event_id = row.get("mfu_event_id")
+        event_uuid = row.get("event_uuid")
+
         title = "💳 決済が承認されました"
         fields = [
             ("タイトル", row.get("event_title") or "-", False),
@@ -235,12 +255,111 @@ def _notify_discord_payment_if_needed(conn, square_payment_id: str):
             ("決済金額", f"¥{int(row.get('amount_yen') or 0):,}", True),
             ("レシートリンク", row.get("square_receipt_url") or "-", False),
         ]
-        _discord_notify(webhook, title=title, description="イベントのお支払いが承認/確定しました。", fields=fields)
 
-        cur.execute("UPDATE event_payments SET discord_notified=1 WHERE id=%s", (row["id"],))
+        # 管理画面（MFU本体のID）
+        if mfu_event_id:
+            fields.append(("管理画面", f"{admin_base}/external-login/admin/events/{mfu_event_id}", False))
+
+        # 決済管理（UUIDルート）
+        if event_uuid:
+            fields.append(("決済管理", f"{admin_base}/payment/admin/events/uuid/{event_uuid}", False))
+
+        _discord_notify(
+            webhook,
+            title=title,
+            description="イベントのお支払いが承認/確定しました。",
+            fields=fields
+        )
+
+        cur.execute("UPDATE event_payments SET discord_notified=1 WHERE id=%s", (row["payment_row_id"],))
         conn.commit()
+
     except Exception:
         logging.exception("notify_discord_payment_if_needed failed")
+
+def _notify_mfu_payment_completion(
+    conn,
+    *,
+    event_id: int,
+    user_id: int,
+    amount_yen: int | None,
+    receipt_url: str | None,
+    payment_status: str | None,
+) -> None:
+    status = (payment_status or "").upper()
+    if status not in ("AUTHORIZED", "APPROVED", "COMPLETED"):
+        return
+
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, title, event_uuid
+          FROM mfu_event
+         WHERE id=%s
+         LIMIT 1
+    """, (event_id,))
+    ev_row = cur.fetchone()
+    if not ev_row:
+        return
+    if isinstance(ev_row, dict):
+        ev = dict(ev_row)
+    else:
+        ev = {"id": ev_row[0], "title": ev_row[1], "event_uuid": ev_row[2]}
+    ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid"))
+    if ev_uuid_str:
+        ev["event_uuid_str"] = ev_uuid_str
+
+    cur.execute("""
+        SELECT id, nickname, email
+          FROM external_login_user
+         WHERE id=%s
+         LIMIT 1
+    """, (user_id,))
+    user_row = cur.fetchone()
+    user = {}
+    if user_row:
+        if isinstance(user_row, dict):
+            user = dict(user_row)
+        else:
+            user = {"id": user_row[0], "nickname": user_row[1], "email": user_row[2]}
+
+    admin_base = _app_base_url().rstrip("/")
+    admin_link = f"{admin_base}/external-login/admin/events/{event_id}"
+    pay_admin_link = f"{admin_base}/payment/admin/events/{event_id}"
+    event_view_link = f"{admin_base}/external-login/events/view/{ev_uuid_str}" if ev_uuid_str else ""
+    amount_line = f"{amount_yen:,} 円" if isinstance(amount_yen, int) else "(未取得)"
+
+    subject_admin = f"【{ev.get('title','イベント')}】クレジットカード決済が完了しました"
+    lines = [
+        f"イベント: {ev.get('title','(無題)')}",
+        f"参加者: {user.get('nickname') or '(不明)'} (ID: {user.get('id')})",
+        f"金額: {amount_line}",
+        f"レシートURL: {receipt_url or '(なし)'}",
+        f"管理画面: {admin_link}",
+        f"決済管理: {pay_admin_link}",
+    ]
+    _notify_payment_to_admin_and_acl(
+        ev,
+        event_uuid_str=ev_uuid_str,
+        subject=subject_admin,
+        mail_lines=lines,
+        discord_lines=None,
+    )
+
+    user_email = (user.get("email") or "").strip()
+    if user_email:
+        subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
+        body_user = (
+            f"{user.get('nickname') or '参加者'} 様\n\n"
+            "お忙しい中、お支払いいただきありがとうございます。\n"
+            "このメールを持って決済完了とさせていただきます。\n"
+            "レシートは、下記のアドレスよりご確認よろしくお願いします。\n\n"
+            "当日、お会いできるのを楽しみにしております！\n\n"
+            f"イベント: {ev.get('title','(無題)')}\n"
+            f"金額: {amount_line}\n"
+            f"レシートURL: {receipt_url or '(なし)'}\n"
+            f"イベント詳細: {event_view_link or '(なし)'}\n\n"
+        )
+        send_mail(to=user_email, subject=subject_user, body=body_user, event_uuid=ev_uuid_str)
 
 # ───────────────────────────────────────────────────────────
 # スキーマ
@@ -810,8 +929,24 @@ def api_charge(event_uuid: str):
                                AND COALESCE(payment_status,'unpaid') <> 'paid'
                         """, (amount, p.get("receipt_url"), pay_row_id, event_id, user_id))
                         conn.commit()
+                        if event_id and user_id:
+                            try:
+                                _notify_mfu_payment_completion(
+                                    conn,
+                                    event_id=int(event_id),
+                                    user_id=int(user_id),
+                                    amount_yen=int(amount) if amount is not None else None,
+                                    receipt_url=p.get("receipt_url"),
+                                    payment_status=status,
+                                )
+                            except Exception:
+                                logging.exception("api_charge: mfu notify failed")
                 except Exception:
                     conn.rollback()
+            try:
+                _notify_discord_payment_if_needed(conn, p.get("id"))
+            except Exception:
+                logging.exception("api_charge: notify failed")
             return jsonify({
                 "payment_id": p.get("id"),
                 "status": p.get("status"),
@@ -1187,3 +1322,4 @@ def admin_event_detail_by_uuid(event_uuid: str):
 
     # 既存のIDルートへリダイレクトして再利用
     return redirect(f"/payment/admin/events/{row['id']}")
+
