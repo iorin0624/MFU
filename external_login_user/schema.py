@@ -80,6 +80,23 @@ CREATE TABLE IF NOT EXISTS mfu_event_member (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
+DDL_ALBUM_PROCESS = """
+CREATE TABLE IF NOT EXISTS album_process (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  ext_user_id   BIGINT UNSIGNED NOT NULL,
+  album_id      CHAR(36) NOT NULL,
+  child_id      CHAR(36) NOT NULL,
+  request_flag  TINYINT(1) NOT NULL DEFAULT 0,
+  complete_flag TINYINT(1) NOT NULL DEFAULT 0,
+  updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uniq_album_process (ext_user_id, album_id, child_id),
+  KEY idx_album_process_album (album_id, child_id),
+  KEY idx_album_process_user (ext_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
 DDL_PAYMENT_REQUEST = """
 CREATE TABLE IF NOT EXISTS mfu_payment_request (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -123,6 +140,7 @@ def _on_bp_registered(state) -> None:
             cur.execute(DDL_EXTERNAL)
             cur.execute(DDL_EVENT)
             cur.execute(DDL_EVENT_MEMBER)
+            cur.execute(DDL_ALBUM_PROCESS)
             cur.execute(DDL_PAYMENT_REQUEST)
 
             # 後方互換ALTER（存在しなければADD）
