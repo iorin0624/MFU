@@ -91,7 +91,7 @@
       <!-- タイトル -->
       <div class="mb-3">
         <label for="childName" class="form-label">ご自身のお名前or新しい子アルバム名</label>
-        <input id="childName" type="text" name="child_name" class="form-control" placeholder="例：いおりん" required>
+        <input id="childName" type="text" name="child_name" class="form-control" placeholder="例：いおりん" value="{{ ext_user_nickname or '' }}" required>
       </div>
 
       <!-- モード選択 -->

@@ -436,6 +436,7 @@ def admin_event_view(event_id: int):
         u.avatar_file, u.avatar_url, u.updated_at,
         m.status, m.payment_status, m.paid_at, m.receipt_url, m.joined_at,
         COALESCE(m.require_payment, 1)        AS require_payment,
+        COALESCE(m.process, 0)                AS process,
         COALESCE(m.is_host, 0)                AS is_host,
         COALESCE(m.is_subhost, 0)             AS is_subhost,
         COALESCE(m.participant_role, 'none')  AS participant_role,
@@ -476,7 +477,7 @@ def admin_event_view(event_id: int):
             (user_id, nickname, x_id, instagram_id, email,
              avatar_file, avatar_url, updated_at,
              status, payment_status, paid_at, receipt_url, joined_at,
-             require_payment, is_host, is_subhost, participant_role, costume_label,
+             require_payment, process, is_host, is_subhost, participant_role, costume_label,
              paid_amount_yen, contact_memo, admin_note, _role_rank) = r
         else:
             user_id          = r["user_id"]
@@ -493,6 +494,7 @@ def admin_event_view(event_id: int):
             receipt_url      = r["receipt_url"]
             joined_at        = r["joined_at"]
             require_payment  = r["require_payment"]
+            process          = r["process"]
             is_host          = r["is_host"]
             is_subhost       = r["is_subhost"]
             participant_role = r["participant_role"]
@@ -533,6 +535,7 @@ def admin_event_view(event_id: int):
             "receipt_url": receipt_url,
             "joined_at": joined_at,
             "require_payment": require_payment_flag,
+            "process": 1 if process else 0,
             "is_host": 1 if is_host else 0,
             "is_subhost": 1 if is_subhost else 0,
             "participant_role": (participant_role or "none"),

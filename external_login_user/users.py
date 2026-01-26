@@ -1818,6 +1818,7 @@ def view_event(event_uuid: str):
               CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment,
               COALESCE(m.payment_status,'unpaid')                 AS payment_status,
               m.paid_amount_yen, m.paid_at, m.receipt_url,
+              COALESCE(m.process,0) AS process,
               COALESCE(m.is_host,0) AS is_host,
               COALESCE(m.is_subhost,0) AS is_subhost,
               COALESCE(m.participant_role,'none') AS participant_role,
@@ -1838,6 +1839,7 @@ def view_event(event_uuid: str):
     my_paid_amount_yen     = row.get("paid_amount_yen") if row else None
     my_paid_at             = row.get("paid_at") if row else None
     my_receipt_url         = row.get("receipt_url") if row else None
+    my_process             = int(row.get("process")) if row else 0
     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
     my_costume_label       = (row.get("costume_label")  if row else "") or ""
@@ -1966,6 +1968,7 @@ def view_event(event_uuid: str):
         my_paid_amount_yen=my_paid_amount_yen,
         my_paid_at=my_paid_at,
         my_receipt_url=my_receipt_url,
+        my_process=my_process,
         album_url=album_url,
         maps_link=maps_link,
         openchat_url=openchat_url,
@@ -2037,6 +2040,47 @@ def update_my_role(event_uuid: str):
         try: db.rollback()
         except Exception: pass
         flash("役割の更新に失敗しました。", "danger")
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+    return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+
+
+# =========================
+# 加工回し（参加者自身が編集可）
+# =========================
+@bp.post("/events/<event_uuid>/process")
+def update_my_process(event_uuid: str):
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+    ev = _event_by_uuid_str(event_uuid)
+    if not ev:
+        abort(404, "イベントが見つかりません")
+
+    status = _membership_status(ev["id"], me["id"])  # type: ignore
+    if status is None:
+        abort(403, "このイベントの参加者ではありません")
+
+    process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
+
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("""
+            UPDATE mfu_event_member
+               SET process=%s
+             WHERE event_id=%s AND user_id=%s
+             LIMIT 1
+        """, (process_flag, ev["id"], me["id"]))  # type: ignore
+        db.commit()
+        flash("加工回し設定を更新しました。", "success")
+    except Exception:
+        try: db.rollback()
+        except Exception: pass
+        flash("加工回し設定の更新に失敗しました。", "danger")
     finally:
         try: cur.close(); db.close()
         except Exception: pass
