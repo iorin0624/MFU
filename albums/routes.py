@@ -54,6 +54,71 @@ def _get_ext_user_nickname() -> str | None:
     nickname = (ext_user.get("nickname") or "").strip()
     return nickname or None
 
+def _is_ext_logged_in() -> bool:
+    return bool(session.get("ext_user_social_id"))
+
+def _fetch_event_process_members(event_id: int) -> list[dict]:
+    """イベント参加者一覧を取得（process フラグ含む）"""
+    rows: list[dict] = []
+    try:
+        conn = get_db()
+        try:
+            cur = conn.cursor(dictionary=True)
+        except Exception:
+            cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              m.user_id,
+              COALESCE(m.process, 0) AS process,
+              u.nickname,
+              u.email
+            FROM mfu_event_member m
+            JOIN external_login_user u ON u.id = m.user_id
+            WHERE m.event_id=%s
+            ORDER BY u.nickname ASC, m.user_id ASC
+            """,
+            (event_id,),
+        )
+        fetched = cur.fetchall() or []
+        if fetched and not isinstance(fetched[0], dict):
+            cols = [d[0] for d in cur.description]
+            for r in fetched:
+                rows.append({cols[i]: r[i] for i in range(len(cols))})
+        else:
+            rows = fetched
+        try:
+            cur.close()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+    except Exception:
+        return []
+    return rows or []
+
+def _fetch_album_process_status_map(album_id: str, child_id: str) -> dict[int, dict]:
+    """album_process の request/complete 状態を ext_user_id ごとに取得"""
+    _ensure_album_process_table()
+    rows = db_get_all(
+        """
+        SELECT ext_user_id, request_flag, complete_flag
+          FROM album_process
+         WHERE album_id=%s AND child_id=%s
+        """,
+        (album_id, child_id),
+    )
+    status_map: dict[int, dict] = {}
+    for r in rows or []:
+        ext_user_id = int(r.get("ext_user_id"))
+        status_map[ext_user_id] = {
+            "request_flag": int(r.get("request_flag", 0)),
+            "complete_flag": int(r.get("complete_flag", 0)),
+        }
+    return status_map
+
 # =============================================================================
 # 定数 / 設定
 # =============================================================================
@@ -241,6 +306,34 @@ def _ensure_album_storage_table():
     try:
         with db.cursor() as cur:
             cur.execute(DDL_ALBUM_STORAGE)
+        db.commit()
+    finally:
+        db.close()
+
+# =============================================================================
+# 加工回し（イベント向け）依頼/完了の状態管理
+# =============================================================================
+DDL_ALBUM_PROCESS = """
+CREATE TABLE IF NOT EXISTS album_process (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  ext_user_id   BIGINT UNSIGNED NOT NULL,
+  album_id      VARCHAR(64) NOT NULL,
+  child_id      VARCHAR(64) NOT NULL,
+  request_flag  TINYINT(1) NOT NULL DEFAULT 0,
+  complete_flag TINYINT(1) NOT NULL DEFAULT 0,
+  updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_album_process (ext_user_id, album_id, child_id),
+  INDEX idx_album_process_album (album_id, child_id),
+  INDEX idx_album_process_user (ext_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+def _ensure_album_process_table():
+    db = get_db()
+    try:
+        with db.cursor() as cur:
+            cur.execute(DDL_ALBUM_PROCESS)
         db.commit()
     finally:
         db.close()
@@ -1639,7 +1732,21 @@ def view_child(album_id, child_id):
             current_app.logger.warning("加工履歴読み込みエラー: %s", e)
 
     # 画像ビュー（通常/加工）
-    template_name = "view_child_process.html" if mode == "process" else "view_child.html"
+    event_meta = _fetch_album_meta(album_id)
+    is_event_login = bool(_is_ext_logged_in() and event_meta and event_meta.get("access_mode") == "event")
+    event_process_members = []
+    if is_event_login and event_meta and event_meta.get("event_id"):
+        event_process_members = _fetch_event_process_members(int(event_meta["event_id"]))
+        status_map = _fetch_album_process_status_map(album_id, child_id)
+        for member in event_process_members:
+            ext_user_id = int(member.get("user_id"))
+            status = status_map.get(ext_user_id, {})
+            member["request_flag"] = int(status.get("request_flag", 0))
+            member["complete_flag"] = int(status.get("complete_flag", 0))
+    if mode == "process" and is_event_login:
+        template_name = "view_child_process_event.html"
+    else:
+        template_name = "view_child_process.html" if mode == "process" else "view_child.html"
     return render_template(
         template_name,
         album_id=album_id,
@@ -1659,6 +1766,8 @@ def view_child(album_id, child_id):
         # ★追加：HDD保管中フラグをテンプレへ渡す
         is_readonly=is_readonly,
         ext_user_nickname=_get_ext_user_nickname(),
+        is_event_login=is_event_login,
+        event_process_members=event_process_members,
     )
 
 # =============================================================================
@@ -1674,6 +1783,50 @@ def album_thumb(album_id, child_id, filename):
         if os.path.isfile(p):
             return send_file(p, conditional=True)
     abort(404)
+
+@album_bp.route('/<album_id>/<child_id>/process_status', methods=['POST'])
+def update_process_status(album_id, child_id):
+    meta = load_meta(album_id)
+    if not meta:
+        return jsonify({"ok": False, "error": "album_not_found"}), 404
+
+    is_authed = session.get(f'auth_{album_id}') is True
+    if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    try:
+        ext_user_id = int(data.get("ext_user_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid ext_user_id"}), 400
+
+    request_flag = 1 if data.get("request_flag") else 0
+    complete_flag = 1 if data.get("complete_flag") else 0
+
+    event_meta = _fetch_album_meta(album_id)
+    if not event_meta or not event_meta.get("event_id"):
+        return jsonify({"ok": False, "error": "event_not_found"}), 404
+
+    # イベント参加者かどうかチェック
+    row = db_get_one(
+        "SELECT id FROM mfu_event_member WHERE event_id=%s AND user_id=%s",
+        (int(event_meta["event_id"]), ext_user_id),
+    )
+    if not row:
+        return jsonify({"ok": False, "error": "member_not_found"}), 404
+
+    _ensure_album_process_table()
+    db_exec(
+        """
+        INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
+        VALUES (%s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+          request_flag=VALUES(request_flag),
+          complete_flag=VALUES(complete_flag)
+        """,
+        (ext_user_id, album_id, child_id, request_flag, complete_flag),
+    )
+    return jsonify({"ok": True})
 
 @album_bp.route('/<album_id>/image/<child_id>/<filename>')
 def image(album_id, child_id, filename):

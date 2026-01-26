@@ -360,9 +360,6 @@ def admin_ext_users_resend_verify(user_id: int):
             "メールアドレスの確認をお願いします。\n"
             "下記の確認ページを開き、「確認する」ボタンを押してください（有効期限: 24時間）。\n\n"
             f"{verify_url_get}\n\n"
-            "—\n"
-            "発行元：MFU イベント管理\n"
-            "このメールに心当たりが無い場合は破棄してください。"
         )
 
         # 送信（/app/utils/mail.py）
@@ -372,7 +369,6 @@ def admin_ext_users_resend_verify(user_id: int):
                 subject=subject,
                 body=body,
                 event_uuid=None,  # From: noreply@mail.iori0624.jp
-                reply_to=None,
             )
         except Exception as e:
             if request.is_json:
@@ -610,4 +606,3 @@ def admin_ext_users_member_delete(user_id: int, member_id: int):
 
     return redirect(url_for("external_login_user.admin_ext_users_edit_page",
                             user_id=user_id, deleted="1"))
-
