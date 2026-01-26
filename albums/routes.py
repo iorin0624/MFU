@@ -119,6 +119,74 @@ def _fetch_album_process_status_map(album_id: str, child_id: str) -> dict[int, d
         }
     return status_map
 
+def _build_event_album_link(event_id: int, album_id: str, child_id: str) -> str:
+    """イベント参加者向けのアルバム直リンクを返す（取得できない場合はアルバムURLへフォールバック）。"""
+    def _to_uuid_str(v):
+        import uuid
+        if isinstance(v, str):
+            s = v.strip()
+            try:
+                uuid.UUID(s)
+                return s
+            except Exception:
+                return None
+        if isinstance(v, (bytes, bytearray)):
+            try:
+                return str(uuid.UUID(bytes=bytes(v)))
+            except Exception:
+                try:
+                    return str(uuid.UUID(hex=v.hex()))
+                except Exception:
+                    return None
+        return None
+
+    ev_uuid_str = None
+    try:
+        try:
+            ev_row = db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+            ev_b = ev_row.get("event_uuid") if isinstance(ev_row, dict) else None
+        except Exception:
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+                r = cur.fetchone()
+                ev_b = r[0] if r else None
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        ev_uuid_str = _to_uuid_str(ev_b)
+    except Exception as e:
+        current_app.logger.warning("notify(event_uuid) failed: %s", e)
+        ev_uuid_str = None
+
+    if ev_uuid_str:
+        try:
+            return url_for('external_login_user.event_album_direct', event_uuid=ev_uuid_str, _external=True)
+        except Exception:
+            return url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)
+    return url_for('album.view_child', album_id=album_id, child_id=child_id, _external=True)
+
+def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
+    if not user_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(user_ids))
+    sql = (
+        "SELECT m.user_id, u.nickname, u.email, "
+        "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
+        "  FROM mfu_event_member m "
+        "  JOIN external_login_user u ON u.id = m.user_id "
+        f" WHERE m.event_id=%s AND m.user_id IN ({placeholders}) "
+        " ORDER BY u.nickname ASC, m.user_id ASC"
+    )
+    return db_get_all(sql, (event_id, *user_ids)) or []
+
 # =============================================================================
 # 定数 / 設定
 # =============================================================================
@@ -1150,7 +1218,8 @@ def upload_child(album_id, child_id):
 
             # 承認済み参加者 + 通知設定カラムも取得
             sql = (
-                "SELECT u.email,"
+                "SELECT m.user_id AS ext_user_id,"
+                "       u.email,"
                 "       COALESCE(u.notify_album_upload, 1)  AS notify_album_upload,"
                 "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
                 "  FROM mfu_event_member m "
@@ -1191,6 +1260,20 @@ def upload_child(album_id, child_id):
                 except Exception as e2:
                     current_app.logger.warning("notify(db) failed: %s", e2)
                     return
+
+            # ★ process モードのアップロード通知は「完了済みのみ」へ絞り込み
+            if kind == "upload" and mode == "process":
+                status_map = _fetch_album_process_status_map(album_id, child_id)
+                filtered = []
+                for r in rows:
+                    try:
+                        ext_user_id = int(r.get("ext_user_id"))
+                    except (TypeError, ValueError):
+                        continue
+                    status = status_map.get(ext_user_id, {})
+                    if int(status.get("complete_flag", 0)) == 1:
+                        filtered.append(r)
+                rows = filtered
 
             # ★ 各自の通知設定でフィルタ
             if kind == "upload":
@@ -1427,6 +1510,7 @@ def upload_child(album_id, child_id):
         if mode == "process":
             file = files[0]
             os.makedirs(child_path, exist_ok=True)
+            had_latest = any(f.startswith('latest.') for f in os.listdir(child_path))
             save_path = os.path.join(child_path, "latest.jpg")
             history_dir = os.path.join(child_path, 'history')
             os.makedirs(history_dir, exist_ok=True)
@@ -1476,9 +1560,39 @@ def upload_child(album_id, child_id):
             except Exception:
                 pass
 
+            # ★アップロード時に完了チェック＆未完了の人へ通知（イベントログイン時のみ）
+            try:
+                event_meta = _fetch_album_meta(album_id)
+                is_event_login = bool(_is_ext_logged_in() and event_meta and event_meta.get("access_mode") == "event")
+                if is_event_login and event_meta and event_meta.get("event_id"):
+                    event_id = int(event_meta["event_id"])
+                    ext_user_id = session.get("ext_user_id")
+                    if not ext_user_id:
+                        ext_social_id = session.get("ext_user_social_id")
+                        if ext_social_id:
+                            ext_user = _get_ext_user_by_social(ext_social_id)
+                            if ext_user:
+                                ext_user_id = ext_user.get("id")
+                    if ext_user_id:
+                        _ensure_album_process_table()
+                        db_exec(
+                            """
+                            INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
+                            VALUES (%s, %s, %s, 1, 1)
+                            ON DUPLICATE KEY UPDATE
+                              request_flag=1,
+                              complete_flag=1
+                            """,
+                            (int(ext_user_id), album_id, child_id),
+                        )
+
+            except Exception as e:
+                current_app.logger.warning("notify(process upload) failed: %s", e)
+
             # ★加工完了の通知（クールタイム対象外）
             try:
-                _notify_event_members('process_done', ['latest.jpg'])
+                if had_latest:
+                    _notify_event_members('process_done', ['latest.jpg'])
             except Exception as e:
                 current_app.logger.warning("notify(process) failed: %s", e)
 
@@ -1827,6 +1941,90 @@ def update_process_status(album_id, child_id):
         (ext_user_id, album_id, child_id, request_flag, complete_flag),
     )
     return jsonify({"ok": True})
+
+@album_bp.route('/<album_id>/<child_id>/process_request', methods=['POST'])
+def request_process(album_id, child_id):
+    meta = load_meta(album_id)
+    if not meta:
+        return jsonify({"ok": False, "error": "album_not_found"}), 404
+
+    is_authed = session.get(f'auth_{album_id}') is True
+    if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    data = request.get_json(silent=True) or {}
+    members = data.get("members") or []
+    if not isinstance(members, list):
+        return jsonify({"ok": False, "error": "invalid_members"}), 400
+
+    event_meta = _fetch_album_meta(album_id)
+    if not event_meta or not event_meta.get("event_id"):
+        return jsonify({"ok": False, "error": "event_not_found"}), 404
+
+    event_id = int(event_meta["event_id"])
+    event_members = _fetch_event_process_members(event_id)
+    valid_user_ids = {int(m.get("user_id")) for m in event_members}
+
+    _ensure_album_process_table()
+
+    request_targets: list[int] = []
+    for m in members:
+        try:
+            ext_user_id = int(m.get("ext_user_id"))
+        except (TypeError, ValueError):
+            continue
+        if ext_user_id not in valid_user_ids:
+            continue
+        request_flag = 1 if m.get("request_flag") else 0
+        complete_flag = 1 if m.get("complete_flag") else 0
+        db_exec(
+            """
+            INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              request_flag=VALUES(request_flag),
+              complete_flag=VALUES(complete_flag)
+            """,
+            (ext_user_id, album_id, child_id, request_flag, complete_flag),
+        )
+        if request_flag == 1 and complete_flag == 0:
+            request_targets.append(ext_user_id)
+
+    sent_count = 0
+    if request_targets:
+        contacts = _fetch_event_notification_contacts(event_id, request_targets)
+        album_name = meta.get("album_name", "アルバム")
+        child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
+        link = _build_event_album_link(event_id, album_id, child_id)
+        subject = f"【加工依頼】{album_name}"
+        body = (
+            f"{album_name} の「{child_name}」について加工のご協力をお願いします。\n\n"
+            f"アクセスはこちら:\n{link}\n\n"
+            "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
+        )
+
+        try:
+            from app.utils.mail import send_mail
+        except Exception:
+            try:
+                from app.mail import send_mail
+            except Exception:
+                current_app.logger.warning("notify: send_mail import failed")
+                send_mail = None
+
+        if send_mail:
+            for c in contacts:
+                if not c.get("email"):
+                    continue
+                if int(c.get("notify_album_process", 1)) != 1:
+                    continue
+                try:
+                    send_mail(c["email"], subject, body)
+                    sent_count += 1
+                except Exception as e:
+                    current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
+
+    return jsonify({"ok": True, "sent": sent_count})
 
 @album_bp.route('/<album_id>/image/<child_id>/<filename>')
 def image(album_id, child_id, filename):
@@ -2223,7 +2421,17 @@ def begin_process(album_id, child_id):
 
     username = (request.form.get("username") or "").strip()
     if not username:
-        return "加工者名は必須です。", 400
+        ext_social_id = session.get("ext_user_social_id")
+        if ext_social_id:
+            ext_user = _get_ext_user_by_social(ext_social_id)
+            if ext_user:
+                username = (ext_user.get("nickname") or "").strip()
+                if not username:
+                    username = "（未設定）"
+        if not username:
+            username = (session.get("user") or "").strip()
+    if not username:
+        username = "不明"
 
     latest_filename = find_latest_filename(album_id, child_id)
     if not latest_filename:
