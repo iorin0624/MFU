@@ -95,7 +95,7 @@
           name="display_name"
           class="form-control"
           placeholder="お名前"
-          value="{{ session.user or '' }}"
+          value="{{ ext_user_nickname or session.user or '' }}"
           required
           minlength="1"
           autocomplete="nickname"

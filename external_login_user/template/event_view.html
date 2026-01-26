@@ -281,6 +281,35 @@
         </div>
       </div>
 
+      <!-- 加工回し -->
+      <div class="col-md-6">
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-3">加工回し</h2>
+            <div class="mb-2">
+              <strong>現在：</strong>
+              {% if my_process|default(0)|int == 1 %}必要{% else %}不要{% endif %}
+            </div>
+
+            {% if my_status == 'approved' %}
+              <form method="post" action="{{ url_for('external_login_user.update_my_process', event_uuid=ev.event_uuid_str) }}" class="d-flex flex-wrap gap-2 align-items-center">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="processCheck" name="process" value="1"
+                         {{ 'checked' if my_process|default(0)|int == 1 else '' }}>
+                  <label class="form-check-label" for="processCheck">
+                    加工回しが必要
+                  </label>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary">保存</button>
+              </form>
+              <div class="form-text mt-2">チェックを入れると加工回し対象として記録されます。</div>
+            {% else %}
+              <div class="text-muted small">承認後に編集できます。</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
       <!-- 役割（衣装／その他メモ） -->
       <div class="col-md-6">
         <div class="card h-100">

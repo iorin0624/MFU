@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS mfu_event_member (
   status             ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
   payment_status     ENUM('unpaid','pending','paid','refunded') NOT NULL DEFAULT 'unpaid',
   require_payment    TINYINT(1) NOT NULL DEFAULT 1,
+  process            TINYINT(1) NOT NULL DEFAULT 0,
   paid_at            DATETIME NULL,
   payment_row_id     BIGINT UNSIGNED NULL,
   receipt_url        VARCHAR(512) NULL,
@@ -144,6 +145,7 @@ def _on_bp_registered(state) -> None:
             # 既存のゆるいALTER群
             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
+            _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
 
             # ★ 追加：支払期間 列（後方互換で追加）
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")

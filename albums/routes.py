@@ -35,9 +35,24 @@ from flask import g  # 追加
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
 from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
+from app.external_login_user.utils import _get_ext_user_by_social
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
 print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
+
+
+def _get_ext_user_nickname() -> str | None:
+    ext_social_id = session.get("ext_user_social_id")
+    if not ext_social_id:
+        return None
+    try:
+        ext_user = _get_ext_user_by_social(ext_social_id)
+    except Exception:
+        return None
+    if not ext_user:
+        return None
+    nickname = (ext_user.get("nickname") or "").strip()
+    return nickname or None
 
 # =============================================================================
 # 定数 / 設定
@@ -909,6 +924,8 @@ def album_home(album_id):
     if not (is_admin or is_owner or is_authed):
         return redirect(url_for('album.album_access', album_id=album_id))
 
+    ext_user_nickname = _get_ext_user_nickname()
+
     # ★追加：加工ロック一覧を取得
     processing_list = []
     try:
@@ -947,6 +964,7 @@ def album_home(album_id):
         is_admin=is_admin, is_owner=is_owner,
         is_readonly=is_readonly,
         processing_list=processing_list,   # ★追加
+        ext_user_nickname=ext_user_nickname,
     )
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
@@ -1639,7 +1657,8 @@ def view_child(album_id, child_id):
         session=session,
         history_list=history_list,
         # ★追加：HDD保管中フラグをテンプレへ渡す
-        is_readonly=is_readonly
+        is_readonly=is_readonly,
+        ext_user_nickname=_get_ext_user_nickname(),
     )
 
 # =============================================================================

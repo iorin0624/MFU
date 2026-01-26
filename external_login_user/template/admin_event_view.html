@@ -260,12 +260,12 @@
             <tr>
               <th>ユーザー</th>
               <th>承認</th>
+              <th>加工</th>
               <th>役割（衣装）</th>
               <th>メモ</th>
               <th class="nowrap">要支払い</th>
               <th>支払状況</th>
               <th class="text-end">支払金額(円)</th>
-              <th>領収</th>
               <th>参加</th>
               <th class="text-end">操作</th>
             </tr>
@@ -340,6 +340,14 @@
                 {% endif %}
               </td>
 
+              <td class="text-center">
+                {% if m.process == 1 %}
+                  ★
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+
               <td>
                 {% if pr %}{{ my_role_label(pr) }}{% else %}—{% endif %}
                 {% if m.costume_label %}
@@ -393,14 +401,6 @@
               <td class="text-end">
                 {% if m.paid_amount_yen is not none %}
                   ¥{{ "{:,}".format(m.paid_amount_yen|int) }}
-                {% else %}
-                  <span class="text-muted">—</span>
-                {% endif %}
-              </td>
-
-              <td>
-                {% if m.receipt_url %}
-                  <a href="{{ m.receipt_url }}" target="_blank" rel="noopener">レシート</a>
                 {% else %}
                   <span class="text-muted">—</span>
                 {% endif %}
