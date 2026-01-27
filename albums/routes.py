@@ -636,6 +636,14 @@ def try_acquire_lock_db(album_id: str, child_id: str, username: str, ttl_sec: in
                 row = cur.fetchone() or {}
                 holder = row.get('username', '不明')
                 exp = row.get('expires_at')
+                if holder == username:
+                    cur.execute(
+                        "UPDATE album_locks SET acquired_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL %s SECOND) "
+                        "WHERE album_id=%s AND child_id=%s",
+                        (ttl_sec, album_id, child_id)
+                    )
+                    conn.commit()
+                    return True, "既存ロックを更新しました。"
                 until = exp.strftime('%H:%M') if isinstance(exp, datetime) else '不明'
                 return False, f"現在 {holder} さんが加工中です（〜{until}）。"
             raise
