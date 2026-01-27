@@ -27,15 +27,48 @@ ENV_FILE = BASE_DIR / ".env"
 load_dotenv(ENV_FILE, override=True)
 
 # ここで評価される値は、external_login_user/.env によって上書きされた後のもの
-SQUARE_ENV = os.getenv("SQUARE_ENV", "SANDBOX").upper()
 SQUARE_APP_ID = os.getenv("SQUARE_APP_ID")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID")
 SQUARE_ACCESS_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN")
 
+def _square_env_suffix(square_env: str) -> str:
+    return "SANDBOX" if square_env == "SANDBOX" else "PRODUCTION"
+
+def _load_square_creds() -> tuple[str | None, str | None, str | None]:
+    square_env = _get_square_env()
+    suffix = _square_env_suffix(square_env)
+    app_id = os.getenv(f"SQUARE_{suffix}_APP_ID") or SQUARE_APP_ID
+    location_id = os.getenv(f"SQUARE_{suffix}_LOCATION_ID") or SQUARE_LOCATION_ID
+    access_token = os.getenv(f"SQUARE_{suffix}_ACCESS_TOKEN") or SQUARE_ACCESS_TOKEN
+    return app_id, location_id, access_token
+
+def _get_square_env() -> str:
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT value FROM settings WHERE `key` = 'square_env_external'")
+        row = cur.fetchone()
+        db.close()
+        if row:
+            value = row.get("value") if isinstance(row, dict) else row[0]
+            if value:
+                return str(value).upper()
+    except Exception:
+        current_app.logger.exception("[auto_payment._get_square_env] failed to load square_env")
+    return os.getenv("SQUARE_ENV", "SANDBOX").upper()
+
+def _square_js_url(square_env: str) -> str:
+    return (
+        "https://sandbox.web.squarecdn.com/v1/square.js"
+        if square_env == "SANDBOX"
+        else "https://web.squarecdn.com/v1/square.js"
+    )
+
 
 def is_square_config_ready() -> bool:
     """カード登録に必要な値が全部そろっているか"""
-    return bool(SQUARE_APP_ID and SQUARE_LOCATION_ID and SQUARE_ACCESS_TOKEN)
+    app_id, location_id, access_token = _load_square_creds()
+    return bool(app_id and location_id and access_token)
 
 
 def create_square_client():
@@ -53,10 +86,12 @@ def create_square_client():
         env_app_id = os.getenv("SQUARE_APP_ID")
         env_location_id = os.getenv("SQUARE_LOCATION_ID")
         env_access = os.getenv("SQUARE_ACCESS_TOKEN")
+        effective_env = _get_square_env()
+        app_id, location_id, access_token = _load_square_creds()
 
         masked_token_const = None
-        if SQUARE_ACCESS_TOKEN:
-            masked_token_const = f"{SQUARE_ACCESS_TOKEN[:6]}... (len={len(SQUARE_ACCESS_TOKEN)})"
+        if access_token:
+            masked_token_const = f"{access_token[:6]}... (len={len(access_token)})"
 
         masked_token_env = None
         if env_access:
@@ -64,9 +99,9 @@ def create_square_client():
 
         current_app.logger.error(
             "[auto_payment.create_square_client] CONST: ENV=%s, APP_ID=%s, LOCATION_ID=%s, ACCESS_TOKEN=%s",
-            SQUARE_ENV,
-            SQUARE_APP_ID,
-            SQUARE_LOCATION_ID,
+            effective_env,
+            app_id,
+            location_id,
             masked_token_const,
         )
         current_app.logger.error(
@@ -88,13 +123,15 @@ def create_square_client():
         )
         return None
 
+    app_id, location_id, access_token = _load_square_creds()
+
     # ★ APP_ID から sandbox / production を自動判別
     #   ・APP_ID が "sandbox-" で始まっていれば sandbox
-    #   ・それ以外なら SQUARE_ENV を見て判断
-    if SQUARE_APP_ID and SQUARE_APP_ID.startswith("sandbox-"):
+    #   ・それ以外なら設定値（square_env / SQUARE_ENV）を見て判断
+    if app_id and app_id.startswith("sandbox-"):
         environment = "sandbox"
     else:
-        environment = "sandbox" if SQUARE_ENV == "SANDBOX" else "production"
+        environment = "sandbox" if _get_square_env() == "SANDBOX" else "production"
 
     current_app.logger.error(
         "[auto_payment.create_square_client] EFFECTIVE_ENV=%s", environment
@@ -111,7 +148,7 @@ def create_square_client():
 
     try:
         client = Client(
-            access_token=SQUARE_ACCESS_TOKEN,
+            access_token=access_token,
             environment=environment,
         )
     except Exception:
@@ -269,8 +306,7 @@ def card():
     db.close()
 
     # Square の AppId / LocationId は external_login_user/.env から読み込んだ値を渡す
-    square_app_id = SQUARE_APP_ID
-    square_location_id = SQUARE_LOCATION_ID
+    square_app_id, square_location_id, _ = _load_square_creds()
     current_app.logger.debug(
         "[auto_payment.card] square_app_id=%r, square_location_id=%r",
         square_app_id,
@@ -291,12 +327,15 @@ def card():
             "[auto_payment.card] square config looks OK"
         )
 
+    square_env = _get_square_env()
     return render_template(
         "ext_card.html",  # ★ テンプレート名はそのまま
         me=me,
         csrf_token=csrf_token,
         square_app_id=square_app_id,
         square_location_id=square_location_id,
+        square_js_url=_square_js_url(square_env),
+        square_env=square_env,
         has_card=has_card,
         card_summary=card_summary,
     )

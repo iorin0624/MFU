@@ -1,97 +1,57 @@
-diff --git a/__init__.py b/__init__.py
-index 71405470fabc3da45566b2d7ed526b783a0dac61..81e69470937827aa81758b75e5a8c923ce804a8f 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -42,60 +42,61 @@ from flask import (
- )
- from flask_login import LoginManager
- from werkzeug.middleware.proxy_fix import ProxyFix
- from werkzeug.utils import secure_filename, safe_join
+diff --git a/templates/admin_maintenance.html b/templates/admin_maintenance.html
+index 443b4afab5f3a7b75ca46d839d3b788818ee704a..a70fa8b1fd3074f3c224d7432776da3df6eb7399 100644
+--- a/templates/admin_maintenance.html
++++ b/templates/admin_maintenance.html
+@@ -1,34 +1,52 @@
+ {% extends "base.html" %}
+ {% block title %}メンテナンスモード設定{% endblock %}
+ {% block content %}
+ <div class="container" style="max-width: 600px;">
+   <h2 class="mb-4">🛠 メンテナンスモード設定</h2>
  
- # =====================================
- # 🛠️ アプリ内ユーティリティ（上段に集約）
- # =====================================
- from app.utils.auth import load_user
- from app.utils.db import get_db
- from app.utils.file_ops import sanitize_filename, generate_thumbnail, create_zip
- from app.utils.image import save_as_jpeg
- from app.utils.logs import log_request_raw
- from app.utils.message import generate_message
- from app.utils.storage_info import get_storage_info
- from app.utils.thumbs import enqueue_thumb_job
- from app.utils.totp_util import get_user_otp_secret
- from app.utils.whois_util import get_netinfo
- from app.albums import album_bp
- from app.utils.mail import send_mail 
+   <form method="post">
+     <div class="form-check form-switch mb-3">
+       <input class="form-check-input" type="checkbox" name="maintenance_mode" id="toggleSwitch" value="on"
+              {% if current_mode == 'on' %}checked{% endif %}>
+       <label class="form-check-label" for="toggleSwitch">メンテナンスモードON/OFF</label>
+     </div>
  
- # =====================================
- # 🌏 タイムゾーン・定数
- # =====================================
- JST = timezone(timedelta(hours=9))
--BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-+APP_DIR = os.path.abspath(os.path.dirname(__file__))
-+BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
- UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
- tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+     <div class="mb-3">
+       <label class="form-label">⏰ 終了予定日時（空欄＝無期限）</label>
+       <input type="datetime-local" name="maintenance_until" class="form-control"
+              value="{{ current_until }}">
+     </div>
  
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
--    template_folder=os.path.join(BASE_DIR, "templates"),
-+    template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=os.path.join(BASE_DIR, "static"),
- )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
++    <div class="mb-3">
++      <label class="form-label">💳 Square 決済モード（/payment 系）</label>
++      <select name="square_env_payment" class="form-select">
++        <option value="SANDBOX" {% if current_square_env_payment == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
++        <option value="PRODUCTION" {% if current_square_env_payment == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
++      </select>
++      <div class="form-text">/payment の API/SDK をこの環境で切り替えます。</div>
++    </div>
++
++    <div class="mb-3">
++      <label class="form-label">💳 Square 決済モード（外部ログイン/カード登録）</label>
++      <select name="square_env_external" class="form-select">
++        <option value="SANDBOX" {% if current_square_env_external == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
++        <option value="PRODUCTION" {% if current_square_env_external == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
++      </select>
++      <div class="form-text">external_login_user のカード登録で使う SDK を切り替えます。</div>
++    </div>
++
+     <div class="text-end">
+       <button type="submit" class="btn btn-primary">保存</button>
+     </div>
+   </form>
  
- load_dotenv()
- app.secret_key = os.environ.get("SECRET_KEY")
- 
- app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
- 
- app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
- app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
- 
- login_manager = LoginManager()
- login_manager.init_app(app)
- login_manager.login_view = "login"
- login_manager.user_loader(load_user)
- 
- # =====================================
- # 🧠 補助関数群（上段へ集約）
- # =====================================
- 
- from functools import wraps
- from flask import session
- 
- def admin_required(func):
-@@ -2167,26 +2168,26 @@ app.register_blueprint(otp_bp)
- from app.routes.timer_routes import timer_bp
- app.register_blueprint(timer_bp)
- 
- from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
- 
- from app.utils.zip_stream import zip_api
- app.register_blueprint(zip_api)
- 
- from .utils.service_logs import bp_service_logs
- app.register_blueprint(bp_service_logs)
- 
- from app.tickets import tickets_bp
- app.register_blueprint(tickets_bp)
- 
- from .payment import bp as payment_bp
- app.register_blueprint(payment_bp)
- 
- from app.utils.logs import log_request_raw, write_login_log, log_access
- 
- from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
- init_line_oauth(app)
- app.register_blueprint(ext_login_bp, url_prefix="/external-login")
- app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
- 
- from app.s_u_calendar.routes import s_u_calendar_bp
--app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
-\ No newline at end of file
-+app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+   <!-- 🔄 再起動ボタン -->
+   <form method="post" action="{{ url_for('admin_restart') }}" class="mt-4">
+     <div class="text-end">
+       <button type="submit" class="btn btn-danger" onclick="return confirm('2秒後にサーバーを再起動します。本当によろしいですか？');">
+         🔄 サーバー再起動
+       </button>
+     </div>
+   </form>
+ </div>
+ {% endblock %}
