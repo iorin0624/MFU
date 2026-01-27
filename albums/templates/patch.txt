@@ -1,0 +1,849 @@
+diff --git a/albums/templates/view_child_process_event.html b/albums/templates/view_child_process_event.html
+index a4a267820e415613a53bf29e96f1dc4062c9cad4..1acb699c93f06531a0e3af516873a1d39029db95 100644
+--- a/albums/templates/view_child_process_event.html
++++ b/albums/templates/view_child_process_event.html
+@@ -59,381 +59,472 @@
+     }
+     .stepper-item.active span.badge { background: var(--wizard-accent); color: #fff; }
+     .step-arrow { display: none; font-size: 0.95rem; color: var(--wizard-accent); margin-left: auto; }
+     .stepper-item.active .step-arrow { display: inline-flex; }
+ 
+     .status-card { border-radius: 16px; border: 1px solid var(--wizard-border); }
+     .status-danger { border-color: rgba(220,53,69,0.3); background: #fff5f6; }
+     .status-success { border-color: rgba(25,135,84,0.3); background: #f1fbf5; }
+     .status-info { border-color: rgba(13,110,253,0.3); background: #f1f7ff; }
+ 
+     .next-action { border-radius: 16px; background: #fff; border: 2px dashed rgba(13,110,253,0.3); }
+     .next-action h4 { font-size: clamp(1.2rem, 2vw, 1.5rem); }
+ 
+     .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+     .gallery .item { position: relative; display: inline-block; text-align: center; }
+     img.thumb { width: 110px; height: auto; border-radius: 10px; }
+ 
+     .member-chip {
+       display: inline-flex; align-items: center; gap: 8px;
+       background: #fff3cd; color: #664d03; border-radius: 999px; padding: 6px 12px; font-size: 0.9rem;
+       border: 1px solid #ffeeba; margin: 4px;
+     }
+ 
+     .btn-lg { padding: 0.9rem 1.4rem; font-size: 1rem; }
+ 
++    .upload-panel { border-radius: 16px; border: 1px dashed #cdd6e3; background: #fdfdff; padding: 16px; }
++    .upload-dropzone {
++      border: 2px dashed #a9b4c2; border-radius: 12px; padding: 20px; text-align: center;
++      color: #6c757d; background: #fff; transition: background-color .2s, border-color .2s, color .2s;
++    }
++    .upload-dropzone.dragover { background: #e9f5ff; border-color: #0d6efd; color: #0d6efd; }
++    .upload-preview img {
++      width: 110px; height: 110px; object-fit: contain;
++      background: #f8f9fa; border-radius: 10px; margin: 4px; border: 1px solid #dfe4ea;
++    }
++
+     @media (pointer:coarse){ img.thumb{ width:130px; } }
+   </style>
+ </head>
+ <body class="container py-4">
+ 
+ {% set ns = namespace(has_requested=false) %}
+ {% if event_process_members %}
+   {% for member in event_process_members %}
+     {% if member.request_flag|default(0)|int == 1 %}
+       {% set ns.has_requested = true %}
+     {% endif %}
+   {% endfor %}
+ {% endif %}
+ {% set has_image = files and (files|length > 0) %}
+ {% set current_step = 1 %}
+ {% if has_image %}{% set current_step = 2 %}{% endif %}
+ {% if ns.has_requested %}{% set current_step = 3 %}{% endif %}
+ {% if lock and not lock_expired %}{% set current_step = 4 %}{% endif %}
+ {% if history_list and not lock and ns.has_requested %}{% set current_step = 5 %}{% endif %}
++{% set can_upload = (not is_readonly) and (not has_image or (lock and not lock_expired)) %}
++{% set ext_user_id = session.get('ext_user_id') %}
+ 
+ <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+   <div>
+     <h1 class="page-title fw-bold mb-1">📂 {{ meta.album_name }} /
+       {% for child in meta.children %}
+         {% if child.folder == child_id %}
+           {{ child.name }}
+           <small class="text-muted ms-2">（{{ image_count }}枚）</small>
+         {% endif %}
+       {% endfor %}
+     </h1>
+     <p class="text-muted mb-0">イベント管理システムでログイン中の加工回し専用画面です。</p>
+   </div>
+   <div>
+     <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary">← 親アルバムに戻る</a>
+   </div>
+ </div>
+ 
+ <div class="wizard-card p-4">
+   <div class="mb-3">
+     <h2 class="fw-bold">安心して進められる加工回しガイド</h2>
+     <p class="text-muted mb-0">今どの段階か・次に何をするかがすぐ分かるように整理しました。</p>
+   </div>
+ 
++  <div class="status-card status-info p-3 mb-4">
++    <div class="fw-bold mb-2">📷 最新ギャラリー</div>
++    <div class="gallery">
++      {% if files %}
++        {% for file in files %}
++          {% set fname = file.name if file.name else file %}
++          <div class="item">
++            <a class="preview" href="{{ url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
++               data-caption="{{ fname }}">
++              <img class="thumb"
++                   src="{{ file.thumb if file.thumb else url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
++                   alt="{{ fname }}">
++            </a>
++          </div>
++        {% endfor %}
++      {% else %}
++        <p class="text-muted">まだ写真がアップロードされていません。</p>
++      {% endif %}
++    </div>
++  </div>
++
+   <div class="mb-4">
+     <div class="d-flex align-items-center justify-content-between mb-2">
+       <h5 class="fw-bold mb-0">現在のステップ</h5>
+       <span class="text-muted small">横にスクロールできます</span>
+     </div>
+     <div class="stepper">
+       <div class="stepper-item {% if current_step == 1 %}active{% endif %}">
+         <span class="badge">1</span>
+         <div>📸 写真アップ</div>
+         <span class="step-arrow">▶</span>
+       </div>
+       <div class="stepper-item {% if current_step == 2 %}active{% endif %}">
+         <span class="badge">2</span>
+         <div>👥 依頼先選択</div>
+         <span class="step-arrow">▶</span>
+       </div>
+       <div class="stepper-item {% if current_step == 3 %}active{% endif %}">
+         <span class="badge">3</span>
+         <div>📣 依頼送信</div>
+         <span class="step-arrow">▶</span>
+       </div>
+       <div class="stepper-item {% if current_step == 4 %}active{% endif %}">
+         <span class="badge">4</span>
+         <div>⏬ DL＆加工</div>
+         <span class="step-arrow">▶</span>
+       </div>
+       <div class="stepper-item {% if current_step == 5 %}active{% endif %}">
+         <span class="badge">5</span>
+         <div>✅ 自動通知</div>
+       </div>
+     </div>
+   </div>
+ 
+-  <div class="row g-4">
+-    <div class="col-lg-6">
+-      <div class="role-card role-requester p-4 h-100">
+-        <div class="d-flex align-items-center gap-2 mb-2">
+-          <span class="fs-3">📣</span>
+-          <div>
+-            <div class="role-title fw-bold">お願いする側（依頼者）</div>
+-            <div class="text-muted">ステップ1〜3を進めます</div>
++  <div class="accordion role-accordion mb-4" id="roleAccordion">
++    <div class="accordion-item">
++      <h2 class="accordion-header" id="requesterHeading">
++        <button class="accordion-button {% if current_step <= 3 %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#requesterCollapse" aria-expanded="{% if current_step <= 3 %}true{% else %}false{% endif %}">
++          📣 お願いする側（依頼者） - ステップ1〜3
++        </button>
++      </h2>
++      <div id="requesterCollapse" class="accordion-collapse collapse {% if current_step <= 3 %}show{% endif %}" aria-labelledby="requesterHeading">
++        <div class="accordion-body role-card role-requester p-4">
++          <div class="next-action p-3 my-3">
++            <h4 class="fw-bold">次にやること</h4>
++            {% if not has_image %}
++              <p class="mb-2 text-muted">まずは加工回し用の写真を1枚アップしましょう。</p>
++              {% if not is_readonly %}
++                <span class="badge bg-primary">この下のアップロード欄から追加できます</span>
++              {% else %}
++                <div class="alert alert-warning mb-0">
++                  このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
++                </div>
++              {% endif %}
++            {% elif not ns.has_requested %}
++              <p class="mb-2 text-muted">依頼する人にチェックを入れてから依頼ボタンを押してください。</p>
++              <a href="#request-card" class="btn btn-primary btn-lg w-100">📣 依頼先を選んで送信する</a>
++            {% else %}
++              <p class="mb-2 text-muted">依頼送信が完了しました。加工担当者のステップへ進みます。</p>
++              <div class="alert alert-success mb-0">✅ 依頼済みです。次は加工担当者の操作です。</div>
++            {% endif %}
+           </div>
+-        </div>
+ 
+-        <div class="next-action p-3 my-3">
+-          <h4 class="fw-bold">次にやること</h4>
+-          {% if not has_image %}
+-            <p class="mb-2 text-muted">まずは加工回し用の写真を1枚アップしましょう。</p>
+-            {% if not is_readonly %}
+-              <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-primary btn-lg w-100">
+-                ⬆ 加工回し写真をアップロード
+-              </a>
+-            {% else %}
++          <div class="mb-4 upload-panel">
++            <h5 class="fw-bold mb-2">ステップ1：加工回し用の写真アップロード</h5>
++            <p class="text-muted mb-3">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
++            {% if not is_readonly and not has_image %}
++              <form id="requesterUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
++                <div id="requesterDropzone" class="upload-dropzone mb-3">
++                  ここに画像をドロップ、または下のボタンで選択
++                </div>
++                <input id="requesterFileInput" class="form-control mb-2" type="file" name="file" accept="image/*" required>
++                <div class="upload-preview d-flex flex-wrap mb-2" id="requesterPreview"></div>
++                <div class="progress mb-2" style="height:22px;">
++                  <div id="requesterProgress" class="progress-bar" role="progressbar" style="width:0%">0%</div>
++                </div>
++                <div class="d-flex gap-2">
++                  <button id="requesterSubmit" type="submit" class="btn btn-primary w-100">アップロード</button>
++                  <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-secondary">専用画面へ</a>
++                </div>
++              </form>
++              <div id="requesterStatus" class="small text-muted mt-2"></div>
++            {% elif not is_readonly and has_image %}
+               <div class="alert alert-warning mb-0">
+-                このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
++                加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
+               </div>
++            {% else %}
++              <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
+             {% endif %}
+-          {% elif not ns.has_requested %}
+-            <p class="mb-2 text-muted">依頼する人にチェックを入れてから依頼ボタンを押してください。</p>
+-            <a href="#request-card" class="btn btn-primary btn-lg w-100">📣 依頼先を選んで送信する</a>
+-          {% else %}
+-            <p class="mb-2 text-muted">依頼送信が完了しました。加工担当者のステップへ進みます。</p>
+-            <div class="alert alert-success mb-0">✅ 依頼済みです。次は加工担当者の操作です。</div>
+-          {% endif %}
+-        </div>
+-
+-        <div class="mb-3">
+-          <h5 class="fw-bold mb-2">ステップ1：加工回し用の写真アップロード</h5>
+-          <p class="text-muted mb-2">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
+-          {% if not is_readonly %}
+-            <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-primary btn-lg w-100">
+-              ⬆ 加工回し写真をアップロード
+-            </a>
+-          {% else %}
+-            <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
+-          {% endif %}
+-        </div>
++          </div>
+ 
+-        <div id="request-card" class="mb-3">
+-          <h5 class="fw-bold mb-2">ステップ2〜3：依頼する人を選んで送信</h5>
+-          <p class="text-muted">※依頼する人に✅を入れてください。</p>
+-          <div class="table-responsive">
+-            <table class="table table-sm table-bordered align-middle text-center bg-white">
+-              <thead class="table-light">
+-                <tr>
+-                  <th scope="col">名前</th>
+-                  <th scope="col">加工有無</th>
+-                  <th scope="col">依頼</th>
+-                  <th scope="col">完了</th>
+-                </tr>
+-              </thead>
+-              <tbody>
+-                {% if event_process_members %}
+-                  {% for member in event_process_members %}
+-                    {% set needs_process = (member.process | default(0) | int) == 1 %}
+-                    {% set is_complete = (member.complete_flag | default(0) | int) == 1 %}
+-                    <tr data-complete-flag="{{ 1 if is_complete else 0 }}">
+-                      <td class="text-start">{{ member.nickname or '（名前未設定）' }}</td>
+-                      <td>
+-                        {% if needs_process %}
+-                          🔵
+-                        {% else %}
+-                          ❌
+-                        {% endif %}
+-                      </td>
+-                      <td>
+-                        <input class="form-check-input process-checkbox"
+-                               type="checkbox"
+-                               data-user-id="{{ member.user_id }}"
+-                               data-field="request"
+-                               {% if member.request_flag|default(0)|int == 1 %}checked{% endif %}
+-                               {% if not needs_process or ns.has_requested %}disabled{% endif %}>
+-                      </td>
+-                      <td>
+-                        {% if is_complete %}
+-                          ✅
+-                        {% else %}
+-                          ⏳
+-                        {% endif %}
+-                      </td>
+-                    </tr>
+-                  {% endfor %}
+-                {% else %}
++          <div id="request-card" class="mb-3">
++            <h5 class="fw-bold mb-2">ステップ2〜3：依頼する人を選んで送信</h5>
++            <p class="text-muted">※依頼する人に✅を入れてください。</p>
++            <div class="table-responsive">
++              <table class="table table-sm table-bordered align-middle text-center bg-white">
++                <thead class="table-light">
+                   <tr>
+-                    <td colspan="4" class="text-muted">参加者が見つかりませんでした。</td>
++                    <th scope="col">名前</th>
++                    <th scope="col">加工有無</th>
++                    <th scope="col">依頼</th>
++                    <th scope="col">完了</th>
+                   </tr>
+-                {% endif %}
+-              </tbody>
+-            </table>
+-          </div>
+-          <div class="mt-3">
+-            <button id="btn-request-process" class="btn btn-warning btn-lg w-100" {% if ns.has_requested %}disabled{% endif %}>
+-              📣 依頼する（リスト保存＋メール送信）
+-            </button>
+-            <div id="request-status" class="small text-muted mt-2"></div>
++                </thead>
++                <tbody>
++                  {% if event_process_members %}
++                    {% for member in event_process_members %}
++                      {% set needs_process = (member.process | default(0) | int) == 1 %}
++                      {% set is_complete = (member.complete_flag | default(0) | int) == 1 %}
++                      <tr data-complete-flag="{{ 1 if is_complete else 0 }}">
++                        <td class="text-start">{{ member.nickname or '（名前未設定）' }}</td>
++                        <td>
++                          {% if needs_process %}
++                            🔵
++                          {% else %}
++                            ❌
++                          {% endif %}
++                        </td>
++                        <td>
++                          <input class="form-check-input process-checkbox"
++                                 type="checkbox"
++                                 data-user-id="{{ member.user_id }}"
++                                 data-field="request"
++                                 {% if member.request_flag|default(0)|int == 1 %}checked{% endif %}
++                                 {% if not needs_process or ns.has_requested %}disabled{% endif %}>
++                        </td>
++                        <td>
++                          {% if is_complete %}
++                            ✅
++                          {% else %}
++                            ⏳
++                          {% endif %}
++                        </td>
++                      </tr>
++                    {% endfor %}
++                  {% else %}
++                    <tr>
++                      <td colspan="4" class="text-muted">参加者が見つかりませんでした。</td>
++                    </tr>
++                  {% endif %}
++                </tbody>
++              </table>
++            </div>
++            <div class="mt-3">
++              <button id="btn-request-process" class="btn btn-warning btn-lg w-100" {% if ns.has_requested %}disabled{% endif %}>
++                📣 依頼する（リスト保存＋メール送信）
++              </button>
++              <div id="request-status" class="small text-muted mt-2"></div>
++            </div>
+           </div>
+         </div>
+       </div>
+     </div>
+ 
+-    <div class="col-lg-6">
+-      <div class="status-card status-info p-3 h-100">
+-        <div class="fw-bold mb-2">📷 最新ギャラリー</div>
+-        <div class="gallery">
+-          {% if files %}
+-            {% for file in files %}
+-              {% set fname = file.name if file.name else file %}
+-              <div class="item">
+-                <a class="preview" href="{{ url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
+-                   data-caption="{{ fname }}">
+-                  <img class="thumb"
+-                       src="{{ file.thumb if file.thumb else url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
+-                       alt="{{ fname }}">
+-                </a>
++    <div class="accordion-item">
++      <h2 class="accordion-header" id="workerHeading">
++        <button class="accordion-button {% if current_step > 3 %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#workerCollapse" aria-expanded="{% if current_step > 3 %}true{% else %}false{% endif %}">
++          🛠️ 引き受ける側（加工担当） - ステップ4〜5
++        </button>
++      </h2>
++      <div id="workerCollapse" class="accordion-collapse collapse {% if current_step > 3 %}show{% endif %}" aria-labelledby="workerHeading">
++        <div class="accordion-body role-card role-worker p-4">
++          <div class="status-card status-info p-3 mb-3">
++            <div class="fw-bold">現在のステータス</div>
++            {% if lock and not lock_expired %}
++              <div class="mt-2" id="lock-status" data-lock-timestamp="{{ lock.timestamp }}">
++                🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。終了までお待ちください。
++                <div class="small text-muted mt-1">残り約 <span id="lock-remaining">--</span> 分</div>
+               </div>
+-            {% endfor %}
+-          {% else %}
+-            <p class="text-muted">まだ写真がアップロードされていません。</p>
+-          {% endif %}
+-        </div>
+-      </div>
+-    </div>
+-  </div>
+-
+-  <div class="row g-4 mt-4">
+-    <div class="col-lg-6">
+-      <div class="role-card role-worker p-4 h-100">
+-        <div class="d-flex align-items-center gap-2 mb-2">
+-          <span class="fs-3">🛠️</span>
+-          <div>
+-            <div class="role-title fw-bold">引き受ける側（加工担当）</div>
+-            <div class="text-muted">ステップ4〜5を進めます</div>
++            {% elif lock and lock_expired %}
++              <div class="mt-2">⏳ <strong>{{ lock.user }}</strong> さんのロックは30分を過ぎました。再取得が可能です。</div>
++            {% else %}
++              <div class="mt-2">✅ 現在はロックされていません。加工担当の方はダウンロードできます。</div>
++            {% endif %}
+           </div>
+-        </div>
+ 
+-        <div class="status-card status-info p-3 mb-3">
+-          <div class="fw-bold">現在のステータス</div>
+-          {% if lock and not lock_expired %}
+-            <div class="mt-2" id="lock-status" data-lock-timestamp="{{ lock.timestamp }}">
+-              🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。終了までお待ちください。
+-              <div class="small text-muted mt-1">残り約 <span id="lock-remaining">--</span> 分</div>
+-            </div>
+-          {% elif lock and lock_expired %}
+-            <div class="mt-2">⏳ <strong>{{ lock.user }}</strong> さんのロックは30分を過ぎました。再取得が可能です。</div>
+-          {% else %}
+-            <div class="mt-2">✅ 現在はロックされていません。加工担当の方はダウンロードできます。</div>
+-          {% endif %}
+-        </div>
++          <div class="next-action p-3 mb-3">
++            <h4 class="fw-bold">次にやること</h4>
++            {% if lock and not lock_expired %}
++              <p class="mb-2 text-muted">現在はロック中です。解除後にダウンロードできます。</p>
++              <div class="alert alert-warning mb-0">🔒 加工中のため待機中です。</div>
++            {% else %}
++              <p class="mb-2 text-muted">今すぐ画像をダウンロードして加工を開始しましょう。</p>
++              <a href="#worker-download" class="btn btn-primary btn-lg w-100">⏬ 今すぐダウンロード</a>
++            {% endif %}
++          </div>
+ 
+-        <div class="next-action p-3 mb-3">
+-          <h4 class="fw-bold">次にやること</h4>
+-          {% if lock and not lock_expired %}
+-            <p class="mb-2 text-muted">現在はロック中です。解除後にダウンロードできます。</p>
+-            <div class="alert alert-warning mb-0">🔒 加工中のため待機中です。</div>
+-          {% else %}
+-            <p class="mb-2 text-muted">今すぐ画像をダウンロードして加工を開始しましょう。</p>
+-            <a href="#worker-download" class="btn btn-primary btn-lg w-100">⏬ 今すぐダウンロード</a>
+-          {% endif %}
+-        </div>
++          <div class="status-card {% if lock and not lock_expired %}status-danger{% else %}status-success{% endif %} p-3 mb-3">
++            {% if lock and not lock_expired %}
++              <div class="fw-bold">🔒 ロック中</div>
++              <div class="mt-1">担当者: <strong>{{ lock.user }}</strong> / ロック残り時間は30分以内です。</div>
++              <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="mt-3">
++                <button class="btn btn-outline-danger btn-lg w-100" type="submit"
++                        onclick="return confirm('本当にロックを解除しますか？');">
++                  🔓 ロックを解除
++                </button>
++              </form>
++            {% else %}
++              <div class="fw-bold">✅ 加工準備OK</div>
++              <div class="mt-1">誰でも加工開始できます。</div>
++            {% endif %}
++          </div>
+ 
+-        <div class="status-card {% if lock and not lock_expired %}status-danger{% else %}status-success{% endif %} p-3 mb-3">
+-          {% if lock and not lock_expired %}
+-            <div class="fw-bold">🔒 ロック中</div>
+-            <div class="mt-1">担当者: <strong>{{ lock.user }}</strong> / ロック残り時間は30分以内です。</div>
+-            <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="mt-3">
+-              <button class="btn btn-outline-danger btn-lg w-100" type="submit"
+-                      onclick="return confirm('本当にロックを解除しますか？');">
+-                🔓 ロックを解除
+-              </button>
+-            </form>
+-          {% else %}
+-            <div class="fw-bold">✅ 加工準備OK</div>
+-            <div class="mt-1">誰でも加工開始できます。</div>
+-          {% endif %}
+-        </div>
++          <div class="mb-3" id="worker-download">
++            <h5 class="fw-bold mb-2">ステップ4：加工用画像をダウンロード</h5>
++            <p class="text-muted">ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。写真を長押しして保存してください。</p>
++            <div class="text-center">
++              {% if not lock or lock_expired %}
++                <form id="pinDownloadForm" class="text-center" autocomplete="off">
++                  <a href="#" id="btn-process-download" class="btn btn-primary btn-lg w-100">
++                    ⏬ 加工用画像をダウンロード
++                  </a>
++                </form>
++                <div id="process-hint" class="text-center small text-muted mt-2"></div>
++              {% else %}
++                <div class="alert alert-danger mb-0">⚠️ 現在加工中です。終了までお待ちください。</div>
++              {% endif %}
++            </div>
++          </div>
+ 
+-        <div class="mb-3" id="worker-download">
+-          <h5 class="fw-bold mb-2">ステップ4：加工用画像をダウンロード</h5>
+-          <p class="text-muted">ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。写真を長押しして保存してください。</p>
+-          <div class="text-center">
+-            {% if not lock or lock_expired %}
+-              <form id="pinDownloadForm" class="text-center" autocomplete="off">
+-                <a href="#" id="btn-process-download" class="btn btn-primary btn-lg w-100">
+-                  ⏬ 加工用画像をダウンロード
+-                </a>
++          <div class="mb-4 upload-panel">
++            <h5 class="fw-bold mb-2">ステップ4-2：加工が終わったらアップロード</h5>
++            <p class="text-muted mb-3">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
++            {% if can_upload %}
++              <form id="workerUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
++                <div id="workerDropzone" class="upload-dropzone mb-3">
++                  ここに加工済み画像をドロップ、または下のボタンで選択
++                </div>
++                <input id="workerFileInput" class="form-control mb-2" type="file" name="file" accept="image/*" required>
++                <div class="upload-preview d-flex flex-wrap mb-2" id="workerPreview"></div>
++                <div class="progress mb-2" style="height:22px;">
++                  <div id="workerProgress" class="progress-bar" role="progressbar" style="width:0%">0%</div>
++                </div>
++                <div class="d-flex gap-2">
++                  <button id="workerSubmit" type="submit" class="btn btn-success w-100">加工済みをアップロード</button>
++                  <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-secondary">専用画面へ</a>
++                </div>
+               </form>
+-              <div id="process-hint" class="text-center small text-muted mt-2"></div>
++              <div id="workerStatus" class="small text-muted mt-2"></div>
++            {% elif not is_readonly %}
++              <div class="alert alert-warning mb-0">
++                加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
++              </div>
+             {% else %}
+-              <div class="alert alert-danger mb-0">⚠️ 現在加工中です。終了までお待ちください。</div>
++              <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
+             {% endif %}
+           </div>
+-        </div>
+ 
+-        <div class="mb-3">
+-          <h5 class="fw-bold mb-2">ステップ4-2：加工が終わったらアップロード</h5>
+-          <p class="text-muted">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
+-          {% if not is_readonly %}
+-            <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-success btn-lg w-100">
+-              ⬆ 加工済み写真をアップロード
+-            </a>
+-          {% else %}
+-            <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
++          {% set current_member_ns = namespace(member=None) %}
++          {% if ext_user_id and event_process_members %}
++            {% for member in event_process_members %}
++              {% if member.user_id|int == ext_user_id|int %}
++                {% set current_member_ns.member = member %}
++              {% endif %}
++            {% endfor %}
++          {% endif %}
++          {% if current_member_ns.member and current_member_ns.member.request_flag|default(0)|int == 1 and current_member_ns.member.complete_flag|default(0)|int == 0 %}
++            <div class="status-card status-info p-3 mb-3">
++              <div class="fw-bold">加工不要の場合</div>
++              <p class="text-muted mb-2">加工が不要だった場合は、完了ボタンでステータスを更新できます。</p>
++              <button type="button" class="btn btn-outline-primary w-100" id="btn-process-complete">
++                ✅ 加工不要として完了にする
++              </button>
++              <div id="process-complete-status" class="small text-muted mt-2"></div>
++            </div>
+           {% endif %}
+-        </div>
+ 
+-        <div class="status-card status-success p-3">
+-          <div class="fw-bold">ステップ5：自動通知</div>
+-          <div class="mt-1">通知設定に従って「未完了の人だけ」へ自動通知します。</div>
+-          <div class="small text-muted mt-1">通知はイベント側の承認済み参加者に送られます。</div>
++          <div class="status-card status-success p-3">
++            <div class="fw-bold">ステップ5：自動通知</div>
++            <div class="mt-1">通知設定に従って「未完了の人だけ」へ自動通知します。</div>
++            <div class="small text-muted mt-1">通知はイベント側の承認済み参加者に送られます。</div>
++          </div>
+         </div>
+       </div>
+     </div>
++  </div>
+ 
+-    <div class="col-lg-6">
+-      {% if process_message %}
+-        <div class="status-card status-info p-3 mb-3">🔁 {{ process_message }}</div>
+-      {% endif %}
+-      <div class="status-card status-danger p-3">
+-        <div class="fw-bold">⚠️ 加工専用モードの注意点</div>
+-        <div class="mt-1">アップロード枚数は常に1枚のみになります。アップロードすると最新の画像に切り替わります。</div>
+-      </div>
+-    </div>
++  {% if process_message %}
++    <div class="status-card status-info p-3 mb-3">🔁 {{ process_message }}</div>
++  {% endif %}
++  <div class="status-card status-danger p-3">
++    <div class="fw-bold">⚠️ 加工専用モードの注意点</div>
++    <div class="mt-1">アップロード枚数は常に1枚のみになります。アップロードすると最新の画像に切り替わります。</div>
+   </div>
+ 
+   {% if is_admin %}
+     <div class="alert alert-info text-center mt-4">👑 管理ユーザー（admin）としてログイン中</div>
+   {% elif is_owner and session.user %}
+     <div class="alert alert-info text-center mt-4">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+   {% endif %}
+ 
++  {% set requested_ns = namespace(members=[]) %}
++  {% if event_process_members %}
++    {% for member in event_process_members %}
++      {% if member.request_flag|default(0)|int == 1 %}
++        {% set requested_ns.members = requested_ns.members + [member] %}
++      {% endif %}
++    {% endfor %}
++  {% endif %}
++
++  {% if requested_ns.members %}
++  <hr>
++  <h5 class="mt-4">📝 加工状況</h5>
++  <div class="table-responsive">
++    <table class="table table-sm table-striped table-bordered text-center align-middle">
++      <thead class="table-light">
++        <tr><th scope="col">名前</th><th scope="col">完了</th></tr>
++      </thead>
++      <tbody>
++        {% for member in requested_ns.members %}
++          {% set is_complete = (member.complete_flag | default(0) | int) == 1 %}
++          <tr>
++            <td class="text-start">{{ member.nickname or '（名前未設定）' }}</td>
++            <td>
++              {% if is_complete %}
++                ✅
++              {% else %}
++                ⏳
++              {% endif %}
++            </td>
++          </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++  </div>
++  {% endif %}
++
+   {% if history_list %}
+   <hr>
+   <h5 class="mt-4">📜 加工履歴（１番上が最新）</h5>
+   <div class="table-responsive">
+     <table class="table table-sm table-striped table-bordered text-center align-middle">
+       <thead class="table-light">
+         <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
+       </thead>
+       <tbody>
+         {% for record in history_list|reverse %}
+           <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
+         {% endfor %}
+       </tbody>
+     </table>
+   </div>
+   {% endif %}
+ </div>
+ 
++<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+ <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+ <script>
+   /* ====== processモード：リンククリックで開始（空タブ先開きでポップアップ回避） ====== */
+   const pinForm = document.getElementById("pinDownloadForm");
+   const btnProcess = document.getElementById("btn-process-download");
+   if (pinForm && btnProcess) {
+     btnProcess.addEventListener("click", async function(event) {
+       event.preventDefault();
+ 
+       // ユーザー操作直後に空タブを開く（同期ジェスチャ内）
+       const preWin = window.open('about:blank', '_blank');
+ 
+       const formData = new FormData();
+ 
+       try {
+         const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", {
+           method: "POST",
+           body: formData
+         });
+ 
+         if (response.status === 409) {
+           if (preWin && !preWin.closed) preWin.close();
+           alert("他の方が加工中です。\n" + await response.text());
+           return;
+         }
+@@ -462,50 +553,172 @@
+           preWin.location.href = openUrl;
+         } else {
+           // フォールバック
+           const a = document.createElement('a');
+           a.href = openUrl;
+           a.target = '_blank';
+           a.rel = 'noopener';
+           document.body.appendChild(a); a.click(); a.remove();
+ 
+           const hint = document.getElementById("process-hint");
+           if (hint) {
+             hint.innerHTML = `<p class="mt-3">ポップアップがブロックされた可能性があります。<a href="${openUrl}" target="_blank" rel="noopener">こちらをタップ</a>してください。</p>`;
+           }
+         }
+ 
+         // 軽く再読込（ロック表示の反映）
+         setTimeout(()=>location.reload(), 400);
+ 
+       } catch (err) {
+         if (preWin && !preWin.closed) preWin.close();
+         alert("⚠️ 通信エラー: " + err.message);
+       }
+     });
+   }
+ 
++  function setupUpload(formId, dropId, inputId, previewId, progressId, statusId, submitId) {
++    const form = document.getElementById(formId);
++    if (!form) return;
++
++    const dropzone = document.getElementById(dropId);
++    const input = document.getElementById(inputId);
++    const preview = document.getElementById(previewId);
++    const progress = document.getElementById(progressId);
++    const status = document.getElementById(statusId);
++    const submit = document.getElementById(submitId);
++
++    const renderPreview = (file) => {
++      if (!preview || !file || !file.type.startsWith("image/")) return;
++      preview.innerHTML = "";
++      const reader = new FileReader();
++      reader.onload = (e) => {
++        const img = document.createElement("img");
++        img.src = e.target.result;
++        preview.appendChild(img);
++      };
++      reader.readAsDataURL(file);
++    };
++
++    if (dropzone) {
++      dropzone.addEventListener("dragover", (e) => {
++        e.preventDefault();
++        dropzone.classList.add("dragover");
++      });
++      dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
++      dropzone.addEventListener("drop", (e) => {
++        e.preventDefault();
++        dropzone.classList.remove("dragover");
++        if (e.dataTransfer.files.length) {
++          input.files = e.dataTransfer.files;
++          renderPreview(e.dataTransfer.files[0]);
++        }
++      });
++    }
++
++    if (input) {
++      input.addEventListener("change", () => {
++        if (input.files.length) renderPreview(input.files[0]);
++      });
++    }
++
++    form.addEventListener("submit", (e) => {
++      e.preventDefault();
++      if (!input.files || !input.files.length) {
++        alert("ファイルを選択してください");
++        return;
++      }
++
++      if (submit) submit.disabled = true;
++      if (status) status.textContent = "アップロード中です...";
++
++      const fd = new FormData();
++      fd.append("file", input.files[0]);
++
++      const xhr = new XMLHttpRequest();
++      xhr.open("POST", form.action, true);
++      xhr.upload.onprogress = (ev) => {
++        if (!ev.lengthComputable || !progress) return;
++        const percent = Math.round((ev.loaded / ev.total) * 100);
++        progress.style.width = percent + "%";
++        progress.textContent = percent + "%";
++      };
++
++      xhr.onload = () => {
++        if (xhr.status >= 200 && xhr.status < 300) {
++          if (status) status.textContent = "完了しました！画面を更新します…";
++          if (submit) {
++            submit.textContent = "完了";
++            submit.classList.remove("btn-primary", "btn-success");
++            submit.classList.add("btn-success");
++          }
++          setTimeout(() => location.reload(), 1000);
++        } else {
++          if (status) status.textContent = "アップロードに失敗しました。";
++          alert("失敗: " + xhr.statusText);
++          if (submit) submit.disabled = false;
++        }
++      };
++
++      xhr.send(fd);
++    });
++  }
++
++  setupUpload("requesterUploadForm", "requesterDropzone", "requesterFileInput", "requesterPreview", "requesterProgress", "requesterStatus", "requesterSubmit");
++  setupUpload("workerUploadForm", "workerDropzone", "workerFileInput", "workerPreview", "workerProgress", "workerStatus", "workerSubmit");
++
++  const processCompleteButton = document.getElementById("btn-process-complete");
++  if (processCompleteButton) {
++    processCompleteButton.addEventListener("click", async () => {
++      const confirmed = window.confirm("加工不要として完了にしますか？");
++      if (!confirmed) {
++        return;
++      }
++      const statusEl = document.getElementById("process-complete-status");
++      if (statusEl) statusEl.textContent = "更新中です...";
++
++      try {
++        const response = await fetch("{{ url_for('album.update_process_status', album_id=album_id, child_id=child_id) }}", {
++          method: "POST",
++          headers: { "Content-Type": "application/json" },
++          body: JSON.stringify({
++            ext_user_id: {{ ext_user_id or "null" }},
++            request_flag: true,
++            complete_flag: true,
++          }),
++        });
++        if (!response.ok) {
++          throw new Error(await response.text());
++        }
++        if (statusEl) statusEl.textContent = "完了に更新しました。";
++        setTimeout(() => location.reload(), 800);
++      } catch (error) {
++        if (statusEl) statusEl.textContent = "更新に失敗しました。";
++        alert("更新に失敗しました: " + error.message);
++      }
++    });
++  }
++
+   const requestButton = document.getElementById("btn-request-process");
+   if (requestButton) {
+     requestButton.addEventListener("click", async (event) => {
+       event.preventDefault();
+       if (requestButton.disabled) {
+         return;
+       }
+       const confirmed = window.confirm("依頼するボタンを押すと、依頼チェックの変更はできなくなります。送信してよろしいですか？");
+       if (!confirmed) {
+         return;
+       }
+       const statusEl = document.getElementById("request-status");
+       if (statusEl) statusEl.textContent = "保存中です...";
+ 
+       const rows = document.querySelectorAll("tbody tr");
+       const members = [];
+       rows.forEach((row) => {
+         const requestBox = row.querySelector('[data-field="request"]');
+         if (!requestBox) return;
+         const userId = requestBox.dataset.userId;
+         if (!userId) return;
+         members.push({
+           ext_user_id: Number(userId),
+           request_flag: requestBox.checked,
+           complete_flag: row.dataset.completeFlag === "1",

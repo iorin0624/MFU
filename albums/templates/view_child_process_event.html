@@ -81,6 +81,17 @@
 
     .btn-lg { padding: 0.9rem 1.4rem; font-size: 1rem; }
 
+    .upload-panel { border-radius: 16px; border: 1px dashed #cdd6e3; background: #fdfdff; padding: 16px; }
+    .upload-dropzone {
+      border: 2px dashed #a9b4c2; border-radius: 12px; padding: 20px; text-align: center;
+      color: #6c757d; background: #fff; transition: background-color .2s, border-color .2s, color .2s;
+    }
+    .upload-dropzone.dragover { background: #e9f5ff; border-color: #0d6efd; color: #0d6efd; }
+    .upload-preview img {
+      width: 110px; height: 110px; object-fit: contain;
+      background: #f8f9fa; border-radius: 10px; margin: 4px; border: 1px solid #dfe4ea;
+    }
+
     @media (pointer:coarse){ img.thumb{ width:130px; } }
   </style>
 </head>
@@ -100,6 +111,8 @@
 {% if ns.has_requested %}{% set current_step = 3 %}{% endif %}
 {% if lock and not lock_expired %}{% set current_step = 4 %}{% endif %}
 {% if history_list and not lock and ns.has_requested %}{% set current_step = 5 %}{% endif %}
+{% set can_upload = (not is_readonly) and (not has_image or (lock and not lock_expired)) %}
+{% set ext_user_id = session.get('ext_user_id') %}
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
   <div>
@@ -122,6 +135,27 @@
   <div class="mb-3">
     <h2 class="fw-bold">安心して進められる加工回しガイド</h2>
     <p class="text-muted mb-0">今どの段階か・次に何をするかがすぐ分かるように整理しました。</p>
+  </div>
+
+  <div class="status-card status-info p-3 mb-4">
+    <div class="fw-bold mb-2">📷 最新ギャラリー</div>
+    <div class="gallery">
+      {% if files %}
+        {% for file in files %}
+          {% set fname = file.name if file.name else file %}
+          <div class="item">
+            <a class="preview" href="{{ url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
+               data-caption="{{ fname }}">
+              <img class="thumb"
+                   src="{{ file.thumb if file.thumb else url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
+                   alt="{{ fname }}">
+            </a>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-muted">まだ写真がアップロードされていません。</p>
+      {% endif %}
+    </div>
   </div>
 
   <div class="mb-4">
@@ -157,281 +191,279 @@
     </div>
   </div>
 
-  <div class="row g-4">
-    <div class="col-lg-6">
-      <div class="role-card role-requester p-4 h-100">
-        <div class="d-flex align-items-center gap-2 mb-2">
-          <span class="fs-3">📣</span>
-          <div>
-            <div class="role-title fw-bold">お願いする側（依頼者）</div>
-            <div class="text-muted">ステップ1〜3を進めます</div>
-          </div>
-        </div>
-
-        <div class="next-action p-3 my-3">
-          <h4 class="fw-bold">次にやること</h4>
-          {% if not has_image %}
-            <p class="mb-2 text-muted">まずは加工回し用の写真を1枚アップしましょう。</p>
-            {% if not is_readonly %}
-              <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-primary btn-lg w-100">
-                ⬆ 加工回し写真をアップロード
-              </a>
+  <div class="accordion role-accordion mb-4" id="roleAccordion">
+    <div class="accordion-item">
+      <h2 class="accordion-header" id="requesterHeading">
+        <button class="accordion-button {% if current_step > 3 %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#requesterCollapse" aria-expanded="{% if current_step <= 3 %}true{% else %}false{% endif %}">
+          📣 お願いする側（依頼者） - ステップ1〜3
+        </button>
+      </h2>
+      <div id="requesterCollapse" class="accordion-collapse collapse {% if current_step <= 3 %}show{% endif %}" aria-labelledby="requesterHeading">
+        <div class="accordion-body role-card role-requester p-4">
+          <div class="next-action p-3 my-3">
+            <h4 class="fw-bold">次にやること</h4>
+            {% if not has_image %}
+              <p class="mb-2 text-muted">まずは加工回し用の写真を1枚アップしましょう。</p>
+              {% if not is_readonly %}
+                <span class="badge bg-primary">この下のアップロード欄から追加できます</span>
+              {% else %}
+                <div class="alert alert-warning mb-0">
+                  このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
+                </div>
+              {% endif %}
+            {% elif not ns.has_requested %}
+              <p class="mb-2 text-muted">依頼する人にチェックを入れてから依頼ボタンを押してください。</p>
+              <a href="#request-card" class="btn btn-primary btn-lg w-100">📣 依頼先を選んで送信する</a>
             {% else %}
-              <div class="alert alert-warning mb-0">
-                このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
-              </div>
+              <p class="mb-2 text-muted">依頼送信が完了しました。加工担当者のステップへ進みます。</p>
+              <div class="alert alert-success mb-0">✅ 依頼済みです。次は加工担当者の操作です。</div>
             {% endif %}
-          {% elif not ns.has_requested %}
-            <p class="mb-2 text-muted">依頼する人にチェックを入れてから依頼ボタンを押してください。</p>
-            <a href="#request-card" class="btn btn-primary btn-lg w-100">📣 依頼先を選んで送信する</a>
-          {% else %}
-            <p class="mb-2 text-muted">依頼送信が完了しました。加工担当者のステップへ進みます。</p>
-            <div class="alert alert-success mb-0">✅ 依頼済みです。次は加工担当者の操作です。</div>
-          {% endif %}
-        </div>
-
-        <div class="mb-3">
-          <h5 class="fw-bold mb-2">ステップ1：加工回し用の写真アップロード</h5>
-          <p class="text-muted mb-2">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
-          {% if not is_readonly %}
-            <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-primary btn-lg w-100">
-              ⬆ 加工回し写真をアップロード
-            </a>
-          {% else %}
-            <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
-          {% endif %}
-        </div>
-
-        <div id="request-card" class="mb-3">
-          <h5 class="fw-bold mb-2">ステップ2〜3：依頼する人を選んで送信</h5>
-          <p class="text-muted">※依頼する人に✅を入れてください。</p>
-          <div class="table-responsive">
-            <table class="table table-sm table-bordered align-middle text-center bg-white">
-              <thead class="table-light">
-                <tr>
-                  <th scope="col">名前</th>
-                  <th scope="col">加工有無</th>
-                  <th scope="col">依頼</th>
-                  <th scope="col">完了</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% if event_process_members %}
-                  {% for member in event_process_members %}
-                    {% set needs_process = (member.process | default(0) | int) == 1 %}
-                    {% set is_complete = (member.complete_flag | default(0) | int) == 1 %}
-                    <tr data-complete-flag="{{ 1 if is_complete else 0 }}">
-                      <td class="text-start">{{ member.nickname or '（名前未設定）' }}</td>
-                      <td>
-                        {% if needs_process %}
-                          🔵
-                        {% else %}
-                          ❌
-                        {% endif %}
-                      </td>
-                      <td>
-                        <input class="form-check-input process-checkbox"
-                               type="checkbox"
-                               data-user-id="{{ member.user_id }}"
-                               data-field="request"
-                               {% if member.request_flag|default(0)|int == 1 %}checked{% endif %}
-                               {% if not needs_process or ns.has_requested %}disabled{% endif %}>
-                      </td>
-                      <td>
-                        {% if is_complete %}
-                          ✅
-                        {% else %}
-                          ⏳
-                        {% endif %}
-                      </td>
-                    </tr>
-                  {% endfor %}
-                {% else %}
-                  <tr>
-                    <td colspan="4" class="text-muted">参加者が見つかりませんでした。</td>
-                  </tr>
-                {% endif %}
-              </tbody>
-            </table>
           </div>
-          <div class="mt-3">
-            <button id="btn-request-process" class="btn btn-warning btn-lg w-100" {% if ns.has_requested %}disabled{% endif %}>
-              📣 依頼する（リスト保存＋メール送信）
-            </button>
-            <div id="request-status" class="small text-muted mt-2"></div>
-          </div>
-        </div>
-      </div>
-    </div>
 
-    <div class="col-lg-6">
-      <div class="status-card status-info p-3 h-100">
-        <div class="fw-bold mb-2">📷 最新ギャラリー</div>
-        <div class="gallery">
-          {% if files %}
-            {% for file in files %}
-              {% set fname = file.name if file.name else file %}
-              <div class="item">
-                <a class="preview" href="{{ url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
-                   data-caption="{{ fname }}">
-                  <img class="thumb"
-                       src="{{ file.thumb if file.thumb else url_for('album.image', album_id=album_id, child_id=child_id, filename=fname) }}"
-                       alt="{{ fname }}">
-                </a>
-              </div>
-            {% endfor %}
-          {% else %}
-            <p class="text-muted">まだ写真がアップロードされていません。</p>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row g-4 mt-4">
-    <div class="col-lg-6">
-      <div class="role-card role-worker p-4 h-100">
-        <div class="d-flex align-items-center gap-2 mb-2">
-          <span class="fs-3">🛠️</span>
-          <div>
-            <div class="role-title fw-bold">引き受ける側（加工担当）</div>
-            <div class="text-muted">ステップ4〜5を進めます</div>
-          </div>
-        </div>
-
-        <div class="status-card status-info p-3 mb-3">
-          <div class="fw-bold">現在のステータス</div>
-          {% if lock and not lock_expired %}
-            <div class="mt-2" id="lock-status" data-lock-timestamp="{{ lock.timestamp }}">
-              🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。終了までお待ちください。
-              <div class="small text-muted mt-1">残り約 <span id="lock-remaining">--</span> 分</div>
-            </div>
-          {% elif lock and lock_expired %}
-            <div class="mt-2">⏳ <strong>{{ lock.user }}</strong> さんのロックは30分を過ぎました。再取得が可能です。</div>
-          {% else %}
-            <div class="mt-2">✅ 現在はロックされていません。加工担当の方はダウンロードできます。</div>
-          {% endif %}
-        </div>
-
-        <div class="next-action p-3 mb-3">
-          <h4 class="fw-bold">次にやること</h4>
-          {% if lock and not lock_expired %}
-            <p class="mb-2 text-muted">現在はロック中です。解除後にダウンロードできます。</p>
-            <div class="alert alert-warning mb-0">🔒 加工中のため待機中です。</div>
-          {% else %}
-            <p class="mb-2 text-muted">今すぐ画像をダウンロードして加工を開始しましょう。</p>
-            <a href="#worker-download" class="btn btn-primary btn-lg w-100">⏬ 今すぐダウンロード</a>
-          {% endif %}
-        </div>
-
-        <div class="status-card {% if lock and not lock_expired %}status-danger{% else %}status-success{% endif %} p-3 mb-3">
-          {% if lock and not lock_expired %}
-            <div class="fw-bold">🔒 ロック中</div>
-            <div class="mt-1">担当者: <strong>{{ lock.user }}</strong> / ロック残り時間は30分以内です。</div>
-            <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="mt-3">
-              <button class="btn btn-outline-danger btn-lg w-100" type="submit"
-                      onclick="return confirm('本当にロックを解除しますか？');">
-                🔓 ロックを解除
-              </button>
-            </form>
-          {% else %}
-            <div class="fw-bold">✅ 加工準備OK</div>
-            <div class="mt-1">誰でも加工開始できます。</div>
-          {% endif %}
-        </div>
-
-        <div class="mb-3" id="worker-download">
-          <h5 class="fw-bold mb-2">ステップ4：加工用画像をダウンロード</h5>
-          <p class="text-muted">ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。写真を長押しして保存してください。</p>
-          <div class="text-center">
-            {% if not lock or lock_expired %}
-              <form id="pinDownloadForm" class="text-center" autocomplete="off">
-                <a href="#" id="btn-process-download" class="btn btn-primary btn-lg w-100">
-                  ⏬ 加工用画像をダウンロード
-                </a>
+          <div class="mb-4 upload-panel">
+            <h5 class="fw-bold mb-2">ステップ1：加工回し用の写真アップロード</h5>
+            <p class="text-muted mb-3">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
+            {% if not is_readonly and not has_image %}
+              <form id="requesterUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
+                <div id="requesterDropzone" class="upload-dropzone mb-3">
+                  ここに画像をドロップ、または下のボタンで選択
+                </div>
+                <input id="requesterFileInput" class="form-control mb-2" type="file" name="file" accept="image/*" required>
+                <div class="upload-preview d-flex flex-wrap mb-2" id="requesterPreview"></div>
+                <div class="progress mb-2" style="height:22px;">
+                  <div id="requesterProgress" class="progress-bar" role="progressbar" style="width:0%">0%</div>
+                </div>
+                <div class="d-flex gap-2">
+                  <button id="requesterSubmit" type="submit" class="btn btn-primary w-100">アップロード</button>
+                  <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-secondary">専用画面へ</a>
+                </div>
               </form>
-              <div id="process-hint" class="text-center small text-muted mt-2"></div>
+              <div id="requesterStatus" class="small text-muted mt-2"></div>
+            {% elif not is_readonly and has_image %}
+              <div class="alert alert-warning mb-0">
+                加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
+              </div>
             {% else %}
-              <div class="alert alert-danger mb-0">⚠️ 現在加工中です。終了までお待ちください。</div>
+              <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
             {% endif %}
           </div>
-        </div>
 
-        <div class="mb-3">
-          <h5 class="fw-bold mb-2">ステップ4-2：加工が終わったらアップロード</h5>
-          <p class="text-muted">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
-          {% if not is_readonly %}
-            <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-success btn-lg w-100">
-              ⬆ 加工済み写真をアップロード
-            </a>
-          {% else %}
-            <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
-          {% endif %}
-        </div>
-
-        <div class="status-card status-success p-3">
-          <div class="fw-bold">ステップ5：自動通知</div>
-          <div class="mt-1">通知設定に従って「未完了の人だけ」へ自動通知します。</div>
-          <div class="small text-muted mt-1">通知はイベント側の承認済み参加者に送られます。</div>
+          <div id="request-card" class="mb-3">
+            <h5 class="fw-bold mb-2">ステップ2〜3：依頼する人を選んで送信</h5>
+            <p class="text-muted">※依頼する人に✅を入れてください。</p>
+            <div class="table-responsive">
+              <table class="table table-sm table-bordered align-middle text-center bg-white">
+                <thead class="table-light">
+                  <tr>
+                    <th scope="col">名前</th>
+                    <th scope="col">加工有無</th>
+                    <th scope="col">依頼</th>
+                    <th scope="col">完了</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% if event_process_members %}
+                    {% for member in event_process_members %}
+                      {% set needs_process = (member.process | default(0) | int) == 1 %}
+                      {% set is_complete = (member.complete_flag | default(0) | int) == 1 %}
+                      <tr data-complete-flag="{{ 1 if is_complete else 0 }}">
+                        <td class="text-start">{{ member.nickname or '（名前未設定）' }}</td>
+                        <td>
+                          {% if needs_process %}
+                            🔵
+                          {% else %}
+                            ❌
+                          {% endif %}
+                        </td>
+                        <td>
+                          <input class="form-check-input process-checkbox"
+                                 type="checkbox"
+                                 data-user-id="{{ member.user_id }}"
+                                 data-field="request"
+                                 {% if member.request_flag|default(0)|int == 1 %}checked{% endif %}
+                                 {% if not needs_process or ns.has_requested %}disabled{% endif %}>
+                        </td>
+                        <td>
+                          {% if is_complete %}
+                            ✅
+                          {% else %}
+                            ⏳
+                          {% endif %}
+                        </td>
+                      </tr>
+                    {% endfor %}
+                  {% else %}
+                    <tr>
+                      <td colspan="4" class="text-muted">参加者が見つかりませんでした。</td>
+                    </tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+            <div class="mt-3">
+              <button id="btn-request-process" class="btn btn-warning btn-lg w-100" {% if ns.has_requested %}disabled{% endif %}>
+                📣 依頼する（リスト保存＋メール送信）
+              </button>
+              <div id="request-status" class="small text-muted mt-2"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="col-lg-6">
-      {% if process_message %}
-        <div class="status-card status-info p-3 mb-3">🔁 {{ process_message }}</div>
-      {% endif %}
-      <div class="status-card status-danger p-3">
-        <div class="fw-bold">⚠️ 加工専用モードの注意点</div>
-        <div class="mt-1">アップロード枚数は常に1枚のみになります。アップロードすると最新の画像に切り替わります。</div>
+    <div class="accordion-item">
+      <h2 class="accordion-header" id="workerHeading">
+        <button class="accordion-button {% if current_step <= 3 %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#workerCollapse" aria-expanded="{% if current_step > 3 %}true{% else %}false{% endif %}">
+          🛠️ 引き受ける側（加工担当） - ステップ4〜5
+        </button>
+      </h2>
+      <div id="workerCollapse" class="accordion-collapse collapse {% if current_step > 3 %}show{% endif %}" aria-labelledby="workerHeading">
+        <div class="accordion-body role-card role-worker p-4">
+          <div class="next-action p-3 mb-3">
+            <h4 class="fw-bold">次にやること</h4>
+            {% if lock and not lock_expired %}
+              <p class="mb-2 text-muted">現在はロック中です。解除後にダウンロードできます。</p>
+              <div class="alert alert-warning mb-0">🔒 加工中のため待機中です。</div>
+            {% else %}
+              <p class="mb-2 text-muted">今すぐ画像をダウンロードして加工を開始しましょう。</p>
+              <a href="#worker-download" class="btn btn-primary btn-lg w-100">⏬ 今すぐダウンロード</a>
+            {% endif %}
+          </div>
+
+          <div class="status-card {% if lock and not lock_expired %}status-danger{% else %}status-success{% endif %} p-3 mb-3">
+            {% if lock and not lock_expired %}
+              <div class="fw-bold">🔒 ロック中</div>
+              <div class="mt-1">担当者: <strong>{{ lock.user }}</strong> / ロック残り時間は30分以内です。</div>
+              <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="mt-3">
+                <button class="btn btn-outline-danger btn-lg w-100" type="submit" onclick="return confirm('本当にロックを解除しますか？');">
+                  🔓 ロックを解除
+                </button>
+              </form>
+            {% else %}
+              <div class="fw-bold">✅ 加工準備OK</div>
+              <div class="mt-1">誰でも加工開始できます。</div>
+            {% endif %}
+          </div>
+
+          <div class="mb-3" id="worker-download">
+            <h5 class="fw-bold mb-2">ステップ4：加工用画像をダウンロード</h5>
+            <p class="text-muted">ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。写真を長押しして保存してください。</p>
+            <div class="text-center">
+              {% if not lock or lock_expired %}
+                <form id="pinDownloadForm" class="text-center" autocomplete="off">
+                  <a href="#" id="btn-process-download" class="btn btn-primary btn-lg w-100">
+                    ⏬ 加工用画像をダウンロード
+                  </a>
+                </form>
+                <div id="process-hint" class="text-center small text-muted mt-2"></div>
+              {% else %}
+                <div class="alert alert-danger mb-0">⚠️ 現在加工中です。終了までお待ちください。</div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="mb-4 upload-panel">
+            <h5 class="fw-bold mb-2">ステップ4-2：加工が終わったらアップロード</h5>
+            <p class="text-muted mb-3">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
+            {% if can_upload %}
+              <form id="workerUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
+                <div id="workerDropzone" class="upload-dropzone mb-3">
+                  ここに加工済み画像をドロップ、または下のボタンで選択
+                </div>
+                <input id="workerFileInput" class="form-control mb-2" type="file" name="file" accept="image/*" required>
+                <div class="upload-preview d-flex flex-wrap mb-2" id="workerPreview"></div>
+                <div class="progress mb-2" style="height:22px;">
+                  <div id="workerProgress" class="progress-bar" role="progressbar" style="width:0%">0%</div>
+                </div>
+                <div class="d-flex gap-2">
+                  <button id="workerSubmit" type="submit" class="btn btn-success w-100">加工済みをアップロード</button>
+                  <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-secondary">専用画面へ</a>
+                </div>
+              </form>
+              <div id="workerStatus" class="small text-muted mt-2"></div>
+            {% elif not is_readonly %}
+              <div class="alert alert-warning mb-0">
+                加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
+              </div>
+            {% else %}
+              <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
+            {% endif %}
+          </div>
+
+          <div class="status-card status-success p-3">
+            <div class="fw-bold">ステップ5：自動通知</div>
+            <div class="mt-1">通知設定に従って「未完了の人だけ」へ自動通知します。</div>
+            <div class="small text-muted mt-1">通知はイベント側の承認済み参加者に送られます。</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 
-  {% if is_admin %}
-    <div class="alert alert-info text-center mt-4">👑 管理ユーザー（admin）としてログイン中</div>
-  {% elif is_owner and session.user %}
-    <div class="alert alert-info text-center mt-4">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+  {% if process_message %}
+    <div class="status-card status-info p-3 mb-3">🔁 {{ process_message }}</div>
   {% endif %}
 
-  {% if history_list %}
+  <div class="status-card status-danger p-3">
+    <div class="fw-bold">⚠️ 加工専用モードの注意点</div>
+    <div class="mt-1">アップロード枚数は常に1枚のみになります。アップロードすると最新の画像に切り替わります。</div>
+  </div>
+</div>
+
+{% if is_admin %}
+  <div class="alert alert-info text-center mt-4">👑 管理ユーザー（admin）としてログイン中</div>
+{% elif is_owner and session.user %}
+  <div class="alert alert-info text-center mt-4">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+{% endif %}
+
+{% set requested_ns = namespace(members=[]) %}
+{% if event_process_members %}
+  {% for member in event_process_members %}
+    {% if member.request_flag|default(0)|int == 1 %}
+      {% set requested_ns.members = requested_ns.members + [member] %}
+    {% endif %}
+  {% endfor %}
+{% endif %}
+
+{% if requested_ns.members %}
   <hr>
-  <h5 class="mt-4">📜 加工履歴（１番上が最新）</h5>
+  <h5 class="mt-4">📝 加工状況</h5>
   <div class="table-responsive">
     <table class="table table-sm table-striped table-bordered text-center align-middle">
       <thead class="table-light">
-        <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
+        <tr><th scope="col">名前</th><th scope="col">完了</th></tr>
       </thead>
       <tbody>
-        {% for record in history_list|reverse %}
-          <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
+        {% for member in requested_ns.members %}
+          <tr>
+            <td class="text-start">{{ member.nickname or '（名前未設定）' }}</td>
+            <td>
+              {% if member.complete_flag|default(0)|int == 1 %}
+                <span class="text-success fw-bold">✅ 完了</span>
+              {% else %}
+                <span class="text-muted">⏳ 未完了</span>
+              {% endif %}
+            </td>
+          </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-  {% endif %}
-</div>
+{% endif %}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
 <script>
-  /* ====== processモード：リンククリックで開始（空タブ先開きでポップアップ回避） ====== */
-  const pinForm = document.getElementById("pinDownloadForm");
-  const btnProcess = document.getElementById("btn-process-download");
-  if (pinForm && btnProcess) {
-    btnProcess.addEventListener("click", async function(event) {
-      event.preventDefault();
-
-      // ユーザー操作直後に空タブを開く（同期ジェスチャ内）
-      const preWin = window.open('about:blank', '_blank');
-
+  const dlButton = document.getElementById("btn-process-download");
+  if (dlButton) {
+    dlButton.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const openUrl = "{{ url_for('album.download_process_image', album_id=album_id, child_id=child_id) }}";
+      let preWin = window.open("about:blank", "_blank");
       const formData = new FormData();
-
       try {
-        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", {
-          method: "POST",
-          body: formData
-        });
-
+        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", { method: "POST", body: formData });
         if (response.status === 409) {
           if (preWin && !preWin.closed) preWin.close();
           alert("他の方が加工中です。\n" + await response.text());
@@ -443,40 +475,16 @@
           alert("❌ 開始に失敗しました:\n" + text);
           return;
         }
-
         const data = await response.json();
-
-        // トースト
-        const toast = document.createElement("div");
-        toast.textContent = data.message || "🔒 加工ロックを開始しました（30分）";
-        toast.style.position="fixed"; toast.style.top="20px"; toast.style.left="50%"; toast.style.transform="translateX(-50%)";
-        toast.style.background="#0d6efd"; toast.style.color="#fff"; toast.style.padding="10px 20px"; toast.style.borderRadius="8px";
-        toast.style.zIndex="1000"; toast.style.boxShadow="0 2px 8px rgba(0,0,0,.2)";
-        document.body.appendChild(toast);
-        setTimeout(()=>toast.remove(), 2500);
-
-        // 別タブURL（キャッシュ避け）
-        const openUrl = (data.image_url || "") + (data.image_url?.includes("?") ? "&" : "?") + "v=" + Date.now();
-
         if (preWin && !preWin.closed) {
           preWin.location.href = openUrl;
         } else {
-          // フォールバック
-          const a = document.createElement('a');
-          a.href = openUrl;
-          a.target = '_blank';
-          a.rel = 'noopener';
+          const a = document.createElement('a'); a.href = openUrl; a.target = '_blank'; a.rel = 'noopener';
           document.body.appendChild(a); a.click(); a.remove();
-
           const hint = document.getElementById("process-hint");
-          if (hint) {
-            hint.innerHTML = `<p class="mt-3">ポップアップがブロックされた可能性があります。<a href="${openUrl}" target="_blank" rel="noopener">こちらをタップ</a>してください。</p>`;
-          }
+          if (hint) { hint.innerHTML = `<p class="mt-3">ポップアップがブロックされた可能性があります。<a href="${openUrl}" target="_blank" rel="noopener">こちらをタップ</a>してください。</p>`; }
         }
-
-        // 軽く再読込（ロック表示の反映）
         setTimeout(()=>location.reload(), 400);
-
       } catch (err) {
         if (preWin && !preWin.closed) preWin.close();
         alert("⚠️ 通信エラー: " + err.message);
@@ -484,20 +492,80 @@
     });
   }
 
+  function setupUpload(formId, dropId, inputId, previewId, progressId, statusId, submitId) {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    const dropzone = document.getElementById(dropId);
+    const input = document.getElementById(inputId);
+    const preview = document.getElementById(previewId);
+    const progress = document.getElementById(progressId);
+    const status = document.getElementById(statusId);
+    const submit = document.getElementById(submitId);
+
+    const updatePreview = (files) => {
+      preview.innerHTML = "";
+      Array.from(files).forEach(file => {
+        if (!file.type.startsWith("image/")) return;
+        const reader = new FileReader();
+        reader.onload = e => {
+          const img = document.createElement("img");
+          img.src = e.target.result;
+          preview.appendChild(img);
+        };
+        reader.readAsDataURL(file);
+      });
+    };
+
+    input.addEventListener("change", e => updatePreview(e.target.files));
+    dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("dragover"); });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", e => {
+      e.preventDefault(); dropzone.classList.remove("dragover");
+      input.files = e.dataTransfer.files; updatePreview(input.files);
+    });
+
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (!input.files.length) return;
+      if (submit) submit.disabled = true;
+      if (status) status.textContent = "アップロード中...";
+      const fd = new FormData(form);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", form.action, true);
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) {
+          const percent = Math.round((e.loaded / e.total) * 100);
+          if (progress) { progress.style.width = percent + "%"; progress.textContent = percent + "%"; }
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          if (status) status.textContent = "完了しました！画面を更新します…";
+          if (submit) {
+            submit.textContent = "完了"; submit.classList.remove("btn-primary", "btn-success"); submit.classList.add("btn-success");
+          }
+          setTimeout(() => location.reload(), 1000);
+        } else {
+          if (status) status.textContent = "アップロードに失敗しました。";
+          alert("失敗: " + xhr.statusText);
+          if (submit) submit.disabled = false;
+        }
+      };
+      xhr.send(fd);
+    });
+  }
+
+  setupUpload("requesterUploadForm", "requesterDropzone", "requesterFileInput", "requesterPreview", "requesterProgress", "requesterStatus", "requesterSubmit");
+  setupUpload("workerUploadForm", "workerDropzone", "workerFileInput", "workerPreview", "workerProgress", "workerStatus", "workerSubmit");
+
   const requestButton = document.getElementById("btn-request-process");
   if (requestButton) {
     requestButton.addEventListener("click", async (event) => {
       event.preventDefault();
-      if (requestButton.disabled) {
-        return;
-      }
-      const confirmed = window.confirm("依頼するボタンを押すと、依頼チェックの変更はできなくなります。送信してよろしいですか？");
-      if (!confirmed) {
-        return;
-      }
+      if (requestButton.disabled) return;
+      if (!window.confirm("依頼するボタンを押すと、依頼チェックの変更はできなくなります。送信してよろしいですか？")) return;
       const statusEl = document.getElementById("request-status");
       if (statusEl) statusEl.textContent = "保存中です...";
-
       const rows = document.querySelectorAll("tbody tr");
       const members = [];
       rows.forEach((row) => {
@@ -505,30 +573,16 @@
         if (!requestBox) return;
         const userId = requestBox.dataset.userId;
         if (!userId) return;
-        members.push({
-          ext_user_id: Number(userId),
-          request_flag: requestBox.checked,
-          complete_flag: row.dataset.completeFlag === "1",
-        });
+        members.push({ user_id: userId, request_flag: requestBox.checked ? 1 : 0 });
       });
-
       try {
-        const response = await fetch("{{ url_for('album.request_process', album_id=album_id, child_id=child_id) }}", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ members }),
+        const response = await fetch("{{ url_for('album.save_event_process_config', album_id=album_id, child_id=child_id) }}", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ members: members, mode: 'request_only' }),
         });
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
-        const data = await response.json();
-        const sentCount = Number(data.sent || 0);
-        if (statusEl) statusEl.textContent = `保存しました。メール送信: ${sentCount}件`;
-        alert(`保存しました。メール送信: ${sentCount}件`);
-        document.querySelectorAll(".process-checkbox").forEach((box) => {
-          box.disabled = true;
-        });
-        requestButton.disabled = true;
+        if (!response.ok) throw new Error(await response.text());
+        if (statusEl) statusEl.textContent = "保存しました！画面を更新します...";
+        setTimeout(() => location.reload(), 800);
       } catch (error) {
         if (statusEl) statusEl.textContent = "保存に失敗しました。";
         alert("保存に失敗しました: " + error.message);
@@ -536,20 +590,15 @@
     });
   }
 
-  /* ====== Lightbox ====== */
+  /* ====== Lightbox & Lock Timer ====== */
   window.addEventListener('DOMContentLoaded', ()=>{
     baguetteBox.run('.gallery',{ animation:'fadeIn', noScrollbars:true });
-
     {% if lock and not lock_expired %}
       document.querySelectorAll('.gallery a.preview').forEach(el => {
         el.addEventListener('click', e => e.preventDefault(), true);
-        el.style.pointerEvents = 'none';
-        el.style.opacity = '0.6';
-        el.style.cursor = 'not-allowed';
-        el.addEventListener('keydown', e => { e.preventDefault(); e.stopPropagation(); }, true);
+        el.style.pointerEvents = 'none'; el.style.opacity = '0.6'; el.style.cursor = 'not-allowed';
       });
     {% endif %}
-
     const lockStatus = document.getElementById('lock-status');
     const remainingEl = document.getElementById('lock-remaining');
     if (lockStatus && remainingEl) {
@@ -566,6 +615,5 @@
     }
   });
 </script>
-
 </body>
 </html>
