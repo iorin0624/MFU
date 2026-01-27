@@ -94,11 +94,13 @@
 
   <div class="wizard-divider"></div>
 
+  <div class="alert alert-primary text-center fw-bold mb-4">依頼する人</div>
+
   <div class="wizard-step">
     <div class="step-index">1</div>
     <div>
-      <h5 class="fw-bold">加工回し用の子アルバムを準備</h5>
-      <small>加工回しモードで作成された子アルバムです。写真は最新1枚のみで差し替わります。</small>
+      <h5 class="fw-bold">加工回しをする写真をアップロード</h5>
+      <small>加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</small>
       <div class="mt-3">
         {% if not is_readonly %}
         <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-primary">
@@ -116,8 +118,8 @@
   <div class="wizard-step">
     <div class="step-index">2</div>
     <div>
-      <h5 class="fw-bold">加工が必要な人のリスト（mfu_event_member.process）</h5>
-      <small>イベント側で「加工が必要」と指定された参加者を一覧で確認できます。</small>
+      <h5 class="fw-bold">加工回しを依頼する人を選択する</h5>
+      <small>※依頼する人に✅を入れてください。</small>
       <div class="mt-3 table-responsive">
         <table class="table table-sm table-bordered align-middle text-center bg-white">
           <thead class="table-light">
@@ -176,11 +178,15 @@
     </div>
   </div>
 
+  <div class="alert alert-success text-center fw-bold my-4">依頼する人はこれで対応終了です！</div>
+
+  <div class="alert alert-primary text-center fw-bold mb-4">依頼された人</div>
+
   <div class="wizard-step">
     <div class="step-index">3</div>
     <div>
-      <h5 class="fw-bold">加工担当者が写真をダウンロード</h5>
-      <small>ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。</small>
+      <h5 class="fw-bold">加工用画像をダウンロード</h5>
+      <small>ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。写真を長押しして保存してください。</small>
       <div class="mt-3 text-center">
         {% if not lock or lock_expired %}
           <form id="pinDownloadForm" class="text-center" autocomplete="off">
@@ -201,7 +207,7 @@
   <div class="wizard-step">
     <div class="step-index">4</div>
     <div>
-      <h5 class="fw-bold">加工後の写真をアップロード</h5>
+      <h5 class="fw-bold">加工が終わったらアップロード</h5>
       <small>アップロードするとロック解除と「加工済み」登録が自動で進みます。</small>
       <div class="mt-3">
         {% if not is_readonly %}
@@ -220,7 +226,7 @@
   <div class="wizard-step">
     <div class="step-index">5</div>
     <div>
-      <h5 class="fw-bold">通知と次の依頼へ</h5>
+      <h5 class="fw-bold">自動的に加工未完了の方に通知が行きます</h5>
       <small>通知設定に従って「未完了の人だけ」へ自動通知します。</small>
       <div class="mt-3 text-muted">通知はイベント側の承認済み参加者に送られます。</div>
     </div>

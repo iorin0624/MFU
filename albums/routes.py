@@ -385,6 +385,7 @@ DDL_ALBUM_PROCESS = """
 CREATE TABLE IF NOT EXISTS album_process (
   id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   ext_user_id   BIGINT UNSIGNED NOT NULL,
+  request_by    BIGINT UNSIGNED NULL,
   album_id      VARCHAR(64) NOT NULL,
   child_id      VARCHAR(64) NOT NULL,
   request_flag  TINYINT(1) NOT NULL DEFAULT 0,
@@ -402,6 +403,10 @@ def _ensure_album_process_table():
     try:
         with db.cursor() as cur:
             cur.execute(DDL_ALBUM_PROCESS)
+            try:
+                cur.execute("ALTER TABLE album_process ADD COLUMN request_by BIGINT UNSIGNED NULL")
+            except MySQLErrors.ProgrammingError:
+                pass
         db.commit()
     finally:
         db.close()
@@ -1261,8 +1266,8 @@ def upload_child(album_id, child_id):
                     current_app.logger.warning("notify(db) failed: %s", e2)
                     return
 
-            # ★ process モードのアップロード通知は「完了済みのみ」へ絞り込み
-            if kind == "upload" and mode == "process":
+            # ★ process モードの通知は「未完了のみ」へ絞り込み
+            if mode == "process" and kind in ("upload", "process_done"):
                 status_map = _fetch_album_process_status_map(album_id, child_id)
                 filtered = []
                 for r in rows:
@@ -1271,7 +1276,7 @@ def upload_child(album_id, child_id):
                     except (TypeError, ValueError):
                         continue
                     status = status_map.get(ext_user_id, {})
-                    if int(status.get("complete_flag", 0)) == 1:
+                    if int(status.get("complete_flag", 0)) != 1:
                         filtered.append(r)
                 rows = filtered
 
@@ -1916,6 +1921,21 @@ def update_process_status(album_id, child_id):
 
     request_flag = 1 if data.get("request_flag") else 0
     complete_flag = 1 if data.get("complete_flag") else 0
+    prev_complete_flag = None
+    requester_id = None
+    if _is_ext_logged_in():
+        requester_id = session.get("ext_user_id")
+        if not requester_id:
+            ext_social_id = session.get("ext_user_social_id")
+            if ext_social_id:
+                ext_user = _get_ext_user_by_social(ext_social_id)
+                if ext_user:
+                    requester_id = ext_user.get("id")
+    if requester_id is not None:
+        try:
+            requester_id = int(requester_id)
+        except (TypeError, ValueError):
+            requester_id = None
 
     event_meta = _fetch_album_meta(album_id)
     if not event_meta or not event_meta.get("event_id"):
@@ -1930,16 +1950,86 @@ def update_process_status(album_id, child_id):
         return jsonify({"ok": False, "error": "member_not_found"}), 404
 
     _ensure_album_process_table()
+    try:
+        prev_row = db_get_one(
+            """
+            SELECT complete_flag
+              FROM album_process
+             WHERE ext_user_id=%s AND album_id=%s AND child_id=%s
+            """,
+            (ext_user_id, album_id, child_id),
+        )
+        if prev_row:
+            prev_complete_flag = int(prev_row.get("complete_flag", 0))
+    except Exception:
+        prev_complete_flag = None
     db_exec(
         """
-        INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO album_process (ext_user_id, album_id, child_id, request_by, request_flag, complete_flag)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
           request_flag=VALUES(request_flag),
-          complete_flag=VALUES(complete_flag)
+          complete_flag=VALUES(complete_flag),
+          request_by=IF(VALUES(request_flag)=1, VALUES(request_by), request_by)
         """,
-        (ext_user_id, album_id, child_id, request_flag, complete_flag),
+        (ext_user_id, album_id, child_id, requester_id, request_flag, complete_flag),
     )
+    try:
+        if request_flag == 1 and complete_flag == 1 and prev_complete_flag == 0:
+            request_row = db_get_one(
+                """
+                SELECT request_by
+                  FROM album_process
+                 WHERE ext_user_id=%s AND album_id=%s AND child_id=%s
+                """,
+                (ext_user_id, album_id, child_id),
+            )
+            request_by_id = None
+            if request_row:
+                try:
+                    request_by_id = int(request_row.get("request_by"))
+                except (TypeError, ValueError):
+                    request_by_id = None
+            if request_by_id:
+                pending_row = db_get_one(
+                    """
+                    SELECT COUNT(*) AS cnt
+                      FROM album_process
+                     WHERE album_id=%s AND child_id=%s
+                       AND request_by=%s
+                       AND request_flag=1
+                       AND complete_flag=0
+                    """,
+                    (album_id, child_id, request_by_id),
+                )
+                pending_cnt = int(pending_row.get("cnt", 0)) if pending_row else 0
+                if pending_cnt == 0:
+                    requester_row = db_get_one(
+                        "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
+                        (request_by_id,),
+                    )
+                    requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
+                    if requester_email:
+                        album_name = meta.get("album_name", "アルバム")
+                        child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
+                        link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
+                        subject = f"【加工完了】{album_name}"
+                        body = (
+                            f"{album_name} の「{child_name}」について、依頼した加工回しが完了しました。\n\n"
+                            f"アクセスはこちら:\n{link}\n\n"
+                            "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
+                        )
+                        try:
+                            from app.utils.mail import send_mail
+                        except Exception:
+                            try:
+                                from app.mail import send_mail
+                            except Exception:
+                                send_mail = None
+                        if send_mail:
+                            send_mail(requester_email, subject, body)
+    except Exception as e:
+        current_app.logger.warning("process completion notify failed: %s", e)
     return jsonify({"ok": True})
 
 @album_bp.route('/<album_id>/<child_id>/process_request', methods=['POST'])
@@ -1967,6 +2057,21 @@ def request_process(album_id, child_id):
 
     _ensure_album_process_table()
 
+    requester_id = None
+    if _is_ext_logged_in():
+        requester_id = session.get("ext_user_id")
+        if not requester_id:
+            ext_social_id = session.get("ext_user_social_id")
+            if ext_social_id:
+                ext_user = _get_ext_user_by_social(ext_social_id)
+                if ext_user:
+                    requester_id = ext_user.get("id")
+    if requester_id is not None:
+        try:
+            requester_id = int(requester_id)
+        except (TypeError, ValueError):
+            requester_id = None
+
     request_targets: list[int] = []
     for m in members:
         try:
@@ -1979,13 +2084,14 @@ def request_process(album_id, child_id):
         complete_flag = 1 if m.get("complete_flag") else 0
         db_exec(
             """
-            INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO album_process (ext_user_id, album_id, child_id, request_by, request_flag, complete_flag)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
               request_flag=VALUES(request_flag),
-              complete_flag=VALUES(complete_flag)
+              complete_flag=VALUES(complete_flag),
+              request_by=IF(VALUES(request_flag)=1, VALUES(request_by), request_by)
             """,
-            (ext_user_id, album_id, child_id, request_flag, complete_flag),
+            (ext_user_id, album_id, child_id, requester_id, request_flag, complete_flag),
         )
         if request_flag == 1 and complete_flag == 0:
             request_targets.append(ext_user_id)
