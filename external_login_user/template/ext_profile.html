@@ -218,8 +218,8 @@
         <div class="card-body">
           <h2 class="h6 card-title mb-3">共有アルバム通知</h2>
 
-          {% set _upload_on  = (form.notify_album_upload  | default(me.notify_album_upload  | default(1, true), true) | int) == 1 %}
-          {% set _process_on = (form.notify_album_process | default(me.notify_album_process | default(1, true), true) | int) == 1 %}
+          {% set _upload_on  = (form.notify_album_upload  | default(me.notify_album_upload  | default(1, false), false) | int) == 1 %}
+          {% set _process_on = (form.notify_album_process | default(me.notify_album_process | default(1, false), false) | int) == 1 %}
 
           <p class="form-text mb-2 small">
             共有アルバムに写真が追加されたとき／加工が完了したときに通知するかどうかを選べます。
