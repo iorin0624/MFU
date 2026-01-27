@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ mode or "新規モード" }} モード設定{% endblock %}
+
+{% block content %}
+<div class="container my-4">
+  <h2 class="mb-4">{{ mode or "新規モード" }} モード設定とテンプレート編集</h2>
+
+  <form method="post" id="mode-form">
+    {% if action == 'edit' %}
+      <input type="hidden" name="mode" value="{{ mode }}">
+    {% else %}
+      <input type="hidden" name="mode" id="mode">
+    {% endif %}
+
+    <div class="mb-3">
+      <label for="label" class="form-label">表示ラベル</label>
+      <input type="text" class="form-control" name="label" id="label" value="{{ mode_data.label if mode_data else '' }}" required>
+    </div>
+
+    <div class="form-check">
+      <input type="checkbox" class="form-check-input" name="enable_download_url" id="enable_download_url"
+             {% if (mode_data and mode_data.enable_download_url) or (action == 'add') %}checked{% endif %}>
+      <label class="form-check-label" for="enable_download_url">ダウンロードURLを表示</label>
+    </div>
+
+    <div class="form-check">
+      <input type="checkbox" class="form-check-input" name="require_password" id="require_password"
+             {% if mode_data and mode_data.require_password %}checked{% endif %}>
+      <label class="form-check-label" for="require_password">パスワードを発行</label>
+    </div>
+
+    <div class="form-check">
+      <input type="checkbox" class="form-check-input" name="enable_layer_upload_url" id="enable_layer_upload_url"
+             {% if mode_data and mode_data.enable_layer_upload_url %}checked{% endif %}>
+      <label class="form-check-label" for="enable_layer_upload_url">加工済アップロードURL</label>
+    </div>
+
+    <div class="form-check mb-3">
+      <input type="checkbox" class="form-check-input" name="generate_thumbnails" id="generate_thumbnails"
+             {% if (mode_data and mode_data.generate_thumbnails) or (action == 'add') %}checked{% endif %}>
+      <label class="form-check-label" for="generate_thumbnails">サムネイル画像を生成する</label>
+    </div>
+
+    <div class="mb-3">
+      <label for="template" class="form-label">テンプレート本文</label>
+      <textarea class="form-control" name="template" id="template" rows="12">{{ template }}</textarea>
+    </div>
+
+    <h4 class="mt-4">🧩 使用可能な変数一覧</h4>
+    <ul class="list-group mb-3" style="font-family: monospace;">
+      {% for var, desc in [
+        ("title", "撮影タイトル"),
+        ("date", "撮影日（例: 2025年05月09日）"),
+        ("link", "ダウンロードURL（有効時のみ）"),
+        ("password", "ダウンロード用パスワード（有効時のみ）"),
+        ("expire", "有効期限（例: 2025年07月08日）※有効期限は60日間固定"),
+        ("layer_upload_url", "レイヤーさんからのアップロード用URL（有効時のみ）"),
+        ("username", "アップロード実行ユーザー名（ログインID）"),
+        ("nickname", "アップロード実行ユーザーのニックネーム")
+      ] %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <span><code>{{ "{{ " ~ var ~ " }}" }}</code> – {{ desc }}</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyToClipboard('{{ '{{ ' ~ var ~ ' }}' }}', this)">📋</button>
+        </li>
+      {% endfor %}
+    </ul>
+
+    <button type="submit" class="btn btn-primary">保存</button>
+    <a href="{{ url_for('mode_list') }}" class="btn btn-secondary ms-2">← モード一覧に戻る</a>
+  </form>
+</div>
+
+{% if action == 'add' %}
+<script>
+  window.addEventListener("DOMContentLoaded", () => {
+    const modeInput = document.getElementById("mode");
+    if (!modeInput) return;
+
+    function generateUUID() {
+      return 'xxxxxxxxxxxx'.replace(/[x]/g, () =>
+        Math.floor(Math.random() * 16).toString(16)
+      );
+    }
+
+    modeInput.value = "mode_" + generateUUID();
+  });
+</script>
+{% endif %}
+
+<script>
+  function copyToClipboard(text, btn) {
+    navigator.clipboard.writeText(text).then(() => {
+      const original = btn.textContent;
+      btn.textContent = "✅";
+      setTimeout(() => { btn.textContent = original; }, 1000);
+    });
+  }
+</script>
+{% endblock %}

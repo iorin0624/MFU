@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}アカウント情報変更{% endblock %}
+
+{% block content %}
+<div class="container d-flex justify-content-center">
+  <form method="post" class="card p-4 shadow-sm w-100" style="max-width: 500px;">
+    <h2 class="text-center mb-4">アカウント情報（{{ username }}）</h2>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ msg }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="閉じる"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div class="mb-3">
+      <label class="form-label">ニックネーム</label>
+      <input type="text" name="nickname" class="form-control" value="{{ user.nickname or '' }}">
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">メールアドレス</label>
+      <input type="email" name="email" class="form-control" value="{{ user.email or '' }}" required>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">Discord Webhook URL</label>
+      <input type="url" name="webhook_url" class="form-control" value="{{ user.webhook_url or '' }}">
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">通知方法</label>
+      <select name="notify_method" class="form-select">
+        <option value="discord" {% if user.notify_method == 'discord' %}selected{% endif %}>Discordのみ</option>
+        <option value="email" {% if user.notify_method == 'email' %}selected{% endif %}>メールのみ</option>
+        <option value="both" {% if user.notify_method == 'both' %}selected{% endif %}>両方</option>
+      </select>
+    </div>
+
+    <hr>
+
+    <div class="mb-3">
+      <label class="form-label">新しいパスワード</label>
+      <input type="password" name="password" class="form-control">
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">パスワード確認</label>
+      <input type="password" name="confirm_password" class="form-control">
+    </div>
+
+    <div class="d-grid gap-2">
+      <button type="submit" class="btn btn-primary">更新</button>
+      <a href="{{ url_for('upload') }}" class="btn btn-secondary">戻る</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

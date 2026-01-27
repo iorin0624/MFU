@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{{ mode }} モード設定とテンプレート編集</title>
+</head>
+<body>
+    <h2>{{ mode }} モード設定とテンプレート編集</h2>
+
+    <form method="post">
+        <label>モード名:</label><br>
+        <input type="text" name="mode" value="{{ mode }}" readonly><br><br>
+
+        <label>表示ラベル:</label><br>
+        <input type="text" name="label" value="{{ mode_data.label if mode_data else '' }}"><br><br>
+
+        <label><input type="checkbox" name="enable_download_url" {% if mode_data and mode_data.enable_download_url %}checked{% endif %}> ダウンロードURLを表示</label><br>
+        <label><input type="checkbox" name="require_password" {% if mode_data and mode_data.require_password %}checked{% endif %}> パスワードを発行</label><br>
+        <label><input type="checkbox" name="enable_layer_upload_url" {% if mode_data and mode_data.enable_layer_upload_url %}checked{% endif %}> 加工済アップロードURL</label><br><br>
+
+        <label>テンプレート本文:</label><br>
+        <textarea name="template" rows="20" cols="80" style="width:100%;">{{ template }}</textarea><br><br>
+
+        <button type="submit">保存</button>
+    </form>
+
+    <p><a href="{{ url_for('mode_list') }}">← モード一覧に戻る</a></p>
+</body>
+</html>

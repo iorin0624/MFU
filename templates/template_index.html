@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>テンプレート一覧</title>
+</head>
+<body>
+    <h2>テンプレート一覧（ユーザー：{{ session['user'] }}）</h2>
+    <ul>
+        {% for item in templates %}
+        <li>
+            <a href="{{ url_for('template_edit', mode=item.mode) }}">
+                {{ item.label }}{% if not item.exists %}（未登録）{% endif %}
+            </a>
+        </li>
+        {% endfor %}
+    </ul>
+    <p><a href="{{ url_for('upload') }}">← 戻る</a></p>
+</body>
+</html>

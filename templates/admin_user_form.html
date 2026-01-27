@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}ユーザー{{ '追加' if action == 'add' else '編集' }}{% endblock %}
+
+{% block content %}
+<div class="container my-4">
+  <h2 class="mb-4">ユーザー{{ '追加' if action == 'add' else '編集' }}</h2>
+
+  <form method="post" class="needs-validation" novalidate>
+    <div class="mb-3">
+      {% if action == 'add' %}
+        <label for="username" class="form-label">ユーザー名</label>
+        <input type="text" class="form-control" name="username" id="username" required>
+      {% else %}
+        <label class="form-label">ユーザー名</label>
+        <p class="form-control-plaintext">{{ user.username }}</p>
+        <input type="hidden" name="username" value="{{ user.username }}">
+      {% endif %}
+    </div>
+
+    <div class="mb-3">
+      <label for="nickname" class="form-label">ニックネーム</label>
+      <input type="text" class="form-control" name="nickname" id="nickname" value="{{ user.nickname if user else '' }}">
+    </div>
+
+    <div class="mb-3">
+      <label for="password" class="form-label">パスワード</label>
+      <input type="password" class="form-control" name="password" id="password">
+    </div>
+
+    <div class="mb-3">
+      <label for="confirm_password" class="form-label">パスワード（確認用）</label>
+      <input type="password" class="form-control" name="confirm_password" id="confirm_password">
+    </div>
+
+    <div class="mb-3">
+      <label for="webhook" class="form-label">Webhook URL</label>
+      <input type="text" class="form-control" name="webhook" id="webhook" value="{{ user.webhook_url if user else '' }}">
+    </div>
+
+    <div class="mb-3">
+      <label for="email" class="form-label">メールアドレス</label>
+      <input type="email" class="form-control" name="email" id="email" value="{{ user.email if user else '' }}">
+    </div>
+
+    <div class="mb-3">
+      <label for="notify_method" class="form-label">通知方法</label>
+      <select class="form-select" name="notify_method" id="notify_method">
+        <option value="none" {% if user and user.notify_method == 'none' %}selected{% endif %}>通知しない</option>
+        <option value="discord" {% if user and user.notify_method == 'discord' %}selected{% endif %}>Discordのみ</option>
+        <option value="email" {% if user and user.notify_method == 'email' %}selected{% endif %}>メールのみ</option>
+        <option value="both" {% if user and user.notify_method == 'both' %}selected{% endif %}>両方</option>
+      </select>
+    </div>
+
+    <button type="submit" class="btn btn-primary">保存</button>
+    <a href="{{ url_for('admin_users') }}" class="btn btn-secondary ms-2">← 戻る</a>
+  </form>
+</div>
+{% endblock %}

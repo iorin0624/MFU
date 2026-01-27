@@ -1,217 +1,854 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>タイマー設定</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-    fieldset { border: 1px solid #ccc; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; }
-    legend { font-weight: 700; }
-    label { display:block; margin: .4rem 0 .2rem; }
-    input, select, button { padding: .5rem .6rem; font-size: 1rem; }
-    .row { display:flex; gap:1rem; flex-wrap: wrap; align-items: center; }
-    .row > * { flex: 1 1 220px; }
-    .hint { color:#555; font-size:.9rem; }
-    .ok { color: #0a7; }
-    .err { color: #c00; }
-    .muted { color:#777; font-size:.9rem; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
-  </style>
-</head>
-<body>
-  <h1>タイマー設定（チャイム＋VOICEVOX）</h1>
+{% extends "base.html" %}
+{% block title %}タイマー設定{% endblock %}
 
-  <fieldset>
-    <legend>モード</legend>
-    <div class="grid">
-      <label><input type="radio" name="mode" value="chime_vv"> 指定チャイム + VOICEVOX</label>
-      <label><input type="radio" name="mode" value="vv_only"> VOICEVOXだけ</label>
-      <label><input type="radio" name="mode" value="chime_only"> 指定チャイムだけ</label>
-    </div>
-    <p class="hint">VOICEVOXの接続先は <code>VOICEVOX_URL</code>（既定: <code>http://127.0.0.1:50021</code>）。</p>
-  </fieldset>
+{% block content %}
+<div class="container mt-4">
 
-  <fieldset>
-    <legend>指定チャイム</legend>
-    <div class="row">
-      <div>
-        <label>ファイル</label>
-        <select id="chime_path"></select>
-      </div>
-      <div>
-        <label>回数（1〜20）</label>
-        <input id="chime_repeat" type="number" value="3" min="1" max="20"/>
+  <h2>⏰ タイマー設定</h2>
+
+  <!-- ⭐ よく使うタイマー -->
+  <h5>⭐ よく使うタイマー</h5>
+  <div id="preset-buttons" class="d-flex flex-wrap gap-2 mb-4"></div>
+
+  <!-- ⏱ タイマー起動 -->
+  <h5>⏱ タイマー起動</h5>
+  <div class="row g-2 align-items-end mb-4">
+    <div class="col-auto">
+      <label class="form-label">時間</label>
+      <div class="d-flex gap-1">
+        <input type="number" id="hour"   class="form-control" placeholder="h" min="0" value="0" style="width:5em;">
+        <input type="number" id="minute" class="form-control" placeholder="m" min="0" value="0" style="width:5em;">
+        <input type="number" id="second" class="form-control" placeholder="s" min="0" value="0" style="width:5em;">
       </div>
     </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>VOICEVOX</legend>
-    <div class="row">
-      <div>
-        <label>話者ID</label>
-        <input id="speaker_id" type="number" value="108" min="0" step="1"/>
-        <div class="muted">下の一覧から選ぶと自動反映</div>
-      </div>
-      <div>
-        <label>話者一覧（名前で選択）</label>
-        <select id="speaker_select"><option value="">取得中…</option></select>
-      </div>
-      <div>
-        <label>回数（1〜20）</label>
-        <input id="tts_repeat" type="number" value="3" min="1" max="20"/>
-      </div>
+    <div class="col">
+      <label class="form-label">ラベル</label>
+      <input type="text" id="label" class="form-control" placeholder="タイマー名（任意）">
     </div>
-  </fieldset>
-
-  <fieldset>
-    <legend>テスト発声</legend>
-    <div class="row">
-      <input id="test_text" type="text" placeholder="テストです。"/>
-      <button id="test_speak">テスト実行</button>
-      <span class="muted">※ 入力テキストを読み上げ、モードどおりに出力します（テスト時は各回数最大5）。</span>
+    <div class="col-auto">
+      <button class="btn btn-success" id="btn-start-timer">開始</button>
     </div>
-  </fieldset>
-
-  <div class="row">
-    <button id="save">保存</button>
-    <span id="status"></span>
   </div>
 
-  <script>
-    const $ = sel => document.querySelector(sel);
-    const $$ = sel => Array.from(document.querySelectorAll(sel));
-    function clampInt(v, lo, hi, fb){ const n = parseInt(v,10); return Number.isNaN(n)? fb : Math.min(hi, Math.max(lo, n)); }
-    function setStatus(msg, ok=true){ const el = $('#status'); el.textContent = msg; el.className = ok?'ok':'err'; if(ok) setTimeout(()=>{el.textContent=''; el.className='';},1500); }
+  <!-- 📌 プリセット追加 -->
+  <h5>📌 プリセット追加</h5>
+  <div class="row g-2 align-items-end mb-4">
+    <div class="col-auto">
+      <label class="form-label">時間</label>
+      <div class="d-flex gap-1">
+        <input type="number" id="fav_hour"   class="form-control" placeholder="h" min="0" value="0" style="width:5em;">
+        <input type="number" id="fav_minute" class="form-control" placeholder="m" min="0" value="0" style="width:5em;">
+        <input type="number" id="fav_second" class="form-control" placeholder="s" min="0" value="0" style="width:5em;">
+      </div>
+    </div>
+    <div class="col">
+      <label class="form-label">プリセット名</label>
+      <input type="text" id="fav_label" class="form-control" placeholder="例：ポモドーロ">
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-outline-secondary" id="btn-add-preset">＋ 追加</button>
+    </div>
+  </div>
 
-    async function loadSpeakers(currentId){
-      try{
-        const res = await fetch('/api/timer/voicevox/speakers');
-        const arr = await res.json();
-        const sel = $('#speaker_select');
-        sel.innerHTML = '';
-        if(!Array.isArray(arr) || arr.length===0){
-          sel.innerHTML = '<option value="">（取得不可）</option>';
+  <!-- 🕓 アラーム -->
+  <h5>🕓 アラーム追加（指定時刻）</h5>
+  <div class="row g-2 align-items-end mb-4">
+    <div class="col-auto">
+      <label class="form-label">アラーム時刻</label>
+      <div class="d-flex gap-1">
+        <input type="number" id="alarm_hour"   class="form-control" placeholder="時" min="0" max="23" value="7" style="width:5em;">
+        <input type="number" id="alarm_minute" class="form-control" placeholder="分" min="0" max="59" value="0" style="width:5em;">
+      </div>
+    </div>
+    <div class="col">
+      <label class="form-label">ラベル</label>
+      <input type="text" id="alarm_label" class="form-control" placeholder="例：起床アラーム">
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-outline-danger" id="btn-set-alarm">＋ アラーム</button>
+    </div>
+  </div>
+
+  <!-- 🍜 JANスキャン -->
+  <h5>🍜 JANスキャンでカップ麺タイマー</h5>
+  <div class="card mb-3">
+    <div class="card-body d-flex gap-2 align-items-end">
+      <div class="flex-grow-1">
+        <label class="form-label">JANコード</label>
+        <input id="jan-input" type="text" class="form-control" placeholder="ここにフォーカスしてスキャン">
+        <div class="form-text">スキャン後にEnter入力されるスキャナ推奨。自動起動はせず、フォームにセットのみ行います。</div>
+      </div>
+      <button class="btn btn-outline-secondary" id="jan-clear">クリア</button>
+      <button class="btn btn-primary" id="jan-start">開始</button>
+    </div>
+    <div id="jan-result" class="px-3 pb-3 small text-muted"></div>
+  </div>
+
+  <!-- 🍳 作り方 -->
+  <div id="cook-card" class="card mb-4" style="display:none;">
+    <div class="card-body">
+      <h6 class="card-title mb-2">🍳 作り方</h6>
+      <ol id="cook-steps" class="mb-0"></ol>
+    </div>
+  </div>
+
+  <!-- 🟢 稼働中タイマー -->
+  <h5>🟢 稼働中タイマー</h5>
+  <table class="table table-sm" id="timer-table">
+    <thead><tr><th>ラベル</th><th>終了時刻</th><th>残り</th></tr></thead>
+    <tbody id="timer-body">
+      <tr><td colspan="3" class="text-muted">読み込み中...</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ⏰ アラーム一覧 -->
+  <h5>⏰ アラーム一覧</h5>
+  <table class="table table-sm" id="alarms-table">
+    <thead><tr><th>ラベル</th><th>時刻</th><th>操作</th></tr></thead>
+    <tbody id="alarms-body"><tr><td colspan="3" class="text-muted">読み込み中...</td></tr></tbody>
+  </table>
+
+  <!-- 🧾 スキャン内容（表示） -->
+  <h5>🧾 スキャン内容</h5>
+  <div class="card mb-4" id="scan-card">
+    <div class="card-body">
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="small text-muted">最後にスキャンした内容（自動更新）</div>
+        <div class="small text-muted"><span id="scan-ts">—</span></div>
+      </div>
+
+      <div class="mt-2 p-2 rounded bg-body-tertiary border">
+        <div class="d-flex align-items-center gap-2 flex-wrap">
+          <span class="badge text-bg-secondary" id="scan-kind">—</span>
+          <code class="fs-5" id="scan-raw">（未検出）</code>
+        </div>
+      </div>
+
+      <div class="form-text mt-2" id="scan-note"></div>
+    </div>
+  </div>
+
+  <!-- 🧾 JAN 登録・編集（分入力） -->
+  <h5>🧾 カップ麺 JAN 登録・編集</h5>
+  <div class="card mb-5">
+    <div class="card-body">
+      <div class="row g-2 align-items-end">
+        <div class="col-12 col-md-3">
+          <label class="form-label">JANコード</label>
+          <input id="mjan-code" type="text" class="form-control" placeholder="例: 4902105......">
+        </div>
+        <div class="col-12 col-md-5">
+          <label class="form-label">商品名（ラベル）</label>
+          <input id="mjan-label" type="text" class="form-control" placeholder="例: 日清カップヌードル(ノーマル)">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label">時間（分）</label>
+          <input id="mjan-minutes" type="number" min="1" step="1" class="form-control" placeholder="例: 3">
+        </div>
+        <div class="col-6 col-md-2">
+          <button id="mjan-save" class="btn btn-primary w-100">保存/更新</button>
+        </div>
+      </div>
+      <div id="mjan-msg" class="form-text mt-2"></div>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-sm mb-0" id="mjan-table">
+        <thead>
+          <tr><th>JAN</th><th>ラベル</th><th>分</th><th>操作</th></tr>
+        </thead>
+        <tbody id="mjan-tbody">
+          <tr><td colspan="4" class="text-muted">読み込み中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ⚙️ 通知設定（最下部・折りたたみ） -->
+  <details id="settings-details" class="mb-4">
+    <summary class="h5 mb-3" style="cursor:pointer;">⚙️ 通知設定（チャイム／VOICEVOX）</summary>
+
+    <!-- モード -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex gap-4 flex-wrap">
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="ts_mode" id="ts_mode_chime_vv" value="chime_vv">
+            <label class="form-check-label" for="ts_mode_chime_vv">指定チャイム + VOICEVOX</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="ts_mode" id="ts_mode_vv_only" value="vv_only">
+            <label class="form-check-label" for="ts_mode_vv_only">VOICEVOXだけ</label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="radio" name="ts_mode" id="ts_mode_chime_only" value="chime_only">
+            <label class="form-check-label" for="ts_mode_chime_only">指定チャイムだけ</label>
+          </div>
+        </div>
+        <div class="form-text mt-2">VOICEVOX 接続先は <code>VOICEVOX_URL</code>（既定: <code>http://127.0.0.1:50021</code>）。</div>
+      </div>
+    </div>
+
+    <!-- チャイム -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="mb-3">🔔 指定チャイム</h6>
+        <div class="row g-3 align-items-end">
+          <div class="col-md-6">
+            <label class="form-label">ファイル（/mnt/mfu/app/sound 配下）</label>
+            <select id="ts_chime_path" class="form-select"></select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">回数（1〜20）</label>
+            <input id="ts_chime_repeat" type="number" class="form-control" min="1" max="20" value="3"/>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VOICEVOX -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <h6 class="mb-3">🗣 VOICEVOX</h6>
+        <div class="row g-3 align-items-end">
+          <div class="col-md-6">
+            <label class="form-label">話者（名前で選択）</label>
+            <select id="ts_speaker_select" class="form-select"><option value="">取得中…</option></select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">話者ID</label>
+            <input id="ts_speaker_id" type="number" class="form-control" value="108" min="0" step="1"/>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">回数（1〜20）</label>
+            <input id="ts_tts_repeat" type="number" class="form-control" min="1" max="20" value="3"/>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- テスト発声 & 保存 -->
+    <div class="card">
+      <div class="card-body">
+        <h6 class="mb-3">🧪 テスト発声</h6>
+        <div class="input-group mb-2">
+          <input id="ts_test_text" type="text" class="form-control" placeholder="テストです。">
+          <button id="ts_test_btn" class="btn btn-outline-secondary">再生</button>
+        </div>
+        <div id="ts_status" class="form-text mb-3"></div>
+
+        <button id="ts_save" class="btn btn-primary">保存</button>
+        <span id="ts_save_status" class="ms-2 small text-muted"></span>
+      </div>
+    </div>
+  </details>
+
+</div>
+
+<script>
+/* ========= ユーティリティ ========= */
+const $  = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const clampInt=(v,lo,hi,fb)=>{const n=parseInt(v,10); return Number.isNaN(n)?fb:Math.min(hi,Math.max(lo,n));};
+function toSec(h, m, s){ return (Number(h)||0)*3600 + (Number(m)||0)*60 + (Number(s)||0); }
+function fmtRemainSec(sec){
+  sec = Math.max(0, Number(sec)||0);
+  const h = String(Math.floor(sec/3600)).padStart(2,'0');
+  const m = String(Math.floor((sec%3600)/60)).padStart(2,'0');
+  const s = String(sec%60).padStart(2,'0');
+  return `${h}:${m}:${s}`;
+}
+function parseRemainingToSec(str){
+  if(!str) return null;
+  const parts = String(str).split(':').map(Number);
+  if(parts.length===3) return parts[0]*3600 + parts[1]*60 + parts[2];
+  if(parts.length===2) return parts[0]*60 + parts[1];
+  return null;
+}
+
+// JAN は 8桁(EAN-8) または 13桁(EAN-13) の数字を許可
+function isJanCode(s){
+  const v = (s || '').trim();
+  return /^[0-9]{8}$/.test(v) || /^[0-9]{13}$/.test(v);
+}
+
+const FOPT = { credentials: 'same-origin', headers:{'Content-Type':'application/json'} };
+
+/* ========= 通知設定（折りたたみ・遅延ロード） ========= */
+function currentMode(){
+  const f = $$('input[name="ts_mode"]').find(x=>x.checked);
+  return f ? f.value : 'chime_vv';
+}
+function setMode(v){
+  ( $$('input[name="ts_mode"]').find(x=>x.value===v) || $$('input[name="ts_mode"]')[0] ).checked = true;
+  onModeChange();
+}
+function onModeChange(){
+  const m = currentMode();
+  const vv = (m !== 'chime_only');
+  const ch = (m !== 'vv_only');
+  $('#ts_speaker_select').disabled = !vv;
+  $('#ts_speaker_id').disabled   = !vv;
+  $('#ts_tts_repeat').disabled   = !vv;
+  $('#ts_chime_path').disabled   = !ch;
+  $('#ts_chime_repeat').disabled = !ch;
+}
+$$('input[name="ts_mode"]').forEach(el=> el.addEventListener('change', onModeChange));
+
+$('#ts_speaker_select')?.addEventListener('change', e=>{
+  const v = parseInt(e.target.value,10);
+  if(!Number.isNaN(v)) $('#ts_speaker_id').value = v;
+});
+
+async function loadSounds(){
+  try{
+    const res = await fetch('/api/timer/available-sounds', { credentials:'same-origin' });
+    const obj = await res.json();
+    const sel = $('#ts_chime_path');
+    sel.innerHTML = '';
+    (obj.sounds||[]).forEach(p=>{
+      const o=document.createElement('option'); o.value=p; o.textContent=p; sel.appendChild(o);
+    });
+  }catch(e){
+    $('#ts_chime_path').innerHTML = '<option value="">（取得エラー）</option>';
+  }
+}
+
+async function loadSpeakers(currentId){
+  try{
+    const res = await fetch('/api/timer/voicevox/speakers', { credentials:'same-origin' });
+    const arr = await res.json();
+    const sel = $('#ts_speaker_select');
+    sel.innerHTML = '';
+    if(!Array.isArray(arr) || arr.length===0){
+      sel.innerHTML = '<option value="">（取得不可）</option>';
+      return;
+    }
+    const flat=[];
+    arr.forEach(sp => (sp.styles||[]).forEach(st => {
+      flat.push({ id: Number(st.id), label: `${sp.name}／${st.name}（id:${st.id}）` });
+    }));
+    flat.sort((a,b)=>a.id-b.id).forEach(x=>{
+      const o=document.createElement('option'); o.value=String(x.id); o.textContent=x.label; sel.appendChild(o);
+    });
+    if(currentId!=null){
+      const m=[...sel.options].find(o=>parseInt(o.value,10)===parseInt(currentId,10));
+      if(m) sel.value = String(currentId);
+    }
+  }catch(e){
+    $('#ts_speaker_select').innerHTML = '<option value="">（取得エラー）</option>';
+  }
+}
+
+async function loadSettingsPanel(){
+  const st = await fetch('/api/timer/settings', { credentials:'same-origin' }).then(r=>r.json());
+  await Promise.all([ loadSounds(), loadSpeakers(st.speaker_id ?? 108) ]);
+
+  const fallbackMode = (String(st.sound_mode).toLowerCase()==='wav') ? 'chime_only' : 'vv_only';
+  setMode((st.mode || fallbackMode));
+
+  $('#ts_speaker_id').value = st.speaker_id ?? 108;
+  $('#ts_tts_repeat').value = st.tts_repeat ?? st.repeat ?? 3;
+
+  const cp = st.chime_path || st.alarm_path || '';
+  if (cp){
+    const sel = $('#ts_chime_path');
+    const found = [...sel.options].some(o => o.value === cp);
+    if(!found){
+      const o=document.createElement('option'); o.value=cp; o.textContent=cp+'（存在しない可能性）'; sel.appendChild(o);
+    }
+    sel.value = cp;
+  }
+  $('#ts_chime_repeat').value = st.chime_repeat ?? st.repeat ?? 3;
+
+  onModeChange();
+}
+
+// 保存
+$('#ts_save')?.addEventListener('click', async ()=>{
+  const mode         = currentMode();
+  const speaker_id   = clampInt($('#ts_speaker_id').value, 0, 10000, 108);
+  const tts_repeat   = clampInt($('#ts_tts_repeat').value, 1, 20, 3);
+  const chime_path   = $('#ts_chime_path').value || '';
+  const chime_repeat = clampInt($('#ts_chime_repeat').value, 1, 20, 3);
+
+  // ✨互換キー（sound_mode / alarm_path）は送らない
+  const payload = { mode, speaker_id, tts_repeat, chime_path, chime_repeat };
+
+  try{
+    const res = await fetch('/api/timer/settings', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      credentials:'same-origin',
+      body: JSON.stringify(payload)
+    });
+    const st = await res.json();  // サーバが返す更新後の設定
+
+    setMode(st.mode);
+    $('#ts_speaker_id').value   = st.speaker_id ?? 108;
+    $('#ts_tts_repeat').value   = st.tts_repeat ?? 3;
+    $('#ts_chime_repeat').value = st.chime_repeat ?? 3;
+
+    if (st.chime_path) {
+      const sel = $('#ts_chime_path');
+      if (![...sel.options].some(o => o.value === st.chime_path)) {
+        const o=document.createElement('option');
+        o.value = st.chime_path;
+        o.textContent = st.chime_path + '（存在しない可能性）';
+        sel.appendChild(o);
+      }
+      sel.value = st.chime_path;
+    }
+
+    $('#ts_save_status').textContent = res.ok ? '保存しました' : '保存に失敗しました';
+  }catch(e){
+    $('#ts_save_status').textContent = '保存に失敗しました';
+  }finally{
+    setTimeout(()=>$('#ts_save_status').textContent='',1500);
+  }
+});
+
+// テスト発声（プレビュー）
+$('#ts_test_btn')?.addEventListener('click', async ()=>{
+  const payload = {
+    mode:       currentMode(),
+    text:       ($('#ts_test_text').value || 'テストです。'),
+    speaker_id: clampInt($('#ts_speaker_id').value, 0, 10000, 108),
+    tts_repeat: clampInt($('#ts_tts_repeat').value, 1, 5, 1),
+    chime_path: $('#ts_chime_path').value || '',
+    chime_repeat: clampInt($('#ts_chime_repeat').value, 1, 5, 1),
+  };
+  try{
+    const res = await fetch('/api/timer/preview', { method:'POST', ...FOPT, body: JSON.stringify(payload) });
+    const data = await res.json().catch(()=>({}));
+    $('#ts_status').textContent = (data && data.ok) ? 'テスト発声しました' : 'テスト発声に失敗しました';
+  }catch(e){
+    $('#ts_status').textContent = 'テスト発声に失敗しました';
+  }
+});
+
+// 最下部の <details> を開いたときだけロード
+let _settingsLoaded = false;
+$('#settings-details')?.addEventListener('toggle', (e)=>{
+  if (e.target.open && !_settingsLoaded){
+    _settingsLoaded = true;
+    loadSettingsPanel();
+  }
+});
+
+/* ========= プリセット ========= */
+async function loadPresets() {
+  const area = $("#preset-buttons");
+  area.innerHTML = "";
+  try{
+    const res = await fetch("/api/preset", { credentials:'same-origin' });
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      area.innerHTML = '<p class="text-muted">プリセットなし</p>';
+      return;
+    }
+    data.forEach(p => {
+      const wrap = document.createElement("div");
+      wrap.className = "d-flex align-items-center me-2 mb-2";
+      const btn = document.createElement("button");
+      btn.className = "btn btn-outline-primary btn-sm";
+      btn.textContent = `${p.label}（${Math.floor(p.seconds/60)}分）`;
+      btn.addEventListener("click", async () => {
+        const r = await fetch("/api/timer/start", { method: "POST", ...FOPT, body: JSON.stringify({ seconds: p.seconds, label: p.label }) });
+        if(!r.ok){ alert("開始に失敗しました"); }
+        loadTimers();
+      });
+      const del = document.createElement("button");
+      del.className = "btn-close ms-1";
+      del.setAttribute("aria-label","delete");
+      del.addEventListener("click", async () => {
+        const r = await fetch("/api/preset/delete", { method: "POST", ...FOPT, body: JSON.stringify({ label: p.label }) });
+        const j = await r.json().catch(()=>({status:'error'}));
+        if(j.status!=='ok'){ alert('削除に失敗しました'); }
+        loadPresets();
+      });
+      wrap.appendChild(btn); wrap.appendChild(del);
+      area.appendChild(wrap);
+    });
+  }catch(e){
+    area.innerHTML = '<p class="text-danger">プリセット取得に失敗</p>';
+  }
+}
+document.getElementById("btn-add-preset")?.addEventListener("click", async () => {
+  const sec = toSec($("#fav_hour").value, $("#fav_minute").value, $("#fav_second").value);
+  const label = $("#fav_label").value.trim();
+  if (!label || sec <= 0) { alert("正しいプリセット名と時間を入力してください"); return; }
+  const r = await fetch("/api/preset/add", { method: "POST", ...FOPT, body: JSON.stringify({ label, seconds: sec }) });
+  const j = await r.json().catch(()=>({status:'error'}));
+  if(j.status==='duplicate'){ alert('同名プリセットが既にあります'); }
+  else if(j.status!=='ok'){ alert('追加に失敗しました'); }
+  loadPresets();
+});
+
+/* ========= タイマー ========= */
+let timerData = []; // {label, ends_at:Date, ends_str:string}
+async function loadTimers() {
+  const tbody = document.getElementById("timer-body");
+  tbody.innerHTML = '<tr><td colspan="3" class="text-muted">更新中...</td></tr>';
+  try{
+    const res = await fetch("/api/timer/status", { credentials:'same-origin' });
+    const data = await res.json();
+    const now = new Date();
+    timerData = (Array.isArray(data) ? data : []).map(t => {
+      const remSec = parseRemainingToSec(t.remaining);
+      let ends = null;
+      if(remSec!=null){
+        ends = new Date(now.getTime() + remSec*1000);
+      }else{
+        const [hh, mm, ss] = String(t.ends_at || "00:00:00").split(":").map(Number);
+        const e = new Date();
+        e.setHours(hh||0, mm||0, ss||0, 0);
+        if (e < now) e.setDate(e.getDate() + 1);
+        ends = e;
+      }
+      return { label: String(t.label||''), ends_at: ends, ends_str: String(t.ends_at||'--:--:--') };
+    });
+    renderTimers();
+  }catch(e){
+    tbody.innerHTML = '<tr><td colspan="3" class="text-danger">取得エラー</td></tr>';
+  }
+}
+function renderTimers() {
+  const tbody = document.getElementById("timer-body");
+  tbody.innerHTML = "";
+  if (!timerData.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="text-muted">なし</td></tr>';
+    return;
+  }
+  const now = new Date();
+  timerData.forEach(t => {
+    const diffSec = Math.max(0, Math.floor((t.ends_at - now) / 1000));
+    const tr = document.createElement("tr");
+    const tdLabel = document.createElement("td"); tdLabel.textContent = t.label;
+    const tdEnds  = document.createElement("td"); tdEnds.textContent  = t.ends_str;
+    const tdRem   = document.createElement("td"); tdRem.className = "d-flex justify-content-between align-items-center";
+    const span    = document.createElement("span"); span.textContent = fmtRemainSec(diffSec);
+    const btn     = document.createElement("button"); btn.className = "btn btn-sm btn-outline-danger ms-2"; btn.textContent = "❌";
+    btn.addEventListener("click", async () => {
+      const r = await fetch("/api/timer/cancel", { method: "POST", ...FOPT, body: JSON.stringify({ label: t.label }) });
+      const j = await r.json().catch(()=>({status:'error'}));
+      if(j.status!=='ok'){ alert('キャンセルに失敗しました'); }
+      loadTimers();
+    });
+    tdRem.appendChild(span); tdRem.appendChild(btn);
+    tr.appendChild(tdLabel); tr.appendChild(tdEnds); tr.appendChild(tdRem);
+    tbody.appendChild(tr);
+  });
+}
+document.getElementById("btn-start-timer")?.addEventListener("click", async () => {
+  const sec = toSec($("#hour").value, $("#minute").value, $("#second").value);
+  const label = $("#label").value.trim() || "タイマー";
+  if (sec <= 0) { alert("1秒以上を指定してください"); return; }
+  const r = await fetch("/api/timer/start", { method: "POST", ...FOPT, body: JSON.stringify({ seconds: sec, label }) });
+  if(!r.ok){ const e = await r.json().catch(()=>({error:'unknown'})); alert(`開始失敗: ${e.error||'unknown'}`); }
+  loadTimers();
+});
+
+/* ========= アラーム ========= */
+async function loadAlarms() {
+  const tbody = document.getElementById("alarms-body");
+  tbody.innerHTML = "<tr><td colspan='3' class='text-muted'>更新中...</td></tr>";
+  try{
+    const res = await fetch("/api/alarms", { credentials:'same-origin' });
+    const data = await res.json();
+    const arr = Array.isArray(data) ? data : [];
+    tbody.innerHTML = "";
+    if (!arr.length) {
+      tbody.innerHTML = "<tr><td colspan='3' class='text-muted'>なし</td></tr>";
+      return;
+    }
+    arr.forEach(a => {
+      const tr = document.createElement("tr");
+      const tdLabel = document.createElement("td"); tdLabel.textContent = a.label || "";
+      const tdTime = document.createElement("td");
+      const ts = Number(a.timestamp) || 0;
+      tdTime.textContent = ts > 0 ? new Date(ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : "不明";
+      const tdOp = document.createElement("td");
+      const btn = document.createElement("button"); btn.className = "btn btn-sm btn-danger"; btn.textContent = "削除";
+      btn.addEventListener("click", async () => {
+        const r = await fetch("/api/alarm/cancel", { method: "POST", ...FOPT, body: JSON.stringify({ label: a.label }) });
+        const j = await r.json().catch(()=>({status:'error'}));
+        if(j.status!=='ok'){ alert('削除に失敗しました'); }
+        loadAlarms();
+      });
+      tdOp.appendChild(btn);
+      tr.appendChild(tdLabel); tr.appendChild(tdTime); tr.appendChild(tdOp);
+      tbody.appendChild(tr);
+    });
+  }catch(e){
+    tbody.innerHTML = "<tr><td colspan='3' class='text-danger'>取得エラー</td></tr>";
+  }
+}
+document.getElementById("btn-set-alarm")?.addEventListener("click", async () => {
+  const hour = Number($("#alarm_hour").value);
+  const minute = Number($("#alarm_minute").value);
+  const label = $("#alarm_label").value.trim() || "アラーム";
+  if (!(0 <= hour && hour < 24) || !(0 <= minute && minute < 60)) return alert("時刻が不正です");
+  const res = await fetch("/api/alarm/set", { method: "POST", ...FOPT, body: JSON.stringify({ hour, minute, label }) });
+  if (res.ok) { alert("アラームを登録しました"); loadAlarms(); }
+  else { const e = await res.json().catch(()=>({error:"unknown"})); alert("登録失敗: " + (e.error || "unknown")); }
+});
+
+/* ========= JAN スキャン（フォームにセット） ========= */
+(() => {
+  const $input  = $('#jan-input');
+  const $result = $('#jan-result');
+  const $cookCard  = $('#cook-card');
+  const $cookSteps = $('#cook-steps');
+  window.addEventListener('load', () => $input && $input.focus());
+  function setTimerForm(seconds, label){
+    const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+    $("#hour").value=h; $("#minute").value=m; $("#second").value=s; $("#label").value=label || "";
+  }
+  function renderSteps(steps){
+    if (!Array.isArray(steps) || steps.length === 0){ $cookCard.style.display="none"; $cookSteps.innerHTML=""; return; }
+    $cookSteps.innerHTML = ""; steps.forEach(line => { const li=document.createElement("li"); li.textContent=line; $cookSteps.appendChild(li); });
+    $cookCard.style.display="";
+  }
+  $input?.addEventListener('keydown', async (e) => {
+    if (e.key !== 'Enter') return;
+    const jan = ($input.value || '').trim(); if (!jan) return;
+    $result.textContent = '検索中...';
+    try {
+      const res = await fetch('/api/timer/jan-info', { method: 'POST', ...FOPT, body: JSON.stringify({ jan }) });
+      if (res.ok) {
+        const data = await res.json();
+        const sec = Number(data.seconds)||0;
+        const label = data.label || '';
+        setTimerForm(sec, label);
+        renderSteps(data.steps || []);
+        $result.textContent = `✅ セットしました：${label}（${Math.round(sec/60)}分）`;
+        $input.select();
+      } else {
+        $result.textContent = `⚠ 未登録のJANです: ${jan}`;
+        renderSteps([]);
+        $input.select();
+      }
+    } catch {
+      $result.textContent = '❌ エラーが発生しました';
+      renderSteps([]);
+    }
+  });
+  $('#jan-clear')?.addEventListener('click', () => { $input.value=''; $result.textContent=''; renderSteps([]); $input.focus(); });
+})();
+$('#jan-start')?.addEventListener('click', async () => {
+  const jan = ($('#jan-input').value||'').trim();
+  try{
+    // 桁数ではなく「数字のみか」で判定
+    if (isJanCode(jan)) {
+      const res = await fetch('/api/timer/jan-start', { method:'POST', ...FOPT, body: JSON.stringify({ jan }) });
+      if (res.ok) {
+        const j = await res.json().catch(()=>({}));
+        const sec = Number(j.seconds)||0; const label = j.label || 'タイマー';
+        if (sec>0) {
+          await loadTimers();
+          $('#jan-result').textContent = `▶ 開始しました：${label}（${Math.round(sec/60)}分）`;
           return;
         }
-        const flat=[];
-        arr.forEach(sp=> (sp.styles||[]).forEach(st=> flat.push({id:st.id,label:`${sp.name}／${st.name}（id:${st.id}）`})));
-        flat.sort((a,b)=>a.id-b.id).forEach(x=>{
-          const o=document.createElement('option'); o.value=x.id; o.textContent=x.label; sel.appendChild(o);
-        });
-        if(currentId!=null){
-          const m=[...sel.options].find(o=>parseInt(o.value,10)===parseInt(currentId,10));
-          if(m) sel.value=String(currentId);
-        }
-      }catch(e){
-        $('#speaker_select').innerHTML = '<option value="">（取得エラー）</option>';
       }
     }
+  }catch(e){ /* フォールバック */ }
+  const sec = toSec($("#hour").value, $("#minute").value, $("#second").value);
+  const label = $("#label").value.trim() || "タイマー";
+  if (sec <= 0) { alert("1秒以上を指定してください"); return; }
+  await fetch("/api/timer/start", { method: "POST", ...FOPT, body: JSON.stringify({ seconds: sec, label }) });
+  loadTimers();
+});
 
-    async function loadSounds(){
-      try{
-        const res = await fetch('/api/timer/available-sounds');
-        const obj = await res.json();
-        const ap = $('#chime_path');
-        ap.innerHTML='';
-        (obj.sounds||[]).forEach(p => { const o=document.createElement('option'); o.value=p; o.textContent=p; ap.appendChild(o); });
-      }catch(e){
-        $('#chime_path').innerHTML='<option value="">（取得エラー）</option>';
+/* ========= JAN 管理（一覧・保存・削除） ========= */
+async function reloadJAN(){
+  const tbody = $('#mjan-tbody');
+  tbody.innerHTML = '<tr><td colspan="4" class="text-muted">読み込み中...</td></tr>';
+  try{
+    const res = await fetch('/api/timer/jan-list', { credentials:'same-origin' });
+    let data = await res.json();
+
+    let entriesArr = [];
+    if (Array.isArray(data)) {
+      entriesArr = data
+        .map(x => ({ jan: String(x.jan||'').trim(), label: String(x.label||''), seconds: Number(x.seconds)||0 }))
+        .filter(x => x.jan);
+    } else if (data && typeof data === 'object') {
+      entriesArr = Object.entries(data).map(([jan, info]) => ({
+        jan: String(jan),
+        label: String((info&&info.label)||''),
+        seconds: Number(info&&info.seconds)||0
+      }));
+    } else {
+      data = {};
+    }
+
+    tbody.innerHTML = '';
+    if (!entriesArr.length){
+      tbody.innerHTML = '<tr><td colspan="4" class="text-muted">登録なし</td></tr>';
+      return;
+    }
+    entriesArr.sort((a,b)=> a.jan.localeCompare(b.jan,'ja'));
+    for (const {jan, label, seconds} of entriesArr){
+      const minutes = seconds>0 ? Math.round(seconds/60) : '';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><code>${jan}</code></td>
+        <td>${label}</td>
+        <td class="text-end">${minutes}</td>
+        <td class="text-end">
+          <button class="btn btn-sm btn-outline-primary me-1" data-jan="${jan}" data-op="fill">編集</button>
+          <button class="btn btn-sm btn-danger" data-jan="${jan}" data-op="del">削除</button>
+        </td>`;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll('button[data-op="fill"]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const jan = btn.getAttribute('data-jan');
+        const rec = entriesArr.find(x=>x.jan===jan) || {};
+        $('#mjan-code').value = jan || '';
+        $('#mjan-label').value = rec.label || '';
+        $('#mjan-minutes').value = rec.seconds ? Math.round(Number(rec.seconds)/60) : '';
+        $('#mjan-code').focus();
+      });
+    });
+    tbody.querySelectorAll('button[data-op="del"]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const jan = btn.getAttribute('data-jan');
+        if(!confirm(`削除しますか？\nJAN: ${jan}`)) return;
+        const r = await fetch('/api/timer/jan-delete', { method:'POST', ...FOPT, body: JSON.stringify({ jan }) });
+        const j = await r.json().catch(()=>({status:'error'}));
+        if(j.status==='ok'){ reloadJAN(); } else { alert('削除に失敗しました'); }
+      });
+    });
+  }catch(e){
+    tbody.innerHTML = '<tr><td colspan="4" class="text-danger">取得エラー</td></tr>';
+  }
+}
+
+$('#mjan-save')?.addEventListener('click', async ()=>{
+  const jan    = ($('#mjan-code').value || '').trim();
+  const label  = ($('#mjan-label').value || '').trim();
+  const minutes = clampInt($('#mjan-minutes').value, 1, 24*60, 3);
+  const msg    = $('#mjan-msg');
+
+  msg.textContent = '';
+
+  // クライアント側の最低限チェック
+// ここも一緒に修正推奨
+if (!isJanCode(jan)) {
+  msg.textContent = 'JAN は8桁または13桁の数字で入力してください';
+  return;
+}
+  if (!label) {
+    msg.textContent = '商品名（ラベル）を入力してください';
+    return;
+  }
+
+  const seconds = minutes * 60;
+
+  try {
+    const res = await fetch('/api/timer/jan-upsert', {
+      method: 'POST',
+      ...FOPT,
+      body: JSON.stringify({ jan, label, seconds })
+    });
+
+    // まずはレスポンスの生テキストを取る
+    const text = await res.text();
+    let j = {};
+    try {
+      if (text) {
+        j = JSON.parse(text);
       }
+    } catch (_e) {
+      // JSON でなければ j は {} のまま
     }
 
-    function currentMode(){
-      const r = $$('input[name="mode"]');
-      const f = r.find(x=>x.checked);
-      return f ? f.value : 'chime_vv';
-    }
-    function setMode(v){
-      const r = $$('input[name="mode"]');
-      (r.find(x=>x.value===v) || r[0]).checked = true;
-      onModeChange();
-    }
-    function onModeChange(){
-      const m = currentMode();
-      const vv = (m!=="chime_only");
-      const ch = (m!=="vv_only");
-      $('#speaker_id').disabled = !vv;
-      $('#speaker_select').disabled = !vv;
-      $('#tts_repeat').disabled = !vv;
-      $('#chime_path').disabled = !ch;
-      $('#chime_repeat').disabled = !ch;
-    }
-    $$('input[name="mode"]').forEach(el=> el.addEventListener('change', onModeChange));
-    $('#speaker_select').addEventListener('change', e=>{
-      const v = parseInt(e.target.value,10);
-      if(!Number.isNaN(v)) $('#speaker_id').value = v;
-    });
+    const ok = res.ok && j.status === 'ok';
 
-    async function loadSettings(){
-      const st = await fetch('/api/timer/settings').then(r=>r.json());
-      await Promise.all([loadSounds(), loadSpeakers(st.speaker_id ?? 108)]);
-
-      // 互換: sound_mode しか無い場合の推定
-      const fallbackMode = (st.sound_mode==='wav') ? 'chime_only' : 'vv_only';
-      setMode(st.mode || fallbackMode);
-
-      $('#speaker_id').value = st.speaker_id ?? 108;
-      $('#tts_repeat').value = st.tts_repeat ?? st.repeat ?? 3;
-
-      if(st.chime_path || st.alarm_path){
-        const cp = st.chime_path || st.alarm_path;
-        const ap = $('#chime_path');
-        const found = [...ap.options].some(o=>o.value===cp);
-        if(!found){ const o=document.createElement('option'); o.value=cp; o.textContent=cp+'（存在しない可能性）'; ap.appendChild(o); }
-        ap.value = cp;
-      }
-      $('#chime_repeat').value = st.chime_repeat ?? st.repeat ?? 3;
-
-      onModeChange();
+    if (ok) {
+      msg.textContent = '保存しました';
+      reloadJAN();
+      return;
     }
 
-    $('#save').addEventListener('click', async ()=>{
-      const mode = currentMode();
-      const speaker_id = clampInt($('#speaker_id').value, 0, 10000, 108);
-      const tts_repeat = clampInt($('#tts_repeat').value, 1, 20, 3);
-      const chime_path = $('#chime_path').value;
-      const chime_repeat = clampInt($('#chime_repeat').value, 1, 20, 3);
+    // エラーメッセージ優先順位：
+    // 1) サーバの message / error
+    // 2) ボディテキスト
+    // 3) 最後に HTTP ステータス
+    const errMsg =
+      j.message ||
+      j.error ||
+      (text && text.trim()) ||
+      `HTTP ${res.status}`;
 
-      // 互換キーも同梱しておく（旧実装が読んでも破綻しない）
-      const compat = {
-        sound_mode: (mode==='chime_only') ? 'wav' : 'voicevox',
-        alarm_path: chime_path,
-        repeat: Math.max(tts_repeat, chime_repeat),
-      };
+    msg.textContent = '保存失敗: ' + errMsg;
 
-      const payload = { mode, speaker_id, tts_repeat, chime_path, chime_repeat, ...compat };
+  } catch (e) {
+    msg.textContent = '保存失敗（通信エラー）';
+  }
+});
 
-      try{
-        const res = await fetch('/api/timer/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        await res.json();
-        setStatus('保存しました', true);
-      }catch(e){ setStatus('保存に失敗しました', false); }
-    });
+/* ========= スキャン内容表示 ========= */
+let _lastScanSig = '';
 
-    // ★ 修正点：テストは /api/timer/preview を叩く（組み合わせ再生に対応）
-    $('#test_speak').addEventListener('click', async ()=>{
-      const payload = {
-        mode: currentMode(),
-        text: ($('#test_text').value || 'テストです。'),
-        speaker_id: clampInt($('#speaker_id').value, 0, 10000, 108),
-        tts_repeat: clampInt($('#tts_repeat').value, 1, 5, 1),     // テストは最大5
-        chime_path: $('#chime_path').value,
-        chime_repeat: clampInt($('#chime_repeat').value, 1, 5, 1), // テストは最大5
-      };
-      try{
-        const res = await fetch('/api/timer/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-        const data = await res.json();
-        if(data && data.ok) setStatus('テスト発声しました', true);
-        else setStatus('テスト発声に失敗しました', false);
-      }catch(e){ setStatus('テスト発声に失敗しました', false); }
-    });
+function fmtScanTs(ts){
+  const n = Number(ts)||0;
+  if(!n) return '—';
+  const d = new Date(n * 1000);
+  return d.toLocaleString([], { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+}
 
-    loadSettings();
-  </script>
-</body>
-</html>
+function kindLabel(kind){
+  const k = String(kind||'').toUpperCase();
+  if(k==='JAN')   return 'JAN';
+  if(k==='MIN')   return '分';
+  if(k==='SEC')   return '秒';
+  if(k==='START') return 'START';
+  if(k==='OTHER') return 'OTHER';
+  return '—';
+}
+
+async function loadScanStatus(){
+  try{
+    const res = await fetch('/api/timer/scan-status', { credentials:'same-origin' });
+    if(!res.ok) return;
+    const data = await res.json();
+    const ls = (data && data.last_scan) ? data.last_scan : {};
+    const raw  = String(ls.raw || '');
+    const kind = String(ls.kind || '');
+    const note = String(ls.note || '');
+    const ts   = ls.ts;
+
+    // 変化がないならDOM更新を省略
+    const sig = `${raw}|${kind}|${note}|${ts||''}`;
+    if(sig === _lastScanSig) return;
+    _lastScanSig = sig;
+
+    $('#scan-raw').textContent  = raw ? raw : '（未検出）';
+    $('#scan-kind').textContent = kindLabel(kind);
+    $('#scan-ts').textContent   = fmtScanTs(ts);
+
+    $('#scan-note').textContent = note ? note : '';
+  }catch(e){
+    // ここは静かに無視（タイマー画面全体を壊さない）
+  }
+}
+
+/* ========= 初期化 ========= */
+document.addEventListener("DOMContentLoaded", () => {
+  loadPresets();
+  loadTimers();
+  loadAlarms();
+  reloadJAN();
+
+  loadScanStatus();
+  setInterval(loadScanStatus, 800);
+
+  setInterval(loadTimers,  10000);
+  setInterval(renderTimers, 1000);
+  setInterval(loadAlarms,  15000);
+});
+</script>
+{% endblock %}

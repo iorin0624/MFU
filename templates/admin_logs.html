@@ -1,0 +1,539 @@
+{% extends "base.html" %}
+{% block title %}ログ確認{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2 class="mb-2">📜 ログ記録（サーバー側フィルタ／上限 {{ filters.limit or 1000 }} 件）</h2>
+
+  {# 今日・昨日のクイックリンク #}
+  {% set today = (now().strftime('%Y-%m-%d')) %}
+  {% set yesterday = ((now() - timedelta(days=1)).strftime('%Y-%m-%d')) %}
+
+  <!-- サーバー側フィルタ操作 -->
+  <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+    <div class="btn-group">
+      <a href="{{ url_for('admin_logs',
+                          date=today,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}" class="btn btn-sm btn-success">🔹今日</a>
+      <a href="{{ url_for('admin_logs',
+                          date=yesterday,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}" class="btn btn-sm btn-warning">🔸昨日</a>
+    </div>
+
+    <div class="btn-group ms-2">
+      <a class="btn btn-sm {{ 'btn-primary' if filters.kind=='LOGIN' else 'btn-outline-primary' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind='LOGIN',
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}">[LOGIN] のみ</a>
+      <a class="btn btn-sm {{ 'btn-success' if filters.kind=='LINE_LOGIN' else 'btn-outline-success' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind='LINE_LOGIN',
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}">[LINE_LOGIN] のみ</a>
+      <a class="btn btn-sm {{ 'btn-info' if filters.kind=='SMTP' else 'btn-outline-info' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind='SMTP',
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}">[SMTP] のみ</a>
+      <a class="btn btn-sm {{ 'btn-outline-secondary' if filters.kind else 'btn-secondary' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}">ALL</a>
+    </div>
+
+    {# ボタンの順序は「ローカル除外」「JP以外のみ」「/suc除外」 #}
+    <div class="btn-group ms-2">
+      <a class="btn btn-sm {{ 'btn-warning' if filters.exclude_local else 'btn-outline-warning' }}"
+         title="設定済みローカル網を除外"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=filters.kind or None,
+                          exclude_local=None if filters.exclude_local else 1,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}">ローカル除外</a>
+
+      <a class="btn btn-sm {{ 'btn-danger' if filters.nonjp_only else 'btn-outline-danger' }}"
+         title="JP 以外のみ表示"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=None if filters.nonjp_only else 1,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          limit=filters.limit) }}">JP以外のみ</a>
+
+      <a class="btn btn-sm {{ 'btn-info text-dark' if filters.exclude_suc else 'btn-outline-info' }}"
+         title="/suc/ 配下のアクセスを除外"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=filters.kind or None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=None if filters.exclude_suc else 1,
+                          limit=filters.limit) }}">/suc 除外</a>
+    </div>
+
+    <!-- 件数上限（最大1000） -->
+    <form class="ms-2 d-flex align-items-center gap-2" method="get" action="{{ url_for('admin_logs') }}">
+      <input type="hidden" name="date" value="{{ selected_date }}">
+      {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+      {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+      {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+      {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+      <label class="small text-muted">表示上限</label>
+      <select class="form-select form-select-sm" name="limit" onchange="this.form.submit()">
+        {% for n in [100,300,500,1000] %}
+          <option value="{{ n }}" {{ 'selected' if (filters.limit or 1000)==n else '' }}>{{ n }}</option>
+        {% endfor %}
+      </select>
+    </form>
+
+    <!-- 表示切替スイッチ -->
+    <div class="ms-2 d-flex align-items-center gap-2">
+      <div class="form-check form-switch">
+        <input class="form-check-input" type="checkbox" id="togglePretty" checked>
+        <label class="form-check-label small" for="togglePretty">見やすい表示</label>
+      </div>
+      <span class="small text-muted">(切替：見やすい表示 / 原文)</span>
+    </div>
+  </div>
+
+  <!-- 日付絞り込み（サーバー側） -->
+  <form method="get" class="mb-3">
+    {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+    {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+    {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+    {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+    <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+    <div class="input-group">
+      <input type="date" name="date" class="form-control" value="{{ selected_date }}">
+      <button class="btn btn-outline-primary" type="submit">日付で絞り込み</button>
+      {% if selected_date %}
+        <a class="btn btn-outline-secondary" href="{{ url_for('admin_logs',
+                                                              kind=filters.kind or None,
+                                                              exclude_local=1 if filters.exclude_local else None,
+                                                              nonjp_only=1 if filters.nonjp_only else None,
+                                                              exclude_suc=1 if filters.exclude_suc else None,
+                                                              limit=filters.limit) }}">リセット</a>
+      {% endif %}
+    </div>
+  </form>
+
+  <!-- 現在の条件 -->
+  <div class="mb-2 small text-muted">
+    サーバー側条件:
+    <span class="badge {{ 'bg-secondary' if not filters.kind else 'bg-primary' }}">{{ filters.kind or 'ALL' }}</span>
+    <span class="badge {{ 'bg-warning text-dark' if filters.exclude_local else 'bg-light text-dark border' }}">ローカル除外: {{ 'ON' if filters.exclude_local else 'OFF' }}</span>
+    <span class="badge {{ 'bg-danger' if filters.nonjp_only else 'bg-light text-dark border' }}">JP以外のみ: {{ 'ON' if filters.nonjp_only else 'OFF' }}</span>
+    <span class="badge {{ 'bg-info text-dark' if filters.exclude_suc else 'bg-light text-dark border' }}">/suc 除外: {{ 'ON' if filters.exclude_suc else 'OFF' }}</span>
+    {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
+    <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
+  </div>
+
+  <!-- 一覧（5列：ID, 日時, IP, 内容, 操作） -->
+  <div class="table-responsive">
+    <table class="table table-sm table-striped table-bordered">
+      <thead class="table-light">
+        <tr>
+          <th>ID</th>
+          <th>日時</th>
+          <th>IPアドレス</th>
+          <th>内容</th>
+          <th class="text-center">操作</th>
+        </tr>
+      </thead>
+      <tbody id="logTableBody">
+        {% for log in logs %}
+          <tr>
+            <td class="text-muted">{{ log.id }}</td>
+            <td class="text-nowrap">{{ log.log_date }}</td>
+            <td>
+              {{ log.ip or '-' }}<br>
+              <small class="text-muted">
+                {{ (log.provider or log.netname) or '-' }}{% if log.country %}（{{ log.country }}）{% endif %}
+              </small>
+            </td>
+            <td class="text-break">
+              <!-- 原文：常に保持 -->
+              <code class="log-raw mono log-text">{{ log.log_text }}</code>
+              <!-- 見やすい表示：JSで生成して挿入 -->
+              <div class="log-pretty d-none"></div>
+            </td>
+            <td class="text-center align-middle">
+              {% if log.ip %}
+                <div class="d-flex flex-column align-items-center gap-1">
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-outline-danger"
+                    data-ip="{{ log.ip }}"
+                    data-target="banStatus-{{ log.id }}"
+                    onclick="banFromBtn(this)"
+                    title="このIPを/24に丸めてBANします">
+                    BAN /24
+                  </button>
+                  <small id="banStatus-{{ log.id }}" class="text-muted"></small>
+                </div>
+              {% else %}
+                <span class="text-muted">-</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        {% if logs|length == 0 %}
+          <tr><td colspan="5" class="text-center text-muted">該当するログはありません。</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ページネーション（サーバー側フィルタを引き回し） -->
+  {% if total_pages > 1 %}
+    <nav class="mt-3">
+      <ul class="pagination pagination-sm justify-content-center">
+        {% if current_page > 1 %}
+          <li class="page-item">
+            <a class="page-link"
+               href="{{ url_for('admin_logs',
+                                date=selected_date or None,
+                                page=current_page-1,
+                                kind=filters.kind or None,
+                                exclude_local=1 if filters.exclude_local else None,
+                                nonjp_only=1 if filters.nonjp_only else None,
+                                exclude_suc=1 if filters.exclude_suc else None,
+                                limit=filters.limit) }}">← 前へ</a>
+          </li>
+        {% endif %}
+        <li class="page-item disabled"><span class="page-link">ページ {{ current_page }} / {{ total_pages }}</span></li>
+        {% if current_page < total_pages %}
+          <li class="page-item">
+            <a class="page-link"
+               href="{{ url_for('admin_logs',
+                                date=selected_date or None,
+                                page=current_page+1,
+                                kind=filters.kind or None,
+                                exclude_local=1 if filters.exclude_local else None,
+                                nonjp_only=1 if filters.nonjp_only else None,
+                                exclude_suc=1 if filters.exclude_suc else None,
+                                limit=filters.limit) }}">次へ →</a>
+          </li>
+        {% endif %}
+      </ul>
+    </nav>
+  {% endif %}
+</div>
+
+<style>
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+code { white-space: pre-wrap; word-break: break-word; }
+
+/* 表示切替（デフォルト：見やすい表示） */
+.show-pretty .log-pretty { display: block !important; }
+.show-pretty .log-raw    { display: none !important; }
+.show-raw    .log-pretty { display: none !important; }
+.show-raw    .log-raw    { display: block !important; }
+</style>
+
+<!-- 見やすい表示/原文 切り替え（グローバル）＋ LOGIN/LINELOGIN/SMTP 専用整形 -->
+<script>
+(() => {
+  const tableBody = document.getElementById('logTableBody');
+  const toggle = document.getElementById('togglePretty');
+
+  // ====== 共通 ======
+  const esc = (s) => String(s ?? '').replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const badge = (label, cls) => '<span class="badge '+cls+' me-2">'+esc(label)+'</span>';
+
+  const statusClass = (code) => {
+    const c = parseInt(code,10);
+    if (c === 200) return 'bg-primary';
+    if (c === 302) return 'bg-success';
+    if (c === 404) return 'bg-danger';
+    if (c >= 500)  return 'bg-dark';
+    if (c >= 400)  return 'bg-danger';
+    if (c >= 300)  return 'bg-warning text-dark';
+    if (c >= 200)  return 'bg-success';
+    return 'bg-secondary';
+  };
+
+  const shortUA = (ua) => {
+    if (!ua) return '';
+    const m = ua.match(/(Chrome\/[\d.]+|Firefox\/[\d.]+|Safari\/[\d.]+|Edg\/[\d.]+|OPR\/[\d.]+|CriOS\/[\d.]+|FxiOS\/[\d.]+)/g);
+    return m ? m.slice(0,2).join(' ') : (ua.length>40 ? ua.slice(0,37)+'…' : ua);
+  };
+
+  // ====== LINE_LOGIN 用ヘルパ ======
+  const pickLineNumericId = (t) => {
+    const mHash = t.match(/#\s*(\d{1,9})/);
+    if (mHash) return mHash[1];
+    const keys = ['ext_user_id','member_id','user_id','id','uid'];
+    for (const k of keys) {
+      const m = t.match(new RegExp(`\\b${k}[=:]\\s*"?([0-9]{1,9})"?`, 'i'));
+      if (m) return m[1];
+    }
+    return '';
+  };
+  const pickLineDisplayName = (t) => {
+    const m1 = t.match(/\b(display|display_name|name|nickname|account_name|line_name|screen_name)\s*[:=]\s*"([^"]+)"/i);
+    if (m1) return m1[2].trim();
+    const m2 = t.match(/"name"\s*:\s*"([^"]+)"/i);
+    if (m2) return m2[1].trim();
+    const m3 = t.match(/#\s*\d{1,9}[\s\u3000]+([^"\s\u3000][^　\s]*)(?=[\s\u3000]*がログイン|["\s]|$)/);
+    if (m3) return m3[1].trim();
+    return '';
+  };
+
+  // ====== LOGIN 用：ユーザー名抽出（日本語原文対応を強化） ======
+  function pickLoginUser(t){
+    const mKey = t.match(/\buser(?:name)?\s*[:=]\s*"?([\w.@:-]+)"?/i);
+    if (mKey) return mKey[1];
+    const mJa = t.match(/ユーザー(?:名)?\s*[:：]\s*([^\s\u3000"']+)(?=[\s\u3000]*がログイン)/);
+    if (mJa) return mJa[1];
+    const mLoose = t.match(/ユーザー(?:名)?\s*[:：]?\s*([^\s\u3000"']+)/);
+    if (mLoose) return mLoose[1];
+    return '';
+  }
+
+  // ====== “見やすい表示” 生成 ======
+  function prettify(t){
+    const mKind = t.match(/\[(LOGIN|LINE_LOGIN|SMTP)\]/);
+    const kind = mKind ? mKind[1] : '';
+
+    if (kind === 'LOGIN') {
+      const user = pickLoginUser(t) || '（不明）';
+      const ms   = (t.match(/\b(\d{1,6})ms\b/)?.[1]) ||
+                   (t.match(/\b(?:time|elapsed|dur|t)[=:]\s*([\d.]+)ms\b/i)?.[1]) || '';
+      const ua   = (t.match(/\bua[=:]"([^"]+)"/i)?.[1]) ||
+                   (t.match(/\bUser-Agent:"([^"]+)"/i)?.[1]) || '';
+
+      let line = badge('LOGIN', 'bg-primary') +
+                 '<span>ユーザー: ' + esc(user) + ' がログインしました</span>';
+      if (ms || ua) {
+        line += ' <span class="text-muted ms-2">' +
+                (ms ? esc(ms)+'ms ' : '') +
+                (ua ? esc(shortUA(ua)) : '') +
+                '</span>';
+      }
+      return line;
+    }
+
+    if (kind === 'LINE_LOGIN') {
+      const id  = pickLineNumericId(t);
+      const nm  = pickLineDisplayName(t) || '（不明）';
+      const ms  = (t.match(/\b(\d{1,6})ms\b/)?.[1]) ||
+                  (t.match(/\b(?:time|elapsed|dur|t)[=:]\s*([\d.]+)ms\b/i)?.[1]) || '';
+      const ua  = (t.match(/\bua[=:]"([^"]+)"/i)?.[1]) ||
+                  (t.match(/\bUser-Agent:"([^"]+)"/i)?.[1]) || '';
+
+      const ZS = '　'; // 全角スペース
+      const who = (id ? ('#' + id + ZS) : '') + nm;
+
+      let line = badge('LINE_LOGIN', 'bg-success') +
+                 '<span>ユーザー: ' + esc(who) + ZS + 'がログインしました</span>';
+      if (ms || ua) {
+        line += ' <span class="text-muted ms-2">' +
+                (ms ? esc(ms)+'ms ' : '') +
+                (ua ? esc(shortUA(ua)) : '') +
+                '</span>';
+      }
+      return line;
+    }
+
+    if (kind === 'SMTP') {
+      const isOk = /送信OK/.test(t);
+      const isNg = /送信NG/.test(t);
+      const to   = (t.match(/to="([^"]+)"/)?.[1]) || '';
+      const subj = (t.match(/subj="([^"]+)"/)?.[1]) || '';
+      const detail = (t.match(/detail=(.+)$/)?.[1] || '').trim();
+
+      let line = badge('SMTP', 'bg-warning text-dark');
+      line += ' ' + badge(
+        isOk ? '送信OK' : (isNg ? '送信NG' : '送信'),
+        isOk ? 'bg-success' : (isNg ? 'bg-danger' : 'bg-secondary')
+      );
+
+      if (to) {
+        line += ' <span class="mono">to=' + esc(to) + '</span>';
+      } else {
+        line += ' <span class="mono">to=（不明）</span>';
+      }
+
+      if (subj) {
+        line += ' <span class="ms-2">subj=</span><span class="text-muted">' + esc(subj) + '</span>';
+      }
+
+      if (detail) {
+        line += ' <span class="text-muted ms-2 small">detail: ' + esc(detail) + '</span>';
+      }
+
+      return line;
+    }
+
+    // ---- 通常Webログ ----
+    const mmp  = t.match(/\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b\s+([^\s"]+)/);
+    const path = (mmp ? mmp[2] : (t.match(/path[=:]"?([^\s"]+)"?/i)?.[1] || ''));
+    let status = (t.match(/\bstatus[=:]\s*(\d{3})\b/i)?.[1]) ||
+                 (t.match(/(?:^|\s)(\d{3})\s+(?:OK|Found|Moved|Not|Bad|Unauthorized|Forbidden|Error)/i)?.[1]) ||
+                 (t.match(/(?:^|\s)(\d{3})(?:\s|$)/)?.[1]) || '';
+    const endpoint = (t.match(/\bendpoint[=:]"?([^\s"]+)"?/i)?.[1]) ||
+                     (t.match(/\bep[=:]"?([^\s"]+)"?/i)?.[1]) || '';
+
+    // ★ user="LINE_28_いおりん" みたいな日本語付きも丸ごと拾う
+    let user = '';
+    {
+      // まず user="......" の中身をそのまま全部拾う（日本語OK）
+      const mQuoted = t.match(/\buser(?:name)?[=:]\s*"([^"]*)"/i);
+      if (mQuoted) {
+        user = mQuoted[1].trim();
+      } else {
+        // 保険: 昔の形式やクォート無しのとき用（英数のみ）
+        const mAscii = t.match(/\buser(?:name)?[=:]"?([\w.@:-]+)"?/i);
+        if (mAscii) {
+          user = mAscii[1].trim();
+        }
+      }
+    }
+
+    const ms = (t.match(/\b(\d{1,6})ms\b/)?.[1]) ||
+               (t.match(/\b(?:time|elapsed|dur|t)[=:]\s*([\d.]+)ms\b/i)?.[1]) || '';
+    const ua = (t.match(/\bua[=:]"([^"]+)"/i)?.[1]) ||
+               (t.match(/\bUser-Agent:"([^"]+)"/i)?.[1]) || '';
+
+    const out = [];
+    if (status)   out.push(badge(status, statusClass(status)));
+    if (endpoint) out.push(badge(endpoint, 'bg-info text-dark'));
+    if (user)     out.push('<span class="badge bg-dark me-2">'+esc(user)+'</span>');
+    if (path)     out.push('<span class="fw-semibold mono">'+esc(path)+'</span>');
+    if (ms)       out.push('<span class="badge bg-light text-dark border ms-2">'+esc(ms)+'ms</span>');
+    if (ua)       out.push('<span class="text-muted ms-2">'+esc(shortUA(ua))+'</span>');
+    return out.length ? out.join(' ') : null;
+  }
+
+  // ====== 原文→見やすい表示を構築 ======
+  function buildPrettyViews(){
+    const rows = tableBody.querySelectorAll('tr');
+    rows.forEach(row => {
+      const rawEl = row.querySelector('.log-raw');
+      const prettyEl = row.querySelector('.log-pretty');
+      if (!rawEl || !prettyEl) return;
+
+      const raw = rawEl.textContent || '';
+      const pretty = prettify(raw);
+      if (pretty) {
+        prettyEl.innerHTML = pretty;
+        prettyEl.classList.remove('d-none');
+      } else {
+        prettyEl.classList.add('d-none');
+      }
+    });
+  }
+
+  // ====== 表示切替 ======
+  function applyMode(mode){
+    const toggle = document.getElementById('togglePretty');
+    if (mode === 'raw') {
+      document.documentElement.classList.add('show-raw');
+      document.documentElement.classList.remove('show-pretty');
+      toggle.checked = false;
+      localStorage.setItem('logViewMode', 'raw');
+    } else {
+      document.documentElement.classList.add('show-pretty');
+      document.documentElement.classList.remove('show-raw');
+      toggle.checked = true;
+      localStorage.setItem('logViewMode', 'pretty');
+    }
+  }
+
+  // 初期化
+  buildPrettyViews();
+  const saved = localStorage.getItem('logViewMode');
+  applyMode(saved === 'raw' ? 'raw' : 'pretty');
+  document.getElementById('togglePretty').addEventListener('change', (e) => applyMode(e.target.checked ? 'pretty' : 'raw'));
+})();
+</script>
+
+<!-- 行の「BAN /24」ボタン用：/admin/fw/ban にPOSTして結果を行内表示 -->
+<script>
+(function(){
+  function isIPv4(s){
+    if (typeof s !== 'string') return false;
+    const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return false;
+    return m.slice(1).every(o => Number(o) >= 0 && Number(o) <= 255);
+  }
+  function toCidr24(ip){
+    const [a,b,c] = ip.split('.');
+    return `${a}.${b}.${c}.0/24`;
+  }
+  function setStatus(el, kind, text){
+    el.classList.remove('text-muted','text-success','text-danger','text-warning','text-secondary');
+    const map = { ok:'text-success', added:'text-success', already:'text-secondary', error:'text-danger', timeout:'text-warning' };
+    el.classList.add(map[kind] || 'text-muted');
+    el.textContent = text;
+  }
+
+  window.banFromBtn = async function(btn){
+    const ip = btn.dataset.ip || '';
+    const targetId = btn.dataset.target || '';
+    const statusEl = targetId ? document.getElementById(targetId) : null;
+
+    if (!isIPv4(ip)) {
+      if (statusEl) setStatus(statusEl, 'error', 'IPv4以外/不正なIP');
+      return;
+    }
+    const cidr = toCidr24(ip);
+    if (!confirm(`このネットワークをBANしますか？\n${cidr}\n（103.15へ反映）`)) return;
+
+    const origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+
+    try {
+      const res = await fetch('/admin/fw/ban', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ ip })   // サーバ側で /24 へ丸める
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data && data.ok) {
+        const st = (data.status || 'ok');
+        const msg = (st === 'added') ? `追加: ${data.target || cidr}`
+                  : (st === 'already') ? `済: ${data.target || cidr}`
+                  : `OK: ${data.target || cidr}`;
+        if (statusEl) setStatus(statusEl, st, msg);
+      } else {
+        const st = (data && data.status) || 'error';
+        const detail = (data && (data.stderr || data.message)) || '失敗';
+        if (statusEl) setStatus(statusEl, st, `失敗: ${detail}`);
+      }
+    } catch (e){
+      if (statusEl) setStatus(statusEl, 'error', `通信失敗: ${String(e)}`);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origHTML;
+    }
+  };
+})();
+</script>
+{% endblock %}

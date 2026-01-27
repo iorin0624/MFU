@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>パスキー登録</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script defer src="{{ url_for('static', filename='js/webauthn-json.browser.js') }}"></script>
+</head>
+<body class="bg-light">
+<div class="container mt-5">
+  <h2 class="mb-4">🔐 パスキー登録</h2>
+
+  <p>この端末にパスキーを登録します。</p>
+  <button id="register-btn" class="btn btn-primary">パスキーを登録</button>
+  <div id="result" class="mt-4"></div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const btn = document.getElementById("register-btn");
+    const resultDiv = document.getElementById("result");
+    const token = new URLSearchParams(window.location.search).get("token");
+
+    if (!btn) {
+      console.error("❌ register-btn が見つかりません");
+      resultDiv.innerHTML = `<div class="alert alert-danger">ボタンが見つかりません</div>`;
+      return;
+    }
+
+    btn.addEventListener("click", async () => {
+      console.log("🚀 パスキー登録ボタンがクリックされました");
+
+      if (typeof webauthnJson === "undefined") {
+        resultDiv.innerHTML = `<div class="alert alert-danger">ライブラリの読み込みに失敗しました（webauthnJson が未定義）</div>`;
+        return;
+      }
+
+      try {
+        const optionsURL = token
+          ? `/passkey_register/options?token=${encodeURIComponent(token)}`
+          : "/passkey_register/options";
+
+        const res = await fetch(optionsURL);
+        if (!res.ok) {
+          const text = await res.text();
+          console.error("❌ options fetch 応答エラー:", text);
+          resultDiv.innerHTML = `<div class="alert alert-danger">オプション取得に失敗しました：${text}</div>`;
+          return;
+        }
+
+        const options = await res.json();
+        console.log("📦 オプション受信:", options);
+
+        // base64 → Uint8Array に変換
+        options.challenge = Uint8Array.from(atob(options.challenge), c => c.charCodeAt(0));
+        options.user.id = Uint8Array.from(atob(options.user.id), c => c.charCodeAt(0));
+
+        const credential = await webauthnJson.create(options);
+        console.log("🆗 credential 作成成功:", credential);
+
+        const completeURL = token
+          ? `/passkey_register/complete?token=${encodeURIComponent(token)}`
+          : "/passkey_register/complete";
+
+        const completeRes = await fetch(completeURL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(credential)
+        });
+
+        const text = await completeRes.text();
+        if (completeRes.ok) {
+          resultDiv.innerHTML = `<div class="alert alert-success">${text}</div>`;
+        } else {
+          console.error("❌ 登録失敗応答:", text);
+          resultDiv.innerHTML = `<div class="alert alert-danger">登録に失敗しました：${text}</div>`;
+        }
+      } catch (err) {
+        console.error("❌ パスキー登録エラー:", err);
+        resultDiv.innerHTML = `<div class="alert alert-danger">登録に失敗しました: ${err.message}</div>`;
+      }
+    });
+  });
+</script>
+</body>
+</html>
