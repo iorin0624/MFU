@@ -362,6 +362,21 @@
             </div>
           </div>
 
+          {% if is_event_login %}
+            <div class="mb-4">
+              <h5 class="fw-bold mb-2">ステップ4-1：加工不要の場合</h5>
+              <p class="text-muted mb-2">加工が不要と判断した場合は、こちらで完了として記録できます。</p>
+              {% set can_mark_complete = lock and not lock_expired and lock.user == ext_user_nickname %}
+              <button id="btn-mark-complete" class="btn btn-outline-success w-100" data-ext-user-id="{{ current_ext_user_id or '' }}" data-lock-ok="{{ 1 if can_mark_complete else 0 }}" {% if not can_mark_complete %}disabled{% endif %}>
+                ✅ 加工不要のため、終了する
+              </button>
+              <div id="mark-complete-status" class="small text-muted mt-2"></div>
+              {% if not can_mark_complete %}
+                <div class="small text-muted mt-2">加工ロック取得中のみ押せます。</div>
+              {% endif %}
+            </div>
+          {% endif %}
+
           <div class="mb-4 upload-panel">
             <h5 class="fw-bold mb-2">ステップ4-2：加工が終わったらアップロード</h5>
             <p class="text-muted mb-3">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
@@ -451,6 +466,23 @@
   </div>
 {% endif %}
 
+{% if history_list %}
+  <hr>
+  <h5 class="mt-4">📜 加工履歴（１番上が最新）</h5>
+  <div class="table-responsive">
+    <table class="table table-sm table-striped table-bordered text-center align-middle">
+      <thead class="table-light">
+        <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
+      </thead>
+      <tbody>
+        {% for record in history_list|reverse %}
+          <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endif %}
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
@@ -459,7 +491,6 @@
   if (dlButton) {
     dlButton.addEventListener("click", async (e) => {
       e.preventDefault();
-      const openUrl = "{{ url_for('album.download_process_image', album_id=album_id, child_id=child_id) }}";
       let preWin = window.open("about:blank", "_blank");
       const formData = new FormData();
       try {
@@ -476,6 +507,12 @@
           return;
         }
         const data = await response.json();
+        const openUrl = data.image_url;
+        if (!openUrl) {
+          if (preWin && !preWin.closed) preWin.close();
+          alert("❌ 画像URLの取得に失敗しました。");
+          return;
+        }
         if (preWin && !preWin.closed) {
           preWin.location.href = openUrl;
         } else {
@@ -558,6 +595,41 @@
   setupUpload("requesterUploadForm", "requesterDropzone", "requesterFileInput", "requesterPreview", "requesterProgress", "requesterStatus", "requesterSubmit");
   setupUpload("workerUploadForm", "workerDropzone", "workerFileInput", "workerPreview", "workerProgress", "workerStatus", "workerSubmit");
 
+  const markCompleteButton = document.getElementById("btn-mark-complete");
+  if (markCompleteButton) {
+    markCompleteButton.addEventListener("click", async (event) => {
+      event.preventDefault();
+      if (markCompleteButton.disabled) return;
+      if (markCompleteButton.dataset.lockOk !== "1") {
+        alert("加工ロック取得中のみ押せます。");
+        return;
+      }
+      if (!window.confirm("加工不要のため終了します。よろしいですか？")) return;
+      const statusEl = document.getElementById("mark-complete-status");
+      if (statusEl) statusEl.textContent = "送信中です...";
+      const extUserId = markCompleteButton.dataset.extUserId;
+      if (!extUserId) {
+        if (statusEl) statusEl.textContent = "ユーザー情報が取得できません。";
+        alert("ユーザー情報が取得できません。再ログインしてください。");
+        return;
+      }
+      const requestFlag = {{ 1 if current_user_process_status and current_user_process_status.get('request_flag') else 0 }};
+      try {
+        const response = await fetch("{{ url_for('album.update_process_status', album_id=album_id, child_id=child_id) }}", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ext_user_id: extUserId, request_flag: requestFlag, complete_flag: 1 }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        if (statusEl) statusEl.textContent = "完了として登録しました。画面を更新します...";
+        setTimeout(() => location.reload(), 800);
+      } catch (error) {
+        if (statusEl) statusEl.textContent = "登録に失敗しました。";
+        alert("登録に失敗しました: " + error.message);
+      }
+    });
+  }
+
   const requestButton = document.getElementById("btn-request-process");
   if (requestButton) {
     requestButton.addEventListener("click", async (event) => {
@@ -573,10 +645,10 @@
         if (!requestBox) return;
         const userId = requestBox.dataset.userId;
         if (!userId) return;
-        members.push({ user_id: userId, request_flag: requestBox.checked ? 1 : 0 });
+        members.push({ ext_user_id: userId, request_flag: requestBox.checked ? 1 : 0 });
       });
       try {
-        const response = await fetch("{{ url_for('album.save_event_process_config', album_id=album_id, child_id=child_id) }}", {
+        const response = await fetch("{{ url_for('album.request_process', album_id=album_id, child_id=child_id) }}", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ members: members, mode: 'request_only' }),
         });

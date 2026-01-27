@@ -1184,6 +1184,24 @@ def album_home(album_id):
     storage, _ = _get_album_storage(album_id)
     is_readonly = (storage == 'hdd')
 
+    completed_process_children = set()
+    event_meta = _fetch_album_meta(album_id)
+    if event_meta and event_meta.get("event_id"):
+        for child in meta.get("children", []):
+            if child.get("mode") != "process":
+                continue
+            status_map = _fetch_album_process_status_map(album_id, child.get("folder"))
+            requested_ids = [
+                ext_user_id
+                for ext_user_id, status in status_map.items()
+                if int(status.get("request_flag", 0)) == 1
+            ]
+            if requested_ids and all(
+                int(status_map.get(ext_user_id, {}).get("complete_flag", 0)) == 1
+                for ext_user_id in requested_ids
+            ):
+                completed_process_children.add(child.get("folder"))
+
     return render_template(
         'album_home.html',
         album_id=album_id, meta=meta,
@@ -1191,6 +1209,7 @@ def album_home(album_id):
         is_readonly=is_readonly,
         processing_list=processing_list,   # ★追加
         ext_user_nickname=ext_user_nickname,
+        completed_process_children=completed_process_children,
     )
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
@@ -1965,6 +1984,20 @@ def view_child(album_id, child_id):
             status = status_map.get(ext_user_id, {})
             member["request_flag"] = int(status.get("request_flag", 0))
             member["complete_flag"] = int(status.get("complete_flag", 0))
+        current_ext_user_id = None
+        if is_event_login:
+            current_ext_user_id = session.get("ext_user_id")
+            if not current_ext_user_id:
+                ext_social_id = session.get("ext_user_social_id")
+                if ext_social_id:
+                    ext_user = _get_ext_user_by_social(ext_social_id)
+                    if ext_user:
+                        current_ext_user_id = ext_user.get("id")
+        try:
+            current_ext_user_id = int(current_ext_user_id) if current_ext_user_id else None
+        except (TypeError, ValueError):
+            current_ext_user_id = None
+        current_user_process_status = status_map.get(current_ext_user_id) if current_ext_user_id else None
     if mode == "process" and is_event_album:
         template_name = "view_child_process_event.html"
     else:
@@ -1990,6 +2023,8 @@ def view_child(album_id, child_id):
         ext_user_nickname=_get_ext_user_nickname(),
         is_event_login=is_event_login,
         event_process_members=event_process_members,
+        current_ext_user_id=current_ext_user_id,
+        current_user_process_status=current_user_process_status,
     )
 
 # =============================================================================
@@ -2077,6 +2112,33 @@ def update_process_status(album_id, child_id):
         """,
         (ext_user_id, album_id, child_id, requester_id, request_flag, complete_flag),
     )
+    if complete_flag == 1:
+        child_meta = next((c for c in meta.get("children", []) if c.get("folder") == child_id), None)
+        mode = child_meta.get("mode", "normal") if child_meta else "normal"
+        child_path = _prefer_existing_child_dir(album_id, child_id, mode)
+        lock_path = os.path.join(child_path, 'lock.json')
+        lock_user = None
+        try:
+            if os.path.exists(lock_path):
+                with open(lock_path, 'r') as f:
+                    lock_user = (json.load(f) or {}).get("user")
+        except Exception:
+            lock_user = None
+        current_username = None
+        if _is_ext_logged_in():
+            current_username = _get_ext_user_nickname()
+        if not current_username:
+            current_username = session.get("user")
+        if lock_user and current_username and lock_user == current_username:
+            try:
+                release_lock_db(album_id, child_id, username=current_username, force=False)
+            except Exception:
+                pass
+            try:
+                if os.path.exists(lock_path):
+                    os.remove(lock_path)
+            except Exception:
+                pass
     try:
         if request_flag == 1 and complete_flag == 1 and prev_complete_flag == 0:
             request_row = db_get_one(
