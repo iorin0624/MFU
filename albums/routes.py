@@ -173,6 +173,58 @@ def _build_event_album_link(event_id: int, album_id: str, child_id: str) -> str:
             return url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)
     return url_for('album.view_child', album_id=album_id, child_id=child_id, _external=True)
 
+
+def _notify_requester_process_completion(
+    album_id: str,
+    child_id: str,
+    request_by_id: int | None,
+    meta: dict,
+    event_meta: dict | None,
+) -> None:
+    if not request_by_id:
+        return
+    if not event_meta or not event_meta.get("event_id"):
+        return
+    pending_row = db_get_one(
+        """
+        SELECT COUNT(*) AS cnt
+          FROM album_process
+         WHERE album_id=%s AND child_id=%s
+           AND request_by=%s
+           AND request_flag=1
+           AND complete_flag=0
+        """,
+        (album_id, child_id, request_by_id),
+    )
+    pending_cnt = int(pending_row.get("cnt", 0)) if pending_row else 0
+    if pending_cnt != 0:
+        return
+    requester_row = db_get_one(
+        "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
+        (request_by_id,),
+    )
+    requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
+    if not requester_email:
+        return
+    album_name = meta.get("album_name", "アルバム")
+    child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
+    link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
+    subject = f"【加工完了】{album_name}"
+    body = (
+        f"{album_name} の「{child_name}」について、依頼した加工回しが完了しました。\n\n"
+        f"アクセスはこちら:\n{link}\n\n"
+        "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
+    )
+    try:
+        from app.utils.mail import send_mail
+    except Exception:
+        try:
+            from app.mail import send_mail
+        except Exception:
+            send_mail = None
+    if send_mail:
+        send_mail(requester_email, subject, body)
+
 def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
     if not user_ids:
         return []
@@ -1290,6 +1342,26 @@ def upload_child(album_id, child_id):
             else:
                 emails = [r.get("email") for r in rows if r.get("email")]
 
+            # ★ 依頼者にも加工完了通知を送る（未完了フィルタの外）
+            if kind == "process_done":
+                requester_rows = db_get_all(
+                    """
+                    SELECT DISTINCT ap.request_by AS requester_id, u.email
+                      FROM album_process ap
+                      JOIN external_login_user u ON u.id = ap.request_by
+                     WHERE ap.album_id=%s AND ap.child_id=%s
+                       AND ap.request_flag=1
+                       AND ap.request_by IS NOT NULL
+                       AND u.email IS NOT NULL AND u.email<>''
+                    """,
+                    (album_id, child_id),
+                )
+                requester_emails = [r.get("email") for r in requester_rows or [] if r.get("email")]
+                if requester_emails:
+                    email_set = {e for e in emails if e}
+                    email_set.update(requester_emails)
+                    emails = list(email_set)
+
             current_app.logger.info("notify: recipients(after filter)=%d album_id=%s child_id=%s", len(emails), album_id, child_id)
             if not emails:
                 return
@@ -1580,16 +1652,38 @@ def upload_child(album_id, child_id):
                                 ext_user_id = ext_user.get("id")
                     if ext_user_id:
                         _ensure_album_process_table()
+                        prev_complete_flag = None
+                        request_by_id = None
+                        try:
+                            prev_row = db_get_one(
+                                """
+                                SELECT complete_flag, request_by
+                                  FROM album_process
+                                 WHERE ext_user_id=%s AND album_id=%s AND child_id=%s
+                                """,
+                                (int(ext_user_id), album_id, child_id),
+                            )
+                            if prev_row:
+                                prev_complete_flag = int(prev_row.get("complete_flag", 0))
+                                try:
+                                    request_by_id = int(prev_row.get("request_by"))
+                                except (TypeError, ValueError):
+                                    request_by_id = None
+                        except Exception:
+                            prev_complete_flag = None
+                            request_by_id = None
                         db_exec(
                             """
                             INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
-                            VALUES (%s, %s, %s, 1, 1)
+                            VALUES (%s, %s, %s, 0, 1)
                             ON DUPLICATE KEY UPDATE
-                              request_flag=1,
+                              request_flag=request_flag,
                               complete_flag=1
                             """,
                             (int(ext_user_id), album_id, child_id),
                         )
+                        if prev_complete_flag != 1:
+                            _notify_requester_process_completion(album_id, child_id, request_by_id, meta, event_meta)
 
             except Exception as e:
                 current_app.logger.warning("notify(process upload) failed: %s", e)
@@ -1852,9 +1946,10 @@ def view_child(album_id, child_id):
 
     # 画像ビュー（通常/加工）
     event_meta = _fetch_album_meta(album_id)
-    is_event_login = bool(_is_ext_logged_in() and event_meta and event_meta.get("access_mode") == "event")
+    is_event_album = bool(event_meta and event_meta.get("access_mode") == "event")
+    is_event_login = bool(_is_ext_logged_in() and is_event_album)
     event_process_members = []
-    if is_event_login and event_meta and event_meta.get("event_id"):
+    if is_event_album and event_meta and event_meta.get("event_id"):
         event_process_members = _fetch_event_process_members(int(event_meta["event_id"]))
         status_map = _fetch_album_process_status_map(album_id, child_id)
         for member in event_process_members:
@@ -1862,7 +1957,7 @@ def view_child(album_id, child_id):
             status = status_map.get(ext_user_id, {})
             member["request_flag"] = int(status.get("request_flag", 0))
             member["complete_flag"] = int(status.get("complete_flag", 0))
-    if mode == "process" and is_event_login:
+    if mode == "process" and is_event_album:
         template_name = "view_child_process_event.html"
     else:
         template_name = "view_child_process.html" if mode == "process" else "view_child.html"
@@ -1990,44 +2085,7 @@ def update_process_status(album_id, child_id):
                     request_by_id = int(request_row.get("request_by"))
                 except (TypeError, ValueError):
                     request_by_id = None
-            if request_by_id:
-                pending_row = db_get_one(
-                    """
-                    SELECT COUNT(*) AS cnt
-                      FROM album_process
-                     WHERE album_id=%s AND child_id=%s
-                       AND request_by=%s
-                       AND request_flag=1
-                       AND complete_flag=0
-                    """,
-                    (album_id, child_id, request_by_id),
-                )
-                pending_cnt = int(pending_row.get("cnt", 0)) if pending_row else 0
-                if pending_cnt == 0:
-                    requester_row = db_get_one(
-                        "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
-                        (request_by_id,),
-                    )
-                    requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
-                    if requester_email:
-                        album_name = meta.get("album_name", "アルバム")
-                        child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
-                        link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
-                        subject = f"【加工完了】{album_name}"
-                        body = (
-                            f"{album_name} の「{child_name}」について、依頼した加工回しが完了しました。\n\n"
-                            f"アクセスはこちら:\n{link}\n\n"
-                            "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
-                        )
-                        try:
-                            from app.utils.mail import send_mail
-                        except Exception:
-                            try:
-                                from app.mail import send_mail
-                            except Exception:
-                                send_mail = None
-                        if send_mail:
-                            send_mail(requester_email, subject, body)
+            _notify_requester_process_completion(album_id, child_id, request_by_id, meta, event_meta)
     except Exception as e:
         current_app.logger.warning("process completion notify failed: %s", e)
     return jsonify({"ok": True})
