@@ -611,6 +611,66 @@ def _amount_for_payment(conn, event_uuid: str, token: str | None) -> int | None:
                 return None
     return None
 
+def _mark_payment_token_used_and_apply_member_status(
+    conn,
+    *,
+    payment_token: str | None,
+    amount_yen: int | None,
+    receipt_url: str | None,
+    payment_row_id: int | None,
+    payment_status: str | None,
+) -> None:
+    if not payment_token:
+        return
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE mfu_payment_request
+               SET status='used', used_at=NOW()
+             WHERE token=%s AND status='pending'
+             LIMIT 1
+        """, (payment_token,))
+        cur.execute("""
+            SELECT event_id, user_id
+              FROM mfu_payment_request
+             WHERE token=%s
+             ORDER BY id DESC
+             LIMIT 1
+        """, (payment_token,))
+        pr = cur.fetchone()
+        if not pr:
+            return
+        event_id = pr[0] if isinstance(pr, tuple) else pr.get("event_id")
+        user_id = pr[1] if isinstance(pr, tuple) else pr.get("user_id")
+        cur.execute("""
+            UPDATE mfu_event_member
+               SET payment_status='paid',
+                   paid_at=NOW(),
+                   paid_amount_yen=%s,
+                   receipt_url=COALESCE(%s, receipt_url),
+                   payment_row_id=%s
+             WHERE event_id=%s AND user_id=%s
+               AND COALESCE(payment_status,'unpaid') <> 'paid'
+        """, (amount_yen, receipt_url, payment_row_id, event_id, user_id))
+        conn.commit()
+        if event_id and user_id:
+            try:
+                _notify_mfu_payment_completion(
+                    conn,
+                    event_id=int(event_id),
+                    user_id=int(user_id),
+                    amount_yen=int(amount_yen) if amount_yen is not None else None,
+                    receipt_url=receipt_url,
+                    payment_status=payment_status,
+                )
+            except Exception:
+                logging.exception("mfu notify failed")
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
 # ───────────────────────────────────────────────────────────
 # 事前チェック API（重複決済/最新金額の確認）
 # ───────────────────────────────────────────────────────────
@@ -909,47 +969,14 @@ def api_charge(event_uuid: str):
             conn.commit()
             if payment_token:
                 try:
-                    cur.execute("""
-                        UPDATE mfu_payment_request
-                           SET status='used', used_at=NOW()
-                         WHERE token=%s AND event_id=%s
-                         LIMIT 1
-                    """, (payment_token, ev["id"]))
-                    conn.commit()
-                    cur.execute("""
-                        SELECT event_id, user_id
-                          FROM mfu_payment_request
-                         WHERE token=%s
-                         ORDER BY id DESC
-                         LIMIT 1
-                    """, (payment_token,))
-                    pr = cur.fetchone()
-                    if pr:
-                        event_id = pr[0] if isinstance(pr, tuple) else pr.get("event_id")
-                        user_id = pr[1] if isinstance(pr, tuple) else pr.get("user_id")
-                        cur.execute("""
-                            UPDATE mfu_event_member
-                               SET payment_status='paid',
-                                   paid_at=NOW(),
-                                   paid_amount_yen=%s,
-                                   receipt_url=COALESCE(%s, receipt_url),
-                                   payment_row_id=%s
-                             WHERE event_id=%s AND user_id=%s
-                               AND COALESCE(payment_status,'unpaid') <> 'paid'
-                        """, (amount, p.get("receipt_url"), pay_row_id, event_id, user_id))
-                        conn.commit()
-                        if event_id and user_id:
-                            try:
-                                _notify_mfu_payment_completion(
-                                    conn,
-                                    event_id=int(event_id),
-                                    user_id=int(user_id),
-                                    amount_yen=int(amount) if amount is not None else None,
-                                    receipt_url=p.get("receipt_url"),
-                                    payment_status=status,
-                                )
-                            except Exception:
-                                logging.exception("api_charge: mfu notify failed")
+                    _mark_payment_token_used_and_apply_member_status(
+                        conn,
+                        payment_token=payment_token,
+                        amount_yen=amount,
+                        receipt_url=p.get("receipt_url"),
+                        payment_row_id=pay_row_id,
+                        payment_status=status,
+                    )
                 except Exception:
                     conn.rollback()
             try:
@@ -1036,34 +1063,14 @@ def webhooks():
                     amount_yen = pay_row[2] if isinstance(pay_row, tuple) else pay_row.get("amount_yen")
                     receipt_url = pay_row[3] if isinstance(pay_row, tuple) else pay_row.get("square_receipt_url")
                     if payment_token:
-                        cur.execute("""
-                            UPDATE mfu_payment_request
-                               SET status='used', used_at=NOW()
-                             WHERE token=%s AND status='pending'
-                             LIMIT 1
-                        """, (payment_token,))
-                        cur.execute("""
-                            SELECT event_id, user_id
-                              FROM mfu_payment_request
-                             WHERE token=%s
-                             ORDER BY id DESC
-                             LIMIT 1
-                        """, (payment_token,))
-                        pr = cur.fetchone()
-                        if pr:
-                            event_id = pr[0] if isinstance(pr, tuple) else pr.get("event_id")
-                            user_id = pr[1] if isinstance(pr, tuple) else pr.get("user_id")
-                            cur.execute("""
-                                UPDATE mfu_event_member
-                                   SET payment_status='paid',
-                                       paid_at=NOW(),
-                                       paid_amount_yen=%s,
-                                       receipt_url=COALESCE(%s, receipt_url),
-                                       payment_row_id=%s
-                                 WHERE event_id=%s AND user_id=%s
-                                   AND COALESCE(payment_status,'unpaid') <> 'paid'
-                            """, (amount_yen, receipt_url, pay_row_id, event_id, user_id))
-                            conn.commit()
+                        _mark_payment_token_used_and_apply_member_status(
+                            conn,
+                            payment_token=payment_token,
+                            amount_yen=amount_yen,
+                            receipt_url=receipt_url,
+                            payment_row_id=pay_row_id,
+                            payment_status=p.get("status"),
+                        )
             _notify_discord_payment_if_needed(conn, p.get("id"))
         finally:
             try: conn.close()
