@@ -136,6 +136,10 @@
   {# 子アルバム描画用マクロ #}
   {% macro render_child_item(child) %}
     {% set badge_class = 'badge-normal' if child.mode == 'normal' else ('badge-process' if child.mode == 'process' else 'badge-movie') %}
+    {% set display_name = child.name %}
+    {% if child.mode == 'process' and child.folder in completed_process_children and display_name.startswith('【加工回し】') %}
+      {% set display_name = '【加工終了】' + display_name[6:] %}
+    {% endif %}
 
     {# この子アルバムが加工ロック中かどうか #}
     {% set is_locked = child.folder in locked_ns.ids %}
@@ -149,7 +153,7 @@
           {% else %}
             {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
           {% endif %}
-          &nbsp;{{ child.name }}
+          &nbsp;{{ display_name }}
         </a>
 
         <span class="badge badge-mode {{ badge_class }} me-3">
@@ -202,6 +206,9 @@
     {% set ns = namespace(labels=[], others_count=0) %}
     {% for child in meta.children %}
       {% set name = child.name or '' %}
+      {% if child.mode == 'process' and child.folder in completed_process_children and name.startswith('【加工回し】') %}
+        {% set name = '【加工終了】' + name[6:] %}
+      {% endif %}
       {% if name and name.startswith('【') %}
         {% set end = name.find('】') %}
         {% if end != -1 %}
@@ -235,6 +242,9 @@
                 {% set c = namespace(count=0) %}
                 {% for child in meta.children %}
                   {% set name = child.name or '' %}
+                  {% if child.mode == 'process' and child.folder in completed_process_children and name.startswith('【加工回し】') %}
+                    {% set name = '【加工終了】' + name[6:] %}
+                  {% endif %}
                   {% if name.startswith(label) %}
                     {% set c.count = c.count + 1 %}
                   {% endif %}
@@ -251,6 +261,9 @@
               <div class="list-group list-group-flush">
                 {% for child in meta.children %}
                   {% set name = child.name or '' %}
+                  {% if child.mode == 'process' and child.folder in completed_process_children and name.startswith('【加工回し】') %}
+                    {% set name = '【加工終了】' + name[6:] %}
+                  {% endif %}
                   {% if name.startswith(label) %}
                     {{ render_child_item(child) }}
                   {% endif %}
