@@ -1925,7 +1925,7 @@ def before_every_request():
 
     # アプリ内ブラウザ（LINE/X/Instagram）への警告
     if "user" not in session:
-        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc","/external-login/",)
+        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc","/external-login/","/e/",)
         if not any(request.path.startswith(p) for p in skip_paths):
             ua = request.headers.get("User-Agent", "")
             ref = request.headers.get("Referer", "")
