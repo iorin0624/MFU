@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>{% block title %}MFU{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <!-- 🔰 共通ナビゲーションバー -->
+  <nav class="navbar navbar-expand-lg navbar-light bg-light border-bottom mb-4">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="/">📂 MFU</a>
+
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+
+      <div class="collapse navbar-collapse" id="navbarMain">
+        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+
+          {% if session.get('user') %}
+          <!-- アップロード関係（全ユーザー） -->
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="navUpload" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+             ⬆️ アップロード関係
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="navUpload">
+              <li><a class="dropdown-item" href="/modes">⚙️ モード管理</a></li>
+              <li><a class="dropdown-item" href="/upload_list">📜 アップロード履歴</a></li>
+            </ul>
+          </li>
+
+          <!-- 単独メニュー（全ユーザー） -->
+          <li class="nav-item"><a class="nav-link" href="/album/admin_create_album/">🖼 アルバム管理</a></li>
+          <li class="nav-item"><a class="nav-link" href="/tickets/admin">🎟 チケット管理</a></li>
+          <li class="nav-item"><a class="nav-link" href="/external-login/admin/events">📅 イベント一覧</a></li>
+
+          {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
+          {% if session.user == 'admin' %}
+            <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
+            <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
+          {% endif %}
+
+          {# ==== ここから：システム系はadminのみ、一般は/account ==== #}
+          {% if session.user == 'admin' %}
+            <!-- システム系（adminのみ） -->
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle" href="#" id="navSystem" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                🧰 システム系
+              </a>
+              <ul class="dropdown-menu" aria-labelledby="navSystem">
+                <li><a class="dropdown-item" href="/admin/users">👤 ユーザー管理</a></li>
+                <li><hr class="dropdown-divider"></li>
+                <li><a class="dropdown-item" href="/admin/maintenance">🛠 メンテナンス切換</a></li>
+                <li><a class="dropdown-item" href="/admin/logs">📑 アクセスログ</a></li>
+                <li><a class="dropdown-item" href="/service_logs/">📡 システムログ</a></li>
+                <!-- ▼ 追加：ノード監視（スピードテストの上に配置） -->
+                <li><a class="dropdown-item" href="/admin/nodes">🖥 ノード監視</a></li>
+                <!-- ▲ 追加ここまで -->
+                <li><a class="dropdown-item" href="/speedtest">🚀 スピードテスト</a></li>
+                {# ※ タイマー＆アラームは上に移動したためここからは削除 #}
+              </ul>
+            </li>
+          {% else %}
+            <!-- 一般ユーザー用：アカウント -->
+            <li class="nav-item">
+              <a class="nav-link" href="/account">👤 アカウント</a>
+            </li>
+          {% endif %}
+          {# ==== ここまで ==== #}
+          {% endif %}
+        </ul>
+
+        <!-- 右側：ログイン状態表示 -->
+        <div class="d-flex align-items-center">
+          {% if session.get('user') %}
+            <span class="me-3 text-muted">
+              🧑 <strong>
+                {% if session.nickname %}
+                  {{ session.nickname }}（{{ session.user }}）
+                {% else %}
+                  {{ session.user }}
+                {% endif %}
+              </strong>
+            </span>
+            <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">ログアウト</a>
+          {% else %}
+            <a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">ログイン</a>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 📄 各ページの内容 -->
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+
+  {% block body_extra %}{% endblock %}
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- ▼ 追加：PC幅はhoverでドロップダウンを展開 -->
+  <style>
+  @media (min-width: 992px) {
+    .navbar .dropdown:hover .dropdown-menu {
+      display: block;
+      margin-top: 0;
+    }
+  }
+  </style>
+  <script>
+  document.addEventListener("DOMContentLoaded", function(){
+    if (window.innerWidth >= 992) {
+      document.querySelectorAll('.navbar .dropdown').forEach(function(drop){
+        drop.addEventListener('mouseenter', function(){
+          let menu = this.querySelector('.dropdown-menu');
+          if(menu){ menu.classList.add('show'); }
+        });
+        drop.addEventListener('mouseleave', function(){
+          let menu = this.querySelector('.dropdown-menu');
+          if(menu){ menu.classList.remove('show'); }
+        });
+      });
+    }
+  });
+  </script>
+</body>
+</html>

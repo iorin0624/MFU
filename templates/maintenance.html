@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>メンテナンス中</title>
+</head>
+<body>
+    <h1>🛠️ メンテナンス中です</h1>
+    <p>ただいまシステムのメンテナンスを行っています。しばらくお待ちください。</p>
+
+    {% if until_time %}
+        <p>⏰ メンテナンス終了予定: {{ until_time.strftime('%Y年%m月%d日 %H:%M') }} JST</p>
+    {% endif %}
+
+    <p>メンテナンス情報は以下でご確認いただけます：</p>
+    <ul>
+        <li>
+            📢 管理者アカウント：
+            <a href="https://x.com/iorin0624" target="_blank" rel="noopener noreferrer">
+                https://x.com/iorin0624
+            </a>
+        </li>
+        <li>
+            🏷️ ハッシュタグ検索：
+            <a href="https://x.com/search?q=%23mfu_iori0624&src=typed_query" target="_blank" rel="noopener noreferrer">
+                #mfu_iori0624
+            </a>
+        </li>
+    </ul>
+</body>
+</html>

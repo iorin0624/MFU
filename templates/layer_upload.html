@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>加工済み写真アップロード</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f0f0;
+      padding: 2rem;
+      margin: 0;
+    }
+    .container {
+      background: white;
+      padding: 2rem;
+      border-radius: 10px;
+      max-width: 600px;
+      margin: auto;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    h2 { margin-top: 0; }
+    label {
+      display: block;
+      margin-top: 1rem;
+      font-weight: bold;
+    }
+    input[type="file"],
+    textarea,
+    input[type="submit"] {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      margin-top: 0.5rem;
+      padding: 0.75rem;
+      font-size: 1.1rem;
+    }
+    input[type="submit"] {
+      background-color: #2196f3;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    input[type="submit"]:hover {
+      background-color: #1976d2;
+    }
+
+    #thumbnailArea {
+      margin-top: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 1rem;
+      border: 2px dashed #bbb;
+      border-radius: 8px;
+      background-color: #fafafa;
+    }
+    #thumbnailArea.dragover {
+      background-color: #e0f7fa;
+      border-color: #00acc1;
+    }
+#thumbnailArea img {
+  max-width: 100px;
+  height: auto;
+  object-fit: contain;  /* ← optional, but harmless here */
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+    #progressContainer {
+      margin-top: 1rem;
+      display: none;
+    }
+    #successMessage {
+      margin-top: 1.5rem;
+      margin-bottom: 1rem;
+      font-weight: bold;
+      color: #4caf50;
+      text-align: center;
+      display: none;
+    }
+    #replyLinkBox {
+      background: #f9f9f9;
+      border: 1px solid #ccc;
+      padding: 1em;
+      border-radius: 8px;
+      text-align: center;
+      display: none;
+    }
+    #replyLinkBox code {
+      display: block;
+      word-break: break-all;
+      margin-bottom: 0.5em;
+      background: #eee;
+      padding: 0.5em;
+      border-radius: 4px;
+    }
+    #replyLinkBox button {
+      padding: 0.5em 1.2em;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #replyLinkBox button:hover {
+      background-color: #0056b3;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>📸 加工済み写真アップロード</h2>
+    <h2>👤 タイトル：{{ title }}</h2>
+    <p>📅 撮影日：{{ date }}</p>
+
+    <form id="uploadForm" enctype="multipart/form-data">
+      <label for="photos">画像ファイル（複数選択可）:</label>
+      <input type="file" name="photos" id="photos" accept="image/*" multiple required>
+      <div id="thumbnailArea">ここに画像をドラッグ＆ドロップしてもOKです</div>
+
+      <label for="comment">💬 コメント（任意）:</label>
+      <textarea name="comment" id="comment" rows="4" placeholder="お名前などを入れてください"></textarea>
+
+      <div id="progressContainer">
+        <progress id="uploadProgress" value="0" max="100" style="width: 100%; height: 20px;"></progress>
+        <p id="uploadStatus">アップロード中です…画面を閉じないでください。</p>
+      </div>
+
+      <input type="submit" value="⬆ アップロードする" id="submitBtn">
+    </form>
+
+    <p id="successMessage">✅ アップロード完了！ご協力ありがとうございます💕</p>
+
+    <div id="replyLinkBox">
+      <p><strong>🔗 アップロード確認用リンク<br>（スクリーンショット推奨）</strong></p>
+      <code id="replyLink"></code>
+      <button onclick="copyReplyLink()">📋 コピー</button>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const form = document.getElementById("uploadForm");
+      const photosInput = document.getElementById("photos");
+      const thumbnailArea = document.getElementById("thumbnailArea");
+      const submitBtn = document.getElementById("submitBtn");
+      const progressContainer = document.getElementById("progressContainer");
+      const progressBar = document.getElementById("uploadProgress");
+      const statusText = document.getElementById("uploadStatus");
+      const successMessage = document.getElementById("successMessage");
+      const replyLinkBox = document.getElementById("replyLinkBox");
+      const replyLink = document.getElementById("replyLink");
+
+      function handleFiles(files) {
+        thumbnailArea.innerHTML = "";
+        const dt = new DataTransfer();
+
+        Array.from(files).forEach(file => {
+          if (!file.type.startsWith("image/")) return;
+          dt.items.add(file);
+
+          const reader = new FileReader();
+          reader.onload = function (e) {
+            const img = document.createElement("img");
+            img.src = e.target.result;
+            thumbnailArea.appendChild(img);
+          };
+          reader.readAsDataURL(file);
+        });
+
+        photosInput.files = dt.files;
+      }
+
+      photosInput.addEventListener("change", () => handleFiles(photosInput.files));
+
+      ["dragenter", "dragover"].forEach(event => {
+        thumbnailArea.addEventListener(event, e => {
+          e.preventDefault();
+          thumbnailArea.classList.add("dragover");
+        });
+      });
+
+      ["dragleave", "drop"].forEach(event => {
+        thumbnailArea.addEventListener(event, e => {
+          e.preventDefault();
+          thumbnailArea.classList.remove("dragover");
+        });
+      });
+
+      thumbnailArea.addEventListener("drop", e => {
+        handleFiles(e.dataTransfer.files);
+      });
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        const formData = new FormData(form);
+        const xhr = new XMLHttpRequest();
+
+        submitBtn.style.display = "none";
+        progressContainer.style.display = "block";
+        statusText.textContent = "アップロード中です…画面を閉じないでください。";
+        photosInput.style.display = "none";
+        document.getElementById("comment").style.display = "none";
+
+        xhr.upload.addEventListener("progress", function (e) {
+          if (e.lengthComputable) {
+            const percent = Math.round((e.loaded / e.total) * 100);
+            progressBar.value = percent;
+            if (percent >= 100) {
+              statusText.textContent = "100%（処理中…）サーバーの完了を待っています。";
+            }
+          }
+        });
+
+        xhr.onload = function () {
+          if (xhr.status === 200) {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(xhr.responseText, "text/html");
+            const reply = doc.querySelector("code#replyLink");
+            if (reply) {
+              replyLink.textContent = reply.textContent.trim();
+              replyLinkBox.style.display = "block";
+            }
+            form.reset();
+            thumbnailArea.innerHTML = "ここに画像をドラッグ＆ドロップしてもOKです";
+            progressContainer.style.display = "none";
+            photosInput.style.display = "";
+            document.getElementById("comment").style.display = "";
+            submitBtn.style.display = "";
+            successMessage.style.display = "block";
+          } else {
+            statusText.textContent = "アップロードに失敗しました。";
+            submitBtn.style.display = "";
+          }
+        };
+
+        xhr.onerror = function () {
+          statusText.textContent = "通信エラーが発生しました。";
+          submitBtn.style.display = "";
+        };
+
+        xhr.open("POST", window.location.href);
+        xhr.send(formData);
+      });
+    });
+
+    function copyReplyLink() {
+      const text = document.getElementById("replyLink").textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        alert("✅ リンクをコピーしました！");
+      }).catch(err => {
+        alert("コピーに失敗しました: " + err);
+      });
+    }
+  </script>
+</body>
+</html>

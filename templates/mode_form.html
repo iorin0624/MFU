@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}モード設定 - {{ '追加' if action == 'add' else '編集' }}{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+  <h2 class="mb-4">モード設定 {{ '追加' if action == 'add' else '編集' }}</h2>
+
+  <form method="post" class="bg-white p-4 rounded shadow-sm" style="max-width: 600px; margin: auto;">
+    <div class="mb-3">
+      <label class="form-label">モード名（英数）:</label>
+      <input type="text" name="mode" class="form-control" value="{{ mode_data.mode if mode_data }}" {% if action == 'edit' %}readonly{% endif %}>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">表示ラベル:</label>
+      <input type="text" name="label" class="form-control" value="{{ mode_data.label if mode_data }}">
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">テンプレートキー:</label>
+      <input type="text" name="template_key" class="form-control" value="{{ mode_data.template_key if mode_data }}">
+    </div>
+
+    <div class="form-check mb-2">
+      <input type="checkbox" class="form-check-input" id="download_url" name="enable_download_url" {% if mode_data and mode_data.enable_download_url %}checked{% endif %}>
+      <label class="form-check-label" for="download_url">ダウンロードURLを表示</label>
+    </div>
+
+    <div class="form-check mb-2">
+      <input type="checkbox" class="form-check-input" id="require_password" name="require_password" {% if mode_data and mode_data.require_password %}checked{% endif %}>
+      <label class="form-check-label" for="require_password">パスワードを発行</label>
+    </div>
+
+    <div class="form-check mb-4">
+      <input type="checkbox" class="form-check-input" id="layer_upload_url" name="enable_layer_upload_url" {% if mode_data and mode_data.enable_layer_upload_url %}checked{% endif %}>
+      <label class="form-check-label" for="layer_upload_url">加工済アップロードURLを表示</label>
+    </div>
+
+    <button type="submit" class="btn btn-primary w-100">保存</button>
+  </form>
+
+  <div class="text-center mt-4">
+    <a href="{{ url_for('mode_list') }}" class="btn btn-secondary">← モード一覧に戻る</a>
+  </div>
+</div>
+{% endblock %}

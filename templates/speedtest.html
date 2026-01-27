@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}スピードテスト{% endblock %}
+
+{% block content %}
+<div class="container d-flex justify-content-center">
+  <div class="card p-4 shadow-sm w-100" style="max-width: 500px;">
+    <h2 class="text-center mb-4">📡 アップロード速度テスト</h2>
+
+    <button class="btn btn-primary w-100 mb-3" onclick="runSpeedTest()">スピードテスト実行（20回×3MB）</button>
+    <div id="result" class="text-center text-muted"></div>
+  </div>
+</div>
+
+<script>
+async function runSpeedTest() {
+  const repeatCount = 20;
+  const blobSizeMB = 3;
+  const results = [];
+  const blob = new Blob([new Uint8Array(blobSizeMB * 1024 * 1024)], { type: "application/octet-stream" });
+
+  const resultDiv = document.getElementById('result');
+  resultDiv.innerHTML = "<div class='text-info'>テスト中...しばらくお待ちください</div>";
+
+  for (let i = 0; i < repeatCount; i++) {
+    const start = performance.now();
+    await fetch("/speedtest", {
+      method: "POST",
+      body: blob,
+    });
+    const end = performance.now();
+
+    const durationSec = (end - start) / 1000;
+    const speedMbps = (blobSizeMB * 8) / durationSec;
+    const pingMs = end - start;
+
+    results.push({ speedMbps, pingMs });
+  }
+
+  const avgSpeed = results.reduce((sum, r) => sum + r.speedMbps, 0) / results.length;
+  const avgPing = results.reduce((sum, r) => sum + r.pingMs, 0) / results.length;
+  const estimatedTimeSec = (500 * 8) / avgSpeed;
+
+  resultDiv.innerHTML = `
+    <div class="text-success">✅ 平均アップロード速度：<strong>${avgSpeed.toFixed(2)} Mbps</strong></div>
+    <div class="text-info">📶 平均Ping（応答時間）：<strong>${avgPing.toFixed(1)} ms</strong></div>
+    <div class="text-primary">📤 500MB アップロード推定時間：<strong>${estimatedTimeSec.toFixed(1)} 秒</strong></div>
+  `;
+}
+</script>
+{% endblock %}

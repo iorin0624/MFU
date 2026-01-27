@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}アップロード履歴{% endblock %}
+
+{% block content %}
+<style>
+  td, th {
+    white-space: normal !important;
+    word-break: break-word;
+    max-width: 200px;
+  }
+</style>
+
+<div class="container mt-4">
+  <h2 class="mb-4">アップロード履歴</h2>
+  <div class="table-responsive">
+    <table class="table table-sm table-striped table-bordered text-nowrap align-middle">
+      <thead class="table-light">
+        <tr>
+          <th style="width: 10%;">UUID</th>
+          <th>ユーザー名</th>
+          <th>タイトル</th>
+          <th>撮影日</th>
+          <th>有効期限</th>
+          <th>アップロード日時</th>
+          <th>パスワード</th>
+          <th>リンク</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+<tbody>
+  {% for item in uploads %}
+  <tr>
+    <td title="{{ item.uuid }}">{{ item.uuid[:8] }}...</td>
+    <td>{{ item.username }}</td>
+    <td>{{ item.title }}</td>
+    <td>{{ item.date }}</td>
+    <td>{{ item.expire_at }}</td>
+    <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
+    <td>{{ item.password }}</td>
+    <td><a href="{{ url_for('view_upload', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary" target="_blank">表示</a></td>
+    <td>
+      <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post" onsubmit="return confirm('本当に削除しますか？');">
+        <button class="btn btn-sm btn-danger">削除</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

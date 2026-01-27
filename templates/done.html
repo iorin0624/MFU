@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>アップロード完了</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f0f0;
+      padding: 2em;
+    }
+
+    .box {
+      background: white;
+      padding: 2em;
+      border-radius: 10px;
+      max-width: 700px;
+      margin: auto;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+      color: #333;
+      margin-top: 0;
+    }
+
+    .message-box {
+      margin-top: 1em;
+      background: #f9f9f9;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 1em;
+      white-space: pre-wrap;
+      font-family: inherit;
+      line-height: 1.6;
+    }
+
+    .copy-button {
+      margin-top: 1em;
+      text-align: center;
+    }
+
+    .copy-button button {
+      padding: 0.6em 1.5em;
+      font-size: 1em;
+      border: none;
+      border-radius: 5px;
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+    }
+
+    .copy-button button:hover {
+      background-color: #0056b3;
+    }
+
+    .actions {
+      margin-top: 2em;
+      text-align: center;
+    }
+
+    .actions a {
+      text-decoration: none;
+      color: #007bff;
+      margin: 0 1em;
+    }
+
+    .actions a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>✅ アップロードが完了しました！</h2>
+
+    <div class="message-box" id="messageBox">{{ message }}</div>
+
+    <div class="copy-button">
+      <button onclick="copyToClipboard()">📋 コピー</button>
+    </div>
+
+    <div class="actions">
+      <a href="{{ url_for('upload') }}">⬅ 別のファイルをアップロードする</a>
+      {% if mode == "layer" %}
+        <a href="{{ url_for('layer_reply.layer_upload', uuid=uuid) }}">📤 加工済み写真をアップロード</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <script>
+    function copyToClipboard() {
+      const text = document.getElementById("messageBox").innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        alert("📋 メッセージをコピーしました！");
+      }).catch(err => {
+        alert("コピーに失敗しました: " + err);
+      });
+    }
+  </script>
+</body>
+</html>
