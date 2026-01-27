@@ -1503,6 +1503,8 @@ def admin_maintenance():
     if request.method == "POST":
         new_mode = "on" if request.form.get("maintenance_mode") == "on" else "off"
         until_raw = request.form.get("maintenance_until")
+        square_env_payment = (request.form.get("square_env_payment") or "").upper()
+        square_env_external = (request.form.get("square_env_external") or "").upper()
 
         if until_raw:
             try:
@@ -1523,6 +1525,17 @@ def admin_maintenance():
             cursor.execute("REPLACE INTO settings (`key`, `value`) VALUES ('maintenance_until', %s)", (until_str,))
         else:
             cursor.execute("DELETE FROM settings WHERE `key` = 'maintenance_until'")
+
+        if square_env_payment in ("SANDBOX", "PRODUCTION"):
+            cursor.execute(
+                "REPLACE INTO settings (`key`, `value`) VALUES ('square_env_payment', %s)",
+                (square_env_payment,),
+            )
+        if square_env_external in ("SANDBOX", "PRODUCTION"):
+            cursor.execute(
+                "REPLACE INTO settings (`key`, `value`) VALUES ('square_env_external', %s)",
+                (square_env_external,),
+            )
 
         db.commit()
         db.close()
@@ -1545,7 +1558,23 @@ def admin_maintenance():
             pass
 
     db.close()
-    return render_template("admin_maintenance.html", current_mode=current_mode, current_until=current_until)
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("SELECT `value` FROM settings WHERE `key` = 'square_env_payment'")
+    square_env_payment_val = (cursor.fetchone() or {}).get("value")
+    cursor.execute("SELECT `value` FROM settings WHERE `key` = 'square_env_external'")
+    square_env_external_val = (cursor.fetchone() or {}).get("value")
+    db.close()
+    fallback_square_env = os.environ.get("SQUARE_ENV", "SANDBOX")
+    current_square_env_payment = (square_env_payment_val or fallback_square_env).upper()
+    current_square_env_external = (square_env_external_val or fallback_square_env).upper()
+    return render_template(
+        "admin_maintenance.html",
+        current_mode=current_mode,
+        current_until=current_until,
+        current_square_env_payment=current_square_env_payment,
+        current_square_env_external=current_square_env_external,
+    )
 
 # =======================================
 # 管理: 再起動

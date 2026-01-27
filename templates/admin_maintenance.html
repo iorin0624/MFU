@@ -17,6 +17,24 @@
              value="{{ current_until }}">
     </div>
 
+    <div class="mb-3">
+      <label class="form-label">💳 Square 決済モード（/payment 系）</label>
+      <select name="square_env_payment" class="form-select">
+        <option value="SANDBOX" {% if current_square_env_payment == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
+        <option value="PRODUCTION" {% if current_square_env_payment == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
+      </select>
+      <div class="form-text">/payment の API/SDK をこの環境で切り替えます。</div>
+    </div>
+
+    <div class="mb-3">
+      <label class="form-label">💳 Square 決済モード（外部ログイン/カード登録）</label>
+      <select name="square_env_external" class="form-select">
+        <option value="SANDBOX" {% if current_square_env_external == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
+        <option value="PRODUCTION" {% if current_square_env_external == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
+      </select>
+      <div class="form-text">external_login_user のカード登録で使う SDK を切り替えます。</div>
+    </div>
+
     <div class="text-end">
       <button type="submit" class="btn btn-primary">保存</button>
     </div>

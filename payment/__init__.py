@@ -111,7 +111,45 @@ def _fetchall_dict(cur):
 # Utils
 # ───────────────────────────────────────────────────────────
 def _env() -> str:
+    db = None
+    try:
+        db = _get_db()
+        cur = db.cursor()
+        cur.execute("SELECT value FROM settings WHERE `key` = 'square_env_payment'")
+        row = cur.fetchone()
+        if row:
+            if isinstance(row, dict):
+                value = row.get("value")
+            else:
+                value = row[0]
+            if value:
+                return str(value).upper()
+    except Exception:
+        pass
+    finally:
+        if db:
+            db.close()
     return os.environ.get("SQUARE_ENV", "SANDBOX").upper()
+
+def _square_env_suffix(square_env: str) -> str:
+    return "SANDBOX" if square_env == "SANDBOX" else "PRODUCTION"
+
+def _square_env_value(name: str) -> str | None:
+    square_env = _env()
+    suffix = _square_env_suffix(square_env)
+    return os.environ.get(f"SQUARE_{suffix}_{name}") or os.environ.get(f"SQUARE_{name}")
+
+def _square_application_id() -> str | None:
+    return _square_env_value("APPLICATION_ID")
+
+def _square_location_id() -> str | None:
+    return _square_env_value("LOCATION_ID")
+
+def _square_access_token() -> str | None:
+    return _square_env_value("ACCESS_TOKEN")
+
+def _square_webhook_signature_key() -> str | None:
+    return _square_env_value("WEBHOOK_SIGNATURE_KEY")
 
 def _square_api_base() -> str:
     return "https://connect.squareupsandbox.com" if _env() == "SANDBOX" else "https://connect.squareup.com"
@@ -773,8 +811,8 @@ def pay_form(event_uuid: str):
         event=event,
         event_amount=amount,               # ← 互換のため“明示の金額”も渡す
         square_js_url=_square_js_url(),
-        app_id=os.environ.get("SQUARE_APPLICATION_ID"),
-        location_id=os.environ.get("SQUARE_LOCATION_ID"),
+        app_id=_square_application_id(),
+        location_id=_square_location_id(),
         autofill=autofill,                 # ← テンプレはこの3項目を参照
         return_url=return_url,
         payment_token=payment_token,
@@ -799,7 +837,7 @@ def pay_thanks(event_uuid: str):
             if payment:
                 status_now = (payment.get("square_status") or "").upper()
                 if status_now not in ("APPROVED", "COMPLETED", "AUTHORIZED"):
-                    access_token = os.environ.get("SQUARE_ACCESS_TOKEN")
+                    access_token = _square_access_token()
                     if access_token:
                         try:
                             resp = requests.get(
@@ -907,8 +945,8 @@ def api_charge(event_uuid: str):
         # 二重決済ブロック（event_payments に対して）—削除
         cur = conn.cursor()
 
-        access_token = os.environ.get("SQUARE_ACCESS_TOKEN")
-        location_id  = os.environ.get("SQUARE_LOCATION_ID")
+        access_token = _square_access_token()
+        location_id  = _square_location_id()
         if not access_token or not location_id:
             return jsonify({"message": "Square設定が未完了です"}), 500
 
@@ -1012,7 +1050,7 @@ def api_charge(event_uuid: str):
 # ───────────────────────────────────────────────────────────
 @bp.post("/webhooks")
 def webhooks():
-    sig_key = os.environ.get("SQUARE_WEBHOOK_SIGNATURE_KEY")
+    sig_key = _square_webhook_signature_key()
     if sig_key:
         try:
             from square.utilities.webhooks_helper import is_valid_webhook_event_signature
@@ -1250,7 +1288,7 @@ def admin_refund(payment_row_id: int):
     amount_form = (request.form.get("amount_yen") or "").strip()
     reason = (request.form.get("reason") or "").strip() or None
 
-    access_token = os.environ.get("SQUARE_ACCESS_TOKEN")
+    access_token = _square_access_token()
     if not access_token:
         return "Square設定が未完了です", 500
 
