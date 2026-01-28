@@ -21,6 +21,8 @@ from app.utils.mail import send_mail
 from flask import current_app
 from app.utils.mail import send_mail
 
+from urllib.parse import quote
+
 import requests  # Discord通知で使用（存在しなければ無視されるよう例外処理）
 
 # ============================================================
@@ -183,6 +185,7 @@ def _create_payment_request(
     user_id: int,
     amount_yen: int,
     *,
+    event_uuid: str | None,
     nickname: str | None,
     x_id: str | None,
     instagram_id: str | None,
@@ -192,9 +195,11 @@ def _create_payment_request(
     db = get_db(); cur = db.cursor()
     try:
         cur.execute("""
-            INSERT INTO mfu_payment_request (token, event_id, user_id, nickname, x_id, instagram_id, amount_yen)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (token, event_id, user_id, nickname, x_id, instagram_id, int(amount_yen)))
+            INSERT INTO mfu_payment_request (
+              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, amount_yen
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, int(amount_yen)))
         db.commit()
     finally:
         try: cur.close(); db.close()
@@ -539,6 +544,7 @@ def pay_start(event_uuid: str):
                 ev["id"],
                 me["id"],
                 int(fee),
+                event_uuid=event_uuid,
                 nickname=me.get("nickname"),
                 x_id=me.get("x_id"),
                 instagram_id=me.get("instagram_id"),
@@ -555,7 +561,11 @@ def pay_start(event_uuid: str):
                 "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
                 "payment_token": payment_token,
             }
-            dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+            return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+            dest = (
+                f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+                f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+            )
             return redirect(dest)
 
         if picked == "paypay":
@@ -586,6 +596,7 @@ def pay_start(event_uuid: str):
         ev["id"],
         me["id"],
         int(fee),
+        event_uuid=event_uuid,
         nickname=me.get("nickname"),
         x_id=me.get("x_id"),
         instagram_id=me.get("instagram_id"),
@@ -602,7 +613,11 @@ def pay_start(event_uuid: str):
         "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
         "payment_token": payment_token,
     }
-    dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+    return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+    dest = (
+        f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+        f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+    )
     return redirect(dest)
 
 # ============================================================
@@ -1230,6 +1245,7 @@ def lecture_pay_start(event_uuid: str):
                 ev["id"],
                 me["id"],
                 int(fee),
+                event_uuid=event_uuid,
                 nickname=me.get("nickname"),
                 x_id=me.get("x_id"),
                 instagram_id=me.get("instagram_id"),
@@ -1246,7 +1262,11 @@ def lecture_pay_start(event_uuid: str):
                 "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
                 "payment_token": payment_token,
             }
-            dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+            return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+            dest = (
+                f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+                f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+            )
             return redirect(dest)
 
         if picked == "paypay":
@@ -1280,6 +1300,7 @@ def lecture_pay_start(event_uuid: str):
         ev["id"],
         me["id"],
         int(fee),
+        event_uuid=event_uuid,
         nickname=me.get("nickname"),
         x_id=me.get("x_id"),
         instagram_id=me.get("instagram_id"),
@@ -1296,7 +1317,11 @@ def lecture_pay_start(event_uuid: str):
         "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
         "payment_token": payment_token,
     }
-    dest = f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}?autofill=1&payment_token={payment_token}"
+    return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+    dest = (
+        f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+        f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+    )
     return redirect(dest)
 
 

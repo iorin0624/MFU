@@ -1,8 +1,60 @@
 diff --git a/payment/__init__.py b/payment/__init__.py
-index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ecda4f7899 100644
+index 8555d31789eb4c6cc7f5c719285471ecda4f7899..267b936b8c2db110dacf18e3a175f49e663ebbb5 100644
 --- a/payment/__init__.py
 +++ b/payment/__init__.py
-@@ -606,71 +606,117 @@ def _mfu_event_by_payment_uuid(event_uuid: str) -> dict | None:
+@@ -563,149 +563,167 @@ def _get_live_amount_and_sync(conn, event_uuid: str) -> tuple[int, dict|None]:
+     fee = int((me or {}).get("fee_yen") or 0)
+ 
+     if fee <= 0:
+         # mfu側に金額が無い場合はevents.default_amountを使う
+         if not ev:
+             return (0, None)
+         return (int(ev.get("default_amount") or 0), ev)
+ 
+     # eventsが無いケース（理論上ないが保険）
+     if not ev:
+         return (fee, None)
+ 
+     # 差があれば同期
+     try:
+         if int(ev.get("default_amount") or 0) != fee:
+             cur.execute("UPDATE events SET default_amount=%s WHERE id=%s", (fee, ev["id"]))
+             conn.commit()
+             ev["default_amount"] = fee
+     except Exception:
+         conn.rollback()
+     return (fee, ev)
+ 
+ def _mfu_event_by_payment_uuid(event_uuid: str) -> dict | None:
+     """
+     mfu_event を payment_uuid で1件取得（必要カラムのみ）
+-    返り値: { id, title, fee_yen } or None
++    返り値: { id, title, fee_yen, event_uuid_str } or None
+     """
+     conn = _get_db()
+     try:
+         cur = conn.cursor()
+         cur.execute("""
+-            SELECT id, title, fee_yen
++            SELECT id, title, fee_yen, event_uuid
+               FROM mfu_event
+              WHERE payment_uuid=%s
+              LIMIT 1
+         """, (event_uuid,))
+         row = _fetchone_dict(cur)
+         if not row:
+             return None
+-        return {"id": row["id"], "title": row["title"], "fee_yen": row["fee_yen"]}
++        ev_uuid_str = _uuid_bytes_to_str(row.get("event_uuid"))
++        return {
++            "id": row["id"],
++            "title": row["title"],
++            "fee_yen": row["fee_yen"],
++            "event_uuid_str": ev_uuid_str,
++        }
+     finally:
+         try: conn.close()
+         except Exception: pass
  
  def _resolve_payment_token(event_uuid: str) -> str | None:
      try:
@@ -23,17 +75,31 @@ index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ec
          return None
      me = _mfu_event_by_payment_uuid(event_uuid) or {}
      event_id = me.get("id")
++    event_uuid_str = me.get("event_uuid_str")
      if not event_id:
          return None
      cur = conn.cursor()
      try:
-         cur.execute("""
--            SELECT id, event_id, user_id, amount_yen, status
-+            SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
-               FROM mfu_payment_request
-              WHERE token=%s AND event_id=%s AND status='pending'
-              LIMIT 1
-         """, (token, event_id))
+-        cur.execute("""
+-            SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
+-              FROM mfu_payment_request
+-             WHERE token=%s AND event_id=%s AND status='pending'
+-             LIMIT 1
+-        """, (token, event_id))
++        if event_uuid_str:
++            cur.execute("""
++                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
++                  FROM mfu_payment_request
++                 WHERE token=%s AND event_id=%s AND event_uuid=%s AND status='pending'
++                 LIMIT 1
++            """, (token, event_id, event_uuid_str))
++        else:
++            cur.execute("""
++                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
++                  FROM mfu_payment_request
++                 WHERE token=%s AND event_id=%s AND status='pending'
++                 LIMIT 1
++            """, (token, event_id))
          row = _fetchone_dict(cur)
          return row
      finally:
@@ -50,52 +116,58 @@ index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ec
                  return None
      return None
  
-+def _infer_payment_token(
-+    conn,
-+    event_uuid: str,
-+    *,
-+    nickname: str,
-+    x_id: str | None,
-+    instagram_id: str | None,
-+) -> str | None:
-+    me = _mfu_event_by_payment_uuid(event_uuid) or {}
-+    event_id = me.get("id")
-+    if not event_id:
-+        return None
-+    cur = conn.cursor()
-+    try:
-+        if x_id:
-+            cur.execute("""
-+                SELECT token
-+                  FROM mfu_payment_request
-+                 WHERE event_id=%s AND status='pending' AND x_id=%s
-+                 ORDER BY id DESC
-+                 LIMIT 1
-+            """, (event_id, x_id))
-+        elif instagram_id:
-+            cur.execute("""
-+                SELECT token
-+                  FROM mfu_payment_request
-+                 WHERE event_id=%s AND status='pending' AND instagram_id=%s
-+                 ORDER BY id DESC
-+                 LIMIT 1
-+            """, (event_id, instagram_id))
-+        else:
-+            cur.execute("""
-+                SELECT token
-+                  FROM mfu_payment_request
-+                 WHERE event_id=%s AND status='pending' AND nickname=%s
-+                 ORDER BY id DESC
-+                 LIMIT 1
-+            """, (event_id, nickname))
-+        row = cur.fetchone()
-+        if not row:
-+            return None
-+        return row[0] if isinstance(row, tuple) else row.get("token")
-+    finally:
-+        try: cur.close()
-+        except Exception: pass
-+
+ def _infer_payment_token(
+     conn,
+     event_uuid: str,
+     *,
+     nickname: str,
+     x_id: str | None,
+     instagram_id: str | None,
+ ) -> str | None:
+     me = _mfu_event_by_payment_uuid(event_uuid) or {}
+     event_id = me.get("id")
+     if not event_id:
+         return None
+     cur = conn.cursor()
+     try:
+         if x_id:
+             cur.execute("""
+                 SELECT token
+                   FROM mfu_payment_request
+-                 WHERE event_id=%s AND status='pending' AND x_id=%s
++                 WHERE event_id=%s AND status='pending'
++                   AND REPLACE(LOWER(x_id), '@', '')=%s
+                  ORDER BY id DESC
+                  LIMIT 1
+             """, (event_id, x_id))
+         elif instagram_id:
+             cur.execute("""
+                 SELECT token
+                   FROM mfu_payment_request
+-                 WHERE event_id=%s AND status='pending' AND instagram_id=%s
++                 WHERE event_id=%s AND status='pending'
++                   AND REPLACE(LOWER(instagram_id), '@', '')=%s
+                  ORDER BY id DESC
+                  LIMIT 1
+             """, (event_id, instagram_id))
+         else:
+             cur.execute("""
+                 SELECT token
+                   FROM mfu_payment_request
+-                 WHERE event_id=%s AND status='pending' AND nickname=%s
++                 WHERE event_id=%s AND status='pending'
++                   AND LOWER(nickname)=LOWER(%s)
+                  ORDER BY id DESC
+                  LIMIT 1
+             """, (event_id, nickname))
+         row = cur.fetchone()
+         if not row:
+             return None
+         return row[0] if isinstance(row, tuple) else row.get("token")
+     finally:
+         try: cur.close()
+         except Exception: pass
+ 
  def _mark_payment_token_used_and_apply_member_status(
      conn,
      *,
@@ -110,18 +182,18 @@ index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ec
      cur = conn.cursor()
      try:
          cur.execute("""
-             UPDATE mfu_payment_request
-                SET status='used', used_at=NOW()
-              WHERE token=%s AND status='pending'
-              LIMIT 1
-         """, (payment_token,))
-         cur.execute("""
-             SELECT event_id, user_id
-               FROM mfu_payment_request
-              WHERE token=%s
-              ORDER BY id DESC
-              LIMIT 1
-@@ -784,50 +830,66 @@ def pay_form(event_uuid: str):
+@@ -819,50 +837,54 @@ def pay_form(event_uuid: str):
+         return "この決済リンクは無効です。", 404
+ 
+     # 画面表示用イベント（タイトルは mfu_event に合わせる）
+     me = _mfu_event_by_payment_uuid(event_uuid) or {}
+     event = {
+         "uuid": event_uuid,
+         "title": me.get("title") or evrow.get("title") or "イベント",
+         "default_amount": int(evrow.get("default_amount") or amount),
+     }
+ 
+     # ★ セッションからプリフィル（決済UUID一致 or 後方互換で mfu_event_uuid がある場合も許可）
      autofill = {}
      return_url = None
      try:
@@ -136,6 +208,10 @@ index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ec
      except Exception:
          logging.exception("read pay_ctx failed")
  
++    qs_return_url = (request.args.get("return_url") or "").strip()
++    if qs_return_url:
++        return_url = qs_return_url
++
      # クエリがあれば上書き
      qs_n = (request.args.get("nickname") or "").strip()
      qs_x = _sanitize_handle(request.args.get("x_id"))
@@ -147,49 +223,21 @@ index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ec
              "instagram_id": (qs_i or "") or autofill.get("instagram_id", ""),
          }
  
-+    # payment_token があればDBの情報で補完（未入力のみ補う）
-+    if payment_token and (not autofill.get("nickname") or not autofill.get("x_id") or not autofill.get("instagram_id")):
-+        conn = _get_db()
-+        try:
-+            pr = _fetch_payment_request(conn, event_uuid, payment_token) or {}
-+        finally:
-+            try: conn.close()
-+            except Exception: pass
-+        if pr:
-+            if not autofill.get("nickname"):
-+                autofill["nickname"] = pr.get("nickname") or ""
-+            if not autofill.get("x_id"):
-+                autofill["x_id"] = _sanitize_handle(pr.get("x_id"))
-+            if not autofill.get("instagram_id"):
-+                autofill["instagram_id"] = _sanitize_handle(pr.get("instagram_id"))
-+
-     return render_template(
-         "pay.html",
-         event=event,
-         event_amount=amount,               # ← 互換のため“明示の金額”も渡す
-         square_js_url=_square_js_url(),
-         app_id=_square_application_id(),
-         location_id=_square_location_id(),
-         autofill=autofill,                 # ← テンプレはこの3項目を参照
-         return_url=return_url,
-         payment_token=payment_token,
-     )
- 
- @bp.get("/e/<event_uuid>/thanks")
- def pay_thanks(event_uuid: str):
-     _ensure_schema()
-     pid = request.args.get("pid")
- 
-     conn = _get_db()
-     event, payment = None, None
-     try:
-         # 表示用にeventsを取得（amountはthanksでは使用しない）
-         cur = conn.cursor()
-         cur.execute("SELECT * FROM events WHERE uuid=%s LIMIT 1", (event_uuid,))
-         event = _fetchone_dict(cur)
- 
-@@ -910,50 +972,58 @@ def pay_thanks(event_uuid: str):
- # ───────────────────────────────────────────────────────────
+     # payment_token があればDBの情報で補完（未入力のみ補う）
+     if payment_token and (not autofill.get("nickname") or not autofill.get("x_id") or not autofill.get("instagram_id")):
+         conn = _get_db()
+         try:
+             pr = _fetch_payment_request(conn, event_uuid, payment_token) or {}
+         finally:
+             try: conn.close()
+             except Exception: pass
+         if pr:
+             if not autofill.get("nickname"):
+                 autofill["nickname"] = pr.get("nickname") or ""
+             if not autofill.get("x_id"):
+                 autofill["x_id"] = _sanitize_handle(pr.get("x_id"))
+             if not autofill.get("instagram_id"):
+@@ -973,57 +995,51 @@ def pay_thanks(event_uuid: str):
  @bp.post("/api/charge/<event_uuid>")
  def api_charge(event_uuid: str):
      _ensure_schema()
@@ -214,14 +262,15 @@ index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ec
  
      conn = _get_db()
      try:
-+        if not payment_token:
-+            payment_token = _infer_payment_token(
-+                conn,
-+                event_uuid,
-+                nickname=nickname,
-+                x_id=x_id,
-+                instagram_id=instagram_id,
-+            )
+         if not payment_token:
+-            payment_token = _infer_payment_token(
+-                conn,
+-                event_uuid,
+-                nickname=nickname,
+-                x_id=x_id,
+-                instagram_id=instagram_id,
+-            )
++            return jsonify({"message": "支払いトークンが見つかりません。イベントページから開き直してください。"}), 400
          token_amount = _amount_for_payment(conn, event_uuid, payment_token)
          if payment_token and token_amount is None:
              return jsonify({"message": "支払いトークンが無効です"}), 400

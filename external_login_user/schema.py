@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   token          CHAR(36) NOT NULL,
   event_id       BIGINT UNSIGNED NOT NULL,
+  event_uuid     CHAR(36) NULL,
   user_id        BIGINT UNSIGNED NOT NULL,
   nickname       VARCHAR(50)     NULL,
   x_id           VARCHAR(15)     NULL,
@@ -169,6 +170,7 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
 
+            _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
