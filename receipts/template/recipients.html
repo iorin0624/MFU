@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}相手先一覧{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">相手先一覧（アドレス帳）</h1>
+
+<form class="row g-2 mb-4" method="get">
+  <div class="col-md-4">
+    <input type="text" class="form-control" name="q" placeholder="表示名 or メール" value="{{ q }}">
+  </div>
+  <div class="col-md-4 d-flex gap-2">
+    <button class="btn btn-primary" type="submit">検索</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('receipts.recipients_list') }}">クリア</a>
+  </div>
+</form>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <h2 class="h6">相手先を追加</h2>
+    <form class="row g-2 align-items-end" method="post" action="{{ url_for('receipts.recipients_upsert') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="col-md-4">
+        <label class="form-label">表示名</label>
+        <input type="text" class="form-control" name="display_name" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">メール</label>
+        <input type="email" class="form-control" name="email" required>
+      </div>
+      <div class="col-md-4">
+        <button class="btn btn-success" type="submit">追加/更新</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<table class="table table-striped align-middle">
+  <thead>
+    <tr>
+      <th>表示名</th>
+      <th>メール</th>
+      <th>最終利用日</th>
+      <th>操作</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in recipients %}
+    <tr>
+      <td style="min-width: 180px;">
+        <form class="d-flex gap-2" method="post" action="{{ url_for('receipts.recipients_upsert') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="recipient_id" value="{{ r.id }}">
+          <input type="text" class="form-control form-control-sm" name="display_name" value="{{ r.display_name }}" required>
+          <button class="btn btn-sm btn-outline-primary" type="submit">更新</button>
+        </form>
+      </td>
+      <td>{{ r.email }}</td>
+      <td>{{ r.last_used_at.strftime('%Y-%m-%d') if r.last_used_at else '-' }}</td>
+      <td class="d-flex gap-2">
+        <a class="btn btn-sm btn-outline-success" href="{{ url_for('receipts.receipts_new', recipient_id=r.id) }}">受領書作成へ</a>
+        <form method="post" action="{{ url_for('receipts.recipients_delete', recipient_id=r.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="text-muted">相手先が登録されていません。</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<a class="btn btn-secondary" href="{{ url_for('receipts.receipts_list') }}">受領書一覧へ戻る</a>
+{% endblock %}

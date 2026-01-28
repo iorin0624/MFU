@@ -260,6 +260,120 @@ def _save_payer_profile(cur, issuer_user_id: str, payload: dict) -> None:
     )
 
 
+def _get_recipient_list(cur, issuer_user_id: str, q: str | None = None):
+    params = [issuer_user_id]
+    where = ["issuer_user_id = %s", "is_deleted = 0"]
+    if q:
+        like = f"%{q}%"
+        where.append("(display_name LIKE %s OR email LIKE %s)")
+        params.extend([like, like])
+    cur.execute(
+        f"""
+        SELECT id, display_name, email, last_used_at, created_at, updated_at
+        FROM receipt_recipients
+        WHERE {" AND ".join(where)}
+        ORDER BY COALESCE(last_used_at, created_at) DESC, id DESC
+        """,
+        params,
+    )
+    return _fetchall_dict(cur)
+
+
+def _get_recipient_by_id(cur, issuer_user_id: str, recipient_id: int):
+    cur.execute(
+        """
+        SELECT id, display_name, email, last_used_at, is_deleted
+        FROM receipt_recipients
+        WHERE id = %s AND issuer_user_id = %s
+        """,
+        (recipient_id, issuer_user_id),
+    )
+    return _fetchone_dict(cur)
+
+
+def _upsert_recipient(
+    cur,
+    *,
+    issuer_user_id: str,
+    display_name: str,
+    email: str,
+    update_name: bool,
+    mark_used: bool,
+    actor_id: str | None,
+    ip: str | None,
+    user_agent: str | None,
+) -> None:
+    now = _now_jst()
+    cur.execute(
+        """
+        SELECT id, display_name, is_deleted
+        FROM receipt_recipients
+        WHERE issuer_user_id = %s AND email = %s
+        """,
+        (issuer_user_id, email),
+    )
+    existing = _fetchone_dict(cur)
+    if not existing:
+        cur.execute(
+            """
+            INSERT INTO receipt_recipients
+            (issuer_user_id, display_name, email, last_used_at, created_at, updated_at, is_deleted)
+            VALUES (%s, %s, %s, %s, %s, %s, 0)
+            """,
+            (
+                issuer_user_id,
+                display_name,
+                email,
+                now if mark_used else None,
+                now,
+                now,
+            ),
+        )
+        _append_audit_log(
+            cur,
+            actor_type="issuer",
+            actor_id=actor_id,
+            action="recipient_created",
+            result="ok",
+            ip=ip,
+            user_agent=user_agent,
+        )
+        return
+
+    updates = []
+    params: list = []
+    if update_name and display_name and display_name != existing.get("display_name"):
+        updates.append("display_name = %s")
+        params.append(display_name)
+    if mark_used:
+        updates.append("last_used_at = %s")
+        params.append(now)
+    if existing.get("is_deleted"):
+        updates.append("is_deleted = 0")
+    if not updates:
+        return
+    updates.append("updated_at = %s")
+    params.append(now)
+    params.extend([existing["id"], issuer_user_id])
+    cur.execute(
+        f"""
+        UPDATE receipt_recipients
+        SET {", ".join(updates)}
+        WHERE id = %s AND issuer_user_id = %s
+        """,
+        params,
+    )
+    _append_audit_log(
+        cur,
+        actor_type="issuer",
+        actor_id=actor_id,
+        action="recipient_updated",
+        result="ok",
+        ip=ip,
+        user_agent=user_agent,
+    )
+
+
 def _send_pdf_notice(to_email: str, subject: str, body: str, pdf_path: str) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
@@ -335,14 +449,143 @@ def receipts_list():
     return render_template("list.html", receipts=receipts, q=q, status=status, start=start, end=end)
 
 
+@receipts_bp.route("/recipients")
+def recipients_list():
+    db = get_db()
+    cur = db.cursor()
+    q = request.args.get("q", "").strip()
+    recipients = _get_recipient_list(cur, session.get("user"), q or None)
+    db.close()
+    return render_template(
+        "recipients.html",
+        recipients=recipients,
+        q=q,
+        csrf_token=_new_csrf_token(),
+    )
+
+
+@receipts_bp.route("/recipients", methods=["POST"])
+def recipients_upsert():
+    if not _check_csrf(request.form.get("csrf_token")):
+        abort(400)
+
+    recipient_id = request.form.get("recipient_id")
+    display_name = request.form.get("display_name", "").strip()
+    email = request.form.get("email", "").strip()
+
+    if not display_name:
+        flash("表示名を入力してください。", "warning")
+        return redirect(url_for("receipts.recipients_list"))
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        if recipient_id:
+            cur.execute(
+                """
+                UPDATE receipt_recipients
+                SET display_name = %s, updated_at = %s
+                WHERE id = %s AND issuer_user_id = %s AND is_deleted = 0
+                """,
+                (display_name, _now_jst(), recipient_id, session.get("user")),
+            )
+            if cur.rowcount:
+                _append_audit_log(
+                    cur,
+                    actor_type="issuer",
+                    actor_id=session.get("user"),
+                    action="recipient_updated",
+                    result="ok",
+                    ip=request.remote_addr,
+                    user_agent=request.headers.get("User-Agent"),
+                )
+        else:
+            if not email:
+                flash("メールアドレスを入力してください。", "warning")
+                return redirect(url_for("receipts.recipients_list"))
+            _upsert_recipient(
+                cur,
+                issuer_user_id=session.get("user"),
+                display_name=display_name,
+                email=email,
+                update_name=True,
+                mark_used=False,
+                actor_id=session.get("user"),
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    flash("相手先情報を保存しました。", "success")
+    return redirect(url_for("receipts.recipients_list"))
+
+
+@receipts_bp.route("/recipients/<int:recipient_id>/delete", methods=["POST"])
+def recipients_delete(recipient_id: int):
+    if not _check_csrf(request.form.get("csrf_token")):
+        abort(400)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE receipt_recipients
+            SET is_deleted = 1, updated_at = %s
+            WHERE id = %s AND issuer_user_id = %s
+            """,
+            (_now_jst(), recipient_id, session.get("user")),
+        )
+        if cur.rowcount:
+            _append_audit_log(
+                cur,
+                actor_type="issuer",
+                actor_id=session.get("user"),
+                action="recipient_deleted",
+                result="ok",
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    flash("相手先を削除しました。", "success")
+    return redirect(url_for("receipts.recipients_list"))
+
+
 @receipts_bp.route("/receipts/new", methods=["GET", "POST"])
 def receipts_new():
     if request.method == "GET":
         db = get_db()
         cur = db.cursor()
         profile = _get_payer_profile(cur, session.get("user"))
+        recipient_id = request.args.get("recipient_id")
+        recipient_prefill = {}
+        if recipient_id and recipient_id.isdigit():
+            recipient = _get_recipient_by_id(cur, session.get("user"), int(recipient_id))
+            if recipient and not recipient.get("is_deleted"):
+                recipient_prefill = {
+                    "recipient_name": recipient.get("display_name") or "",
+                    "recipient_email": recipient.get("email") or "",
+                }
+        recipients = _get_recipient_list(cur, session.get("user"))
         db.close()
-        return render_template("new.html", csrf_token=_new_csrf_token(), profile=profile or {})
+        return render_template(
+            "new.html",
+            csrf_token=_new_csrf_token(),
+            profile=profile or {},
+            recipients=recipients,
+            recipient_prefill=recipient_prefill,
+        )
 
     if not _check_csrf(request.form.get("csrf_token")):
         abort(400)
@@ -394,6 +637,8 @@ def receipts_new():
     description = form.get("description", "").strip()
     payment_method = form.get("payment_method", "").strip()
     update_profile = form.get("update_profile") == "on"
+    save_recipient = form.get("save_recipient") == "on"
+    update_recipient_name = form.get("update_recipient_name") == "on"
 
     db = get_db()
     cur = db.cursor()
@@ -499,6 +744,19 @@ def receipts_new():
             ip=request.remote_addr,
             user_agent=request.headers.get("User-Agent"),
         )
+
+        if save_recipient and recipient_email:
+            _upsert_recipient(
+                cur,
+                issuer_user_id=session.get("user"),
+                display_name=recipient_name,
+                email=recipient_email,
+                update_name=update_recipient_name,
+                mark_used=True,
+                actor_id=session.get("user"),
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+            )
         db.commit()
     except Exception:
         db.rollback()
