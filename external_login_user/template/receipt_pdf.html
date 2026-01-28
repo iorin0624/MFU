@@ -4,17 +4,35 @@
   <meta charset="utf-8">
   <title>領収書</title>
   <style>
-    body { font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; color: #111; }
-    .container { width: 680px; margin: 0 auto; padding: 24px 32px; }
+    @page { size: A4; margin: 20mm; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+      color: #111;
+    }
+    .container { width: 100%; box-sizing: border-box; }
     h1 { font-size: 28px; margin: 0 0 12px; text-align: center; letter-spacing: 0.1em; }
-    .meta { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 24px; }
+    .meta { font-size: 12px; margin-bottom: 24px; }
+    .meta div { margin-bottom: 4px; }
     .recipient { font-size: 18px; margin-bottom: 12px; }
-    .amount { font-size: 24px; font-weight: 700; margin: 12px 0; }
+    .amount-section { text-align: center; margin-bottom: 12px; }
+    .amount-section .label { font-weight: 600; margin-bottom: 4px; }
+    .amount { font-size: 28px; font-weight: 700; margin: 0; }
     .box { border: 1px solid #333; padding: 12px 16px; margin-bottom: 16px; }
-    .row { display: flex; margin-bottom: 6px; }
-    .label { width: 120px; font-weight: 600; }
+    .row { display: flex; align-items: flex-start; margin-bottom: 6px; }
+    .label { width: 120px; font-weight: 600; flex-shrink: 0; }
+    .value { flex: 1; word-break: break-word; overflow-wrap: anywhere; }
+    .issuer {
+      margin-top: 24px;
+      font-size: 12px;
+      text-align: right;
+      line-height: 1.5;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .issuer div { word-break: break-word; overflow-wrap: anywhere; }
+    .receipt-footer { margin-top: 16px; font-size: 12px; }
     .note { margin-top: 12px; font-size: 12px; color: #555; }
-    .issuer { margin-top: 24px; font-size: 12px; text-align: right; line-height: 1.5; }
   </style>
 </head>
 <body>
@@ -29,17 +47,17 @@
     <div class="recipient">{{ receipt.recipient_name }}</div>
 
     <div class="box">
-      <div class="row">
+      <div class="amount-section">
         <div class="label">金額</div>
         <div class="amount">{{ receipt.amount }}</div>
       </div>
       <div class="row">
         <div class="label">但し書き</div>
-        <div>{{ receipt.description }}</div>
+        <div class="value">{{ receipt.description }}</div>
       </div>
       <div class="row">
         <div class="label">支払方法</div>
-        <div>{{ receipt.payment_method }}</div>
+        <div class="value">{{ receipt.payment_method }}</div>
       </div>
     </div>
 
@@ -50,6 +68,7 @@
       <div>{{ receipt.payer_email }}</div>
     </div>
 
+    <div class="receipt-footer">上記正に領収しました</div>
     <div class="note">本領収書はシステムより自動発行されています。</div>
   </div>
 </body>

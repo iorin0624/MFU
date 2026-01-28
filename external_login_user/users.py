@@ -1917,12 +1917,26 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
             raise ValueError("発行者情報が見つかりません")
 
         issue_date = datetime.now(JST).date()
+        event_date = _to_jst_date(ev.get("starts_at"))
+        if event_date:
+            event_date_label = event_date.strftime("%Y年%-m月%-d日")
+        else:
+            event_date_label = ""
+        event_title = (ev.get("title") or "").strip()
+        if event_date_label and event_title:
+            description = f"{event_date_label}　{event_title}　のイベント参加費のため"
+        elif event_date_label:
+            description = f"{event_date_label}　のイベント参加費のため"
+        elif event_title:
+            description = f"{event_title}　のイベント参加費のため"
+        else:
+            description = "イベント参加費のため"
         receipt_data = {
             "recipient_name": f"{row.get('nickname') or ''} 様",
             "issue_date": issue_date,
             "pay_date": pay_date,
             "amount": _format_yen(int(paid_amount)),
-            "description": "イベント参加費のため",
+            "description": description,
             "payment_method": payment_method,
             "payer_name": payer.get("payer_name"),
             "payer_address": payer.get("payer_address"),

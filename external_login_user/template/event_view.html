@@ -239,8 +239,8 @@
 
             {# 受け取りの揺れ: my_paid_amount_yen / my_paid_amount のどちらでもOKに #}
             {% set paid_amt = (my_paid_amount_yen if my_paid_amount_yen is defined else my_paid_amount) %}
-            {# レシートURLの揺れ: my_receipt_pdf_url / receipt_url #}
-            {% set rcpt_url = (my_receipt_pdf_url if my_receipt_pdf_url is defined else (receipt_url if receipt_url is defined else None)) %}
+            {# レシートURLはPDF生成エンドポイントのみを利用 #}
+            {% set rcpt_url = (my_receipt_pdf_url if my_receipt_pdf_url is defined else None) %}
 
             <!-- 上段：現在の状況 / 日付 / 金額 / リンク -->
             <div class="mb-1"><strong>支払状況：</strong>
