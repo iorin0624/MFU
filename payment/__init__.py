@@ -585,13 +585,13 @@ def _get_live_amount_and_sync(conn, event_uuid: str) -> tuple[int, dict|None]:
 def _mfu_event_by_payment_uuid(event_uuid: str) -> dict | None:
     """
     mfu_event を payment_uuid で1件取得（必要カラムのみ）
-    返り値: { id, title, fee_yen } or None
+    返り値: { id, title, fee_yen, event_uuid_str } or None
     """
     conn = _get_db()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT id, title, fee_yen
+            SELECT id, title, fee_yen, event_uuid
               FROM mfu_event
              WHERE payment_uuid=%s
              LIMIT 1
@@ -599,7 +599,13 @@ def _mfu_event_by_payment_uuid(event_uuid: str) -> dict | None:
         row = _fetchone_dict(cur)
         if not row:
             return None
-        return {"id": row["id"], "title": row["title"], "fee_yen": row["fee_yen"]}
+        ev_uuid_str = _uuid_bytes_to_str(row.get("event_uuid"))
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "fee_yen": row["fee_yen"],
+            "event_uuid_str": ev_uuid_str,
+        }
     finally:
         try: conn.close()
         except Exception: pass
@@ -623,16 +629,25 @@ def _fetch_payment_request(conn, event_uuid: str, token: str | None) -> dict | N
         return None
     me = _mfu_event_by_payment_uuid(event_uuid) or {}
     event_id = me.get("id")
+    event_uuid_str = me.get("event_uuid_str")
     if not event_id:
         return None
     cur = conn.cursor()
     try:
-        cur.execute("""
-            SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
-              FROM mfu_payment_request
-             WHERE token=%s AND event_id=%s AND status='pending'
-             LIMIT 1
-        """, (token, event_id))
+        if event_uuid_str:
+            cur.execute("""
+                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
+                  FROM mfu_payment_request
+                 WHERE token=%s AND event_id=%s AND event_uuid=%s AND status='pending'
+                 LIMIT 1
+            """, (token, event_id, event_uuid_str))
+        else:
+            cur.execute("""
+                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
+                  FROM mfu_payment_request
+                 WHERE token=%s AND event_id=%s AND status='pending'
+                 LIMIT 1
+            """, (token, event_id))
         row = _fetchone_dict(cur)
         return row
     finally:
@@ -667,7 +682,8 @@ def _infer_payment_token(
             cur.execute("""
                 SELECT token
                   FROM mfu_payment_request
-                 WHERE event_id=%s AND status='pending' AND x_id=%s
+                 WHERE event_id=%s AND status='pending'
+                   AND REPLACE(LOWER(x_id), '@', '')=%s
                  ORDER BY id DESC
                  LIMIT 1
             """, (event_id, x_id))
@@ -675,7 +691,8 @@ def _infer_payment_token(
             cur.execute("""
                 SELECT token
                   FROM mfu_payment_request
-                 WHERE event_id=%s AND status='pending' AND instagram_id=%s
+                 WHERE event_id=%s AND status='pending'
+                   AND REPLACE(LOWER(instagram_id), '@', '')=%s
                  ORDER BY id DESC
                  LIMIT 1
             """, (event_id, instagram_id))
@@ -683,7 +700,8 @@ def _infer_payment_token(
             cur.execute("""
                 SELECT token
                   FROM mfu_payment_request
-                 WHERE event_id=%s AND status='pending' AND nickname=%s
+                 WHERE event_id=%s AND status='pending'
+                   AND LOWER(nickname)=LOWER(%s)
                  ORDER BY id DESC
                  LIMIT 1
             """, (event_id, nickname))
@@ -841,6 +859,10 @@ def pay_form(event_uuid: str):
     except Exception:
         logging.exception("read pay_ctx failed")
 
+    qs_return_url = (request.args.get("return_url") or "").strip()
+    if qs_return_url:
+        return_url = qs_return_url
+
     # クエリがあれば上書き
     qs_n = (request.args.get("nickname") or "").strip()
     qs_x = _sanitize_handle(request.args.get("x_id"))
@@ -995,13 +1017,7 @@ def api_charge(event_uuid: str):
     conn = _get_db()
     try:
         if not payment_token:
-            payment_token = _infer_payment_token(
-                conn,
-                event_uuid,
-                nickname=nickname,
-                x_id=x_id,
-                instagram_id=instagram_id,
-            )
+            return jsonify({"message": "支払いトークンが見つかりません。イベントページから開き直してください。"}), 400
         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
         if payment_token and token_amount is None:
             return jsonify({"message": "支払いトークンが無効です"}), 400
