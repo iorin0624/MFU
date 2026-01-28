@@ -20,6 +20,18 @@
     <div class="row"><span class="label">支払者住所</span>{{ receipt.payer_address }}</div>
     <div class="row"><span class="label">支払者電話</span>{{ receipt.payer_phone }}</div>
     <div class="row"><span class="label">支払者メール</span>{{ receipt.payer_email }}</div>
+    {% if receipt.payer_invoice_no %}
+    <div class="row"><span class="label">登録番号</span>{{ receipt.payer_invoice_no }}</div>
+    {% endif %}
+    {% if receipt.payer_bank_name or receipt.payer_bank_branch or receipt.payer_bank_account or receipt.payer_bank_holder %}
+    <div class="row"><span class="label">振込情報</span>
+      {{ receipt.payer_bank_name or '' }} {{ receipt.payer_bank_branch or '' }}
+      {{ receipt.payer_bank_account or '' }} {{ receipt.payer_bank_holder or '' }}
+    </div>
+    {% endif %}
+    {% if receipt.payer_note %}
+    <div class="row"><span class="label">支払者備考</span>{{ receipt.payer_note }}</div>
+    {% endif %}
     <div class="row"><span class="label">相手氏名</span>{{ receipt.recipient_name }}</div>
     <div class="row"><span class="label">相手メール</span>{{ receipt.recipient_email }}</div>
     <div class="row"><span class="label">金額</span>{{ receipt.amount }} 円</div>

@@ -33,30 +33,67 @@
       <label class="form-label">相手メール</label>
       <input type="email" name="recipient_email" class="form-control" required>
     </div>
-    <div class="col-md-6">
-      <label class="form-label">支払者氏名</label>
-      <input type="text" name="payer_name" class="form-control" required>
-    </div>
-    <div class="col-md-6">
-      <label class="form-label">支払者メール</label>
-      <input type="email" name="payer_email" class="form-control" required>
-    </div>
-    <div class="col-md-6">
-      <label class="form-label">支払者電話番号</label>
-      <input type="text" name="payer_phone" class="form-control" required>
-    </div>
-    <div class="col-md-6">
-      <label class="form-label">支払者住所</label>
-      <input type="text" name="payer_address" class="form-control" required>
-    </div>
     <div class="col-md-12">
       <label class="form-label">摘要</label>
       <input type="text" name="description" class="form-control" required>
     </div>
   </div>
 
+  <hr class="my-4">
+  <h2 class="h5">支払者情報（プロフィール）</h2>
+  <p class="text-muted">初回は空欄です。保存すると次回から自動で読み込みます。</p>
+
+  <div class="row g-3">
+    <div class="col-md-6">
+      <label class="form-label">支払者氏名/屋号</label>
+      <input type="text" name="payer_name" class="form-control" value="{{ profile.payer_name or '' }}" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">支払者メール（任意）</label>
+      <input type="email" name="payer_email" class="form-control" value="{{ profile.payer_email or '' }}">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">支払者電話番号</label>
+      <input type="text" name="payer_phone" class="form-control" value="{{ profile.payer_phone or '' }}" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">支払者住所</label>
+      <input type="text" name="payer_address" class="form-control" value="{{ profile.payer_address or '' }}" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">登録番号（任意）</label>
+      <input type="text" name="payer_invoice_no" class="form-control" value="{{ profile.payer_invoice_no or '' }}">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">振込情報: 銀行名（任意）</label>
+      <input type="text" name="payer_bank_name" class="form-control" value="{{ profile.payer_bank_name or '' }}">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">振込情報: 支店名（任意）</label>
+      <input type="text" name="payer_bank_branch" class="form-control" value="{{ profile.payer_bank_branch or '' }}">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">振込情報: 口座番号（任意）</label>
+      <input type="text" name="payer_bank_account" class="form-control" value="{{ profile.payer_bank_account or '' }}">
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">振込情報: 口座名義（任意）</label>
+      <input type="text" name="payer_bank_holder" class="form-control" value="{{ profile.payer_bank_holder or '' }}">
+    </div>
+    <div class="col-md-12">
+      <label class="form-label">支払者備考（任意）</label>
+      <textarea name="payer_note" class="form-control" rows="2">{{ profile.payer_note or '' }}</textarea>
+    </div>
+  </div>
+
+  <div class="form-check mt-3">
+    <input class="form-check-input" type="checkbox" name="update_profile" id="update_profile">
+    <label class="form-check-label" for="update_profile">受領書作成時にプロフィールも更新する</label>
+  </div>
+
   <div class="mt-3">
-    <button class="btn btn-primary">作成</button>
+    <button class="btn btn-outline-primary me-2" name="action" value="save_profile" formnovalidate>プロフィール保存</button>
+    <button class="btn btn-primary" name="action" value="create">受領書作成</button>
     <a class="btn btn-secondary" href="{{ url_for('receipts.receipts_list') }}">戻る</a>
   </div>
 </form>

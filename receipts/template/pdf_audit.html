@@ -15,9 +15,11 @@
   <div class="row"><span class="label">署名者氏名</span>{{ signer_name or '（未入力）' }}</div>
   <div class="row"><span class="label">署名者メール</span>{{ signer_email }}</div>
   <div class="row"><span class="label">署名日時（JST）</span>{{ signed_at.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+  <div class="row"><span class="label">署名方式</span>文字署名（氏名入力）</div>
   <div class="row"><span class="label">認証手段</span>メールOTP</div>
+  <div class="row"><span class="label">同意確認</span>内容を確認し同意にチェック済み</div>
   <div class="row"><span class="label">原本PDF SHA-256</span><span class="hash">{{ version.hash_original }}</span></div>
-  <div class="row"><span class="label">確定PDF SHA-256</span><span class="hash">{{ version.hash_final or '管理画面に記録' }}</span></div>
+  <div class="row"><span class="label">確定PDF SHA-256（本PDF）</span><span class="hash">{{ version.hash_final or '算出中' }}</span></div>
   <div class="row"><span class="label">IP</span>{{ ip }}</div>
   <div class="row"><span class="label">User-Agent</span>{{ user_agent }}</div>
   <div class="row"><span class="label">署名操作ID</span>{{ op_id }}</div>
