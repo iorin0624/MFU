@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <style>
-    body { font-family: "Noto Sans CJK JP", "Hiragino Kaku Gothic Pro", "Meiryo", sans-serif; }
+    body { font-family: "Noto Sans CJK JP", "Hiragino Kaku Gothic Pro", "Meiryo", sans-serif; padding-bottom: 24px; }
     .header { text-align: center; font-size: 20px; margin-bottom: 24px; }
     .box { border: 1px solid #333; padding: 16px; }
     .row { margin-bottom: 8px; }
     .label { width: 120px; display: inline-block; font-weight: bold; }
+    .footer-note { margin-top: 20px; text-align: center; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -38,5 +39,6 @@
     <div class="row"><span class="label">摘要</span>{{ receipt.description }}</div>
     <div class="row"><span class="label">支払方法</span>{{ receipt.payment_method }}</div>
   </div>
+  <div class="footer-note">上記金額を確かに受領しました</div>
 </body>
 </html>

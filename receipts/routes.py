@@ -1009,10 +1009,11 @@ def receipts_submit_sign(token: str):
         abort(400)
 
     signer_name = request.form.get("signer_name", "").strip()
-    signer_agree = request.form.get("agree") == "on"
+    consent_terms = request.form.get("consent_terms") == "on"
+    consent_received = request.form.get("consent_received") == "on"
 
-    if not signer_agree:
-        flash("同意にチェックしてください。", "warning")
+    if not consent_terms or not consent_received:
+        flash("同意確認のチェックが必要です。", "warning")
         return redirect(url_for("receipts.receipts_sign", token=token))
 
     db = get_db()
@@ -1059,8 +1060,9 @@ def receipts_submit_sign(token: str):
             """
             INSERT INTO signatures
             (receipt_version_id, signed_at, signer_name_input, signer_email,
-             signature_type, signature_image_path, ip, user_agent, op_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+             signature_type, signature_image_path, ip, user_agent, op_id,
+             consent_terms, consent_received)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 version["id"],
@@ -1072,6 +1074,8 @@ def receipts_submit_sign(token: str):
                 request.remote_addr,
                 request.headers.get("User-Agent"),
                 op_id,
+                consent_terms,
+                consent_received,
             ),
         )
         signature_id = cur.lastrowid
@@ -1100,6 +1104,8 @@ def receipts_submit_sign(token: str):
             ip=request.remote_addr,
             user_agent=request.headers.get("User-Agent"),
             op_id=op_id,
+            consent_terms=consent_terms,
+            consent_received=consent_received,
         )
         _render_pdf(audit_page_html, audit_path, base_url=request.url_root)
         _merge_pdf(version["original_pdf_path"], audit_path, temp_final_path)
@@ -1115,6 +1121,8 @@ def receipts_submit_sign(token: str):
             ip=request.remote_addr,
             user_agent=request.headers.get("User-Agent"),
             op_id=op_id,
+            consent_terms=consent_terms,
+            consent_received=consent_received,
         )
         _render_pdf(audit_page_html, audit_path, base_url=request.url_root)
         _merge_pdf(version["original_pdf_path"], audit_path, final_path)
@@ -1147,7 +1155,7 @@ def receipts_submit_sign(token: str):
             receipt_id=receipt["id"],
             version_id=version["id"],
             token_id=token_row["id"],
-            result=f"ok:{signature_id}",
+            result=f"ok:{signature_id}:consent_terms={int(consent_terms)}:consent_received={int(consent_received)}",
             ip=request.remote_addr,
             user_agent=request.headers.get("User-Agent"),
         )

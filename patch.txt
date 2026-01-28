@@ -1,61 +1,8 @@
 diff --git a/receipts/template/sign.html b/receipts/template/sign.html
-index f6468164d5f97b0c4f7cf03fca844e23537c6f99..bfd3317fa31d9b688e873d785b465792373f5017 100644
+index bfd3317fa31d9b688e873d785b465792373f5017..dafdf1cb24f6951c3fa3e00c619070f77a85d8f2 100644
 --- a/receipts/template/sign.html
 +++ b/receipts/template/sign.html
-@@ -1,38 +1,38 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-   <meta charset="UTF-8">
-   <title>受領書署名</title>
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
--    #signature-pad {
--      border: 1px solid #ddd;
--      width: 100%;
--      height: 200px;
--      touch-action: none;
-+    .notice {
-+      border: 1px solid #e3e7ed;
-+      border-radius: 6px;
-+      background: #f8f9fa;
-+      padding: 12px;
-     }
-   </style>
- </head>
- <body class="bg-light">
- <div class="container py-4">
-   <h1 class="mb-3">受領書署名</h1>
- 
-   <div class="alert alert-secondary">
-     <strong>受領書番号:</strong> {{ receipt.receipt_no }}<br>
-     <strong>金額:</strong> {{ receipt.amount }} 円<br>
-     <strong>摘要:</strong> {{ receipt.description }}<br>
-     <strong>支払方法:</strong> {{ receipt.payment_method }}
-   </div>
- 
-   {% with messages = get_flashed_messages(with_categories=true) %}
-     {% if messages %}
-       {% for category, message in messages %}
-         <div class="alert alert-{{ category }}">{{ message }}</div>
-       {% endfor %}
-     {% endif %}
-   {% endwith %}
- 
-   <div class="card mb-3">
-     <div class="card-body">
-       <h5 class="card-title">OTP送信</h5>
-@@ -40,106 +40,45 @@
-         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-         <button class="btn btn-primary">OTPを送信</button>
-       </form>
-     </div>
-   </div>
- 
-   <div class="card mb-3">
-     <div class="card-body">
-       <h5 class="card-title">OTP確認</h5>
+@@ -49,36 +49,40 @@
        <form method="post" action="{{ url_for('receipts.receipts_verify_otp', token=token) }}">
          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
          <div class="input-group">
@@ -72,91 +19,29 @@ index f6468164d5f97b0c4f7cf03fca844e23537c6f99..bfd3317fa31d9b688e873d785b465792
    <div class="card">
      <div class="card-body">
        <h5 class="card-title">署名</h5>
--      <form method="post" action="{{ url_for('receipts.receipts_submit_sign', token=token) }}" onsubmit="syncSignature()">
-+      <form method="post" action="{{ url_for('receipts.receipts_submit_sign', token=token) }}">
+       <form method="post" action="{{ url_for('receipts.receipts_submit_sign', token=token) }}">
          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
--        <input type="hidden" name="signature_data" id="signature_data">
          <div class="mb-3">
--          <label class="form-label">署名文字列（氏名）</label>
--          <input type="text" name="signer_name" class="form-control" placeholder="氏名を入力">
-+          <label class="form-label">署名者氏名（必須）</label>
-+          <input type="text" name="signer_name" class="form-control" placeholder="氏名を入力" required>
+           <label class="form-label">署名者氏名（必須）</label>
+           <input type="text" name="signer_name" class="form-control" placeholder="氏名を入力" required>
          </div>
--        <div class="mb-3">
--          <label class="form-label">手書き署名</label>
--          <canvas id="signature-pad"></canvas>
--          <div class="mt-2">
--            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSignature()">クリア</button>
--          </div>
-+        <div class="notice mb-3">
-+          署名方式は「文字署名（氏名入力）」です。内容を確認し、同意チェックの上で確定してください。
+         <div class="notice mb-3">
+           署名方式は「文字署名（氏名入力）」です。内容を確認し、同意チェックの上で確定してください。
          </div>
++        <div class="form-check mb-2">
++          <input class="form-check-input" type="checkbox" name="consent_terms" id="consent_terms" required>
++          <label class="form-check-label" for="consent_terms">受領書の内容を確認し、同意します。</label>
++        </div>
          <div class="form-check mb-3">
-           <input class="form-check-input" type="checkbox" name="agree" id="agree" required>
--          <label class="form-check-label" for="agree">内容に同意します</label>
-+          <label class="form-check-label" for="agree">内容を確認し同意します</label>
+-          <input class="form-check-input" type="checkbox" name="agree" id="agree" required>
+-          <label class="form-check-label" for="agree">内容を確認し同意します</label>
++          <input class="form-check-input" type="checkbox" name="consent_received" id="consent_received" required>
++          <label class="form-check-label" for="consent_received">上記金額を確かに受領しました。</label>
          </div>
--        <button class="btn btn-success">署名を完了</button>
-+        <button class="btn btn-success">署名して確定</button>
+         <button class="btn btn-success">署名して確定</button>
        </form>
      </div>
    </div>
  </div>
--
--<script>
--  const canvas = document.getElementById('signature-pad');
--  const ctx = canvas.getContext('2d');
--  let drawing = false;
--
--  function resizeCanvas() {
--    canvas.width = canvas.offsetWidth;
--    canvas.height = canvas.offsetHeight;
--    ctx.strokeStyle = '#000';
--    ctx.lineWidth = 2;
--  }
--  window.addEventListener('resize', resizeCanvas);
--  resizeCanvas();
--
--  function startDraw(e) {
--    drawing = true;
--    ctx.beginPath();
--    ctx.moveTo(getX(e), getY(e));
--  }
--
--  function draw(e) {
--    if (!drawing) return;
--    ctx.lineTo(getX(e), getY(e));
--    ctx.stroke();
--  }
--
--  function endDraw() {
--    drawing = false;
--  }
--
--  function getX(e) {
--    return (e.touches ? e.touches[0].clientX : e.clientX) - canvas.getBoundingClientRect().left;
--  }
--
--  function getY(e) {
--    return (e.touches ? e.touches[0].clientY : e.clientY) - canvas.getBoundingClientRect().top;
--  }
--
--  canvas.addEventListener('mousedown', startDraw);
--  canvas.addEventListener('mousemove', draw);
--  canvas.addEventListener('mouseup', endDraw);
--  canvas.addEventListener('mouseleave', endDraw);
--  canvas.addEventListener('touchstart', startDraw);
--  canvas.addEventListener('touchmove', draw);
--  canvas.addEventListener('touchend', endDraw);
--
--  function clearSignature() {
--    ctx.clearRect(0, 0, canvas.width, canvas.height);
--  }
--
--  function syncSignature() {
--    const dataUrl = canvas.toDataURL('image/png');
--    document.getElementById('signature_data').value = dataUrl;
--  }
--</script>
  </body>
  </html>
