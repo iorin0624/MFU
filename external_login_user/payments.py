@@ -706,6 +706,7 @@ def pay_return(event_uuid: str):
     if is_success and not already:
         # 講座：メンバー行が無いケースに備えて upsert
         db2 = get_db(); cur2 = db2.cursor()
+        member_id = None
         try:
             if lecture:
                 cur2.execute("""
@@ -729,9 +730,31 @@ def pay_return(event_uuid: str):
                      WHERE event_id=%s AND user_id=%s
                 """, (paid_amount_yen, receipt_url, payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
+            cur2.execute("""
+                SELECT id
+                  FROM mfu_event_member
+                 WHERE event_id=%s AND user_id=%s
+                 LIMIT 1
+            """, (ev["id"], me["id"]))  # type: ignore
+            row = cur2.fetchone()
+            if row:
+                member_id = row[0] if isinstance(row, tuple) else row.get("id")
         finally:
             try: cur2.close(); db2.close()
             except Exception: pass
+
+        receipt_pdf_url = None
+        if member_id:
+            try:
+                receipt_pdf_url = url_for(
+                    "external_login_user.member_receipt_pdf",
+                    event_uuid=event_uuid,
+                    member_id=member_id,
+                    _external=True,
+                )
+            except Exception:
+                receipt_pdf_url = None
+        receipt_link = receipt_pdf_url or receipt_url
 
         # セッションクリア＆通知（既存ロジックそのまま）
         try:
@@ -751,7 +774,7 @@ def pay_return(event_uuid: str):
                 f"イベント: {ev.get('title','(無題)')}",
                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
-                f"レシートURL: {receipt_url or '(なし)'}",
+                f"レシートURL: {receipt_link or '(なし)'}",
                 f"管理画面: {admin_link}" if admin_link else "",
                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
             ]
@@ -781,7 +804,7 @@ def pay_return(event_uuid: str):
                     "当日、お会いできるのを楽しみにしております！\n\n"
                     f"イベント: {ev.get('title','(無題)')}\n"
                     f"金額: {amount_line}\n"
-                    f"レシートURL: {receipt_url or '(なし)'}\n"
+                    f"レシートURL: {receipt_link or '(なし)'}\n"
                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
                     "--\n"
                     "小松　伊織\n"
@@ -1401,6 +1424,7 @@ def lecture_return(event_uuid: str):
     if is_success and not already_paid:
         # 無ければ安全に作ってから反映（承認前でもOK）
         db2 = get_db(); cur2 = db2.cursor()
+        member_id = None
         try:
             cur2.execute("""
                 INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, require_payment, joined_at)
@@ -1418,9 +1442,31 @@ def lecture_return(event_uuid: str):
                  WHERE event_id=%s AND user_id=%s
             """, (paid_amount_yen, receipt_url, payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
+            cur2.execute("""
+                SELECT id
+                  FROM mfu_event_member
+                 WHERE event_id=%s AND user_id=%s
+                 LIMIT 1
+            """, (ev["id"], me["id"]))  # type: ignore
+            row = cur2.fetchone()
+            if row:
+                member_id = row[0] if isinstance(row, tuple) else row.get("id")
         finally:
             try: cur2.close(); db2.close()
             except Exception: pass
+
+        receipt_pdf_url = None
+        if member_id:
+            try:
+                receipt_pdf_url = url_for(
+                    "external_login_user.member_receipt_pdf",
+                    event_uuid=event_uuid,
+                    member_id=member_id,
+                    _external=True,
+                )
+            except Exception:
+                receipt_pdf_url = None
+        receipt_link = receipt_pdf_url or receipt_url
 
         # セッションのフォールバック情報はクリア
         try:
@@ -1440,7 +1486,7 @@ def lecture_return(event_uuid: str):
                 f"イベント: {ev.get('title','(無題)')}",
                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
-                f"レシートURL: {receipt_url or '(なし)'}",
+                f"レシートURL: {receipt_link or '(なし)'}",
                 f"管理画面: {admin_link}" if admin_link else "",
                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
             ]
@@ -1469,7 +1515,7 @@ def lecture_return(event_uuid: str):
                     "当日、お会いできるのを楽しみにしております！\n\n"
                     f"イベント: {ev.get('title','(無題)')}\n"
                     f"金額: {amount_line}\n"
-                    f"レシートURL: {receipt_url or '(なし)'}\n"
+                    f"レシートURL: {receipt_link or '(なし)'}\n"
                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
                     "--\n"
                     "小松　伊織\n"
