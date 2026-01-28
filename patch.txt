@@ -1,56 +1,35 @@
-diff --git a/templates/base.html b/templates/base.html
-index 3a12cad15e4ca6975c28f841da299621e66b71bf..5949fdfbe291c26a675d2a7dd240c82bb879c6cd 100644
---- a/templates/base.html
-+++ b/templates/base.html
-@@ -13,50 +13,51 @@
-     <div class="container-fluid">
-       <a class="navbar-brand" href="/">📂 MFU</a>
- 
-       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
-         <span class="navbar-toggler-icon"></span>
-       </button>
- 
-       <div class="collapse navbar-collapse" id="navbarMain">
-         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
- 
-           {% if session.get('user') %}
-           <!-- アップロード関係（全ユーザー） -->
-           <li class="nav-item dropdown">
-             <a class="nav-link dropdown-toggle" href="#" id="navUpload" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-              ⬆️ アップロード関係
-             </a>
-             <ul class="dropdown-menu" aria-labelledby="navUpload">
-               <li><a class="dropdown-item" href="/modes">⚙️ モード管理</a></li>
-               <li><a class="dropdown-item" href="/upload_list">📜 アップロード履歴</a></li>
-             </ul>
-           </li>
- 
-           <!-- 単独メニュー（全ユーザー） -->
-           <li class="nav-item"><a class="nav-link" href="/album/admin_create_album/">🖼 アルバム管理</a></li>
-           <li class="nav-item"><a class="nav-link" href="/tickets/admin">🎟 チケット管理</a></li>
-+          <li class="nav-item"><a class="nav-link" href="/receipts">🧾 受領書</a></li>
-           <li class="nav-item"><a class="nav-link" href="/external-login/admin/events">📅 イベント一覧</a></li>
- 
-           {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
-           {% if session.user == 'admin' %}
-             <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
-             <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
-           {% endif %}
- 
-           {# ==== ここから：システム系はadminのみ、一般は/account ==== #}
-           {% if session.user == 'admin' %}
-             <!-- システム系（adminのみ） -->
-             <li class="nav-item dropdown">
-               <a class="nav-link dropdown-toggle" href="#" id="navSystem" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                 🧰 システム系
-               </a>
-               <ul class="dropdown-menu" aria-labelledby="navSystem">
-                 <li><a class="dropdown-item" href="/admin/users">👤 ユーザー管理</a></li>
-                 <li><hr class="dropdown-divider"></li>
-                 <li><a class="dropdown-item" href="/admin/maintenance">🛠 メンテナンス切換</a></li>
-                 <li><a class="dropdown-item" href="/admin/logs">📑 アクセスログ</a></li>
-                 <li><a class="dropdown-item" href="/service_logs/">📡 システムログ</a></li>
-                 <!-- ▼ 追加：ノード監視（スピードテストの上に配置） -->
-                 <li><a class="dropdown-item" href="/admin/nodes">🖥 ノード監視</a></li>
-                 <!-- ▲ 追加ここまで -->
-                 <li><a class="dropdown-item" href="/speedtest">🚀 スピードテスト</a></li>
+diff --git a/receipts/template/pdf_original.html b/receipts/template/pdf_original.html
+index 72323d7a113920e8274ad28a27540be6ea7a39ab..84abc24a720b79c2a5e9ff90ecd434ec2bbacb05 100644
+--- a/receipts/template/pdf_original.html
++++ b/receipts/template/pdf_original.html
+@@ -1,26 +1,30 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <style>
+     body { font-family: "Noto Sans CJK JP", "Hiragino Kaku Gothic Pro", "Meiryo", sans-serif; }
+     .header { text-align: center; font-size: 20px; margin-bottom: 24px; }
+     .box { border: 1px solid #333; padding: 16px; }
+     .row { margin-bottom: 8px; }
+     .label { width: 120px; display: inline-block; font-weight: bold; }
+   </style>
+ </head>
+ <body>
+   <div class="header">受領書（原本）</div>
+   <div class="box">
+     <div class="row"><span class="label">受領書番号</span>{{ receipt.receipt_no }}</div>
+     <div class="row"><span class="label">発行日</span>{{ receipt.issue_date.strftime('%Y-%m-%d') if receipt.issue_date else '' }}</div>
+     <div class="row"><span class="label">支払日</span>{{ receipt.pay_date.strftime('%Y-%m-%d') if receipt.pay_date else '' }}</div>
++    <div class="row"><span class="label">支払者氏名</span>{{ receipt.payer_name }}</div>
++    <div class="row"><span class="label">支払者住所</span>{{ receipt.payer_address }}</div>
++    <div class="row"><span class="label">支払者電話</span>{{ receipt.payer_phone }}</div>
++    <div class="row"><span class="label">支払者メール</span>{{ receipt.payer_email }}</div>
+     <div class="row"><span class="label">相手氏名</span>{{ receipt.recipient_name }}</div>
+     <div class="row"><span class="label">相手メール</span>{{ receipt.recipient_email }}</div>
+     <div class="row"><span class="label">金額</span>{{ receipt.amount }} 円</div>
+     <div class="row"><span class="label">摘要</span>{{ receipt.description }}</div>
+     <div class="row"><span class="label">支払方法</span>{{ receipt.payment_method }}</div>
+   </div>
+ </body>
+ </html>

@@ -19,8 +19,37 @@
     </p>
     <p class="card-text">
       <strong>現行バージョン:</strong> v{{ version.version_no }}<br>
-      <strong>原本ハッシュ:</strong> {{ version.hash_original }}
+      <strong>原本ハッシュ:</strong> {{ version.hash_original }}<br>
+      <strong>確定ハッシュ:</strong> {{ version.hash_final or '生成中' }}
     </p>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <h5 class="card-title">支払者情報</h5>
+    <form method="post" action="{{ url_for('receipts.receipts_update_payer', receipt_id=receipt.id) }}" class="row g-3">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="col-md-6">
+        <label class="form-label">支払者氏名</label>
+        <input type="text" name="payer_name" class="form-control" value="{{ receipt.payer_name }}" required>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">支払者メール</label>
+        <input type="email" name="payer_email" class="form-control" value="{{ receipt.payer_email }}" required>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">支払者電話番号</label>
+        <input type="text" name="payer_phone" class="form-control" value="{{ receipt.payer_phone }}" required>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">支払者住所</label>
+        <input type="text" name="payer_address" class="form-control" value="{{ receipt.payer_address }}" required>
+      </div>
+      <div class="col-12">
+        <button class="btn btn-outline-primary">支払者情報を更新</button>
+      </div>
+    </form>
   </div>
 </div>
 

@@ -16,6 +16,10 @@
     <div class="row"><span class="label">受領書番号</span>{{ receipt.receipt_no }}</div>
     <div class="row"><span class="label">発行日</span>{{ receipt.issue_date.strftime('%Y-%m-%d') if receipt.issue_date else '' }}</div>
     <div class="row"><span class="label">支払日</span>{{ receipt.pay_date.strftime('%Y-%m-%d') if receipt.pay_date else '' }}</div>
+    <div class="row"><span class="label">支払者氏名</span>{{ receipt.payer_name }}</div>
+    <div class="row"><span class="label">支払者住所</span>{{ receipt.payer_address }}</div>
+    <div class="row"><span class="label">支払者電話</span>{{ receipt.payer_phone }}</div>
+    <div class="row"><span class="label">支払者メール</span>{{ receipt.payer_email }}</div>
     <div class="row"><span class="label">相手氏名</span>{{ receipt.recipient_name }}</div>
     <div class="row"><span class="label">相手メール</span>{{ receipt.recipient_email }}</div>
     <div class="row"><span class="label">金額</span>{{ receipt.amount }} 円</div>

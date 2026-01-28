@@ -3,6 +3,11 @@ import base64
 import hashlib
 import os
 import secrets
+from email.header import Header
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formataddr, formatdate, make_msgid
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -13,7 +18,7 @@ from flask import (
 
 from . import receipts_bp
 from app.utils.db import get_db
-from app.utils.mail import send_mail
+from app.utils.mail import send_mail, send_mime
 
 JST = timezone(timedelta(hours=9))
 RECEIPTS_ROOT = os.environ.get("MFU_RECEIPTS_ROOT", "/mnt/mfu/app/receipts")
@@ -200,6 +205,34 @@ def _render_pdf(html: str, out_path: str, base_url: str | None = None) -> None:
     HTML(string=html, base_url=base_url).write_pdf(out_path)
 
 
+def _get_user_email(cur, username: str | None) -> str | None:
+    if not username:
+        return None
+    cur.execute("SELECT email FROM users WHERE username = %s", (username,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return row[0] if not isinstance(row, dict) else row.get("email")
+
+
+def _send_pdf_notice(to_email: str, subject: str, body: str, pdf_path: str) -> None:
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((Header("IORI0624_MFUシステム", "utf-8").encode(), "noreply@mail.iori0624.jp"))
+    msg["To"] = to_email
+    msg["Reply-To"] = "admin@mail.iori0624.jp"
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-Id"] = make_msgid(domain="mail.iori0624.jp")
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    with open(pdf_path, "rb") as f:
+        part = MIMEApplication(f.read(), _subtype="pdf")
+    part.add_header("Content-Disposition", "attachment", filename=os.path.basename(pdf_path))
+    msg.attach(part)
+
+    send_mime(msg)
+
+
 def _merge_pdf(original_path: str, audit_path: str, out_path: str) -> None:
     try:
         from PyPDF2 import PdfReader, PdfWriter
@@ -270,6 +303,10 @@ def receipts_new():
     pay_date = datetime.strptime(form.get("pay_date"), "%Y-%m-%d")
     recipient_name = form.get("recipient_name", "").strip()
     recipient_email = form.get("recipient_email", "").strip()
+    payer_name = form.get("payer_name", "").strip()
+    payer_address = form.get("payer_address", "").strip()
+    payer_phone = form.get("payer_phone", "").strip()
+    payer_email = form.get("payer_email", "").strip()
     amount = int(form.get("amount"))
     description = form.get("description", "").strip()
     payment_method = form.get("payment_method", "").strip()
@@ -281,13 +318,18 @@ def receipts_new():
         cur.execute(
             """
             INSERT INTO receipts
-            (receipt_no, issuer_user_id, recipient_name, recipient_email, issue_date, pay_date,
-             amount, description, payment_method, status, created_at, updated_at, is_deleted)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, 0)
+            (receipt_no, issuer_user_id, payer_name, payer_address, payer_phone, payer_email,
+             recipient_name, recipient_email, issue_date, pay_date, amount, description,
+             payment_method, status, created_at, updated_at, is_deleted)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, 0)
             """,
             (
                 receipt_no,
                 session.get("user"),
+                payer_name,
+                payer_address,
+                payer_phone,
+                payer_email,
                 recipient_name,
                 recipient_email,
                 issue_date,
@@ -321,6 +363,10 @@ def receipts_new():
             "receipt_no": receipt_no,
             "issue_date": issue_date,
             "pay_date": pay_date,
+            "payer_name": payer_name,
+            "payer_address": payer_address,
+            "payer_phone": payer_phone,
+            "payer_email": payer_email,
             "recipient_name": recipient_name,
             "recipient_email": recipient_email,
             "amount": amount,
@@ -375,6 +421,53 @@ def receipts_detail(receipt_id: int):
     cur.execute("SELECT * FROM receipt_versions WHERE id = %s", (receipt["current_version_id"],))
     version = _fetchone_dict(cur)
     return render_template("detail.html", receipt=receipt, version=version, csrf_token=_new_csrf_token())
+
+
+@receipts_bp.route("/receipts/<int:receipt_id>/payer", methods=["POST"])
+def receipts_update_payer(receipt_id: int):
+    if not _check_csrf(request.form.get("csrf_token")):
+        abort(400)
+
+    payer_name = request.form.get("payer_name", "").strip()
+    payer_address = request.form.get("payer_address", "").strip()
+    payer_phone = request.form.get("payer_phone", "").strip()
+    payer_email = request.form.get("payer_email", "").strip()
+
+    if not all([payer_name, payer_address, payer_phone, payer_email]):
+        flash("支払者情報をすべて入力してください。", "warning")
+        return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE receipts
+            SET payer_name = %s,
+                payer_address = %s,
+                payer_phone = %s,
+                payer_email = %s,
+                updated_at = %s
+            WHERE id = %s AND is_deleted = 0
+            """,
+            (payer_name, payer_address, payer_phone, payer_email, _now_jst(), receipt_id),
+        )
+        _append_audit_log(
+            cur,
+            actor_type="issuer",
+            actor_id=session.get("user"),
+            action="update_payer",
+            receipt_id=receipt_id,
+            result="ok",
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    flash("支払者情報を更新しました。", "success")
+    return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
 
 
 @receipts_bp.route("/receipts/<int:receipt_id>/send", methods=["POST"])
@@ -486,6 +579,10 @@ def receipts_reissue(receipt_id: int):
             "receipt_no": receipt["receipt_no"],
             "issue_date": receipt["issue_date"],
             "pay_date": receipt["pay_date"],
+            "payer_name": receipt["payer_name"],
+            "payer_address": receipt["payer_address"],
+            "payer_phone": receipt["payer_phone"],
+            "payer_email": receipt["payer_email"],
             "recipient_name": receipt["recipient_name"],
             "recipient_email": receipt["recipient_email"],
             "amount": receipt["amount"],
@@ -938,6 +1035,69 @@ def receipts_submit_sign(token: str):
             version_id=version["id"],
             token_id=token_row["id"],
             result=f"ok:{signature_id}",
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
+
+        issuer_email = _get_user_email(cur, receipt.get("issuer_user_id"))
+        recipient_subject = f"【受領書確定】{receipt['receipt_no']}"
+        recipient_body = (
+            f"{receipt['recipient_name']} 様\n\n"
+            "受領書の署名が完了しました。控えのPDFを添付します。\n\n"
+            f"受領書番号: {receipt['receipt_no']}\n"
+            f"金額: {receipt['amount']} 円\n"
+            f"摘要: {receipt['description']}\n"
+            f"確定PDF SHA-256: {hash_final}\n"
+        )
+        issuer_subject = f"【受領書署名完了】{receipt['receipt_no']}"
+        issuer_body = (
+            f"受領書の署名が完了しました。\n\n"
+            f"受領書番号: {receipt['receipt_no']}\n"
+            f"相手: {receipt['recipient_name']}（{receipt['recipient_email']}）\n"
+            f"金額: {receipt['amount']} 円\n"
+            f"摘要: {receipt['description']}\n"
+            f"確定PDF SHA-256: {hash_final}\n"
+        )
+
+        recipient_result = "skip"
+        issuer_result = "skip"
+        try:
+            if os.path.exists(final_path):
+                _send_pdf_notice(receipt["recipient_email"], recipient_subject, recipient_body, final_path)
+                recipient_result = "ok"
+            else:
+                recipient_result = "ng:missing_pdf"
+        except Exception as e:
+            recipient_result = f"ng:{e}"
+
+        try:
+            if issuer_email:
+                send_mail(issuer_email, issuer_subject, issuer_body)
+                issuer_result = "ok"
+        except Exception as e:
+            issuer_result = f"ng:{e}"
+
+        _append_audit_log(
+            cur,
+            actor_type="system",
+            actor_id=issuer_email,
+            action="notify_issuer_final",
+            receipt_id=receipt["id"],
+            version_id=version["id"],
+            token_id=token_row["id"],
+            result=issuer_result,
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+        )
+        _append_audit_log(
+            cur,
+            actor_type="system",
+            actor_id=receipt["recipient_email"],
+            action="notify_recipient_final",
+            receipt_id=receipt["id"],
+            version_id=version["id"],
+            token_id=token_row["id"],
+            result=recipient_result,
             ip=request.remote_addr,
             user_agent=request.headers.get("User-Agent"),
         )
