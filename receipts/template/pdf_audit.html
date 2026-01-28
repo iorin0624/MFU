@@ -17,7 +17,7 @@
   <div class="row"><span class="label">署名日時（JST）</span>{{ signed_at.strftime('%Y-%m-%d %H:%M:%S') }}</div>
   <div class="row"><span class="label">認証手段</span>メールOTP</div>
   <div class="row"><span class="label">原本PDF SHA-256</span><span class="hash">{{ version.hash_original }}</span></div>
-  <div class="row"><span class="label">確定PDF SHA-256</span><span class="hash">{{ version.hash_final or '生成中' }}</span></div>
+  <div class="row"><span class="label">確定PDF SHA-256</span><span class="hash">{{ version.hash_final or '管理画面に記録' }}</span></div>
   <div class="row"><span class="label">IP</span>{{ ip }}</div>
   <div class="row"><span class="label">User-Agent</span>{{ user_agent }}</div>
   <div class="row"><span class="label">署名操作ID</span>{{ op_id }}</div>
