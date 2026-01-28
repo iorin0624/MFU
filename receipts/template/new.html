@@ -26,12 +26,22 @@
       <input type="text" name="payment_method" class="form-control" placeholder="現金/振込/QR" required>
     </div>
     <div class="col-md-6">
+      <label class="form-label">相手先を選択</label>
+      <input type="text" name="recipient_select" class="form-control" list="recipient_list" placeholder="表示名（メール）で検索" value="{% if recipient_prefill.recipient_name and recipient_prefill.recipient_email %}{{ recipient_prefill.recipient_name }}（{{ recipient_prefill.recipient_email }}）{% endif %}">
+      <datalist id="recipient_list">
+        {% for r in recipients %}
+        <option value="{{ r.display_name }}（{{ r.email }}）" data-name="{{ r.display_name }}" data-email="{{ r.email }}"></option>
+        {% endfor %}
+      </datalist>
+      <div class="form-text">過去の相手先から選ぶと自動入力されます。</div>
+    </div>
+    <div class="col-md-6">
       <label class="form-label">相手氏名</label>
-      <input type="text" name="recipient_name" class="form-control" required>
+      <input type="text" name="recipient_name" class="form-control" value="{{ recipient_prefill.recipient_name or '' }}" required>
     </div>
     <div class="col-md-6">
       <label class="form-label">相手メール</label>
-      <input type="email" name="recipient_email" class="form-control" required>
+      <input type="email" name="recipient_email" class="form-control" value="{{ recipient_prefill.recipient_email or '' }}" required>
     </div>
     <div class="col-md-12">
       <label class="form-label">摘要</label>
@@ -91,10 +101,49 @@
     <label class="form-check-label" for="update_profile">受領書作成時にプロフィールも更新する</label>
   </div>
 
+  <div class="form-check mt-2">
+    <input class="form-check-input" type="checkbox" name="save_recipient" id="save_recipient" checked>
+    <label class="form-check-label" for="save_recipient">相手先をアドレス帳に保存する</label>
+  </div>
+  <div class="form-check mt-2">
+    <input class="form-check-input" type="checkbox" name="update_recipient_name" id="update_recipient_name">
+    <label class="form-check-label" for="update_recipient_name">既存相手先の表示名を更新する</label>
+  </div>
+
   <div class="mt-3">
     <button class="btn btn-outline-primary me-2" name="action" value="save_profile" formnovalidate>プロフィール保存</button>
     <button class="btn btn-primary" name="action" value="create">受領書作成</button>
     <a class="btn btn-secondary" href="{{ url_for('receipts.receipts_list') }}">戻る</a>
+    <a class="btn btn-outline-secondary" href="{{ url_for('receipts.recipients_list') }}">相手先一覧</a>
   </div>
 </form>
+{% endblock %}
+
+{% block body_extra %}
+<script>
+  document.addEventListener("DOMContentLoaded", function() {
+    const selector = document.querySelector('input[name="recipient_select"]');
+    const nameInput = document.querySelector('input[name="recipient_name"]');
+    const emailInput = document.querySelector('input[name="recipient_email"]');
+    const list = document.getElementById("recipient_list");
+
+    if (!selector || !list) {
+      return;
+    }
+
+    selector.addEventListener("change", function() {
+      const value = selector.value;
+      const option = Array.from(list.options).find((opt) => opt.value === value);
+      if (!option) {
+        return;
+      }
+      if (nameInput) {
+        nameInput.value = option.dataset.name || "";
+      }
+      if (emailInput) {
+        emailInput.value = option.dataset.email || "";
+      }
+    });
+  });
+</script>
 {% endblock %}
