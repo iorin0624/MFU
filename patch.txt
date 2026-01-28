@@ -1,504 +1,56 @@
-diff --git a/payment/template/pay.html b/payment/template/pay.html
-index 3249bffad9cf99d5b7846d8baad3f8a56d59f708..6b85f727c23b4b792dc644f021d6abde7d84ad5d 100644
---- a/payment/template/pay.html
-+++ b/payment/template/pay.html
-@@ -1,168 +1,211 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-   <meta charset="UTF-8" />
-   <title>{{ event.title }} - お支払い</title>
-   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-   <script src="{{ square_js_url }}"></script>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+diff --git a/templates/base.html b/templates/base.html
+index 3a12cad15e4ca6975c28f841da299621e66b71bf..5949fdfbe291c26a675d2a7dd240c82bb879c6cd 100644
+--- a/templates/base.html
++++ b/templates/base.html
+@@ -13,50 +13,51 @@
+     <div class="container-fluid">
+       <a class="navbar-brand" href="/">📂 MFU</a>
  
-   <style>
-     :root{ --brand:#2563eb; --text:#0f172a; }
-     html,body{height:100%}
-     body{
-       max-width: 820px; margin: 0 auto; color: var(--text); background: #fff;
-       -webkit-text-size-adjust: 100%;
-       font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif;
-       padding: 16px 12px 40px;
-     }
-     .frame{ background:#fff; border-radius: 16px; box-shadow: 0 8px 20px rgba(0,0,0,.05);
-       border: 1px solid #e5e7eb; padding: clamp(14px, 3.5vw, 20px); margin: 0 auto; }
-     .page-title{ font-weight: 700; font-size: clamp(18px, 2.6vw, 22px); line-height: 1.25; margin: 0 0 12px; }
-     .brand-strip{display:block; max-width:100%; height:auto; margin:.25rem 0 1rem}
-     #card-container{margin: 10px 0 12px}
-     .help-note{font-size: 12px; color:#475569}
+       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+         <span class="navbar-toggler-icon"></span>
+       </button>
  
--    /* ラジオ外観 */
-     .method-card{border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; cursor:pointer; user-select:none;}
-     .method-card input{margin-right:8px}
-     .method-card.active{border-color:#60a5fa; box-shadow:0 0 0 3px rgba(37,99,235,.15)}
-     .method-card.disabled{opacity:.45; cursor:not-allowed}
-+    .method-card:focus-within{
-+      border-color:#60a5fa;
-+      box-shadow:0 0 0 3px rgba(37,99,235,.2);
-+      background:#eff6ff;
-+    }
+       <div class="collapse navbar-collapse" id="navbarMain">
+         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
  
--    /* 切替表示 */
-     .pay-section{ display:none; }
-     .pay-section.show{ display:block; }
- 
--    /* GPay/Apple を中央寄せ */
-     .center-row{ display:flex; justify-content:center; align-items:center; }
- 
--    /* カード用の支払ボタン（カードセクション内だけに存在） */
-     .pay-wrap{ display:flex; justify-content:center; margin-top: 8px; }
-     #pay{ min-height: 48px; padding: 10px 22px; border-radius: 12px; font-weight: 700; min-width: 220px; }
- 
--    /* Apple Pay 見た目（native見た目を維持しつつ角丸可） */
-+    #section-card{
-+      background: #f8fafc;
-+      border: 1px solid #e2e8f0;
-+      border-radius: 14px;
-+      padding: 12px;
-+    }
-+
-+    @media (max-width: 576px){
-+      #pay{ width: 100%; min-width: auto; }
-+    }
-+
-     #apple-pay-button{
-       display:block; border-radius:12px;
--      WebkitAppearance:-apple-pay-button; appearance:-apple-pay-button;
-+      -webkit-appearance:-apple-pay-button; appearance:-apple-pay-button;
-       -apple-pay-button-type: plain; -apple-pay-button-style: black;
-     }
- 
--    /* GPayホストの角丸を反映させるために切り抜き */
-     #google-pay-button{ overflow:hidden; border-radius:12px; }
- 
--    /* 計測用に一時表示するクラス（非表示のまま寸法を取得） */
-     .measure{ display:block !important; visibility:hidden !important; position:absolute !important; left:-99999px !important; }
- 
-     .loading-backdrop{ position: fixed; inset: 0; background: rgba(15,23,42,.25);
-       display:none; align-items:center; justify-content:center; z-index: 1100; }
-     .loading-card{ background:#fff; padding:16px 20px; border-radius:14px;
-       box-shadow: 0 8px 24px rgba(0,0,0,.15); text-align:center; color: var(--text);
-       border: 1px solid #e5e7eb; }
-     .spinner{width:22px;height:22px;border:3px solid #e5e7eb;border-top-color:var(--brand);border-radius:50%;animation:spin .9s linear infinite;margin-right:8px;display:inline-block;vertical-align:-5px}
-     @keyframes spin{to{transform:rotate(360deg)}}
-+
-+    .amount-hero {
-+      text-align: center;
-+      margin: 1.5rem 0 2.25rem;
-+      padding: 1.4rem;
-+      background: #f8f9fa;
-+      border-radius: 16px;
-+      border: 1px solid #dee2e6;
-+    }
-+    .amount-hero .yen {
-+      font-size: clamp(2.2rem, 6vw, 3.2rem);
-+      font-weight: 900;
-+      color: var(--brand);
-+      line-height: 1;
-+      letter-spacing: 0.02em;
-+    }
-+    .amount-hero .who {
-+      font-size: 1.25rem;
-+      margin: 0.85rem 0 0.35rem;
-+      color: #333;
-+    }
-+    .amount-hero .title {
-+      font-size: 0.98rem;
-+      color: #64748b;
-+    }
-+    .amount-hero .title::before {
-+      content: "支払い対象";
-+      display: block;
-+      font-size: 0.78rem;
-+      color: #94a3b8;
-+      letter-spacing: 0.08em;
-+      margin-bottom: 0.2rem;
-+    }
-   </style>
- </head>
- <body>
-+  <div class="amount-hero">
-+    <div class="yen" id="heroAmount">—</div>
-+    <div class="who">
-+      {{ (autofill.nickname if autofill and autofill.nickname else '（ニックネーム未設定）') | e }} さんとしてのお支払い
-+    </div>
-+    <div class="title">{{ event.title }} 参加費</div>
-+  </div>
-+
-   <h1 class="page-title">{{ event.title }} お支払い</h1>
- 
-   <div class="frame">
-     <form id="pay-form" class="row gy-3" onsubmit="return false;">
--      <!-- 表示のみ：ニックネーム -->
-       <div class="col-12 col-md-6">
-         <label class="form-label">ニックネーム</label>
-         <div id="nicknameView" class="form-control-plaintext fw-bold">
--          {{ (autofill.get('nickname','') if autofill else '') }}
-+          {{ (autofill.nickname if autofill else '') | e }}
-         </div>
-       </div>
- 
--      <!-- 金額表示 -->
-       <div class="col-12 col-md-6">
-         <label class="form-label">金額（円）</label>
-         <div id="amountView" class="form-control-plaintext fw-bold">—</div>
-       </div>
- 
--      <!-- 表示のみ：X ID -->
-       <div class="col-12 col-md-6">
-         <label class="form-label">X ID</label>
-         <div id="xIdView" class="form-control-plaintext">
--          {{ (autofill.get('x_id','') if autofill else '') }}
-+          {{ (autofill.x_id if autofill else '') | e }}
-         </div>
-       </div>
- 
--      <!-- 表示のみ：Instagram ID -->
-       <div class="col-12 col-md-6">
-         <label class="form-label">Instagram ID</label>
-         <div id="instaIdView" class="form-control-plaintext">
--          {{ (autofill.get('instagram_id','') if autofill else '') }}
-+          {{ (autofill.instagram_id if autofill else '') | e }}
-         </div>
-       </div>
- 
-       <div class="col-12">
-         <label class="form-label d-block">カード情報 / ウォレット</label>
-         <img class="brand-strip" src="/payment/template/credit_card_payment.png"
-              alt="対応ブランド（Visa / Mastercard / American Express / JCB / Diners / Discover）">
- 
--        <!-- 支払方法ラジオ -->
-         <div class="row g-2 mb-2" id="methodRadios">
-           <div class="col-12 col-md-4">
-             <label class="method-card w-100" id="radio-gpay-label">
-               <input type="radio" name="pay-method" id="radio-gpay" value="gpay">
-               <strong>Google Pay</strong>
-             </label>
-           </div>
-           <div class="col-12 col-md-4">
-             <label class="method-card w-100" id="radio-apple-label" title="非対応端末では使用できません">
-               <input type="radio" name="pay-method" id="radio-apple" value="apple">
-               <strong>Apple Pay</strong>
-             </label>
-           </div>
-           <div class="col-12 col-md-4">
-             <label class="method-card w-100" id="radio-card-label">
-               <input type="radio" name="pay-method" id="radio-card" value="card" checked>
-               <strong>カード番号入力</strong>
-             </label>
-           </div>
-         </div>
- 
--        <!-- 切替セクション -->
-         <div id="section-gpay" class="pay-section">
-           <div id="googlepay-wrap" class="center-row" style="margin:8px 0;">
-             <div id="google-pay-button"></div>
-           </div>
-         </div>
- 
-         <div id="section-apple" class="pay-section">
-           <div id="applepay-wrap" class="center-row" style="margin:8px 0;">
-             <button type="button" id="apple-pay-button"></button>
-           </div>
-         </div>
- 
-         <div id="section-card" class="pay-section show" aria-label="クレジットカード入力欄">
-           <div id="card-container"></div>
-           <div class="help-note">※ ニックネームと <strong>X または Instagram のいずれか</strong>は事前に登録されています。</div>
--          <!-- 支払うボタンはカード用のみ -->
-           <div class="pay-wrap">
-             <button id="pay" type="button" class="btn btn-primary">支払う</button>
-           </div>
-         </div>
-       </div>
-     </form>
-   </div>
- 
- <!-- 案内/メッセージ モーダル（修正後） -->
- <div class="modal fade" id="infoModal" tabindex="-1" aria-labelledby="infoModalLabel" aria-hidden="true">
-   <div class="modal-dialog modal-dialog-centered">
-     <div class="modal-content">
-       <div class="modal-header">
-         <h2 class="modal-title h6" id="infoModalLabel">お支払い前のご案内</h2>
-         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
-       </div>
-       <div class="modal-body">
-         <ol class="mb-3">
-           <li>クレジットカード決済は <strong>Square</strong> を通して行います。</li>
-           <li class="mb-2">
-             使用できるブランドは <strong>Visa、Mastercard、JCB、American Express、Diners、Discover</strong> です。<br>
-             <img class="brand-strip" src="/payment/template/credit_card_payment.png"
-                  alt="対応ブランド（Visa / Mastercard / American Express / JCB / Diners / Discover）">
+           {% if session.get('user') %}
+           <!-- アップロード関係（全ユーザー） -->
+           <li class="nav-item dropdown">
+             <a class="nav-link dropdown-toggle" href="#" id="navUpload" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              ⬆️ アップロード関係
+             </a>
+             <ul class="dropdown-menu" aria-labelledby="navUpload">
+               <li><a class="dropdown-item" href="/modes">⚙️ モード管理</a></li>
+               <li><a class="dropdown-item" href="/upload_list">📜 アップロード履歴</a></li>
+             </ul>
            </li>
-           <li>Apple Pay と Google Pay に対応しています。ご利用の方はボタンにて切り替えお願いいたします。</li>
-@@ -189,134 +232,139 @@
-         <div class="modal-footer">
-           <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
-         </div>
-       </div>
-     </div>
-   </div>
  
-   <div class="loading-backdrop" id="loading">
-     <div class="loading-card">
-       <span class="spinner"></span>
-       <span>処理中です。しばらくお待ちください…</span>
-     </div>
-   </div>
+           <!-- 単独メニュー（全ユーザー） -->
+           <li class="nav-item"><a class="nav-link" href="/album/admin_create_album/">🖼 アルバム管理</a></li>
+           <li class="nav-item"><a class="nav-link" href="/tickets/admin">🎟 チケット管理</a></li>
++          <li class="nav-item"><a class="nav-link" href="/receipts">🧾 受領書</a></li>
+           <li class="nav-item"><a class="nav-link" href="/external-login/admin/events">📅 イベント一覧</a></li>
  
-   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+           {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
+           {% if session.user == 'admin' %}
+             <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
+             <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
+           {% endif %}
  
- <script>
-   const appId = "{{ app_id }}";
-   const locationId = "{{ location_id }}";
-   const chargeUrl = "{{ url_for('payment.api_charge', event_uuid=event.uuid) }}";
-   const precheckUrl = "{{ url_for('payment.api_precheck', event_uuid=event.uuid) }}";
-   const squareJsUrl = "{{ square_js_url }}";
-   const paymentToken = {{ (payment_token or '') | tojson }};
-   const returnUrl = {{ (return_url or '') | tojson }};
- 
--  /* 表示専用の固定値（サーバから埋め込み） */
-   const AUTOFILL = {
--    nickname: {{ ((autofill.get('nickname','') if autofill else '') | tojson) }},
--    x_id: {{ ((autofill.get('x_id','') if autofill else '') | tojson) }},
--    instagram_id: {{ ((autofill.get('instagram_id','') if autofill else '') | tojson) }},
-+    nickname: {{ (autofill.nickname if autofill else '') | tojson }},
-+    x_id: {{ (autofill.x_id if autofill else '') | tojson }},
-+    instagram_id: {{ (autofill.instagram_id if autofill else '') | tojson }},
-   };
- 
-   function getFixedUserInputs(){
-     const nickname = (AUTOFILL.nickname || '').trim();
-     const x_id = sanitizeHandle(AUTOFILL.x_id || '');
-     const instagram_id = sanitizeHandle(AUTOFILL.instagram_id || '');
-     return { nickname, x_id, instagram_id };
-   }
- 
--  // ラジオ
-   const $radioG = document.getElementById('radio-gpay');
-   const $radioA = document.getElementById('radio-apple');
-   const $radioC = document.getElementById('radio-card');
-   const $labelG = document.getElementById('radio-gpay-label');
-   const $labelA = document.getElementById('radio-apple-label');
-   const $labelC = document.getElementById('radio-card-label');
- 
--  // セクション
-   const $secG = document.getElementById('section-gpay');
-   const $secA = document.getElementById('section-apple');
-   const $secC = document.getElementById('section-card');
- 
--  // 共通UI
-   const $loading = document.getElementById('loading');
-   const $amountView = document.getElementById('amountView');
-+  const $heroAmount = document.getElementById('heroAmount');
- 
-   function log(...args){ try{ console.log('[PAY]', ...args); }catch{} }
-   function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));}
-   function showModal(title, html){
-     document.getElementById('msgModalLabel').textContent = title || 'お知らせ';
-     document.getElementById('msgModalBody').innerHTML = html || '';
-     new bootstrap.Modal(document.getElementById('msgModal')).show();
-   }
-   function showError(msg){ showModal('エラー', `<div class="text-danger">${escapeHtml(msg)}</div>`); }
-   function sanitizeHandle(v){ if(!v) return ''; v=v.trim(); if(v.startsWith('@')) v=v.slice(1); return v.trim().toLowerCase(); }
--  function setAmount(yen){ const n = Number(yen||0); $amountView.textContent = n>0 ? `¥${n.toLocaleString()}` : '—'; window.__amountYen = n; }
-+  function setAmount(yen){
-+    const n = Number(yen||0);
-+    const formatted = n>0 ? `¥${n.toLocaleString()}` : '—';
-+    $amountView.textContent = formatted;
-+    $heroAmount.textContent = formatted;
-+    window.__amountYen = n;
-+    updatePayButtonText();
-+  }
-   function setBusy(b){
--    const payBtn = document.querySelector('#pay'); // カードセクション内
--    if (payBtn) { payBtn.disabled = b; payBtn.textContent = b ? '処理中…' : '支払う'; }
-+    const payBtn = document.getElementById('pay');
-+    if (payBtn) { payBtn.disabled = b; }
-     $loading.style.display = b ? 'flex' : 'none';
-   }
-   function redirectAfterPayment(data){
-     if (!returnUrl) {
-       const receipt = data?.receipt_url ? `<a href="${escapeHtml(data.receipt_url)}" target="_blank" rel="noopener">レシートを表示</a>` : 'レシート情報が取得できませんでした。';
-       showModal('お支払いが完了しました', receipt);
-       return;
-     }
-     try{
-       const url = new URL(returnUrl);
-       const params = {
-         status: 'ok',
-         payment_id: data?.payment_id,
-         receipt: data?.receipt_url,
-         payment_token: paymentToken,
-         amount_yen: data?.amount_yen,
-         payment_row_id: data?.payment_row_id,
-       };
-       Object.entries(params).forEach(([key, value]) => {
-         if (value !== undefined && value !== null && String(value).trim() !== '') {
-           url.searchParams.set(key, String(value));
-         }
-       });
-       location.href = url.toString();
-     }catch(e){
-       showError(e?.message || String(e));
-     }
-   }
- 
-   // ラジオUI切替
-   function setActive(label){
-     [$labelG,$labelA,$labelC].forEach(el=>el.classList.remove('active'));
-     label.classList.add('active');
-   }
-   function switchSection(){
-     $secG.classList.toggle('show', $radioG.checked);
-     $secA.classList.toggle('show', $radioA.checked);
-     $secC.classList.toggle('show', $radioC.checked);
-     setActive($radioG.checked ? $labelG : $radioA.checked ? $labelA : $labelC);
--    sizeWalletButtons(); // 切替時も寸法同期
-+    sizeWalletButtons();
-+    updatePayButtonText();
-   }
-   ['change','click'].forEach(ev=>{
-     $radioG.addEventListener(ev, switchSection);
-     $radioA.addEventListener(ev, switchSection);
-     $radioC.addEventListener(ev, switchSection);
-   });
- 
-   new bootstrap.Modal(document.getElementById('infoModal')).show();
- 
-   // ---------- 支払ボタンと同寸に揃える ----------
-   function measurePaySize(){
-     const cardSec = document.getElementById('section-card');
-     const payBtn = document.getElementById('pay');
-     if (!payBtn) return {w:220,h:48,r:12};
- 
-     let addedMeasure = false;
-     if (!cardSec.classList.contains('show')) {
-       cardSec.classList.add('measure');
-       addedMeasure = true;
-     }
-     const rect = payBtn.getBoundingClientRect();
-     const styles = getComputedStyle(payBtn);
-     const w = rect.width  || 220;
-     const h = rect.height || 48;
-     const r = parseFloat(styles.borderRadius) || 12;
-@@ -324,81 +372,116 @@
-     return {w,h,r};
-   }
- 
-   function sizeWalletButtons(){
-     const {w,h,r} = measurePaySize();
- 
-     // Google Pay host
-     const gHost = document.getElementById('google-pay-button');
-     if (gHost){
-       gHost.style.width  = `${w}px`;
-       gHost.style.height = `${h}px`;
-       gHost.style.borderRadius = `${r}px`;
-       gHost.style.display = 'block';
-       gHost.style.overflow = 'hidden';
-     }
-     // Apple Pay button
-     const aBtn = document.getElementById('apple-pay-button');
-     if (aBtn){
-       aBtn.style.width  = `${w}px`;
-       aBtn.style.height = `${h}px`;
-       aBtn.style.borderRadius = `${r}px`;
-       aBtn.style.display = 'block';
-     }
-   }
- 
-+  function updatePayButtonText() {
-+    const amountStr = window.__amountYen > 0 ? `¥${window.__amountYen.toLocaleString()}` : '';
-+    const btn = document.getElementById('pay');
-+    if (!btn) return;
-+
-+    if ($radioA.checked) {
-+      btn.textContent = amountStr ? `Apple Payで ${amountStr} を支払う` : 'Apple Payで支払う';
-+    } else if ($radioG.checked) {
-+      btn.textContent = amountStr ? `Google Payで ${amountStr} を支払う` : 'Google Payで支払う';
-+    } else {
-+      btn.textContent = amountStr ? `${amountStr} を今すぐ支払う` : '支払う';
-+    }
-+  }
-+
-   // ---------- Square 初期化 ----------
-   async function main() {
-     if (!window.Square) { showError('Square.jsの読み込みに失敗しました'); log('Square.js not found:', squareJsUrl); return; }
-     let payments;
-     try { payments = window.Square.payments(appId, locationId); log('Square.payments init OK'); }
-     catch (e) { showError('appId/locationIdエラー: ' + (e?.message || e)); return; }
- 
-     // 初回 precheck（AUTOFILLを送る）
-     try{
-       const { nickname, x_id, instagram_id } = getFixedUserInputs();
-       const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-         body: JSON.stringify({ nickname: nickname || '（未設定）', x_id, instagram_id, payment_token: paymentToken }) });
-       const pj = await pre.json().catch(()=>({}));
-       if (pre.ok && pj && pj.amount_yen) setAmount(pj.amount_yen); else setAmount(0);
-     }catch(e){ setAmount(0); }
- 
-     // カード欄
-     try{
-       const card = await payments.card();
-       await card.attach('#card-container');
-       setupCardFlow(card);
-     }catch(e){ log('card.attach FAILED:', e); }
- 
-     // Google Pay
--    initGooglePay(payments);
-+    await initGooglePay(payments);
- 
-     // Apple Pay
--    initApplePay_NoAttach(payments);
-+    await initApplePay_NoAttach(payments);
-+
-+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-+                  /iPad|iPhone|iPod/.test(navigator.platform) ||
-+                  (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
-+    const isAndroid = /Android/.test(navigator.userAgent);
-+
-+    if (isIOS && !$radioA.disabled) {
-+      $radioA.checked = true;
-+      log('Auto-selected: Apple Pay (iOS detected)');
-+    } else if (isAndroid && !$radioG.disabled) {
-+      $radioG.checked = true;
-+      log('Auto-selected: Google Pay (Android detected)');
-+    } else {
-+      $radioC.checked = true;
-+      log('Auto-selected: Card (fallback)');
-+    }
- 
-     switchSection();
-     sizeWalletButtons();
-+    updatePayButtonText();
-+    setTimeout(() => {
-+      switchSection();
-+      sizeWalletButtons();
-+    }, 300);
-     window.addEventListener('resize', sizeWalletButtons);
-   }
- 
-   // ---------- Google Pay ----------
-   async function initGooglePay(payments){
-     let gpay;
-     try {
-       const paymentRequest = payments.paymentRequest({
-         countryCode: "JP",
-         currencyCode: "JPY",
-         total: { amount: String(window.__amountYen || {{ event_amount|int }}), label: "{{ event.title|e }}" }
-       });
-       gpay = await payments.googlePay(paymentRequest);
-     } catch (e) {
-       $radioG.disabled = true; $labelG.classList.add('disabled'); switchSection(); return;
-     }
- 
-     const wrap = document.getElementById('googlepay-wrap');
-     const btnHost = document.getElementById('google-pay-button');
-     if (!btnHost) return;
- 
-     try {
-       await gpay.attach('#google-pay-button');  // 公式UI（iframe）
-       if (wrap) { wrap.style.display = 'flex'; wrap.style.opacity = '1'; }
-       $radioG.disabled = false; $labelG.classList.remove('disabled');
+           {# ==== ここから：システム系はadminのみ、一般は/account ==== #}
+           {% if session.user == 'admin' %}
+             <!-- システム系（adminのみ） -->
+             <li class="nav-item dropdown">
+               <a class="nav-link dropdown-toggle" href="#" id="navSystem" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                 🧰 システム系
+               </a>
+               <ul class="dropdown-menu" aria-labelledby="navSystem">
+                 <li><a class="dropdown-item" href="/admin/users">👤 ユーザー管理</a></li>
+                 <li><hr class="dropdown-divider"></li>
+                 <li><a class="dropdown-item" href="/admin/maintenance">🛠 メンテナンス切換</a></li>
+                 <li><a class="dropdown-item" href="/admin/logs">📑 アクセスログ</a></li>
+                 <li><a class="dropdown-item" href="/service_logs/">📡 システムログ</a></li>
+                 <!-- ▼ 追加：ノード監視（スピードテストの上に配置） -->
+                 <li><a class="dropdown-item" href="/admin/nodes">🖥 ノード監視</a></li>
+                 <!-- ▲ 追加ここまで -->
+                 <li><a class="dropdown-item" href="/speedtest">🚀 スピードテスト</a></li>

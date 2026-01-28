@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}受領書作成{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">受領書の新規作成</h1>
+
+<form method="post" class="card card-body">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="row g-3">
+    <div class="col-md-3">
+      <label class="form-label">発行日</label>
+      <input type="date" name="issue_date" class="form-control" required>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">支払日</label>
+      <input type="date" name="pay_date" class="form-control" required>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">金額</label>
+      <input type="number" name="amount" class="form-control" required>
+    </div>
+    <div class="col-md-3">
+      <label class="form-label">支払方法</label>
+      <input type="text" name="payment_method" class="form-control" placeholder="現金/振込/QR" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">相手氏名</label>
+      <input type="text" name="recipient_name" class="form-control" required>
+    </div>
+    <div class="col-md-6">
+      <label class="form-label">相手メール</label>
+      <input type="email" name="recipient_email" class="form-control" required>
+    </div>
+    <div class="col-md-12">
+      <label class="form-label">摘要</label>
+      <input type="text" name="description" class="form-control" required>
+    </div>
+  </div>
+
+  <div class="mt-3">
+    <button class="btn btn-primary">作成</button>
+    <a class="btn btn-secondary" href="{{ url_for('receipts.receipts_list') }}">戻る</a>
+  </div>
+</form>
+{% endblock %}

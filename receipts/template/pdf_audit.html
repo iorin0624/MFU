@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body { font-family: "Noto Sans CJK JP", "Hiragino Kaku Gothic Pro", "Meiryo", sans-serif; }
+    h2 { margin-bottom: 16px; }
+    .row { margin-bottom: 6px; }
+    .label { width: 160px; display: inline-block; font-weight: bold; }
+    .hash { font-family: monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>署名証跡ページ</h2>
+  <div class="row"><span class="label">署名者氏名</span>{{ signer_name or '（未入力）' }}</div>
+  <div class="row"><span class="label">署名者メール</span>{{ signer_email }}</div>
+  <div class="row"><span class="label">署名日時（JST）</span>{{ signed_at.strftime('%Y-%m-%d %H:%M:%S') }}</div>
+  <div class="row"><span class="label">認証手段</span>メールOTP</div>
+  <div class="row"><span class="label">原本PDF SHA-256</span><span class="hash">{{ version.hash_original }}</span></div>
+  <div class="row"><span class="label">確定PDF SHA-256</span><span class="hash">{{ version.hash_final or '生成中' }}</span></div>
+  <div class="row"><span class="label">IP</span>{{ ip }}</div>
+  <div class="row"><span class="label">User-Agent</span>{{ user_agent }}</div>
+  <div class="row"><span class="label">署名操作ID</span>{{ op_id }}</div>
+</body>
+</html>

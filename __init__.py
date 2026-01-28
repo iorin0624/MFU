@@ -58,6 +58,7 @@ from app.utils.thumbs import enqueue_thumb_job
 from app.utils.totp_util import get_user_otp_secret
 from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
+from app.receipts import receipts_bp
 from app.utils.mail import send_mail 
 
 # =====================================
@@ -2210,6 +2211,8 @@ app.register_blueprint(tickets_bp)
 
 from .payment import bp as payment_bp
 app.register_blueprint(payment_bp)
+
+app.register_blueprint(receipts_bp)
 
 from app.utils.logs import log_request_raw, write_login_log, log_access
 

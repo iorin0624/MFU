@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block title %}受領書詳細{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">受領書詳細</h1>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <h5 class="card-title">{{ receipt.receipt_no }}</h5>
+    <p class="card-text">
+      <strong>相手:</strong> {{ receipt.recipient_name }}（{{ receipt.recipient_email }}）<br>
+      <strong>金額:</strong> {{ receipt.amount }} 円<br>
+      <strong>摘要:</strong> {{ receipt.description }}<br>
+      <strong>支払方法:</strong> {{ receipt.payment_method }}<br>
+      <strong>発行日:</strong> {{ receipt.issue_date.strftime('%Y-%m-%d') if receipt.issue_date else '' }}<br>
+      <strong>支払日:</strong> {{ receipt.pay_date.strftime('%Y-%m-%d') if receipt.pay_date else '' }}<br>
+      <strong>状態:</strong> <span class="badge bg-secondary">{{ receipt.status }}</span>
+    </p>
+    <p class="card-text">
+      <strong>現行バージョン:</strong> v{{ version.version_no }}<br>
+      <strong>原本ハッシュ:</strong> {{ version.hash_original }}
+    </p>
+  </div>
+</div>
+
+<div class="d-flex flex-wrap gap-2">
+  <form method="post" action="{{ url_for('receipts.receipts_send', receipt_id=receipt.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-primary">署名リンク送信</button>
+  </form>
+  <form method="post" action="{{ url_for('receipts.receipts_reissue', receipt_id=receipt.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-warning">再発行</button>
+  </form>
+  <a class="btn btn-success" href="{{ url_for('receipts.receipts_download', receipt_id=receipt.id) }}">確定PDFダウンロード</a>
+  <a class="btn btn-secondary" href="{{ url_for('receipts.receipts_list') }}">一覧へ</a>
+</div>
+{% endblock %}
