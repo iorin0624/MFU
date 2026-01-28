@@ -23,34 +23,43 @@
     #card-container{margin: 10px 0 12px}
     .help-note{font-size: 12px; color:#475569}
 
-    /* ラジオ外観 */
     .method-card{border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; cursor:pointer; user-select:none;}
     .method-card input{margin-right:8px}
     .method-card.active{border-color:#60a5fa; box-shadow:0 0 0 3px rgba(37,99,235,.15)}
     .method-card.disabled{opacity:.45; cursor:not-allowed}
+    .method-card:focus-within{
+      border-color:#60a5fa;
+      box-shadow:0 0 0 3px rgba(37,99,235,.2);
+      background:#eff6ff;
+    }
 
-    /* 切替表示 */
     .pay-section{ display:none; }
     .pay-section.show{ display:block; }
 
-    /* GPay/Apple を中央寄せ */
     .center-row{ display:flex; justify-content:center; align-items:center; }
 
-    /* カード用の支払ボタン（カードセクション内だけに存在） */
     .pay-wrap{ display:flex; justify-content:center; margin-top: 8px; }
     #pay{ min-height: 48px; padding: 10px 22px; border-radius: 12px; font-weight: 700; min-width: 220px; }
 
-    /* Apple Pay 見た目（native見た目を維持しつつ角丸可） */
+    #section-card{
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    @media (max-width: 576px){
+      #pay{ width: 100%; min-width: auto; }
+    }
+
     #apple-pay-button{
       display:block; border-radius:12px;
-      WebkitAppearance:-apple-pay-button; appearance:-apple-pay-button;
+      -webkit-appearance:-apple-pay-button; appearance:-apple-pay-button;
       -apple-pay-button-type: plain; -apple-pay-button-style: black;
     }
 
-    /* GPayホストの角丸を反映させるために切り抜き */
     #google-pay-button{ overflow:hidden; border-radius:12px; }
 
-    /* 計測用に一時表示するクラス（非表示のまま寸法を取得） */
     .measure{ display:block !important; visibility:hidden !important; position:absolute !important; left:-99999px !important; }
 
     .loading-backdrop{ position: fixed; inset: 0; background: rgba(15,23,42,.25);
@@ -60,40 +69,77 @@
       border: 1px solid #e5e7eb; }
     .spinner{width:22px;height:22px;border:3px solid #e5e7eb;border-top-color:var(--brand);border-radius:50%;animation:spin .9s linear infinite;margin-right:8px;display:inline-block;vertical-align:-5px}
     @keyframes spin{to{transform:rotate(360deg)}}
+
+    .amount-hero {
+      text-align: center;
+      margin: 1.5rem 0 2.25rem;
+      padding: 1.4rem;
+      background: #f8f9fa;
+      border-radius: 16px;
+      border: 1px solid #dee2e6;
+    }
+    .amount-hero .yen {
+      font-size: clamp(2.2rem, 6vw, 3.2rem);
+      font-weight: 900;
+      color: var(--brand);
+      line-height: 1;
+      letter-spacing: 0.02em;
+    }
+    .amount-hero .who {
+      font-size: 1.25rem;
+      margin: 0.85rem 0 0.35rem;
+      color: #333;
+    }
+    .amount-hero .title {
+      font-size: 0.98rem;
+      color: #64748b;
+    }
+    .amount-hero .title::before {
+      content: "支払い対象";
+      display: block;
+      font-size: 0.78rem;
+      color: #94a3b8;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.2rem;
+    }
   </style>
 </head>
 <body>
+  <div class="amount-hero">
+    <div class="yen" id="heroAmount">—</div>
+    <div class="who">
+      {{ (autofill.nickname if autofill and autofill.nickname else '（ニックネーム未設定）') | e }} さんとしてのお支払い
+    </div>
+    <div class="title">{{ event.title }} 参加費</div>
+  </div>
+
   <h1 class="page-title">{{ event.title }} お支払い</h1>
 
   <div class="frame">
     <form id="pay-form" class="row gy-3" onsubmit="return false;">
-      <!-- 表示のみ：ニックネーム -->
       <div class="col-12 col-md-6">
         <label class="form-label">ニックネーム</label>
         <div id="nicknameView" class="form-control-plaintext fw-bold">
-          {{ (autofill.get('nickname','') if autofill else '') }}
+          {{ (autofill.nickname if autofill else '') | e }}
         </div>
       </div>
 
-      <!-- 金額表示 -->
       <div class="col-12 col-md-6">
         <label class="form-label">金額（円）</label>
         <div id="amountView" class="form-control-plaintext fw-bold">—</div>
       </div>
 
-      <!-- 表示のみ：X ID -->
       <div class="col-12 col-md-6">
         <label class="form-label">X ID</label>
         <div id="xIdView" class="form-control-plaintext">
-          {{ (autofill.get('x_id','') if autofill else '') }}
+          {{ (autofill.x_id if autofill else '') | e }}
         </div>
       </div>
 
-      <!-- 表示のみ：Instagram ID -->
       <div class="col-12 col-md-6">
         <label class="form-label">Instagram ID</label>
         <div id="instaIdView" class="form-control-plaintext">
-          {{ (autofill.get('instagram_id','') if autofill else '') }}
+          {{ (autofill.instagram_id if autofill else '') | e }}
         </div>
       </div>
 
@@ -102,7 +148,6 @@
         <img class="brand-strip" src="/payment/template/credit_card_payment.png"
              alt="対応ブランド（Visa / Mastercard / American Express / JCB / Diners / Discover）">
 
-        <!-- 支払方法ラジオ -->
         <div class="row g-2 mb-2" id="methodRadios">
           <div class="col-12 col-md-4">
             <label class="method-card w-100" id="radio-gpay-label">
@@ -124,7 +169,6 @@
           </div>
         </div>
 
-        <!-- 切替セクション -->
         <div id="section-gpay" class="pay-section">
           <div id="googlepay-wrap" class="center-row" style="margin:8px 0;">
             <div id="google-pay-button"></div>
@@ -140,7 +184,6 @@
         <div id="section-card" class="pay-section show" aria-label="クレジットカード入力欄">
           <div id="card-container"></div>
           <div class="help-note">※ ニックネームと <strong>X または Instagram のいずれか</strong>は事前に登録されています。</div>
-          <!-- 支払うボタンはカード用のみ -->
           <div class="pay-wrap">
             <button id="pay" type="button" class="btn btn-primary">支払う</button>
           </div>
@@ -211,11 +254,10 @@
   const paymentToken = {{ (payment_token or '') | tojson }};
   const returnUrl = {{ (return_url or '') | tojson }};
 
-  /* 表示専用の固定値（サーバから埋め込み） */
   const AUTOFILL = {
-    nickname: {{ ((autofill.get('nickname','') if autofill else '') | tojson) }},
-    x_id: {{ ((autofill.get('x_id','') if autofill else '') | tojson) }},
-    instagram_id: {{ ((autofill.get('instagram_id','') if autofill else '') | tojson) }},
+    nickname: {{ (autofill.nickname if autofill else '') | tojson }},
+    x_id: {{ (autofill.x_id if autofill else '') | tojson }},
+    instagram_id: {{ (autofill.instagram_id if autofill else '') | tojson }},
   };
 
   function getFixedUserInputs(){
@@ -225,7 +267,6 @@
     return { nickname, x_id, instagram_id };
   }
 
-  // ラジオ
   const $radioG = document.getElementById('radio-gpay');
   const $radioA = document.getElementById('radio-apple');
   const $radioC = document.getElementById('radio-card');
@@ -233,14 +274,13 @@
   const $labelA = document.getElementById('radio-apple-label');
   const $labelC = document.getElementById('radio-card-label');
 
-  // セクション
   const $secG = document.getElementById('section-gpay');
   const $secA = document.getElementById('section-apple');
   const $secC = document.getElementById('section-card');
 
-  // 共通UI
   const $loading = document.getElementById('loading');
   const $amountView = document.getElementById('amountView');
+  const $heroAmount = document.getElementById('heroAmount');
 
   function log(...args){ try{ console.log('[PAY]', ...args); }catch{} }
   function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));}
@@ -251,10 +291,17 @@
   }
   function showError(msg){ showModal('エラー', `<div class="text-danger">${escapeHtml(msg)}</div>`); }
   function sanitizeHandle(v){ if(!v) return ''; v=v.trim(); if(v.startsWith('@')) v=v.slice(1); return v.trim().toLowerCase(); }
-  function setAmount(yen){ const n = Number(yen||0); $amountView.textContent = n>0 ? `¥${n.toLocaleString()}` : '—'; window.__amountYen = n; }
+  function setAmount(yen){
+    const n = Number(yen||0);
+    const formatted = n>0 ? `¥${n.toLocaleString()}` : '—';
+    $amountView.textContent = formatted;
+    $heroAmount.textContent = formatted;
+    window.__amountYen = n;
+    updatePayButtonText();
+  }
   function setBusy(b){
-    const payBtn = document.querySelector('#pay'); // カードセクション内
-    if (payBtn) { payBtn.disabled = b; payBtn.textContent = b ? '処理中…' : '支払う'; }
+    const payBtn = document.getElementById('pay');
+    if (payBtn) { payBtn.disabled = b; }
     $loading.style.display = b ? 'flex' : 'none';
   }
   function redirectAfterPayment(data){
@@ -294,7 +341,8 @@
     $secA.classList.toggle('show', $radioA.checked);
     $secC.classList.toggle('show', $radioC.checked);
     setActive($radioG.checked ? $labelG : $radioA.checked ? $labelA : $labelC);
-    sizeWalletButtons(); // 切替時も寸法同期
+    sizeWalletButtons();
+    updatePayButtonText();
   }
   ['change','click'].forEach(ev=>{
     $radioG.addEventListener(ev, switchSection);
@@ -346,6 +394,20 @@
     }
   }
 
+  function updatePayButtonText() {
+    const amountStr = window.__amountYen > 0 ? `¥${window.__amountYen.toLocaleString()}` : '';
+    const btn = document.getElementById('pay');
+    if (!btn) return;
+
+    if ($radioA.checked) {
+      btn.textContent = amountStr ? `Apple Payで ${amountStr} を支払う` : 'Apple Payで支払う';
+    } else if ($radioG.checked) {
+      btn.textContent = amountStr ? `Google Payで ${amountStr} を支払う` : 'Google Payで支払う';
+    } else {
+      btn.textContent = amountStr ? `${amountStr} を今すぐ支払う` : '支払う';
+    }
+  }
+
   // ---------- Square 初期化 ----------
   async function main() {
     if (!window.Square) { showError('Square.jsの読み込みに失敗しました'); log('Square.js not found:', squareJsUrl); return; }
@@ -370,13 +432,34 @@
     }catch(e){ log('card.attach FAILED:', e); }
 
     // Google Pay
-    initGooglePay(payments);
+    await initGooglePay(payments);
 
     // Apple Pay
-    initApplePay_NoAttach(payments);
+    await initApplePay_NoAttach(payments);
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                  /iPad|iPhone|iPod/.test(navigator.platform) ||
+                  (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
+    const isAndroid = /Android/.test(navigator.userAgent);
+
+    if (isIOS && !$radioA.disabled) {
+      $radioA.checked = true;
+      log('Auto-selected: Apple Pay (iOS detected)');
+    } else if (isAndroid && !$radioG.disabled) {
+      $radioG.checked = true;
+      log('Auto-selected: Google Pay (Android detected)');
+    } else {
+      $radioC.checked = true;
+      log('Auto-selected: Card (fallback)');
+    }
 
     switchSection();
     sizeWalletButtons();
+    updatePayButtonText();
+    setTimeout(() => {
+      switchSection();
+      sizeWalletButtons();
+    }, 300);
     window.addEventListener('resize', sizeWalletButtons);
   }
 
