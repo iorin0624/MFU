@@ -1,66 +1,249 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index 3b5bdea86f3fada4282aff46ef031770cd1cab94..ddda58e5bd7e269d4ae1960f0e171f4413bad2e6 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -1954,59 +1954,60 @@ def view_child(album_id, child_id):
-                     continue
-                 if f in seen:
-                     continue
-                 seen.add(f)
-                 # resolve_thumb_url を大量呼び出ししない（roots を使い回す）
-                 merged.append({"name": f, "thumb": _thumb_with_cached_roots(album_id, child_id, f, roots)})
-         files = sorted(merged, key=lambda x: x["name"])
+diff --git a/payment/__init__.py b/payment/__init__.py
+index c1a6df5a9794dbf5e8e709f7e9196f4fb9df7630..8555d31789eb4c6cc7f5c719285471ecda4f7899 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -606,71 +606,117 @@ def _mfu_event_by_payment_uuid(event_uuid: str) -> dict | None:
  
-     zip_token = session.pop('zip_token', None)
+ def _resolve_payment_token(event_uuid: str) -> str | None:
+     try:
+         token = (request.args.get("payment_token") or "").strip()
+         if token:
+             return token
+     except Exception:
+         pass
+     try:
+         ctx = session.get("pay_ctx") or {}
+         token = (ctx.get("payment_token") or "").strip()
+         return token or None
+     except Exception:
+         return None
  
-     # 加工履歴（静止画用）— どちらか存在する側から読む
-     history_list = []
-     history_path = os.path.join(child_path, "history.json")
-     if os.path.exists(history_path):
-         try:
-             with open(history_path, 'r') as f:
-                 history_list = json.load(f)
-         except Exception as e:
-             current_app.logger.warning("加工履歴読み込みエラー: %s", e)
+ def _fetch_payment_request(conn, event_uuid: str, token: str | None) -> dict | None:
+     if not token:
+         return None
+     me = _mfu_event_by_payment_uuid(event_uuid) or {}
+     event_id = me.get("id")
+     if not event_id:
+         return None
+     cur = conn.cursor()
+     try:
+         cur.execute("""
+-            SELECT id, event_id, user_id, amount_yen, status
++            SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
+               FROM mfu_payment_request
+              WHERE token=%s AND event_id=%s AND status='pending'
+              LIMIT 1
+         """, (token, event_id))
+         row = _fetchone_dict(cur)
+         return row
+     finally:
+         try: cur.close()
+         except Exception: pass
  
-     # 画像ビュー（通常/加工）
-     event_meta = _fetch_album_meta(album_id)
-     is_event_album = bool(event_meta and event_meta.get("access_mode") == "event")
-     is_event_login = bool(_is_ext_logged_in() and is_event_album)
-     event_process_members = []
-+    current_ext_user_id = None
-+    current_user_process_status = None
-     if is_event_album and event_meta and event_meta.get("event_id"):
-         event_process_members = _fetch_event_process_members(int(event_meta["event_id"]))
-         status_map = _fetch_album_process_status_map(album_id, child_id)
-         for member in event_process_members:
-             ext_user_id = int(member.get("user_id"))
-             status = status_map.get(ext_user_id, {})
-             member["request_flag"] = int(status.get("request_flag", 0))
-             member["complete_flag"] = int(status.get("complete_flag", 0))
--        current_ext_user_id = None
-         if is_event_login:
-             current_ext_user_id = session.get("ext_user_id")
-             if not current_ext_user_id:
-                 ext_social_id = session.get("ext_user_social_id")
-                 if ext_social_id:
-                     ext_user = _get_ext_user_by_social(ext_social_id)
-                     if ext_user:
-                         current_ext_user_id = ext_user.get("id")
-         try:
-             current_ext_user_id = int(current_ext_user_id) if current_ext_user_id else None
-         except (TypeError, ValueError):
-             current_ext_user_id = None
-         current_user_process_status = status_map.get(current_ext_user_id) if current_ext_user_id else None
-     if mode == "process" and is_event_album:
-         template_name = "view_child_process_event.html"
-     else:
-         template_name = "view_child_process.html" if mode == "process" else "view_child.html"
+ def _amount_for_payment(conn, event_uuid: str, token: str | None) -> int | None:
+     if token:
+         row = _fetch_payment_request(conn, event_uuid, token)
+         if row:
+             try:
+                 return int(row.get("amount_yen") or 0)
+             except Exception:
+                 return None
+     return None
+ 
++def _infer_payment_token(
++    conn,
++    event_uuid: str,
++    *,
++    nickname: str,
++    x_id: str | None,
++    instagram_id: str | None,
++) -> str | None:
++    me = _mfu_event_by_payment_uuid(event_uuid) or {}
++    event_id = me.get("id")
++    if not event_id:
++        return None
++    cur = conn.cursor()
++    try:
++        if x_id:
++            cur.execute("""
++                SELECT token
++                  FROM mfu_payment_request
++                 WHERE event_id=%s AND status='pending' AND x_id=%s
++                 ORDER BY id DESC
++                 LIMIT 1
++            """, (event_id, x_id))
++        elif instagram_id:
++            cur.execute("""
++                SELECT token
++                  FROM mfu_payment_request
++                 WHERE event_id=%s AND status='pending' AND instagram_id=%s
++                 ORDER BY id DESC
++                 LIMIT 1
++            """, (event_id, instagram_id))
++        else:
++            cur.execute("""
++                SELECT token
++                  FROM mfu_payment_request
++                 WHERE event_id=%s AND status='pending' AND nickname=%s
++                 ORDER BY id DESC
++                 LIMIT 1
++            """, (event_id, nickname))
++        row = cur.fetchone()
++        if not row:
++            return None
++        return row[0] if isinstance(row, tuple) else row.get("token")
++    finally:
++        try: cur.close()
++        except Exception: pass
++
+ def _mark_payment_token_used_and_apply_member_status(
+     conn,
+     *,
+     payment_token: str | None,
+     amount_yen: int | None,
+     receipt_url: str | None,
+     payment_row_id: int | None,
+     payment_status: str | None,
+ ) -> None:
+     if not payment_token:
+         return
+     cur = conn.cursor()
+     try:
+         cur.execute("""
+             UPDATE mfu_payment_request
+                SET status='used', used_at=NOW()
+              WHERE token=%s AND status='pending'
+              LIMIT 1
+         """, (payment_token,))
+         cur.execute("""
+             SELECT event_id, user_id
+               FROM mfu_payment_request
+              WHERE token=%s
+              ORDER BY id DESC
+              LIMIT 1
+@@ -784,50 +830,66 @@ def pay_form(event_uuid: str):
+     autofill = {}
+     return_url = None
+     try:
+         ctx = session.get("pay_ctx") or {}
+         if ctx and (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")):
+             autofill = {
+                 "nickname": ctx.get("nickname") or "",
+                 "x_id": ctx.get("x_id") or "",
+                 "instagram_id": ctx.get("instagram_id") or "",
+             }
+             return_url = ctx.get("return_url")
+     except Exception:
+         logging.exception("read pay_ctx failed")
+ 
+     # クエリがあれば上書き
+     qs_n = (request.args.get("nickname") or "").strip()
+     qs_x = _sanitize_handle(request.args.get("x_id"))
+     qs_i = _sanitize_handle(request.args.get("instagram_id"))
+     if qs_n or qs_x or qs_i:
+         autofill = {
+             "nickname": qs_n or autofill.get("nickname", ""),
+             "x_id": (qs_x or "") or autofill.get("x_id", ""),
+             "instagram_id": (qs_i or "") or autofill.get("instagram_id", ""),
+         }
+ 
++    # payment_token があればDBの情報で補完（未入力のみ補う）
++    if payment_token and (not autofill.get("nickname") or not autofill.get("x_id") or not autofill.get("instagram_id")):
++        conn = _get_db()
++        try:
++            pr = _fetch_payment_request(conn, event_uuid, payment_token) or {}
++        finally:
++            try: conn.close()
++            except Exception: pass
++        if pr:
++            if not autofill.get("nickname"):
++                autofill["nickname"] = pr.get("nickname") or ""
++            if not autofill.get("x_id"):
++                autofill["x_id"] = _sanitize_handle(pr.get("x_id"))
++            if not autofill.get("instagram_id"):
++                autofill["instagram_id"] = _sanitize_handle(pr.get("instagram_id"))
++
      return render_template(
-         template_name,
-         album_id=album_id,
-         child_id=child_id,
-         files=files,
-         videos=videos,
-         image_count=len(files),
-         meta=meta,
+         "pay.html",
+         event=event,
+         event_amount=amount,               # ← 互換のため“明示の金額”も渡す
+         square_js_url=_square_js_url(),
+         app_id=_square_application_id(),
+         location_id=_square_location_id(),
+         autofill=autofill,                 # ← テンプレはこの3項目を参照
+         return_url=return_url,
+         payment_token=payment_token,
+     )
+ 
+ @bp.get("/e/<event_uuid>/thanks")
+ def pay_thanks(event_uuid: str):
+     _ensure_schema()
+     pid = request.args.get("pid")
+ 
+     conn = _get_db()
+     event, payment = None, None
+     try:
+         # 表示用にeventsを取得（amountはthanksでは使用しない）
+         cur = conn.cursor()
+         cur.execute("SELECT * FROM events WHERE uuid=%s LIMIT 1", (event_uuid,))
+         event = _fetchone_dict(cur)
+ 
+@@ -910,50 +972,58 @@ def pay_thanks(event_uuid: str):
+ # ───────────────────────────────────────────────────────────
+ @bp.post("/api/charge/<event_uuid>")
+ def api_charge(event_uuid: str):
+     _ensure_schema()
+     data = request.get_json(force=True)
+ 
+     nickname      = (data.get("nickname") or "").strip()
+     x_id          = _sanitize_handle(data.get("x_id"))
+     instagram_id  = _sanitize_handle(data.get("instagram_id"))
+     source_id     = data.get("sourceId")
+     payment_token = (data.get("payment_token") or request.args.get("payment_token") or "").strip() or None
+ 
+     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
+     _wt_in = data.get("walletType", data.get("wallet_type"))
+     if isinstance(_wt_in, str):
+         _wt_in = _wt_in.strip().upper()
+     else:
+         _wt_in = ""
+     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
+ 
+     if not nickname or not source_id or (not x_id and not instagram_id):
+         return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
+ 
+     conn = _get_db()
+     try:
++        if not payment_token:
++            payment_token = _infer_payment_token(
++                conn,
++                event_uuid,
++                nickname=nickname,
++                x_id=x_id,
++                instagram_id=instagram_id,
++            )
+         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
+         if payment_token and token_amount is None:
+             return jsonify({"message": "支払いトークンが無効です"}), 400
+         # ★ 常に最新金額を取得（トークンがあれば優先）
+         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
+         if not ev or amount <= 0:
+             return jsonify({"message": "イベントが見つからない/無効です"}), 404
+         if token_amount is not None and token_amount > 0:
+             amount = token_amount
+ 
+         # 二重決済ブロック（event_payments に対して）—削除
+         cur = conn.cursor()
+ 
+         access_token = _square_access_token()
+         location_id  = _square_location_id()
+         if not access_token or not location_id:
+             return jsonify({"message": "Square設定が未完了です"}), 500
+ 
+         idemp = str(uuid.uuid4())
+ 
+         # ★ 先にPENDINGで1行作成（wallet_type を保存）
+         cur.execute("""
+             INSERT INTO event_payments
+               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
+                idempotency_key, square_status, wallet_type, payment_token)
