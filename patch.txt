@@ -1,57 +1,66 @@
-diff --git a/templates/admin_maintenance.html b/templates/admin_maintenance.html
-index 443b4afab5f3a7b75ca46d839d3b788818ee704a..a70fa8b1fd3074f3c224d7432776da3df6eb7399 100644
---- a/templates/admin_maintenance.html
-+++ b/templates/admin_maintenance.html
-@@ -1,34 +1,52 @@
- {% extends "base.html" %}
- {% block title %}メンテナンスモード設定{% endblock %}
- {% block content %}
- <div class="container" style="max-width: 600px;">
-   <h2 class="mb-4">🛠 メンテナンスモード設定</h2>
+diff --git a/albums/routes.py b/albums/routes.py
+index 3b5bdea86f3fada4282aff46ef031770cd1cab94..ddda58e5bd7e269d4ae1960f0e171f4413bad2e6 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -1954,59 +1954,60 @@ def view_child(album_id, child_id):
+                     continue
+                 if f in seen:
+                     continue
+                 seen.add(f)
+                 # resolve_thumb_url を大量呼び出ししない（roots を使い回す）
+                 merged.append({"name": f, "thumb": _thumb_with_cached_roots(album_id, child_id, f, roots)})
+         files = sorted(merged, key=lambda x: x["name"])
  
-   <form method="post">
-     <div class="form-check form-switch mb-3">
-       <input class="form-check-input" type="checkbox" name="maintenance_mode" id="toggleSwitch" value="on"
-              {% if current_mode == 'on' %}checked{% endif %}>
-       <label class="form-check-label" for="toggleSwitch">メンテナンスモードON/OFF</label>
-     </div>
+     zip_token = session.pop('zip_token', None)
  
-     <div class="mb-3">
-       <label class="form-label">⏰ 終了予定日時（空欄＝無期限）</label>
-       <input type="datetime-local" name="maintenance_until" class="form-control"
-              value="{{ current_until }}">
-     </div>
+     # 加工履歴（静止画用）— どちらか存在する側から読む
+     history_list = []
+     history_path = os.path.join(child_path, "history.json")
+     if os.path.exists(history_path):
+         try:
+             with open(history_path, 'r') as f:
+                 history_list = json.load(f)
+         except Exception as e:
+             current_app.logger.warning("加工履歴読み込みエラー: %s", e)
  
-+    <div class="mb-3">
-+      <label class="form-label">💳 Square 決済モード（/payment 系）</label>
-+      <select name="square_env_payment" class="form-select">
-+        <option value="SANDBOX" {% if current_square_env_payment == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
-+        <option value="PRODUCTION" {% if current_square_env_payment == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
-+      </select>
-+      <div class="form-text">/payment の API/SDK をこの環境で切り替えます。</div>
-+    </div>
-+
-+    <div class="mb-3">
-+      <label class="form-label">💳 Square 決済モード（外部ログイン/カード登録）</label>
-+      <select name="square_env_external" class="form-select">
-+        <option value="SANDBOX" {% if current_square_env_external == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
-+        <option value="PRODUCTION" {% if current_square_env_external == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
-+      </select>
-+      <div class="form-text">external_login_user のカード登録で使う SDK を切り替えます。</div>
-+    </div>
-+
-     <div class="text-end">
-       <button type="submit" class="btn btn-primary">保存</button>
-     </div>
-   </form>
- 
-   <!-- 🔄 再起動ボタン -->
-   <form method="post" action="{{ url_for('admin_restart') }}" class="mt-4">
-     <div class="text-end">
-       <button type="submit" class="btn btn-danger" onclick="return confirm('2秒後にサーバーを再起動します。本当によろしいですか？');">
-         🔄 サーバー再起動
-       </button>
-     </div>
-   </form>
- </div>
- {% endblock %}
+     # 画像ビュー（通常/加工）
+     event_meta = _fetch_album_meta(album_id)
+     is_event_album = bool(event_meta and event_meta.get("access_mode") == "event")
+     is_event_login = bool(_is_ext_logged_in() and is_event_album)
+     event_process_members = []
++    current_ext_user_id = None
++    current_user_process_status = None
+     if is_event_album and event_meta and event_meta.get("event_id"):
+         event_process_members = _fetch_event_process_members(int(event_meta["event_id"]))
+         status_map = _fetch_album_process_status_map(album_id, child_id)
+         for member in event_process_members:
+             ext_user_id = int(member.get("user_id"))
+             status = status_map.get(ext_user_id, {})
+             member["request_flag"] = int(status.get("request_flag", 0))
+             member["complete_flag"] = int(status.get("complete_flag", 0))
+-        current_ext_user_id = None
+         if is_event_login:
+             current_ext_user_id = session.get("ext_user_id")
+             if not current_ext_user_id:
+                 ext_social_id = session.get("ext_user_social_id")
+                 if ext_social_id:
+                     ext_user = _get_ext_user_by_social(ext_social_id)
+                     if ext_user:
+                         current_ext_user_id = ext_user.get("id")
+         try:
+             current_ext_user_id = int(current_ext_user_id) if current_ext_user_id else None
+         except (TypeError, ValueError):
+             current_ext_user_id = None
+         current_user_process_status = status_map.get(current_ext_user_id) if current_ext_user_id else None
+     if mode == "process" and is_event_album:
+         template_name = "view_child_process_event.html"
+     else:
+         template_name = "view_child_process.html" if mode == "process" else "view_child.html"
+     return render_template(
+         template_name,
+         album_id=album_id,
+         child_id=child_id,
+         files=files,
+         videos=videos,
+         image_count=len(files),
+         meta=meta,

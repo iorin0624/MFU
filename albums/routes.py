@@ -1976,6 +1976,8 @@ def view_child(album_id, child_id):
     is_event_album = bool(event_meta and event_meta.get("access_mode") == "event")
     is_event_login = bool(_is_ext_logged_in() and is_event_album)
     event_process_members = []
+    current_ext_user_id = None
+    current_user_process_status = None
     if is_event_album and event_meta and event_meta.get("event_id"):
         event_process_members = _fetch_event_process_members(int(event_meta["event_id"]))
         status_map = _fetch_album_process_status_map(album_id, child_id)
@@ -1984,7 +1986,6 @@ def view_child(album_id, child_id):
             status = status_map.get(ext_user_id, {})
             member["request_flag"] = int(status.get("request_flag", 0))
             member["complete_flag"] = int(status.get("complete_flag", 0))
-        current_ext_user_id = None
         if is_event_login:
             current_ext_user_id = session.get("ext_user_id")
             if not current_ext_user_id:
