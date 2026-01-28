@@ -133,7 +133,7 @@
               {% set fee = e.fee_yen|default(0)|int %}
               {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
               {% set ps  = ps0 if ps0 else 'unpaid' %}
-              {% set rcpt = (e.my_receipt_url if e.my_receipt_url is defined else e.receipt_url) %}
+              {% set rcpt = (e.receipt_pdf_url if e.receipt_pdf_url is defined else (e.my_receipt_url if e.my_receipt_url is defined else e.receipt_url)) %}
               {% set needs_pay = (rp == 1) and (fee > 0) %}
               {% set start = e.starts_at %}
               {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
@@ -195,7 +195,7 @@
                 {% set fee = e.fee_yen|default(0)|int %}
                 {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
                 {% set ps  = ps0 if ps0 else 'unpaid' %}
-                {% set rcpt = (e.my_receipt_url if e.my_receipt_url is defined else e.receipt_url) %}
+                {% set rcpt = (e.receipt_pdf_url if e.receipt_pdf_url is defined else (e.my_receipt_url if e.my_receipt_url is defined else e.receipt_url)) %}
                 {% set needs_pay = (rp == 1) and (fee > 0) %}
                 {% set start = e.starts_at %}
                 {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
