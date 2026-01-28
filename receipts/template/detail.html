@@ -35,8 +35,8 @@
         <input type="text" name="payer_name" class="form-control" value="{{ receipt.payer_name }}" required>
       </div>
       <div class="col-md-6">
-        <label class="form-label">支払者メール</label>
-        <input type="email" name="payer_email" class="form-control" value="{{ receipt.payer_email }}" required>
+        <label class="form-label">支払者メール（任意）</label>
+        <input type="email" name="payer_email" class="form-control" value="{{ receipt.payer_email }}">
       </div>
       <div class="col-md-6">
         <label class="form-label">支払者電話番号</label>
@@ -45,6 +45,30 @@
       <div class="col-md-6">
         <label class="form-label">支払者住所</label>
         <input type="text" name="payer_address" class="form-control" value="{{ receipt.payer_address }}" required>
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">登録番号（任意）</label>
+        <input type="text" name="payer_invoice_no" class="form-control" value="{{ receipt.payer_invoice_no }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">振込情報: 銀行名（任意）</label>
+        <input type="text" name="payer_bank_name" class="form-control" value="{{ receipt.payer_bank_name }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">振込情報: 支店名（任意）</label>
+        <input type="text" name="payer_bank_branch" class="form-control" value="{{ receipt.payer_bank_branch }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">振込情報: 口座番号（任意）</label>
+        <input type="text" name="payer_bank_account" class="form-control" value="{{ receipt.payer_bank_account }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">振込情報: 口座名義（任意）</label>
+        <input type="text" name="payer_bank_holder" class="form-control" value="{{ receipt.payer_bank_holder }}">
+      </div>
+      <div class="col-12">
+        <label class="form-label">支払者備考（任意）</label>
+        <textarea name="payer_note" class="form-control" rows="2">{{ receipt.payer_note }}</textarea>
       </div>
       <div class="col-12">
         <button class="btn btn-outline-primary">支払者情報を更新</button>

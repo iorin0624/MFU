@@ -6,11 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
-    #signature-pad {
-      border: 1px solid #ddd;
-      width: 100%;
-      height: 200px;
-      touch-action: none;
+    .notice {
+      border: 1px solid #e3e7ed;
+      border-radius: 6px;
+      background: #f8f9fa;
+      padding: 12px;
     }
   </style>
 </head>
@@ -62,84 +62,23 @@
   <div class="card">
     <div class="card-body">
       <h5 class="card-title">署名</h5>
-      <form method="post" action="{{ url_for('receipts.receipts_submit_sign', token=token) }}" onsubmit="syncSignature()">
+      <form method="post" action="{{ url_for('receipts.receipts_submit_sign', token=token) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <input type="hidden" name="signature_data" id="signature_data">
         <div class="mb-3">
-          <label class="form-label">署名文字列（氏名）</label>
-          <input type="text" name="signer_name" class="form-control" placeholder="氏名を入力">
+          <label class="form-label">署名者氏名（必須）</label>
+          <input type="text" name="signer_name" class="form-control" placeholder="氏名を入力" required>
         </div>
-        <div class="mb-3">
-          <label class="form-label">手書き署名</label>
-          <canvas id="signature-pad"></canvas>
-          <div class="mt-2">
-            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearSignature()">クリア</button>
-          </div>
+        <div class="notice mb-3">
+          署名方式は「文字署名（氏名入力）」です。内容を確認し、同意チェックの上で確定してください。
         </div>
         <div class="form-check mb-3">
           <input class="form-check-input" type="checkbox" name="agree" id="agree" required>
-          <label class="form-check-label" for="agree">内容に同意します</label>
+          <label class="form-check-label" for="agree">内容を確認し同意します</label>
         </div>
-        <button class="btn btn-success">署名を完了</button>
+        <button class="btn btn-success">署名して確定</button>
       </form>
     </div>
   </div>
 </div>
-
-<script>
-  const canvas = document.getElementById('signature-pad');
-  const ctx = canvas.getContext('2d');
-  let drawing = false;
-
-  function resizeCanvas() {
-    canvas.width = canvas.offsetWidth;
-    canvas.height = canvas.offsetHeight;
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2;
-  }
-  window.addEventListener('resize', resizeCanvas);
-  resizeCanvas();
-
-  function startDraw(e) {
-    drawing = true;
-    ctx.beginPath();
-    ctx.moveTo(getX(e), getY(e));
-  }
-
-  function draw(e) {
-    if (!drawing) return;
-    ctx.lineTo(getX(e), getY(e));
-    ctx.stroke();
-  }
-
-  function endDraw() {
-    drawing = false;
-  }
-
-  function getX(e) {
-    return (e.touches ? e.touches[0].clientX : e.clientX) - canvas.getBoundingClientRect().left;
-  }
-
-  function getY(e) {
-    return (e.touches ? e.touches[0].clientY : e.clientY) - canvas.getBoundingClientRect().top;
-  }
-
-  canvas.addEventListener('mousedown', startDraw);
-  canvas.addEventListener('mousemove', draw);
-  canvas.addEventListener('mouseup', endDraw);
-  canvas.addEventListener('mouseleave', endDraw);
-  canvas.addEventListener('touchstart', startDraw);
-  canvas.addEventListener('touchmove', draw);
-  canvas.addEventListener('touchend', endDraw);
-
-  function clearSignature() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-
-  function syncSignature() {
-    const dataUrl = canvas.toDataURL('image/png');
-    document.getElementById('signature_data').value = dataUrl;
-  }
-</script>
 </body>
 </html>

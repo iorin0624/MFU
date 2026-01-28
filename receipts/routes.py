@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import base64
 import hashlib
 import os
 import secrets
@@ -215,6 +214,52 @@ def _get_user_email(cur, username: str | None) -> str | None:
     return row[0] if not isinstance(row, dict) else row.get("email")
 
 
+def _get_payer_profile(cur, issuer_user_id: str | None):
+    if not issuer_user_id:
+        return None
+    cur.execute("SELECT * FROM payer_profiles WHERE issuer_user_id = %s", (issuer_user_id,))
+    return _fetchone_dict(cur)
+
+
+def _save_payer_profile(cur, issuer_user_id: str, payload: dict) -> None:
+    cur.execute(
+        """
+        INSERT INTO payer_profiles
+        (issuer_user_id, payer_name, payer_address, payer_phone, payer_email,
+         payer_invoice_no, payer_bank_name, payer_bank_branch, payer_bank_account,
+         payer_bank_holder, payer_note, created_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+          payer_name = VALUES(payer_name),
+          payer_address = VALUES(payer_address),
+          payer_phone = VALUES(payer_phone),
+          payer_email = VALUES(payer_email),
+          payer_invoice_no = VALUES(payer_invoice_no),
+          payer_bank_name = VALUES(payer_bank_name),
+          payer_bank_branch = VALUES(payer_bank_branch),
+          payer_bank_account = VALUES(payer_bank_account),
+          payer_bank_holder = VALUES(payer_bank_holder),
+          payer_note = VALUES(payer_note),
+          updated_at = VALUES(updated_at)
+        """,
+        (
+            issuer_user_id,
+            payload["payer_name"],
+            payload["payer_address"],
+            payload["payer_phone"],
+            payload.get("payer_email"),
+            payload.get("payer_invoice_no"),
+            payload.get("payer_bank_name"),
+            payload.get("payer_bank_branch"),
+            payload.get("payer_bank_account"),
+            payload.get("payer_bank_holder"),
+            payload.get("payer_note"),
+            _now_jst(),
+            _now_jst(),
+        ),
+    )
+
+
 def _send_pdf_notice(to_email: str, subject: str, body: str, pdf_path: str) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
@@ -293,35 +338,78 @@ def receipts_list():
 @receipts_bp.route("/receipts/new", methods=["GET", "POST"])
 def receipts_new():
     if request.method == "GET":
-        return render_template("new.html", csrf_token=_new_csrf_token())
+        db = get_db()
+        cur = db.cursor()
+        profile = _get_payer_profile(cur, session.get("user"))
+        db.close()
+        return render_template("new.html", csrf_token=_new_csrf_token(), profile=profile or {})
 
     if not _check_csrf(request.form.get("csrf_token")):
         abort(400)
 
     form = request.form
-    issue_date = datetime.strptime(form.get("issue_date"), "%Y-%m-%d")
-    pay_date = datetime.strptime(form.get("pay_date"), "%Y-%m-%d")
-    recipient_name = form.get("recipient_name", "").strip()
-    recipient_email = form.get("recipient_email", "").strip()
+    action = form.get("action", "create")
     payer_name = form.get("payer_name", "").strip()
     payer_address = form.get("payer_address", "").strip()
     payer_phone = form.get("payer_phone", "").strip()
     payer_email = form.get("payer_email", "").strip()
+    payer_invoice_no = form.get("payer_invoice_no", "").strip()
+    payer_bank_name = form.get("payer_bank_name", "").strip()
+    payer_bank_branch = form.get("payer_bank_branch", "").strip()
+    payer_bank_account = form.get("payer_bank_account", "").strip()
+    payer_bank_holder = form.get("payer_bank_holder", "").strip()
+    payer_note = form.get("payer_note", "").strip()
+    profile_payload = {
+        "payer_name": payer_name,
+        "payer_address": payer_address,
+        "payer_phone": payer_phone,
+        "payer_email": payer_email or None,
+        "payer_invoice_no": payer_invoice_no or None,
+        "payer_bank_name": payer_bank_name or None,
+        "payer_bank_branch": payer_bank_branch or None,
+        "payer_bank_account": payer_bank_account or None,
+        "payer_bank_holder": payer_bank_holder or None,
+        "payer_note": payer_note or None,
+    }
+
+    if action == "save_profile":
+        if not all([payer_name, payer_address, payer_phone]):
+            flash("支払者プロフィールの必須項目（氏名/住所/電話）を入力してください。", "warning")
+            return redirect(url_for("receipts.receipts_new"))
+        db = get_db()
+        cur = db.cursor()
+        try:
+            _save_payer_profile(cur, session.get("user"), profile_payload)
+            db.commit()
+        finally:
+            db.close()
+        flash("支払者プロフィールを保存しました。", "success")
+        return redirect(url_for("receipts.receipts_new"))
+
+    issue_date = datetime.strptime(form.get("issue_date"), "%Y-%m-%d")
+    pay_date = datetime.strptime(form.get("pay_date"), "%Y-%m-%d")
+    recipient_name = form.get("recipient_name", "").strip()
+    recipient_email = form.get("recipient_email", "").strip()
     amount = int(form.get("amount"))
     description = form.get("description", "").strip()
     payment_method = form.get("payment_method", "").strip()
+    update_profile = form.get("update_profile") == "on"
 
     db = get_db()
     cur = db.cursor()
     try:
+        if update_profile:
+            _save_payer_profile(cur, session.get("user"), profile_payload)
+
         receipt_no = _make_receipt_no(cur, issue_date)
         cur.execute(
             """
             INSERT INTO receipts
             (receipt_no, issuer_user_id, payer_name, payer_address, payer_phone, payer_email,
-             recipient_name, recipient_email, issue_date, pay_date, amount, description,
-             payment_method, status, created_at, updated_at, is_deleted)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, 0)
+             payer_invoice_no, payer_bank_name, payer_bank_branch, payer_bank_account,
+             payer_bank_holder, payer_note, recipient_name, recipient_email, issue_date,
+             pay_date, amount, description, payment_method, status, created_at, updated_at, is_deleted)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, 0)
             """,
             (
                 receipt_no,
@@ -330,6 +418,12 @@ def receipts_new():
                 payer_address,
                 payer_phone,
                 payer_email,
+                payer_invoice_no,
+                payer_bank_name,
+                payer_bank_branch,
+                payer_bank_account,
+                payer_bank_holder,
+                payer_note,
                 recipient_name,
                 recipient_email,
                 issue_date,
@@ -367,6 +461,12 @@ def receipts_new():
             "payer_address": payer_address,
             "payer_phone": payer_phone,
             "payer_email": payer_email,
+            "payer_invoice_no": payer_invoice_no,
+            "payer_bank_name": payer_bank_name,
+            "payer_bank_branch": payer_bank_branch,
+            "payer_bank_account": payer_bank_account,
+            "payer_bank_holder": payer_bank_holder,
+            "payer_note": payer_note,
             "recipient_name": recipient_name,
             "recipient_email": recipient_email,
             "amount": amount,
@@ -432,9 +532,15 @@ def receipts_update_payer(receipt_id: int):
     payer_address = request.form.get("payer_address", "").strip()
     payer_phone = request.form.get("payer_phone", "").strip()
     payer_email = request.form.get("payer_email", "").strip()
+    payer_invoice_no = request.form.get("payer_invoice_no", "").strip()
+    payer_bank_name = request.form.get("payer_bank_name", "").strip()
+    payer_bank_branch = request.form.get("payer_bank_branch", "").strip()
+    payer_bank_account = request.form.get("payer_bank_account", "").strip()
+    payer_bank_holder = request.form.get("payer_bank_holder", "").strip()
+    payer_note = request.form.get("payer_note", "").strip()
 
-    if not all([payer_name, payer_address, payer_phone, payer_email]):
-        flash("支払者情報をすべて入力してください。", "warning")
+    if not all([payer_name, payer_address, payer_phone]):
+        flash("支払者情報の必須項目（氏名/住所/電話）を入力してください。", "warning")
         return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
 
     db = get_db()
@@ -447,10 +553,29 @@ def receipts_update_payer(receipt_id: int):
                 payer_address = %s,
                 payer_phone = %s,
                 payer_email = %s,
+                payer_invoice_no = %s,
+                payer_bank_name = %s,
+                payer_bank_branch = %s,
+                payer_bank_account = %s,
+                payer_bank_holder = %s,
+                payer_note = %s,
                 updated_at = %s
             WHERE id = %s AND is_deleted = 0
             """,
-            (payer_name, payer_address, payer_phone, payer_email, _now_jst(), receipt_id),
+            (
+                payer_name,
+                payer_address,
+                payer_phone,
+                payer_email,
+                payer_invoice_no,
+                payer_bank_name,
+                payer_bank_branch,
+                payer_bank_account,
+                payer_bank_holder,
+                payer_note,
+                _now_jst(),
+                receipt_id,
+            ),
         )
         _append_audit_log(
             cur,
@@ -583,6 +708,12 @@ def receipts_reissue(receipt_id: int):
             "payer_address": receipt["payer_address"],
             "payer_phone": receipt["payer_phone"],
             "payer_email": receipt["payer_email"],
+            "payer_invoice_no": receipt.get("payer_invoice_no"),
+            "payer_bank_name": receipt.get("payer_bank_name"),
+            "payer_bank_branch": receipt.get("payer_bank_branch"),
+            "payer_bank_account": receipt.get("payer_bank_account"),
+            "payer_bank_holder": receipt.get("payer_bank_holder"),
+            "payer_note": receipt.get("payer_note"),
             "recipient_name": receipt["recipient_name"],
             "recipient_email": receipt["recipient_email"],
             "amount": receipt["amount"],
@@ -879,7 +1010,6 @@ def receipts_submit_sign(token: str):
 
     signer_name = request.form.get("signer_name", "").strip()
     signer_agree = request.form.get("agree") == "on"
-    signature_data = request.form.get("signature_data", "").strip()
 
     if not signer_agree:
         flash("同意にチェックしてください。", "warning")
@@ -918,39 +1048,9 @@ def receipts_submit_sign(token: str):
             flash("OTPの有効期限が切れています。", "warning")
             return redirect(url_for("receipts.receipts_sign", token=token))
 
-        signature_type = "typed"
-        image_path = None
-        signature_bytes = None
-        if signature_data and signature_data.startswith("data:image/"):
-            try:
-                _, b64data = signature_data.split(",", 1)
-                signature_bytes = base64.b64decode(b64data)
-            except Exception:
-                signature_bytes = None
-
-        if signature_bytes and len(signature_bytes) <= 512:
-            signature_bytes = None
-
-        if not signer_name and not signature_bytes:
-            flash("署名文字列または手書き署名のいずれかを入力してください。", "warning")
+        if not signer_name:
+            flash("署名者氏名を入力してください。", "warning")
             return redirect(url_for("receipts.receipts_sign", token=token))
-
-        if signature_bytes:
-            signature_type = "drawn" if not signer_name else "both"
-            if len(signature_bytes) > 1024 * 200:
-                flash("署名画像が大きすぎます。", "warning")
-                return redirect(url_for("receipts.receipts_sign", token=token))
-            base_dir = os.path.join(
-                RECEIPTS_ROOT,
-                receipt["receipt_no"],
-                f"v{version['version_no']}",
-                "signatures",
-            )
-            _ensure_dir(base_dir)
-            filename = f"sign_{uuid4().hex}.png"
-            image_path = os.path.join(base_dir, filename)
-            with open(image_path, "wb") as f:
-                f.write(signature_bytes)
 
         op_id = uuid4().hex
         signed_at = _now_jst()
@@ -967,8 +1067,8 @@ def receipts_submit_sign(token: str):
                 signed_at,
                 signer_name,
                 receipt["recipient_email"],
-                signature_type,
-                image_path,
+                "typed",
+                None,
                 request.remote_addr,
                 request.headers.get("User-Agent"),
                 op_id,
@@ -981,10 +1081,19 @@ def receipts_submit_sign(token: str):
             (_now_jst(), receipt["id"]),
         )
 
+        base_dir = os.path.join(
+            RECEIPTS_ROOT,
+            receipt["receipt_no"],
+            f"v{version['version_no']}",
+        )
+        audit_path = os.path.join(base_dir, "audit.pdf")
+        final_path = os.path.join(base_dir, "final.pdf")
+        temp_final_path = os.path.join(base_dir, "final_tmp.pdf")
+
         audit_page_html = render_template(
             "pdf_audit.html",
             receipt=receipt,
-            version=version,
+            version={**version, "hash_final": ""},
             signed_at=signed_at,
             signer_name=signer_name,
             signer_email=receipt["recipient_email"],
@@ -992,22 +1101,26 @@ def receipts_submit_sign(token: str):
             user_agent=request.headers.get("User-Agent"),
             op_id=op_id,
         )
-        audit_path = os.path.join(
-            RECEIPTS_ROOT,
-            receipt["receipt_no"],
-            f"v{version['version_no']}",
-            "audit.pdf",
+        _render_pdf(audit_page_html, audit_path, base_url=request.url_root)
+        _merge_pdf(version["original_pdf_path"], audit_path, temp_final_path)
+        hash_final = _sha256_file(temp_final_path)
+
+        audit_page_html = render_template(
+            "pdf_audit.html",
+            receipt=receipt,
+            version={**version, "hash_final": hash_final},
+            signed_at=signed_at,
+            signer_name=signer_name,
+            signer_email=receipt["recipient_email"],
+            ip=request.remote_addr,
+            user_agent=request.headers.get("User-Agent"),
+            op_id=op_id,
         )
         _render_pdf(audit_page_html, audit_path, base_url=request.url_root)
-
-        final_path = os.path.join(
-            RECEIPTS_ROOT,
-            receipt["receipt_no"],
-            f"v{version['version_no']}",
-            "final.pdf",
-        )
         _merge_pdf(version["original_pdf_path"], audit_path, final_path)
         hash_final = _sha256_file(final_path)
+        if os.path.exists(temp_final_path):
+            os.remove(temp_final_path)
 
         cur.execute(
             """
