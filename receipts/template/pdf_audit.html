@@ -17,7 +17,12 @@
   <div class="row"><span class="label">署名日時（JST）</span>{{ signed_at.strftime('%Y-%m-%d %H:%M:%S') }}</div>
   <div class="row"><span class="label">署名方式</span>文字署名（氏名入力）</div>
   <div class="row"><span class="label">認証手段</span>メールOTP</div>
-  <div class="row"><span class="label">同意確認</span>内容を確認し同意にチェック済み</div>
+  <div class="row"><span class="label">同意確認①</span>
+    受領書の内容を確認し同意（{% if consent_terms is none %}未記録（旧仕様）{% elif consent_terms %}チェック済み{% else %}未チェック{% endif %}）
+  </div>
+  <div class="row"><span class="label">同意確認②</span>
+    上記金額を確かに受領（{% if consent_received is none %}未記録（旧仕様）{% elif consent_received %}チェック済み{% else %}未チェック{% endif %}）
+  </div>
   <div class="row"><span class="label">原本PDF SHA-256</span><span class="hash">{{ version.hash_original }}</span></div>
   <div class="row"><span class="label">確定PDF SHA-256（本PDF）</span><span class="hash">{{ version.hash_final or '算出中' }}</span></div>
   <div class="row"><span class="label">IP</span>{{ ip }}</div>

@@ -71,9 +71,13 @@
         <div class="notice mb-3">
           署名方式は「文字署名（氏名入力）」です。内容を確認し、同意チェックの上で確定してください。
         </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="consent_terms" id="consent_terms" required>
+          <label class="form-check-label" for="consent_terms">受領書の内容を確認し、同意します。</label>
+        </div>
         <div class="form-check mb-3">
-          <input class="form-check-input" type="checkbox" name="agree" id="agree" required>
-          <label class="form-check-label" for="agree">内容を確認し同意します</label>
+          <input class="form-check-input" type="checkbox" name="consent_received" id="consent_received" required>
+          <label class="form-check-label" for="consent_received">上記金額を確かに受領しました。</label>
         </div>
         <button class="btn btn-success">署名して確定</button>
       </form>
