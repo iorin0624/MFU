@@ -12,7 +12,7 @@ import time
 import secrets
 import hashlib
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from mimetypes import guess_extension
 from urllib.parse import quote_plus, urlparse
 from ipaddress import ip_address, IPv4Address, IPv6Address, ip_network
@@ -28,6 +28,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 from PIL import Image
 import requests
 from itsdangerous import URLSafeSerializer, BadSignature
+from weasyprint import HTML
 
 # =========================
 # Flask / アプリ内部
@@ -37,6 +38,7 @@ from flask import (
     abort, flash, current_app, send_from_directory, make_response
 )
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
 
 # Blueprint は必ず先に import
 from . import bp, oauth
@@ -59,6 +61,7 @@ ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
 AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
 
 
+JST = timezone(timedelta(hours=9))
 
 # =========================
 # 便利ヘルパ（このファイル内限定）
@@ -100,6 +103,40 @@ def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24, 
         try: cur.close(); db.close()
         except Exception: pass
     return raw
+
+
+def _to_jst_date(dt_value) -> datetime.date | None:
+    if not dt_value:
+        return None
+    if isinstance(dt_value, str):
+        try:
+            dt_value = datetime.fromisoformat(dt_value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    if not hasattr(dt_value, "tzinfo") or dt_value.tzinfo is None:
+        return dt_value.date()
+    return dt_value.astimezone(JST).date()
+
+
+def _format_yen(amount_yen: int | None) -> str:
+    if amount_yen is None:
+        return ""
+    return f"¥{int(amount_yen):,}"
+
+
+def _fetchone_dict(cur):
+    row = cur.fetchone()
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return row
+    cols = [d[0] for d in cur.description]
+    return dict(zip(cols, row))
+
+
+def _get_admin_payer_profile(cur):
+    cur.execute("SELECT * FROM payer_profiles WHERE issuer_user_id = %s", ("admin",))
+    return _fetchone_dict(cur)
 
 
 def _send_verify_mail(to_email: str, token_raw: str):
@@ -713,9 +750,12 @@ def index():
           SELECT
             e.id, e.event_uuid, e.title,
             e.starts_at, e.fee_yen, e.album_id,
+            m.id AS member_id,
             COALESCE(m.status,'pending')                        AS status,
             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
             m.receipt_url,
+            COALESCE(m.bank_transfer,0) AS bank_transfer,
+            COALESCE(m.paypay_transfer,0) AS paypay_transfer,
             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
           FROM mfu_event e
           JOIN (
@@ -751,6 +791,9 @@ def index():
                 "status": r["status"] or "pending",
                 "payment_status": r["payment_status"] or "unpaid",
                 "receipt_url": r["receipt_url"],
+                "member_id": r.get("member_id"),
+                "bank_transfer": int(r.get("bank_transfer") or 0),
+                "paypay_transfer": int(r.get("paypay_transfer") or 0),
                 "fee_yen": r["fee_yen"],
                 "album_id": r["album_id"],
                 "album_url": (url_for("album.album_access", album_id=r["album_id"]) if r["album_id"] else None),
@@ -759,6 +802,22 @@ def index():
                 "my_payment_status": r["payment_status"] or "unpaid",
                 "my_receipt_url": r["receipt_url"],
             }
+            receipt_pdf_url = None
+            if (
+                item["my_payment_status"] == "paid"
+                and item["member_id"]
+                and (
+                    item["bank_transfer"] == 1
+                    or item["paypay_transfer"] == 1
+                    or item["receipt_url"]
+                )
+            ):
+                receipt_pdf_url = url_for(
+                    "external_login_user.member_receipt_pdf",
+                    event_uuid=euuid_str,
+                    member_id=item["member_id"],
+                )
+            item["receipt_pdf_url"] = receipt_pdf_url
 
             dt = _to_dt(r["starts_at"])
             if dt is None:
@@ -1795,6 +1854,113 @@ def join_event(event_uuid: str):
     )
 
 
+@bp.route("/events/<event_uuid>/members/<int:member_id>/receipt.pdf")
+def member_receipt_pdf(event_uuid: str, member_id: int):
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    ev = _event_by_uuid_str(event_uuid)
+    if not ev:
+        abort(404, "イベントが見つかりません")
+
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    if not me and not _is_mfu_logged_in():
+        abort(401)
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT
+              m.id AS member_id,
+              m.user_id,
+              m.event_id,
+              m.paid_amount_yen,
+              m.paid_at,
+              m.receipt_url,
+              COALESCE(m.bank_transfer, 0) AS bank_transfer,
+              COALESCE(m.paypay_transfer, 0) AS paypay_transfer,
+              u.nickname
+            FROM mfu_event_member m
+            JOIN external_login_user u ON u.id = m.user_id
+            WHERE m.id = %s AND m.event_id = %s
+            LIMIT 1
+        """, (member_id, ev["id"]))
+        row = cur.fetchone()
+        if not row:
+            abort(404, "参加者が見つかりません")
+
+        if not _is_mfu_logged_in():
+            if not me or row.get("user_id") != me.get("id"):
+                abort(403, "権限がありません")
+
+        paid_amount = row.get("paid_amount_yen")
+        pay_date = _to_jst_date(row.get("paid_at"))
+        if paid_amount is None or pay_date is None:
+            raise ValueError("支払情報が不足しています")
+
+        bank_transfer = int(row.get("bank_transfer") or 0)
+        paypay_transfer = int(row.get("paypay_transfer") or 0)
+        receipt_url = (row.get("receipt_url") or "").strip()
+
+        if bank_transfer == 1 and paypay_transfer == 0:
+            payment_method = "銀行振込"
+        elif bank_transfer == 0 and paypay_transfer == 1:
+            payment_method = "PayPay友達送金"
+        elif bank_transfer == 0 and paypay_transfer == 0 and receipt_url:
+            payment_method = "クレジットカード"
+        else:
+            raise ValueError("支払種別の判定に失敗しました")
+
+        payer = _get_admin_payer_profile(cur)
+        if not payer:
+            raise ValueError("発行者情報が見つかりません")
+
+        issue_date = datetime.now(JST).date()
+        receipt_data = {
+            "recipient_name": f"{row.get('nickname') or ''} 様",
+            "issue_date": issue_date,
+            "pay_date": pay_date,
+            "amount": _format_yen(int(paid_amount)),
+            "description": "イベント参加費のため",
+            "payment_method": payment_method,
+            "payer_name": payer.get("payer_name"),
+            "payer_address": payer.get("payer_address"),
+            "payer_phone": payer.get("payer_phone"),
+            "payer_email": payer.get("payer_email"),
+        }
+
+        html = render_template("receipt_pdf.html", receipt=receipt_data, event=ev)
+        pdf_bytes = HTML(string=html, base_url=request.url_root).write_pdf()
+
+        filename = f"receipt_{event_uuid}_{member_id}.pdf"
+        resp = make_response(pdf_bytes)
+        resp.headers["Content-Type"] = "application/pdf"
+        resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
+        return resp
+    except HTTPException:
+        raise
+    except ValueError:
+        current_app.logger.exception(
+            "receipt pdf validation failed: event_uuid=%s member_id=%s",
+            event_uuid,
+            member_id,
+        )
+        abort(400, "領収書の情報が不足しています")
+    except Exception:
+        current_app.logger.exception(
+            "receipt pdf generation failed: event_uuid=%s member_id=%s",
+            event_uuid,
+            member_id,
+        )
+        abort(500, "領収書の生成に失敗しました")
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+
 @bp.route("/events/view/<event_uuid>")
 def view_event(event_uuid: str):
     guard = _require_ext_login()
@@ -1814,10 +1980,13 @@ def view_event(event_uuid: str):
     try:
         cur.execute("""
             SELECT
+              m.id AS member_id,
               COALESCE(m.status,'pending')                        AS status,
               CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment,
               COALESCE(m.payment_status,'unpaid')                 AS payment_status,
               m.paid_amount_yen, m.paid_at, m.receipt_url,
+              COALESCE(m.bank_transfer,0) AS bank_transfer,
+              COALESCE(m.paypay_transfer,0) AS paypay_transfer,
               COALESCE(m.process,0) AS process,
               COALESCE(m.is_host,0) AS is_host,
               COALESCE(m.is_subhost,0) AS is_subhost,
@@ -1839,10 +2008,25 @@ def view_event(event_uuid: str):
     my_paid_amount_yen     = row.get("paid_amount_yen") if row else None
     my_paid_at             = row.get("paid_at") if row else None
     my_receipt_url         = row.get("receipt_url") if row else None
+    my_member_id           = row.get("member_id") if row else None
+    my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
+    my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
     my_process             = int(row.get("process")) if row else 0
     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
     my_costume_label       = (row.get("costume_label")  if row else "") or ""
+
+    my_receipt_pdf_url = None
+    if (
+        my_payment_status == "paid"
+        and my_member_id
+        and (my_bank_transfer == 1 or my_paypay_transfer == 1 or my_receipt_url)
+    ):
+        my_receipt_pdf_url = url_for(
+            "external_login_user.member_receipt_pdf",
+            event_uuid=event_uuid,
+            member_id=my_member_id,
+        )
 
     # 表示モード
     if _is_mfu_logged_in():
@@ -1968,6 +2152,7 @@ def view_event(event_uuid: str):
         my_paid_amount_yen=my_paid_amount_yen,
         my_paid_at=my_paid_at,
         my_receipt_url=my_receipt_url,
+        my_receipt_pdf_url=my_receipt_pdf_url,
         my_process=my_process,
         album_url=album_url,
         maps_link=maps_link,
