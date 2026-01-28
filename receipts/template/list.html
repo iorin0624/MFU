@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}受領書一覧{% endblock %}
+
+{% block content %}
+<h1 class="mb-4">受領書</h1>
+
+<form class="row g-2 mb-3" method="get">
+  <div class="col-md-3">
+    <input type="text" class="form-control" name="q" placeholder="受領書番号・氏名・メール" value="{{ q }}">
+  </div>
+  <div class="col-md-2">
+    <select name="status" class="form-select">
+      <option value="">すべての状態</option>
+      {% for s in ["draft", "sent", "signed", "finalized", "reissued", "void"] %}
+      <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-2">
+    <input type="date" class="form-control" name="start" value="{{ start }}">
+  </div>
+  <div class="col-md-2">
+    <input type="date" class="form-control" name="end" value="{{ end }}">
+  </div>
+  <div class="col-md-3 d-flex gap-2">
+    <button class="btn btn-primary" type="submit">検索</button>
+    <a class="btn btn-success" href="{{ url_for('receipts.receipts_new') }}">新規作成</a>
+  </div>
+</form>
+
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th>受領書番号</th>
+      <th>相手</th>
+      <th>金額</th>
+      <th>発行日</th>
+      <th>状態</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in receipts %}
+    <tr>
+      <td>{{ r.receipt_no }}</td>
+      <td>{{ r.recipient_name }}<br><small class="text-muted">{{ r.recipient_email }}</small></td>
+      <td>{{ r.amount }} 円</td>
+      <td>{{ r.issue_date.strftime('%Y-%m-%d') if r.issue_date else '' }}</td>
+      <td><span class="badge bg-secondary">{{ r.status }}</span></td>
+      <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('receipts.receipts_detail', receipt_id=r.id) }}">詳細</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="text-muted">データがありません。</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
