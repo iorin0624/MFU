@@ -137,6 +137,12 @@ def _enforce_lecture_prepaid_on_join():
     if not event_uuid:
         return None
 
+    iv = (request.args.get("iv") or "").strip()
+    if iv:
+        store = session.get("lecture_invite_tokens") or {}
+        store[event_uuid] = iv
+        session["lecture_invite_tokens"] = store
+
     # 未ログインならスルー（join本体に任せる）
     if not session.get("ext_user_social_id"):
         return None
