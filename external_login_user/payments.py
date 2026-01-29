@@ -254,6 +254,64 @@ def _amount_from_payment_token(event_id: int, user_id: int, token: str | None) -
     except Exception:
         return None
 
+
+def _mask_payment_token(token: str | None, *, show: int = 4) -> str:
+    if not token:
+        return "(none)"
+    token = str(token)
+    if len(token) <= show:
+        return "*" * len(token)
+    return f"***{token[-show:]}"
+
+
+def _payment_request_id_from_token(event_id: int, user_id: int, token: str | None) -> int | None:
+    if not token:
+        return None
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id
+              FROM mfu_payment_request
+             WHERE token=%s AND event_id=%s AND user_id=%s
+             ORDER BY id DESC
+             LIMIT 1
+        """, (token, event_id, user_id))
+        row = cur.fetchone()
+        if row:
+            return row["id"] if isinstance(row, dict) else row[0]
+    except Exception:
+        current_app.logger.exception(
+            "payment request lookup failed token=%s event_id=%s user_id=%s",
+            _mask_payment_token(token),
+            event_id,
+            user_id,
+        )
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+    return None
+
+
+def _mark_payment_request_used(payment_request_id: int, token: str | None) -> None:
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("""
+            UPDATE mfu_payment_request
+               SET status='used',
+                   used_at=COALESCE(used_at, NOW())
+             WHERE id=%s
+        """, (payment_request_id,))
+        db.commit()
+    except Exception:
+        current_app.logger.exception(
+            "payment request update failed id=%s token=%s",
+            payment_request_id,
+            _mask_payment_token(token),
+        )
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
 # ============================================================
 # users.py を踏襲した 通知系ヘルパ
 # ============================================================
@@ -739,6 +797,17 @@ def pay_return(event_uuid: str):
 
     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
 
+    payment_request_id = _payment_request_id_from_token(ev["id"], me["id"], token)  # type: ignore
+    if token and payment_request_id is None:
+        current_app.logger.warning(
+            "payment request not found token=%s event_id=%s user_id=%s",
+            _mask_payment_token(token),
+            ev["id"],
+            me["id"],
+        )
+
+    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
+
     # 既存の paid 冪等チェック
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
@@ -756,6 +825,9 @@ def pay_return(event_uuid: str):
         except Exception:
             pass
 
+    if is_success and payment_request_id is not None:
+        _mark_payment_request_used(payment_request_id, token)
+
     if is_success and not already:
         # 講座：メンバー行が無いケースに備えて upsert
         db2 = get_db(); cur2 = db2.cursor()
@@ -771,7 +843,7 @@ def pay_return(event_uuid: str):
                       paid_amount_yen=%s,
                       receipt_url=COALESCE(%s, receipt_url),
                       payment_row_id=%s
-                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, payment_row_id))  # type: ignore
+                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
             else:
                 cur2.execute("""
                     UPDATE mfu_event_member
@@ -781,7 +853,7 @@ def pay_return(event_uuid: str):
                            receipt_url=COALESCE(%s, receipt_url),
                            payment_row_id=%s
                      WHERE event_id=%s AND user_id=%s
-                """, (paid_amount_yen, receipt_url, payment_row_id, ev["id"], me["id"]))  # type: ignore
+                """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
             cur2.execute("""
                 SELECT id
@@ -1509,6 +1581,16 @@ def lecture_return(event_uuid: str):
     # 成功判定（空=OK を含む）
     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
 
+    payment_request_id = _payment_request_id_from_token(ev["id"], me["id"], token)  # type: ignore
+    if token and payment_request_id is None:
+        current_app.logger.warning(
+            "payment request not found token=%s event_id=%s user_id=%s",
+            _mask_payment_token(token),
+            ev["id"],
+            me["id"],
+        )
+    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
+
     # すでに paid なら冪等（再反映しない）
     db = get_db(); cur = db.cursor()
     try:
@@ -1523,6 +1605,9 @@ def lecture_return(event_uuid: str):
     finally:
         try: cur.close(); db.close()
         except Exception: pass
+
+    if is_success and payment_request_id is not None:
+        _mark_payment_request_used(payment_request_id, token)
 
     if is_success and not already_paid:
         # 無ければ安全に作ってから反映（承認前でもOK）
@@ -1543,7 +1628,7 @@ def lecture_return(event_uuid: str):
                        receipt_url=COALESCE(%s, receipt_url),
                        payment_row_id=%s
                  WHERE event_id=%s AND user_id=%s
-            """, (paid_amount_yen, receipt_url, payment_row_id, ev["id"], me["id"]))  # type: ignore
+            """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
             cur2.execute("""
                 SELECT id
