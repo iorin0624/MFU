@@ -1,8 +1,8 @@
 diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index 4dd20de6ec9f1540ae52a02979da28f98ed52560..7b84e75634354b28d66db61ff18cb99123e50aae 100644
+index 4dd20de6ec9f1540ae52a02979da28f98ed52560..eb42e5fc2512e694dbaf7ac1bd31810d58770a91 100644
 --- a/external_login_user/payments.py
 +++ b/external_login_user/payments.py
-@@ -232,50 +232,108 @@ def _create_payment_request(
+@@ -232,50 +232,160 @@ def _create_payment_request(
          except Exception: pass
      return token
  
@@ -86,6 +86,58 @@ index 4dd20de6ec9f1540ae52a02979da28f98ed52560..7b84e75634354b28d66db61ff18cb991
 +        try: cur.close(); db.close()
 +        except Exception: pass
 +
++
++def _payment_request_id_from_row_id(event_id: int, user_id: int, row_id: int | None) -> int | None:
++    if not row_id:
++        return None
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT id
++              FROM mfu_payment_request
++             WHERE id=%s AND event_id=%s AND user_id=%s
++             LIMIT 1
++        """, (row_id, event_id, user_id))
++        row = cur.fetchone()
++        if row:
++            return row["id"] if isinstance(row, dict) else row[0]
++    except Exception:
++        current_app.logger.exception(
++            "payment request row lookup failed id=%s event_id=%s user_id=%s",
++            row_id,
++            event_id,
++            user_id,
++        )
++    finally:
++        try: cur.close(); db.close()
++        except Exception: pass
++    return None
++
++
++def _latest_payment_request_id(event_id: int, user_id: int) -> int | None:
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT id
++              FROM mfu_payment_request
++             WHERE event_id=%s AND user_id=%s
++             ORDER BY id DESC
++             LIMIT 1
++        """, (event_id, user_id))
++        row = cur.fetchone()
++        if row:
++            return row["id"] if isinstance(row, dict) else row[0]
++    except Exception:
++        current_app.logger.exception(
++            "payment request latest lookup failed event_id=%s user_id=%s",
++            event_id,
++            user_id,
++        )
++    finally:
++        try: cur.close(); db.close()
++        except Exception: pass
++    return None
++
  # ============================================================
  # users.py を踏襲した 通知系ヘルパ
  # ============================================================
@@ -111,7 +163,141 @@ index 4dd20de6ec9f1540ae52a02979da28f98ed52560..7b84e75634354b28d66db61ff18cb991
  
  
  def _fetch_admin_contacts() -> tuple[str | None, str | None]:
-@@ -717,93 +775,107 @@ def pay_return(event_uuid: str):
+@@ -587,54 +697,64 @@ def pay_start(event_uuid: str):
+             if not methods.get("card"):
+                 flash("このイベントではクレジットカード決済は利用できません。", "warning")
+                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+             pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
+             payment_token = _create_payment_request(
+                 ev["id"],
+                 me["id"],
+                 int(fee),
+                 event_uuid=event_uuid,
+                 nickname=me.get("nickname"),
+                 x_id=me.get("x_id"),
+                 instagram_id=me.get("instagram_id"),
+                 lecture_auto_approve=lecture_auto_approve,
+             )  # type: ignore
+             if lecture_auto_approve:
+                 _clear_lecture_auto_approve_iv_session(event_uuid)
+             session["pay_ctx"] = {
+                 "mfu_event_id": ev["id"],
+                 "mfu_event_uuid": event_uuid,
+                 "ext_user_id": me["id"],
+                 "nickname": me.get("nickname"),
+                 "x_id": me.get("x_id"),
+                 "instagram_id": me.get("instagram_id"),
+                 "email": me.get("email"),
+                 "expected_amount_yen": int(fee) if fee else None,
+-                "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
++                "return_url": url_for(
++                    "external_login_user.pay_return",
++                    event_uuid=event_uuid,
++                    payment_token=payment_token,
++                    _external=True,
++                ),
+                 "payment_token": payment_token,
+             }
+-            return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
++            return_url = url_for(
++                "external_login_user.pay_return",
++                event_uuid=event_uuid,
++                payment_token=payment_token,
++                _external=True,
++            )
+             dest = (
+                 f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+                 f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+             )
+             return redirect(dest)
+ 
+         if picked == "paypay":
+             if not methods.get("paypay"):
+                 flash("このイベントではPayPay送金は選択できません。", "warning")
+                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+             return redirect(url_for("external_login_user.pay_paypay", event_uuid=event_uuid))
+ 
+         if picked == "bank":
+             if not methods.get("bank"):
+                 flash("このイベントでは銀行振込は選択できません。", "warning")
+                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+             return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
+ 
+         flash("支払方法を選択してください。", "warning")
+         return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+ 
+     if not force and sum(1 for v in methods.values() if v) >= 2:
+         return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+ 
+     if methods.get("paypay") and not (methods.get("card") or methods.get("bank")):
+@@ -642,54 +762,64 @@ def pay_start(event_uuid: str):
+     if methods.get("bank") and not (methods.get("card") or methods.get("paypay")):
+         return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
+ 
+     pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
+     payment_token = _create_payment_request(
+         ev["id"],
+         me["id"],
+         int(fee),
+         event_uuid=event_uuid,
+         nickname=me.get("nickname"),
+         x_id=me.get("x_id"),
+         instagram_id=me.get("instagram_id"),
+         lecture_auto_approve=lecture_auto_approve,
+     )  # type: ignore
+     if lecture_auto_approve:
+         _clear_lecture_auto_approve_iv_session(event_uuid)
+     session["pay_ctx"] = {
+         "mfu_event_id": ev["id"],
+         "mfu_event_uuid": event_uuid,
+         "ext_user_id": me["id"],
+         "nickname": me.get("nickname"),
+         "x_id": me.get("x_id"),
+         "instagram_id": me.get("instagram_id"),
+         "email": me.get("email"),
+         "expected_amount_yen": int(fee) if fee else None,
+-        "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
++        "return_url": url_for(
++            "external_login_user.pay_return",
++            event_uuid=event_uuid,
++            payment_token=payment_token,
++            _external=True,
++        ),
+         "payment_token": payment_token,
+     }
+-    return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
++    return_url = url_for(
++        "external_login_user.pay_return",
++        event_uuid=event_uuid,
++        payment_token=payment_token,
++        _external=True,
++    )
+     dest = (
+         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+     )
+     return redirect(dest)
+ 
+ # ============================================================
+ # Square戻り
+ # ============================================================
+ 
+ # === 既存: pay_return の末尾ロジックを講座対応で補強 ===
+ @bp.route("/pay/return/<event_uuid>")
+ def pay_return(event_uuid: str):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     lecture = _is_lecture_event(ev)
+ 
+     # 承認済みのみ完了処理（← 非講座のみ厳格。講座は支払い先行OK）
+@@ -717,93 +847,111 @@ def pay_return(event_uuid: str):
              paid_amount_yen = int(str(amt_raw).strip())
          except Exception:
              paid_amount_yen = None
@@ -146,7 +332,11 @@ index 4dd20de6ec9f1540ae52a02979da28f98ed52560..7b84e75634354b28d66db61ff18cb991
 +            me["id"],
 +        )
 +
-+    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
++    resolved_payment_row_id = payment_request_id
++    if resolved_payment_row_id is None:
++        resolved_payment_row_id = _payment_request_id_from_row_id(ev["id"], me["id"], payment_row_id)  # type: ignore
++    if resolved_payment_row_id is None:
++        resolved_payment_row_id = _latest_payment_request_id(ev["id"], me["id"])  # type: ignore
 +
      # 既存の paid 冪等チェック
      db = get_db(); cur = db.cursor(dictionary=True)
@@ -221,7 +411,147 @@ index 4dd20de6ec9f1540ae52a02979da28f98ed52560..7b84e75634354b28d66db61ff18cb991
                  )
              except Exception:
                  receipt_pdf_url = None
-@@ -1487,85 +1559,98 @@ def lecture_return(event_uuid: str):
+@@ -1354,55 +1502,67 @@ def lecture_pay_start(event_uuid: str):
+                 flash("この講座ではクレジットカード決済は利用できません。", "warning")
+                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+             # Square へ（戻りは講座専用の return へ）
+             pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
+             payment_token = _create_payment_request(
+                 ev["id"],
+                 me["id"],
+                 int(fee),
+                 event_uuid=event_uuid,
+                 nickname=me.get("nickname"),
+                 x_id=me.get("x_id"),
+                 instagram_id=me.get("instagram_id"),
+                 lecture_auto_approve=auto_approve_hit,
+             )  # type: ignore
+             if auto_approve_hit:
+                 _clear_lecture_auto_approve_iv_session(event_uuid)
+             session["pay_ctx"] = {
+                 "mfu_event_id": ev["id"],
+                 "mfu_event_uuid": event_uuid,
+                 "ext_user_id": me["id"],
+                 "nickname": me.get("nickname"),
+                 "x_id": me.get("x_id"),
+                 "instagram_id": me.get("instagram_id"),
+                 "email": me.get("email"),
+                 "expected_amount_yen": fee,
+-                "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
++                "return_url": url_for(
++                    "external_login_user.lecture_return",
++                    event_uuid=event_uuid,
++                    payment_token=payment_token,
++                    iv=iv or None,
++                    _external=True,
++                ),
+                 "payment_token": payment_token,
+                 "invite_token": iv or None,
+             }
+-            return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
++            return_url = url_for(
++                "external_login_user.lecture_return",
++                event_uuid=event_uuid,
++                payment_token=payment_token,
++                iv=iv or None,
++                _external=True,
++            )
+             dest = (
+                 f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+                 f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+             )
+             return redirect(dest)
+ 
+         if picked == "paypay":
+             if not methods.get("paypay"):
+                 flash("この講座ではPayPay送金は選択できません。", "warning")
+                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+             return redirect(url_for("external_login_user.pay_paypay", event_uuid=event_uuid))
+ 
+         if picked == "bank":
+             if not methods.get("bank"):
+                 flash("この講座では銀行振込は選択できません。", "warning")
+                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+             return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
+ 
+         flash("支払方法を選択してください。", "warning")
+         return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+ 
+     # GET: 単独手段なら自動遷移 / 複数なら既存の選択画面へ
+     enabled = [k for k, v in methods.items() if v]
+     if len(enabled) >= 2:
+         # 既存の選択画面をそのまま利用（テンプレ改変なし）
+@@ -1413,55 +1573,67 @@ def lecture_pay_start(event_uuid: str):
+         return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
+ 
+     # ここまで来たらカードのみ → Squareへ
+     pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
+     payment_token = _create_payment_request(
+         ev["id"],
+         me["id"],
+         int(fee),
+         event_uuid=event_uuid,
+         nickname=me.get("nickname"),
+         x_id=me.get("x_id"),
+         instagram_id=me.get("instagram_id"),
+         lecture_auto_approve=auto_approve_hit,
+     )  # type: ignore
+     if auto_approve_hit:
+         _clear_lecture_auto_approve_iv_session(event_uuid)
+     session["pay_ctx"] = {
+         "mfu_event_id": ev["id"],
+         "mfu_event_uuid": event_uuid,
+         "ext_user_id": me["id"],
+         "nickname": me.get("nickname"),
+         "x_id": me.get("x_id"),
+         "instagram_id": me.get("instagram_id"),
+         "email": me.get("email"),
+         "expected_amount_yen": fee,
+-        "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
++        "return_url": url_for(
++            "external_login_user.lecture_return",
++            event_uuid=event_uuid,
++            payment_token=payment_token,
++            iv=iv or None,
++            _external=True,
++        ),
+         "payment_token": payment_token,
+         "invite_token": iv or None,
+     }
+-    return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
++    return_url = url_for(
++        "external_login_user.lecture_return",
++        event_uuid=event_uuid,
++        payment_token=payment_token,
++        iv=iv or None,
++        _external=True,
++    )
+     dest = (
+         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+     )
+     return redirect(dest)
+ 
+ 
+ @bp.route("/lecture/return/<event_uuid>")
+ def lecture_return(event_uuid: str):
+     """
+     講座：Square戻り（承認前でも支払反映）→ 参加申請ページへ。
+     内容は既存 /pay/return を踏襲しつつ「承認済みガード」を外したもの。
+     """
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     # --- 戻り値の受け口（キー名ゆるく受理） ---
+     q = request.args
+     status = (q.get("status") or q.get("square_status") or "").strip().lower()
+@@ -1487,85 +1659,102 @@ def lecture_return(event_uuid: str):
          except Exception:
              paid_amount_yen = None
      if paid_amount_yen is None:
@@ -255,7 +585,11 @@ index 4dd20de6ec9f1540ae52a02979da28f98ed52560..7b84e75634354b28d66db61ff18cb991
 +            ev["id"],
 +            me["id"],
 +        )
-+    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
++    resolved_payment_row_id = payment_request_id
++    if resolved_payment_row_id is None:
++        resolved_payment_row_id = _payment_request_id_from_row_id(ev["id"], me["id"], payment_row_id)  # type: ignore
++    if resolved_payment_row_id is None:
++        resolved_payment_row_id = _latest_payment_request_id(ev["id"], me["id"])  # type: ignore
 +
      # すでに paid なら冪等（再反映しない）
      db = get_db(); cur = db.cursor()
