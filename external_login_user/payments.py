@@ -155,6 +155,21 @@ def _is_lecture_event(ev: dict) -> bool:
     except Exception:
         return False
 
+def _lecture_auto_approve_from_iv_session(event_uuid: str) -> bool:
+    try:
+        return bool((session.get("lecture_auto_approve_by_iv") or {}).get(event_uuid))
+    except Exception:
+        return False
+
+def _clear_lecture_auto_approve_iv_session(event_uuid: str) -> None:
+    try:
+        store = session.get("lecture_auto_approve_by_iv") or {}
+        if event_uuid in store:
+            store.pop(event_uuid, None)
+            session["lecture_auto_approve_by_iv"] = store
+    except Exception:
+        pass
+
 def _resolve_member_fee(event_id: int, user_id: int, default_fee: int) -> int:
     """ユーザー別の金額があれば優先し、なければイベント金額を返す。"""
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -544,6 +559,10 @@ def pay_start(event_uuid: str):
             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
 
     # ─ 以下、支払方法分岐は従来どおり（省略なしで原文維持） ─
+    lecture_auto_approve = False
+    if lecture and _lecture_auto_approve_from_iv_session(event_uuid):
+        lecture_auto_approve = True
+
     if request.method == "POST":
         picked = (request.form.get("method") or "").strip()
         if picked == "card":
@@ -559,7 +578,10 @@ def pay_start(event_uuid: str):
                 nickname=me.get("nickname"),
                 x_id=me.get("x_id"),
                 instagram_id=me.get("instagram_id"),
+                lecture_auto_approve=lecture_auto_approve,
             )  # type: ignore
+            if lecture_auto_approve:
+                _clear_lecture_auto_approve_iv_session(event_uuid)
             session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
                 "mfu_event_uuid": event_uuid,
@@ -611,7 +633,10 @@ def pay_start(event_uuid: str):
         nickname=me.get("nickname"),
         x_id=me.get("x_id"),
         instagram_id=me.get("instagram_id"),
+        lecture_auto_approve=lecture_auto_approve,
     )  # type: ignore
+    if lecture_auto_approve:
+        _clear_lecture_auto_approve_iv_session(event_uuid)
     session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
         "mfu_event_uuid": event_uuid,
@@ -1240,6 +1265,8 @@ def lecture_pay_start(event_uuid: str):
         and iv
         and iv == ev.get("invite_token")
     )
+    if _lecture_auto_approve_from_iv_session(event_uuid):
+        auto_approve_hit = True
 
     # 支払期間ガード（通常のカード決済と同じ判定）
     now = datetime.now()
@@ -1310,6 +1337,8 @@ def lecture_pay_start(event_uuid: str):
                 instagram_id=me.get("instagram_id"),
                 lecture_auto_approve=auto_approve_hit,
             )  # type: ignore
+            if auto_approve_hit:
+                _clear_lecture_auto_approve_iv_session(event_uuid)
             session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
                 "mfu_event_uuid": event_uuid,
@@ -1367,6 +1396,8 @@ def lecture_pay_start(event_uuid: str):
         instagram_id=me.get("instagram_id"),
         lecture_auto_approve=auto_approve_hit,
     )  # type: ignore
+    if auto_approve_hit:
+        _clear_lecture_auto_approve_iv_session(event_uuid)
     session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
         "mfu_event_uuid": event_uuid,

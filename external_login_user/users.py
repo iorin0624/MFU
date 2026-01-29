@@ -1602,7 +1602,75 @@ def line_login_shortcut():
 
 def _is_lecture_event_from_event(ev: dict) -> bool:
     title = (ev.get("title") or "").strip()
-    return "【講座】" in title
+    return title.startswith("【講座】")
+
+def _mask_iv_token(token: str) -> str:
+    token = (token or "").strip()
+    if not token:
+        return ""
+    tail = token[-4:] if len(token) > 4 else token
+    return f"***{tail}"
+
+def _mark_lecture_auto_approve_by_iv(
+    *,
+    event_id: int,
+    event_uuid: str,
+    user_id: int,
+    iv_token: str,
+) -> bool:
+    if not iv_token:
+        return False
+    try:
+        store = session.get("lecture_auto_approve_by_iv") or {}
+        store[event_uuid] = True
+        session["lecture_auto_approve_by_iv"] = store
+    except Exception:
+        pass
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id, COALESCE(lecture_auto_approve,0) AS lecture_auto_approve
+              FROM mfu_payment_request
+             WHERE event_id=%s AND user_id=%s
+             ORDER BY id DESC
+             LIMIT 1
+        """, (event_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            current_app.logger.info(
+                "join: lecture iv auto-approve pending (event_id=%s user_id=%s iv=%s)",
+                event_id,
+                user_id,
+                _mask_iv_token(iv_token),
+            )
+            return False
+        if int(row.get("lecture_auto_approve") or 0) != 1:
+            cur.execute("""
+                UPDATE mfu_payment_request
+                   SET lecture_auto_approve=1
+                 WHERE id=%s AND event_id=%s AND user_id=%s
+                 LIMIT 1
+            """, (row["id"], event_id, user_id))
+            db.commit()
+        current_app.logger.info(
+            "join: lecture iv auto-approve set (event_id=%s user_id=%s iv=%s payment_request_id=%s)",
+            event_id,
+            user_id,
+            _mask_iv_token(iv_token),
+            row["id"],
+        )
+        return True
+    except Exception:
+        current_app.logger.exception(
+            "join: lecture iv auto-approve update failed (event_id=%s user_id=%s)",
+            event_id,
+            user_id,
+        )
+        return False
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
 
 def _lecture_auto_approve_from_payment_request(
     *,
@@ -1707,6 +1775,15 @@ def join_event(event_uuid: str):
         cur.close(); db.close()
         abort(404, "event not found")
 
+    iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
+    if iv_param and _is_lecture_event_from_event(ev):
+        _mark_lecture_auto_approve_by_iv(
+            event_id=ev["id"],
+            event_uuid=event_uuid,
+            user_id=ext_uid,
+            iv_token=iv_param,
+        )
+
     # 表示用 UUID 文字列 / 管理URL
     ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
     ev["event_uuid_str"] = ev_uuid_str
@@ -1730,12 +1807,14 @@ def join_event(event_uuid: str):
     if not iv:
         iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
+    auto_hit_by_lecture = False
     if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-        auto_hit = auto_hit or _lecture_auto_approve_from_payment_request(
+        auto_hit_by_lecture = _lecture_auto_approve_from_payment_request(
             event_id=ev["id"],
             user_id=ext_uid,
             payment_row_id=m.get("payment_row_id"),
         )
+        auto_hit = auto_hit or auto_hit_by_lecture
 
     # =========================
     # POST: フォーム送信（申請）
@@ -1758,7 +1837,9 @@ def join_event(event_uuid: str):
             costume = None  # サーバ側でも空に
 
         # ステータス決定（自動承認 or 手動承認待ち）
-        new_status = "approved" if auto_hit else "pending"
+        already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
+        new_status = "approved" if (auto_hit or already_approved) else "pending"
+        should_notify = not (already_approved and auto_hit_by_lecture)
 
         # upsert
         if m:
@@ -1778,6 +1859,12 @@ def join_event(event_uuid: str):
                 VALUES (%s, %s, %s, %s, %s, NOW())
             """, (ev["id"], ext_uid, new_status, role, costume))
         db.commit()
+        if auto_hit_by_lecture and new_status == "approved" and not already_approved:
+            current_app.logger.info(
+                "join: lecture auto-approved member (event_id=%s user_id=%s)",
+                ev["id"],
+                ext_uid,
+            )
 
         # ===== 管理者メール収集（ACLメンバー） =====
         try:
@@ -1799,80 +1886,82 @@ def join_event(event_uuid: str):
                 pass
 
         # ===== 参加者メール（件名はすでに【イベント名】統一済み） =====
-        try:
-            if to_email:
-                if new_status == "approved":
-                    send_mail(
-                        to=to_email,
-                        subject=f"【{ev['title']}】参加が承認されました",
-                        body=(f"{nick or '参加者'} 様\n\n"
-                              f"イベント「{ev['title']}」への参加が承認されました。\n"
-                              f"当日のご参加をお待ちしております！\n"
-                              f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
-                        event_uuid=ev_uuid_str,
-                    )
-                else:
-                    send_mail(
-                        to=to_email,
-                        subject=f"【{ev['title']}】参加申請を受け付けました（承認待ち）",
-                        body=(f"{nick or '参加者'} 様\n\n"
-                              f"イベント「{ev['title']}」への参加申請を受け付けました。\n"
-                              f"主催の承認後にご案内いたします。\n"
-                              f"申請状況は以下のページで確認できます。\n"
-                              f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
-                        event_uuid=ev_uuid_str,
-                    )
-        except Exception:
-            current_app.logger.exception("join: user mail failed")
+        if should_notify:
+            try:
+                if to_email:
+                    if new_status == "approved":
+                        send_mail(
+                            to=to_email,
+                            subject=f"【{ev['title']}】参加が承認されました",
+                            body=(f"{nick or '参加者'} 様\n\n"
+                                  f"イベント「{ev['title']}」への参加が承認されました。\n"
+                                  f"当日のご参加をお待ちしております！\n"
+                                  f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
+                            event_uuid=ev_uuid_str,
+                        )
+                    else:
+                        send_mail(
+                            to=to_email,
+                            subject=f"【{ev['title']}】参加申請を受け付けました（承認待ち）",
+                            body=(f"{nick or '参加者'} 様\n\n"
+                                  f"イベント「{ev['title']}」への参加申請を受け付けました。\n"
+                                  f"主催の承認後にご案内いたします。\n"
+                                  f"申請状況は以下のページで確認できます。\n"
+                                  f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
+                            event_uuid=ev_uuid_str,
+                        )
+            except Exception:
+                current_app.logger.exception("join: user mail failed")
 
         # ===== 管理者メール（ACLメンバーのみ）＋ Discord =====
-        try:
-            # 役割の日本語化（'other' を追加）
-            role_jp = {"camera": "カメラマン", "assistant": "アシスタント", "cosplayer": "衣装", "other": "その他"}.get(role, "衣装")
-            costume_line = (costume or "")
-            kind_label = "自動承認" if new_status == "approved" and auto_hit else "承認待ち"
+        if should_notify:
+            try:
+                # 役割の日本語化（'other' を追加）
+                role_jp = {"camera": "カメラマン", "assistant": "アシスタント", "cosplayer": "衣装", "other": "その他"}.get(role, "衣装")
+                costume_line = (costume or "")
+                kind_label = "自動承認" if new_status == "approved" and auto_hit else "承認待ち"
 
-            # 件名（種別を併記）
-            subject_admin = f"【{ev['title']}】新しい参加申請があります（{kind_label}）"
+                # 件名（種別を併記）
+                subject_admin = f"【{ev['title']}】新しい参加申請があります（{kind_label}）"
 
-            # 本文（ご指定の体裁＋申請種別を追記）
-            body_text = (
-                "新しい参加申請があります。\n"
-                "\n"
-                f"イベント名：{ev['title']}\n"
-                f"申請者：{nick or '(名前未設定)'}\n"
-                f"X ID：{xid}\n"
-                f"IG ID：{igid}\n"
-                "\n"
-                f"役割：{role_jp}\n"
-                f"衣装：{costume_line}\n"
-                "\n"
-                "詳細は管理画面をご確認ください。\n"
-                f"管理URL: {admin_url}\n"
-                "\n"
-                f"申請種別：{kind_label}\n"
-            )
-
-            # 管理者メール送信
-            for em in {e for e in admin_emails if e}:
-                send_mail(
-                    to=em,
-                    subject=subject_admin,
-                    body=body_text,
-                    event_uuid=ev_uuid_str,
+                # 本文（ご指定の体裁＋申請種別を追記）
+                body_text = (
+                    "新しい参加申請があります。\n"
+                    "\n"
+                    f"イベント名：{ev['title']}\n"
+                    f"申請者：{nick or '(名前未設定)'}\n"
+                    f"X ID：{xid}\n"
+                    f"IG ID：{igid}\n"
+                    "\n"
+                    f"役割：{role_jp}\n"
+                    f"衣装：{costume_line}\n"
+                    "\n"
+                    "詳細は管理画面をご確認ください。\n"
+                    f"管理URL: {admin_url}\n"
+                    "\n"
+                    f"申請種別：{kind_label}\n"
                 )
 
-            # Discord も同文面
-            wh = _get_admin_webhook_url()
-            if wh:
-                r = requests.post(wh, json={"content": body_text}, timeout=7)
-                if r.status_code >= 300:
-                    current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
-            else:
-                current_app.logger.warning("join: admin webhook_url not set")
+                # 管理者メール送信
+                for em in {e for e in admin_emails if e}:
+                    send_mail(
+                        to=em,
+                        subject=subject_admin,
+                        body=body_text,
+                        event_uuid=ev_uuid_str,
+                    )
 
-        except Exception:
-            current_app.logger.exception("join: admin mail/discord failed")
+                # Discord も同文面
+                wh = _get_admin_webhook_url()
+                if wh:
+                    r = requests.post(wh, json={"content": body_text}, timeout=7)
+                    if r.status_code >= 300:
+                        current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
+                else:
+                    current_app.logger.warning("join: admin webhook_url not set")
+
+            except Exception:
+                current_app.logger.exception("join: admin mail/discord failed")
 
         # 送信後はイベントページへ
         if new_status == "pending":
