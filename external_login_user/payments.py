@@ -151,7 +151,7 @@ def _ensure_payment_notice_table():
 
 def _is_lecture_event(ev: dict) -> bool:
     try:
-        return str(ev.get("title") or "").startswith("【講座】")
+        return "【講座】" in str(ev.get("title") or "")
     except Exception:
         return False
 
@@ -560,7 +560,25 @@ def pay_start(event_uuid: str):
 
     # ─ 以下、支払方法分岐は従来どおり（省略なしで原文維持） ─
     lecture_auto_approve = False
-    if lecture and _lecture_auto_approve_from_iv_session(event_uuid):
+    iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
+    if not iv:
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+    if iv:
+        store = session.get("lecture_invite_tokens") or {}
+        store[event_uuid] = iv
+        session["lecture_invite_tokens"] = store
+    auto_approve_hit = bool(
+        lecture
+        and int(ev.get("auto_approve_by_invite") or 0) == 1
+        and ev.get("invite_token")
+        and iv
+        and iv == ev.get("invite_token")
+    )
+    if auto_approve_hit:
+        store = session.get("lecture_auto_approve_by_iv") or {}
+        store[event_uuid] = True
+        session["lecture_auto_approve_by_iv"] = store
+    if lecture and (auto_approve_hit or _lecture_auto_approve_from_iv_session(event_uuid)):
         lecture_auto_approve = True
 
     if request.method == "POST":
@@ -896,6 +914,16 @@ def pay_options(event_uuid: str):
 
     methods = _enabled_methods(ev)
     enabled = [k for k, v in methods.items() if v]
+    is_lecture = _is_lecture_event(ev)
+
+    iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
+    if iv and is_lecture:
+        store = session.get("lecture_invite_tokens") or {}
+        store[event_uuid] = iv
+        session["lecture_invite_tokens"] = store
+
+    if is_lecture and enabled == ["card"]:
+        return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid))
 
     # 1つだけなら自動遷移（PayPayはテンプレ表示へ。go=1 は使わない）
     if len(enabled) == 1:
