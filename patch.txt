@@ -1,134 +1,64 @@
 diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index 505d4416bdcc08512be9fc3fe2a04501c1bd4ad1..41c1e9456dbaf99c5f995796dcf092d262d43292 100644
+index 41c1e9456dbaf99c5f995796dcf092d262d43292..c0410678b112d76d33db36ba15308080ed78b9c5 100644
 --- a/external_login_user/payments.py
 +++ b/external_login_user/payments.py
-@@ -684,126 +684,149 @@ def pay_return(event_uuid: str):
+@@ -633,51 +633,50 @@ def pay_return(event_uuid: str):
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     lecture = _is_lecture_event(ev)
+ 
+     # 承認済みのみ完了処理（← 非講座のみ厳格。講座は支払い先行OK）
+     if not lecture:
+         if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
+             flash("承認済み参加者のみ完了処理が可能です。", "warning")
+             return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+ 
+     # --- Square 戻り値の受け口（既存のまま） ---
+     q = request.args
+     status = (q.get("status") or q.get("square_status") or "").strip().lower()
+     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
+     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
+     try:
+         payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
+     except Exception:
+         payment_row_id = None
+     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
+     token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+-    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+ 
+     # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
+     paid_amount_yen = None
+     if amt_raw is not None and str(amt_raw).strip() != "":
+         try:
+             paid_amount_yen = int(str(amt_raw).strip())
          except Exception:
              paid_amount_yen = None
- 
-     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
- 
-     # 既存の paid 冪等チェック
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT COALESCE(payment_status,'unpaid') AS payment_status
-               FROM mfu_event_member
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-         """, (ev["id"], me["id"]))  # type: ignore
-         row = cur.fetchone() or {}
-         already = (row.get("payment_status") or "unpaid").strip().lower() == "paid"
-     finally:
+     if paid_amount_yen is None:
          try:
-             cur.close(); db.close()
+             paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
          except Exception:
-             pass
- 
-     if is_success and not already:
-         # 講座：メンバー行が無いケースに備えて upsert
-         db2 = get_db(); cur2 = db2.cursor()
-+        member_id = None
+             paid_amount_yen = None
+     if paid_amount_yen is None:
          try:
-             if lecture:
-                 cur2.execute("""
-                     INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
-                     VALUES (%s,%s,'pending','paid',1,NOW())
-                     ON DUPLICATE KEY UPDATE
-                       payment_status='paid',
-                       paid_at=NOW(),
-                       paid_amount_yen=%s,
-                       receipt_url=COALESCE(%s, receipt_url),
-                       payment_row_id=%s
-                 """, (ev["id"], me["id"], paid_amount_yen, receipt_url, payment_row_id))  # type: ignore
-             else:
-                 cur2.execute("""
-                     UPDATE mfu_event_member
-                        SET payment_status='paid',
-                            paid_at=NOW(),
-                            paid_amount_yen=%s,
-                            receipt_url=COALESCE(%s, receipt_url),
-                            payment_row_id=%s
-                      WHERE event_id=%s AND user_id=%s
-                 """, (paid_amount_yen, receipt_url, payment_row_id, ev["id"], me["id"]))  # type: ignore
-             db2.commit()
-+            cur2.execute("""
-+                SELECT id
-+                  FROM mfu_event_member
-+                 WHERE event_id=%s AND user_id=%s
-+                 LIMIT 1
-+            """, (ev["id"], me["id"]))  # type: ignore
-+            row = cur2.fetchone()
-+            if row:
-+                member_id = row[0] if isinstance(row, tuple) else row.get("id")
-         finally:
-             try: cur2.close(); db2.close()
-             except Exception: pass
- 
-+        receipt_pdf_url = None
-+        if member_id:
-+            try:
-+                receipt_pdf_url = url_for(
-+                    "external_login_user.member_receipt_pdf",
-+                    event_uuid=event_uuid,
-+                    member_id=member_id,
-+                    _external=True,
-+                )
-+            except Exception:
-+                receipt_pdf_url = None
-+        receipt_link = receipt_pdf_url or receipt_url
-+
-         # セッションクリア＆通知（既存ロジックそのまま）
-         try:
-             (session.get("pay_ctx") or {}).clear()
-             session.pop("pay_ctx", None)
+             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
+             if sess_amt is not None and int(sess_amt) > 0:
+                 paid_amount_yen = int(sess_amt)
          except Exception:
-             pass
- 
+             paid_amount_yen = None
+     if paid_amount_yen is None:
          try:
-             from datetime import datetime
-             try:
-                 admin_link = url_for("external_login_user.admin_event_view", event_id=ev["id"], _external=True)  # type: ignore
-             except Exception:
-                 admin_link = ""
-             subject_admin = f"【{ev.get('title','イベント')}】クレジットカード決済が完了しました"
-             lines = [
-                 f"イベント: {ev.get('title','(無題)')}",
-                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
-                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
--                f"レシートURL: {receipt_url or '(なし)'}",
-+                f"レシートURL: {receipt_link or '(なし)'}",
-                 f"管理画面: {admin_link}" if admin_link else "",
-                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
-             ]
-             _notify_payment_to_admin_and_acl(
-                 ev,
-                 event_uuid_str=event_uuid,
-                 subject=subject_admin,
-                 mail_lines=[s for s in lines if s],
-                 discord_lines=None,
-             )
-         except Exception:
-             current_app.logger.exception("notify (card) failed")
- 
-         # 参加者控えメール（既存のまま）
-         try:
-             user_email = (me.get("email") or "").strip()
-             if user_email:
-                 from app.utils.mail import send_mail
-                 amount_line = f"{paid_amount_yen:,} 円" if isinstance(paid_amount_yen, int) else "— 円"
-                 subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-                 body_user = (
-                     f"{me.get('nickname') or '参加者'} 様\n\n"
-                     "お忙しい中、お支払いいただきありがとうございます。\n"
-                     "このメールを持って決済完了とさせていただきます。\n"
-                     "レシートは、下記のアドレスよりご確認よろしくお願いします。\n"
-                     "※クレジットカード加盟店は「小松　伊織」と表示されますが、変更処理が間に合っておらず「チームイカ」と記載される場合があります。間違いではありませんが、ご面倒お掛けします。\n\n"
+             base_fee = ev.get("fee_yen")
+             if base_fee is not None and int(base_fee) > 0:
+                 paid_amount_yen = int(base_fee)
+@@ -804,55 +803,61 @@ def pay_return(event_uuid: str):
                      "当日、お会いできるのを楽しみにしております！\n\n"
                      f"イベント: {ev.get('title','(無題)')}\n"
                      f"金額: {amount_line}\n"
--                    f"レシートURL: {receipt_url or '(なし)'}\n"
-+                    f"レシートURL: {receipt_link or '(なし)'}\n"
+                     f"レシートURL: {receipt_link or '(なし)'}\n"
                      f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
                      "--\n"
                      "小松　伊織\n"
@@ -150,130 +80,190 @@ index 505d4416bdcc08512be9fc3fe2a04501c1bd4ad1..41c1e9456dbaf99c5f995796dcf092d2
          # ★ 講座モード：支払い後は参加申請へ誘導
          if lecture:
              flash("続いて、参加申請（必要項目の入力）をお願いします。", "info")
++            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
++            if iv:
++                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
              return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
  
      elif is_success and already:
          flash("お支払いは反映済みです。", "info")
-@@ -1379,118 +1402,141 @@ def lecture_return(event_uuid: str):
-                 paid_amount_yen = int(base_fee)
-         except Exception:
-             paid_amount_yen = None
+         if lecture:
++            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
++            if iv:
++                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
+             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+     else:
+         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
  
-     # 成功判定（空=OK を含む）
-     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
+     return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
  
-     # すでに paid なら冪等（再反映しない）
+ # ============================================================
+ # 支払い方法の分岐 / PayPay / 銀行振込
+ # ============================================================
+ 
+ # --- 支払方法の選択（単独時の自動遷移をPayPay表示に） ---
+ @bp.route("/pay/options/<event_uuid>")
+ def pay_options(event_uuid: str):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+     ev = _event_attach_uuid_str(ev, event_uuid)
+ 
+     methods = _enabled_methods(ev)
+     enabled = [k for k, v in methods.items() if v]
+ 
+@@ -1153,80 +1158,92 @@ def pay_bank(event_uuid: str):
+ #   1) 案内リンク：/external-login/lecture/start/<event_uuid>
+ #   2) ログイン後：自動で /lecture/pay/<uuid> へ
+ #   3) Square完了戻り：/lecture/return/<uuid> → 参加申請ページへ
+ # ============================================================
+ 
+ def _is_lecture_event(ev: dict) -> bool:
+     """イベント名に【講座】を含むか判定（全角のまま一致）"""
+     title = (ev.get("title") or "").strip()
+     return "【講座】" in title
+ 
+ @bp.route("/lecture/start/<event_uuid>")
+ def lecture_start(event_uuid: str):
+     """
+     講座の案内→LINEログインへ誘導（案内はflashで、テンプレ追加なし）
+     """
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+     if not _is_lecture_event(ev):
+         flash("このページは講座専用です。通常の申請ページに移動しました。", "info")
+         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+ 
+     # 案内（テンプレ増やさず flash で案内）
+     flash("講座参加には事前支払が必要です。LINEログインして続行してください。", "info")
+ 
++    iv = (request.args.get("iv") or "").strip()
++    if iv:
++        store = session.get("lecture_invite_tokens") or {}
++        store[event_uuid] = iv
++        session["lecture_invite_tokens"] = store
++
+     # 未ログインなら、講座用支払ページを next にしてLINEログインへ
+     if not session.get("ext_user_social_id"):
+         next_url = url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, _external=False)
+         session["ext_after_login_next"] = next_url
+         return redirect(url_for("external_login_user.line_login", next=next_url))
+ 
+     # 既にログイン済みならそのまま支払ステップへ
+     return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid))
+ 
+ 
+ @bp.route("/lecture/pay/<event_uuid>", methods=["GET", "POST"])
+ def lecture_pay_start(event_uuid: str):
+     """
+     講座：支払ステップ（承認前でも支払を許可）。支払後に参加申請ページへ誘導。
+     - 支払い期間ガードあり
+     - 支払不要設定（require_payment=0）は尊重し、申請ページへ直行
+     - 支払方法の分岐は既存の pay_* へ委譲
+     """
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+     if not _is_lecture_event(ev):
+         flash("このページは講座専用です。通常の申請ページに移動しました。", "info")
+         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+ 
++    iv = (request.args.get("iv") or "").strip()
++    if iv:
++        store = session.get("lecture_invite_tokens") or {}
++        store[event_uuid] = iv
++        session["lecture_invite_tokens"] = store
++
+     # 支払期間ガード（通常のカード決済と同じ判定）
+     now = datetime.now()
+     pf = _as_dt(ev.get("pay_from"))
+     pu = _as_dt(ev.get("pay_until"))
+     if (pf and now < pf) or (pu and now > pu):
+         if pf and pu:
+             flash(f"支払い可能期間は {pf:%Y-%m-%d %H:%M} 〜 {pu:%Y-%m-%d %H:%M} です。", "warning")
+         elif pf:
+             flash(f"支払いは {pf:%Y-%m-%d %H:%M} から可能です。", "warning")
+         else:
+             flash(f"支払いは {pu:%Y-%m-%d %H:%M} までに行ってください。", "warning")
+         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+ 
+     # 参加費チェック
+     fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
+     if fee <= 0:
+         flash("この講座イベントに参加費が設定されていません。主催へお問い合わせください。", "warning")
+         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+ 
+     # 参加レコードが無ければ仮エントリを作成しておく（承認前でもOK）
      db = get_db(); cur = db.cursor()
      try:
          cur.execute("""
-             SELECT COALESCE(payment_status,'unpaid') AS ps
+             SELECT id, COALESCE(require_payment,1) AS rp
                FROM mfu_event_member
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-         """, (ev["id"], me["id"]))  # type: ignore
-         row = cur.fetchone()
-         already_paid = bool(row and ((row[0] if isinstance(row, tuple) else row.get("ps") or "unpaid") == "paid"))
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
+@@ -1345,50 +1362,51 @@ def lecture_pay_start(event_uuid: str):
+         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+     )
+     return redirect(dest)
  
-     if is_success and not already_paid:
-         # 無ければ安全に作ってから反映（承認前でもOK）
-         db2 = get_db(); cur2 = db2.cursor()
-+        member_id = None
+ 
+ @bp.route("/lecture/return/<event_uuid>")
+ def lecture_return(event_uuid: str):
+     """
+     講座：Square戻り（承認前でも支払反映）→ 参加申請ページへ。
+     内容は既存 /pay/return を踏襲しつつ「承認済みガード」を外したもの。
+     """
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     # --- 戻り値の受け口（キー名ゆるく受理） ---
+     q = request.args
+     status = (q.get("status") or q.get("square_status") or "").strip().lower()
+     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
++    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+ 
+     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
+     try:
+         payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
+     except Exception:
+         payment_row_id = None
+ 
+     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
+ 
+     # ①URL → ②トークン → ③セッション → ④イベントfee_yen の順に解決
+     paid_amount_yen = None
+     if amt_raw is not None and str(amt_raw).strip() != "":
          try:
-             cur2.execute("""
-                 INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, require_payment, joined_at)
-                 VALUES (%s, %s, 'pending', 1, NOW())
-             """, (ev["id"], me["id"]))  # type: ignore
-             db2.commit()
- 
-             cur2.execute("""
-                 UPDATE mfu_event_member
-                    SET payment_status='paid',
-                        paid_at=NOW(),
-                        paid_amount_yen=%s,
-                        receipt_url=COALESCE(%s, receipt_url),
-                        payment_row_id=%s
-                  WHERE event_id=%s AND user_id=%s
-             """, (paid_amount_yen, receipt_url, payment_row_id, ev["id"], me["id"]))  # type: ignore
-             db2.commit()
-+            cur2.execute("""
-+                SELECT id
-+                  FROM mfu_event_member
-+                 WHERE event_id=%s AND user_id=%s
-+                 LIMIT 1
-+            """, (ev["id"], me["id"]))  # type: ignore
-+            row = cur2.fetchone()
-+            if row:
-+                member_id = row[0] if isinstance(row, tuple) else row.get("id")
-         finally:
-             try: cur2.close(); db2.close()
-             except Exception: pass
- 
-+        receipt_pdf_url = None
-+        if member_id:
-+            try:
-+                receipt_pdf_url = url_for(
-+                    "external_login_user.member_receipt_pdf",
-+                    event_uuid=event_uuid,
-+                    member_id=member_id,
-+                    _external=True,
-+                )
-+            except Exception:
-+                receipt_pdf_url = None
-+        receipt_link = receipt_pdf_url or receipt_url
-+
-         # セッションのフォールバック情報はクリア
-         try:
-             (session.get("pay_ctx") or {}).clear()
-             session.pop("pay_ctx", None)
+             paid_amount_yen = int(str(amt_raw).strip())
          except Exception:
-             pass
- 
-         # ===== 管理者/ACL 通知（既存ペイ系と同じ体裁） =====
+             paid_amount_yen = None
+     if paid_amount_yen is None:
          try:
-             try:
-                 admin_link = url_for("external_login_user.admin_event_view", event_id=ev["id"], _external=True)  # type: ignore
-             except Exception:
-                 admin_link = ""
-             subject_admin = f"【{ev.get('title','イベント')}】クレジットカード決済が完了しました"
-             lines = [
-                 f"イベント: {ev.get('title','(無題)')}",
-                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
-                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
--                f"レシートURL: {receipt_url or '(なし)'}",
-+                f"レシートURL: {receipt_link or '(なし)'}",
-                 f"管理画面: {admin_link}" if admin_link else "",
-                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
-             ]
-             _notify_payment_to_admin_and_acl(
-                 ev,
-                 event_uuid_str=event_uuid,
-                 subject=subject_admin,
-                 mail_lines=[s for s in lines if s],
-                 discord_lines=None,
-             )
+             paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
          except Exception:
-             current_app.logger.exception("notify (lecture card) failed")
- 
-         # ===== 参加者控えメール =====
+             paid_amount_yen = None
+     if paid_amount_yen is None:
          try:
-             user_email = (me.get("email") or "").strip()
-             if user_email:
-                 amount_line = f"{paid_amount_yen:,} 円" if isinstance(paid_amount_yen, int) else "— 円"
-                 subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-                 body_user = (
-                     f"{me.get('nickname') or '参加者'} 様\n\n"
-                     "お忙しい中、お支払いいただきありがとうございます。\n"
-                     "このメールを持って決済完了とさせていただきます。\n"
-                     "レシートは、下記のアドレスよりご確認よろしくお願いします。\n"
-                     "※クレジットカード加盟店は「小松　伊織」と表示されますが、変更処理が間に合っておらず「チームイカ」と記載される場合があります。間違いではありませんが、ご面倒お掛けします。\n\n"
-                     "当日、お会いできるのを楽しみにしております！\n\n"
-                     f"イベント: {ev.get('title','(無題)')}\n"
+             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
+             if sess_amt is not None and int(sess_amt) > 0:
+@@ -1517,26 +1535,29 @@ def lecture_return(event_uuid: str):
                      f"金額: {amount_line}\n"
--                    f"レシートURL: {receipt_url or '(なし)'}\n"
-+                    f"レシートURL: {receipt_link or '(なし)'}\n"
+                     f"レシートURL: {receipt_link or '(なし)'}\n"
                      f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
                      "--\n"
                      "小松　伊織\n"
@@ -297,4 +287,7 @@ index 505d4416bdcc08512be9fc3fe2a04501c1bd4ad1..41c1e9456dbaf99c5f995796dcf092d2
          flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
  
      # 支払後は必ず参加申請ページへ
++    iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
++    if iv:
++        return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
      return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))

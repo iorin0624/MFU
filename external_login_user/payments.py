@@ -655,7 +655,6 @@ def pay_return(event_uuid: str):
         payment_row_id = None
     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
     token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
-    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
 
     # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
     paid_amount_yen = None
@@ -826,11 +825,17 @@ def pay_return(event_uuid: str):
         # ★ 講座モード：支払い後は参加申請へ誘導
         if lecture:
             flash("続いて、参加申請（必要項目の入力）をお願いします。", "info")
+            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
+            if iv:
+                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
 
     elif is_success and already:
         flash("お支払いは反映済みです。", "info")
         if lecture:
+            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
+            if iv:
+                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
     else:
         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
@@ -1175,6 +1180,12 @@ def lecture_start(event_uuid: str):
     # 案内（テンプレ増やさず flash で案内）
     flash("講座参加には事前支払が必要です。LINEログインして続行してください。", "info")
 
+    iv = (request.args.get("iv") or "").strip()
+    if iv:
+        store = session.get("lecture_invite_tokens") or {}
+        store[event_uuid] = iv
+        session["lecture_invite_tokens"] = store
+
     # 未ログインなら、講座用支払ページを next にしてLINEログインへ
     if not session.get("ext_user_social_id"):
         next_url = url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, _external=False)
@@ -1204,6 +1215,12 @@ def lecture_pay_start(event_uuid: str):
     if not _is_lecture_event(ev):
         flash("このページは講座専用です。通常の申請ページに移動しました。", "info")
         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+
+    iv = (request.args.get("iv") or "").strip()
+    if iv:
+        store = session.get("lecture_invite_tokens") or {}
+        store[event_uuid] = iv
+        session["lecture_invite_tokens"] = store
 
     # 支払期間ガード（通常のカード決済と同じ判定）
     now = datetime.now()
@@ -1367,6 +1384,7 @@ def lecture_return(event_uuid: str):
     q = request.args
     status = (q.get("status") or q.get("square_status") or "").strip().lower()
     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
+    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
 
     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
     try:
@@ -1539,4 +1557,7 @@ def lecture_return(event_uuid: str):
         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
 
     # 支払後は必ず参加申請ページへ
+    iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
+    if iv:
+        return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
     return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
