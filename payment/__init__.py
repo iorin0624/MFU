@@ -160,6 +160,62 @@ def _square_js_url() -> str:
 def _app_base_url() -> str:
     return os.environ.get("MFU_PUBLIC_BASE_URL", "https://mfu.iori0624.jp")
 
+def _uuid_hex_to_str(value: str | bytes | None) -> str | None:
+    if not value:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            value = value.decode()
+        except Exception:
+            try:
+                return _uuid_bytes_to_str(value)
+            except Exception:
+                return None
+    value_str = str(value).strip()
+    if not value_str:
+        return None
+    try:
+        return str(uuid.UUID(hex=value_str))
+    except Exception:
+        return None
+
+def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT HEX(event_uuid) AS event_uuid_hex
+              FROM mfu_event
+             WHERE id=%s
+             LIMIT 1
+        """, (event_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        event_uuid_hex = row.get("event_uuid_hex") if isinstance(row, dict) else row[0]
+        event_uuid_str = _uuid_hex_to_str(event_uuid_hex)
+        if not event_uuid_str:
+            return None
+
+        cur.execute("""
+            SELECT id
+              FROM mfu_event_member
+             WHERE event_id=%s
+               AND user_id=%s
+             LIMIT 1
+        """, (event_id, user_id))
+        member_row = cur.fetchone()
+        if not member_row:
+            return None
+        member_id = member_row.get("id") if isinstance(member_row, dict) else member_row[0]
+        if not member_id:
+            return None
+
+        base_url = _app_base_url().rstrip("/")
+        return f"{base_url}/external-login/events/{event_uuid_str}/members/{member_id}/receipt.pdf"
+    except Exception:
+        logging.exception("build_receipt_pdf_url failed")
+        return None
+
 def _sanitize_handle(s: str | None) -> str | None:
     if not s:
         return None
@@ -365,6 +421,8 @@ def _notify_mfu_payment_completion(
         else:
             user = {"id": user_row[0], "nickname": user_row[1], "email": user_row[2]}
 
+    receipt_pdf_url = _build_receipt_pdf_url(conn, event_id=event_id, user_id=user_id)
+
     admin_base = _app_base_url().rstrip("/")
     admin_link = f"{admin_base}/external-login/admin/events/{event_id}"
     payment_uuid = ev.get("payment_uuid")
@@ -380,7 +438,7 @@ def _notify_mfu_payment_completion(
         f"イベント: {ev.get('title','(無題)')}",
         f"参加者: {user.get('nickname') or '(不明)'} (ID: {user.get('id')})",
         f"金額: {amount_line}",
-        f"レシートURL: {receipt_url or '(なし)'}",
+        f"領収書PDF: {receipt_pdf_url or '(領収書発行準備中)'}",
         f"管理画面: {admin_link}",
         f"決済管理: {pay_admin_link}",
     ]
@@ -399,11 +457,11 @@ def _notify_mfu_payment_completion(
             f"{user.get('nickname') or '参加者'} 様\n\n"
             "お忙しい中、お支払いいただきありがとうございます。\n"
             "このメールを持って決済完了とさせていただきます。\n"
-            "レシートは、下記のアドレスよりご確認よろしくお願いします。\n\n"
+            "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n\n"
             "当日、お会いできるのを楽しみにしております！\n\n"
             f"イベント: {ev.get('title','(無題)')}\n"
             f"金額: {amount_line}\n"
-            f"レシートURL: {receipt_url or '(なし)'}\n"
+            f"領収書PDF: {receipt_pdf_url or '(領収書発行準備中)'}\n"
             f"イベント詳細: {event_view_link or '(なし)'}\n\n"
         )
         send_mail(to=user_email, subject=subject_user, body=body_user, event_uuid=ev_uuid_str)

@@ -1,130 +1,206 @@
-diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index 29d63d20ad500bc6d5fa397115bf959f055f0c59..9318025b5fa16897c728a3ce9152a7c8f15e67be 100644
---- a/external_login_user/payments.py
-+++ b/external_login_user/payments.py
-@@ -884,62 +884,63 @@ def pay_return(event_uuid: str):
-         """, (ev["id"], me["id"]))  # type: ignore
-         row = cur.fetchone() or {}
-         already = (row.get("payment_status") or "unpaid").strip().lower() == "paid"
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
+diff --git a/payment/__init__.py b/payment/__init__.py
+index 267b936b8c2db110dacf18e3a175f49e663ebbb5..645efc73cfbb3b7743c282941ccd07a4503ecebf 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -138,50 +138,106 @@ def _square_env_value(name: str) -> str | None:
+     square_env = _env()
+     suffix = _square_env_suffix(square_env)
+     return os.environ.get(f"SQUARE_{suffix}_{name}") or os.environ.get(f"SQUARE_{name}")
  
-     if is_success and payment_request_id is not None:
-         _mark_payment_request_used(payment_request_id, token)
+ def _square_application_id() -> str | None:
+     return _square_env_value("APPLICATION_ID")
  
-     if is_success and not already:
-         # 講座：メンバー行が無いケースに備えて upsert
-         db2 = get_db(); cur2 = db2.cursor()
-         try:
-             if lecture:
-                 cur2.execute("""
-                     INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
-                     VALUES (%s,%s,'pending','paid',1,NOW())
-                     ON DUPLICATE KEY UPDATE
-                       payment_status='paid',
-                       paid_at=COALESCE(paid_at, NOW()),
-                       paid_amount_yen=%s,
-                       receipt_url=COALESCE(%s, receipt_url),
--                      payment_row_id=%s
-+                      payment_row_id=COALESCE(%s, payment_row_id)
-                 """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
-             else:
-                 cur2.execute("""
--                    UPDATE mfu_event_member
--                       SET payment_status='paid',
--                           paid_at=COALESCE(paid_at, NOW()),
--                           paid_amount_yen=%s,
--                           receipt_url=COALESCE(%s, receipt_url),
--                           payment_row_id=%s
--                     WHERE event_id=%s AND user_id=%s
--                """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
-+                    INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
-+                    VALUES (%s,%s,'pending','paid',1,NOW())
-+                    ON DUPLICATE KEY UPDATE
-+                      payment_status='paid',
-+                      paid_at=COALESCE(paid_at, NOW()),
-+                      paid_amount_yen=%s,
-+                      receipt_url=COALESCE(%s, receipt_url),
-+                      payment_row_id=COALESCE(%s, payment_row_id)
-+                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
-             db2.commit()
-         finally:
-             try: cur2.close(); db2.close()
-             except Exception: pass
+ def _square_location_id() -> str | None:
+     return _square_env_value("LOCATION_ID")
  
-         receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
-         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
+ def _square_access_token() -> str | None:
+     return _square_env_value("ACCESS_TOKEN")
  
-         # セッションクリア＆通知（既存ロジックそのまま）
-         try:
-             (session.get("pay_ctx") or {}).clear()
-             session.pop("pay_ctx", None)
-         except Exception:
-             pass
+ def _square_webhook_signature_key() -> str | None:
+     return _square_env_value("WEBHOOK_SIGNATURE_KEY")
  
-         try:
-             from datetime import datetime
-             try:
-                 admin_link = url_for("external_login_user.admin_event_view", event_id=ev["id"], _external=True)  # type: ignore
-             except Exception:
-                 admin_link = ""
-             subject_admin = f"【{ev.get('title','イベント')}】クレジットカード決済が完了しました"
-             lines = [
-                 f"イベント: {ev.get('title','(無題)')}",
-                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
-@@ -1672,51 +1673,51 @@ def lecture_return(event_uuid: str):
-         row = cur.fetchone()
-         already_paid = bool(row and ((row[0] if isinstance(row, tuple) else row.get("ps") or "unpaid") == "paid"))
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
+ def _square_api_base() -> str:
+     return "https://connect.squareupsandbox.com" if _env() == "SANDBOX" else "https://connect.squareup.com"
  
-     if is_success and payment_request_id is not None:
-         _mark_payment_request_used(payment_request_id, token)
+ def _square_js_url() -> str:
+     return "https://sandbox.web.squarecdn.com/v1/square.js" if _env() == "SANDBOX" else "https://web.squarecdn.com/v1/square.js"
  
-     if is_success and not already_paid:
-         # 無ければ安全に作ってから反映（承認前でもOK）
-         db2 = get_db(); cur2 = db2.cursor()
-         try:
-             cur2.execute("""
-                 INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, require_payment, joined_at)
-                 VALUES (%s, %s, 'pending', 1, NOW())
-             """, (ev["id"], me["id"]))  # type: ignore
-             db2.commit()
+ def _app_base_url() -> str:
+     return os.environ.get("MFU_PUBLIC_BASE_URL", "https://mfu.iori0624.jp")
  
-             cur2.execute("""
-                 UPDATE mfu_event_member
-                    SET payment_status='paid',
-                        paid_at=COALESCE(paid_at, NOW()),
-                        paid_amount_yen=%s,
-                        receipt_url=COALESCE(%s, receipt_url),
--                       payment_row_id=%s
-+                       payment_row_id=COALESCE(%s, payment_row_id)
-                  WHERE event_id=%s AND user_id=%s
-             """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
-             db2.commit()
-         finally:
-             try: cur2.close(); db2.close()
-             except Exception: pass
++def _uuid_hex_to_str(value: str | bytes | None) -> str | None:
++    if not value:
++        return None
++    if isinstance(value, (bytes, bytearray)):
++        try:
++            value = value.decode()
++        except Exception:
++            try:
++                return _uuid_bytes_to_str(value)
++            except Exception:
++                return None
++    value_str = str(value).strip()
++    if not value_str:
++        return None
++    try:
++        return str(uuid.UUID(hex=value_str))
++    except Exception:
++        return None
++
++def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
++    try:
++        cur = conn.cursor()
++        cur.execute("""
++            SELECT HEX(event_uuid) AS event_uuid_hex
++              FROM mfu_event
++             WHERE id=%s
++             LIMIT 1
++        """, (event_id,))
++        row = cur.fetchone()
++        if not row:
++            return None
++        event_uuid_hex = row.get("event_uuid_hex") if isinstance(row, dict) else row[0]
++        event_uuid_str = _uuid_hex_to_str(event_uuid_hex)
++        if not event_uuid_str:
++            return None
++
++        cur.execute("""
++            SELECT id
++              FROM mfu_event_member
++             WHERE event_id=%s
++               AND user_id=%s
++             LIMIT 1
++        """, (event_id, user_id))
++        member_row = cur.fetchone()
++        if not member_row:
++            return None
++        member_id = member_row.get("id") if isinstance(member_row, dict) else member_row[0]
++        if not member_id:
++            return None
++
++        base_url = _app_base_url().rstrip("/")
++        return f"{base_url}/external-login/events/{event_uuid_str}/members/{member_id}/receipt.pdf"
++    except Exception:
++        logging.exception("build_receipt_pdf_url failed")
++        return None
++
+ def _sanitize_handle(s: str | None) -> str | None:
+     if not s:
+         return None
+     s = s.strip()
+     if s.startswith("@"):
+         s = s[1:]
+     s = s.strip()
+     return s.lower() or None
  
-         receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
-         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
+ def _normalize_handle(v: str | None) -> str:
+     if not v:
+         return ""
+     v = v.strip()
+     if v.startswith("@"):
+         v = v[1:]
+     # Python なので lower()
+     return v.strip().lower()
  
-         if iv:
-             store = session.get("lecture_invite_tokens") or {}
-             store[event_uuid] = iv
-             session["lecture_invite_tokens"] = store
+ # ───────────────────────────────────────────────────────────
+ # Square 顧客ヘルパ
+ # ───────────────────────────────────────────────────────────
+ def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
+     import hashlib
+     base = _square_api_base()
+     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
+@@ -343,89 +399,91 @@ def _notify_mfu_payment_completion(
+     else:
+         ev = {
+             "id": ev_row[0],
+             "title": ev_row[1],
+             "event_uuid": ev_row[2],
+             "payment_uuid": ev_row[3],
+         }
+     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid"))
+     if ev_uuid_str:
+         ev["event_uuid_str"] = ev_uuid_str
  
-         # セッションのフォールバック情報はクリア
-         try:
-             (session.get("pay_ctx") or {}).clear()
-             session.pop("pay_ctx", None)
-         except Exception:
-             pass
+     cur.execute("""
+         SELECT id, nickname, email
+           FROM external_login_user
+          WHERE id=%s
+          LIMIT 1
+     """, (user_id,))
+     user_row = cur.fetchone()
+     user = {}
+     if user_row:
+         if isinstance(user_row, dict):
+             user = dict(user_row)
+         else:
+             user = {"id": user_row[0], "nickname": user_row[1], "email": user_row[2]}
  
-         # ===== 管理者/ACL 通知（既存ペイ系と同じ体裁） =====
-         try:
-             try:
++    receipt_pdf_url = _build_receipt_pdf_url(conn, event_id=event_id, user_id=user_id)
++
+     admin_base = _app_base_url().rstrip("/")
+     admin_link = f"{admin_base}/external-login/admin/events/{event_id}"
+     payment_uuid = ev.get("payment_uuid")
+     if payment_uuid:
+         pay_admin_link = f"{admin_base}/payment/admin/events/uuid/{payment_uuid}"
+     else:
+         pay_admin_link = f"{admin_base}/payment/admin/events/{event_id}"
+     event_view_link = f"{admin_base}/external-login/events/view/{ev_uuid_str}" if ev_uuid_str else ""
+     amount_line = f"{amount_yen:,} 円" if isinstance(amount_yen, int) else "(未取得)"
+ 
+     subject_admin = f"【{ev.get('title','イベント')}】クレジットカード決済が完了しました"
+     lines = [
+         f"イベント: {ev.get('title','(無題)')}",
+         f"参加者: {user.get('nickname') or '(不明)'} (ID: {user.get('id')})",
+         f"金額: {amount_line}",
+-        f"レシートURL: {receipt_url or '(なし)'}",
++        f"領収書PDF: {receipt_pdf_url or '(領収書発行準備中)'}",
+         f"管理画面: {admin_link}",
+         f"決済管理: {pay_admin_link}",
+     ]
+     _notify_payment_to_admin_and_acl(
+         ev,
+         event_uuid_str=ev_uuid_str,
+         subject=subject_admin,
+         mail_lines=lines,
+         discord_lines=None,
+     )
+ 
+     user_email = (user.get("email") or "").strip()
+     if user_email:
+         subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
+         body_user = (
+             f"{user.get('nickname') or '参加者'} 様\n\n"
+             "お忙しい中、お支払いいただきありがとうございます。\n"
+             "このメールを持って決済完了とさせていただきます。\n"
+-            "レシートは、下記のアドレスよりご確認よろしくお願いします。\n\n"
++            "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n\n"
+             "当日、お会いできるのを楽しみにしております！\n\n"
+             f"イベント: {ev.get('title','(無題)')}\n"
+             f"金額: {amount_line}\n"
+-            f"レシートURL: {receipt_url or '(なし)'}\n"
++            f"領収書PDF: {receipt_pdf_url or '(領収書発行準備中)'}\n"
+             f"イベント詳細: {event_view_link or '(なし)'}\n\n"
+         )
+         send_mail(to=user_email, subject=subject_user, body=body_user, event_uuid=ev_uuid_str)
+ 
+ # ───────────────────────────────────────────────────────────
+ # スキーマ
+ # ───────────────────────────────────────────────────────────
+ DDL_EVENTS = """
+ CREATE TABLE IF NOT EXISTS events (
+   id              BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+   uuid            CHAR(22) NOT NULL UNIQUE,
+   title           VARCHAR(200) NOT NULL,
+   date            DATE NULL,
+   default_amount  INT UNSIGNED NOT NULL DEFAULT 1000,
+   is_active       TINYINT(1) NOT NULL DEFAULT 1,
+   notes           TEXT NULL,
+   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ """
+ 
+ DDL_PAYMENTS = """
+ CREATE TABLE IF NOT EXISTS event_payments (
+   id                   BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+   event_id             BIGINT UNSIGNED NOT NULL,
+   created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
