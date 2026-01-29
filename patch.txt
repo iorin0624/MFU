@@ -1,293 +1,219 @@
-diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index 41c1e9456dbaf99c5f995796dcf092d262d43292..c0410678b112d76d33db36ba15308080ed78b9c5 100644
---- a/external_login_user/payments.py
-+++ b/external_login_user/payments.py
-@@ -633,51 +633,50 @@ def pay_return(event_uuid: str):
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index c0b6dcd2bfa9f4bf68633612b8ceb5340301881a..2a25b781f14659c328c4275262e7a1caaafb6906 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1578,50 +1578,88 @@ def profile():
+     is_join_url = "/events/join/" in current_next
  
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
+     # メール確認が不要、かつイベント参加URLでもない場合のみ pop する
+     if not needs_verify and not is_join_url:
+         session.pop("ext_after_login_next", None)
  
-     lecture = _is_lecture_event(ev)
+     def _is_safe_local(url: str) -> bool:
+         return bool(url) and url.startswith("/") and not url.startswith("//")
  
-     # 承認済みのみ完了処理（← 非講座のみ厳格。講座は支払い先行OK）
-     if not lecture:
-         if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
-             flash("承認済み参加者のみ完了処理が可能です。", "warning")
-             return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+     if not _is_safe_local(next_url):
+         next_url = url_for("external_login_user.index")
  
-     # --- Square 戻り値の受け口（既存のまま） ---
-     q = request.args
-     status = (q.get("status") or q.get("square_status") or "").strip().lower()
-     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
-     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
-     try:
-         payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
-     except Exception:
-         payment_row_id = None
-     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
-     token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
--    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+     cur.close()
+     db.close()
+     flash("プロフィールを保存しました。", "success")
+     return redirect(next_url)
  
-     # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
-     paid_amount_yen = None
-     if amt_raw is not None and str(amt_raw).strip() != "":
-         try:
-             paid_amount_yen = int(str(amt_raw).strip())
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
-             if sess_amt is not None and int(sess_amt) > 0:
-                 paid_amount_yen = int(sess_amt)
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             base_fee = ev.get("fee_yen")
-             if base_fee is not None and int(base_fee) > 0:
-                 paid_amount_yen = int(base_fee)
-@@ -804,55 +803,61 @@ def pay_return(event_uuid: str):
-                     "当日、お会いできるのを楽しみにしております！\n\n"
-                     f"イベント: {ev.get('title','(無題)')}\n"
-                     f"金額: {amount_line}\n"
-                     f"レシートURL: {receipt_link or '(なし)'}\n"
-                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
-                     "--\n"
-                     "小松　伊織\n"
-                     "050-6874-1025\n"
-                     "admin@mail.iori0624.jp\n"
-                     "--\n"
-                 )
-                 send_mail(
-                     to=user_email,
-                     subject=subject_user,
-                     body=body_user,
-                     event_uuid=event_uuid,
-                 )
-         except Exception:
-             current_app.logger.exception("notify (user mail) failed")
  
-         flash("お支払いが完了しました。ありがとうございます。", "success")
+ # =========================
+ # 参加（承認制）・閲覧
+ # =========================
+ @bp.route("/line-login")
+ def line_login_shortcut():
+     return redirect(url_for("external_login_user.line_login", **request.args), code=302)
  
-         # ★ 講座モード：支払い後は参加申請へ誘導
-         if lecture:
-             flash("続いて、参加申請（必要項目の入力）をお願いします。", "info")
-+            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
-+            if iv:
-+                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
-             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
- 
-     elif is_success and already:
-         flash("お支払いは反映済みです。", "info")
-         if lecture:
-+            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
-+            if iv:
-+                return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
-             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
-     else:
-         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
- 
-     return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
- # ============================================================
- # 支払い方法の分岐 / PayPay / 銀行振込
- # ============================================================
- 
- # --- 支払方法の選択（単独時の自動遷移をPayPay表示に） ---
- @bp.route("/pay/options/<event_uuid>")
- def pay_options(event_uuid: str):
-     guard = _require_ext_login()
-     if guard:
-         return guard
- 
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
-     ev = _event_attach_uuid_str(ev, event_uuid)
- 
-     methods = _enabled_methods(ev)
-     enabled = [k for k, v in methods.items() if v]
- 
-@@ -1153,80 +1158,92 @@ def pay_bank(event_uuid: str):
- #   1) 案内リンク：/external-login/lecture/start/<event_uuid>
- #   2) ログイン後：自動で /lecture/pay/<uuid> へ
- #   3) Square完了戻り：/lecture/return/<uuid> → 参加申請ページへ
- # ============================================================
- 
- def _is_lecture_event(ev: dict) -> bool:
-     """イベント名に【講座】を含むか判定（全角のまま一致）"""
-     title = (ev.get("title") or "").strip()
-     return "【講座】" in title
- 
- @bp.route("/lecture/start/<event_uuid>")
- def lecture_start(event_uuid: str):
-     """
-     講座の案内→LINEログインへ誘導（案内はflashで、テンプレ追加なし）
-     """
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
-     if not _is_lecture_event(ev):
-         flash("このページは講座専用です。通常の申請ページに移動しました。", "info")
-         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
- 
-     # 案内（テンプレ増やさず flash で案内）
-     flash("講座参加には事前支払が必要です。LINEログインして続行してください。", "info")
- 
-+    iv = (request.args.get("iv") or "").strip()
-+    if iv:
-+        store = session.get("lecture_invite_tokens") or {}
-+        store[event_uuid] = iv
-+        session["lecture_invite_tokens"] = store
++def _is_lecture_event_from_event(ev: dict) -> bool:
++    title = (ev.get("title") or "").strip()
++    return "【講座】" in title
 +
-     # 未ログインなら、講座用支払ページを next にしてLINEログインへ
-     if not session.get("ext_user_social_id"):
-         next_url = url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, _external=False)
-         session["ext_after_login_next"] = next_url
-         return redirect(url_for("external_login_user.line_login", next=next_url))
- 
-     # 既にログイン済みならそのまま支払ステップへ
-     return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid))
- 
- 
- @bp.route("/lecture/pay/<event_uuid>", methods=["GET", "POST"])
- def lecture_pay_start(event_uuid: str):
-     """
-     講座：支払ステップ（承認前でも支払を許可）。支払後に参加申請ページへ誘導。
-     - 支払い期間ガードあり
-     - 支払不要設定（require_payment=0）は尊重し、申請ページへ直行
-     - 支払方法の分岐は既存の pay_* へ委譲
-     """
-     guard = _require_ext_login()
-     if guard:
-         return guard
- 
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
-     if not _is_lecture_event(ev):
-         flash("このページは講座専用です。通常の申請ページに移動しました。", "info")
-         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
- 
-+    iv = (request.args.get("iv") or "").strip()
-+    if iv:
-+        store = session.get("lecture_invite_tokens") or {}
-+        store[event_uuid] = iv
-+        session["lecture_invite_tokens"] = store
++def _lecture_auto_approve_from_payment_request(
++    *,
++    event_id: int,
++    user_id: int,
++    payment_row_id: int | None,
++) -> bool:
++    db = get_db(); cur = db.cursor()
++    try:
++        if payment_row_id:
++            cur.execute("""
++                SELECT COALESCE(lecture_auto_approve,0)
++                  FROM mfu_payment_request
++                 WHERE id=%s AND event_id=%s AND user_id=%s
++                 LIMIT 1
++            """, (payment_row_id, event_id, user_id))
++        else:
++            cur.execute("""
++                SELECT COALESCE(lecture_auto_approve,0)
++                  FROM mfu_payment_request
++                 WHERE event_id=%s AND user_id=%s AND status='used'
++                 ORDER BY id DESC
++                 LIMIT 1
++            """, (event_id, user_id))
++        row = cur.fetchone()
++        if not row:
++            return False
++        val = row[0] if isinstance(row, tuple) else row.get("lecture_auto_approve") or 0
++        return int(val or 0) == 1
++    except Exception:
++        return False
++    finally:
++        try: cur.close(); db.close()
++        except Exception: pass
 +
-     # 支払期間ガード（通常のカード決済と同じ判定）
-     now = datetime.now()
-     pf = _as_dt(ev.get("pay_from"))
-     pu = _as_dt(ev.get("pay_until"))
-     if (pf and now < pf) or (pu and now > pu):
-         if pf and pu:
-             flash(f"支払い可能期間は {pf:%Y-%m-%d %H:%M} 〜 {pu:%Y-%m-%d %H:%M} です。", "warning")
-         elif pf:
-             flash(f"支払いは {pf:%Y-%m-%d %H:%M} から可能です。", "warning")
+ 
+ @bp.route("/events/join/<event_uuid>", methods=["GET", "POST"])
+ def join_event(event_uuid: str):
+     """
+     仕様:
+       - 未ログイン時は LINE ログインへ。next に現在URL(含iv)を渡す。
+       - ログイン後/初回プロフィール作成後も常にこのフォームへ戻す。
+       - GET: 既存メンバーは状態表示、未申請は「役割/衣装」入力フォームを表示。
+       - POST: 自動承認トークン(iv)が一致すれば 'approved'、なければ 'pending' で upsert。
+               送信後はイベントページ（/events/view/<uuid>）へ遷移。
+     """
+     import secrets
+ 
+     # --- ログインチェック（next でこのページに戻す。iv も保持される） ---
+     social_id = session.get("ext_user_social_id")
+     if not social_id:
+         session["ext_after_login_next"] = request.url
+         login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
+         return redirect(login_url)
+ 
+     # --- CSRF トークン ---
+     if "ext_csrf" not in session:
+         session["ext_csrf"] = secrets.token_hex(16)
+     csrf_token = session["ext_csrf"]
+ 
+@@ -1656,60 +1694,70 @@ def join_event(event_uuid: str):
+     # --- イベント本体（テンプレが参照する列は必ず選ぶ） ---
+     cur.execute("""
+       SELECT
+         id, title, event_uuid,
+         starts_at, fee_yen, place_name, address,
+         COALESCE(auto_approve_by_invite,0) AS auto_on,
+         invite_token
+       FROM mfu_event
+       WHERE event_uuid = UNHEX(REPLACE(%s,'-',''))
+       LIMIT 1
+     """, (event_uuid,))
+     ev = cur.fetchone()
+     if not ev:
+         cur.close(); db.close()
+         abort(404, "event not found")
+ 
+     # 表示用 UUID 文字列 / 管理URL
+     ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
+     ev["event_uuid_str"] = ev_uuid_str
+     admin_url = f"https://mfu.iori0624.jp/external-login/admin/events/{ev['id']}"
+ 
+     # 既存メンバー状況
+     cur.execute("""
+         SELECT id, COALESCE(status,'pending') AS status,
+                COALESCE(participant_role,'none') AS participant_role,
+-               costume_label
++               costume_label,
++               COALESCE(payment_status,'unpaid') AS payment_status,
++               payment_row_id
+           FROM mfu_event_member
+          WHERE event_id=%s AND user_id=%s
+          LIMIT 1
+     """, (ev["id"], ext_uid))
+     m = cur.fetchone()
+ 
+     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
+-    iv = (request.args.get("iv") or "").strip()
++    iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
++    if not iv:
++        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
++    if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
++        auto_hit = auto_hit or _lecture_auto_approve_from_payment_request(
++            event_id=ev["id"],
++            user_id=ext_uid,
++            payment_row_id=m.get("payment_row_id"),
++        )
+ 
+     # =========================
+     # POST: フォーム送信（申請）
+     # =========================
+     if request.method == "POST":
+         # CSRF
+         token = request.form.get("csrf_token", "")
+         if not token or token != csrf_token:
+             cur.close(); db.close()
+             abort(400, "invalid csrf token")
+ 
+         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
+         # ★ 'other' を許可
+         if role not in ("camera", "assistant", "cosplayer", "other"):
+             role = "cosplayer"
+ 
+         costume = (request.form.get("costume_label") or "").strip() or None
+         # ★ 「衣装／その他」のときだけ保持
+         if role not in ("cosplayer", "other"):
+             costume = None  # サーバ側でも空に
+ 
+         # ステータス決定（自動承認 or 手動承認待ち）
+         new_status = "approved" if auto_hit else "pending"
+ 
+         # upsert
+@@ -1818,50 +1866,52 @@ def join_event(event_uuid: str):
+             wh = _get_admin_webhook_url()
+             if wh:
+                 r = requests.post(wh, json={"content": body_text}, timeout=7)
+                 if r.status_code >= 300:
+                     current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
+             else:
+                 current_app.logger.warning("join: admin webhook_url not set")
+ 
+         except Exception:
+             current_app.logger.exception("join: admin mail/discord failed")
+ 
+         # 送信後はイベントページへ
+         if new_status == "pending":
+             flash("参加申請を受け付けました。承認までお待ちください。", "success")
          else:
-             flash(f"支払いは {pu:%Y-%m-%d %H:%M} までに行ってください。", "warning")
-         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+             flash("参加が承認されました。", "success")
+         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
  
-     # 参加費チェック
-     fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
-     if fee <= 0:
-         flash("この講座イベントに参加費が設定されていません。主催へお問い合わせください。", "warning")
-         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+     # =========================
+     # GET: 表示
+     # =========================
+     for k in ("starts_at", "fee_yen", "place_name", "address"):
+         ev.setdefault(k, None)
  
-     # 参加レコードが無ければ仮エントリを作成しておく（承認前でもOK）
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             SELECT id, COALESCE(require_payment,1) AS rp
-               FROM mfu_event_member
-@@ -1345,50 +1362,51 @@ def lecture_pay_start(event_uuid: str):
-         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
-         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
+     status = (m and m.get("status")) or None
++    if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
++        status = None
+     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
+     form_costume = (m and (m.get("costume_label") or "")) or ""
+ 
+     cur.close(); db.close()
+     return render_template(
+         "event_join.html",
+         ev=ev,
+         status=status,
+         form_role=form_role,
+         form_costume=form_costume,
+         csrf_token=csrf_token,
      )
-     return redirect(dest)
  
  
- @bp.route("/lecture/return/<event_uuid>")
- def lecture_return(event_uuid: str):
-     """
-     講座：Square戻り（承認前でも支払反映）→ 参加申請ページへ。
-     内容は既存 /pay/return を踏襲しつつ「承認済みガード」を外したもの。
-     """
+ @bp.route("/events/<event_uuid>/members/<int:member_id>/receipt.pdf")
+ def member_receipt_pdf(event_uuid: str, member_id: int):
      guard = _require_ext_login()
      if guard:
          return guard
  
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
      ev = _event_by_uuid_str(event_uuid)
      if not ev:
          abort(404, "イベントが見つかりません")
  
-     # --- 戻り値の受け口（キー名ゆるく受理） ---
-     q = request.args
-     status = (q.get("status") or q.get("square_status") or "").strip().lower()
-     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
-+    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
- 
-     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
-     try:
-         payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
-     except Exception:
-         payment_row_id = None
- 
-     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
- 
-     # ①URL → ②トークン → ③セッション → ④イベントfee_yen の順に解決
-     paid_amount_yen = None
-     if amt_raw is not None and str(amt_raw).strip() != "":
-         try:
-             paid_amount_yen = int(str(amt_raw).strip())
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
-             if sess_amt is not None and int(sess_amt) > 0:
-@@ -1517,26 +1535,29 @@ def lecture_return(event_uuid: str):
-                     f"金額: {amount_line}\n"
-                     f"レシートURL: {receipt_link or '(なし)'}\n"
-                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
-                     "--\n"
-                     "小松　伊織\n"
-                     "050-6874-1025\n"
-                     "admin@mail.iori0624.jp\n"
-                     "--\n"
-                 )
-                 send_mail(
-                     to=user_email,
-                     subject=subject_user,
-                     body=body_user,
-                     event_uuid=event_uuid,
-                 )
-         except Exception:
-             current_app.logger.exception("notify (lecture user mail) failed")
- 
-         flash("お支払いが完了しました。次に『参加申請ページ』で役割/衣装を入力してください。", "success")
-     elif is_success and already_paid:
-         flash("お支払いは反映済みです。参加申請ページへお進みください。", "info")
-     else:
-         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
- 
-     # 支払後は必ず参加申請ページへ
-+    iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
-+    if iv:
-+        return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
-     return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))

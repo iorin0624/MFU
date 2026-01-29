@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
   x_id           VARCHAR(15)     NULL,
   instagram_id   VARCHAR(30)     NULL,
   amount_yen     INT UNSIGNED NOT NULL,
+  lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0,
   status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   used_at        DATETIME NULL,
@@ -174,6 +175,8 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
+            _ensure_col("mfu_payment_request", "lecture_auto_approve",
+                        "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
 
             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
             _ensure_col("mfu_event", "line_openchat_url",

@@ -189,6 +189,7 @@ def _create_payment_request(
     nickname: str | None,
     x_id: str | None,
     instagram_id: str | None,
+    lecture_auto_approve: bool = False,
 ) -> str:
     """支払いリクエストを発行し、トークンを返す。"""
     token = str(uuid.uuid4())
@@ -196,10 +197,20 @@ def _create_payment_request(
     try:
         cur.execute("""
             INSERT INTO mfu_payment_request (
-              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, amount_yen
+              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, amount_yen, lecture_auto_approve
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, int(amount_yen)))
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            token,
+            event_id,
+            event_uuid,
+            user_id,
+            nickname,
+            x_id,
+            instagram_id,
+            int(amount_yen),
+            1 if lecture_auto_approve else 0,
+        ))
         db.commit()
     finally:
         try: cur.close(); db.close()
@@ -1180,7 +1191,7 @@ def lecture_start(event_uuid: str):
     # 案内（テンプレ増やさず flash で案内）
     flash("講座参加には事前支払が必要です。LINEログインして続行してください。", "info")
 
-    iv = (request.args.get("iv") or "").strip()
+    iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if iv:
         store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
@@ -1216,11 +1227,19 @@ def lecture_pay_start(event_uuid: str):
         flash("このページは講座専用です。通常の申請ページに移動しました。", "info")
         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
 
-    iv = (request.args.get("iv") or "").strip()
+    iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
+    if not iv:
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     if iv:
         store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
         session["lecture_invite_tokens"] = store
+    auto_approve_hit = bool(
+        int(ev.get("auto_approve_by_invite") or 0) == 1
+        and ev.get("invite_token")
+        and iv
+        and iv == ev.get("invite_token")
+    )
 
     # 支払期間ガード（通常のカード決済と同じ判定）
     now = datetime.now()
@@ -1289,6 +1308,7 @@ def lecture_pay_start(event_uuid: str):
                 nickname=me.get("nickname"),
                 x_id=me.get("x_id"),
                 instagram_id=me.get("instagram_id"),
+                lecture_auto_approve=auto_approve_hit,
             )  # type: ignore
             session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
@@ -1301,6 +1321,7 @@ def lecture_pay_start(event_uuid: str):
                 "expected_amount_yen": fee,
                 "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
                 "payment_token": payment_token,
+                "invite_token": iv or None,
             }
             return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
             dest = (
@@ -1344,6 +1365,7 @@ def lecture_pay_start(event_uuid: str):
         nickname=me.get("nickname"),
         x_id=me.get("x_id"),
         instagram_id=me.get("instagram_id"),
+        lecture_auto_approve=auto_approve_hit,
     )  # type: ignore
     session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
@@ -1356,6 +1378,7 @@ def lecture_pay_start(event_uuid: str):
         "expected_amount_yen": fee,
         "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
         "payment_token": payment_token,
+        "invite_token": iv or None,
     }
     return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
     dest = (
@@ -1385,6 +1408,9 @@ def lecture_return(event_uuid: str):
     status = (q.get("status") or q.get("square_status") or "").strip().lower()
     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
     token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+    iv = (q.get("iv") or q.get("vi") or (session.get("pay_ctx") or {}).get("invite_token") or "").strip()
+    if not iv:
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
 
     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
     try:
@@ -1485,6 +1511,11 @@ def lecture_return(event_uuid: str):
             except Exception:
                 receipt_pdf_url = None
         receipt_link = receipt_pdf_url or receipt_url
+
+        if iv:
+            store = session.get("lecture_invite_tokens") or {}
+            store[event_uuid] = iv
+            session["lecture_invite_tokens"] = store
 
         # セッションのフォールバック情報はクリア
         try:
