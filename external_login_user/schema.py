@@ -178,6 +178,35 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_payment_request", "lecture_auto_approve",
                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
 
+            def _ensure_payment_request_status_enum() -> None:
+                try:
+                    cur.execute("""
+                        SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+                         WHERE TABLE_SCHEMA=DATABASE()
+                           AND TABLE_NAME='mfu_payment_request'
+                           AND COLUMN_NAME='status'
+                    """)
+                    row = cur.fetchone()
+                    column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
+                except Exception:
+                    app.logger.exception("failed to inspect mfu_payment_request.status")
+                    return
+
+                if not column_type:
+                    return
+                if "used" in str(column_type).lower():
+                    return
+                try:
+                    cur.execute("""
+                        ALTER TABLE mfu_payment_request
+                          MODIFY COLUMN status ENUM('pending','used','canceled')
+                          NOT NULL DEFAULT 'pending'
+                    """)
+                except Exception:
+                    app.logger.exception("failed to alter mfu_payment_request.status enum")
+
+            _ensure_payment_request_status_enum()
+
             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
             _ensure_col("mfu_event", "line_openchat_url",
                         "line_openchat_url VARCHAR(512) NULL AFTER maps_url")
