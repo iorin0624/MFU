@@ -1687,14 +1687,20 @@ def _lecture_auto_approve_from_payment_request(
                  WHERE id=%s AND event_id=%s AND user_id=%s
                  LIMIT 1
             """, (payment_row_id, event_id, user_id))
-        else:
-            cur.execute("""
-                SELECT COALESCE(lecture_auto_approve,0)
-                  FROM mfu_payment_request
-                 WHERE event_id=%s AND user_id=%s AND status='used'
-                 ORDER BY id DESC
-                 LIMIT 1
-            """, (event_id, user_id))
+            row = cur.fetchone()
+            if row:
+                val = row[0] if isinstance(row, tuple) else row.get("lecture_auto_approve") or 0
+                return int(val or 0) == 1
+        cur.execute("""
+            SELECT COALESCE(lecture_auto_approve,0)
+              FROM mfu_payment_request
+             WHERE event_id=%s
+               AND user_id=%s
+               AND status IN ('used','pending')
+               AND lecture_auto_approve=1
+             ORDER BY id DESC
+             LIMIT 1
+        """, (event_id, user_id))
         row = cur.fetchone()
         if not row:
             return False

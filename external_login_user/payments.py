@@ -292,6 +292,18 @@ def _payment_request_id_from_token(event_id: int, user_id: int, token: str | Non
     return None
 
 
+def _resolve_payment_request_id(
+    event_id: int,
+    user_id: int,
+    token: str | None,
+    payment_row_id: int | None,
+) -> int | None:
+    payment_request_id = _payment_request_id_from_token(event_id, user_id, token)
+    if payment_request_id is not None:
+        return payment_request_id
+    return payment_row_id
+
+
 def _mark_payment_request_used(payment_request_id: int, token: str | None) -> None:
     db = get_db(); cur = db.cursor()
     try:
@@ -311,6 +323,35 @@ def _mark_payment_request_used(payment_request_id: int, token: str | None) -> No
     finally:
         try: cur.close(); db.close()
         except Exception: pass
+
+
+def _build_member_receipt_pdf_url(event_uuid: str, event_id: int, user_id: int) -> str | None:
+    try:
+        db = get_db(); cur = db.cursor()
+        try:
+            cur.execute("""
+                SELECT id
+                  FROM mfu_event_member
+                 WHERE event_id=%s AND user_id=%s
+                 LIMIT 1
+            """, (event_id, user_id))
+            row = cur.fetchone()
+            if not row:
+                return None
+            member_id = row[0] if isinstance(row, tuple) else row.get("id")
+            if not member_id:
+                return None
+        finally:
+            try: cur.close(); db.close()
+            except Exception: pass
+        return url_for(
+            "external_login_user.member_receipt_pdf",
+            event_uuid=event_uuid,
+            member_id=member_id,
+            _external=True,
+        )
+    except Exception:
+        return None
 
 # ============================================================
 # users.py を踏襲した 通知系ヘルパ
@@ -667,10 +708,22 @@ def pay_start(event_uuid: str):
                 "instagram_id": me.get("instagram_id"),
                 "email": me.get("email"),
                 "expected_amount_yen": int(fee) if fee else None,
-                "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
+                "return_url": url_for(
+                    "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
+                    event_uuid=event_uuid,
+                    payment_token=payment_token,
+                    iv=iv or None,
+                    _external=True,
+                ),
                 "payment_token": payment_token,
             }
-            return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+            return_url = url_for(
+                "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
+                event_uuid=event_uuid,
+                payment_token=payment_token,
+                iv=iv or None,
+                _external=True,
+            )
             dest = (
                 f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
                 f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
@@ -722,10 +775,22 @@ def pay_start(event_uuid: str):
         "instagram_id": me.get("instagram_id"),
         "email": me.get("email"),
         "expected_amount_yen": int(fee) if fee else None,
-        "return_url": url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True),
+        "return_url": url_for(
+            "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
+            event_uuid=event_uuid,
+            payment_token=payment_token,
+            iv=iv or None,
+            _external=True,
+        ),
         "payment_token": payment_token,
     }
-    return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+    return_url = url_for(
+        "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
+        event_uuid=event_uuid,
+        payment_token=payment_token,
+        iv=iv or None,
+        _external=True,
+    )
     dest = (
         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
@@ -797,7 +862,7 @@ def pay_return(event_uuid: str):
 
     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
 
-    payment_request_id = _payment_request_id_from_token(ev["id"], me["id"], token)  # type: ignore
+    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token, payment_row_id)  # type: ignore
     if token and payment_request_id is None:
         current_app.logger.warning(
             "payment request not found token=%s event_id=%s user_id=%s",
@@ -831,7 +896,6 @@ def pay_return(event_uuid: str):
     if is_success and not already:
         # 講座：メンバー行が無いケースに備えて upsert
         db2 = get_db(); cur2 = db2.cursor()
-        member_id = None
         try:
             if lecture:
                 cur2.execute("""
@@ -839,7 +903,7 @@ def pay_return(event_uuid: str):
                     VALUES (%s,%s,'pending','paid',1,NOW())
                     ON DUPLICATE KEY UPDATE
                       payment_status='paid',
-                      paid_at=NOW(),
+                      paid_at=COALESCE(paid_at, NOW()),
                       paid_amount_yen=%s,
                       receipt_url=COALESCE(%s, receipt_url),
                       payment_row_id=%s
@@ -848,38 +912,19 @@ def pay_return(event_uuid: str):
                 cur2.execute("""
                     UPDATE mfu_event_member
                        SET payment_status='paid',
-                           paid_at=NOW(),
+                           paid_at=COALESCE(paid_at, NOW()),
                            paid_amount_yen=%s,
                            receipt_url=COALESCE(%s, receipt_url),
                            payment_row_id=%s
                      WHERE event_id=%s AND user_id=%s
                 """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
-            cur2.execute("""
-                SELECT id
-                  FROM mfu_event_member
-                 WHERE event_id=%s AND user_id=%s
-                 LIMIT 1
-            """, (ev["id"], me["id"]))  # type: ignore
-            row = cur2.fetchone()
-            if row:
-                member_id = row[0] if isinstance(row, tuple) else row.get("id")
         finally:
             try: cur2.close(); db2.close()
             except Exception: pass
 
-        receipt_pdf_url = None
-        if member_id:
-            try:
-                receipt_pdf_url = url_for(
-                    "external_login_user.member_receipt_pdf",
-                    event_uuid=event_uuid,
-                    member_id=member_id,
-                    _external=True,
-                )
-            except Exception:
-                receipt_pdf_url = None
-        receipt_link = receipt_pdf_url or receipt_url
+        receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
+        receipt_label = receipt_pdf_url or "(領収書発行準備中)"
 
         # セッションクリア＆通知（既存ロジックそのまま）
         try:
@@ -899,7 +944,7 @@ def pay_return(event_uuid: str):
                 f"イベント: {ev.get('title','(無題)')}",
                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
-                f"レシートURL: {receipt_link or '(なし)'}",
+                f"領収書PDF: {receipt_label}",
                 f"管理画面: {admin_link}" if admin_link else "",
                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
             ]
@@ -929,7 +974,7 @@ def pay_return(event_uuid: str):
                     "当日、お会いできるのを楽しみにしております！\n\n"
                     f"イベント: {ev.get('title','(無題)')}\n"
                     f"金額: {amount_line}\n"
-                    f"レシートURL: {receipt_link or '(なし)'}\n"
+                    f"領収書PDF: {receipt_label}\n"
                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
                     "--\n"
                     "小松　伊織\n"
@@ -995,7 +1040,7 @@ def pay_options(event_uuid: str):
         session["lecture_invite_tokens"] = store
 
     if is_lecture and enabled == ["card"]:
-        return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid))
+        return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, iv=iv or None))
 
     # 1つだけなら自動遷移（PayPayはテンプレ表示へ。go=1 は使わない）
     if len(enabled) == 1:
@@ -1448,11 +1493,23 @@ def lecture_pay_start(event_uuid: str):
                 "instagram_id": me.get("instagram_id"),
                 "email": me.get("email"),
                 "expected_amount_yen": fee,
-                "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
+                "return_url": url_for(
+                    "external_login_user.lecture_return",
+                    event_uuid=event_uuid,
+                    payment_token=payment_token,
+                    iv=iv or None,
+                    _external=True,
+                ),
                 "payment_token": payment_token,
                 "invite_token": iv or None,
             }
-            return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+            return_url = url_for(
+                "external_login_user.lecture_return",
+                event_uuid=event_uuid,
+                payment_token=payment_token,
+                iv=iv or None,
+                _external=True,
+            )
             dest = (
                 f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
                 f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
@@ -1507,11 +1564,23 @@ def lecture_pay_start(event_uuid: str):
         "instagram_id": me.get("instagram_id"),
         "email": me.get("email"),
         "expected_amount_yen": fee,
-        "return_url": url_for("external_login_user.lecture_return", event_uuid=event_uuid, _external=True),
+        "return_url": url_for(
+            "external_login_user.lecture_return",
+            event_uuid=event_uuid,
+            payment_token=payment_token,
+            iv=iv or None,
+            _external=True,
+        ),
         "payment_token": payment_token,
         "invite_token": iv or None,
     }
-    return_url = url_for("external_login_user.pay_return", event_uuid=event_uuid, _external=True)
+    return_url = url_for(
+        "external_login_user.lecture_return",
+        event_uuid=event_uuid,
+        payment_token=payment_token,
+        iv=iv or None,
+        _external=True,
+    )
     dest = (
         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
@@ -1581,7 +1650,7 @@ def lecture_return(event_uuid: str):
     # 成功判定（空=OK を含む）
     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
 
-    payment_request_id = _payment_request_id_from_token(ev["id"], me["id"], token)  # type: ignore
+    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token, payment_row_id)  # type: ignore
     if token and payment_request_id is None:
         current_app.logger.warning(
             "payment request not found token=%s event_id=%s user_id=%s",
@@ -1612,7 +1681,6 @@ def lecture_return(event_uuid: str):
     if is_success and not already_paid:
         # 無ければ安全に作ってから反映（承認前でもOK）
         db2 = get_db(); cur2 = db2.cursor()
-        member_id = None
         try:
             cur2.execute("""
                 INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, require_payment, joined_at)
@@ -1623,38 +1691,19 @@ def lecture_return(event_uuid: str):
             cur2.execute("""
                 UPDATE mfu_event_member
                    SET payment_status='paid',
-                       paid_at=NOW(),
+                       paid_at=COALESCE(paid_at, NOW()),
                        paid_amount_yen=%s,
                        receipt_url=COALESCE(%s, receipt_url),
                        payment_row_id=%s
                  WHERE event_id=%s AND user_id=%s
             """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
-            cur2.execute("""
-                SELECT id
-                  FROM mfu_event_member
-                 WHERE event_id=%s AND user_id=%s
-                 LIMIT 1
-            """, (ev["id"], me["id"]))  # type: ignore
-            row = cur2.fetchone()
-            if row:
-                member_id = row[0] if isinstance(row, tuple) else row.get("id")
         finally:
             try: cur2.close(); db2.close()
             except Exception: pass
 
-        receipt_pdf_url = None
-        if member_id:
-            try:
-                receipt_pdf_url = url_for(
-                    "external_login_user.member_receipt_pdf",
-                    event_uuid=event_uuid,
-                    member_id=member_id,
-                    _external=True,
-                )
-            except Exception:
-                receipt_pdf_url = None
-        receipt_link = receipt_pdf_url or receipt_url
+        receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
+        receipt_label = receipt_pdf_url or "(領収書発行準備中)"
 
         if iv:
             store = session.get("lecture_invite_tokens") or {}
@@ -1679,7 +1728,7 @@ def lecture_return(event_uuid: str):
                 f"イベント: {ev.get('title','(無題)')}",
                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
-                f"レシートURL: {receipt_link or '(なし)'}",
+                f"領収書PDF: {receipt_label}",
                 f"管理画面: {admin_link}" if admin_link else "",
                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
             ]
@@ -1708,7 +1757,7 @@ def lecture_return(event_uuid: str):
                     "当日、お会いできるのを楽しみにしております！\n\n"
                     f"イベント: {ev.get('title','(無題)')}\n"
                     f"金額: {amount_line}\n"
-                    f"レシートURL: {receipt_link or '(なし)'}\n"
+                    f"領収書PDF: {receipt_label}\n"
                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
                     "--\n"
                     "小松　伊織\n"
