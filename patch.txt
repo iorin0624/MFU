@@ -1,8 +1,8 @@
 diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 2a25b781f14659c328c4275262e7a1caaafb6906..400038e4fb7db84c84c00fc97f2d3215a3bad4fc 100644
+index 400038e4fb7db84c84c00fc97f2d3215a3bad4fc..4bfcb114279699b65240cb43af517f62b0471000 100644
 --- a/external_login_user/users.py
 +++ b/external_login_user/users.py
-@@ -1580,51 +1580,119 @@ def profile():
+@@ -1580,51 +1580,51 @@ def profile():
      # メール確認が不要、かつイベント参加URLでもない場合のみ pop する
      if not needs_verify and not is_join_url:
          session.pop("ext_after_login_next", None)
@@ -28,103 +28,34 @@ index 2a25b781f14659c328c4275262e7a1caaafb6906..400038e4fb7db84c84c00fc97f2d3215
  
  def _is_lecture_event_from_event(ev: dict) -> bool:
      title = (ev.get("title") or "").strip()
--    return "【講座】" in title
-+    return title.startswith("【講座】")
-+
-+def _mask_iv_token(token: str) -> str:
-+    token = (token or "").strip()
-+    if not token:
-+        return ""
-+    tail = token[-4:] if len(token) > 4 else token
-+    return f"***{tail}"
-+
-+def _mark_lecture_auto_approve_by_iv(
-+    *,
-+    event_id: int,
-+    event_uuid: str,
-+    user_id: int,
-+    iv_token: str,
-+) -> bool:
-+    if not iv_token:
-+        return False
-+    try:
-+        store = session.get("lecture_auto_approve_by_iv") or {}
-+        store[event_uuid] = True
-+        session["lecture_auto_approve_by_iv"] = store
-+    except Exception:
-+        pass
-+
-+    db = get_db(); cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute("""
-+            SELECT id, COALESCE(lecture_auto_approve,0) AS lecture_auto_approve
-+              FROM mfu_payment_request
-+             WHERE event_id=%s AND user_id=%s
-+             ORDER BY id DESC
-+             LIMIT 1
-+        """, (event_id, user_id))
-+        row = cur.fetchone()
-+        if not row:
-+            current_app.logger.info(
-+                "join: lecture iv auto-approve pending (event_id=%s user_id=%s iv=%s)",
-+                event_id,
-+                user_id,
-+                _mask_iv_token(iv_token),
-+            )
-+            return False
-+        if int(row.get("lecture_auto_approve") or 0) != 1:
-+            cur.execute("""
-+                UPDATE mfu_payment_request
-+                   SET lecture_auto_approve=1
-+                 WHERE id=%s AND event_id=%s AND user_id=%s
-+                 LIMIT 1
-+            """, (row["id"], event_id, user_id))
-+            db.commit()
-+        current_app.logger.info(
-+            "join: lecture iv auto-approve set (event_id=%s user_id=%s iv=%s payment_request_id=%s)",
-+            event_id,
-+            user_id,
-+            _mask_iv_token(iv_token),
-+            row["id"],
-+        )
-+        return True
-+    except Exception:
-+        current_app.logger.exception(
-+            "join: lecture iv auto-approve update failed (event_id=%s user_id=%s)",
-+            event_id,
-+            user_id,
-+        )
-+        return False
-+    finally:
-+        try: cur.close(); db.close()
-+        except Exception: pass
+-    return title.startswith("【講座】")
++    return "【講座】" in title
  
- def _lecture_auto_approve_from_payment_request(
+ def _mask_iv_token(token: str) -> str:
+     token = (token or "").strip()
+     if not token:
+         return ""
+     tail = token[-4:] if len(token) > 4 else token
+     return f"***{tail}"
+ 
+ def _mark_lecture_auto_approve_by_iv(
      *,
      event_id: int,
+     event_uuid: str,
      user_id: int,
-     payment_row_id: int | None,
+     iv_token: str,
  ) -> bool:
-     db = get_db(); cur = db.cursor()
+     if not iv_token:
+         return False
      try:
-         if payment_row_id:
-             cur.execute("""
-                 SELECT COALESCE(lecture_auto_approve,0)
-                   FROM mfu_payment_request
-                  WHERE id=%s AND event_id=%s AND user_id=%s
-                  LIMIT 1
-             """, (payment_row_id, event_id, user_id))
-         else:
-             cur.execute("""
-                 SELECT COALESCE(lecture_auto_approve,0)
-                   FROM mfu_payment_request
-                  WHERE event_id=%s AND user_id=%s AND status='used'
-                  ORDER BY id DESC
-                  LIMIT 1
-             """, (event_id, user_id))
-         row = cur.fetchone()
-@@ -1685,216 +1753,237 @@ def join_event(event_uuid: str):
+         store = session.get("lecture_auto_approve_by_iv") or {}
+         store[event_uuid] = True
+         session["lecture_auto_approve_by_iv"] = store
+     except Exception:
+         pass
  
+     db = get_db(); cur = db.cursor(dictionary=True)
+@@ -1754,76 +1754,90 @@ def join_event(event_uuid: str):
      # --- プロフィール未設定チェック ---
      # ニックネームが未設定、または「（未設定）」の場合はプロフィール編集へ誘導
      is_profile_incomplete = not (nick and str(nick).strip()) or nick == "（未設定）"
@@ -149,15 +80,20 @@ index 2a25b781f14659c328c4275262e7a1caaafb6906..400038e4fb7db84c84c00fc97f2d3215
          cur.close(); db.close()
          abort(404, "event not found")
  
-+    iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
-+    if iv_param and _is_lecture_event_from_event(ev):
-+        _mark_lecture_auto_approve_by_iv(
-+            event_id=ev["id"],
-+            event_uuid=event_uuid,
-+            user_id=ext_uid,
-+            iv_token=iv_param,
-+        )
-+
+     iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
+-    if iv_param and _is_lecture_event_from_event(ev):
++    is_lecture = _is_lecture_event_from_event(ev)
++    if iv_param and is_lecture:
++        store = session.get("lecture_invite_tokens") or {}
++        store[event_uuid] = iv_param
++        session["lecture_invite_tokens"] = store
+         _mark_lecture_auto_approve_by_iv(
+             event_id=ev["id"],
+             event_uuid=event_uuid,
+             user_id=ext_uid,
+             iv_token=iv_param,
+         )
+ 
      # 表示用 UUID 文字列 / 管理URL
      ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
      ev["event_uuid_str"] = ev_uuid_str
@@ -169,27 +105,37 @@ index 2a25b781f14659c328c4275262e7a1caaafb6906..400038e4fb7db84c84c00fc97f2d3215
                 COALESCE(participant_role,'none') AS participant_role,
                 costume_label,
                 COALESCE(payment_status,'unpaid') AS payment_status,
-                payment_row_id
+-               payment_row_id
++               payment_row_id,
++               COALESCE(require_payment,1) AS require_payment
            FROM mfu_event_member
           WHERE event_id=%s AND user_id=%s
           LIMIT 1
      """, (ev["id"], ext_uid))
      m = cur.fetchone()
  
++    if is_lecture:
++        require_payment = int(m.get("require_payment") or 1) if m else 1
++        payment_status = (m.get("payment_status") or "unpaid").strip() if m else "unpaid"
++        if require_payment != 0 and payment_status != "paid":
++            iv_redirect = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or iv_param
++            if iv_redirect:
++                return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid, iv=iv_redirect))
++            return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid))
++
      # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
      iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
      if not iv:
          iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
      auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
-+    auto_hit_by_lecture = False
+     auto_hit_by_lecture = False
      if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
--        auto_hit = auto_hit or _lecture_auto_approve_from_payment_request(
-+        auto_hit_by_lecture = _lecture_auto_approve_from_payment_request(
+         auto_hit_by_lecture = _lecture_auto_approve_from_payment_request(
              event_id=ev["id"],
              user_id=ext_uid,
              payment_row_id=m.get("payment_row_id"),
          )
-+        auto_hit = auto_hit or auto_hit_by_lecture
+         auto_hit = auto_hit or auto_hit_by_lecture
  
      # =========================
      # POST: フォーム送信（申請）
@@ -202,233 +148,3 @@ index 2a25b781f14659c328c4275262e7a1caaafb6906..400038e4fb7db84c84c00fc97f2d3215
              abort(400, "invalid csrf token")
  
          role = (request.form.get("participant_role") or "cosplayer").strip().lower()
-         # ★ 'other' を許可
-         if role not in ("camera", "assistant", "cosplayer", "other"):
-             role = "cosplayer"
- 
-         costume = (request.form.get("costume_label") or "").strip() or None
-         # ★ 「衣装／その他」のときだけ保持
-         if role not in ("cosplayer", "other"):
-             costume = None  # サーバ側でも空に
- 
-         # ステータス決定（自動承認 or 手動承認待ち）
--        new_status = "approved" if auto_hit else "pending"
-+        already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
-+        new_status = "approved" if (auto_hit or already_approved) else "pending"
-+        should_notify = not (already_approved and auto_hit_by_lecture)
- 
-         # upsert
-         if m:
-             cur.execute("""
-                 UPDATE mfu_event_member
-                    SET status=%s,
-                        participant_role=%s,
-                        costume_label=%s,
-                        joined_at=COALESCE(joined_at, NOW())
-                  WHERE id=%s AND event_id=%s
-                  LIMIT 1
-             """, (new_status, role, costume, m["id"], ev["id"]))
-         else:
-             cur.execute("""
-                 INSERT INTO mfu_event_member
-                   (event_id, user_id, status, participant_role, costume_label, joined_at)
-                 VALUES (%s, %s, %s, %s, %s, NOW())
-             """, (ev["id"], ext_uid, new_status, role, costume))
-         db.commit()
-+        if auto_hit_by_lecture and new_status == "approved" and not already_approved:
-+            current_app.logger.info(
-+                "join: lecture auto-approved member (event_id=%s user_id=%s)",
-+                ev["id"],
-+                ext_uid,
-+            )
- 
-         # ===== 管理者メール収集（ACLメンバー） =====
-         try:
-             cur.execute("""
-               SELECT u.email
-                 FROM mfu_event_admin_acl a
-                 JOIN users u ON u.username=a.username
-                WHERE a.event_id=%s
-                  AND COALESCE(a.role,'viewer') IN ('viewer','manager')
-                  AND u.email IS NOT NULL
-             """, (ev["id"],))
-             admin_emails = [r["email"] for r in (cur.fetchall() or []) if r.get("email")]
-         except Exception:
-             admin_emails = []
-         finally:
-             try:
-                 cur.close(); db.close()
-             except Exception:
-                 pass
- 
-         # ===== 参加者メール（件名はすでに【イベント名】統一済み） =====
--        try:
--            if to_email:
--                if new_status == "approved":
--                    send_mail(
--                        to=to_email,
--                        subject=f"【{ev['title']}】参加が承認されました",
--                        body=(f"{nick or '参加者'} 様\n\n"
--                              f"イベント「{ev['title']}」への参加が承認されました。\n"
--                              f"当日のご参加をお待ちしております！\n"
--                              f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
--                        event_uuid=ev_uuid_str,
--                    )
--                else:
--                    send_mail(
--                        to=to_email,
--                        subject=f"【{ev['title']}】参加申請を受け付けました（承認待ち）",
--                        body=(f"{nick or '参加者'} 様\n\n"
--                              f"イベント「{ev['title']}」への参加申請を受け付けました。\n"
--                              f"主催の承認後にご案内いたします。\n"
--                              f"申請状況は以下のページで確認できます。\n"
--                              f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
--                        event_uuid=ev_uuid_str,
--                    )
--        except Exception:
--            current_app.logger.exception("join: user mail failed")
-+        if should_notify:
-+            try:
-+                if to_email:
-+                    if new_status == "approved":
-+                        send_mail(
-+                            to=to_email,
-+                            subject=f"【{ev['title']}】参加が承認されました",
-+                            body=(f"{nick or '参加者'} 様\n\n"
-+                                  f"イベント「{ev['title']}」への参加が承認されました。\n"
-+                                  f"当日のご参加をお待ちしております！\n"
-+                                  f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
-+                            event_uuid=ev_uuid_str,
-+                        )
-+                    else:
-+                        send_mail(
-+                            to=to_email,
-+                            subject=f"【{ev['title']}】参加申請を受け付けました（承認待ち）",
-+                            body=(f"{nick or '参加者'} 様\n\n"
-+                                  f"イベント「{ev['title']}」への参加申請を受け付けました。\n"
-+                                  f"主催の承認後にご案内いたします。\n"
-+                                  f"申請状況は以下のページで確認できます。\n"
-+                                  f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
-+                            event_uuid=ev_uuid_str,
-+                        )
-+            except Exception:
-+                current_app.logger.exception("join: user mail failed")
- 
-         # ===== 管理者メール（ACLメンバーのみ）＋ Discord =====
--        try:
--            # 役割の日本語化（'other' を追加）
--            role_jp = {"camera": "カメラマン", "assistant": "アシスタント", "cosplayer": "衣装", "other": "その他"}.get(role, "衣装")
--            costume_line = (costume or "")
--            kind_label = "自動承認" if new_status == "approved" and auto_hit else "承認待ち"
--
--            # 件名（種別を併記）
--            subject_admin = f"【{ev['title']}】新しい参加申請があります（{kind_label}）"
--
--            # 本文（ご指定の体裁＋申請種別を追記）
--            body_text = (
--                "新しい参加申請があります。\n"
--                "\n"
--                f"イベント名：{ev['title']}\n"
--                f"申請者：{nick or '(名前未設定)'}\n"
--                f"X ID：{xid}\n"
--                f"IG ID：{igid}\n"
--                "\n"
--                f"役割：{role_jp}\n"
--                f"衣装：{costume_line}\n"
--                "\n"
--                "詳細は管理画面をご確認ください。\n"
--                f"管理URL: {admin_url}\n"
--                "\n"
--                f"申請種別：{kind_label}\n"
--            )
--
--            # 管理者メール送信
--            for em in {e for e in admin_emails if e}:
--                send_mail(
--                    to=em,
--                    subject=subject_admin,
--                    body=body_text,
--                    event_uuid=ev_uuid_str,
-+        if should_notify:
-+            try:
-+                # 役割の日本語化（'other' を追加）
-+                role_jp = {"camera": "カメラマン", "assistant": "アシスタント", "cosplayer": "衣装", "other": "その他"}.get(role, "衣装")
-+                costume_line = (costume or "")
-+                kind_label = "自動承認" if new_status == "approved" and auto_hit else "承認待ち"
-+
-+                # 件名（種別を併記）
-+                subject_admin = f"【{ev['title']}】新しい参加申請があります（{kind_label}）"
-+
-+                # 本文（ご指定の体裁＋申請種別を追記）
-+                body_text = (
-+                    "新しい参加申請があります。\n"
-+                    "\n"
-+                    f"イベント名：{ev['title']}\n"
-+                    f"申請者：{nick or '(名前未設定)'}\n"
-+                    f"X ID：{xid}\n"
-+                    f"IG ID：{igid}\n"
-+                    "\n"
-+                    f"役割：{role_jp}\n"
-+                    f"衣装：{costume_line}\n"
-+                    "\n"
-+                    "詳細は管理画面をご確認ください。\n"
-+                    f"管理URL: {admin_url}\n"
-+                    "\n"
-+                    f"申請種別：{kind_label}\n"
-                 )
- 
--            # Discord も同文面
--            wh = _get_admin_webhook_url()
--            if wh:
--                r = requests.post(wh, json={"content": body_text}, timeout=7)
--                if r.status_code >= 300:
--                    current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
--            else:
--                current_app.logger.warning("join: admin webhook_url not set")
-+                # 管理者メール送信
-+                for em in {e for e in admin_emails if e}:
-+                    send_mail(
-+                        to=em,
-+                        subject=subject_admin,
-+                        body=body_text,
-+                        event_uuid=ev_uuid_str,
-+                    )
- 
--        except Exception:
--            current_app.logger.exception("join: admin mail/discord failed")
-+                # Discord も同文面
-+                wh = _get_admin_webhook_url()
-+                if wh:
-+                    r = requests.post(wh, json={"content": body_text}, timeout=7)
-+                    if r.status_code >= 300:
-+                        current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
-+                else:
-+                    current_app.logger.warning("join: admin webhook_url not set")
-+
-+            except Exception:
-+                current_app.logger.exception("join: admin mail/discord failed")
- 
-         # 送信後はイベントページへ
-         if new_status == "pending":
-             flash("参加申請を受け付けました。承認までお待ちください。", "success")
-         else:
-             flash("参加が承認されました。", "success")
-         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
- 
-     # =========================
-     # GET: 表示
-     # =========================
-     for k in ("starts_at", "fee_yen", "place_name", "address"):
-         ev.setdefault(k, None)
- 
-     status = (m and m.get("status")) or None
-     if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-         status = None
-     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
-     form_costume = (m and (m.get("costume_label") or "")) or ""
- 
-     cur.close(); db.close()
-     return render_template(
-         "event_join.html",
-         ev=ev,
-         status=status,

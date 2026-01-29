@@ -1602,7 +1602,7 @@ def line_login_shortcut():
 
 def _is_lecture_event_from_event(ev: dict) -> bool:
     title = (ev.get("title") or "").strip()
-    return title.startswith("【講座】")
+    return "【講座】" in title
 
 def _mask_iv_token(token: str) -> str:
     token = (token or "").strip()
@@ -1776,7 +1776,11 @@ def join_event(event_uuid: str):
         abort(404, "event not found")
 
     iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
-    if iv_param and _is_lecture_event_from_event(ev):
+    is_lecture = _is_lecture_event_from_event(ev)
+    if iv_param and is_lecture:
+        store = session.get("lecture_invite_tokens") or {}
+        store[event_uuid] = iv_param
+        session["lecture_invite_tokens"] = store
         _mark_lecture_auto_approve_by_iv(
             event_id=ev["id"],
             event_uuid=event_uuid,
@@ -1795,12 +1799,22 @@ def join_event(event_uuid: str):
                COALESCE(participant_role,'none') AS participant_role,
                costume_label,
                COALESCE(payment_status,'unpaid') AS payment_status,
-               payment_row_id
+               payment_row_id,
+               COALESCE(require_payment,1) AS require_payment
           FROM mfu_event_member
          WHERE event_id=%s AND user_id=%s
          LIMIT 1
     """, (ev["id"], ext_uid))
     m = cur.fetchone()
+
+    if is_lecture:
+        require_payment = int(m.get("require_payment") or 1) if m else 1
+        payment_status = (m.get("payment_status") or "unpaid").strip() if m else "unpaid"
+        if require_payment != 0 and payment_status != "paid":
+            iv_redirect = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or iv_param
+            if iv_redirect:
+                return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid, iv=iv_redirect))
+            return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid))
 
     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
