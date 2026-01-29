@@ -1600,6 +1600,44 @@ def profile():
 def line_login_shortcut():
     return redirect(url_for("external_login_user.line_login", **request.args), code=302)
 
+def _is_lecture_event_from_event(ev: dict) -> bool:
+    title = (ev.get("title") or "").strip()
+    return "【講座】" in title
+
+def _lecture_auto_approve_from_payment_request(
+    *,
+    event_id: int,
+    user_id: int,
+    payment_row_id: int | None,
+) -> bool:
+    db = get_db(); cur = db.cursor()
+    try:
+        if payment_row_id:
+            cur.execute("""
+                SELECT COALESCE(lecture_auto_approve,0)
+                  FROM mfu_payment_request
+                 WHERE id=%s AND event_id=%s AND user_id=%s
+                 LIMIT 1
+            """, (payment_row_id, event_id, user_id))
+        else:
+            cur.execute("""
+                SELECT COALESCE(lecture_auto_approve,0)
+                  FROM mfu_payment_request
+                 WHERE event_id=%s AND user_id=%s AND status='used'
+                 ORDER BY id DESC
+                 LIMIT 1
+            """, (event_id, user_id))
+        row = cur.fetchone()
+        if not row:
+            return False
+        val = row[0] if isinstance(row, tuple) else row.get("lecture_auto_approve") or 0
+        return int(val or 0) == 1
+    except Exception:
+        return False
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
 
 @bp.route("/events/join/<event_uuid>", methods=["GET", "POST"])
 def join_event(event_uuid: str):
@@ -1678,7 +1716,9 @@ def join_event(event_uuid: str):
     cur.execute("""
         SELECT id, COALESCE(status,'pending') AS status,
                COALESCE(participant_role,'none') AS participant_role,
-               costume_label
+               costume_label,
+               COALESCE(payment_status,'unpaid') AS payment_status,
+               payment_row_id
           FROM mfu_event_member
          WHERE event_id=%s AND user_id=%s
          LIMIT 1
@@ -1686,8 +1726,16 @@ def join_event(event_uuid: str):
     m = cur.fetchone()
 
     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
-    iv = (request.args.get("iv") or "").strip()
+    iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
+    if not iv:
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
+    if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
+        auto_hit = auto_hit or _lecture_auto_approve_from_payment_request(
+            event_id=ev["id"],
+            user_id=ext_uid,
+            payment_row_id=m.get("payment_row_id"),
+        )
 
     # =========================
     # POST: フォーム送信（申請）
@@ -1840,6 +1888,8 @@ def join_event(event_uuid: str):
         ev.setdefault(k, None)
 
     status = (m and m.get("status")) or None
+    if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
+        status = None
     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
     form_costume = (m and (m.get("costume_label") or "")) or ""
 
