@@ -1,8 +1,83 @@
 diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..29d63d20ad500bc6d5fa397115bf959f055f0c59 100644
+index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..55a3d2ea844e25b8f36e54333a268ea75da74f40 100644
 --- a/external_login_user/payments.py
 +++ b/external_login_user/payments.py
-@@ -947,51 +947,51 @@ def pay_return(event_uuid: str):
+@@ -888,58 +888,66 @@ def pay_return(event_uuid: str):
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+     if is_success and payment_request_id is not None:
+         _mark_payment_request_used(payment_request_id, token)
+ 
+     if is_success and not already:
+         # 講座：メンバー行が無いケースに備えて upsert
+         db2 = get_db(); cur2 = db2.cursor()
+         try:
+             if lecture:
+                 cur2.execute("""
+                     INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
+                     VALUES (%s,%s,'pending','paid',1,NOW())
+                     ON DUPLICATE KEY UPDATE
+                       payment_status='paid',
+                       paid_at=COALESCE(paid_at, NOW()),
+                       paid_amount_yen=%s,
+                       receipt_url=COALESCE(%s, receipt_url),
+                       payment_row_id=%s
+                 """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
+             else:
+                 cur2.execute("""
+-                    UPDATE mfu_event_member
+-                       SET payment_status='paid',
+-                           paid_at=COALESCE(paid_at, NOW()),
+-                           paid_amount_yen=%s,
+-                           receipt_url=COALESCE(%s, receipt_url),
+-                           payment_row_id=%s
+-                     WHERE event_id=%s AND user_id=%s
+-                """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
++                    INSERT INTO mfu_event_member
++                      (event_id, user_id, status, payment_status, require_payment, joined_at)
++                    VALUES (%s, %s, 'pending', 'paid', 1, NOW())
++                    ON DUPLICATE KEY UPDATE
++                      payment_status='paid',
++                      paid_at=COALESCE(paid_at, NOW()),
++                      paid_amount_yen=%s,
++                      receipt_url=COALESCE(%s, receipt_url),
++                      payment_row_id=COALESCE(%s, payment_row_id)
++                """, (
++                    ev["id"],
++                    me["id"],
++                    paid_amount_yen,
++                    receipt_url,
++                    resolved_payment_row_id,
++                ))  # type: ignore
+             db2.commit()
+         finally:
+             try: cur2.close(); db2.close()
+             except Exception: pass
+ 
+         receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
+         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
+ 
+         # セッションクリア＆通知（既存ロジックそのまま）
+         try:
+             (session.get("pay_ctx") or {}).clear()
+             session.pop("pay_ctx", None)
+         except Exception:
+             pass
+ 
+         try:
+             from datetime import datetime
+             try:
+                 admin_link = url_for("external_login_user.admin_event_view", event_id=ev["id"], _external=True)  # type: ignore
+             except Exception:
+                 admin_link = ""
+             subject_admin = f"【{ev.get('title','イベント')}】クレジットカード決済が完了しました"
+             lines = [
+                 f"イベント: {ev.get('title','(無題)')}",
+                 f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
+@@ -947,51 +955,51 @@ def pay_return(event_uuid: str):
                  f"領収書PDF: {receipt_label}",
                  f"管理画面: {admin_link}" if admin_link else "",
                  f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -55,7 +130,7 @@ index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..29d63d20ad500bc6d5fa397115bf959f
  
          # ★ 講座モード：支払い後は参加申請へ誘導
          if lecture:
-@@ -1730,51 +1730,51 @@ def lecture_return(event_uuid: str):
+@@ -1730,51 +1738,51 @@ def lecture_return(event_uuid: str):
                  f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
                  f"領収書PDF: {receipt_label}",
                  f"管理画面: {admin_link}" if admin_link else "",
