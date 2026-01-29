@@ -1,8 +1,12 @@
 diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..55a3d2ea844e25b8f36e54333a268ea75da74f40 100644
+index 29d63d20ad500bc6d5fa397115bf959f055f0c59..9318025b5fa16897c728a3ce9152a7c8f15e67be 100644
 --- a/external_login_user/payments.py
 +++ b/external_login_user/payments.py
-@@ -888,58 +888,66 @@ def pay_return(event_uuid: str):
+@@ -884,62 +884,63 @@ def pay_return(event_uuid: str):
+         """, (ev["id"], me["id"]))  # type: ignore
+         row = cur.fetchone() or {}
+         already = (row.get("payment_status") or "unpaid").strip().lower() == "paid"
+     finally:
          try:
              cur.close(); db.close()
          except Exception:
@@ -24,7 +28,8 @@ index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..55a3d2ea844e25b8f36e54333a268ea7
                        paid_at=COALESCE(paid_at, NOW()),
                        paid_amount_yen=%s,
                        receipt_url=COALESCE(%s, receipt_url),
-                       payment_row_id=%s
+-                      payment_row_id=%s
++                      payment_row_id=COALESCE(%s, payment_row_id)
                  """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
              else:
                  cur2.execute("""
@@ -36,22 +41,15 @@ index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..55a3d2ea844e25b8f36e54333a268ea7
 -                           payment_row_id=%s
 -                     WHERE event_id=%s AND user_id=%s
 -                """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
-+                    INSERT INTO mfu_event_member
-+                      (event_id, user_id, status, payment_status, require_payment, joined_at)
-+                    VALUES (%s, %s, 'pending', 'paid', 1, NOW())
++                    INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
++                    VALUES (%s,%s,'pending','paid',1,NOW())
 +                    ON DUPLICATE KEY UPDATE
 +                      payment_status='paid',
 +                      paid_at=COALESCE(paid_at, NOW()),
 +                      paid_amount_yen=%s,
 +                      receipt_url=COALESCE(%s, receipt_url),
 +                      payment_row_id=COALESCE(%s, payment_row_id)
-+                """, (
-+                    ev["id"],
-+                    me["id"],
-+                    paid_amount_yen,
-+                    receipt_url,
-+                    resolved_payment_row_id,
-+                ))  # type: ignore
++                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
              db2.commit()
          finally:
              try: cur2.close(); db2.close()
@@ -77,109 +75,56 @@ index f59aef8fdc799a0dd23aa75cd83bf1032ab0ce3f..55a3d2ea844e25b8f36e54333a268ea7
              lines = [
                  f"イベント: {ev.get('title','(無題)')}",
                  f"参加者: {me.get('nickname') or '(不明)'} (ID: {me.get('id')})",
-@@ -947,51 +955,51 @@ def pay_return(event_uuid: str):
-                 f"領収書PDF: {receipt_label}",
-                 f"管理画面: {admin_link}" if admin_link else "",
-                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
-             ]
-             _notify_payment_to_admin_and_acl(
-                 ev,
-                 event_uuid_str=event_uuid,
-                 subject=subject_admin,
-                 mail_lines=[s for s in lines if s],
-                 discord_lines=None,
-             )
-         except Exception:
-             current_app.logger.exception("notify (card) failed")
+@@ -1672,51 +1673,51 @@ def lecture_return(event_uuid: str):
+         row = cur.fetchone()
+         already_paid = bool(row and ((row[0] if isinstance(row, tuple) else row.get("ps") or "unpaid") == "paid"))
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
  
-         # 参加者控えメール（既存のまま）
+     if is_success and payment_request_id is not None:
+         _mark_payment_request_used(payment_request_id, token)
+ 
+     if is_success and not already_paid:
+         # 無ければ安全に作ってから反映（承認前でもOK）
+         db2 = get_db(); cur2 = db2.cursor()
          try:
-             user_email = (me.get("email") or "").strip()
-             if user_email:
-                 from app.utils.mail import send_mail
-                 amount_line = f"{paid_amount_yen:,} 円" if isinstance(paid_amount_yen, int) else "— 円"
-                 subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-                 body_user = (
-                     f"{me.get('nickname') or '参加者'} 様\n\n"
-                     "お忙しい中、お支払いいただきありがとうございます。\n"
-                     "このメールを持って決済完了とさせていただきます。\n"
--                    "レシートは、下記のアドレスよりご確認よろしくお願いします。\n"
-+                    "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n"
-                     "※クレジットカード加盟店は「小松　伊織」と表示されますが、変更処理が間に合っておらず「チームイカ」と記載される場合があります。間違いではありませんが、ご面倒お掛けします。\n\n"
-                     "当日、お会いできるのを楽しみにしております！\n\n"
-                     f"イベント: {ev.get('title','(無題)')}\n"
-                     f"金額: {amount_line}\n"
-                     f"領収書PDF: {receipt_label}\n"
-                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
-                     "--\n"
-                     "小松　伊織\n"
-                     "050-6874-1025\n"
-                     "admin@mail.iori0624.jp\n"
-                     "--\n"
-                 )
-                 send_mail(
-                     to=user_email,
-                     subject=subject_user,
-                     body=body_user,
-                     event_uuid=event_uuid,
-                 )
-         except Exception:
-             current_app.logger.exception("notify (user mail) failed")
+             cur2.execute("""
+                 INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, require_payment, joined_at)
+                 VALUES (%s, %s, 'pending', 1, NOW())
+             """, (ev["id"], me["id"]))  # type: ignore
+             db2.commit()
  
-         flash("お支払いが完了しました。ありがとうございます。", "success")
+             cur2.execute("""
+                 UPDATE mfu_event_member
+                    SET payment_status='paid',
+                        paid_at=COALESCE(paid_at, NOW()),
+                        paid_amount_yen=%s,
+                        receipt_url=COALESCE(%s, receipt_url),
+-                       payment_row_id=%s
++                       payment_row_id=COALESCE(%s, payment_row_id)
+                  WHERE event_id=%s AND user_id=%s
+             """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
+             db2.commit()
+         finally:
+             try: cur2.close(); db2.close()
+             except Exception: pass
  
-         # ★ 講座モード：支払い後は参加申請へ誘導
-         if lecture:
-@@ -1730,51 +1738,51 @@ def lecture_return(event_uuid: str):
-                 f"金額: {paid_amount_yen if paid_amount_yen is not None else '(未取得)'} 円",
-                 f"領収書PDF: {receipt_label}",
-                 f"管理画面: {admin_link}" if admin_link else "",
-                 f"日時: {datetime.now():%Y-%m-%d %H:%M:%S}",
-             ]
-             _notify_payment_to_admin_and_acl(
-                 ev,
-                 event_uuid_str=event_uuid,
-                 subject=subject_admin,
-                 mail_lines=[s for s in lines if s],
-                 discord_lines=None,
-             )
-         except Exception:
-             current_app.logger.exception("notify (lecture card) failed")
+         receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
+         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
  
-         # ===== 参加者控えメール =====
+         if iv:
+             store = session.get("lecture_invite_tokens") or {}
+             store[event_uuid] = iv
+             session["lecture_invite_tokens"] = store
+ 
+         # セッションのフォールバック情報はクリア
          try:
-             user_email = (me.get("email") or "").strip()
-             if user_email:
-                 amount_line = f"{paid_amount_yen:,} 円" if isinstance(paid_amount_yen, int) else "— 円"
-                 subject_user = f"【{ev.get('title','イベント')}】お支払いありがとうございます！💕"
-                 body_user = (
-                     f"{me.get('nickname') or '参加者'} 様\n\n"
-                     "お忙しい中、お支払いいただきありがとうございます。\n"
-                     "このメールを持って決済完了とさせていただきます。\n"
--                    "レシートは、下記のアドレスよりご確認よろしくお願いします。\n"
-+                    "領収書PDFは、下記のアドレスよりご確認よろしくお願いします。\n"
-                     "※クレジットカード加盟店は「小松　伊織」と表示されますが、変更処理が間に合っておらず「チームイカ」と記載される場合があります。間違いではありませんが、ご面倒お掛けします。\n\n"
-                     "当日、お会いできるのを楽しみにしております！\n\n"
-                     f"イベント: {ev.get('title','(無題)')}\n"
-                     f"金額: {amount_line}\n"
-                     f"領収書PDF: {receipt_label}\n"
-                     f"イベント詳細: https://mfu.iori0624.jp/external-login/events/view/{event_uuid}\n\n"
-                     "--\n"
-                     "小松　伊織\n"
-                     "050-6874-1025\n"
-                     "admin@mail.iori0624.jp\n"
-                     "--\n"
-                 )
-                 send_mail(
-                     to=user_email,
-                     subject=subject_user,
-                     body=body_user,
-                     event_uuid=event_uuid,
-                 )
+             (session.get("pay_ctx") or {}).clear()
+             session.pop("pay_ctx", None)
          except Exception:
-             current_app.logger.exception("notify (lecture user mail) failed")
+             pass
  
-         flash("お支払いが完了しました。次に『参加申請ページ』で役割/衣装を入力してください。", "success")
-     elif is_success and already_paid:
-         flash("お支払いは反映済みです。参加申請ページへお進みください。", "info")
-     else:
+         # ===== 管理者/ACL 通知（既存ペイ系と同じ体裁） =====
+         try:
+             try:

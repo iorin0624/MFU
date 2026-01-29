@@ -906,18 +906,19 @@ def pay_return(event_uuid: str):
                       paid_at=COALESCE(paid_at, NOW()),
                       paid_amount_yen=%s,
                       receipt_url=COALESCE(%s, receipt_url),
-                      payment_row_id=%s
+                      payment_row_id=COALESCE(%s, payment_row_id)
                 """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
             else:
                 cur2.execute("""
-                    UPDATE mfu_event_member
-                       SET payment_status='paid',
-                           paid_at=COALESCE(paid_at, NOW()),
-                           paid_amount_yen=%s,
-                           receipt_url=COALESCE(%s, receipt_url),
-                           payment_row_id=%s
-                     WHERE event_id=%s AND user_id=%s
-                """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
+                    INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
+                    VALUES (%s,%s,'pending','paid',1,NOW())
+                    ON DUPLICATE KEY UPDATE
+                      payment_status='paid',
+                      paid_at=COALESCE(paid_at, NOW()),
+                      paid_amount_yen=%s,
+                      receipt_url=COALESCE(%s, receipt_url),
+                      payment_row_id=COALESCE(%s, payment_row_id)
+                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
             db2.commit()
         finally:
             try: cur2.close(); db2.close()
@@ -1694,7 +1695,7 @@ def lecture_return(event_uuid: str):
                        paid_at=COALESCE(paid_at, NOW()),
                        paid_amount_yen=%s,
                        receipt_url=COALESCE(%s, receipt_url),
-                       payment_row_id=%s
+                       payment_row_id=COALESCE(%s, payment_row_id)
                  WHERE event_id=%s AND user_id=%s
             """, (paid_amount_yen, receipt_url, resolved_payment_row_id, ev["id"], me["id"]))  # type: ignore
             db2.commit()
