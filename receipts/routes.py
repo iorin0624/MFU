@@ -20,10 +20,36 @@ from app.utils.db import get_db
 from app.utils.mail import send_mail, send_mime
 
 JST = timezone(timedelta(hours=9))
-RECEIPTS_ROOT = os.environ.get("MFU_RECEIPTS_ROOT", "/mnt/mfu/app/receipts")
+RECEIPTS_ARCHIVE_ROOT = os.environ.get(
+    "MFU_RECEIPTS_ARCHIVE_ROOT",
+    "/mnt/mfu/receipts_pdf_archive",
+)
+LEGACY_RECEIPTS_ROOT = (
+    os.environ.get("MFU_RECEIPTS_LEGACY_ROOT")
+    or os.environ.get("MFU_RECEIPTS_ROOT")
+    or "/mnt/mfu/app/receipts"
+)
+RECEIPTS_ROOT = RECEIPTS_ARCHIVE_ROOT
 OTP_EXPIRES_MIN = 10
 OTP_MAX_FAIL = 5
 TOKEN_EXPIRES_HOURS = 48
+
+STATUS_LABELS = {
+    "draft": "下書き",
+    "sent": "送信済み",
+    "signed": "署名済み",
+    "finalized": "確定",
+    "void": "取消/無効",
+    "reissued": "再発行",
+}
+STATUS_BADGES = {
+    "draft": "bg-secondary",
+    "sent": "bg-primary",
+    "signed": "badge-purple",
+    "finalized": "bg-success",
+    "void": "bg-danger",
+    "reissued": "bg-warning text-dark",
+}
 
 
 def _fetchone_dict(cur):
@@ -74,6 +100,35 @@ def _new_csrf_token() -> str:
     token = secrets.token_urlsafe(16)
     session["receipts_csrf"] = token
     return token
+
+
+def _status_label(status: str | None) -> str:
+    if not status:
+        return ""
+    return STATUS_LABELS.get(status, status)
+
+
+def _status_badge(status: str | None) -> str:
+    if not status:
+        return "bg-secondary"
+    return STATUS_BADGES.get(status, "bg-secondary")
+
+
+def _resolve_receipt_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    if path.startswith(LEGACY_RECEIPTS_ROOT):
+        candidate = RECEIPTS_ROOT + path[len(LEGACY_RECEIPTS_ROOT):]
+        if os.path.exists(candidate):
+            return candidate
+    if os.path.exists(path):
+        return path
+    return path
+
+
+def _can_manage_receipt(receipt: dict) -> bool:
+    user = session.get("user")
+    return bool(user) and (user == receipt.get("issuer_user_id") or user == "admin")
 
 
 def _check_csrf(token: str | None) -> bool:
@@ -446,7 +501,27 @@ def receipts_list():
     cur.execute(sql, params)
     receipts = _fetchall_dict(cur)
 
-    return render_template("list.html", receipts=receipts, q=q, status=status, start=start, end=end)
+    status_options = [
+        {"value": "draft", "label": _status_label("draft")},
+        {"value": "sent", "label": _status_label("sent")},
+        {"value": "signed", "label": _status_label("signed")},
+        {"value": "finalized", "label": _status_label("finalized")},
+        {"value": "reissued", "label": _status_label("reissued")},
+        {"value": "void", "label": _status_label("void")},
+    ]
+
+    return render_template(
+        "list.html",
+        receipts=receipts,
+        q=q,
+        status=status,
+        start=start,
+        end=end,
+        status_options=status_options,
+        status_labels=STATUS_LABELS,
+        status_badges=STATUS_BADGES,
+        csrf_token=_new_csrf_token(),
+    )
 
 
 @receipts_bp.route("/recipients")
@@ -778,7 +853,78 @@ def receipts_detail(receipt_id: int):
         abort(404)
     cur.execute("SELECT * FROM receipt_versions WHERE id = %s", (receipt["current_version_id"],))
     version = _fetchone_dict(cur)
-    return render_template("detail.html", receipt=receipt, version=version, csrf_token=_new_csrf_token())
+    return render_template(
+        "detail.html",
+        receipt=receipt,
+        version=version,
+        csrf_token=_new_csrf_token(),
+        status_labels=STATUS_LABELS,
+        status_badges=STATUS_BADGES,
+        can_manage=_can_manage_receipt(receipt),
+    )
+
+
+@receipts_bp.route("/receipts/<int:receipt_id>/delete", methods=["POST"])
+def receipts_delete(receipt_id: int):
+    if not _check_csrf(request.form.get("csrf_token")):
+        abort(400)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
+        receipt = _fetchone_dict(cur)
+        if not receipt:
+            abort(404)
+        if not _can_manage_receipt(receipt):
+            abort(403)
+
+        now = _now_jst()
+        if receipt.get("status") == "finalized":
+            cur.execute(
+                "UPDATE receipts SET status = 'void', updated_at = %s WHERE id = %s",
+                (now, receipt_id),
+            )
+            _append_audit_log(
+                cur,
+                actor_type="issuer",
+                actor_id=session.get("user"),
+                action="void_receipt",
+                receipt_id=receipt_id,
+                result="ok",
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+            )
+            flash("確定済みの受領書は削除できないため、取消にしました。", "warning")
+        else:
+            cur.execute(
+                """
+                UPDATE receipts
+                SET is_deleted = 1, deleted_at = %s, deleted_by = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (now, session.get("user"), now, receipt_id),
+            )
+            _append_audit_log(
+                cur,
+                actor_type="issuer",
+                actor_id=session.get("user"),
+                action="delete_receipt",
+                receipt_id=receipt_id,
+                result="ok",
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+            )
+            flash("受領書を削除しました。", "success")
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    return redirect(url_for("receipts.receipts_list"))
 
 
 @receipts_bp.route("/receipts/<int:receipt_id>/payer", methods=["POST"])
@@ -1024,8 +1170,8 @@ def receipts_download(receipt_id: int):
     version = _fetchone_dict(cur)
     if not version or not version.get("final_pdf_path"):
         abort(404)
-    path = version["final_pdf_path"]
-    if not os.path.exists(path):
+    path = _resolve_receipt_path(version["final_pdf_path"])
+    if not path or not os.path.exists(path):
         abort(404)
 
     _append_audit_log(
@@ -1366,7 +1512,10 @@ def receipts_submit_sign(token: str):
             consent_received=consent_received,
         )
         _render_pdf(audit_page_html, audit_path, base_url=request.url_root)
-        _merge_pdf(version["original_pdf_path"], audit_path, temp_final_path)
+        original_path = _resolve_receipt_path(version["original_pdf_path"])
+        if not original_path or not os.path.exists(original_path):
+            raise FileNotFoundError("原本PDFが見つかりません。")
+        _merge_pdf(original_path, audit_path, temp_final_path)
         hash_final = _sha256_file(temp_final_path)
 
         audit_page_html = render_template(
@@ -1383,7 +1532,7 @@ def receipts_submit_sign(token: str):
             consent_received=consent_received,
         )
         _render_pdf(audit_page_html, audit_path, base_url=request.url_root)
-        _merge_pdf(version["original_pdf_path"], audit_path, final_path)
+        _merge_pdf(original_path, audit_path, final_path)
         hash_final = _sha256_file(final_path)
         if os.path.exists(temp_final_path):
             os.remove(temp_final_path)
