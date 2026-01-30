@@ -8,6 +8,9 @@
   {# 今日・昨日のクイックリンク #}
   {% set today = (now().strftime('%Y-%m-%d')) %}
   {% set yesterday = ((now() - timedelta(days=1)).strftime('%Y-%m-%d')) %}
+  {% set smtp_filter_param = filters.smtp_filter if filters.kind == 'SMTP' and filters.smtp_filter != 'ALL' else None %}
+  {% set smtp_filter_value = filters.smtp_filter if filters.kind == 'SMTP' else 'ALL' %}
+  {% set smtp_tag_param = 1 if filters.smtp_tag else None %}
 
   <!-- サーバー側フィルタ操作 -->
   <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
@@ -18,6 +21,8 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}" class="btn btn-sm btn-success">🔹今日</a>
       <a href="{{ url_for('admin_logs',
                           date=yesterday,
@@ -25,6 +30,8 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}" class="btn btn-sm btn-warning">🔸昨日</a>
     </div>
 
@@ -36,6 +43,7 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
                           limit=filters.limit) }}">[LOGIN] のみ</a>
       <a class="btn btn-sm {{ 'btn-success' if filters.kind=='LINE_LOGIN' else 'btn-outline-success' }}"
          href="{{ url_for('admin_logs',
@@ -44,6 +52,7 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
                           limit=filters.limit) }}">[LINE_LOGIN] のみ</a>
       <a class="btn btn-sm {{ 'btn-info' if filters.kind=='SMTP' else 'btn-outline-info' }}"
          href="{{ url_for('admin_logs',
@@ -52,13 +61,26 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}">[SMTP] のみ</a>
+      <a class="btn btn-sm {{ 'btn-info text-dark' if filters.smtp_tag else 'btn-outline-info' }}"
+         href="{{ url_for('admin_logs',
+                          date=selected_date or None,
+                          kind=None,
+                          exclude_local=1 if filters.exclude_local else None,
+                          nonjp_only=1 if filters.nonjp_only else None,
+                          exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_tag=1,
+                          limit=filters.limit) }}">[SMTP]（全文）</a>
       <a class="btn btn-sm {{ 'btn-outline-secondary' if filters.kind else 'btn-secondary' }}"
          href="{{ url_for('admin_logs',
                           date=selected_date or None,
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}">ALL</a>
     </div>
 
@@ -72,6 +94,8 @@
                           exclude_local=None if filters.exclude_local else 1,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}">ローカル除外</a>
 
       <a class="btn btn-sm {{ 'btn-danger' if filters.nonjp_only else 'btn-outline-danger' }}"
@@ -82,6 +106,8 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=None if filters.nonjp_only else 1,
                           exclude_suc=1 if filters.exclude_suc else None,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}">JP以外のみ</a>
 
       <a class="btn btn-sm {{ 'btn-info text-dark' if filters.exclude_suc else 'btn-outline-info' }}"
@@ -92,6 +118,8 @@
                           exclude_local=1 if filters.exclude_local else None,
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=None if filters.exclude_suc else 1,
+                          smtp_filter=smtp_filter_param,
+                          smtp_tag=smtp_tag_param,
                           limit=filters.limit) }}">/suc 除外</a>
     </div>
 
@@ -102,6 +130,8 @@
       {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
       {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
       {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+      {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+      {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
       <label class="small text-muted">表示上限</label>
       <select class="form-select form-select-sm" name="limit" onchange="this.form.submit()">
         {% for n in [100,300,500,1000] %}
@@ -109,6 +139,25 @@
         {% endfor %}
       </select>
     </form>
+
+    {% if filters.kind == 'SMTP' %}
+      <form class="ms-2 d-flex align-items-center gap-2" method="get" action="{{ url_for('admin_logs') }}">
+        <input type="hidden" name="date" value="{{ selected_date }}">
+        <input type="hidden" name="kind" value="SMTP">
+        {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+        {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+        {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+        <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        <label class="small text-muted">SMTP詳細</label>
+        <select class="form-select form-select-sm" name="smtp_filter" onchange="this.form.submit()">
+          <option value="ALL" {{ 'selected' if smtp_filter_value=='ALL' else '' }}>ALL</option>
+          <option value="AUTHFAIL" {{ 'selected' if smtp_filter_value=='AUTHFAIL' else '' }}>AUTHFAIL</option>
+          <option value="REJECT" {{ 'selected' if smtp_filter_value=='REJECT' else '' }}>REJECT</option>
+          <option value="DISCONNECT" {{ 'selected' if smtp_filter_value=='DISCONNECT' else '' }}>DISCONNECT</option>
+          <option value="SENT" {{ 'selected' if smtp_filter_value=='SENT' else '' }}>SENT</option>
+        </select>
+      </form>
+    {% endif %}
 
     <!-- 表示切替スイッチ -->
     <div class="ms-2 d-flex align-items-center gap-2">
@@ -126,6 +175,8 @@
     {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
     {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
     {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+    {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+    {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
     <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
     <div class="input-group">
       <input type="date" name="date" class="form-control" value="{{ selected_date }}">
@@ -136,6 +187,8 @@
                                                               exclude_local=1 if filters.exclude_local else None,
                                                               nonjp_only=1 if filters.nonjp_only else None,
                                                               exclude_suc=1 if filters.exclude_suc else None,
+                                                              smtp_filter=smtp_filter_param,
+                                                              smtp_tag=smtp_tag_param,
                                                               limit=filters.limit) }}">リセット</a>
       {% endif %}
     </div>
@@ -148,6 +201,10 @@
     <span class="badge {{ 'bg-warning text-dark' if filters.exclude_local else 'bg-light text-dark border' }}">ローカル除外: {{ 'ON' if filters.exclude_local else 'OFF' }}</span>
     <span class="badge {{ 'bg-danger' if filters.nonjp_only else 'bg-light text-dark border' }}">JP以外のみ: {{ 'ON' if filters.nonjp_only else 'OFF' }}</span>
     <span class="badge {{ 'bg-info text-dark' if filters.exclude_suc else 'bg-light text-dark border' }}">/suc 除外: {{ 'ON' if filters.exclude_suc else 'OFF' }}</span>
+    <span class="badge {{ 'bg-info text-dark' if filters.smtp_tag else 'bg-light text-dark border' }}">SMTPタグ: {{ 'ON' if filters.smtp_tag else 'OFF' }}</span>
+    {% if filters.kind == 'SMTP' %}
+      <span class="badge {{ 'bg-info text-dark' if smtp_filter_value != 'ALL' else 'bg-light text-dark border' }}">SMTP詳細: {{ smtp_filter_value }}</span>
+    {% endif %}
     {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
     <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
   </div>
@@ -182,7 +239,7 @@
               <div class="log-pretty d-none"></div>
             </td>
             <td class="text-center align-middle">
-              {% if log.ip %}
+              {% if log.ip_valid_v4 %}
                 <div class="d-flex flex-column align-items-center gap-1">
                   <button
                     type="button"
@@ -222,6 +279,8 @@
                                 exclude_local=1 if filters.exclude_local else None,
                                 nonjp_only=1 if filters.nonjp_only else None,
                                 exclude_suc=1 if filters.exclude_suc else None,
+                                smtp_filter=smtp_filter_param,
+                                smtp_tag=smtp_tag_param,
                                 limit=filters.limit) }}">← 前へ</a>
           </li>
         {% endif %}
@@ -236,6 +295,8 @@
                                 exclude_local=1 if filters.exclude_local else None,
                                 nonjp_only=1 if filters.nonjp_only else None,
                                 exclude_suc=1 if filters.exclude_suc else None,
+                                smtp_filter=smtp_filter_param,
+                                smtp_tag=smtp_tag_param,
                                 limit=filters.limit) }}">次へ →</a>
           </li>
         {% endif %}
