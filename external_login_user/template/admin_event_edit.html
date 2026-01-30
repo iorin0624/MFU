@@ -71,6 +71,71 @@
     {% if errors.fee_yen %}<div class="text-danger small mt-1">{{ errors.fee_yen }}</div>{% endif %}
   </div>
 
+  <!-- 参加費計算 -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+        <div class="fw-semibold">参加費の計算</div>
+        <div class="form-check form-switch m-0">
+          <input class="form-check-input" type="checkbox" id="fee-auto-mode" name="fee_auto_calc"
+                 {% if form.fee_auto_calc or ev.fee_auto_calc %}checked{% endif %}>
+          <label class="form-check-label small" for="fee-auto-mode">自動計算モード</label>
+        </div>
+      </div>
+      <div class="card-body d-grid gap-3">
+        <div class="row g-3">
+          <div class="col-md-3">
+            <label class="form-label">スタジオ代金（円）</label>
+            <input type="number" min="0" step="1" name="studio_fee_yen" id="studio-fee"
+                   class="form-control" inputmode="numeric"
+                   value="{% if form.studio_fee_yen is not none %}{{ form.studio_fee_yen }}{% elif ev.studio_fee_yen is not none %}{{ ev.studio_fee_yen }}{% endif %}">
+            {% if errors.studio_fee_yen %}<div class="text-danger small mt-1">{{ errors.studio_fee_yen }}</div>{% endif %}
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">支払人数</label>
+            <input type="number" min="1" step="1" name="require_payment_count" id="fee-payers"
+                   class="form-control" inputmode="numeric"
+                   value="{% if form.require_payment_count is not none and form.require_payment_count != '' %}{{ form.require_payment_count }}{% else %}{{ require_payment_count }}{% endif %}">
+            <div class="form-text">支払いありの人数を入力してください。</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">手数料（%）</label>
+            <input type="number" min="0" step="0.01" name="fee_rate_percent" id="fee-rate"
+                   class="form-control" inputmode="decimal"
+                   value="{% if form.fee_rate_percent is not none %}{{ form.fee_rate_percent }}{% elif ev.fee_rate_percent is not none %}{{ ev.fee_rate_percent }}{% endif %}"
+                   placeholder="例：5">
+            {% if errors.fee_rate_percent %}<div class="text-danger small mt-1">{{ errors.fee_rate_percent }}</div>{% endif %}
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">事務手数料（円）</label>
+            <input type="number" min="0" step="1" name="admin_fee_yen" id="admin-fee"
+                   class="form-control" inputmode="numeric"
+                   value="{% if form.admin_fee_yen is not none %}{{ form.admin_fee_yen }}{% elif ev.admin_fee_yen is not none %}{{ ev.admin_fee_yen }}{% endif %}">
+            {% if errors.admin_fee_yen %}<div class="text-danger small mt-1">{{ errors.admin_fee_yen }}</div>{% endif %}
+          </div>
+        </div>
+
+        <div class="border rounded p-3 bg-light">
+          <div class="d-flex flex-wrap gap-3 align-items-center">
+            <div class="fw-semibold">計算結果</div>
+            <div class="small text-muted" id="fee-calc-status">入力すると自動計算されます。</div>
+          </div>
+          <div class="mt-2">
+            <div class="h5 mb-1">参加費（丸め後）：<span id="fee-calc-total">-</span> 円</div>
+            <div class="small text-muted" id="fee-calc-breakdown"></div>
+          </div>
+          <div class="mt-3 d-flex flex-wrap gap-2">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="fee-calc-btn">計算する</button>
+            <button type="button" class="btn btn-primary btn-sm" id="fee-apply-btn">参加費に適用</button>
+          </div>
+          <div class="form-text mt-2">
+            計算式：スタジオ代金 ÷ 支払人数 = x ／ x × (1 + 手数料%) = y ／ y + 事務手数料 → 10円単位で切り上げ
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- 支払期間：開始 -->
   <div class="col-md-6">
     <label class="form-label">支払開始（任意）</label>
@@ -324,6 +389,102 @@
         setMsg('解除に失敗しました: ' + (e && e.message ? e.message : e), false);
       }finally{
         $save.disabled = false; $clear.disabled = false;
+      }
+    });
+  }
+
+  // --- 参加費計算 ---
+  const $autoMode = document.getElementById('fee-auto-mode');
+  const $studioFee = document.getElementById('studio-fee');
+  const $payers = document.getElementById('fee-payers');
+  const $feeRate = document.getElementById('fee-rate');
+  const $adminFee = document.getElementById('admin-fee');
+  const $calcBtn = document.getElementById('fee-calc-btn');
+  const $applyBtn = document.getElementById('fee-apply-btn');
+  const $feeInput = document.querySelector('input[name="fee_yen"]');
+  const $calcStatus = document.getElementById('fee-calc-status');
+  const $calcTotal = document.getElementById('fee-calc-total');
+  const $calcBreakdown = document.getElementById('fee-calc-breakdown');
+
+  function parseNumber(el){
+    if(!el) return null;
+    const raw = (el.value || '').trim();
+    if(!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function roundUp10(value){
+    return Math.ceil(value / 10) * 10;
+  }
+
+  function calcFee(){
+    const studioFee = parseNumber($studioFee);
+    const payers = parseNumber($payers);
+    const feeRate = parseNumber($feeRate);
+    const adminFee = parseNumber($adminFee) || 0;
+
+    if(studioFee === null || payers === null || feeRate === null || payers <= 0){
+      $calcStatus.textContent = '入力値を確認してください。';
+      $calcTotal.textContent = '-';
+      $calcBreakdown.textContent = '';
+      return null;
+    }
+
+    const perPerson = studioFee / payers;
+    const withFee = perPerson * (1 + (feeRate / 100));
+    const total = roundUp10(withFee + adminFee);
+
+    $calcStatus.textContent = '計算済み（10円単位で切り上げ）';
+    $calcTotal.textContent = total.toFixed(0);
+    $calcBreakdown.textContent = `1人あたり ${perPerson.toFixed(2)} 円 → 手数料込み ${withFee.toFixed(2)} 円 → 事務手数料加算`;
+    return total;
+  }
+
+  function maybeAutoApply(){
+    if(!$autoMode || !$autoMode.checked) return;
+    const total = calcFee();
+    if(total !== null && $feeInput){
+      $feeInput.value = total.toFixed(0);
+    }
+  }
+
+  [$studioFee, $payers, $feeRate, $adminFee].forEach((el)=>{
+    if(!el) return;
+    el.addEventListener('input', ()=>{
+      if($autoMode && $autoMode.checked){
+        maybeAutoApply();
+      }else{
+        calcFee();
+      }
+    });
+  });
+
+  if($autoMode){
+    $autoMode.addEventListener('change', ()=>{
+      if($autoMode.checked){
+        maybeAutoApply();
+        if($calcBtn) $calcBtn.disabled = true;
+        if($applyBtn) $applyBtn.disabled = true;
+      }else{
+        if($calcBtn) $calcBtn.disabled = false;
+        if($applyBtn) $applyBtn.disabled = false;
+      }
+    });
+    $autoMode.dispatchEvent(new Event('change'));
+  }
+
+  if($calcBtn){
+    $calcBtn.addEventListener('click', ()=>{
+      calcFee();
+    });
+  }
+
+  if($applyBtn){
+    $applyBtn.addEventListener('click', ()=>{
+      const total = calcFee();
+      if(total !== null && $feeInput){
+        $feeInput.value = total.toFixed(0);
       }
     });
   }
