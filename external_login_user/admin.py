@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import csv
+import math
 from flask import request, jsonify
 from email.mime.text import MIMEText
 from email.header import Header
@@ -25,6 +26,69 @@ from .utils import (
 from .albums import create_event_album
 from .payments import _ensure_payment_uuid_for_event
 from app.utils.db import get_db
+
+
+def _calculate_event_fee(studio_fee_yen: int | float | None,
+                         fee_rate_percent: int | float | None,
+                         admin_fee_yen: int | float | None,
+                         payers: int | None) -> int | None:
+    if studio_fee_yen in (None, "") or fee_rate_percent in (None, "") or payers in (None, 0):
+        return None
+    admin_fee_value = admin_fee_yen or 0
+    per_person = studio_fee_yen / payers
+    with_fee = per_person * (1 + (fee_rate_percent / 100))
+    total = math.ceil((with_fee + admin_fee_value) / 10) * 10
+    return int(total)
+
+
+def _recalc_event_fee_if_auto(event_id: int) -> bool:
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT studio_fee_yen, fee_rate_percent, admin_fee_yen,
+                   COALESCE(fee_auto_calc, 0) AS fee_auto_calc
+              FROM mfu_event
+             WHERE id=%s
+             LIMIT 1
+        """, (event_id,))
+        ev = cur.fetchone()
+        if not ev or not int(ev.get("fee_auto_calc") or 0):
+            return False
+
+        cur.execute("""
+            SELECT COUNT(*) AS cnt
+              FROM mfu_event_member
+             WHERE event_id=%s
+               AND COALESCE(require_payment, 1)=1
+        """, (event_id,))
+        row = cur.fetchone()
+        payers = row.get("cnt") if row else 0
+
+        total = _calculate_event_fee(
+            ev.get("studio_fee_yen"),
+            ev.get("fee_rate_percent"),
+            ev.get("admin_fee_yen"),
+            payers,
+        )
+        if total is None:
+            return False
+
+        cur.execute("""
+            UPDATE mfu_event
+               SET fee_yen=%s
+             WHERE id=%s
+             LIMIT 1
+        """, (total, event_id))
+        db.commit()
+        return True
+    except Exception:
+        try: db.rollback()
+        except Exception: pass
+        current_app.logger.exception("auto fee calc failed (event_id=%s)", event_id)
+        return False
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
 from urllib.parse import quote_plus
 from flask import request, jsonify
 from app.utils.db import get_db
@@ -602,6 +666,10 @@ def admin_event_edit(event_id: int):
               google_form_url,
               album_id, payment_uuid,
               memo_all,
+              studio_fee_yen,
+              fee_rate_percent,
+              admin_fee_yen,
+              COALESCE(fee_auto_calc, 1) AS fee_auto_calc,
               COALESCE(allow_square, 1) AS allow_square,
               COALESCE(allow_paypay, 0) AS allow_paypay,
               COALESCE(allow_bank,   0) AS allow_bank,
@@ -619,6 +687,21 @@ def admin_event_edit(event_id: int):
 
     if not ev:
         abort(404, "イベントが見つかりません")
+
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("""
+            SELECT COUNT(*)
+              FROM mfu_event_member
+             WHERE event_id=%s
+               AND COALESCE(require_payment, 1)=1
+        """, (event_id,))
+        require_payment_count_row = cur.fetchone()
+        require_payment_count = (require_payment_count_row[0] if isinstance(require_payment_count_row, tuple)
+                                 else (require_payment_count_row.get("COUNT(*)") if require_payment_count_row else 0))
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
 
     try:
         ev["event_uuid_str"] = _uuid_bytes_to_str(ev.get("event_uuid"))
@@ -643,6 +726,11 @@ def admin_event_edit(event_id: int):
         "album_id": ev.get("album_id"),
         "payment_uuid": ev.get("payment_uuid"),
         "memo_all": ev.get("memo_all"),
+        "studio_fee_yen": ev.get("studio_fee_yen"),
+        "fee_rate_percent": ev.get("fee_rate_percent"),
+        "admin_fee_yen": ev.get("admin_fee_yen"),
+        "fee_auto_calc": int(ev.get("fee_auto_calc") or 0),
+        "require_payment_count": require_payment_count,
         "allow_square": int(ev.get("allow_square") or 0),
         "allow_paypay": int(ev.get("allow_paypay") or 0),
         "allow_bank":   int(ev.get("allow_bank") or 0),
@@ -660,6 +748,11 @@ def admin_event_edit(event_id: int):
         pay_from_in = request.form.get("pay_from")  or ""
         pay_until_in= request.form.get("pay_until") or ""
         fee_yen_in  = request.form.get("fee_yen")
+        studio_fee_yen_in = request.form.get("studio_fee_yen")
+        fee_rate_percent_in = request.form.get("fee_rate_percent")
+        admin_fee_yen_in = request.form.get("admin_fee_yen")
+        require_payment_count_in = request.form.get("require_payment_count")
+        fee_auto_calc = 1 if request.form.get("fee_auto_calc") else 0
 
         place_name  = (request.form.get("place_name") or "").strip() or None
         address     = (request.form.get("address") or "").strip() or None
@@ -691,6 +784,30 @@ def admin_event_edit(event_id: int):
             except Exception:
                 errors["fee_yen"] = "参加費は0以上の整数で指定してください。"
 
+        studio_fee_yen = None
+        if studio_fee_yen_in not in (None, ""):
+            try:
+                studio_fee_yen = int(studio_fee_yen_in)
+                if studio_fee_yen < 0: raise ValueError()
+            except Exception:
+                errors["studio_fee_yen"] = "スタジオ代金は0以上の整数で指定してください。"
+
+        fee_rate_percent = None
+        if fee_rate_percent_in not in (None, ""):
+            try:
+                fee_rate_percent = float(fee_rate_percent_in)
+                if fee_rate_percent < 0: raise ValueError()
+            except Exception:
+                errors["fee_rate_percent"] = "手数料は0以上の数値で指定してください。"
+
+        admin_fee_yen = None
+        if admin_fee_yen_in not in (None, ""):
+            try:
+                admin_fee_yen = int(admin_fee_yen_in)
+                if admin_fee_yen < 0: raise ValueError()
+            except Exception:
+                errors["admin_fee_yen"] = "事務手数料は0以上の整数で指定してください。"
+
         starts_at = _parse_dt_local(starts_at_in) if starts_at_in else None
         pay_from  = _parse_dt_local(pay_from_in)  if pay_from_in  else None
         pay_until = _parse_dt_local(pay_until_in) if pay_until_in else None
@@ -704,6 +821,11 @@ def admin_event_edit(event_id: int):
             "sns_hashtag": sns_hashtag or "",
             "line_openchat_url": line_openchat_url or "", "line_openchat_pass": line_openchat_pass or "",
             "google_form_url": google_form_url or "", "album_id": album_id or "", "memo_all": memo_all or "",
+            "studio_fee_yen": studio_fee_yen_in or "",
+            "fee_rate_percent": fee_rate_percent_in or "",
+            "admin_fee_yen": admin_fee_yen_in or "",
+            "require_payment_count": require_payment_count_in or "",
+            "fee_auto_calc": fee_auto_calc,
             "allow_square": allow_square, "allow_paypay": allow_paypay, "allow_bank": allow_bank,
             "paypay_display": paypay_display or "",
         })
@@ -712,7 +834,8 @@ def admin_event_edit(event_id: int):
         if errors:
             flash("入力に誤りがあります。確認してください。", "warning")
             return render_template("admin_event_edit.html",
-                ev=ev, form=form, form_iso=form_iso, errors=errors, admin_csrf=admin_csrf)
+                ev=ev, form=form, form_iso=form_iso, errors=errors,
+                require_payment_count=require_payment_count, admin_csrf=admin_csrf)
 
         # === 保存処理 ===
         dbu = get_db(); curu = dbu.cursor()
@@ -720,6 +843,8 @@ def admin_event_edit(event_id: int):
             curu.execute("""
                 UPDATE mfu_event
                    SET title=%s, starts_at=%s, fee_yen=%s,
+                       studio_fee_yen=%s, fee_rate_percent=%s, admin_fee_yen=%s,
+                       fee_auto_calc=%s,
                        pay_from=%s, pay_until=%s,
                        place_name=%s, address=%s, maps_url=%s, sns_hashtag=%s,
                        line_openchat_url=%s, line_openchat_pass=%s, google_form_url=%s,
@@ -727,7 +852,10 @@ def admin_event_edit(event_id: int):
                        allow_square=%s, allow_paypay=%s, allow_bank=%s, paypay_display=%s
                  WHERE id=%s
                  LIMIT 1
-            """, (title, starts_at, fee_yen, pay_from, pay_until,
+            """, (title, starts_at, fee_yen,
+                  studio_fee_yen, fee_rate_percent, admin_fee_yen,
+                  fee_auto_calc,
+                  pay_from, pay_until,
                   place_name, address, maps_url, sns_hashtag,
                   line_openchat_url, line_openchat_pass, google_form_url,
                   album_id, memo_all,
@@ -803,7 +931,8 @@ def admin_event_edit(event_id: int):
         return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
     return render_template("admin_event_edit.html",
-        ev=ev, form=form, form_iso=form_iso, errors=errors, admin_csrf=admin_csrf)
+        ev=ev, form=form, form_iso=form_iso, errors=errors,
+        require_payment_count=require_payment_count, admin_csrf=admin_csrf)
 
 # 以降（CSV出力・役割/支払金額の更新・他）は既存そのまま
 @bp.route("/admin/events/<int:event_id>/export.csv")
@@ -961,6 +1090,8 @@ def admin_event_member_toggle_payment(event_id: int, user_id: int):
     finally:
         try: cur.close(); db.close()
         except Exception: pass
+
+    _recalc_event_fee_if_auto(event_id)
 
     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
@@ -1950,6 +2081,8 @@ def admin_member_bulk_update(event_id: int, user_id: int):
     finally:
         try: cur.close(); db.close()
         except Exception: pass
+
+    _recalc_event_fee_if_auto(event_id)
 
     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
