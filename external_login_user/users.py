@@ -2164,7 +2164,8 @@ def view_event(event_uuid: str):
               COALESCE(m.is_host,0) AS is_host,
               COALESCE(m.is_subhost,0) AS is_subhost,
               COALESCE(m.participant_role,'none') AS participant_role,
-              COALESCE(m.costume_label,'')        AS costume_label
+              COALESCE(m.costume_label,'')        AS costume_label,
+              m.custom_fee_yen
             FROM mfu_event_member m
             WHERE m.event_id=%s AND m.user_id=%s
             ORDER BY m.id DESC
@@ -2188,6 +2189,7 @@ def view_event(event_uuid: str):
     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
     my_costume_label       = (row.get("costume_label")  if row else "") or ""
+    my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
 
     my_receipt_pdf_url = None
     if (
@@ -2337,6 +2339,7 @@ def view_event(event_uuid: str):
         # ★ 追加でテンプレに渡す（フォーム初期値用）
         my_participant_role=my_participant_role,
         my_costume_label=my_costume_label,
+        my_custom_fee_yen=my_custom_fee_yen,
         # 互換エイリアス（テンプレが form_* を参照していても動くように）
         form_role=my_participant_role,
         form_costume=my_costume_label,

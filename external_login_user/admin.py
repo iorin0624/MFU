@@ -1443,11 +1443,11 @@ def admin_member_edit(event_id: int, user_id: int):
 
     # === イベント ===
     db = get_db(); cur = db.cursor()
-    cur.execute("SELECT id, title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+    cur.execute("SELECT id, title, event_uuid, fee_yen FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
     ev_row = cur.fetchone()
     if not ev_row:
         abort(404, "イベントが見つかりません")
-    ev = {"id": ev_row[0], "title": ev_row[1], "event_uuid": ev_row[2]} if isinstance(ev_row, tuple) else dict(ev_row)
+    ev = {"id": ev_row[0], "title": ev_row[1], "event_uuid": ev_row[2], "fee_yen": ev_row[3]} if isinstance(ev_row, tuple) else dict(ev_row)
     ev["event_uuid_str"] = _uuid_bytes_to_str(ev.get("event_uuid"))
 
     # === 参加者 ===
@@ -1468,6 +1468,7 @@ def admin_member_edit(event_id: int, user_id: int):
         COALESCE(m.participant_role, 'none')  AS participant_role,
         m.costume_label,
         m.paid_amount_yen,
+        m.custom_fee_yen,
         m.contact_memo,
         m.admin_note,
         m.bank_transfer, m.bank_dest_name, m.bank_remitter_name, m.bank_deposit_date,
@@ -1855,6 +1856,24 @@ def admin_member_bulk_update(event_id: int, user_id: int):
     if request.form.get("csrf_token") != session.get("admin_csrf"):
         abort(400, "CSRF token mismatch")
 
+    custom_fee_raw = (request.form.get("custom_fee_yen") or "").replace(",", "").strip()
+    if custom_fee_raw == "":
+        custom_fee_yen = None
+    elif not custom_fee_raw.isdigit():
+        flash("個別参加費は半角数字で入力してください", "warning")
+        ref = request.headers.get("Referer")
+        if ref:
+            return redirect(ref)
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+    else:
+        custom_fee_yen = int(custom_fee_raw)
+        if custom_fee_yen == 0:
+            flash("個別参加費は1円以上。空欄で標準参加費です", "warning")
+            ref = request.headers.get("Referer")
+            if ref:
+                return redirect(ref)
+            return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+
     status = (request.form.get("status") or "").strip()
     if status not in ("approved", "pending", "rejected"):
         status = None
@@ -1904,10 +1923,11 @@ def admin_member_bulk_update(event_id: int, user_id: int):
             "participant_role=%s",
             "costume_label=%s",
             "require_payment=%s",
+            "custom_fee_yen=%s",
             "contact_memo=%s",
             "admin_note=%s",
         ]
-        params = [is_host, is_subhost, save_role, costume, require_payment, contact_memo, admin_note]
+        params = [is_host, is_subhost, save_role, costume, require_payment, custom_fee_yen, contact_memo, admin_note]
 
         sql = f"""
             UPDATE mfu_event_member
@@ -1979,19 +1999,23 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
 
     receipt_url = _none_if_blank(request.form.get("receipt_url"))
 
-    custom_fee_yen, custom_err = _parse_optional_int(request.form.get("custom_fee_yen"), "個別参加費")
-    if custom_err:
-        flash("個別参加費は1円以上で入力してください。", "warning")
+    custom_fee_raw = (request.form.get("custom_fee_yen") or "").replace(",", "").strip()
+    if custom_fee_raw == "":
+        custom_fee_yen = None
+    elif not custom_fee_raw.isdigit():
+        flash("個別参加費は半角数字で入力してください", "warning")
         ref = request.headers.get("Referer")
         if ref:
             return redirect(ref)
         return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
-    if custom_fee_yen is not None and custom_fee_yen <= 0:
-        flash("個別参加費は1円以上で入力してください。", "warning")
-        ref = request.headers.get("Referer")
-        if ref:
-            return redirect(ref)
-        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+    else:
+        custom_fee_yen = int(custom_fee_raw)
+        if custom_fee_yen == 0:
+            flash("個別参加費は1円以上。空欄で標準参加費です", "warning")
+            ref = request.headers.get("Referer")
+            if ref:
+                return redirect(ref)
+            return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
     admin_note_present = "admin_note" in request.form
     admin_note = _none_if_blank(request.form.get("admin_note"))
