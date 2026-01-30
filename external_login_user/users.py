@@ -52,6 +52,7 @@ from .utils import (
     _event_by_uuid_str, _membership_status,
     avatar_url_for,  # ← 追加
 )
+from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
 
 
@@ -1879,6 +1880,7 @@ def join_event(event_uuid: str):
                 VALUES (%s, %s, %s, %s, %s, NOW())
             """, (ev["id"], ext_uid, new_status, role, costume))
         db.commit()
+        _recalc_event_fee_if_auto(ev["id"])
         if auto_hit_by_lecture and new_status == "approved" and not already_approved:
             current_app.logger.info(
                 "join: lecture auto-approved member (event_id=%s user_id=%s)",

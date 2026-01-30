@@ -34,9 +34,11 @@ def _calculate_event_fee(studio_fee_yen: int | float | None,
                          payers: int | None) -> int | None:
     if studio_fee_yen in (None, "") or fee_rate_percent in (None, "") or payers in (None, 0):
         return None
-    admin_fee_value = admin_fee_yen or 0
-    per_person = studio_fee_yen / payers
-    with_fee = per_person * (1 + (fee_rate_percent / 100))
+    admin_fee_value = float(admin_fee_yen or 0)
+    studio_fee_value = float(studio_fee_yen)
+    fee_rate_value = float(fee_rate_percent)
+    per_person = studio_fee_value / payers
+    with_fee = per_person * (1 + (fee_rate_value / 100))
     total = math.ceil((with_fee + admin_fee_value) / 10) * 10
     return int(total)
 
@@ -46,13 +48,15 @@ def _recalc_event_fee_if_auto(event_id: int) -> bool:
     try:
         cur.execute("""
             SELECT studio_fee_yen, fee_rate_percent, admin_fee_yen,
-                   COALESCE(fee_auto_calc, 0) AS fee_auto_calc
+                   COALESCE(fee_auto_calc, 1) AS fee_auto_calc
               FROM mfu_event
              WHERE id=%s
              LIMIT 1
         """, (event_id,))
         ev = cur.fetchone()
-        if not ev or not int(ev.get("fee_auto_calc") or 0):
+        if not ev:
+            return False
+        if not int(ev.get("fee_auto_calc") or 0):
             return False
 
         cur.execute("""
@@ -1298,6 +1302,7 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
                 db.commit()
             finally:
                 cur.close(); db.close()
+            _recalc_event_fee_if_auto(event_id)
             flash("更新しました。", "success")
             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
         abort(400, "unsupported action")
