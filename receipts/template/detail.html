@@ -2,6 +2,15 @@
 
 {% block title %}受領書詳細{% endblock %}
 
+{% block head_extra %}
+<style>
+  .badge-purple {
+    background-color: #6f42c1;
+    color: #fff;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 <h1 class="mb-4">受領書詳細</h1>
 
@@ -15,7 +24,8 @@
       <strong>支払方法:</strong> {{ receipt.payment_method }}<br>
       <strong>発行日:</strong> {{ receipt.issue_date.strftime('%Y-%m-%d') if receipt.issue_date else '' }}<br>
       <strong>支払日:</strong> {{ receipt.pay_date.strftime('%Y-%m-%d') if receipt.pay_date else '' }}<br>
-      <strong>状態:</strong> <span class="badge bg-secondary">{{ receipt.status }}</span>
+      <strong>状態:</strong>
+      <span class="badge {{ status_badges.get(receipt.status, 'bg-secondary') }}">{{ status_labels.get(receipt.status, receipt.status) }}</span>
     </p>
     <p class="card-text">
       <strong>現行バージョン:</strong> v{{ version.version_no }}<br>
@@ -88,5 +98,11 @@
   </form>
   <a class="btn btn-success" href="{{ url_for('receipts.receipts_download', receipt_id=receipt.id) }}">確定PDFダウンロード</a>
   <a class="btn btn-secondary" href="{{ url_for('receipts.receipts_list') }}">一覧へ</a>
+  {% if can_manage %}
+  <form method="post" action="{{ url_for('receipts.receipts_delete', receipt_id=receipt.id) }}" onsubmit="return confirm('{{ '確定済みの受領書を取消しますか？' if receipt.status == 'finalized' else '受領書を削除しますか？' }}');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-outline-danger">{{ '取消' if receipt.status == 'finalized' else '削除' }}</button>
+  </form>
+  {% endif %}
 </div>
 {% endblock %}

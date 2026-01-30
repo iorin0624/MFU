@@ -2,6 +2,15 @@
 
 {% block title %}受領書一覧{% endblock %}
 
+{% block head_extra %}
+<style>
+  .badge-purple {
+    background-color: #6f42c1;
+    color: #fff;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 <h1 class="mb-4">受領書</h1>
 
@@ -12,8 +21,8 @@
   <div class="col-md-2">
     <select name="status" class="form-select">
       <option value="">すべての状態</option>
-      {% for s in ["draft", "sent", "signed", "finalized", "reissued", "void"] %}
-      <option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s }}</option>
+      {% for s in status_options %}
+      <option value="{{ s.value }}" {% if status == s.value %}selected{% endif %}>{{ s.label }}</option>
       {% endfor %}
     </select>
   </div>
@@ -48,8 +57,16 @@
       <td>{{ r.recipient_name }}<br><small class="text-muted">{{ r.recipient_email }}</small></td>
       <td>{{ r.amount }} 円</td>
       <td>{{ r.issue_date.strftime('%Y-%m-%d') if r.issue_date else '' }}</td>
-      <td><span class="badge bg-secondary">{{ r.status }}</span></td>
-      <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('receipts.receipts_detail', receipt_id=r.id) }}">詳細</a></td>
+      <td><span class="badge {{ status_badges.get(r.status, 'bg-secondary') }}">{{ status_labels.get(r.status, r.status) }}</span></td>
+      <td class="d-flex flex-wrap gap-2">
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('receipts.receipts_detail', receipt_id=r.id) }}">詳細</a>
+        {% if session.user == r.issuer_user_id or session.user == 'admin' %}
+        <form method="post" action="{{ url_for('receipts.receipts_delete', receipt_id=r.id) }}" onsubmit="return confirm('{{ '確定済みの受領書を取消しますか？' if r.status == 'finalized' else '受領書を削除しますか？' }}');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn btn-sm btn-outline-danger">{{ '取消' if r.status == 'finalized' else '削除' }}</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
     {% else %}
     <tr><td colspan="6" class="text-muted">データがありません。</td></tr>

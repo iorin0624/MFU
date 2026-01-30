@@ -45,5 +45,6 @@
 
 ## 運用メモ
 - バックアップ対象: DB（receipt/署名/監査ログ）、PDF（原本/確定）、署名画像。
-- PDF保管パス例: `/mnt/mfu/app/receipts/<receipt_no>/v<version>/original.pdf`。
+- PDF保管パス例: `/mnt/mfu/receipts_pdf_archive/<receipt_no>/v<version>/original.pdf`。
+- 旧ルート `/mnt/mfu/app/receipts` は移行期間のみ参照（移行後は新ルート優先）。
 - 署名画像は `signatures.signature_image_path` にファイル保存。
