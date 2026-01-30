@@ -997,6 +997,14 @@ def admin_set_admin_role(event_id: int, user_id: int):
 
     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
+def _parse_optional_int(raw_value: str, field_label: str):
+    raw = (raw_value or "").replace(",", "").strip()
+    if raw == "":
+        return None, None
+    if not raw.isdigit():
+        return None, f"{field_label}は半角数字で入力してください。"
+    return int(raw), None
+
 @bp.post("/admin/events/<int:event_id>/members/<int:user_id>/set-paid-amount")
 def admin_set_paid_amount(event_id: int, user_id: int):
     """支払金額入力に応じて paid/unpaid 切替＋メール通知（send_mail統一）"""
@@ -1005,15 +1013,12 @@ def admin_set_paid_amount(event_id: int, user_id: int):
     if request.form.get("csrf_token") != session.get("admin_csrf"):
         abort(400, "CSRF token mismatch")
 
-    raw = (request.form.get("paid_amount_yen") or "").replace(",", "").strip()
     receipt_url = (request.form.get("receipt_url") or "").strip() or None
 
-    amount = None
-    if raw != "":
-        if not raw.isdigit():
-            flash("支払金額は半角数字で入力してください。", "warning")
-            return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
-        amount = int(raw)
+    amount, err = _parse_optional_int(request.form.get("paid_amount_yen"), "支払金額")
+    if err:
+        flash(err, "warning")
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
     db = get_db(); cur = db.cursor()
     try:
@@ -1956,6 +1961,39 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
     if new_pstatus not in (None, "unpaid", "pending", "paid", "refunded"):
         new_pstatus = None
 
+    paid_amount_yen, amount_err = _parse_optional_int(request.form.get("paid_amount_yen"), "支払金額")
+    if amount_err:
+        flash(amount_err, "warning")
+        ref = request.headers.get("Referer")
+        if ref:
+            return redirect(ref)
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+
+    payment_row_id, row_err = _parse_optional_int(request.form.get("payment_row_id"), "payment_row_id")
+    if row_err:
+        flash(row_err, "warning")
+        ref = request.headers.get("Referer")
+        if ref:
+            return redirect(ref)
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+
+    receipt_url = _none_if_blank(request.form.get("receipt_url"))
+
+    custom_fee_yen, custom_err = _parse_optional_int(request.form.get("custom_fee_yen"), "個別参加費")
+    if custom_err:
+        flash("個別参加費は1円以上で入力してください。", "warning")
+        ref = request.headers.get("Referer")
+        if ref:
+            return redirect(ref)
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+    if custom_fee_yen is not None and custom_fee_yen <= 0:
+        flash("個別参加費は1円以上で入力してください。", "warning")
+        ref = request.headers.get("Referer")
+        if ref:
+            return redirect(ref)
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+
+    admin_note_present = "admin_note" in request.form
     admin_note = _none_if_blank(request.form.get("admin_note"))
 
     # 現在の支払状態 & 通知用
@@ -1984,6 +2022,18 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
         try: cur.close(); db.close()
         except Exception: pass
 
+    if new_pstatus == "unpaid":
+        bank_transfer = 0
+        bank_dest_name = None
+        bank_remitter = None
+        bank_deposit = None
+        paypay_transfer = 0
+        paypay_sender = None
+        paypay_sent = None
+        paid_amount_yen = None
+        receipt_url = None
+        payment_row_id = None
+
     # 更新クエリ（require_payment には触れない）
     sets = [
         "bank_transfer=%s",
@@ -1993,11 +2043,19 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
         "paypay_transfer=%s",
         "paypay_sender_name=%s",
         "paypay_sent_date=%s",
+        "paid_amount_yen=%s",
+        "receipt_url=%s",
+        "payment_row_id=%s",
+        "custom_fee_yen=%s",
     ]
-    params = [bank_transfer, bank_dest_name, bank_remitter, bank_deposit,
-              paypay_transfer, paypay_sender, paypay_sent]
+    params = [
+        bank_transfer, bank_dest_name, bank_remitter, bank_deposit,
+        paypay_transfer, paypay_sender, paypay_sent,
+        paid_amount_yen, receipt_url, payment_row_id,
+        custom_fee_yen,
+    ]
 
-    if admin_note is not None:
+    if admin_note_present:
         sets.append("admin_note=%s")
         params.append(admin_note)
 
@@ -2011,10 +2069,6 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
             sets.append("paid_at=NOW()")
         if new_pstatus in ("unpaid", "pending", "refunded"):
             sets.append("paid_at=NULL")
-        # ★ 未払いに戻した場合は 3項目を NULL にする
-        if new_pstatus == "unpaid":
-            sets.append("paid_amount_yen=NULL")
-            sets.append("payment_row_id=NULL")
 
     sql = f"UPDATE mfu_event_member SET {', '.join(sets)} WHERE event_id=%s AND id=%s LIMIT 1"
     params.extend([event_id, member_id])
