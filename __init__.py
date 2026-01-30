@@ -1137,6 +1137,8 @@ def admin_logs():
     """
     クエリ:
       kind=LOGIN|LINE_LOGIN|SMTP
+      smtp_filter=ALL|AUTHFAIL|REJECT|DISCONNECT|SENT
+      smtp_tag=1
       exclude_local=1
       nonjp_only=1
       exclude_suc=1          ← /suc/配下のアクセスを除外表示
@@ -1195,6 +1197,12 @@ def admin_logs():
     # --------- クエリ取得 ----------
     selected_date = (request.args.get("date") or "").strip()
     kind = (request.args.get("kind") or "").strip().upper()  # LOGIN / LINE_LOGIN / SMTP / ""
+    smtp_filter = (request.args.get("smtp_filter") or "").strip().upper()
+    if smtp_filter not in ("ALL", "AUTHFAIL", "REJECT", "DISCONNECT", "SENT"):
+        smtp_filter = "ALL"
+    if kind != "SMTP":
+        smtp_filter = "ALL"
+    smtp_tag = (request.args.get("smtp_tag") or "").lower() in ("1", "true", "on", "yes")
 
     # 生のクエリ値
     raw_exclude_local = request.args.get("exclude_local")
@@ -1245,6 +1253,19 @@ def admin_logs():
             return False
         return any(ipobj in net for net in LOCAL_NETS_OBJ)
 
+    def is_valid_ip(ip_str: str) -> bool:
+        try:
+            ip_address(ip_str)
+            return True
+        except Exception:
+            return False
+
+    def is_valid_ipv4(ip_str: str) -> bool:
+        try:
+            return ip_address(ip_str).version == 4
+        except Exception:
+            return False
+
     def _text_contains_excluded_path(text: str) -> bool:
         if not text:
             return False
@@ -1272,6 +1293,45 @@ def admin_logs():
             return int(m.group(2))
         except Exception:
             return None
+
+    SMTP_FILTER_LIKES = {
+        "AUTHFAIL": [
+            "%SASL%",
+            "%auth fail%",
+            "%authentication failed%",
+            "%AUTH FAILED%",
+            "%AUTH=fail%",
+        ],
+        "REJECT": [
+            "%NOQUEUE: reject%",
+            "% reject:%",
+            "% reject %",
+        ],
+        "DISCONNECT": [
+            "%lost connection%",
+            "%disconnect%",
+            "%timeout%",
+        ],
+        "SENT": [
+            "%status=sent%",
+            "%送信OK%",
+            "%sent=%",
+        ],
+    }
+    SMTP_FILTER_REGEX = {
+        "AUTHFAIL": re.compile(r"(SASL|auth(?:entication)? failed|auth[=\s:]+fail|AUTH FAILED)", re.I),
+        "REJECT": re.compile(r"(NOQUEUE:\s*reject|reject:\s|reject\s)", re.I),
+        "DISCONNECT": re.compile(r"(lost connection|disconnect|timed out|timeout)", re.I),
+        "SENT": re.compile(r"(status=sent|送信OK|\\bsent\\b)", re.I),
+    }
+
+    def _smtp_match(text: str, filt: str) -> bool:
+        if not filt or filt == "ALL":
+            return True
+        rx = SMTP_FILTER_REGEX.get(filt)
+        if not rx:
+            return True
+        return bool(rx.search(text or ""))
 
     # ---- ① netinfo の TTL付きLRUキャッシュ（プロセス内） + リクエスト内重複排除 ----
     global _NETINFO_CACHE, _NETINFO_ORDER
@@ -1356,6 +1416,7 @@ def admin_logs():
         r["provider"] = (
             ni.get("org") or ni.get("asname") or ni.get("netname") or ""
         )
+        r["ip_valid_v4"] = bool(ip and is_valid_ipv4(ip))
         return r
 
     # ---- ② SQLで事前にできるだけ絞る（kind / exclude_local / date / exclude_suc） ----
@@ -1379,6 +1440,15 @@ def admin_logs():
         where.append("INSTR(log_text,'[LINE_LOGIN]') > 0")
     elif kind == "SMTP":
         where.append("INSTR(log_text,'[SMTP]') > 0")
+    if smtp_tag:
+        where.append("INSTR(log_text,'[SMTP]') > 0")
+
+    if kind == "SMTP" and smtp_filter != "ALL":
+        likes = SMTP_FILTER_LIKES.get(smtp_filter, [])
+        if likes:
+            placeholders = " OR ".join(["log_text LIKE %s"] * len(likes))
+            where.append(f"({placeholders})")
+            params.extend(likes)
 
     # ローカル除外（IPは文字列格納想定）
     if exclude_local and LOCAL_SQL_LIKE_PREFIXES:
@@ -1429,12 +1499,22 @@ def admin_logs():
                 if st is not None and 300 <= st < 400:
                     continue
 
+            if kind == "SMTP" and smtp_filter != "ALL":
+                if not _smtp_match(text, smtp_filter):
+                    continue
+
             # nonjp_only の場合はここで国判定
             if nonjp_only:
+                if not ip or ip.strip() in ("-", "—") or not is_valid_ip(ip.strip()):
+                    continue
                 tmp = enrich_row(dict(r))
                 cc = (tmp.get("country") or "").upper()
-                if not cc or cc == "JP":
-                    continue
+                if kind == "SMTP":
+                    if not cc or cc in ("JP", "ZZ", "不明", "UNKNOWN"):
+                        continue
+                else:
+                    if not cc or cc == "JP":
+                        continue
                 r = tmp  # enrich 済み
 
             # SQL で取り切れなかったものの最終防衛
@@ -1482,11 +1562,19 @@ def admin_logs():
             "exclude_local": exclude_local,
             "nonjp_only": nonjp_only,
             "exclude_suc": exclude_suc,
+            "smtp_filter": smtp_filter,
+            "smtp_tag": smtp_tag,
             # ここは「常にTrue」の状態をそのままUIへ渡しておく
             "exclude_3xx": exclude_3xx,
             "limit": per_page,
             "has_filters": bool(
-                kind or exclude_local or nonjp_only or exclude_suc or exclude_3xx
+                kind
+                or exclude_local
+                or nonjp_only
+                or exclude_suc
+                or exclude_3xx
+                or (kind == "SMTP" and smtp_filter != "ALL")
+                or smtp_tag
             ),
         },
     )
