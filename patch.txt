@@ -1,354 +1,134 @@
-{% extends "base.html" %}
-{% block title %}参加者編集 | {{ ev.title }}{% endblock %}
-
-{% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h5 mb-0">参加者編集</h1>
-  <div class="d-flex gap-2">
-    <a class="btn btn-sm btn-outline-secondary"
-       href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">← イベント管理へ戻る</a>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-body">
-    <div class="d-flex align-items-center gap-3 mb-3">
-      {% set _src = None %}
-      {% if m.avatar_file %}
-        {% set ver = (m.updated_at.timestamp() if m.updated_at else '' ) %}
-        {% set _src = url_for('external_login_user.avatar_file', name=m.avatar_file) ~ ('?v=' ~ ver) %}
-      {% elif m.avatar_url %}
-        {% set ver = (m.updated_at.timestamp() if m.updated_at else '' ) %}
-        {% if '?' in m.avatar_url %}
-          {% set _src = m.avatar_url ~ '&v=' ~ ver %}
-        {% else %}
-          {% set _src = m.avatar_url ~ '?v=' ~ ver %}
-        {% endif %}
-      {% endif %}
-      <img src="{{ _src or 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==' }}"
-           alt="" style="width:72px;height:72px;border-radius:50%;object-fit:cover;box-shadow:0 1px 4px rgba(0,0,0,.1);">
-      <div>
-        <div class="fw-bold h5 mb-1">
-          {% if m.is_host %}👑👑{% elif m.is_subhost %}👑{% endif %}
-          {{ m.nickname }}
-        </div>
-        <div class="small text-muted">
-          {% if m.x_id %}X: {{ m.x_id }}{% endif %}
-          {% if m.x_id and m.instagram_id %} / {% endif %}
-          {% if m.instagram_id %}Instagram: {{ m.instagram_id }}{% endif %}
-          {% if m.joined_at %}<br>参加: {{ m.joined_at }}{% endif %}
-        </div>
-      </div>
-    </div>
-
-    {% set _custom_fee = (m.get('custom_fee_yen') if m is mapping else (m.custom_fee_yen if m.custom_fee_yen is defined else None)) %}
-    {% set _fee_yen = (ev.get('fee_yen') if ev is mapping else ev.fee_yen) %}
-    {% set _fee_display = (_fee_yen if _fee_yen is not none else 0) %}
-    {% set _applied_fee = (_custom_fee if _custom_fee is not none else _fee_yen) %}
-    {% set _applied_display = (_applied_fee if _applied_fee is not none else 0) %}
-
-    <!-- 一括保存フォーム（承認ステータスもここで送信） -->
-    <form method="post"
-          action="{{ url_for('external_login_user.admin_member_bulk_update', event_id=ev.id, user_id=m.user_id) }}"
-          class="js-bulk-form">
-      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-
-      <!-- 承認ステータス -->
-      <div class="mb-3">
-        <label class="form-label small text-muted">承認ステータス</label><br>
-        <div class="btn-group" role="group" aria-label="status">
-          <input type="radio" class="btn-check" name="status" id="st-approved-{{m.user_id}}" value="approved" {% if m.status=='approved' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="st-approved-{{m.user_id}}">承認</label>
-
-          <input type="radio" class="btn-check" name="status" id="st-rejected-{{m.user_id}}" value="rejected" {% if m.status=='rejected' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="st-rejected-{{m.user_id}}">拒否</label>
-
-          <input type="radio" class="btn-check" name="status" id="st-pending-{{m.user_id}}" value="pending" {% if m.status!='approved' and m.status!='rejected' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="st-pending-{{m.user_id}}">保留</label>
-        </div>
-        <div class="form-text">※ 保存時に変更があれば参加者へメール通知されます。</div>
-      </div>
-
-      <!-- 主催権限 -->
-      <div class="mb-3">
-        <label class="form-label small text-muted">主催権限</label><br>
-        <div class="btn-group role-pill" role="group">
-          <input type="radio" class="btn-check" name="admin_kind" id="bk-host-{{m.user_id}}" value="host" {% if m.is_host %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="bk-host-{{m.user_id}}">主催</label>
-
-          <input type="radio" class="btn-check" name="admin_kind" id="bk-subhost-{{m.user_id}}" value="subhost" {% if m.is_subhost %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="bk-subhost-{{m.user_id}}">副主催</label>
-
-          <input type="radio" class="btn-check" name="admin_kind" id="bk-none-{{m.user_id}}" value="none" {% if not m.is_host and not m.is_subhost %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="bk-none-{{m.user_id}}">なし</label>
-        </div>
-      </div>
-
-      <!-- 参加者役割 + メモ（衣装/その他のみ有効） -->
-      <div class="mb-3">
-        <label class="form-label small text-muted">参加者役割</label><br>
-        <div class="btn-group" role="group" aria-label="participant-role">
-          <input type="radio" class="btn-check js-role-radio" name="participant_role" id="pr-camera-{{m.user_id}}" value="camera" {% if m.participant_role=='camera' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="pr-camera-{{m.user_id}}">カメラマン</label>
-
-          <input type="radio" class="btn-check js-role-radio" name="participant_role" id="pr-assistant-{{m.user_id}}" value="assistant" {% if m.participant_role=='assistant' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="pr-assistant-{{m.user_id}}">アシスタント</label>
-
-          <input type="radio" class="btn-check js-role-radio" name="participant_role" id="pr-cosplayer-{{m.user_id}}" value="cosplayer" {% if m.participant_role=='cosplayer' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="pr-cosplayer-{{m.user_id}}">衣装</label>
-
-          <!-- ★ 追加：その他 -->
-          <input type="radio" class="btn-check js-role-radio" name="participant_role" id="pr-other-{{m.user_id}}" value="other" {% if m.participant_role=='other' %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="pr-other-{{m.user_id}}">その他</label>
-        </div>
-
-        <div class="mt-2">
-          <input type="text" class="form-control form-control-sm js-costume-input"
-                 name="costume_label" placeholder="衣装／その他のメモ" maxlength="120"
-                 value="{{ m.costume_label or '' }}">
-          <div class="form-text">※「衣装」または「その他」を選ぶときのみ入力可（他を選ぶと自動で無効化＆送信対象外）</div>
-        </div>
-      </div>
-
-      <!-- 支払（必要／不要） -->
-      <div class="mb-3">
-        <label class="form-label small text-muted">支払</label><br>
-        <div class="btn-group" role="group" aria-label="require-payment">
-          <input type="radio" class="btn-check" name="require_payment" id="rp-need-{{m.user_id}}" value="1" {% if m.require_payment == 1 %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="rp-need-{{m.user_id}}">必要</label>
-
-          <input type="radio" class="btn-check" name="require_payment" id="rp-noneed-{{m.user_id}}" value="0" {% if m.require_payment != 1 %}checked{% endif %}>
-          <label class="btn btn-outline-dark" for="rp-noneed-{{m.user_id}}">不要</label>
-        </div>
-
-        <!-- ★ 個別参加費（ここに移動） -->
-        <div class="mt-3">
-          <label class="form-label small text-muted mb-1">個別参加費（円）</label>
-          <input type="text" class="form-control form-control-sm" name="custom_fee_yen" inputmode="numeric"
-                 value="{{ _custom_fee if _custom_fee is not none else '' }}" placeholder="空欄で標準参加費">
-          <div class="form-text">
-            標準参加費：¥{{ "{:,}".format(_fee_display|int) }}
-            ／ 現在の適用参加費：¥{{ "{:,}".format(_applied_display|int) }}
-          </div>
-          <div class="form-text">※ 1円以上。0円は不可（空欄で標準参加費）</div>
-        </div>
-      </div>
-
-      <!-- 支払い状況（表示のみ） -->
-      <div class="mb-3">
-        <label class="form-label small text-muted">支払い状況</label>
-        {% if m.payment_status == 'paid' %}
-          <div class="p-2 border rounded bg-light">
-            <div>支払済み</div>
-            <div>¥{{ "{:,}".format((m.paid_amount_yen if m.paid_amount_yen is not none else 0)|int) }}</div>
-            {% if m.receipt_url %}<div><a target="_blank" rel="noopener" href="{{ m.receipt_url }}">レシートを見る</a></div>{% endif %}
-          </div>
-        {% else %}
-          <div class="p-2 border rounded">未払い</div>
-        {% endif %}
-      </div>
-
-      <!-- 個別連絡メモ（参加者にも表示） -->
-      <div class="mb-3">
-        <label class="form-label small text-muted">個別連絡メモ（参加者にも表示）</label>
-        <textarea class="form-control" name="contact_memo" rows="3" placeholder="参加者と共有したい連絡事項など">{{ m.contact_memo or '' }}</textarea>
-      </div>
-
-      <!-- 管理者備考（非公開） -->
-      <div class="mb-4">
-        <label class="form-label small text-muted">管理者備考（非公開）</label>
-        <textarea class="form-control" name="admin_note" rows="3" placeholder="内部用メモ（参加者には見えません）">{{ m.admin_note or '' }}</textarea>
-      </div>
-
-      <div class="d-flex justify-content-between align-items-center">
-        <button class="btn btn-primary" type="submit">保存</button>
-
-        <!-- 解除ボタンは別フォームをform属性で送信（入れ子フォーム回避） -->
-        <button class="btn btn-outline-danger"
-                type="submit"
-                form="remove-member-{{m.user_id}}"
-                onclick="return confirm('この参加者を解除します。よろしいですか？');">
-          参加者を解除
-        </button>
-      </div>
-    </form>
-
-    <!-- 参加者解除のための独立フォーム（入れ子禁止のため外に置く） -->
-    <form id="remove-member-{{m.user_id}}" method="post"
-          action="{{ url_for('external_login_user.admin_event_member_action', event_id=ev.id, user_id=m.user_id, action='remove') }}">
-      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-    </form>
-  </div>
-</div>
-
-{% set _member_id = (request.view_args.get('member_id') if request.view_args else None)
-                    or (m.id if m.id is defined else None)
-                    or (m.member_id if m.member_id is defined else None)
-                    or m.user_id %}
-
-<!-- ================= 支払い ================= -->
-<div class="card my-4">
-  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-    <div class="h6 mb-0">支払い</div>
-    <div class="d-flex flex-wrap gap-2 align-items-center">
-      <span class="badge {{ 'text-bg-success' if (m.payment_status=='paid') else 'text-bg-secondary' }}">
-        現在のステータス：{{ m.payment_status or '—' }}
-      </span>
-      {% set _pp_badge  = 'text-bg-warning' if (m.paypay_transfer or 0)==1 else 'text-bg-light' %}
-      {% set _bk_badge  = 'text-bg-warning' if (m.bank_transfer or 0)==1 else 'text-bg-light' %}
-      <span class="badge {{ _pp_badge }}">PayPay{{ '（申告）' if (m.paypay_transfer or 0)==1 else '（—）' }}</span>
-      <span class="badge {{ _bk_badge }}">銀行振込{{ '（申告）' if (m.bank_transfer or 0)==1 else '（—）' }}</span>
-    </div>
-  </div>
-
-  <div class="card-body">
-    {% set _row_id = (m.get('payment_row_id') if m is mapping else (m.payment_row_id if m.payment_row_id is defined else None)) %}
-
-    <form method="post"
-          action="{{ url_for('external_login_user.admin_member_update_payment_details', event_id=ev.id, member_id=_member_id) }}"
-          class="d-grid gap-3">
-      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-
-      <div class="row g-3">
-        <!-- ステータス/金額/クレカ情報 -->
-        <div class="col-12 col-lg-4">
-          <div class="border rounded p-3 h-100">
-            <div class="fw-semibold mb-2">支払ステータス・金額・クレカ情報</div>
-
-            <div class="mb-2">
-              <label class="form-label small text-muted mb-1">支払ステータス</label>
-              <div class="btn-group flex-wrap" role="group" aria-label="payment-status">
-                <input type="radio" class="btn-check" name="payment_status" id="payment-paid-{{ m.user_id }}" value="paid" {% if m.payment_status=='paid' %}checked{% endif %}>
-                <label class="btn btn-outline-success btn-sm" for="payment-paid-{{ m.user_id }}">paid</label>
-
-                <input type="radio" class="btn-check" name="payment_status" id="payment-pending-{{ m.user_id }}" value="pending" {% if m.payment_status=='pending' %}checked{% endif %}>
-                <label class="btn btn-outline-secondary btn-sm" for="payment-pending-{{ m.user_id }}">pending</label>
-
-                <input type="radio" class="btn-check" name="payment_status" id="payment-unpaid-{{ m.user_id }}" value="unpaid" {% if m.payment_status=='unpaid' or not m.payment_status %}checked{% endif %}>
-                <label class="btn btn-outline-dark btn-sm" for="payment-unpaid-{{ m.user_id }}">unpaid</label>
-              </div>
-              <div class="form-text">※ paid にすると <code>paid_at</code> が未設定の場合は自動で現在時刻を付与します。</div>
-            </div>
-
-            <div class="mt-3">
-              <label class="form-label small text-muted mb-1">支払金額（円）</label>
-              <input type="text" class="form-control form-control-sm" name="paid_amount_yen" inputmode="numeric"
-                     value="{{ m.paid_amount_yen if m.paid_amount_yen is not none else '' }}" placeholder="例：3,000">
-              <div class="form-text">※ カンマ入力可</div>
-            </div>
-
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">レシートURL</label>
-              <input type="url" class="form-control form-control-sm" name="receipt_url" value="{{ m.receipt_url or '' }}" placeholder="https://">
-            </div>
-
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">payment_row_id</label>
-              <input type="text" class="form-control form-control-sm" name="payment_row_id" inputmode="numeric"
-                     value="{{ _row_id if _row_id is not none else '' }}" placeholder="例：12345">
-            </div>
-          </div>
-        </div>
-
-        <!-- 銀行振込 -->
-        <div class="col-12 col-lg-4">
-          <div class="border rounded p-3 h-100">
-            <div class="d-flex justify-content-between align-items-center">
-              <div class="fw-semibold">銀行振込</div>
-              <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="bank_transfer" name="bank_transfer" value="1" {% if (m.bank_transfer or 0) == 1 %}checked{% endif %}>
-                <label class="form-check-label small" for="bank_transfer">申告あり</label>
-              </div>
-            </div>
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">振込先銀行名</label>
-              <input type="text" class="form-control form-control-sm" name="bank_dest_name" value="{{ m.bank_dest_name or '' }}" placeholder="例：三井住友銀行 本店">
-            </div>
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">振込元名</label>
-              <input type="text" class="form-control form-control-sm" name="bank_remitter_name" value="{{ m.bank_remitter_name or '' }}" placeholder="参加者の振込名義">
-            </div>
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">着金日</label>
-              <input type="date" class="form-control form-control-sm" name="bank_deposit_date" value="{{ m.bank_deposit_date or '' }}">
-            </div>
-          </div>
-        </div>
-
-        <!-- PayPay -->
-        <div class="col-12 col-lg-4">
-          <div class="border rounded p-3 h-100">
-            <div class="d-flex justify-content-between align-items-center">
-              <div class="fw-semibold">PayPay友だち送金</div>
-              <div class="form-check form-switch">
-                <input class="form-check-input" type="checkbox" id="paypay_transfer" name="paypay_transfer" value="1" {% if (m.paypay_transfer or 0) == 1 %}checked{% endif %}>
-                <label class="form-check-label small" for="paypay_transfer">申告あり</label>
-              </div>
-            </div>
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">送金名</label>
-              <input type="text" class="form-control form-control-sm" name="paypay_sender_name" value="{{ m.paypay_sender_name or '' }}" placeholder="参加者の送金名">
-            </div>
-            <div class="mt-2">
-              <label class="form-label small text-muted mb-1">送金日</label>
-              <input type="date" class="form-control form-control-sm" name="paypay_sent_date" value="{{ m.paypay_sent_date or '' }}">
-              <div class="form-text">※ 参加者申告では自動で本日が入ります（管理で修正可）</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <label class="form-label small text-muted mb-1">管理メモ（任意）</label>
-        <textarea class="form-control" name="admin_note" rows="2" placeholder="例：明細確認済み／レシート確認 等">{{ m.admin_note or '' }}</textarea>
-      </div>
-
-      <div class="d-grid d-sm-flex justify-content-end">
-        <button class="btn btn-primary">支払いを保存</button>
-      </div>
-    </form>
-  </div>
-</div>
-<!-- ================= /支払い ================= -->
-
-<!-- 画面狭小時も操作しやすいよう最低パディング -->
-<style>
-  .card-body{ padding: 1rem; }
-  @media (min-width: 576px){ .card-body{ padding: 1.25rem; } }
-</style>
-
-<script>
-  // === 役割に応じてメモ欄（costume_label）を有効/無効化 ===
-  (function(){
-    function isMemoEnabled(root){
-      var checked = root.querySelector('input[name="participant_role"]:checked');
-      if(!checked) return false;
-      return (checked.value === 'cosplayer' || checked.value === 'other');
-    }
-    function setMemoState(root){
-      var input = root.querySelector('.js-costume-input');
-      if(!input) return;
-      if(isMemoEnabled(root)){
-        input.removeAttribute('disabled');
-        if(!input.placeholder || input.placeholder.indexOf('衣装') !== -1){
-          input.placeholder = '衣装／その他のメモ';
-        }
-      }else{
-        if(input.value) input.value = '';
-        input.setAttribute('disabled','disabled');
-        input.placeholder = '衣装／その他（該当時のみ入力可）';
-      }
-    }
-    var form = document.querySelector('.js-bulk-form');
-    if(form){
-      form.addEventListener('change', function(e){
-        if(e.target && e.target.name === 'participant_role'){
-          setMemoState(form);
-        }
-      });
-      form.addEventListener('submit', function(){ setMemoState(form); });
-      setMemoState(form);
-    }
-  })();
-</script>
-{% endblock %}
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 3fd346edf42ed835fbb028dac74708d839bad06f..d47e3c75d6388465a4f2812a16da2374a40a8a5f 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -2142,74 +2142,76 @@ def view_event(event_uuid: str):
+ 
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+     if not me:
+         abort(401)
+ 
+     # 参加状況（最新行） ← 役割/衣装を追加で取得
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               m.id AS member_id,
+               COALESCE(m.status,'pending')                        AS status,
+               CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment,
+               COALESCE(m.payment_status,'unpaid')                 AS payment_status,
+               m.paid_amount_yen, m.paid_at, m.receipt_url,
+               COALESCE(m.bank_transfer,0) AS bank_transfer,
+               COALESCE(m.paypay_transfer,0) AS paypay_transfer,
+               COALESCE(m.process,0) AS process,
+               COALESCE(m.is_host,0) AS is_host,
+               COALESCE(m.is_subhost,0) AS is_subhost,
+               COALESCE(m.participant_role,'none') AS participant_role,
+-              COALESCE(m.costume_label,'')        AS costume_label
++              COALESCE(m.costume_label,'')        AS costume_label,
++              m.custom_fee_yen
+             FROM mfu_event_member m
+             WHERE m.event_id=%s AND m.user_id=%s
+             ORDER BY m.id DESC
+             LIMIT 1
+         """, (ev["id"], me["id"]))
+         row = cur.fetchone()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     my_status              = (row["status"] if row else "pending") or "pending"
+     my_require_payment     = int(row["require_payment"]) if row else 1
+     my_payment_status      = (row["payment_status"] if row else "unpaid") or "unpaid"
+     my_paid_amount_yen     = row.get("paid_amount_yen") if row else None
+     my_paid_at             = row.get("paid_at") if row else None
+     my_receipt_url         = row.get("receipt_url") if row else None
+     my_member_id           = row.get("member_id") if row else None
+     my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
+     my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
+     my_process             = int(row.get("process")) if row else 0
+     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
+     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
+     my_costume_label       = (row.get("costume_label")  if row else "") or ""
++    my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
+ 
+     my_receipt_pdf_url = None
+     if (
+         my_payment_status == "paid"
+         and my_member_id
+         and (my_bank_transfer == 1 or my_paypay_transfer == 1 or my_receipt_url)
+     ):
+         my_receipt_pdf_url = url_for(
+             "external_login_user.member_receipt_pdf",
+             event_uuid=event_uuid,
+             member_id=my_member_id,
+         )
+ 
+     # 表示モード
+     if _is_mfu_logged_in():
+         view_mode = "admin"
+     else:
+         if str(my_status).lower() == "approved":
+             view_mode = "member"
+         elif str(my_status).lower() in ("pending", "rejected"):
+             view_mode = "member_limited"
+         else:
+             view_mode = "guest"
+ 
+     # 各種リンク生成（略：元コードそのまま）
+@@ -2315,50 +2317,51 @@ def view_event(event_uuid: str):
+         if q:
+             maps_link = f"https://www.google.com/maps/search/?api=1&query={quote_plus(q)}"
+ 
+     resp = make_response(render_template(
+         "event_view.html",
+         ev=ev, me=me,
+         view_mode=view_mode,
+         my_status=my_status,
+         my_require_payment=my_require_payment,
+         my_payment_status=my_payment_status,
+         my_paid_amount_yen=my_paid_amount_yen,
+         my_paid_at=my_paid_at,
+         my_receipt_url=my_receipt_url,
+         my_receipt_pdf_url=my_receipt_pdf_url,
+         my_process=my_process,
+         album_url=album_url,
+         maps_link=maps_link,
+         openchat_url=openchat_url,
+         openchat_pass=openchat_pass,
+         google_form_url=google_form_url,
+         line_openchat_url=openchat_url,
+         survey_url=google_form_url,
+         # ★ 追加でテンプレに渡す（フォーム初期値用）
+         my_participant_role=my_participant_role,
+         my_costume_label=my_costume_label,
++        my_custom_fee_yen=my_custom_fee_yen,
+         # 互換エイリアス（テンプレが form_* を参照していても動くように）
+         form_role=my_participant_role,
+         form_costume=my_costume_label,
+     ))
+     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+     resp.headers["Pragma"] = "no-cache"
+     return resp
+ 
+ 
+ # =========================
+ # 役割（参加者自身が編集可）
+ # =========================
+ @bp.post("/events/<event_uuid>/my-role")
+ def update_my_role(event_uuid: str):
+     guard = _require_ext_login()
+     if guard: return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     status = _membership_status(ev["id"], me["id"])  # type: ignore
+     if status is None:
+         abort(403, "このイベントの参加者ではありません")

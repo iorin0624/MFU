@@ -106,7 +106,8 @@
       <div class="card h-100">
         <div class="card-body">
           <h2 class="h6 mb-3">イベント詳細</h2>
-          <div><strong>参加費:</strong> {% if ev.fee_yen is not none %}¥{{ "{:,}".format(ev.fee_yen|int) }}{% else %}—{% endif %}</div>
+          {% set display_fee = (my_custom_fee_yen if my_custom_fee_yen is defined and my_custom_fee_yen is not none else ev.fee_yen) %}
+          <div><strong>参加費:</strong> {% if display_fee is not none %}¥{{ "{:,}".format(display_fee|int) }}{% else %}—{% endif %}</div>
           <div><strong>場所:</strong> {{ ev.place_name or '—' }}</div>
           <div class="small text-muted mb-2">{{ ev.address or '' }}</div>
           {% if maps_link %}
@@ -234,7 +235,7 @@
 
             {# ★ require_payment を厳密に 0/1 へ正規化してから判定 #}
             {% set rp = norm01(my_require_payment, 1)|int %}
-            {% set fee = ev.fee_yen|default(0)|int %}
+            {% set fee = (my_custom_fee_yen if my_custom_fee_yen is defined and my_custom_fee_yen is not none else ev.fee_yen)|default(0)|int %}
             {% set needs_pay = (rp == 1) and (fee > 0) %}
 
             {# 受け取りの揺れ: my_paid_amount_yen / my_paid_amount のどちらでもOKに #}
@@ -258,8 +259,8 @@
             <div class="mb-1"><strong>支払金額：</strong>
               {% if my_payment_status == 'paid' and paid_amt is not none %}
                 ¥{{ "{:,}".format(paid_amt|int) }}
-              {% elif my_payment_status == 'paid' and paid_amt is none and ev.fee_yen %}
-                ¥{{ "{:,}".format(ev.fee_yen|int) }}
+              {% elif my_payment_status == 'paid' and paid_amt is none and fee %}
+                ¥{{ "{:,}".format(fee|int) }}
               {% else %}
                 <span class="text-muted">—</span>
               {% endif %}

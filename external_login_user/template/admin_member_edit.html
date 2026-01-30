@@ -41,8 +41,8 @@
       </div>
     </div>
 
-    {% set _custom_fee = (m.get('custom_fee_yen') if m is mapping else (m.custom_fee_yen if m.custom_fee_yen is defined else None)) %}
-    {% set _fee_yen = (ev.get('fee_yen') if ev is mapping else ev.fee_yen) %}
+    {% set _custom_fee = (m.get('custom_fee_yen') if m is mapping else (m.custom_fee_yen | default(None))) %}
+    {% set _fee_yen = (ev.get('fee_yen') if ev is mapping else (ev.fee_yen | default(None))) %}
     {% set _fee_display = (_fee_yen if _fee_yen is not none else 0) %}
     {% set _applied_fee = (_custom_fee if _custom_fee is not none else _fee_yen) %}
     {% set _applied_display = (_applied_fee if _applied_fee is not none else 0) %}

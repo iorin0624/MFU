@@ -1097,12 +1097,20 @@ def pay_paypay(event_uuid: str):
         flash("PayPay友だち送金リンクが未設定です。主催者にお問い合わせください。", "warning")
         return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
 
+    display_fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
+
     # POST：送金申告 → mfu_event_member に記録（pending）
     if request.method == "POST":
         remitter = (request.form.get("remitter_name") or "").strip()
         if not remitter:
             flash("送金名を入力してください。", "warning")
-            return render_template("pay_paypay.html", ev=ev, paypay_url=p2p_url, paypay_display=(ev.get("paypay_display") or ""))
+            return render_template(
+                "pay_paypay.html",
+                ev=ev,
+                paypay_url=p2p_url,
+                paypay_display=(ev.get("paypay_display") or ""),
+                fee_yen=display_fee,
+            )
 
         # ★ その時点の参加費を保存
         fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
@@ -1166,7 +1174,8 @@ def pay_paypay(event_uuid: str):
         "pay_paypay.html",
         ev=ev,
         paypay_url=p2p_url,
-        paypay_display=(ev.get("paypay_display") or "")
+        paypay_display=(ev.get("paypay_display") or ""),
+        fee_yen=display_fee,
     )
 
 
@@ -1242,6 +1251,7 @@ def pay_bank(event_uuid: str):
         flash("銀行振込口座が未設定です。主催者にお問い合わせください。", "warning")
         return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
 
+    display_fee = _resolve_member_fee(ev["id"], me["id"], int(ev.get("fee_yen") or 0))  # type: ignore
     selected_bank_id = request.args.get("bank_id") or str(banks[0]["id"])
 
     # POST：申告 → mfu_event_member に記録
@@ -1252,17 +1262,41 @@ def pay_bank(event_uuid: str):
 
         if not bank_id:
             flash("振込先の銀行を選択してください。", "warning")
-            return render_template("pay_bank.html", ev=ev, banks=banks, selected_bank_id=selected_bank_id)
+            return render_template(
+                "pay_bank.html",
+                ev=ev,
+                banks=banks,
+                selected_bank_id=selected_bank_id,
+                fee_yen=display_fee,
+            )
         sel = next((b for b in banks if str(b["id"]) == bank_id), None)
         if not sel:
             flash("選択した銀行が無効です。", "warning")
-            return render_template("pay_bank.html", ev=ev, banks=banks, selected_bank_id=selected_bank_id)
+            return render_template(
+                "pay_bank.html",
+                ev=ev,
+                banks=banks,
+                selected_bank_id=selected_bank_id,
+                fee_yen=display_fee,
+            )
         if not remitter:
             flash("振込元名を入力してください。", "warning")
-            return render_template("pay_bank.html", ev=ev, banks=banks, selected_bank_id=bank_id)
+            return render_template(
+                "pay_bank.html",
+                ev=ev,
+                banks=banks,
+                selected_bank_id=bank_id,
+                fee_yen=display_fee,
+            )
         if not deposit_date:
             flash("振込先着金日を入力してください。", "warning")
-            return render_template("pay_bank.html", ev=ev, banks=banks, selected_bank_id=bank_id)
+            return render_template(
+                "pay_bank.html",
+                ev=ev,
+                banks=banks,
+                selected_bank_id=bank_id,
+                fee_yen=display_fee,
+            )
 
         dest_name = (sel.get("bank_name") or sel.get("label") or "").strip()
         # ★ その時点の参加費を保存
@@ -1330,7 +1364,8 @@ def pay_bank(event_uuid: str):
         "pay_bank.html",
         ev=ev,
         banks=banks,
-        selected_bank_id=selected_bank_id
+        selected_bank_id=selected_bank_id,
+        fee_yen=display_fee,
     )
 
 

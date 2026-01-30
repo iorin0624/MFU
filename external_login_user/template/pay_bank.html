@@ -69,7 +69,8 @@
           </div>
           <div class="text-sm-end">
             <div class="text-muted small">参加費</div>
-            <div class="fs-5 fw-bold">¥{{ (ev.fee_yen or 0) | int }}</div>
+            {% set display_fee = (fee_yen if fee_yen is defined else ev.fee_yen) %}
+            <div class="fs-5 fw-bold">¥{{ "{:,}".format((display_fee or 0) | int) }}</div>
           </div>
         </div>
         {% if ev.pay_until %}
