@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}パスキー管理{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="card p-4 shadow-sm">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+      <div>
+        <h2 class="mb-1">パスキー管理</h2>
+        <div class="text-muted">ログイン中: {{ username }}</div>
+      </div>
+      <a href="{{ url_for('account.manage_account') }}" class="btn btn-outline-secondary">アカウントに戻る</a>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ msg }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="閉じる"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div id="passkey-error" class="alert alert-danger d-none"></div>
+    <div id="passkey-success" class="alert alert-success d-none"></div>
+
+    <div class="mb-4">
+      <button type="button" class="btn btn-primary" id="register-passkey" data-username="{{ username }}">
+        この端末をパスキー登録
+      </button>
+      <div class="form-text mt-2">
+        登録後はこの端末のパスキーでログインできます。
+      </div>
+    </div>
+
+    <h5 class="mb-3">登録済みパスキー</h5>
+    {% if passkeys %}
+      <div class="table-responsive">
+        <table class="table table-striped align-middle">
+          <thead>
+            <tr>
+              <th>ラベル</th>
+              <th>登録日</th>
+              <th>最終使用</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for key in passkeys %}
+              <tr>
+                <td>{{ key.label or '未設定' }}</td>
+                <td>{{ key.created_at }}</td>
+                <td>{{ key.last_used_at or '未使用' }}</td>
+                <td class="text-end">
+                  <form method="post" action="{{ url_for('account.delete_passkey', passkey_id=key.id) }}" onsubmit="return confirm('このパスキーを削除しますか？');">
+                    <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="text-muted">登録済みのパスキーはありません。</div>
+    {% endif %}
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
+<script>
+  const registerButton = document.getElementById("register-passkey");
+  const passkeyError = document.getElementById("passkey-error");
+  const passkeySuccess = document.getElementById("passkey-success");
+
+  const showMessage = (target, message) => {
+    target.textContent = message;
+    target.classList.remove("d-none");
+  };
+
+  const clearMessages = () => {
+    passkeyError.textContent = "";
+    passkeySuccess.textContent = "";
+    passkeyError.classList.add("d-none");
+    passkeySuccess.classList.add("d-none");
+  };
+
+  const buildLabel = () => {
+    if (navigator.userAgentData && navigator.userAgentData.platform) {
+      const platform = navigator.userAgentData.platform;
+      const brand = navigator.userAgentData.brands?.[0]?.brand || "";
+      return `${platform} ${brand}`.trim();
+    }
+    const ua = navigator.userAgent;
+    const platform = navigator.platform || "";
+    let browser = "Browser";
+    if (ua.includes("Chrome")) browser = "Chrome";
+    else if (ua.includes("Safari")) browser = "Safari";
+    else if (ua.includes("Firefox")) browser = "Firefox";
+    else if (ua.includes("Edg")) browser = "Edge";
+    return `${platform} ${browser}`.trim();
+  };
+
+  const registerPasskey = async () => {
+    clearMessages();
+    const username = registerButton.dataset.username;
+
+    try {
+      const optionsRes = await fetch("/webauthn/register/options", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+      const optionsData = await optionsRes.json();
+      if (!optionsRes.ok) {
+        showMessage(passkeyError, optionsData.error || "パスキー登録の準備に失敗しました。");
+        return;
+      }
+
+      const credential = await navigator.credentials.create({
+        publicKey: PasskeyUtils.decodeCreationOptions(optionsData),
+      });
+      const verifyRes = await fetch("/webauthn/register/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username,
+          credential: PasskeyUtils.serializeCredential(credential),
+          label: buildLabel(),
+        }),
+      });
+      const verifyData = await verifyRes.json();
+      if (!verifyRes.ok) {
+        showMessage(passkeyError, verifyData.error || "パスキー登録に失敗しました。");
+        return;
+      }
+      showMessage(passkeySuccess, "パスキーを登録しました。");
+      window.location.reload();
+    } catch (err) {
+      if (err && err.name === "NotAllowedError") {
+        showMessage(passkeyError, "キャンセルされました。");
+      } else {
+        showMessage(passkeyError, "パスキー登録中にエラーが発生しました。");
+      }
+    }
+  };
+
+  if (registerButton) {
+    registerButton.addEventListener("click", registerPasskey);
+  }
+</script>
+{% endblock %}

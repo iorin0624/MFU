@@ -13,6 +13,7 @@
     {% if error %}
       <div class="alert alert-danger text-center">{{ error }}</div>
     {% endif %}
+    <div id="passkey-error" class="alert alert-danger text-center d-none"></div>
 
     <form method="post">
       <div class="mb-3">
@@ -36,6 +37,79 @@
 
       <button type="submit" class="btn btn-primary w-100 mb-2">ログイン</button>
     </form>
+    {% if not otp_required %}
+      <button type="button" id="passkey-login" class="btn btn-outline-primary w-100">
+        パスキーでログイン
+      </button>
+    {% endif %}
   </div>
+  <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
+  <script>
+    const passkeyButton = document.getElementById("passkey-login");
+    const passkeyError = document.getElementById("passkey-error");
+    const usernameInput = document.getElementById("username");
+
+    const showPasskeyError = (message) => {
+      if (!passkeyError) return;
+      passkeyError.textContent = message;
+      passkeyError.classList.remove("d-none");
+    };
+
+    const clearPasskeyError = () => {
+      if (!passkeyError) return;
+      passkeyError.textContent = "";
+      passkeyError.classList.add("d-none");
+    };
+
+    const handlePasskeyLogin = async () => {
+      clearPasskeyError();
+      const username = usernameInput.value.trim();
+      if (!username) {
+        showPasskeyError("ユーザー名を入力してください。");
+        return;
+      }
+
+      try {
+        const optionsRes = await fetch("/webauthn/auth/options", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username }),
+        });
+        const optionsData = await optionsRes.json();
+        if (!optionsRes.ok) {
+          showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
+          return;
+        }
+
+        const credential = await navigator.credentials.get({
+          publicKey: PasskeyUtils.decodeRequestOptions(optionsData),
+        });
+        const verifyRes = await fetch("/webauthn/auth/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username,
+            credential: PasskeyUtils.serializeCredential(credential),
+          }),
+        });
+        const verifyData = await verifyRes.json();
+        if (!verifyRes.ok) {
+          showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
+          return;
+        }
+        window.location.href = verifyData.redirect || "/upload";
+      } catch (err) {
+        if (err && err.name === "NotAllowedError") {
+          showPasskeyError("キャンセルされました。");
+        } else {
+          showPasskeyError("パスキーの利用中にエラーが発生しました。");
+        }
+      }
+    };
+
+    if (passkeyButton) {
+      passkeyButton.addEventListener("click", handlePasskeyLogin);
+    }
+  </script>
 </body>
 </html>
