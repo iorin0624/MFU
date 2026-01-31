@@ -1,66 +1,68 @@
-diff --git a/utils/logs.py b/utils/logs.py
-index b9b29679877eaf391c9de9256bfe465ca63182b6..6faaed7fee723df9cddd7e38f296c5a54c065988 100644
---- a/utils/logs.py
-+++ b/utils/logs.py
-@@ -749,58 +749,59 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
-                     f":rotating_light: 404 burst detected (non-JP) [{trigger}]\n"
-                     f"・IPアドレス: {ip}\n"
-                     f"・Path: {path}\n"
-                     f"・国: {country_disp}\n"
-                     f"・プロバイダ: {provider}\n"
-                     f"・UA: {ua}"
-                 )
-                 _dbg(
-                     f"discord-post trigger={trigger} ip={ip} "
-                     f"path={path} country={country_disp} provider={provider}"
-                 )
-                 _send_discord(msg)
-             else:
-                 _dbg(
-                     f"notify-deferred ip={ip} path={path} "
-                     f"cooldowns=({int(cooldown_until_path)},{int(cooldown_until_ip)})"
-                 )
-     except Exception as e:
-         _dbg(f"log_access: burst notify failed err={e!r}")
-         current_app.logger.warning("log_access: burst notify failed", exc_info=True)
+diff --git a/__init__.py b/__init__.py
+index 05b294fd969ec2011a8d9d5261030eb6ce6d27a7..0619e61068cf2d63952d3e1aa4cb2cba936532ce 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -45,60 +45,62 @@ from werkzeug.middleware.proxy_fix import ProxyFix
+ from werkzeug.utils import secure_filename, safe_join
  
+ # =====================================
+ # 🛠️ アプリ内ユーティリティ（上段に集約）
+ # =====================================
+ from app.utils.auth import load_user
+ from app.utils.db import get_db
+ from app.utils.file_ops import sanitize_filename, generate_thumbnail, create_zip
+ from app.utils.image import save_as_jpeg
+ from app.utils.logs import log_request_raw
+ from app.utils.message import generate_message
+ from app.utils.storage_info import get_storage_info
+ from app.utils.thumbs import enqueue_thumb_job
+ from app.utils.totp_util import get_user_otp_secret
+ from app.utils.whois_util import get_netinfo
+ from app.albums import album_bp
+ from app.receipts import receipts_bp
+ from app.utils.mail import send_mail 
  
- # ==========================================================
- # ログイン系（互換）
- # ==========================================================
--def write_login_log(username: str, ip: str) -> None:
-+def write_login_log(username: str, ip: str, tag: str = "LOGIN") -> None:
-     """ログインイベントの簡易ログ（従来互換）。"""
-     db = get_db()
-     try:
-+        tag = (tag or "LOGIN").strip()
-         cur = db.cursor()
-         cur.execute(
-             "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
--            (ip or "-", f"[LOGIN] ユーザー: {username} がログインしました"),
-+            (ip or "-", f"[{tag}] ユーザー: {username} がログインしました"),
-         )
-         db.commit()
-     finally:
-         try:
-             db.close()
-         except Exception:
-             pass
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
++STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
  
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+     template_folder=os.path.join(APP_DIR, "templates"),
+-    static_folder=os.path.join(BASE_DIR, "static"),
++    static_folder=STATIC_DIR,
++    static_url_path="/static",
+ )
+ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
  
- def write_line_login_log(nickname: str, ip: str, user_id: int | None = None) -> None:
-     """LINEログイン簡易ログ（従来互換）。"""
-     nick = (nickname or "未設定").strip()
-     if user_id is not None:
-         log_text = f"[LINE_LOGIN] ユーザー: #{int(user_id)} {nick} がログインしました"
-     else:
-         log_text = f"[LINE_LOGIN] ユーザー: {nick} がログインしました"
+ load_dotenv()
+ app.secret_key = os.environ.get("SECRET_KEY")
  
-     db = get_db()
-     try:
-         cur = db.cursor()
-         cur.execute(
-             "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
-             (ip or "-", log_text),
-         )
-         db.commit()
+ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
+ 
+ app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
+ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
+ 
+ login_manager = LoginManager()
+ login_manager.init_app(app)
+ login_manager.login_view = "login"
+ login_manager.user_loader(load_user)
+ 
+ # =====================================
+ # 🧠 補助関数群（上段へ集約）
+ # =====================================
+ 
+ from functools import wraps
+ from flask import session
+ 
+ def admin_required(func):
+     @wraps(func)
