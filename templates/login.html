@@ -15,7 +15,7 @@
     {% endif %}
     <div id="passkey-error" class="alert alert-danger text-center d-none"></div>
 
-    <form method="post">
+    <form method="post" data-otp-required="{{ 'true' if otp_required else 'false' }}">
       <div class="mb-3">
         <label for="username" class="form-label">ユーザー名</label>
         <input type="text" id="username" name="username" class="form-control" required value="{{ username or '' }}" {% if otp_required %}readonly{% endif %}>
@@ -45,9 +45,11 @@
   </div>
   <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
   <script>
+    const loginForm = document.querySelector("form");
     const passkeyButton = document.getElementById("passkey-login");
     const passkeyError = document.getElementById("passkey-error");
     const usernameInput = document.getElementById("username");
+    let isFallbacking = false;
 
     const showPasskeyError = (message) => {
       if (!passkeyError) return;
@@ -61,11 +63,26 @@
       passkeyError.classList.add("d-none");
     };
 
-    const handlePasskeyLogin = async () => {
+    const passwordLoginFallback = () => {
+      if (!loginForm || isFallbacking) return;
+      isFallbacking = true;
+      if (typeof loginForm.requestSubmit === "function") {
+        loginForm.requestSubmit();
+      } else {
+        loginForm.submit();
+      }
+    };
+
+    const attemptPasskeyLogin = async ({ onFallback } = {}) => {
       clearPasskeyError();
       const username = usernameInput.value.trim();
       if (!username) {
         showPasskeyError("ユーザー名を入力してください。");
+        return;
+      }
+      if (!navigator.credentials || !window.PublicKeyCredential) {
+        showPasskeyError("この環境ではパスキーを利用できません。");
+        if (onFallback) onFallback();
         return;
       }
 
@@ -73,11 +90,18 @@
         const optionsRes = await fetch("/webauthn/auth/options", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({ username }),
         });
+        if (optionsRes.status === 404) {
+          showPasskeyError("パスキー未登録のためパスワードでログインします。");
+          if (onFallback) onFallback();
+          return;
+        }
         const optionsData = await optionsRes.json();
         if (!optionsRes.ok) {
           showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
+          if (onFallback) onFallback();
           return;
         }
 
@@ -87,6 +111,7 @@
         const verifyRes = await fetch("/webauthn/auth/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({
             username,
             credential: PasskeyUtils.serializeAuthenticationCredential(credential),
@@ -95,6 +120,7 @@
         const verifyData = await verifyRes.json();
         if (!verifyRes.ok) {
           showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
+          if (onFallback) onFallback();
           return;
         }
         window.location.href = verifyData.redirect || "/upload";
@@ -104,11 +130,26 @@
         } else {
           showPasskeyError("パスキーの利用中にエラーが発生しました。");
         }
+        if (onFallback) onFallback();
       }
     };
 
+    const otpRequired = loginForm?.dataset.otpRequired === "true";
+
+    if (loginForm && !otpRequired) {
+      loginForm.addEventListener("submit", (event) => {
+        if (isFallbacking) {
+          return;
+        }
+        event.preventDefault();
+        attemptPasskeyLogin({ onFallback: passwordLoginFallback });
+      });
+    }
+
     if (passkeyButton) {
-      passkeyButton.addEventListener("click", handlePasskeyLogin);
+      passkeyButton.addEventListener("click", () => {
+        attemptPasskeyLogin();
+      });
     }
   </script>
 </body>

@@ -1,22 +1,114 @@
 diff --git a/templates/login.html b/templates/login.html
-index 7fb3bfa0117c8de209d06f0c364c03e78bb750ac..cf15e99d8194e6bfded6657b4facfe2c5d0e2fc1 100644
+index cf15e99d8194e6bfded6657b4facfe2c5d0e2fc1..c9d1581dc4d64c7f30fce452ebc080bf4b8275e3 100644
 --- a/templates/login.html
 +++ b/templates/login.html
-@@ -67,49 +67,49 @@
+@@ -1,115 +1,156 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <title>ログイン</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+ </head>
+ <body class="bg-light d-flex justify-content-center align-items-center min-vh-100">
+   <div class="card shadow-sm p-4" style="max-width: 400px; width: 100%;">
+     <h2 class="text-center mb-4">ログイン</h2>
+     
+     {% if error %}
+       <div class="alert alert-danger text-center">{{ error }}</div>
+     {% endif %}
+     <div id="passkey-error" class="alert alert-danger text-center d-none"></div>
+ 
+-    <form method="post">
++    <form method="post" data-otp-required="{{ 'true' if otp_required else 'false' }}">
+       <div class="mb-3">
+         <label for="username" class="form-label">ユーザー名</label>
+         <input type="text" id="username" name="username" class="form-control" required value="{{ username or '' }}" {% if otp_required %}readonly{% endif %}>
+       </div>
+ 
+       {% if not otp_required %}
+         <div class="mb-3">
+           <label for="password" class="form-label">パスワード</label>
+           <input type="password" id="password" name="password" class="form-control" required>
+         </div>
+       {% endif %}
+ 
+       {% if otp_required %}
+         <div class="mb-3">
+           <label for="otp_code" class="form-label">ワンタイムパスワード</label>
+           <input type="text" id="otp_code" name="otp_code" class="form-control" required>
+         </div>
+       {% endif %}
+ 
+       <button type="submit" class="btn btn-primary w-100 mb-2">ログイン</button>
+     </form>
+     {% if not otp_required %}
+       <button type="button" id="passkey-login" class="btn btn-outline-primary w-100">
+         パスキーでログイン
+       </button>
+     {% endif %}
+   </div>
+   <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
+   <script>
++    const loginForm = document.querySelector("form");
+     const passkeyButton = document.getElementById("passkey-login");
+     const passkeyError = document.getElementById("passkey-error");
+     const usernameInput = document.getElementById("username");
++    let isFallbacking = false;
+ 
+     const showPasskeyError = (message) => {
+       if (!passkeyError) return;
+       passkeyError.textContent = message;
+       passkeyError.classList.remove("d-none");
+     };
+ 
+     const clearPasskeyError = () => {
+       if (!passkeyError) return;
+       passkeyError.textContent = "";
+       passkeyError.classList.add("d-none");
+     };
+ 
+-    const handlePasskeyLogin = async () => {
++    const passwordLoginFallback = () => {
++      if (!loginForm || isFallbacking) return;
++      isFallbacking = true;
++      if (typeof loginForm.requestSubmit === "function") {
++        loginForm.requestSubmit();
++      } else {
++        loginForm.submit();
++      }
++    };
++
++    const attemptPasskeyLogin = async ({ onFallback } = {}) => {
+       clearPasskeyError();
+       const username = usernameInput.value.trim();
        if (!username) {
          showPasskeyError("ユーザー名を入力してください。");
          return;
        }
++      if (!navigator.credentials || !window.PublicKeyCredential) {
++        showPasskeyError("この環境ではパスキーを利用できません。");
++        if (onFallback) onFallback();
++        return;
++      }
  
        try {
          const optionsRes = await fetch("/webauthn/auth/options", {
            method: "POST",
            headers: { "Content-Type": "application/json" },
++          credentials: "same-origin",
            body: JSON.stringify({ username }),
          });
++        if (optionsRes.status === 404) {
++          showPasskeyError("パスキー未登録のためパスワードでログインします。");
++          if (onFallback) onFallback();
++          return;
++        }
          const optionsData = await optionsRes.json();
          if (!optionsRes.ok) {
            showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
++          if (onFallback) onFallback();
            return;
          }
  
@@ -26,15 +118,16 @@ index 7fb3bfa0117c8de209d06f0c364c03e78bb750ac..cf15e99d8194e6bfded6657b4facfe2c
          const verifyRes = await fetch("/webauthn/auth/verify", {
            method: "POST",
            headers: { "Content-Type": "application/json" },
++          credentials: "same-origin",
            body: JSON.stringify({
              username,
--            credential: PasskeyUtils.serializeCredential(credential),
-+            credential: PasskeyUtils.serializeAuthenticationCredential(credential),
+             credential: PasskeyUtils.serializeAuthenticationCredential(credential),
            }),
          });
          const verifyData = await verifyRes.json();
          if (!verifyRes.ok) {
            showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
++          if (onFallback) onFallback();
            return;
          }
          window.location.href = verifyData.redirect || "/upload";
@@ -44,11 +137,27 @@ index 7fb3bfa0117c8de209d06f0c364c03e78bb750ac..cf15e99d8194e6bfded6657b4facfe2c
          } else {
            showPasskeyError("パスキーの利用中にエラーが発生しました。");
          }
++        if (onFallback) onFallback();
        }
      };
  
++    const otpRequired = loginForm?.dataset.otpRequired === "true";
++
++    if (loginForm && !otpRequired) {
++      loginForm.addEventListener("submit", (event) => {
++        if (isFallbacking) {
++          return;
++        }
++        event.preventDefault();
++        attemptPasskeyLogin({ onFallback: passwordLoginFallback });
++      });
++    }
++
      if (passkeyButton) {
-       passkeyButton.addEventListener("click", handlePasskeyLogin);
+-      passkeyButton.addEventListener("click", handlePasskeyLogin);
++      passkeyButton.addEventListener("click", () => {
++        attemptPasskeyLogin();
++      });
      }
    </script>
  </body>
