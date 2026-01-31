@@ -13,42 +13,58 @@
     {% if error %}
       <div class="alert alert-danger text-center">{{ error }}</div>
     {% endif %}
+    {% if info %}
+      <div class="alert alert-info text-center">{{ info }}</div>
+    {% endif %}
     <div id="passkey-error" class="alert alert-danger text-center d-none"></div>
+    <div id="mfa-error" class="alert alert-danger text-center d-none"></div>
+    <div id="mfa-info" class="alert alert-info text-center d-none"></div>
 
-    <form method="post" data-otp-required="{{ 'true' if otp_required else 'false' }}">
+    <form method="post" data-preauth-active="{{ 'true' if preauth_active else 'false' }}" data-preauth-username="{{ preauth_username or '' }}">
       <div class="mb-3">
         <label for="username" class="form-label">ユーザー名</label>
-        <input type="text" id="username" name="username" class="form-control" required value="{{ username or '' }}" {% if otp_required %}readonly{% endif %}>
+        <input type="text" id="username" name="username" class="form-control" required value="{{ preauth_username or username or '' }}">
       </div>
 
-      {% if not otp_required %}
-        <div class="mb-3">
-          <label for="password" class="form-label">パスワード</label>
-          <input type="password" id="password" name="password" class="form-control" required>
-        </div>
-      {% endif %}
+      <div class="mb-3" id="password-group">
+        <label for="password" class="form-label">パスワード</label>
+        <input type="password" id="password" name="password" class="form-control">
+      </div>
 
-      {% if otp_required %}
-        <div class="mb-3">
-          <label for="otp_code" class="form-label">ワンタイムパスワード</label>
-          <input type="text" id="otp_code" name="otp_code" class="form-control" required>
-        </div>
-      {% endif %}
-
-      <button type="submit" class="btn btn-primary w-100 mb-2">ログイン</button>
-    </form>
-    {% if not otp_required %}
-      <button type="button" id="passkey-login" class="btn btn-outline-primary w-100">
-        パスキーでログイン
+      <button type="submit" class="btn btn-primary w-100 mb-2" id="primary-login">ログイン</button>
+      <button type="submit" class="btn btn-outline-secondary w-100 mb-2" id="password-login" name="password_login" value="1">
+        パスワードでログイン
       </button>
-    {% endif %}
+    </form>
+
+    <div id="mfa-section" class="mt-3 d-none">
+      <div class="mb-3">
+        <label for="totp-code" class="form-label">アプリOTP</label>
+        <input type="text" id="totp-code" class="form-control" inputmode="numeric" autocomplete="one-time-code">
+        <button type="button" id="totp-verify" class="btn btn-outline-primary w-100 mt-2">OTPを確認</button>
+      </div>
+      <div class="mb-3">
+        <label for="email-code" class="form-label">メールOTP</label>
+        <div class="d-grid gap-2">
+          <button type="button" id="email-send" class="btn btn-outline-secondary">メールOTPを送信</button>
+        </div>
+        <input type="text" id="email-code" class="form-control mt-2" inputmode="numeric" autocomplete="one-time-code">
+        <button type="button" id="email-verify" class="btn btn-outline-secondary w-100 mt-2">メールOTPを確認</button>
+      </div>
+    </div>
   </div>
   <script src="{{ url_for('static', filename='js/passkey-utils.js') }}"></script>
   <script>
     const loginForm = document.querySelector("form");
-    const passkeyButton = document.getElementById("passkey-login");
     const passkeyError = document.getElementById("passkey-error");
+    const mfaError = document.getElementById("mfa-error");
+    const mfaInfo = document.getElementById("mfa-info");
     const usernameInput = document.getElementById("username");
+    const passwordGroup = document.getElementById("password-group");
+    const mfaSection = document.getElementById("mfa-section");
+    const totpVerifyButton = document.getElementById("totp-verify");
+    const emailSendButton = document.getElementById("email-send");
+    const emailVerifyButton = document.getElementById("email-verify");
     let isFallbacking = false;
 
     const showPasskeyError = (message) => {
@@ -63,18 +79,64 @@
       passkeyError.classList.add("d-none");
     };
 
-    const passwordLoginFallback = () => {
-      if (!loginForm || isFallbacking) return;
-      isFallbacking = true;
-      if (typeof loginForm.requestSubmit === "function") {
-        loginForm.requestSubmit();
-      } else {
-        loginForm.submit();
+    const showMfaError = (message) => {
+      if (!mfaError) return;
+      mfaError.textContent = message;
+      mfaError.classList.remove("d-none");
+    };
+
+    const showMfaInfo = (message) => {
+      if (!mfaInfo) return;
+      mfaInfo.textContent = message;
+      mfaInfo.classList.remove("d-none");
+    };
+
+    const clearMfaMessages = () => {
+      if (mfaError) {
+        mfaError.textContent = "";
+        mfaError.classList.add("d-none");
       }
+      if (mfaInfo) {
+        mfaInfo.textContent = "";
+        mfaInfo.classList.add("d-none");
+      }
+    };
+
+    const showMfaSection = (username) => {
+      if (usernameInput) {
+        usernameInput.value = username;
+        usernameInput.readOnly = true;
+      }
+      if (passwordGroup) {
+        passwordGroup.classList.add("d-none");
+      }
+      if (mfaSection) {
+        mfaSection.classList.remove("d-none");
+      }
+    };
+
+    const ensurePreauth = async (username) => {
+      const res = await fetch("/auth/preauth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ username }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        showMfaError(data.error || "認証準備に失敗しました。");
+        return null;
+      }
+      showMfaSection(username);
+      if (!data.totp_enabled) {
+        showMfaInfo("TOTPが未設定の場合はメールOTPをご利用ください。");
+      }
+      return data;
     };
 
     const attemptPasskeyLogin = async ({ onFallback } = {}) => {
       clearPasskeyError();
+      clearMfaMessages();
       const username = usernameInput.value.trim();
       if (!username) {
         showPasskeyError("ユーザー名を入力してください。");
@@ -94,14 +156,14 @@
           body: JSON.stringify({ username }),
         });
         if (optionsRes.status === 404) {
-          showPasskeyError("パスキー未登録のためパスワードでログインします。");
-          if (onFallback) onFallback();
+          showPasskeyError("パスキー未登録のためOTPログインに進みます。");
+          if (onFallback) onFallback(username);
           return;
         }
         const optionsData = await optionsRes.json();
         if (!optionsRes.ok) {
           showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
-          if (onFallback) onFallback();
+          if (onFallback) onFallback(username);
           return;
         }
 
@@ -120,7 +182,7 @@
         const verifyData = await verifyRes.json();
         if (!verifyRes.ok) {
           showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
-          if (onFallback) onFallback();
+          if (onFallback) onFallback(username);
           return;
         }
         window.location.href = verifyData.redirect || "/upload";
@@ -130,25 +192,105 @@
         } else {
           showPasskeyError("パスキーの利用中にエラーが発生しました。");
         }
-        if (onFallback) onFallback();
+        if (onFallback) onFallback(username);
       }
     };
 
-    const otpRequired = loginForm?.dataset.otpRequired === "true";
+    const preauthActive = loginForm?.dataset.preauthActive === "true";
+    const preauthUsername = loginForm?.dataset.preauthUsername || "";
 
-    if (loginForm && !otpRequired) {
+    if (preauthActive && preauthUsername) {
+      showMfaSection(preauthUsername);
+    }
+
+    if (loginForm) {
       loginForm.addEventListener("submit", (event) => {
+        const submitter = event.submitter;
+        if (submitter && submitter.id === "password-login") {
+          return;
+        }
         if (isFallbacking) {
           return;
         }
         event.preventDefault();
-        attemptPasskeyLogin({ onFallback: passwordLoginFallback });
+        attemptPasskeyLogin({
+          onFallback: async (username) => {
+            isFallbacking = true;
+            await ensurePreauth(username);
+            isFallbacking = false;
+          },
+        });
       });
     }
 
-    if (passkeyButton) {
-      passkeyButton.addEventListener("click", () => {
-        attemptPasskeyLogin();
+    if (totpVerifyButton) {
+      totpVerifyButton.addEventListener("click", async () => {
+        clearMfaMessages();
+        const username = usernameInput.value.trim();
+        const code = (document.getElementById("totp-code")?.value || "").trim();
+        if (!username || !code) {
+          showMfaError("ユーザー名とOTPを入力してください。");
+          return;
+        }
+        const res = await fetch("/mfa/totp/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ username, code }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          showMfaError(data.error || "OTP認証に失敗しました。");
+          return;
+        }
+        window.location.href = data.redirect || "/upload";
+      });
+    }
+
+    if (emailSendButton) {
+      emailSendButton.addEventListener("click", async () => {
+        clearMfaMessages();
+        const username = usernameInput.value.trim();
+        if (!username) {
+          showMfaError("ユーザー名を入力してください。");
+          return;
+        }
+        const res = await fetch("/mfa/email/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ username }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          showMfaError(data.error || "メール送信に失敗しました。");
+          return;
+        }
+        showMfaInfo("メールOTPを送信しました。");
+      });
+    }
+
+    if (emailVerifyButton) {
+      emailVerifyButton.addEventListener("click", async () => {
+        clearMfaMessages();
+        const username = usernameInput.value.trim();
+        const code = (document.getElementById("email-code")?.value || "").trim();
+        if (!username || !code) {
+          showMfaError("ユーザー名とOTPを入力してください。");
+          return;
+        }
+        const res = await fetch("/mfa/email/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ username, code }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          showMfaError(data.error || "OTP認証に失敗しました。");
+          return;
+        }
+        window.location.href = data.redirect || "/upload";
       });
     }
   </script>

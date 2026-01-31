@@ -42,11 +42,26 @@ def manage_account():
         flash("アカウント情報を更新しました", "success")
         return redirect(url_for("account.manage_account"))
 
-    cursor.execute("SELECT nickname, email, webhook_url, notify_method FROM users WHERE username = %s", (username,))
+    cursor.execute(
+        """
+        SELECT nickname, email, webhook_url, notify_method, totp_enabled, totp_secret
+        FROM users
+        WHERE username = %s
+        """,
+        (username,),
+    )
     user = cursor.fetchone()
     db.close()
 
-    return render_template("account.html", user=user, username=username)
+    totp_configured = bool(user and user.get("totp_secret"))
+    totp_enabled = bool(user and user.get("totp_enabled"))
+    return render_template(
+        "account.html",
+        user=user,
+        username=username,
+        totp_configured=totp_configured,
+        totp_enabled=totp_enabled,
+    )
 
 
 @account_bp.route("/account/passkeys", methods=["GET"])
