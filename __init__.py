@@ -67,6 +67,7 @@ from app.utils.mail import send_mail
 JST = timezone(timedelta(hours=9))
 APP_DIR = os.path.abspath(os.path.dirname(__file__))
 BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
 UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
 tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
 
@@ -76,7 +77,8 @@ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
 app = Flask(
     __name__,
     template_folder=os.path.join(APP_DIR, "templates"),
-    static_folder=os.path.join(BASE_DIR, "static"),
+    static_folder=STATIC_DIR,
+    static_url_path="/static",
 )
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
