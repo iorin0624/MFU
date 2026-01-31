@@ -127,11 +127,12 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username,
-          credential: PasskeyUtils.serializeCredential(credential),
+          credential: PasskeyUtils.serializeRegistrationCredential(credential),
           label: buildLabel(),
         }),
       });
       const verifyData = await verifyRes.json();
+      console.log("register/verify response keys:", Object.keys(verifyData || {}));
       if (!verifyRes.ok) {
         showMessage(passkeyError, verifyData.error || "パスキー登録に失敗しました。");
         return;
