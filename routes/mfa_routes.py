@@ -23,7 +23,42 @@ EMAIL_OTP_IP_LIMIT_PER_HOUR = 10
 
 
 def _now() -> datetime:
+    # サーバのローカル時間（naive）で統一
     return datetime.now()
+
+
+def _normalize_dt(value) -> datetime | None:
+    """
+    datetime比較の安全化:
+    - aware datetime -> ローカルに変換して tzinfo を落とす（naive化）
+    - ISO文字列 -> datetime化（tz付きならローカル変換してnaive化）
+    - naive datetime -> そのまま
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            # ローカルへ寄せて tzinfo を落とす
+            return value.astimezone().replace(tzinfo=None)
+        return value
+
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            # "Z" を含むISOを許容
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone().replace(tzinfo=None)
+            return dt
+        except Exception:
+            return None
+
+    return None
 
 
 def _ensure_email_otp_schema() -> None:
@@ -76,10 +111,14 @@ def _get_user_row(username: str) -> dict | None:
 def _preauth_valid(username: str) -> bool:
     if session.get("preauth_user") != username:
         return False
-    expires_at = session.get("preauth_expires_at")
+
+    expires_at = _normalize_dt(session.get("preauth_expires_at"))
     if not expires_at:
         return False
-    return _now() <= expires_at
+
+    now = _now()  # naive
+    # expires_at は _normalize_dt で必ず naive に寄せている
+    return now <= expires_at
 
 
 def _clear_preauth() -> None:
@@ -150,7 +189,7 @@ def verify_totp():
     if not _preauth_valid(username):
         return jsonify(ok=False, error="認証の有効期限が切れました"), 400
 
-    locked_until = session.get("preauth_totp_locked_until")
+    locked_until = _normalize_dt(session.get("preauth_totp_locked_until"))
     if locked_until and _now() < locked_until:
         return jsonify(ok=False, error="試行回数が多すぎます。時間をおいてください。"), 429
 
@@ -198,7 +237,8 @@ def send_email_otp():
         (username,),
     )
     last = cur.fetchone()
-    if last and last.get("sent_at") and (now - last["sent_at"]).total_seconds() < EMAIL_OTP_SEND_COOLDOWN_SECONDS:
+    last_sent = _normalize_dt(last.get("sent_at")) if last else None
+    if last_sent and (now - last_sent).total_seconds() < EMAIL_OTP_SEND_COOLDOWN_SECONDS:
         db.close()
         return jsonify(ok=False, error="送信間隔が短すぎます。少し時間をおいてください。"), 429
 
@@ -270,6 +310,7 @@ def verify_email_otp():
     db = get_db()
     cur = db.cursor(dictionary=True)
     now = _now()
+
     cur.execute(
         """
         SELECT *
@@ -289,27 +330,29 @@ def verify_email_otp():
         db.close()
         return jsonify(ok=False, error="OTPは既に使用されています"), 400
 
-    if row.get("cooldown_until") and row["cooldown_until"] > now:
+    cooldown_until = _normalize_dt(row.get("cooldown_until"))
+    if cooldown_until and cooldown_until > now:
         db.close()
         return jsonify(ok=False, error="試行回数が多すぎます。時間をおいてください。"), 429
 
-    if row.get("expires_at") and row["expires_at"] < now:
+    expires_at = _normalize_dt(row.get("expires_at"))
+    if expires_at and expires_at < now:
         db.close()
         return jsonify(ok=False, error="OTPの有効期限が切れています"), 400
 
     expected = _hash_code(username, code, row["code_salt"])
     if expected != row["code_hash"]:
         attempts = int(row.get("attempts") or 0) + 1
-        cooldown_until = row.get("cooldown_until")
+        cooldown_until_new = cooldown_until
         if attempts >= EMAIL_OTP_MAX_ATTEMPTS:
-            cooldown_until = now + timedelta(minutes=EMAIL_OTP_TTL_MINUTES)
+            cooldown_until_new = now + timedelta(minutes=EMAIL_OTP_TTL_MINUTES)
         cur.execute(
             """
             UPDATE user_email_otps
             SET attempts = %s, cooldown_until = %s
             WHERE id = %s
             """,
-            (attempts, cooldown_until, row["id"]),
+            (attempts, cooldown_until_new, row["id"]),
         )
         db.commit()
         db.close()
