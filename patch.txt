@@ -1,293 +1,55 @@
-diff --git a/routes/webauthn_routes.py b/routes/webauthn_routes.py
-index e2587499bad39e8f40805f9ca5e8ea30429ecd02..de1977ff5169c4dbf29f72167d6a36520360ba67 100644
---- a/routes/webauthn_routes.py
-+++ b/routes/webauthn_routes.py
-@@ -1,35 +1,35 @@
- from __future__ import annotations
+diff --git a/templates/login.html b/templates/login.html
+index 7fb3bfa0117c8de209d06f0c364c03e78bb750ac..cf15e99d8194e6bfded6657b4facfe2c5d0e2fc1 100644
+--- a/templates/login.html
++++ b/templates/login.html
+@@ -67,49 +67,49 @@
+       if (!username) {
+         showPasskeyError("ユーザー名を入力してください。");
+         return;
+       }
  
- import base64
- import json
- import os
- import time
- from datetime import datetime, timedelta
+       try {
+         const optionsRes = await fetch("/webauthn/auth/options", {
+           method: "POST",
+           headers: { "Content-Type": "application/json" },
+           body: JSON.stringify({ username }),
+         });
+         const optionsData = await optionsRes.json();
+         if (!optionsRes.ok) {
+           showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
+           return;
+         }
  
- import requests
--from flask import Blueprint, jsonify, request, session
-+from flask import Blueprint, current_app, jsonify, request, session
- from webauthn import verify_authentication_response, verify_registration_response
- from webauthn.helpers.structs import (
-     AuthenticationCredential,
-     RegistrationCredential,
-     UserVerificationRequirement,
- )
+         const credential = await navigator.credentials.get({
+           publicKey: PasskeyUtils.decodeRequestOptions(optionsData),
+         });
+         const verifyRes = await fetch("/webauthn/auth/verify", {
+           method: "POST",
+           headers: { "Content-Type": "application/json" },
+           body: JSON.stringify({
+             username,
+-            credential: PasskeyUtils.serializeCredential(credential),
++            credential: PasskeyUtils.serializeAuthenticationCredential(credential),
+           }),
+         });
+         const verifyData = await verifyRes.json();
+         if (!verifyRes.ok) {
+           showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
+           return;
+         }
+         window.location.href = verifyData.redirect || "/upload";
+       } catch (err) {
+         if (err && err.name === "NotAllowedError") {
+           showPasskeyError("キャンセルされました。");
+         } else {
+           showPasskeyError("パスキーの利用中にエラーが発生しました。");
+         }
+       }
+     };
  
- from app.utils.db import get_db
- from app.utils.logs import write_login_log
- 
- webauthn_bp = Blueprint("webauthn", __name__, url_prefix="/webauthn")
- 
- RP_ID = "mfu.iori0624.jp"
- ORIGIN = "https://mfu.iori0624.jp"
- RP_NAME = "MFU"
- CHALLENGE_TTL_SECONDS = 120
- LABEL_MAX_LENGTH = 128
- 
- 
- def _b64url_encode(data: bytes) -> str:
-     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
- 
- 
- def _b64url_decode(data: str) -> bytes:
-     padding = "=" * (-len(data) % 4)
-@@ -64,133 +64,201 @@ def _load_challenge(kind: str, username: str) -> str | None:
- 
- 
- def _clear_challenge(kind: str) -> None:
-     session.pop(f"webauthn_{kind}_challenge", None)
-     session.pop(f"webauthn_{kind}_username", None)
-     session.pop(f"webauthn_{kind}_expires_at", None)
- 
- 
- def _fetch_user(username: str) -> dict | None:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     cur.execute("SELECT username, nickname, webhook_url FROM users WHERE username = %s", (username,))
-     row = cur.fetchone()
-     db.close()
-     return row
- 
- 
- def _derive_label(explicit_label: str | None) -> str:
-     label = (explicit_label or "").strip()
-     if not label:
-         ua = (request.user_agent.string or "").strip()
-         label = ua[:LABEL_MAX_LENGTH]
-     return label[:LABEL_MAX_LENGTH]
- 
- 
--@webauthn_bp.post("/register/options")
--def register_options():
--    payload = request.get_json(silent=True) or {}
--    username = (payload.get("username") or "").strip()
--    if not username:
--        return jsonify(error="ユーザー名が必要です"), 400
-+def _collect_request_metadata() -> dict:
-+    headers_to_log = [
-+        "Host",
-+        "Origin",
-+        "Referer",
-+        "User-Agent",
-+        "Content-Type",
-+        "Content-Length",
-+        "X-Forwarded-Proto",
-+        "X-Forwarded-For",
-+    ]
-+    headers = {
-+        header: request.headers.get(header)
-+        for header in headers_to_log
-+        if request.headers.get(header) is not None
-+    }
-+    json_data = None
-+    if request.is_json:
-+        try:
-+            json_data = request.get_json(silent=True)
-+        except Exception:
-+            json_data = None
-+    return {
-+        "method": request.method,
-+        "path": request.path,
-+        "endpoint": request.endpoint,
-+        "scheme": request.scheme,
-+        "host": request.host,
-+        "remote_addr": request.remote_addr,
-+        "headers": headers,
-+        "cookie_present": "Cookie" in request.headers,
-+        "is_json": request.is_json,
-+        "json_keys": sorted(json_data.keys()) if isinstance(json_data, dict) else [],
-+        "form_keys": sorted(request.form.keys()),
-+        "args_keys": sorted(request.args.keys()),
-+    }
- 
--    user = _fetch_user(username)
--    if not user:
--        return jsonify(error="ユーザーが見つかりません"), 404
- 
--    db = get_db()
--    cur = db.cursor(dictionary=True)
--    cur.execute(
--        "SELECT credential_id, transports FROM user_passkeys WHERE username = %s", (username,)
--    )
--    rows = cur.fetchall()
--    db.close()
-+def _log_webauthn_request(logger, reason: str | None = None, *, exception: bool = False) -> None:
-+    data = _collect_request_metadata()
-+    if reason:
-+        data["reason"] = reason
-+    if exception:
-+        logger.exception("webauthn_request %s", data)
-+    else:
-+        logger.info("webauthn_request %s", data)
- 
--    exclude_credentials = []
--    for row in rows:
--        if row.get("credential_id"):
--            descriptor = {"type": "public-key", "id": row["credential_id"]}
--            transports = row.get("transports")
--            if transports:
--                try:
--                    descriptor["transports"] = json.loads(transports)
--                except Exception:
--                    pass
--            exclude_credentials.append(descriptor)
- 
--    challenge = _b64url_encode(os.urandom(32))
--    options = {
--        "rp": {"name": RP_NAME, "id": RP_ID},
--        "user": {
--            "id": _b64url_encode(username.encode("utf-8")),
--            "name": username,
--            "displayName": user.get("nickname") or username,
--        },
--        "challenge": challenge,
--        "timeout": CHALLENGE_TTL_SECONDS * 1000,
--        "attestation": "none",
--        "authenticatorSelection": {"userVerification": _user_verification_string(username)},
--        "pubKeyCredParams": [
--            {"type": "public-key", "alg": -7},
--            {"type": "public-key", "alg": -257},
--        ],
--    }
--    if exclude_credentials:
--        options["excludeCredentials"] = exclude_credentials
-+@webauthn_bp.post("/register/options")
-+def register_options():
-+    logger = current_app.logger
-+    _log_webauthn_request(logger)
-+    try:
-+        payload = request.get_json(silent=True) or {}
-+        username = (payload.get("username") or "").strip()
-+        if not username:
-+            return jsonify(error="ユーザー名が必要です"), 400
- 
--    _store_challenge("register", username, challenge)
--    return jsonify(options)
-+        user = _fetch_user(username)
-+        if not user:
-+            return jsonify(error="ユーザーが見つかりません"), 404
-+
-+        db = get_db()
-+        cur = db.cursor(dictionary=True)
-+        cur.execute(
-+            "SELECT credential_id, transports FROM user_passkeys WHERE username = %s",
-+            (username,),
-+        )
-+        rows = cur.fetchall()
-+        db.close()
-+
-+        exclude_credentials = []
-+        for row in rows:
-+            if row.get("credential_id"):
-+                descriptor = {"type": "public-key", "id": row["credential_id"]}
-+                transports = row.get("transports")
-+                if transports:
-+                    try:
-+                        descriptor["transports"] = json.loads(transports)
-+                    except Exception:
-+                        pass
-+                exclude_credentials.append(descriptor)
-+
-+        challenge = _b64url_encode(os.urandom(32))
-+        options = {
-+            "rp": {"name": RP_NAME, "id": RP_ID},
-+            "user": {
-+                "id": _b64url_encode(username.encode("utf-8")),
-+                "name": username,
-+                "displayName": user.get("nickname") or username,
-+            },
-+            "challenge": challenge,
-+            "timeout": CHALLENGE_TTL_SECONDS * 1000,
-+            "attestation": "none",
-+            "authenticatorSelection": {"userVerification": _user_verification_string(username)},
-+            "pubKeyCredParams": [
-+                {"type": "public-key", "alg": -7},
-+                {"type": "public-key", "alg": -257},
-+            ],
-+        }
-+        if exclude_credentials:
-+            options["excludeCredentials"] = exclude_credentials
-+
-+        _store_challenge("register", username, challenge)
-+        return jsonify(options)
-+    except Exception:
-+        _log_webauthn_request(logger, reason="exception", exception=True)
-+        return jsonify(error="パスキー登録オプションの生成に失敗しました"), 500
- 
- 
- @webauthn_bp.post("/register/verify")
- def register_verify():
-+    logger = current_app.logger
-+    _log_webauthn_request(logger)
-+    if not request.is_json:
-+        _log_webauthn_request(logger, reason="not_json")
-+        return jsonify(error="リクエストが不正です"), 400
-+
-     payload = request.get_json(silent=True) or {}
-     username = (payload.get("username") or "").strip()
-     credential = payload.get("credential")
-     if not username or not credential:
-+        _log_webauthn_request(logger, reason="missing_fields")
-         return jsonify(error="リクエストが不正です"), 400
- 
-     challenge = _load_challenge("register", username)
-     if not challenge:
-+        _log_webauthn_request(logger, reason="challenge_missing")
-         return jsonify(error="登録チャレンジの有効期限が切れました"), 400
- 
-     user = _fetch_user(username)
-     if not user:
-         return jsonify(error="ユーザーが見つかりません"), 404
- 
-     try:
-+        if hasattr(RegistrationCredential, "model_validate"):
-+            parsed_credential = RegistrationCredential.model_validate(credential)
-+        else:
-+            parsed_credential = RegistrationCredential.parse_obj(credential)
-         verification = verify_registration_response(
--            credential=RegistrationCredential.parse_raw(json.dumps(credential)),
-+            credential=parsed_credential,
-             expected_challenge=_b64url_decode(challenge),
-             expected_origin=ORIGIN,
-             expected_rp_id=RP_ID,
-             require_user_verification=(
-                 _user_verification(username) == UserVerificationRequirement.REQUIRED
-             ),
-         )
-     except Exception:
--        return jsonify(error="パスキー登録に失敗しました"), 400
-+        _log_webauthn_request(logger, reason="exception", exception=True)
-+        return jsonify(error="パスキー登録に失敗しました", reason="exception"), 500
-     finally:
-         _clear_challenge("register")
- 
-     credential_id = _b64url_encode(verification.credential_id)
-     public_key = _b64url_encode(verification.credential_public_key)
-     sign_count = int(verification.sign_count or 0)
-     aaguid = str(getattr(verification, "aaguid", "") or "") or None
-     uv = 1 if getattr(verification, "user_verified", False) else 0
-     label = _derive_label(payload.get("label"))
- 
-     transports = None
-     if isinstance(credential, dict):
-         transports = (
-             credential.get("response", {}).get("transports") or credential.get("transports")
-         )
-     transports_json = json.dumps(transports) if transports else None
- 
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             INSERT INTO user_passkeys
-                 (username, label, credential_id, public_key, sign_count, transports, aaguid, uv)
-             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+     if (passkeyButton) {
+       passkeyButton.addEventListener("click", handlePasskeyLogin);
+     }
+   </script>
+ </body>
+ </html>

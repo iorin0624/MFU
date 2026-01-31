@@ -89,7 +89,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             username,
-            credential: PasskeyUtils.serializeCredential(credential),
+            credential: PasskeyUtils.serializeAuthenticationCredential(credential),
           }),
         });
         const verifyData = await verifyRes.json();

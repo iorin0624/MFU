@@ -46,7 +46,17 @@
     return decoded;
   };
 
-  const serializeCredential = (credential) => ({
+  const serializeRegistrationCredential = (credential) => ({
+    id: credential.id,
+    rawId: arrayBufferToBase64Url(credential.rawId),
+    type: credential.type,
+    response: {
+      clientDataJSON: arrayBufferToBase64Url(credential.response.clientDataJSON),
+      attestationObject: arrayBufferToBase64Url(credential.response.attestationObject),
+    },
+  });
+
+  const serializeAuthenticationCredential = (credential) => ({
     id: credential.id,
     rawId: arrayBufferToBase64Url(credential.rawId),
     type: credential.type,
@@ -65,6 +75,7 @@
     arrayBufferToBase64Url,
     decodeRequestOptions,
     decodeCreationOptions,
-    serializeCredential,
+    serializeRegistrationCredential,
+    serializeAuthenticationCredential,
   };
 })();
