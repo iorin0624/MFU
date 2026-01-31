@@ -47,3 +47,49 @@ def manage_account():
     db.close()
 
     return render_template("account.html", user=user, username=username)
+
+
+@account_bp.route("/account/passkeys", methods=["GET"])
+def manage_passkeys():
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute(
+        """
+        SELECT id, label, created_at, last_used_at
+        FROM user_passkeys
+        WHERE username = %s
+        ORDER BY created_at DESC
+        """,
+        (username,),
+    )
+    passkeys = cursor.fetchall()
+    db.close()
+
+    return render_template("account_passkeys.html", passkeys=passkeys, username=username)
+
+
+@account_bp.post("/account/passkeys/<int:passkey_id>/delete")
+def delete_passkey(passkey_id: int):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "DELETE FROM user_passkeys WHERE id = %s AND username = %s",
+        (passkey_id, username),
+    )
+    if cursor.rowcount == 0:
+        db.close()
+        flash("削除に失敗しました。", "danger")
+        return redirect(url_for("account.manage_passkeys"))
+
+    db.commit()
+    db.close()
+    flash("パスキーを削除しました。", "success")
+    return redirect(url_for("account.manage_passkeys"))

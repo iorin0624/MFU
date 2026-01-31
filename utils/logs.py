@@ -771,14 +771,15 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
 # ==========================================================
 # ログイン系（互換）
 # ==========================================================
-def write_login_log(username: str, ip: str) -> None:
+def write_login_log(username: str, ip: str, tag: str = "LOGIN") -> None:
     """ログインイベントの簡易ログ（従来互換）。"""
     db = get_db()
     try:
+        tag = (tag or "LOGIN").strip()
         cur = db.cursor()
         cur.execute(
             "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
-            (ip or "-", f"[LOGIN] ユーザー: {username} がログインしました"),
+            (ip or "-", f"[{tag}] ユーザー: {username} がログインしました"),
         )
         db.commit()
     finally:

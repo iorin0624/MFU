@@ -1,108 +1,66 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index d47e3c75d6388465a4f2812a16da2374a40a8a5f..65b8c613350e19a1e24bcafc90cf5dfbaa648064 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -30,50 +30,51 @@ import requests
- from itsdangerous import URLSafeSerializer, BadSignature
- from weasyprint import HTML
- 
- # =========================
- # Flask / アプリ内部
- # =========================
- from flask import (
-     request, session, redirect, url_for, render_template,
-     abort, flash, current_app, send_from_directory, make_response
- )
- from werkzeug.utils import secure_filename
- from werkzeug.exceptions import HTTPException
- 
- # Blueprint は必ず先に import
- from . import bp, oauth
- 
- from app.utils.db import get_db
- from app.utils.mail import send_mail
- from .utils import (
-     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
-     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
-     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
-     _event_by_uuid_str, _membership_status,
-     avatar_url_for,  # ← 追加
- )
-+from .admin import _recalc_event_fee_if_auto
- #from .auto_payment import load_default_card_summary
+diff --git a/utils/logs.py b/utils/logs.py
+index b9b29679877eaf391c9de9256bfe465ca63182b6..6faaed7fee723df9cddd7e38f296c5a54c065988 100644
+--- a/utils/logs.py
++++ b/utils/logs.py
+@@ -749,58 +749,59 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
+                     f":rotating_light: 404 burst detected (non-JP) [{trigger}]\n"
+                     f"・IPアドレス: {ip}\n"
+                     f"・Path: {path}\n"
+                     f"・国: {country_disp}\n"
+                     f"・プロバイダ: {provider}\n"
+                     f"・UA: {ua}"
+                 )
+                 _dbg(
+                     f"discord-post trigger={trigger} ip={ip} "
+                     f"path={path} country={country_disp} provider={provider}"
+                 )
+                 _send_discord(msg)
+             else:
+                 _dbg(
+                     f"notify-deferred ip={ip} path={path} "
+                     f"cooldowns=({int(cooldown_until_path)},{int(cooldown_until_ip)})"
+                 )
+     except Exception as e:
+         _dbg(f"log_access: burst notify failed err={e!r}")
+         current_app.logger.warning("log_access: burst notify failed", exc_info=True)
  
  
- # ==== アバター保存設定 ====
- AVATAR_ROOT = Path("/mnt/mfu/avatars")
- ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
- AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
- 
- 
- JST = timezone(timedelta(hours=9))
- 
- # =========================
- # 便利ヘルパ（このファイル内限定）
- # =========================
- def _normalize_email(s: str) -> str | None:
-     s = (s or "").strip()
-     if not s or "@" not in s or len(s) > 255:
-         return None
-     return s
- 
- 
- def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24, redirect_url: str | None = None) -> str:
-     """
-     検証用トークンを発行して DB に保存し、URL に載せるプレーントークンを返す。
-     DB 側には SHA256 ハッシュで保存。
-@@ -1857,50 +1858,51 @@ def join_event(event_uuid: str):
-             costume = None  # サーバ側でも空に
- 
-         # ステータス決定（自動承認 or 手動承認待ち）
-         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
-         new_status = "approved" if (auto_hit or already_approved) else "pending"
-         should_notify = not (already_approved and auto_hit_by_lecture)
- 
-         # upsert
-         if m:
-             cur.execute("""
-                 UPDATE mfu_event_member
-                    SET status=%s,
-                        participant_role=%s,
-                        costume_label=%s,
-                        joined_at=COALESCE(joined_at, NOW())
-                  WHERE id=%s AND event_id=%s
-                  LIMIT 1
-             """, (new_status, role, costume, m["id"], ev["id"]))
-         else:
-             cur.execute("""
-                 INSERT INTO mfu_event_member
-                   (event_id, user_id, status, participant_role, costume_label, joined_at)
-                 VALUES (%s, %s, %s, %s, %s, NOW())
-             """, (ev["id"], ext_uid, new_status, role, costume))
+ # ==========================================================
+ # ログイン系（互換）
+ # ==========================================================
+-def write_login_log(username: str, ip: str) -> None:
++def write_login_log(username: str, ip: str, tag: str = "LOGIN") -> None:
+     """ログインイベントの簡易ログ（従来互換）。"""
+     db = get_db()
+     try:
++        tag = (tag or "LOGIN").strip()
+         cur = db.cursor()
+         cur.execute(
+             "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+-            (ip or "-", f"[LOGIN] ユーザー: {username} がログインしました"),
++            (ip or "-", f"[{tag}] ユーザー: {username} がログインしました"),
+         )
          db.commit()
-+        _recalc_event_fee_if_auto(ev["id"])
-         if auto_hit_by_lecture and new_status == "approved" and not already_approved:
-             current_app.logger.info(
-                 "join: lecture auto-approved member (event_id=%s user_id=%s)",
-                 ev["id"],
-                 ext_uid,
-             )
- 
-         # ===== 管理者メール収集（ACLメンバー） =====
+     finally:
          try:
-             cur.execute("""
-               SELECT u.email
-                 FROM mfu_event_admin_acl a
-                 JOIN users u ON u.username=a.username
-                WHERE a.event_id=%s
-                  AND COALESCE(a.role,'viewer') IN ('viewer','manager')
-                  AND u.email IS NOT NULL
-             """, (ev["id"],))
-             admin_emails = [r["email"] for r in (cur.fetchall() or []) if r.get("email")]
+             db.close()
          except Exception:
-             admin_emails = []
-         finally:
-             try:
-                 cur.close(); db.close()
-             except Exception:
-                 pass
+             pass
+ 
+ 
+ def write_line_login_log(nickname: str, ip: str, user_id: int | None = None) -> None:
+     """LINEログイン簡易ログ（従来互換）。"""
+     nick = (nickname or "未設定").strip()
+     if user_id is not None:
+         log_text = f"[LINE_LOGIN] ユーザー: #{int(user_id)} {nick} がログインしました"
+     else:
+         log_text = f"[LINE_LOGIN] ユーザー: {nick} がログインしました"
+ 
+     db = get_db()
+     try:
+         cur = db.cursor()
+         cur.execute(
+             "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+             (ip or "-", log_text),
+         )
+         db.commit()

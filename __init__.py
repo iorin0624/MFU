@@ -143,12 +143,12 @@ def is_maintenance_mode():
     db.close()
     return row and row["value"] == "on"
 
-def write_login_log(username, ip):
+def write_login_log(username, ip, tag="LOGIN"):
     db = get_db()
     cursor = db.cursor()
     cursor.execute(
         "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
-        (ip, f"[LOGIN] ユーザー: {username} がログインしました"),
+        (ip, f"[{tag}] ユーザー: {username} がログインしました"),
     )
     db.commit()
     db.close()
@@ -2293,6 +2293,9 @@ app.register_blueprint(zip_api)
 
 from .utils.service_logs import bp_service_logs
 app.register_blueprint(bp_service_logs)
+
+from app.routes.webauthn_routes import webauthn_bp
+app.register_blueprint(webauthn_bp)
 
 from app.tickets import tickets_bp
 app.register_blueprint(tickets_bp)
