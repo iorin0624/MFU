@@ -29,7 +29,6 @@ from pathlib import Path
 # =====================================
 import bcrypt
 import psutil
-import pyotp
 import requests
 from dateutil import parser as dateutil_parser
 from dotenv import load_dotenv
@@ -55,7 +54,7 @@ from app.utils.logs import log_request_raw
 from app.utils.message import generate_message
 from app.utils.storage_info import get_storage_info
 from app.utils.thumbs import enqueue_thumb_job
-from app.utils.totp_util import get_user_otp_secret
+from app.utils.totp_util import get_totp_status
 from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
@@ -392,10 +391,22 @@ def index():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    def _preauth_active():
+        preauth_user = session.get("preauth_user")
+        expires_at = session.get("preauth_expires_at")
+        if not preauth_user or not expires_at:
+            return None
+        if datetime.now() > expires_at:
+            session.pop("preauth_user", None)
+            session.pop("preauth_expires_at", None)
+            session.pop("preauth_totp_attempts", None)
+            session.pop("preauth_totp_locked_until", None)
+            return None
+        return preauth_user
+
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
-        otp_code = request.form.get("otp_code")
         client_ip = ip_address(request.remote_addr)
 
         # ローカル判定
@@ -409,86 +420,57 @@ def login():
         db = get_db()
         cursor = db.cursor(dictionary=True)
 
-        if "step" not in session:
-            # 初回ログイン試行
-            session.clear()
-            cursor.execute(
-                "SELECT password_hash, nickname, webhook_url FROM users WHERE username = %s",
-                (username,),
-            )
-            row = cursor.fetchone()
-            db.close()
+        session.clear()
+        cursor.execute(
+            "SELECT password_hash, nickname, webhook_url FROM users WHERE username = %s",
+            (username,),
+        )
+        row = cursor.fetchone()
+        db.close()
 
-            if row and bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
-                session["username"] = username
-                session["nickname"] = row["nickname"]
-                otp_secret = get_user_otp_secret(username)
+        if row and bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+            totp_status = get_totp_status(username)
+            if totp_status.get("enabled") and totp_status.get("has_secret") and not is_local:
+                session["preauth_user"] = username
+                session["preauth_expires_at"] = datetime.now() + timedelta(minutes=5)
+                session.pop("preauth_totp_attempts", None)
+                session.pop("preauth_totp_locked_until", None)
+                return render_template(
+                    "login.html",
+                    preauth_active=True,
+                    preauth_username=username,
+                    info="アプリOTPを入力してください。",
+                )
 
-                if otp_secret and not is_local:
-                    session["step"] = "otp_check"
-                    return render_template("login.html", otp_required=True, username=username)
-                else:
-                    session["user"] = username
-                    session["login_expires_at"] = datetime.now() + timedelta(hours=24)
-                    session["login_extension_count"] = 0
-                    write_login_log(username, request.remote_addr)
+            session["user"] = username
+            session["nickname"] = row["nickname"]
+            session["login_expires_at"] = datetime.now() + timedelta(hours=24)
+            session["login_extension_count"] = 0
+            write_login_log(username, request.remote_addr)
 
-                    if username == "admin" and row.get("webhook_url"):
-                        try:
-                            login_time = datetime.now().strftime("%Y/%m/%d %H:%M")
-                            login_ip = request.remote_addr
-                            message = f"👤 **管理者ログイン**\n📅 ログイン日時: {login_time}\n🌐 ログインIP: {login_ip}"
-                            requests.post(row["webhook_url"], json={"content": message})
-                        except Exception as e:
-                            print(f"Discord通知エラー: {e}")
-
-                    return redirect(url_for("upload"))
-
-            return render_template("login.html", error="ログイン失敗")
-
-        else:
-            # OTP 確認
-            username = session.get("username")
-            otp_secret = get_user_otp_secret(username)
-
-            if otp_secret:
-                totp = pyotp.TOTP(otp_secret)
-                if totp.verify(otp_code):
-                    session.pop("step", None)
-                    session["user"] = username
-                    session["login_expires_at"] = datetime.now() + timedelta(hours=24)
-                    session["login_extension_count"] = 0
-
-                    db = get_db()
-                    cursor = db.cursor(dictionary=True)
-                    cursor.execute(
-                        "SELECT webhook_url, nickname FROM users WHERE username = %s", (username,)
+            if username == "admin" and row.get("webhook_url"):
+                try:
+                    login_time = datetime.now().strftime("%Y/%m/%d %H:%M")
+                    login_ip = request.remote_addr
+                    message = (
+                        "👤 **管理者ログイン**\n"
+                        f"📅 ログイン日時: {login_time}\n"
+                        f"🌐 ログインIP: {login_ip}"
                     )
-                    row = cursor.fetchone()
-                    db.close()
+                    requests.post(row["webhook_url"], json={"content": message})
+                except Exception:
+                    pass
 
-                    session["nickname"] = row["nickname"]
-                    write_login_log(username, request.remote_addr)
+            return redirect(url_for("upload"))
 
-                    if username == "admin" and row and row.get("webhook_url"):
-                        try:
-                            login_time = datetime.now().strftime("%Y/%m/%d %H:%M")
-                            login_ip = request.remote_addr
-                            message = f"👤 **管理者ログイン**\n📅 ログイン日時: {login_time}\n🌐 ログインIP: {login_ip}"
-                            requests.post(row["webhook_url"], json={"content": message})
-                        except Exception as e:
-                            print(f"Discord通知エラー: {e}")
+        return render_template("login.html", error="ログイン失敗", username=username)
 
-                    return redirect(url_for("upload"))
-                else:
-                    return render_template(
-                        "login.html", error="OTP認証失敗", otp_required=True, username=username
-                    )
-            else:
-                session.clear()
-                return redirect(url_for("login"))
-
-    return render_template("login.html")
+    preauth_user = _preauth_active()
+    return render_template(
+        "login.html",
+        preauth_active=bool(preauth_user),
+        preauth_username=preauth_user or "",
+    )
 
 @app.route("/logout")
 def logout():
@@ -2284,6 +2266,9 @@ app.register_blueprint(layer_reply_bp)
 
 from app.otp.routes import otp_bp
 app.register_blueprint(otp_bp)
+
+from app.routes.mfa_routes import mfa_bp
+app.register_blueprint(mfa_bp)
 
 from app.routes.timer_routes import timer_bp
 app.register_blueprint(timer_bp)
