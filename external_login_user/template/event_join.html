@@ -46,37 +46,55 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token or session.csrf_token or '' }}">
 
       <div class="col-12">
-        <h2 class="h6 mb-2">参加される役割の入力をお願い致します</h2>
-        <p class="mb-2 small text-muted">衣装またはその他の方は、下の入力欄にメモ（衣装名など）の入力をお願い致します。</p>
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-2">参加される役割の入力をお願い致します</h2>
+            <p class="mb-2 small text-muted">衣装またはその他の方は、下の入力欄にメモ（衣装名など）の入力をお願い致します。</p>
 
-        <!-- 役割（ボタン式） -->
-        <div class="btn-group mb-2" role="group" aria-label="participant role">
-          <input type="radio" class="btn-check" name="participant_role" id="role_camera" value="camera"
-                 {% if default_role == 'camera' %}checked{% endif %} autocomplete="off">
-          <label class="btn btn-outline-primary" for="role_camera">カメラマン</label>
+            <!-- 役割（ボタン式） -->
+            <div class="btn-group mb-2" role="group" aria-label="participant role">
+              <input type="radio" class="btn-check" name="participant_role" id="role_camera" value="camera"
+                     {% if default_role == 'camera' %}checked{% endif %} autocomplete="off">
+              <label class="btn btn-outline-primary" for="role_camera">カメラマン</label>
 
-          <input type="radio" class="btn-check" name="participant_role" id="role_assistant" value="assistant"
-                 {% if default_role == 'assistant' %}checked{% endif %} autocomplete="off">
-          <label class="btn btn-outline-primary" for="role_assistant">アシスタント</label>
+              <input type="radio" class="btn-check" name="participant_role" id="role_assistant" value="assistant"
+                     {% if default_role == 'assistant' %}checked{% endif %} autocomplete="off">
+              <label class="btn btn-outline-primary" for="role_assistant">アシスタント</label>
 
-          <input type="radio" class="btn-check" name="participant_role" id="role_cosplayer" value="cosplayer"
-                 {% if default_role == 'cosplayer' %}checked{% endif %} autocomplete="off">
-          <label class="btn btn-outline-primary" for="role_cosplayer">衣装</label>
+              <input type="radio" class="btn-check" name="participant_role" id="role_cosplayer" value="cosplayer"
+                     {% if default_role == 'cosplayer' %}checked{% endif %} autocomplete="off">
+              <label class="btn btn-outline-primary" for="role_cosplayer">衣装</label>
 
-          <!-- ★ 追加：その他 -->
-          <input type="radio" class="btn-check" name="participant_role" id="role_other" value="other"
-                 {% if default_role == 'other' %}checked{% endif %} autocomplete="off">
-          <label class="btn btn-outline-primary" for="role_other">その他</label>
+              <!-- ★ 追加：その他 -->
+              <input type="radio" class="btn-check" name="participant_role" id="role_other" value="other"
+                     {% if default_role == 'other' %}checked{% endif %} autocomplete="off">
+              <label class="btn btn-outline-primary" for="role_other">その他</label>
+            </div>
+            <div class="form-text mb-3">※カメラマン／アシスタントのときは、下の入力欄は自動で無効化（サーバー側でも空にします）。</div>
+
+            <label class="form-label" for="costume_label">【衣装／その他のメモ】</label>
+            <input type="text" class="form-control" id="costume_label" name="costume_label"
+                   maxlength="120" value="{{ form_costume or '' }}" placeholder="例：アナ（雪山）／受付補助／進行補助 など">
+            <div class="form-text" id="costume_help">
+              「衣装」または「その他」を選択した方は入力してください（最大120文字）。
+            </div>
+          </div>
         </div>
-        <div class="form-text">※カメラマン／アシスタントのときは、下の入力欄は自動で無効化（サーバー側でも空にします）。</div>
       </div>
 
       <div class="col-12">
-        <label class="form-label" for="costume_label">【衣装／その他のメモ】</label>
-        <input type="text" class="form-control" id="costume_label" name="costume_label"
-               maxlength="120" value="{{ form_costume or '' }}" placeholder="例：アナ（雪山）／受付補助／進行補助 など">
-        <div class="form-text" id="costume_help">
-          「衣装」または「その他」を選択した方は入力してください（最大120文字）。
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-3">加工回しの有無</h2>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="processCheck" name="process" value="1"
+                     {% if form_process %}checked{% endif %}>
+              <label class="form-check-label" for="processCheck">
+                加工回しが必要
+              </label>
+            </div>
+            <div class="form-text mt-2">チェックを入れると加工回し対象として記録されます。</div>
+          </div>
         </div>
       </div>
 
