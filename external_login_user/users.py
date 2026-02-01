@@ -1805,6 +1805,7 @@ def join_event(event_uuid: str):
         SELECT id, COALESCE(status,'pending') AS status,
                COALESCE(participant_role,'none') AS participant_role,
                costume_label,
+               COALESCE(process, 0) AS process,
                COALESCE(payment_status,'unpaid') AS payment_status,
                payment_row_id,
                COALESCE(require_payment,1) AS require_payment
@@ -1856,6 +1857,7 @@ def join_event(event_uuid: str):
         # ★ 「衣装／その他」のときだけ保持
         if role not in ("cosplayer", "other"):
             costume = None  # サーバ側でも空に
+        process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
 
         # ステータス決定（自動承認 or 手動承認待ち）
         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
@@ -1869,16 +1871,17 @@ def join_event(event_uuid: str):
                    SET status=%s,
                        participant_role=%s,
                        costume_label=%s,
+                       process=%s,
                        joined_at=COALESCE(joined_at, NOW())
                  WHERE id=%s AND event_id=%s
                  LIMIT 1
-            """, (new_status, role, costume, m["id"], ev["id"]))
+            """, (new_status, role, costume, process_flag, m["id"], ev["id"]))
         else:
             cur.execute("""
                 INSERT INTO mfu_event_member
-                  (event_id, user_id, status, participant_role, costume_label, joined_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
-            """, (ev["id"], ext_uid, new_status, role, costume))
+                  (event_id, user_id, status, participant_role, costume_label, process, joined_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            """, (ev["id"], ext_uid, new_status, role, costume, process_flag))
         db.commit()
         _recalc_event_fee_if_auto(ev["id"])
         if auto_hit_by_lecture and new_status == "approved" and not already_approved:
@@ -2003,6 +2006,7 @@ def join_event(event_uuid: str):
         status = None
     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
     form_costume = (m and (m.get("costume_label") or "")) or ""
+    form_process = bool(m and int(m.get("process") or 0) == 1)
 
     cur.close(); db.close()
     return render_template(
@@ -2011,6 +2015,7 @@ def join_event(event_uuid: str):
         status=status,
         form_role=form_role,
         form_costume=form_costume,
+        form_process=form_process,
         csrf_token=csrf_token,
     )
 
