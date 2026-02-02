@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import time
+import ipaddress
 from typing import Optional
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -135,6 +136,12 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
     if cached:
         return cached
 
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        is_ipv6 = ip_obj.version == 6
+    except ValueError:
+        is_ipv6 = False
+
     info = {
         "netname": "不明",
         "country": "不明",
@@ -173,11 +180,14 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
         if not info["source"]:
             info["source"] = "whois"
 
-    if info["netname"] == "不明":
+    if info["netname"] == "不明" and not is_ipv6:
         if info["org"]:
             info["netname"] = info["org"]
         elif info["asname"]:
             info["netname"] = info["asname"]
+
+    if is_ipv6:
+        info["display_name"] = info["netname"]
 
     is_failure = info["netname"] in ("不明", "")
     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
