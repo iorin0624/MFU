@@ -1,61 +1,126 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index c53754a8d768f14220371bd3fdc5eb424bcd7e7d..1257d78ac6ab71a5e7d5eaada1c45e9ee0c4f61c 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -2696,52 +2696,56 @@ def member_sns_clip(event_uuid: str):
-         return 4  # cosplayer / other / none など
+diff --git a/utils/whois_util.py b/utils/whois_util.py
+index 8b00d463517caa5a4b4f43878e0cd533db0eb3d9..2b68a66d953b5b987a7d86452d75fc79f03afe1f 100644
+--- a/utils/whois_util.py
++++ b/utils/whois_util.py
+@@ -1,31 +1,32 @@
+ # app/utils/whois_util.py
+ import subprocess
+ import os
+ import hashlib
+ import json
+ import time
++import ipaddress
+ from typing import Optional
+ from pathlib import Path
+ from urllib.request import urlopen, Request
+ from urllib.error import URLError, HTTPError
  
-     members_sorted = sorted(members, key=lambda m: (_sns_sort_group(m), m["nickname"]))
+ WHOIS_CACHE_DIR = "/mnt/mfu/whois_cache"
+ os.makedirs(WHOIS_CACHE_DIR, exist_ok=True)
  
-     # --- 表示用ラベル生成 ---
-     ZS = "　"  # 全角スペース
+ SUCCESS_TTL_SEC = 86400 * 7
+ FAIL_TTL_SEC = 3600
  
-     def _role_label(m: dict) -> str:
-         role = (m["participant_role"] or "none").strip()
-         is_host = m["is_host"]
-         is_subhost = m["is_subhost"]
-         costume = (m["costume_label"] or "").strip()
+ def _cache_path(ip: str) -> Path:
+     key = hashlib.md5(ip.encode()).hexdigest()
+     return Path(WHOIS_CACHE_DIR) / f"{key}.json"
  
-         # 結合パターン
-         if is_host and role == "camera":
-             return "主催＆カメラマン"
-         if is_host and role == "assistant":
-             return "主催＆アシスタント"
-         if is_subhost and role == "assistant":
-             return "副主催＆アシスタント"
-         if is_subhost and role == "camera":
-             return "副主催＆カメラマン"
+ def _load_cache(ip: str, *, force_refresh: bool) -> Optional[dict]:
+     if force_refresh:
+         return None
+     cache_file = _cache_path(ip)
+     if not cache_file.exists():
+         return None
+     try:
+         data = json.loads(cache_file.read_text())
+     except Exception:
+         return None
+@@ -113,78 +114,87 @@ def _extract_whois_info(text: str) -> dict:
+         lower = line.lower()
+         if lower.startswith("netname:"):
+             info["netname"] = line.split(":", 1)[1].strip()
+         elif lower.startswith("orgname:"):
+             info["org"] = info["org"] or line.split(":", 1)[1].strip()
+         elif lower.startswith("organization:"):
+             info["org"] = info["org"] or line.split(":", 1)[1].strip()
+         elif lower.startswith("owner:") and not info["org"]:
+             info["org"] = line.split(":", 1)[1].strip()
+         elif lower.startswith("descr:") and not info["org"]:
+             info["org"] = line.split(":", 1)[1].strip()
+         elif lower.startswith("country:"):
+             info["country"] = line.split(":", 1)[1].strip()
+         elif lower.startswith("as-name:") or lower.startswith("asname:"):
+             info["asname"] = line.split(":", 1)[1].strip()
+         elif lower.startswith("origin:") or lower.startswith("originas:"):
+             info["asname"] = info["asname"] or line.split(":", 1)[1].strip()
+     return info
  
-         # 単独役割
-         if is_host:
-+            if costume:
-+                return f"主催＆{costume}"
-             return "主催"
-         if is_subhost:
-+            if costume:
-+                return f"副主催＆{costume}"
-             return "副主催"
-         if role == "camera":
-             return "カメラマン"
-         if role == "assistant":
-             return "アシスタント"
+ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
+     """IPからnetnameとcountryを取得（キャッシュ付き）"""
+     cached = _load_cache(ip, force_refresh=force_refresh)
+     if cached:
+         return cached
  
-         # コス・その他 → 衣装名を先頭に
-         if costume:
-             return costume
++    try:
++        ip_obj = ipaddress.ip_address(ip)
++        is_ipv6 = ip_obj.version == 6
++    except ValueError:
++        is_ipv6 = False
++
+     info = {
+         "netname": "不明",
+         "country": "不明",
+         "org": "",
+         "asname": "",
+         "source": "",
+     }
  
-         # 何もなければとりあえず「衣装」
-         return "衣装"
+     rdap = _fetch_rdap(ip)
+     if rdap:
+         name, org, country = _extract_rdap_name(rdap)
+         if name:
+             info["netname"] = name
+         if org:
+             info["org"] = org
+         if country:
+             info["country"] = country
+         info["source"] = "rdap"
  
-     def _sns_handle(member: dict, platform: str) -> str:
-         """プラットフォームごとの @ID 選択
-         - Instagram用: instagram_id があればそれを使う（なければ空）
-         - X用: x_id があればそれを使う（なければ空）
-         """
-         ig = (member.get("instagram_id") or "").strip()
-         x_  = (member.get("x_id") or "").strip()
+     whois_text = ""
+     try:
+         whois_text = subprocess.check_output(["whois", ip], timeout=10).decode(errors="ignore")
+     except Exception:
+         whois_text = ""
  
-         if platform == "instagram":
-             handle = ig
-         else:  # "x"
-             handle = x_
+     if whois_text:
+         whois_info = _extract_whois_info(whois_text)
+         if info["netname"] == "不明" and whois_info["netname"]:
+             info["netname"] = whois_info["netname"]
+         if not info["org"] and whois_info["org"]:
+             info["org"] = whois_info["org"]
+         if not info["asname"] and whois_info["asname"]:
+             info["asname"] = whois_info["asname"]
+         if info["country"] == "不明" and whois_info["country"]:
+             info["country"] = whois_info["country"]
+         if not info["source"]:
+             info["source"] = "whois"
+ 
+-    if info["netname"] == "不明":
++    if info["netname"] == "不明" and not is_ipv6:
+         if info["org"]:
+             info["netname"] = info["org"]
+         elif info["asname"]:
+             info["netname"] = info["asname"]
+ 
++    if is_ipv6:
++        info["display_name"] = info["netname"]
++
+     is_failure = info["netname"] in ("不明", "")
+     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
+     return info
+ 
+ if __name__ == "__main__":
+     import sys
+     target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
+     force = "--refresh" in sys.argv
+     print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
