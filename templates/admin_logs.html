@@ -11,6 +11,17 @@
   {% set smtp_filter_param = filters.smtp_filter if filters.kind == 'SMTP' and filters.smtp_filter != 'ALL' else None %}
   {% set smtp_filter_value = filters.smtp_filter if filters.kind == 'SMTP' else 'ALL' %}
   {% set smtp_tag_param = 1 if filters.smtp_tag else None %}
+  {% set search_keyword_param = filters.search_keyword or None %}
+  {% set search_mode_param = filters.search_mode if filters.search_keyword else None %}
+  {% set search_ip_param = filters.search_ip or None %}
+  {% set search_status_param = filters.search_status or None %}
+  {% set search_method_param = filters.search_method or None %}
+  {% set search_path_param = filters.search_path or None %}
+  {% set search_endpoint_param = filters.search_endpoint or None %}
+  {% set search_user_param = filters.search_user or None %}
+  {% set search_ua_param = filters.search_ua or None %}
+  {% set search_date_from_param = filters.search_date_from or None %}
+  {% set search_date_to_param = filters.search_date_to or None %}
 
   <!-- サーバー側フィルタ操作 -->
   <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
@@ -23,6 +34,17 @@
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
                           smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}" class="btn btn-sm btn-success">🔹今日</a>
       <a href="{{ url_for('admin_logs',
                           date=yesterday,
@@ -32,6 +54,17 @@
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
                           smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}" class="btn btn-sm btn-warning">🔸昨日</a>
     </div>
 
@@ -44,6 +77,17 @@
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">[LOGIN] のみ</a>
       <a class="btn btn-sm {{ 'btn-success' if filters.kind=='LINE_LOGIN' else 'btn-outline-success' }}"
          href="{{ url_for('admin_logs',
@@ -53,17 +97,18 @@
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">[LINE_LOGIN] のみ</a>
-      <a class="btn btn-sm {{ 'btn-info' if filters.kind=='SMTP' else 'btn-outline-info' }}"
-         href="{{ url_for('admin_logs',
-                          date=selected_date or None,
-                          kind='SMTP',
-                          exclude_local=1 if filters.exclude_local else None,
-                          nonjp_only=1 if filters.nonjp_only else None,
-                          exclude_suc=1 if filters.exclude_suc else None,
-                          smtp_filter=smtp_filter_param,
-                          smtp_tag=smtp_tag_param,
-                          limit=filters.limit) }}">[SMTP] のみ</a>
       <a class="btn btn-sm {{ 'btn-info text-dark' if filters.smtp_tag else 'btn-outline-info' }}"
          href="{{ url_for('admin_logs',
                           date=selected_date or None,
@@ -72,6 +117,17 @@
                           nonjp_only=1 if filters.nonjp_only else None,
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_tag=1,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">[SMTP]（全文）</a>
       <a class="btn btn-sm {{ 'btn-outline-secondary' if filters.kind else 'btn-secondary' }}"
          href="{{ url_for('admin_logs',
@@ -81,6 +137,17 @@
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
                           smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">ALL</a>
     </div>
 
@@ -96,6 +163,17 @@
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
                           smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">ローカル除外</a>
 
       <a class="btn btn-sm {{ 'btn-danger' if filters.nonjp_only else 'btn-outline-danger' }}"
@@ -108,6 +186,17 @@
                           exclude_suc=1 if filters.exclude_suc else None,
                           smtp_filter=smtp_filter_param,
                           smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">JP以外のみ</a>
 
       <a class="btn btn-sm {{ 'btn-info text-dark' if filters.exclude_suc else 'btn-outline-info' }}"
@@ -120,6 +209,17 @@
                           exclude_suc=None if filters.exclude_suc else 1,
                           smtp_filter=smtp_filter_param,
                           smtp_tag=smtp_tag_param,
+                          search_keyword=search_keyword_param,
+                          search_mode=search_mode_param,
+                          search_ip=search_ip_param,
+                          search_status=search_status_param,
+                          search_method=search_method_param,
+                          search_path=search_path_param,
+                          search_endpoint=search_endpoint_param,
+                          search_user=search_user_param,
+                          search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                           limit=filters.limit) }}">/suc 除外</a>
     </div>
 
@@ -132,6 +232,17 @@
       {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
       {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
       {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+      {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+      {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+      {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+      {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+      {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+      {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+      {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+      {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+      {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+        {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+        {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
       <label class="small text-muted">表示上限</label>
       <select class="form-select form-select-sm" name="limit" onchange="this.form.submit()">
         {% for n in [100,300,500,1000] %}
@@ -148,6 +259,17 @@
         {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
         {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
         <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+        {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+        {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+        {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+        {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+        {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+        {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+        {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+        {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+    {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+    {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
         <label class="small text-muted">SMTP詳細</label>
         <select class="form-select form-select-sm" name="smtp_filter" onchange="this.form.submit()">
           <option value="ALL" {{ 'selected' if smtp_filter_value=='ALL' else '' }}>ALL</option>
@@ -177,6 +299,17 @@
     {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
     {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
     {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+    {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+    {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+    {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+    {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+    {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+    {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+    {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+    {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+    {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+    {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+    {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
     <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
     <div class="input-group">
       <input type="date" name="date" class="form-control" value="{{ selected_date }}">
@@ -189,6 +322,17 @@
                                                               exclude_suc=1 if filters.exclude_suc else None,
                                                               smtp_filter=smtp_filter_param,
                                                               smtp_tag=smtp_tag_param,
+                                                              search_keyword=search_keyword_param,
+                                                              search_mode=search_mode_param,
+                                                              search_ip=search_ip_param,
+                                                              search_status=search_status_param,
+                                                              search_method=search_method_param,
+                                                              search_path=search_path_param,
+                                                              search_endpoint=search_endpoint_param,
+                                                              search_user=search_user_param,
+                                                              search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                                                               limit=filters.limit) }}">リセット</a>
       {% endif %}
     </div>
@@ -205,8 +349,104 @@
     {% if filters.kind == 'SMTP' %}
       <span class="badge {{ 'bg-info text-dark' if smtp_filter_value != 'ALL' else 'bg-light text-dark border' }}">SMTP詳細: {{ smtp_filter_value }}</span>
     {% endif %}
+    {% if filters.search_keyword %}
+      <span class="badge bg-secondary">検索: {{ filters.search_keyword }}</span>
+      <span class="badge bg-light text-dark border">条件: {{ 'AND' if filters.search_mode == 'and' else 'OR' }}</span>
+    {% endif %}
+    {% if filters.search_ip %}<span class="badge bg-light text-dark border">IP: {{ filters.search_ip }}</span>{% endif %}
+    {% if filters.search_status %}<span class="badge bg-light text-dark border">Status: {{ filters.search_status }}</span>{% endif %}
+    {% if filters.search_method %}<span class="badge bg-light text-dark border">Method: {{ filters.search_method }}</span>{% endif %}
+    {% if filters.search_path %}<span class="badge bg-light text-dark border">Path: {{ filters.search_path }}</span>{% endif %}
+    {% if filters.search_endpoint %}<span class="badge bg-light text-dark border">EP: {{ filters.search_endpoint }}</span>{% endif %}
+    {% if filters.search_user %}<span class="badge bg-light text-dark border">User: {{ filters.search_user }}</span>{% endif %}
+    {% if filters.search_ua %}<span class="badge bg-light text-dark border">UA: {{ filters.search_ua }}</span>{% endif %}
+    {% if filters.search_date_from or filters.search_date_to %}
+      <span class="badge bg-light text-dark border">期間: {{ filters.search_date_from or '未指定' }} 〜 {{ filters.search_date_to or '未指定' }}</span>
+    {% endif %}
     {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
     <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
+  </div>
+
+  <!-- 検索（サーバー側・全ページ対象） -->
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <h5 class="card-title mb-0">検索（全ページ対象）</h5>
+        <span class="small text-muted">※サーバー側で絞り込み</span>
+      </div>
+      <form method="get">
+        {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+        {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+        {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+        {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+        {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+        {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+        {% if selected_date %}<input type="hidden" name="date" value="{{ selected_date }}">{% endif %}
+        <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+        <div class="row g-2 align-items-end">
+          <div class="col-12 col-lg-4">
+            <label class="form-label small">フリーワード</label>
+            <input type="text" class="form-control form-control-sm" name="search_keyword" value="{{ filters.search_keyword }}" placeholder="例: album access 200">
+            <div class="form-text small">半角/全角スペース区切り。IP/ログ全文を対象。</div>
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">開始日</label>
+            <input type="date" class="form-control form-control-sm" name="search_date_from" value="{{ filters.search_date_from }}">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">終了日</label>
+            <input type="date" class="form-control form-control-sm" name="search_date_to" value="{{ filters.search_date_to }}">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">キーワード条件</label>
+            <select class="form-select form-select-sm" name="search_mode">
+              <option value="and" {{ 'selected' if filters.search_mode == 'and' else '' }}>すべて含む (AND)</option>
+              <option value="or" {{ 'selected' if filters.search_mode == 'or' else '' }}>いずれか含む (OR)</option>
+            </select>
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">IP</label>
+            <input type="text" class="form-control form-control-sm" name="search_ip" value="{{ filters.search_ip }}" placeholder="例: 203.0.113.">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">ステータス</label>
+            <input type="text" class="form-control form-control-sm" name="search_status" value="{{ filters.search_status }}" placeholder="例: 200">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">メソッド</label>
+            <input type="text" class="form-control form-control-sm" name="search_method" value="{{ filters.search_method }}" placeholder="例: GET">
+          </div>
+          <div class="col-12 col-lg-4">
+            <label class="form-label small">パス/URL</label>
+            <input type="text" class="form-control form-control-sm" name="search_path" value="{{ filters.search_path }}" placeholder="/album/access/">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">エンドポイント</label>
+            <input type="text" class="form-control form-control-sm" name="search_endpoint" value="{{ filters.search_endpoint }}" placeholder="album.album_access">
+          </div>
+          <div class="col-6 col-lg-2">
+            <label class="form-label small">ユーザー</label>
+            <input type="text" class="form-control form-control-sm" name="search_user" value="{{ filters.search_user }}" placeholder="user=...">
+          </div>
+          <div class="col-12 col-lg-4">
+            <label class="form-label small">UA</label>
+            <input type="text" class="form-control form-control-sm" name="search_ua" value="{{ filters.search_ua }}" placeholder="Chrome/">
+          </div>
+          <div class="col-12 col-lg-2 d-flex gap-2 align-items-center">
+            <button type="submit" class="btn btn-sm btn-primary w-100">検索</button>
+            <a class="btn btn-sm btn-outline-secondary w-100" href="{{ url_for('admin_logs',
+                                                                              date=selected_date or None,
+                                                                              kind=filters.kind or None,
+                                                                              exclude_local=1 if filters.exclude_local else None,
+                                                                              nonjp_only=1 if filters.nonjp_only else None,
+                                                                              exclude_suc=1 if filters.exclude_suc else None,
+                                                                              smtp_filter=smtp_filter_param,
+                                                                              smtp_tag=smtp_tag_param,
+                                                                              limit=filters.limit) }}">条件クリア</a>
+          </div>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- 一覧（5列：ID, 日時, IP, 内容, 操作） -->
@@ -281,6 +521,17 @@
                                 exclude_suc=1 if filters.exclude_suc else None,
                                 smtp_filter=smtp_filter_param,
                                 smtp_tag=smtp_tag_param,
+                                search_keyword=search_keyword_param,
+                                search_mode=search_mode_param,
+                                search_ip=search_ip_param,
+                                search_status=search_status_param,
+                                search_method=search_method_param,
+                                search_path=search_path_param,
+                                search_endpoint=search_endpoint_param,
+                                search_user=search_user_param,
+                                search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                                 limit=filters.limit) }}">← 前へ</a>
           </li>
         {% endif %}
@@ -297,6 +548,17 @@
                                 exclude_suc=1 if filters.exclude_suc else None,
                                 smtp_filter=smtp_filter_param,
                                 smtp_tag=smtp_tag_param,
+                                search_keyword=search_keyword_param,
+                                search_mode=search_mode_param,
+                                search_ip=search_ip_param,
+                                search_status=search_status_param,
+                                search_method=search_method_param,
+                                search_path=search_path_param,
+                                search_endpoint=search_endpoint_param,
+                                search_user=search_user_param,
+                                search_ua=search_ua_param,
+                          search_date_from=search_date_from_param,
+                          search_date_to=search_date_to_param,
                                 limit=filters.limit) }}">次へ →</a>
           </li>
         {% endif %}

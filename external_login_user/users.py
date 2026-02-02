@@ -2718,8 +2718,12 @@ def member_sns_clip(event_uuid: str):
 
         # 単独役割
         if is_host:
+            if costume:
+                return f"主催＆{costume}"
             return "主催"
         if is_subhost:
+            if costume:
+                return f"副主催＆{costume}"
             return "副主催"
         if role == "camera":
             return "カメラマン"

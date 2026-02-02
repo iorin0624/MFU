@@ -1130,6 +1130,8 @@ def admin_logs():
       limit <= 1000 (デフォルト1000)
       page >= 1
       date=YYYY-MM-DD
+      search_date_from=YYYY-MM-DD
+      search_date_to=YYYY-MM-DD
     """
     from ipaddress import ip_address, ip_network, IPv4Network, IPv6Network
     import time
@@ -1187,6 +1189,21 @@ def admin_logs():
     if kind != "SMTP":
         smtp_filter = "ALL"
     smtp_tag = (request.args.get("smtp_tag") or "").lower() in ("1", "true", "on", "yes")
+
+    # 検索（サーバー側）
+    search_keyword = (request.args.get("search_keyword") or "").strip()
+    search_mode = (request.args.get("search_mode") or "and").strip().lower()
+    if search_mode not in ("and", "or"):
+        search_mode = "and"
+    search_ip = (request.args.get("search_ip") or "").strip()
+    search_status = (request.args.get("search_status") or "").strip()
+    search_method = (request.args.get("search_method") or "").strip()
+    search_path = (request.args.get("search_path") or "").strip()
+    search_endpoint = (request.args.get("search_endpoint") or "").strip()
+    search_user = (request.args.get("search_user") or "").strip()
+    search_ua = (request.args.get("search_ua") or "").strip()
+    search_date_from = (request.args.get("search_date_from") or "").strip()
+    search_date_to = (request.args.get("search_date_to") or "").strip()
 
     # 生のクエリ値
     raw_exclude_local = request.args.get("exclude_local")
@@ -1259,6 +1276,53 @@ def admin_logs():
                 return True
         return False
 
+    def _split_keywords(text: str):
+        if not text:
+            return []
+        return [t for t in re.split(r"[\s\u3000]+", text.strip()) if t]
+
+    def _parse_method(text: str) -> str:
+        if not text:
+            return ""
+        m = re.search(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b", text)
+        return m.group(1) if m else ""
+
+    def _parse_path(text: str) -> str:
+        if not text:
+            return ""
+        m = re.search(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b\s+([^\s\"]+)", text)
+        if m:
+            return m.group(2)
+        m = re.search(r"path[=:]\"?([^\s\"]+)\"?", text, re.I)
+        return m.group(1) if m else ""
+
+    def _parse_endpoint(text: str) -> str:
+        if not text:
+            return ""
+        m = re.search(r"\bendpoint[=:]\"?([^\s\"]+)\"?", text, re.I)
+        if m:
+            return m.group(1)
+        m = re.search(r"\bep[=:]\"?([^\s\"]+)\"?", text, re.I)
+        return m.group(1) if m else ""
+
+    def _parse_user(text: str) -> str:
+        if not text:
+            return ""
+        m = re.search(r"\buser(?:name)?[=:]\s*\"([^\"]*)\"", text, re.I)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r"\buser(?:name)?[=:]\"?([\w.@:-]+)\"?", text, re.I)
+        return m.group(1).strip() if m else ""
+
+    def _parse_ua(text: str) -> str:
+        if not text:
+            return ""
+        m = re.search(r"\bua[=:]\"([^\"]+)\"", text, re.I)
+        if m:
+            return m.group(1)
+        m = re.search(r"\bUser-Agent:\"([^\"]+)\"", text, re.I)
+        return m.group(1) if m else ""
+
     def _parse_status_code(text: str):
         """
         ログ本文からステータスコード(3桁)をざっくり抽出。
@@ -1316,6 +1380,57 @@ def admin_logs():
         if not rx:
             return True
         return bool(rx.search(text or ""))
+
+    def _search_match(text: str, ip_str: str) -> bool:
+        if not any(
+            [
+                search_keyword,
+                search_ip,
+                search_status,
+                search_method,
+                search_path,
+                search_endpoint,
+                search_user,
+                search_ua,
+            ]
+        ):
+            return True
+        haystack = f"{ip_str} {text}".lower()
+        terms = _split_keywords(search_keyword)
+        if terms:
+            if search_mode == "or":
+                if not any(term.lower() in haystack for term in terms):
+                    return False
+            else:
+                if not all(term.lower() in haystack for term in terms):
+                    return False
+        if search_ip and search_ip.lower() not in (ip_str or "").lower():
+            return False
+        if search_status:
+            status = _parse_status_code(text)
+            if not status or search_status not in str(status):
+                return False
+        if search_method:
+            method = _parse_method(text)
+            if search_method.lower() not in method.lower():
+                return False
+        if search_path:
+            path = _parse_path(text)
+            if search_path.lower() not in path.lower():
+                return False
+        if search_endpoint:
+            endpoint = _parse_endpoint(text)
+            if search_endpoint.lower() not in endpoint.lower():
+                return False
+        if search_user:
+            user = _parse_user(text)
+            if search_user.lower() not in user.lower():
+                return False
+        if search_ua:
+            ua = _parse_ua(text)
+            if search_ua.lower() not in ua.lower():
+                return False
+        return True
 
     # ---- ① netinfo の TTL付きLRUキャッシュ（プロセス内） + リクエスト内重複排除 ----
     global _NETINFO_CACHE, _NETINFO_ORDER
@@ -1417,6 +1532,25 @@ def admin_logs():
         )
         params += [selected_date, selected_date]
 
+    # 日付範囲（検索用）
+    if search_date_from and not _valid_date(search_date_from):
+        search_date_from = ""
+    if search_date_to and not _valid_date(search_date_to):
+        search_date_to = ""
+    if search_date_from and search_date_to and search_date_from > search_date_to:
+        search_date_from, search_date_to = search_date_to, search_date_from
+    if search_date_from and search_date_to:
+        where.append(
+            "log_date >= %s AND log_date < DATE_ADD(%s, INTERVAL 1 DAY)"
+        )
+        params += [search_date_from, search_date_to]
+    elif search_date_from:
+        where.append("log_date >= %s")
+        params.append(search_date_from)
+    elif search_date_to:
+        where.append("log_date < DATE_ADD(%s, INTERVAL 1 DAY)")
+        params.append(search_date_to)
+
     # kind（テキスト検索だが、まずはDBで粗く絞る）
     if kind == "LOGIN":
         where.append("INSTR(log_text,'[LOGIN]') > 0")
@@ -1449,6 +1583,42 @@ def admin_logs():
         )
         where.append(f"NOT ({placeholders})")
         params.extend(EXCLUDE_PATH_SQL_LIKES)
+
+    # 検索（SQLで粗く絞る）
+    search_terms = _split_keywords(search_keyword)
+    if search_terms:
+        if search_mode == "or":
+            or_parts = []
+            for term in search_terms:
+                or_parts.append("(log_text LIKE %s OR ip LIKE %s)")
+                params.extend([f"%{term}%", f"%{term}%"])
+            where.append("(" + " OR ".join(or_parts) + ")")
+        else:
+            for term in search_terms:
+                where.append("(log_text LIKE %s OR ip LIKE %s)")
+                params.extend([f"%{term}%", f"%{term}%"])
+
+    if search_ip:
+        where.append("ip LIKE %s")
+        params.append(f"%{search_ip}%")
+    if search_status:
+        where.append("log_text LIKE %s")
+        params.append(f"%{search_status}%")
+    if search_method:
+        where.append("log_text LIKE %s")
+        params.append(f"%{search_method}%")
+    if search_path:
+        where.append("log_text LIKE %s")
+        params.append(f"%{search_path}%")
+    if search_endpoint:
+        where.append("log_text LIKE %s")
+        params.append(f"%{search_endpoint}%")
+    if search_user:
+        where.append("log_text LIKE %s")
+        params.append(f"%{search_user}%")
+    if search_ua:
+        where.append("log_text LIKE %s")
+        params.append(f"%{search_ua}%")
 
     base_sql = "SELECT id, log_date, ip, log_text FROM logs"
     if where:
@@ -1486,6 +1656,9 @@ def admin_logs():
             if kind == "SMTP" and smtp_filter != "ALL":
                 if not _smtp_match(text, smtp_filter):
                     continue
+
+            if not _search_match(text, ip):
+                continue
 
             # nonjp_only の場合はここで国判定
             if nonjp_only:
@@ -1548,6 +1721,17 @@ def admin_logs():
             "exclude_suc": exclude_suc,
             "smtp_filter": smtp_filter,
             "smtp_tag": smtp_tag,
+            "search_keyword": search_keyword,
+            "search_mode": search_mode,
+            "search_ip": search_ip,
+            "search_status": search_status,
+            "search_method": search_method,
+            "search_path": search_path,
+            "search_endpoint": search_endpoint,
+            "search_user": search_user,
+            "search_ua": search_ua,
+            "search_date_from": search_date_from,
+            "search_date_to": search_date_to,
             # ここは「常にTrue」の状態をそのままUIへ渡しておく
             "exclude_3xx": exclude_3xx,
             "limit": per_page,
@@ -1559,6 +1743,16 @@ def admin_logs():
                 or exclude_3xx
                 or (kind == "SMTP" and smtp_filter != "ALL")
                 or smtp_tag
+                or search_keyword
+                or search_ip
+                or search_status
+                or search_method
+                or search_path
+                or search_endpoint
+                or search_user
+                or search_ua
+                or search_date_from
+                or search_date_to
             ),
         },
     )
