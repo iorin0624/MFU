@@ -1,126 +1,191 @@
-diff --git a/utils/whois_util.py b/utils/whois_util.py
-index 8b00d463517caa5a4b4f43878e0cd533db0eb3d9..2b68a66d953b5b987a7d86452d75fc79f03afe1f 100644
---- a/utils/whois_util.py
-+++ b/utils/whois_util.py
-@@ -1,31 +1,32 @@
- # app/utils/whois_util.py
- import subprocess
- import os
- import hashlib
- import json
- import time
-+import ipaddress
- from typing import Optional
- from pathlib import Path
- from urllib.request import urlopen, Request
- from urllib.error import URLError, HTTPError
+diff --git a/__init__.py b/__init__.py
+index f436a72903e1cf3a19968a5d094aa988b6ca85d0..7efbc1a80c117da501e462994886aafe22919749 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -88,50 +88,92 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
  
- WHOIS_CACHE_DIR = "/mnt/mfu/whois_cache"
- os.makedirs(WHOIS_CACHE_DIR, exist_ok=True)
+ app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
+ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
  
- SUCCESS_TTL_SEC = 86400 * 7
- FAIL_TTL_SEC = 3600
+ login_manager = LoginManager()
+ login_manager.init_app(app)
+ login_manager.login_view = "login"
+ login_manager.user_loader(load_user)
  
- def _cache_path(ip: str) -> Path:
-     key = hashlib.md5(ip.encode()).hexdigest()
-     return Path(WHOIS_CACHE_DIR) / f"{key}.json"
+ # =====================================
+ # 🧠 補助関数群（上段へ集約）
+ # =====================================
  
- def _load_cache(ip: str, *, force_refresh: bool) -> Optional[dict]:
-     if force_refresh:
-         return None
-     cache_file = _cache_path(ip)
-     if not cache_file.exists():
-         return None
-     try:
-         data = json.loads(cache_file.read_text())
-     except Exception:
-         return None
-@@ -113,78 +114,87 @@ def _extract_whois_info(text: str) -> dict:
-         lower = line.lower()
-         if lower.startswith("netname:"):
-             info["netname"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("orgname:"):
-             info["org"] = info["org"] or line.split(":", 1)[1].strip()
-         elif lower.startswith("organization:"):
-             info["org"] = info["org"] or line.split(":", 1)[1].strip()
-         elif lower.startswith("owner:") and not info["org"]:
-             info["org"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("descr:") and not info["org"]:
-             info["org"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("country:"):
-             info["country"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("as-name:") or lower.startswith("asname:"):
-             info["asname"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("origin:") or lower.startswith("originas:"):
-             info["asname"] = info["asname"] or line.split(":", 1)[1].strip()
-     return info
+ from functools import wraps
+ from flask import session
  
- def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
-     """IPからnetnameとcountryを取得（キャッシュ付き）"""
-     cached = _load_cache(ip, force_refresh=force_refresh)
-     if cached:
-         return cached
+ def admin_required(func):
+     @wraps(func)
+     def wrapper(*args, **kwargs):
+         if session.get("user") != "admin":
+             return "管理者のみアクセス可能", 403
+         return func(*args, **kwargs)
+     return wrapper
  
-+    try:
-+        ip_obj = ipaddress.ip_address(ip)
-+        is_ipv6 = ip_obj.version == 6
-+    except ValueError:
-+        is_ipv6 = False
+ 
++def _local_tzinfo():
++    local_tz = datetime.now().astimezone().tzinfo
++    return local_tz or timezone.utc
 +
-     info = {
-         "netname": "不明",
-         "country": "不明",
-         "org": "",
-         "asname": "",
-         "source": "",
-     }
- 
-     rdap = _fetch_rdap(ip)
-     if rdap:
-         name, org, country = _extract_rdap_name(rdap)
-         if name:
-             info["netname"] = name
-         if org:
-             info["org"] = org
-         if country:
-             info["country"] = country
-         info["source"] = "rdap"
- 
-     whois_text = ""
-     try:
-         whois_text = subprocess.check_output(["whois", ip], timeout=10).decode(errors="ignore")
-     except Exception:
-         whois_text = ""
- 
-     if whois_text:
-         whois_info = _extract_whois_info(whois_text)
-         if info["netname"] == "不明" and whois_info["netname"]:
-             info["netname"] = whois_info["netname"]
-         if not info["org"] and whois_info["org"]:
-             info["org"] = whois_info["org"]
-         if not info["asname"] and whois_info["asname"]:
-             info["asname"] = whois_info["asname"]
-         if info["country"] == "不明" and whois_info["country"]:
-             info["country"] = whois_info["country"]
-         if not info["source"]:
-             info["source"] = "whois"
- 
--    if info["netname"] == "不明":
-+    if info["netname"] == "不明" and not is_ipv6:
-         if info["org"]:
-             info["netname"] = info["org"]
-         elif info["asname"]:
-             info["netname"] = info["asname"]
- 
-+    if is_ipv6:
-+        info["display_name"] = info["netname"]
 +
-     is_failure = info["netname"] in ("不明", "")
-     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
-     return info
++def _utc_now() -> datetime:
++    return datetime.now(timezone.utc)
++
++
++def _normalize_utc_dt(value, *, label: str = "") -> datetime | None:
++    if value is None:
++        return None
++
++    dt = None
++    if isinstance(value, datetime):
++        dt = value
++    elif isinstance(value, str):
++        s = value.strip()
++        if not s:
++            return None
++        try:
++            if s.endswith("Z"):
++                s = s[:-1] + "+00:00"
++            dt = datetime.fromisoformat(s)
++        except Exception:
++            if label:
++                current_app.logger.warning("%s の復元に失敗: type=%s", label, type(value).__name__)
++            return None
++    else:
++        if label:
++            current_app.logger.debug("%s の型が想定外: %s", label, type(value).__name__)
++        return None
++
++    if dt.tzinfo is None:
++        local_tz = _local_tzinfo()
++        if label:
++            current_app.logger.debug("%s がnaiveのためローカルTZ(%s)で補正", label, local_tz)
++        dt = dt.replace(tzinfo=local_tz)
++
++    return dt.astimezone(timezone.utc)
++
++
+ def _save_stream(file_storage, dest_path):
+     """アップロードストリームを保存（最小実装）"""
+     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+     file_storage.save(dest_path)
+     return os.path.basename(dest_path)
  
- if __name__ == "__main__":
-     import sys
-     target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
-     force = "--refresh" in sys.argv
-     print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
+ def delayed_restart():
+     try:
+         print("[delayed_restart] 🔁 サービス再起動処理を開始")
+         time.sleep(2)
+         print("[delayed_restart] 📤 systemctl restart 実行中...")
+         result = subprocess.run(
+             ["sudo", "systemctl", "restart", "mfu.service"],
+             check=True,
+             capture_output=True,
+             text=True,
+         )
+         print("[delayed_restart] ✅ 再起動成功")
+         print("[stdout]", result.stdout)
+         print("[stderr]", result.stderr)
+     except subprocess.CalledProcessError as e:
+         print("[delayed_restart] ❌ 再起動失敗（subprocess.CalledProcessError）")
+         print("[stderr]", e.stderr)
+     except Exception as e:
+         print(f"[delayed_restart] ❌ 再起動中に予期せぬエラー: {e}")
+@@ -371,90 +413,90 @@ schedule_restart_if_needed()
+ from flask import request, redirect, url_for
+ 
+ @login_manager.unauthorized_handler
+ def _unauthorized():
+     path = request.full_path or request.path or "/"
+     # 外部ログイン系は LINE へ（元URLを next に積む）
+     if request.path.startswith("/external-login"):
+         return redirect(url_for("external_login_user.line_login", next=request.full_path))
+     # それ以外（管理系など）は従来どおり
+     return redirect(url_for("login", next=path))
+ 
+ WELL_KNOWN_DIR = os.path.join(BASE_DIR, ".well-known")
+ 
+ @app.route("/.well-known/<path:filename>")
+ def well_known(filename):
+     return send_from_directory(WELL_KNOWN_DIR, filename)
+ 
+ @app.route("/")
+ def index():
+     return redirect(url_for("upload"))
+ 
+ @app.route("/login", methods=["GET", "POST"])
+ def login():
+     def _preauth_active():
+         preauth_user = session.get("preauth_user")
+-        expires_at = session.get("preauth_expires_at")
++        expires_at = _normalize_utc_dt(session.get("preauth_expires_at"), label="preauth_expires_at")
+         if not preauth_user or not expires_at:
+             return None
+-        if datetime.now() > expires_at:
++        if _utc_now() > expires_at:
+             session.pop("preauth_user", None)
+             session.pop("preauth_expires_at", None)
+             session.pop("preauth_totp_attempts", None)
+             session.pop("preauth_totp_locked_until", None)
+             return None
+         return preauth_user
+ 
+     if request.method == "POST":
+         username = request.form.get("username")
+         password = request.form.get("password")
+         client_ip = ip_address(request.remote_addr)
+ 
+         # ローカル判定
+         is_local = (
+             client_ip in ip_network("192.168.103.0/24")
+             or client_ip in ip_network("fe80::/10")
+             or client_ip in ip_network("2404:7a81:bc40:2a00::/64")
+             or client_ip in ip_network("2404:7a81:8ac1:1000::/64")
+         )
+ 
+         db = get_db()
+         cursor = db.cursor(dictionary=True)
+ 
+         session.clear()
+         cursor.execute(
+             "SELECT password_hash, nickname, webhook_url FROM users WHERE username = %s",
+             (username,),
+         )
+         row = cursor.fetchone()
+         db.close()
+ 
+         if row and bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+             totp_status = get_totp_status(username)
+             if totp_status.get("enabled") and totp_status.get("has_secret") and not is_local:
+                 session["preauth_user"] = username
+-                session["preauth_expires_at"] = datetime.now() + timedelta(minutes=5)
++                session["preauth_expires_at"] = _utc_now() + timedelta(minutes=5)
+                 session.pop("preauth_totp_attempts", None)
+                 session.pop("preauth_totp_locked_until", None)
+                 return render_template(
+                     "login.html",
+                     preauth_active=True,
+                     preauth_username=username,
+                     info="アプリOTPを入力してください。",
+                 )
+ 
+             session["user"] = username
+             session["nickname"] = row["nickname"]
+             session["login_expires_at"] = datetime.now() + timedelta(hours=24)
+             session["login_extension_count"] = 0
+             write_login_log(username, request.remote_addr)
+ 
+             if username == "admin" and row.get("webhook_url"):
+                 try:
+                     login_time = datetime.now().strftime("%Y/%m/%d %H:%M")
+                     login_ip = request.remote_addr
+                     message = (
+                         "👤 **管理者ログイン**\n"
+                         f"📅 ログイン日時: {login_time}\n"
+                         f"🌐 ログインIP: {login_ip}"
+                     )
+                     requests.post(row["webhook_url"], json={"content": message})
