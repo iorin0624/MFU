@@ -1,216 +1,183 @@
-diff --git a/utils/mail_delivery.py b/utils/mail_delivery.py
-index 72330c5fbbba28c2e7b5e0168be454c67e100b30..ad83dd42fba11aea9c8efc6aa55d6362b61d3ada 100644
---- a/utils/mail_delivery.py
-+++ b/utils/mail_delivery.py
-@@ -1,40 +1,41 @@
- from __future__ import annotations
+diff --git a/templates/admin_mail_delivery_logs.html b/templates/admin_mail_delivery_logs.html
+index da9a68f31ba9a6491459a95c8b06594c86917627..d0b17d371fcbb840fe7c7a5ad08417048f67c716 100644
+--- a/templates/admin_mail_delivery_logs.html
++++ b/templates/admin_mail_delivery_logs.html
+@@ -37,51 +37,51 @@
+     <input class="form-control" type="number" name="limit" min="20" max="500" value="{{ filters.limit }}">
+   </div>
+   <div class="col-sm-2 d-flex gap-2">
+     <button class="btn btn-primary w-100" type="submit">適用</button>
+     <a class="btn btn-outline-secondary w-100" href="{{ url_for('admin_mail_delivery_logs') }}">リセット</a>
+   </div>
+ </form>
  
- import os
- import uuid
- from datetime import datetime, timedelta
+ <div class="table-responsive">
+   <table class="table table-striped table-hover align-middle">
+     <thead class="table-light">
+       <tr>
+         <th>送信日時</th>
+         <th>宛先</th>
+         <th>件名</th>
+         <th>Message-ID</th>
+         <th>送信結果</th>
+         <th>配送結果</th>
+         <th>詳細</th>
+         <th>Queue-ID</th>
+         <th>最終チェック</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for row in rows %}
+-      <tr>
++      <tr data-submit-ts="{{ row.submit_at_ts or '' }}" data-delivery-status="{{ row.last_delivery_status or '' }}">
+         <td class="text-nowrap">{{ row.submit_at }}</td>
+         <td>{{ row.to_addresses or '-' }}</td>
+         <td>{{ row.subject or '-' }}</td>
+         <td class="text-break small">{{ row.message_id }}</td>
+         <td>
+           {% if row.submit_status == 'sent' %}
+             <span class="badge bg-success">sent</span>
+           {% elif row.submit_status == 'queued' %}
+             <span class="badge bg-secondary">queued</span>
+           {% else %}
+             <span class="badge bg-danger">failed</span>
+           {% endif %}
+         </td>
+         <td>
+           {% set status = row.last_delivery_status %}
+           {% if status == 'sent' %}
+             <span class="badge bg-success">sent</span>
+           {% elif status == 'bounced' %}
+             <span class="badge bg-danger">bounced</span>
+           {% elif status == 'deferred' %}
+             <span class="badge bg-warning text-dark">deferred</span>
+           {% elif status == 'queued' %}
+             <span class="badge bg-secondary">queued</span>
+           {% elif status == 'failed' %}
+             <span class="badge bg-dark">failed</span>
+@@ -115,66 +115,93 @@
+     {% set prev_page = page - 1 %}
+     {% set next_page = page + 1 %}
+     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+       <a class="page-link" href="{{ url_for('admin_mail_delivery_logs', page=prev_page, status=filters.status, q=filters.q, limit=filters.limit) }}">前へ</a>
+     </li>
+     <li class="page-item disabled"><span class="page-link">{{ page }} / {{ total_pages }}</span></li>
+     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
+       <a class="page-link" href="{{ url_for('admin_mail_delivery_logs', page=next_page, status=filters.status, q=filters.q, limit=filters.limit) }}">次へ</a>
+     </li>
+   </ul>
+ </nav>
+ {% endblock %}
  
- import requests
- from flask import current_app
+ {% block body_extra %}
+ <script>
+   document.addEventListener('DOMContentLoaded', () => {
+     const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+     tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+       if (window.bootstrap && window.bootstrap.Tooltip) {
+         new bootstrap.Tooltip(tooltipTriggerEl);
+       }
+     });
  
- from app.utils.db import get_db
- 
- DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
--DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
-+DEFAULT_MESSAGE_ID_DOMAIN = "mail.iori0624.jp"
- DEFAULT_POLL_LIMIT_HOURS = 24
--DEFAULT_HTTP_TIMEOUT_SEC = 15
-+DEFAULT_HTTP_TIMEOUT_SEC = 30
-+MAX_HTTP_TIMEOUT_SEC = 120
- 
- 
- def _get_config_value(name: str, default):
-     try:
-         return current_app.config.get(name, default)
-     except Exception:
-         return os.environ.get(name, default)
- 
- 
- def _clamp(value: str | None, max_len: int) -> str | None:
-     if value is None:
-         return None
-     text = str(value)
-     return text if len(text) <= max_len else text[:max_len]
- 
- 
- def ensure_mail_delivery_schema() -> None:
-     db = get_db()
-     cur = db.cursor()
-     cur.execute(
-         """
-         CREATE TABLE IF NOT EXISTS mfu_mail_delivery_log (
-             id INT AUTO_INCREMENT PRIMARY KEY,
-             mfu_mail_uuid CHAR(36) NOT NULL,
-             message_id VARCHAR(255) NOT NULL,
-@@ -99,51 +100,51 @@ def record_mail_submission(
-             last_delivery_detail = VALUES(last_delivery_detail)
-         """,
-         (
-             mfu_mail_uuid,
-             message_id,
-             _clamp(to_addresses, 1024),
-             _clamp(subject, 255),
-             submit_status,
-             submit_at,
-             last_delivery_status,
-             _clamp(last_delivery_detail, 1000),
-         ),
-     )
-     db.commit()
-     db.close()
- 
- 
- def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
-     cutoff = datetime.now() - timedelta(hours=limit_hours)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     cur.execute(
-         """
-         SELECT id, message_id, last_delivery_status, submit_at
-           FROM mfu_mail_delivery_log
--         WHERE submit_status = 'queued'
-+         WHERE submit_status IN ('queued', 'sent')
-            AND last_delivery_status NOT IN ('sent', 'bounced')
-            AND submit_at >= %s
-          ORDER BY submit_at ASC
-          LIMIT %s
-         """,
-         (cutoff, max_rows),
-     )
-     rows = cur.fetchall() or []
-     db.close()
-     return rows
- 
- 
- def _update_delivery_row(
-     *,
-     row_id: int,
-     status: str,
-     detail: str | None,
-     queue_id: str | None,
-     checked_at: datetime,
- ) -> None:
-     db = get_db()
-     cur = db.cursor()
-     cur.execute(
-         """
-         UPDATE mfu_mail_delivery_log
-@@ -181,111 +182,111 @@ def _touch_delivery_row(
-          WHERE id = %s
-         """,
-         (
-             _clamp(detail, 1000),
-             checked_at,
-             row_id,
-         ),
-     )
-     db.commit()
-     db.close()
- 
- 
- def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = None) -> dict:
-     ensure_mail_delivery_schema()
-     base_url = _get_config_value(
-         "MFU_POSTFIX_STATUS_API_BASE_URL", DEFAULT_POSTFIX_STATUS_API_BASE_URL
-     )
-     api_key = _get_config_value("MFU_POSTFIX_STATUS_API_KEY", "")
-     limit_hours = int(
-         _get_config_value("MFU_MAIL_STATUS_POLL_LIMIT_HOURS", DEFAULT_POLL_LIMIT_HOURS)
-     )
-     if timeout_sec is None:
-         timeout_sec = int(
-             _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
-         )
--    timeout_sec = max(1, min(60, int(timeout_sec)))
-+    timeout_sec = max(1, min(MAX_HTTP_TIMEOUT_SEC, int(timeout_sec)))
- 
-     base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
-     headers = {"X-API-Key": api_key} if api_key else {}
- 
-     rows = _fetch_poll_targets(limit_hours=limit_hours, max_rows=max_rows)
-     now = datetime.now()
-     summary = {"checked": 0, "updated": 0, "errors": 0}
- 
-     for row in rows:
-         summary["checked"] += 1
-         message_id = row.get("message_id")
-         row_id = row.get("id")
-         if not message_id or not row_id:
-             continue
- 
-         url = f"{base_url}/api/mail/status"
-         try:
-             resp = requests.get(
-                 url,
-                 params={"message_id": message_id},
-                 headers=headers,
-                 timeout=timeout_sec,
-             )
-         except requests.Timeout:
--            retry_timeout = min(timeout_sec * 2, 60)
-+            retry_timeout = min(timeout_sec * 2, MAX_HTTP_TIMEOUT_SEC)
-             try:
-                 resp = requests.get(
-                     url,
-                     params={"message_id": message_id},
-                     headers=headers,
-                     timeout=retry_timeout,
-                 )
-             except requests.RequestException as exc:
-                 summary["errors"] += 1
-                 _touch_delivery_row(
-                     row_id=row_id,
-                     detail=f"poll_error: {exc.__class__.__name__}",
-                     checked_at=now,
-                 )
-                 continue
-         except requests.RequestException as exc:
-             summary["errors"] += 1
-             _touch_delivery_row(
-                 row_id=row_id,
-                 detail=f"poll_error: {exc.__class__.__name__}",
-                 checked_at=now,
-             )
-             continue
- 
-         if resp.status_code != 200:
-             summary["errors"] += 1
-             _touch_delivery_row(
-                 row_id=row_id,
-                 detail=f"poll_http_status: {resp.status_code}",
-                 checked_at=now,
-             )
-             continue
- 
-         try:
-             payload = resp.json()
-         except ValueError:
-             summary["errors"] += 1
-             _touch_delivery_row(
-                 row_id=row_id,
-                 detail="poll_error: invalid_json",
-                 checked_at=now,
-             )
-             continue
- 
-         status = str(payload.get("status") or "unknown")
-         detail = payload.get("detail")
-         queue_id = payload.get("queue_id")
--        if status not in ("sent", "deferred", "bounced", "unknown"):
-+        if status not in ("sent", "deferred", "bounced", "queued", "unknown", "failed"):
-             status = "unknown"
- 
-         _update_delivery_row(
-             row_id=row_id,
-             status=status,
-             detail=detail,
-             queue_id=queue_id,
-             checked_at=now,
-         )
-         summary["updated"] += 1
- 
-     return summary
+     const refreshButton = document.getElementById('mail-delivery-refresh');
+     const refreshStatus = document.getElementById('mail-delivery-refresh-status');
+-    if (refreshButton) {
++    const runRefresh = async () => {
++      if (!refreshButton) {
++        return;
++      }
+       const defaultLabel = refreshButton.textContent;
+-      refreshButton.addEventListener('click', async () => {
+-        refreshButton.disabled = true;
+-        refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
++      refreshButton.disabled = true;
++      refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
++      if (refreshStatus) {
++        refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
++      }
++
++      const params = new URLSearchParams(window.location.search);
++      const limit = Number(params.get('limit')) || {{ filters.limit }};
++      const maxRows = Math.min(Math.max(limit, 20), 500);
++      const timeoutSec = 45;
++      try {
++        const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows + '&timeout_sec=' + timeoutSec, {
++          method: 'POST',
++          headers: {
++            'Content-Type': 'application/json'
++          },
++        });
++        if (!response.ok) {
++          throw new Error('refresh_failed');
++        }
++        const result = await response.json();
+         if (refreshStatus) {
+-          refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
++          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
+         }
+-
+-        const params = new URLSearchParams(window.location.search);
+-        const limit = Number(params.get('limit')) || {{ filters.limit }};
+-        const maxRows = Math.min(Math.max(limit, 20), 500);
+-        const timeoutSec = 45;
+-        try {
+-          const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows + '&timeout_sec=' + timeoutSec, {
+-            method: 'POST',
+-            headers: {
+-              'Content-Type': 'application/json'
+-            },
+-          });
+-          if (!response.ok) {
+-            throw new Error('refresh_failed');
+-          }
+-          const result = await response.json();
+-          if (refreshStatus) {
+-            refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
+-          }
+-          window.location.reload();
+-        } catch (error) {
+-          if (refreshStatus) {
+-            refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
+-          }
+-        } finally {
+-          refreshButton.disabled = false;
+-          refreshButton.textContent = defaultLabel;
++        window.location.reload();
++      } catch (error) {
++        if (refreshStatus) {
++          refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
+         }
++      } finally {
++        refreshButton.disabled = false;
++        refreshButton.textContent = defaultLabel;
++      }
++    };
++
++    if (refreshButton) {
++      refreshButton.addEventListener('click', async () => {
++        await runRefresh();
+       });
+     }
++
++    const rows = Array.from(document.querySelectorAll('tbody tr[data-submit-ts]'));
++    const pendingStatuses = new Set(['queued', 'deferred', 'unknown']);
++    const pendingRows = rows.filter((row) => pendingStatuses.has(row.dataset.deliveryStatus || ''));
++    if (pendingRows.length > 0) {
++      const latestSubmit = pendingRows.reduce((maxValue, row) => {
++        const ts = Number(row.dataset.submitTs || 0);
++        return Math.max(maxValue, ts);
++      }, 0);
++      if (latestSubmit > 0) {
++        const now = Math.floor(Date.now() / 1000);
++        const elapsedSec = now - latestSubmit;
++        if (elapsedSec <= 30) {
++          const delayMs = Math.max(0, (30 - elapsedSec) * 1000);
++          setTimeout(() => {
++            runRefresh();
++          }, delayMs);
++        }
++      }
++    }
+   });
+ </script>
+ {% endblock %}
