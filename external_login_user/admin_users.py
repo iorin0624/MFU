@@ -79,6 +79,9 @@ def admin_ext_users_index():
             cols += ", email_verified_at"
 
         # ★ 並び順: 先頭が英数 → かな → その他（漢字など） → その中で nickname 昇順
+        cur.execute("SELECT COUNT(*) AS c FROM external_login_user")
+        total = int((cur.fetchone() or {}).get("c", 0))
+
         cur.execute(f"""
             SELECT {cols}
               FROM external_login_user
@@ -89,15 +92,11 @@ def admin_ext_users_index():
                  ELSE 2
                END,
                nickname
-             LIMIT 50
         """)
         initial_items = cur.fetchall() or []
         if not has_verified:
             for r in initial_items:
                 r["email_verified_at"] = None
-
-        cur.execute("SELECT COUNT(*) AS c FROM external_login_user")
-        total = int((cur.fetchone() or {}).get("c", 0))
     finally:
         try:
             cur.close()
@@ -110,7 +109,7 @@ def admin_ext_users_index():
         admin_csrf=_admin_csrf_token(),
         initial_items=initial_items,
         initial_total=total,
-        initial_per_page=50,
+        initial_per_page=total,
         initial_page=1,
     )
 
@@ -127,26 +126,45 @@ def admin_ext_users_data():
         page = max(int(request.args.get("page") or 1), 1)
     except Exception:
         page = 1
+    per_page_raw = request.args.get("per_page")
     try:
-        per_page = min(max(int(request.args.get("per_page") or 50), 1), 200)
+        per_page_candidate = int(per_page_raw) if per_page_raw is not None else 0
     except Exception:
-        per_page = 50
+        per_page_candidate = 0
+    if per_page_candidate <= 0:
+        per_page = None
+    else:
+        per_page = min(max(per_page_candidate, 1), 200)
 
     params: list = []
     where = []
     if q:
         like = f"%{q}%"
-        where.append(
-            "(nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
-        )
-        params += [like, like, like, like, like]
+        where.append("(nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s)")
+        params += [like, like, like, like]
     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
 
     has_verified = _column_exists("external_login_user", "email_verified_at")
     cols = """
-        id, nickname, x_id, instagram_id, email, social_id,
-        avatar_file, avatar_url, created_at, updated_at,
-        admin_note
+        id,
+        nickname,
+        x_id,
+        instagram_id,
+        email,
+        social_id,
+        avatar_file,
+        avatar_url,
+        created_at,
+        updated_at,
+        admin_note,
+        COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+        COALESCE(notify_album_process, 1) AS notify_album_process,
+        (
+          SELECT COUNT(*)
+            FROM external_login_user_card_data c
+           WHERE c.user_id = external_login_user.id
+             AND c.deleted_at IS NULL
+        ) AS card_count
     """
     if has_verified:
         cols += ", email_verified_at"
@@ -155,9 +173,14 @@ def admin_ext_users_data():
     try:
         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
         total = int(cur.fetchone()["c"])
-        offset = (page - 1) * per_page
-
         # ★ 一覧と同じ並び順に統一
+        if per_page:
+            offset = (page - 1) * per_page
+            limit_clause = "LIMIT %s OFFSET %s"
+            limit_params = [per_page, offset]
+        else:
+            limit_clause = ""
+            limit_params = []
         cur.execute(f"""
             SELECT {cols}
               FROM external_login_user
@@ -169,8 +192,8 @@ def admin_ext_users_data():
                  ELSE 2
                END,
                nickname
-             LIMIT %s OFFSET %s
-        """, params + [per_page, offset])
+             {limit_clause}
+        """, params + limit_params)
         rows = cur.fetchall() or []
         if not has_verified:
             for r in rows:
@@ -179,7 +202,15 @@ def admin_ext_users_data():
         try: cur.close(); db.close()
         except Exception: pass
 
-    return jsonify({"ok": True, "items": rows, "total": total, "page": page, "per_page": per_page})
+    return jsonify(
+        {
+            "ok": True,
+            "items": rows,
+            "total": total,
+            "page": page,
+            "per_page": per_page or 0,
+        }
+    )
 
 # ============= API（単票：旧モーダル用） =============
 @bp.get("/admin/ext-users/<int:user_id>/detail")

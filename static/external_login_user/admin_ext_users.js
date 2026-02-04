@@ -1,0 +1,133 @@
+(function () {
+  const ctx = window.__EXT_USERS__ || {};
+  const tbody = document.getElementById('userTbody');
+  const totalCount = document.getElementById('totalCount');
+  const searchInput = document.getElementById('searchInput');
+  const searchBtn = document.getElementById('searchBtn');
+  const clearBtn = document.getElementById('clearBtn');
+
+  if (!tbody || !ctx.dataUrl) return;
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function buildRow(item) {
+    const avatar = item.avatar_file
+      ? `/external-login/avatars/${encodeURIComponent(item.avatar_file)}`
+      : item.avatar_url || 'https://via.placeholder.com/48?text=—';
+    const nickname = escapeHtml(item.nickname || '-');
+    const socialId = escapeHtml(item.social_id || '-');
+    const email = item.email ? escapeHtml(item.email) : '';
+    const emailVerifiedAt = item.email_verified_at ? escapeHtml(item.email_verified_at) : '';
+    const xId = item.x_id ? escapeHtml(item.x_id) : '';
+    const igId = item.instagram_id ? escapeHtml(item.instagram_id) : '';
+    const notifyUpload = item.notify_album_upload ? '🔵' : '🔴';
+    const notifyProcess = item.notify_album_process ? '🔵' : '🔴';
+    const cardCount = Number(item.card_count || 0) > 0 ? '登録あり' : '未登録';
+
+    let snsHtml = '<span class="text-muted">-</span>';
+    if (xId || igId) {
+      const parts = [];
+      if (xId) {
+        parts.push(`<a href="https://x.com/${xId}" target="_blank" rel="noopener">X: @${xId}</a>`);
+      }
+      if (igId) {
+        parts.push(`<a href="https://www.instagram.com/${igId}/" target="_blank" rel="noopener">IG: @${igId}</a>`);
+      }
+      snsHtml = parts.join('<br>');
+    }
+
+    let emailHtml = '<span class="text-muted">-</span>';
+    if (email) {
+      const badge = emailVerifiedAt
+        ? `<span class="badge bg-success">確認済</span><span class="text-muted ms-1">${emailVerifiedAt}</span>`
+        : '<span class="badge bg-secondary">未確認</span>';
+      emailHtml = `<div>${email}</div><div class="small mt-1">${badge}</div>`;
+    }
+
+    return `
+      <tr data-id="${escapeHtml(item.id)}">
+        <td class="text-muted">#${escapeHtml(item.id)}</td>
+        <td>
+          <img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">
+        </td>
+        <td>
+          <div class="fw-semibold">${nickname}</div>
+          <div class="small text-muted">social_id: ${socialId}</div>
+        </td>
+        <td>
+          ${emailHtml}
+        </td>
+        <td>
+          ${snsHtml}
+        </td>
+        <td>
+          <div>アップ ${notifyUpload}</div>
+          <div>加工 ${notifyProcess}</div>
+        </td>
+        <td>
+          ${cardCount}
+        </td>
+        <td class="text-end">
+          <a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${escapeHtml(item.id)}/edit">編集</a>
+        </td>
+      </tr>
+    `;
+  }
+
+  function renderItems(items) {
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(buildRow).join('');
+  }
+
+  async function fetchItems(query) {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    params.set('per_page', '0');
+    const url = `${ctx.dataUrl}?${params.toString()}`;
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('fetch_failed');
+    return res.json();
+  }
+
+  async function runSearch() {
+    const q = (searchInput ? searchInput.value : '').trim();
+    try {
+      const data = await fetchItems(q);
+      const items = data.items || [];
+      if (totalCount) totalCount.textContent = String(data.total || items.length);
+      renderItems(items);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  if (searchBtn) {
+    searchBtn.addEventListener('click', runSearch);
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        runSearch();
+      }
+    });
+  }
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (searchInput) searchInput.value = '';
+      runSearch();
+    });
+  }
+})();
