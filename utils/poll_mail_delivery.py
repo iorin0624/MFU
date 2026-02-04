@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import sys
+from datetime import datetime
+
+# Flask app を起動して current_app / get_db を使えるようにする必要があるため
+# MFU のアプリファクトリ(create_app)を import して app_context を張ります。
+#
+# ※ ここはあなたのMFUの実装に合わせて import パスを調整してください。
+#   例: "from app import create_app" だったり "from app.main import create_app" だったりします。
+from app import create_app  # ←必要なら修正
+
+from app.utils.mail_delivery import poll_mail_delivery_statuses  # ←このモジュールの配置に合わせて修正
+
+
+def main() -> int:
+    max_rows = int(os.environ.get("MFU_MAIL_STATUS_POLL_MAX_ROWS", "200"))
+    timeout_sec_env = os.environ.get("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC")
+    timeout_sec = int(timeout_sec_env) if timeout_sec_env else None
+
+    app = create_app()
+    with app.app_context():
+        summary = poll_mail_delivery_statuses(max_rows=max_rows, timeout_sec=timeout_sec)
+
+    # systemd/journal に残す（grepしやすい）
+    payload = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "summary": summary,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as e:
+        print(f"[poll_mail_delivery] ERROR: {e.__class__.__name__}: {e}", file=sys.stderr)
+        raise
