@@ -30,6 +30,7 @@ from pathlib import Path
 import bcrypt
 import psutil
 import requests
+import click
 from dateutil import parser as dateutil_parser
 from dotenv import load_dotenv
 from PIL import Image  # （将来の画像操作に備え、既存どおり保持）
@@ -89,6 +90,22 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
 
+app.config["MFU_POSTFIX_STATUS_API_BASE_URL"] = os.environ.get(
+    "MFU_POSTFIX_STATUS_API_BASE_URL", "http://192.168.103.15:18080"
+)
+app.config["MFU_POSTFIX_STATUS_API_KEY"] = os.environ.get(
+    "MFU_POSTFIX_STATUS_API_KEY", ""
+)
+app.config["MFU_MAIL_MESSAGE_ID_DOMAIN"] = os.environ.get(
+    "MFU_MAIL_MESSAGE_ID_DOMAIN", "mfu.iori0624.jp"
+)
+app.config["MFU_MAIL_STATUS_POLL_LIMIT_HOURS"] = int(
+    os.environ.get("MFU_MAIL_STATUS_POLL_LIMIT_HOURS", "24")
+)
+app.config["MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC"] = int(
+    os.environ.get("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", "5")
+)
+
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
@@ -108,6 +125,19 @@ def admin_required(func):
             return "管理者のみアクセス可能", 403
         return func(*args, **kwargs)
     return wrapper
+
+
+@app.cli.command("poll-mail-delivery")
+@click.option("--max-rows", default=200, show_default=True, type=int)
+def poll_mail_delivery_command(max_rows: int) -> None:
+    """Postfix配送結果をポーリングしてDBへ反映するCLI。"""
+    from app.utils.mail_delivery import poll_mail_delivery_statuses
+
+    summary = poll_mail_delivery_statuses(max_rows=max_rows)
+    click.echo(
+        f"mail delivery polled: checked={summary['checked']} "
+        f"updated={summary['updated']} errors={summary['errors']}"
+    )
 
 
 def _local_tzinfo():
@@ -1797,6 +1827,80 @@ def admin_logs():
                 or search_date_to
             ),
         },
+    )
+
+
+# =======================================
+# 管理: メール送信ログ（配送結果）
+# =======================================
+@app.route("/admin/mail-delivery")
+@admin_required
+def admin_mail_delivery_logs():
+    from app.utils.mail_delivery import ensure_mail_delivery_schema
+
+    ensure_mail_delivery_schema()
+
+    status = (request.args.get("status") or "all").strip().lower()
+    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
+        status = "all"
+
+    search = (request.args.get("q") or "").strip()
+    try:
+        per_page = int(request.args.get("limit", "200"))
+    except ValueError:
+        per_page = 200
+    per_page = max(20, min(500, per_page))
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * per_page
+
+    where_sql = "WHERE 1=1"
+    params: list = []
+    if status != "all":
+        where_sql += " AND last_delivery_status = %s"
+        params.append(status)
+    if search:
+        where_sql += " AND (message_id LIKE %s OR mfu_mail_uuid LIKE %s OR subject LIKE %s OR to_addresses LIKE %s)"
+        like = f"%{search}%"
+        params.extend([like, like, like, like])
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        f"""
+        SELECT id, mfu_mail_uuid, message_id, to_addresses, subject, submit_status, submit_at,
+               last_delivery_status, last_delivery_detail, last_delivery_queue_id,
+               last_delivery_checked_at
+          FROM mfu_mail_delivery_log
+          {where_sql}
+         ORDER BY submit_at DESC, id DESC
+         LIMIT %s OFFSET %s
+        """,
+        (*params, per_page, offset),
+    )
+    rows = cur.fetchall() or []
+
+    cur.execute(
+        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",
+        params,
+    )
+    total = (cur.fetchone() or {}).get("cnt", 0)
+    db.close()
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return render_template(
+        "admin_mail_delivery_logs.html",
+        rows=rows,
+        filters={
+            "status": status,
+            "q": search,
+            "limit": per_page,
+        },
+        page=page,
+        total_pages=total_pages,
+        total=total,
     )
 
 
