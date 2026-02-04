@@ -1,0 +1,8 @@
+[Unit]
+Description=MFU Postfix delivery status poller
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/mfu/app
+Environment=FLASK_APP=app
+ExecStart=/usr/bin/flask --app app poll-mail-delivery --max-rows 200

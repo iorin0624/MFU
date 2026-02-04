@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS mfu_mail_delivery_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    mfu_mail_uuid CHAR(36) NOT NULL,
+    message_id VARCHAR(255) NOT NULL,
+    to_addresses VARCHAR(1024) NULL,
+    subject VARCHAR(255) NULL,
+    submit_status VARCHAR(32) NOT NULL,
+    submit_at DATETIME NOT NULL,
+    last_delivery_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
+    last_delivery_detail VARCHAR(1000) NULL,
+    last_delivery_queue_id VARCHAR(64) NULL,
+    last_delivery_checked_at DATETIME NULL,
+    UNIQUE KEY uniq_message_id (message_id),
+    KEY idx_submit_at (submit_at),
+    KEY idx_last_delivery_status (last_delivery_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
