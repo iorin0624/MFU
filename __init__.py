@@ -1904,6 +1904,26 @@ def admin_mail_delivery_logs():
     )
 
 
+@app.route("/admin/mail-delivery/refresh", methods=["POST"])
+@admin_required
+def admin_mail_delivery_refresh():
+    from app.utils.mail_delivery import poll_mail_delivery_statuses
+
+    max_rows = request.args.get("max_rows")
+    if max_rows is None:
+        payload = request.get_json(silent=True) or {}
+        max_rows = payload.get("max_rows")
+    try:
+        max_rows_int = int(max_rows or 200)
+    except (TypeError, ValueError):
+        max_rows_int = 200
+    max_rows_int = max(20, min(500, max_rows_int))
+
+    summary = poll_mail_delivery_statuses(max_rows=max_rows_int)
+    summary["max_rows"] = max_rows_int
+    return jsonify(summary)
+
+
 # =======================================
 # 管理: メンテナンスモード
 # =======================================
