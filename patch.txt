@@ -1,8 +1,8 @@
 diff --git a/utils/mail_delivery.py b/utils/mail_delivery.py
-index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c67e100b30 100644
+index 72330c5fbbba28c2e7b5e0168be454c67e100b30..ad83dd42fba11aea9c8efc6aa55d6362b61d3ada 100644
 --- a/utils/mail_delivery.py
 +++ b/utils/mail_delivery.py
-@@ -1,40 +1,40 @@
+@@ -1,40 +1,41 @@
  from __future__ import annotations
  
  import os
@@ -15,10 +15,12 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
  from app.utils.db import get_db
  
  DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
- DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
+-DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
++DEFAULT_MESSAGE_ID_DOMAIN = "mail.iori0624.jp"
  DEFAULT_POLL_LIMIT_HOURS = 24
--DEFAULT_HTTP_TIMEOUT_SEC = 5
-+DEFAULT_HTTP_TIMEOUT_SEC = 15
+-DEFAULT_HTTP_TIMEOUT_SEC = 15
++DEFAULT_HTTP_TIMEOUT_SEC = 30
++MAX_HTTP_TIMEOUT_SEC = 120
  
  
  def _get_config_value(name: str, default):
@@ -44,11 +46,52 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
              id INT AUTO_INCREMENT PRIMARY KEY,
              mfu_mail_uuid CHAR(36) NOT NULL,
              message_id VARCHAR(255) NOT NULL,
-@@ -168,85 +168,104 @@ def _update_delivery_row(
- def _touch_delivery_row(
+@@ -99,51 +100,51 @@ def record_mail_submission(
+             last_delivery_detail = VALUES(last_delivery_detail)
+         """,
+         (
+             mfu_mail_uuid,
+             message_id,
+             _clamp(to_addresses, 1024),
+             _clamp(subject, 255),
+             submit_status,
+             submit_at,
+             last_delivery_status,
+             _clamp(last_delivery_detail, 1000),
+         ),
+     )
+     db.commit()
+     db.close()
+ 
+ 
+ def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
+     cutoff = datetime.now() - timedelta(hours=limit_hours)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     cur.execute(
+         """
+         SELECT id, message_id, last_delivery_status, submit_at
+           FROM mfu_mail_delivery_log
+-         WHERE submit_status = 'queued'
++         WHERE submit_status IN ('queued', 'sent')
+            AND last_delivery_status NOT IN ('sent', 'bounced')
+            AND submit_at >= %s
+          ORDER BY submit_at ASC
+          LIMIT %s
+         """,
+         (cutoff, max_rows),
+     )
+     rows = cur.fetchall() or []
+     db.close()
+     return rows
+ 
+ 
+ def _update_delivery_row(
      *,
      row_id: int,
+     status: str,
      detail: str | None,
+     queue_id: str | None,
      checked_at: datetime,
  ) -> None:
      db = get_db()
@@ -56,8 +99,7 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
      cur.execute(
          """
          UPDATE mfu_mail_delivery_log
-            SET last_delivery_detail = %s,
-                last_delivery_checked_at = %s
+@@ -181,111 +182,111 @@ def _touch_delivery_row(
           WHERE id = %s
          """,
          (
@@ -70,8 +112,7 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
      db.close()
  
  
--def poll_mail_delivery_statuses(max_rows: int = 200) -> dict:
-+def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = None) -> dict:
+ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = None) -> dict:
      ensure_mail_delivery_schema()
      base_url = _get_config_value(
          "MFU_POSTFIX_STATUS_API_BASE_URL", DEFAULT_POSTFIX_STATUS_API_BASE_URL
@@ -80,14 +121,12 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
      limit_hours = int(
          _get_config_value("MFU_MAIL_STATUS_POLL_LIMIT_HOURS", DEFAULT_POLL_LIMIT_HOURS)
      )
--    timeout_sec = int(
--        _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
--    )
-+    if timeout_sec is None:
-+        timeout_sec = int(
-+            _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
-+        )
-+    timeout_sec = max(1, min(60, int(timeout_sec)))
+     if timeout_sec is None:
+         timeout_sec = int(
+             _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
+         )
+-    timeout_sec = max(1, min(60, int(timeout_sec)))
++    timeout_sec = max(1, min(MAX_HTTP_TIMEOUT_SEC, int(timeout_sec)))
  
      base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
      headers = {"X-API-Key": api_key} if api_key else {}
@@ -111,23 +150,24 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
                  headers=headers,
                  timeout=timeout_sec,
              )
-+        except requests.Timeout:
-+            retry_timeout = min(timeout_sec * 2, 60)
-+            try:
-+                resp = requests.get(
-+                    url,
-+                    params={"message_id": message_id},
-+                    headers=headers,
-+                    timeout=retry_timeout,
-+                )
-+            except requests.RequestException as exc:
-+                summary["errors"] += 1
-+                _touch_delivery_row(
-+                    row_id=row_id,
-+                    detail=f"poll_error: {exc.__class__.__name__}",
-+                    checked_at=now,
-+                )
-+                continue
+         except requests.Timeout:
+-            retry_timeout = min(timeout_sec * 2, 60)
++            retry_timeout = min(timeout_sec * 2, MAX_HTTP_TIMEOUT_SEC)
+             try:
+                 resp = requests.get(
+                     url,
+                     params={"message_id": message_id},
+                     headers=headers,
+                     timeout=retry_timeout,
+                 )
+             except requests.RequestException as exc:
+                 summary["errors"] += 1
+                 _touch_delivery_row(
+                     row_id=row_id,
+                     detail=f"poll_error: {exc.__class__.__name__}",
+                     checked_at=now,
+                 )
+                 continue
          except requests.RequestException as exc:
              summary["errors"] += 1
              _touch_delivery_row(
@@ -153,3 +193,24 @@ index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c6
              _touch_delivery_row(
                  row_id=row_id,
                  detail="poll_error: invalid_json",
+                 checked_at=now,
+             )
+             continue
+ 
+         status = str(payload.get("status") or "unknown")
+         detail = payload.get("detail")
+         queue_id = payload.get("queue_id")
+-        if status not in ("sent", "deferred", "bounced", "unknown"):
++        if status not in ("sent", "deferred", "bounced", "queued", "unknown", "failed"):
+             status = "unknown"
+ 
+         _update_delivery_row(
+             row_id=row_id,
+             status=status,
+             detail=detail,
+             queue_id=queue_id,
+             checked_at=now,
+         )
+         summary["updated"] += 1
+ 
+     return summary

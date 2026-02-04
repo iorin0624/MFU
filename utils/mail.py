@@ -158,7 +158,7 @@ def send_mail(
                 message_id=message_id,
                 to_addresses=to_header,
                 subject=subject or "",
-                submit_status="queued",
+                submit_status="sent",
                 last_delivery_status="queued",
             )
         except Exception:
