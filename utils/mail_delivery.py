@@ -10,9 +10,10 @@ from flask import current_app
 from app.utils.db import get_db
 
 DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
-DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
+DEFAULT_MESSAGE_ID_DOMAIN = "mail.iori0624.jp"
 DEFAULT_POLL_LIMIT_HOURS = 24
-DEFAULT_HTTP_TIMEOUT_SEC = 15
+DEFAULT_HTTP_TIMEOUT_SEC = 30
+MAX_HTTP_TIMEOUT_SEC = 120
 
 
 def _get_config_value(name: str, default):
@@ -121,7 +122,7 @@ def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
         """
         SELECT id, message_id, last_delivery_status, submit_at
           FROM mfu_mail_delivery_log
-         WHERE submit_status = 'queued'
+         WHERE submit_status IN ('queued', 'sent')
            AND last_delivery_status NOT IN ('sent', 'bounced')
            AND submit_at >= %s
          ORDER BY submit_at ASC
@@ -203,7 +204,7 @@ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = N
         timeout_sec = int(
             _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
         )
-    timeout_sec = max(1, min(60, int(timeout_sec)))
+    timeout_sec = max(1, min(MAX_HTTP_TIMEOUT_SEC, int(timeout_sec)))
 
     base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
     headers = {"X-API-Key": api_key} if api_key else {}
@@ -228,7 +229,7 @@ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = N
                 timeout=timeout_sec,
             )
         except requests.Timeout:
-            retry_timeout = min(timeout_sec * 2, 60)
+            retry_timeout = min(timeout_sec * 2, MAX_HTTP_TIMEOUT_SEC)
             try:
                 resp = requests.get(
                     url,
@@ -276,7 +277,7 @@ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = N
         status = str(payload.get("status") or "unknown")
         detail = payload.get("detail")
         queue_id = payload.get("queue_id")
-        if status not in ("sent", "deferred", "bounced", "unknown"):
+        if status not in ("sent", "deferred", "bounced", "queued", "unknown", "failed"):
             status = "unknown"
 
         _update_delivery_row(
