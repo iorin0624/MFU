@@ -47,14 +47,45 @@ def ensure_mail_delivery_schema() -> None:
             last_delivery_detail VARCHAR(1000) NULL,
             last_delivery_queue_id VARCHAR(64) NULL,
             last_delivery_checked_at DATETIME NULL,
+            external_login_user_id BIGINT NULL,
+            mail_kind VARCHAR(64) NULL,
             UNIQUE KEY uniq_message_id (message_id),
             KEY idx_submit_at (submit_at),
-            KEY idx_last_delivery_status (last_delivery_status)
+            KEY idx_last_delivery_status (last_delivery_status),
+            KEY idx_ext_user_submit (external_login_user_id, submit_at),
+            KEY idx_mail_kind_submit (mail_kind, submit_at)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
     db.commit()
+    _ensure_mail_delivery_columns(cur)
+    db.commit()
     db.close()
+
+
+def _ensure_mail_delivery_columns(cur) -> None:
+    cur.execute("SHOW COLUMNS FROM mfu_mail_delivery_log")
+    existing = {row[0] if isinstance(row, tuple) else row.get("Field") for row in cur.fetchall()}
+    cur.execute("SHOW INDEX FROM mfu_mail_delivery_log")
+    existing_indexes = {
+        row[2] if isinstance(row, tuple) else row.get("Key_name") for row in cur.fetchall()
+    }
+    if "external_login_user_id" not in existing:
+        cur.execute("ALTER TABLE mfu_mail_delivery_log ADD COLUMN external_login_user_id BIGINT NULL")
+    if "mail_kind" not in existing:
+        cur.execute("ALTER TABLE mfu_mail_delivery_log ADD COLUMN mail_kind VARCHAR(64) NULL")
+    if "idx_ext_user_submit" not in existing_indexes:
+        try:
+            cur.execute(
+                "ALTER TABLE mfu_mail_delivery_log ADD KEY idx_ext_user_submit (external_login_user_id, submit_at)"
+            )
+        except Exception:
+            pass
+    if "idx_mail_kind_submit" not in existing_indexes:
+        try:
+            cur.execute("ALTER TABLE mfu_mail_delivery_log ADD KEY idx_mail_kind_submit (mail_kind, submit_at)")
+        except Exception:
+            pass
 
 
 def generate_message_id() -> tuple[str, str]:
@@ -74,6 +105,8 @@ def record_mail_submission(
     submit_status: str,
     last_delivery_status: str,
     last_delivery_detail: str | None = None,
+    external_login_user_id: int | None = None,
+    mail_kind: str | None = None,
 ) -> None:
     ensure_mail_delivery_schema()
     submit_at = datetime.now()
@@ -91,13 +124,17 @@ def record_mail_submission(
             last_delivery_status,
             last_delivery_detail,
             last_delivery_queue_id,
-            last_delivery_checked_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL)
+            last_delivery_checked_at,
+            external_login_user_id,
+            mail_kind
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s)
         ON DUPLICATE KEY UPDATE
             submit_status = VALUES(submit_status),
             submit_at = VALUES(submit_at),
             last_delivery_status = VALUES(last_delivery_status),
-            last_delivery_detail = VALUES(last_delivery_detail)
+            last_delivery_detail = VALUES(last_delivery_detail),
+            external_login_user_id = VALUES(external_login_user_id),
+            mail_kind = VALUES(mail_kind)
         """,
         (
             mfu_mail_uuid,
@@ -108,10 +145,94 @@ def record_mail_submission(
             submit_at,
             last_delivery_status,
             _clamp(last_delivery_detail, 1000),
+            external_login_user_id,
+            _clamp(mail_kind, 64),
         ),
     )
     db.commit()
     db.close()
+
+
+def fetch_latest_mail_delivery_for_external_user(
+    *,
+    external_login_user_id: int,
+    email: str,
+    mail_kind: str | None = None,
+) -> dict | None:
+    ensure_mail_delivery_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        where_sql = "WHERE external_login_user_id = %s AND to_addresses LIKE %s"
+        params: list = [external_login_user_id, f"%{email}%"]
+        if mail_kind:
+            where_sql += " AND mail_kind = %s"
+            params.append(mail_kind)
+        cur.execute(
+            f"""
+            SELECT mfu_mail_uuid,
+                   message_id,
+                   to_addresses,
+                   subject,
+                   submit_status,
+                   submit_at,
+                   last_delivery_status,
+                   last_delivery_detail,
+                   last_delivery_queue_id,
+                   last_delivery_checked_at,
+                   external_login_user_id,
+                   mail_kind
+              FROM mfu_mail_delivery_log
+              {where_sql}
+             ORDER BY submit_at DESC, id DESC
+             LIMIT 1
+            """,
+            params,
+        )
+        return cur.fetchone()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except Exception:
+            pass
+
+
+def build_mail_delivery_display(
+    submit_status: str | None,
+    delivery_status: str | None,
+) -> tuple[str, str | None]:
+    submit_status_norm = (submit_status or "").lower()
+    delivery_status_norm = (delivery_status or "").lower()
+
+    submit_map = {
+        "accepted": "送信受付済み",
+        "sent": "送信受付済み",
+        "success": "送信受付済み",
+        "queued": "送信受付済み",
+        "failed": "送信失敗",
+        "error": "送信失敗",
+    }
+    delivery_map = {
+        "sent": "配信完了",
+        "delivered": "配信完了",
+        "bounced": "配信失敗（宛先不達の可能性）",
+        "failed": "配信失敗",
+        "deferred": "遅延中（再試行中）",
+        "queued": "確認中",
+        "unknown": "確認中",
+    }
+
+    submit_ja = submit_map.get(submit_status_norm, "未送信")
+    delivery_ja = delivery_map.get(delivery_status_norm, "確認中")
+
+    display = f"{submit_ja}／配信状況：{delivery_ja}"
+    message_ja = None
+    if delivery_status_norm == "deferred":
+        message_ja = "配送が遅延しているため、再試行しています。"
+    elif delivery_status_norm in ("bounced", "failed"):
+        message_ja = "宛先不達の可能性があります。メールアドレスをご確認ください。"
+    return display, message_ja
 
 
 def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
