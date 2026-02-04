@@ -11,7 +11,7 @@ from datetime import datetime
 #
 # ※ ここはあなたのMFUの実装に合わせて import パスを調整してください。
 #   例: "from app import create_app" だったり "from app.main import create_app" だったりします。
-from app import create_app  # ←必要なら修正
+from app import app  # ←必要なら修正
 
 from app.utils.mail_delivery import poll_mail_delivery_statuses  # ←このモジュールの配置に合わせて修正
 
@@ -21,7 +21,6 @@ def main() -> int:
     timeout_sec_env = os.environ.get("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC")
     timeout_sec = int(timeout_sec_env) if timeout_sec_env else None
 
-    app = create_app()
     with app.app_context():
         summary = poll_mail_delivery_statuses(max_rows=max_rows, timeout_sec=timeout_sec)
 

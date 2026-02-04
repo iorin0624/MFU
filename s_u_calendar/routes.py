@@ -209,16 +209,32 @@ def admin_or_token_required(view):
     return _wrap
 
 # === Graph: free/busy 取得（最小）==============================================
-TENANT = os.environ["GRAPH_TENANT_ID"]
-CLIENT_ID = os.environ["GRAPH_CLIENT_ID"]
-CLIENT_SECRET = os.environ["GRAPH_CLIENT_SECRET"]
-UPN = os.environ["OUTLOOK_SYNC_UPN"]
+def _get_graph_env() -> tuple[str, str, str, str]:
+    env = {
+        "GRAPH_TENANT_ID": os.environ.get("GRAPH_TENANT_ID"),
+        "GRAPH_CLIENT_ID": os.environ.get("GRAPH_CLIENT_ID"),
+        "GRAPH_CLIENT_SECRET": os.environ.get("GRAPH_CLIENT_SECRET"),
+        "OUTLOOK_SYNC_UPN": os.environ.get("OUTLOOK_SYNC_UPN"),
+    }
+    missing = [key for key, value in env.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Missing required Graph environment variables: "
+            + ", ".join(missing)
+        )
+    return (
+        env["GRAPH_TENANT_ID"],
+        env["GRAPH_CLIENT_ID"],
+        env["GRAPH_CLIENT_SECRET"],
+        env["OUTLOOK_SYNC_UPN"],
+    )
 
 def get_app_token():
+    tenant, client_id, client_secret, _upn = _get_graph_env()
     auth = msal.ConfidentialClientApplication(
-        CLIENT_ID,
-        authority=f"https://login.microsoftonline.com/{TENANT}",
-        client_credential=CLIENT_SECRET,
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant}",
+        client_credential=client_secret,
     )
     scope = ["https://graph.microsoft.com/.default"]
     result = auth.acquire_token_silent(scope, account=None) or auth.acquire_token_for_client(scopes=scope)
@@ -227,10 +243,11 @@ def get_app_token():
     return result["access_token"]
 
 def get_freebusy(date_from: dt.date, date_to: dt.date):
+    _tenant, _client_id, _client_secret, upn = _get_graph_env()
     token = get_app_token()
-    url = f"https://graph.microsoft.com/v1.0/users/{UPN}/calendar/getSchedule"
+    url = f"https://graph.microsoft.com/v1.0/users/{upn}/calendar/getSchedule"
     body = {
-        "schedules": [UPN],
+        "schedules": [upn],
         "startTime": {"dateTime": f"{date_from}T00:00:00", "timeZone": "Tokyo Standard Time"},
         "endTime":   {"dateTime": f"{date_to}T23:59:59", "timeZone": "Tokyo Standard Time"},
         "availabilityViewInterval": 60
@@ -1205,5 +1222,4 @@ def admin_api_sync_outlook_6m():
         "last_sync_at": last_sync_at_str,
         "last_sync_range": f"{start_d.strftime(fmt)}..{end_d.strftime(fmt)}"
     }), 200
-
 
