@@ -39,6 +39,8 @@ def send_mail(
     debug: bool = False,
     starttls: bool | None = None,
     ignore_quit_errors: bool = True,
+    external_login_user_id: int | None = None,
+    mail_kind: str | None = None,
 ) -> None:
     """
     メール送信ユーティリティ。
@@ -160,6 +162,8 @@ def send_mail(
                 subject=subject or "",
                 submit_status="sent",
                 last_delivery_status="queued",
+                external_login_user_id=external_login_user_id,
+                mail_kind=mail_kind,
             )
         except Exception:
             log.warning("mail submission log failed", exc_info=True)
@@ -186,6 +190,8 @@ def send_mail(
                     submit_status="failed",
                     last_delivery_status="failed",
                     last_delivery_detail=repr(e),
+                    external_login_user_id=external_login_user_id,
+                    mail_kind=mail_kind,
                 )
             except Exception:
                 log.warning("mail submission log failed", exc_info=True)
@@ -204,6 +210,8 @@ def send_mail(
                     submit_status="failed",
                     last_delivery_status="failed",
                     last_delivery_detail=repr(e),
+                    external_login_user_id=external_login_user_id,
+                    mail_kind=mail_kind,
                 )
             except Exception:
                 log.warning("mail submission log failed", exc_info=True)
