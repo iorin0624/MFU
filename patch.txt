@@ -1,115 +1,155 @@
-diff --git a/templates/admin_mail_delivery_logs.html b/templates/admin_mail_delivery_logs.html
-index e764a1a7a8d82af444c124d40f3c53bdf49251c3..715440c5a8af9e7de25b8314f430b1a8fac985f1 100644
---- a/templates/admin_mail_delivery_logs.html
-+++ b/templates/admin_mail_delivery_logs.html
-@@ -1,33 +1,39 @@
- {% extends "base.html" %}
+diff --git a/utils/mail_delivery.py b/utils/mail_delivery.py
+index 03e7f3162154701e5f8babc0ac395594f5756603..72330c5fbbba28c2e7b5e0168be454c67e100b30 100644
+--- a/utils/mail_delivery.py
++++ b/utils/mail_delivery.py
+@@ -1,40 +1,40 @@
+ from __future__ import annotations
  
- {% block title %}メール送信ログ | MFU{% endblock %}
+ import os
+ import uuid
+ from datetime import datetime, timedelta
  
- {% block content %}
--<div class="d-flex justify-content-between align-items-center mb-3">
--  <h2 class="mb-0">📧 メール送信ログ（配送結果）</h2>
--  <span class="text-muted small">合計 {{ total }} 件</span>
-+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 gap-2">
-+  <div>
-+    <h2 class="mb-0">📧 メール送信ログ（配送結果）</h2>
-+    <div id="mail-delivery-refresh-status" class="text-muted small mt-1" aria-live="polite"></div>
-+  </div>
-+  <div class="d-flex align-items-center gap-2">
-+    <span class="text-muted small">合計 {{ total }} 件</span>
-+    <button class="btn btn-outline-primary btn-sm" type="button" id="mail-delivery-refresh">配送状況を更新</button>
-+  </div>
- </div>
+ import requests
+ from flask import current_app
  
- <form class="row g-2 align-items-end mb-3" method="get" action="{{ url_for('admin_mail_delivery_logs') }}">
-   <div class="col-sm-3">
-     <label class="form-label">配送ステータス</label>
-     <select class="form-select" name="status">
-       {% set cur = filters.status %}
-       <option value="all" {% if cur == 'all' %}selected{% endif %}>すべて</option>
-       <option value="queued" {% if cur == 'queued' %}selected{% endif %}>queued</option>
-       <option value="sent" {% if cur == 'sent' %}selected{% endif %}>sent</option>
-       <option value="deferred" {% if cur == 'deferred' %}selected{% endif %}>deferred</option>
-       <option value="bounced" {% if cur == 'bounced' %}selected{% endif %}>bounced</option>
-       <option value="unknown" {% if cur == 'unknown' %}selected{% endif %}>unknown</option>
-       <option value="failed" {% if cur == 'failed' %}selected{% endif %}>failed</option>
-     </select>
-   </div>
-   <div class="col-sm-5">
-     <label class="form-label">検索（宛先/件名/Message-ID）</label>
-     <input class="form-control" type="text" name="q" value="{{ filters.q or '' }}" placeholder="keyword">
-   </div>
-   <div class="col-sm-2">
-     <label class="form-label">件数</label>
-     <input class="form-control" type="number" name="limit" min="20" max="500" value="{{ filters.limit }}">
-   </div>
-   <div class="col-sm-2 d-flex gap-2">
-@@ -101,27 +107,67 @@
-     </tbody>
-   </table>
- </div>
+ from app.utils.db import get_db
  
- <nav aria-label="pagination" class="mt-3">
-   <ul class="pagination justify-content-center">
-     {% set prev_page = page - 1 %}
-     {% set next_page = page + 1 %}
-     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-       <a class="page-link" href="{{ url_for('admin_mail_delivery_logs', page=prev_page, status=filters.status, q=filters.q, limit=filters.limit) }}">前へ</a>
-     </li>
-     <li class="page-item disabled"><span class="page-link">{{ page }} / {{ total_pages }}</span></li>
-     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-       <a class="page-link" href="{{ url_for('admin_mail_delivery_logs', page=next_page, status=filters.status, q=filters.q, limit=filters.limit) }}">次へ</a>
-     </li>
-   </ul>
- </nav>
- {% endblock %}
+ DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
+ DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
+ DEFAULT_POLL_LIMIT_HOURS = 24
+-DEFAULT_HTTP_TIMEOUT_SEC = 5
++DEFAULT_HTTP_TIMEOUT_SEC = 15
  
- {% block body_extra %}
- <script>
-   const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-   tooltipTriggerList.forEach(function (tooltipTriggerEl) {
-     new bootstrap.Tooltip(tooltipTriggerEl);
-   });
-+
-+  const refreshButton = document.getElementById('mail-delivery-refresh');
-+  const refreshStatus = document.getElementById('mail-delivery-refresh-status');
-+  if (refreshButton) {
-+    const defaultLabel = refreshButton.textContent;
-+    refreshButton.addEventListener('click', async () => {
-+      refreshButton.disabled = true;
-+      refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
-+      if (refreshStatus) {
-+        refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
-+      }
-+
-+      const params = new URLSearchParams(window.location.search);
-+      const limit = Number(params.get('limit')) || {{ filters.limit }};
-+      const maxRows = Math.min(Math.max(limit, 20), 500);
-+      try {
-+        const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows, {
-+          method: 'POST',
-+          headers: {
-+            'Content-Type': 'application/json'
-+          },
-+        });
-+        if (!response.ok) {
-+          throw new Error('refresh_failed');
-+        }
-+        const result = await response.json();
-+        if (refreshStatus) {
-+          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
-+        }
-+        window.location.reload();
-+      } catch (error) {
-+        if (refreshStatus) {
-+          refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
-+        }
-+      } finally {
-+        refreshButton.disabled = false;
-+        refreshButton.textContent = defaultLabel;
-+      }
-+    });
-+  }
- </script>
- {% endblock %}
+ 
+ def _get_config_value(name: str, default):
+     try:
+         return current_app.config.get(name, default)
+     except Exception:
+         return os.environ.get(name, default)
+ 
+ 
+ def _clamp(value: str | None, max_len: int) -> str | None:
+     if value is None:
+         return None
+     text = str(value)
+     return text if len(text) <= max_len else text[:max_len]
+ 
+ 
+ def ensure_mail_delivery_schema() -> None:
+     db = get_db()
+     cur = db.cursor()
+     cur.execute(
+         """
+         CREATE TABLE IF NOT EXISTS mfu_mail_delivery_log (
+             id INT AUTO_INCREMENT PRIMARY KEY,
+             mfu_mail_uuid CHAR(36) NOT NULL,
+             message_id VARCHAR(255) NOT NULL,
+@@ -168,85 +168,104 @@ def _update_delivery_row(
+ def _touch_delivery_row(
+     *,
+     row_id: int,
+     detail: str | None,
+     checked_at: datetime,
+ ) -> None:
+     db = get_db()
+     cur = db.cursor()
+     cur.execute(
+         """
+         UPDATE mfu_mail_delivery_log
+            SET last_delivery_detail = %s,
+                last_delivery_checked_at = %s
+          WHERE id = %s
+         """,
+         (
+             _clamp(detail, 1000),
+             checked_at,
+             row_id,
+         ),
+     )
+     db.commit()
+     db.close()
+ 
+ 
+-def poll_mail_delivery_statuses(max_rows: int = 200) -> dict:
++def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = None) -> dict:
+     ensure_mail_delivery_schema()
+     base_url = _get_config_value(
+         "MFU_POSTFIX_STATUS_API_BASE_URL", DEFAULT_POSTFIX_STATUS_API_BASE_URL
+     )
+     api_key = _get_config_value("MFU_POSTFIX_STATUS_API_KEY", "")
+     limit_hours = int(
+         _get_config_value("MFU_MAIL_STATUS_POLL_LIMIT_HOURS", DEFAULT_POLL_LIMIT_HOURS)
+     )
+-    timeout_sec = int(
+-        _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
+-    )
++    if timeout_sec is None:
++        timeout_sec = int(
++            _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
++        )
++    timeout_sec = max(1, min(60, int(timeout_sec)))
+ 
+     base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
+     headers = {"X-API-Key": api_key} if api_key else {}
+ 
+     rows = _fetch_poll_targets(limit_hours=limit_hours, max_rows=max_rows)
+     now = datetime.now()
+     summary = {"checked": 0, "updated": 0, "errors": 0}
+ 
+     for row in rows:
+         summary["checked"] += 1
+         message_id = row.get("message_id")
+         row_id = row.get("id")
+         if not message_id or not row_id:
+             continue
+ 
+         url = f"{base_url}/api/mail/status"
+         try:
+             resp = requests.get(
+                 url,
+                 params={"message_id": message_id},
+                 headers=headers,
+                 timeout=timeout_sec,
+             )
++        except requests.Timeout:
++            retry_timeout = min(timeout_sec * 2, 60)
++            try:
++                resp = requests.get(
++                    url,
++                    params={"message_id": message_id},
++                    headers=headers,
++                    timeout=retry_timeout,
++                )
++            except requests.RequestException as exc:
++                summary["errors"] += 1
++                _touch_delivery_row(
++                    row_id=row_id,
++                    detail=f"poll_error: {exc.__class__.__name__}",
++                    checked_at=now,
++                )
++                continue
+         except requests.RequestException as exc:
+             summary["errors"] += 1
+             _touch_delivery_row(
+                 row_id=row_id,
+                 detail=f"poll_error: {exc.__class__.__name__}",
+                 checked_at=now,
+             )
+             continue
+ 
+         if resp.status_code != 200:
+             summary["errors"] += 1
+             _touch_delivery_row(
+                 row_id=row_id,
+                 detail=f"poll_http_status: {resp.status_code}",
+                 checked_at=now,
+             )
+             continue
+ 
+         try:
+             payload = resp.json()
+         except ValueError:
+             summary["errors"] += 1
+             _touch_delivery_row(
+                 row_id=row_id,
+                 detail="poll_error: invalid_json",
