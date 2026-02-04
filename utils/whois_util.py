@@ -101,6 +101,7 @@ def _extract_rdap_name(rdap: dict) -> tuple[str, str, str]:
 def _extract_whois_info(text: str) -> dict:
     info = {
         "netname": "",
+        "network_name": "",
         "country": "",
         "org": "",
         "asname": "",
@@ -111,24 +112,58 @@ def _extract_whois_info(text: str) -> dict:
         line = line.strip()
         if not line:
             continue
-        lower = line.lower()
-        if lower.startswith("netname:"):
-            info["netname"] = line.split(":", 1)[1].strip()
-        elif lower.startswith("orgname:"):
-            info["org"] = info["org"] or line.split(":", 1)[1].strip()
-        elif lower.startswith("organization:"):
-            info["org"] = info["org"] or line.split(":", 1)[1].strip()
-        elif lower.startswith("owner:") and not info["org"]:
-            info["org"] = line.split(":", 1)[1].strip()
-        elif lower.startswith("descr:") and not info["org"]:
-            info["org"] = line.split(":", 1)[1].strip()
-        elif lower.startswith("country:"):
-            info["country"] = line.split(":", 1)[1].strip()
-        elif lower.startswith("as-name:") or lower.startswith("asname:"):
-            info["asname"] = line.split(":", 1)[1].strip()
-        elif lower.startswith("origin:") or lower.startswith("originas:"):
-            info["asname"] = info["asname"] or line.split(":", 1)[1].strip()
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        key_norm = key.replace(" ", "")
+        if key_norm == "netname":
+            info["netname"] = value
+        elif key_norm == "networkname":
+            info["network_name"] = value
+        elif key_norm == "orgname":
+            info["org"] = info["org"] or value
+        elif key_norm == "organization":
+            info["org"] = info["org"] or value
+        elif key_norm == "owner" and not info["org"]:
+            info["org"] = value
+        elif key_norm == "descr" and not info["org"]:
+            info["org"] = value
+        elif key_norm == "country":
+            info["country"] = value
+        elif key_norm in ("as-name", "asname"):
+            info["asname"] = value
+        elif key_norm in ("origin", "originas"):
+            info["asname"] = info["asname"] or value
     return info
+
+def _is_generic_jpnic_name(name: str) -> bool:
+    if not name:
+        return False
+    lowered = name.lower()
+    return "japan network information center" in lowered or "jpnic" in lowered
+
+def _pick_best_display_name(
+    whois_info: dict,
+    rdap_org: str,
+    rdap_asname: str,
+    rdap_name: str,
+) -> str:
+    candidates = [
+        whois_info.get("network_name") or whois_info.get("netname") or "",
+        whois_info.get("org") or "",
+        rdap_org or "",
+        rdap_asname or "",
+        rdap_name or "",
+    ]
+    for candidate in candidates:
+        if candidate and not _is_generic_jpnic_name(candidate):
+            return candidate
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return ""
 
 def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
     """IPからnetnameとcountryを取得（キャッシュ付き）"""
@@ -150,15 +185,18 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
         "source": "",
     }
 
+    rdap_name = ""
+    rdap_org = ""
+    rdap_country = ""
     rdap = _fetch_rdap(ip)
     if rdap:
-        name, org, country = _extract_rdap_name(rdap)
-        if name:
-            info["netname"] = name
-        if org:
-            info["org"] = org
-        if country:
-            info["country"] = country
+        rdap_name, rdap_org, rdap_country = _extract_rdap_name(rdap)
+        if rdap_name:
+            info["netname"] = rdap_name
+        if rdap_org:
+            info["org"] = rdap_org
+        if rdap_country:
+            info["country"] = rdap_country
         info["source"] = "rdap"
 
     whois_text = ""
@@ -167,6 +205,13 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
     except Exception:
         whois_text = ""
 
+    whois_info = {
+        "netname": "",
+        "network_name": "",
+        "country": "",
+        "org": "",
+        "asname": "",
+    }
     if whois_text:
         whois_info = _extract_whois_info(whois_text)
         if info["netname"] == "不明" and whois_info["netname"]:
@@ -187,7 +232,17 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
             info["netname"] = info["asname"]
 
     if is_ipv6:
-        info["display_name"] = info["netname"]
+        display_name = _pick_best_display_name(
+            whois_info,
+            rdap_org,
+            info["asname"],
+            rdap_name,
+        )
+        info["display_name"] = display_name or info["netname"]
+        if display_name:
+            info["netname"] = display_name
+        if _is_generic_jpnic_name(info["org"]):
+            info["org"] = ""
 
     is_failure = info["netname"] in ("不明", "")
     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
