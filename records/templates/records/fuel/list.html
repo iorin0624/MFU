@@ -2,7 +2,9 @@
 
 {% block records_title %}給油記録{% endblock %}
 
-{% block records_actions %}{% endblock %}
+{% block records_actions %}
+  {% include "records/_back_to_index.html" %}
+{% endblock %}
 
 {% block records_content %}
 <div class="card mb-4">
