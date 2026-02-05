@@ -1,56 +1,53 @@
-diff --git a/templates/base.html b/templates/base.html
-index 40393349e914468b59896cb66560c97ebb1c1ded..09f16ab498333d52976913caafdafeb2cf4a0aaf 100644
---- a/templates/base.html
-+++ b/templates/base.html
-@@ -19,50 +19,51 @@
+diff --git a/records/templates/records/maintenance/list.html b/records/templates/records/maintenance/list.html
+index 1f614d9ed1b141f5ba05d75936e571e72a156912..9025d1c9ededc7900e6a08abae74cb20720f82c7 100644
+--- a/records/templates/records/maintenance/list.html
++++ b/records/templates/records/maintenance/list.html
+@@ -1,37 +1,47 @@
+ {% extends "records/base_records.html" %}
  
-       <div class="collapse navbar-collapse" id="navbarMain">
-         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+ {% block records_title %}整備記録{% endblock %}
  
-           {% if session.get('user') %}
-           <!-- アップロード関係（全ユーザー） -->
-           <li class="nav-item dropdown">
-             <a class="nav-link dropdown-toggle" href="#" id="navUpload" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-              ⬆️ アップロード関係
-             </a>
-             <ul class="dropdown-menu" aria-labelledby="navUpload">
-               <li><a class="dropdown-item" href="/modes">⚙️ モード管理</a></li>
-               <li><a class="dropdown-item" href="/upload_list">📜 アップロード履歴</a></li>
-             </ul>
-           </li>
+ {% block records_actions %}
+   <div class="d-flex flex-wrap gap-2">
+     {% include "records/_back_to_index.html" %}
+-    <a href="{{ url_for('records.maintenance_new') }}" class="btn btn-primary">新規追加</a>
++    <a href="{{ url_for('records.maintenance_list', _anchor='new') }}" class="btn btn-primary">新規追加</a>
+   </div>
+ {% endblock %}
  
-           <!-- 単独メニュー（全ユーザー） -->
-           <li class="nav-item"><a class="nav-link" href="/album/admin_create_album/">🖼 アルバム管理</a></li>
-           <li class="nav-item"><a class="nav-link" href="/tickets/admin">🎟 チケット管理</a></li>
-           <li class="nav-item"><a class="nav-link" href="/receipts">🧾 受領書</a></li>
-           <li class="nav-item"><a class="nav-link" href="/external-login/admin/events">📅 イベント一覧</a></li>
- 
-           {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
-           {% if session.user == 'admin' %}
-             <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
-+            <li class="nav-item"><a class="nav-link" href="{{ url_for('records.index') }}">📃 記録</a></li>
-             <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
-           {% endif %}
- 
-           {# ==== ここから：システム系はadminのみ、一般は/account ==== #}
-           {% if session.user == 'admin' %}
-             <!-- システム系（adminのみ） -->
-             <li class="nav-item dropdown">
-               <a class="nav-link dropdown-toggle" href="#" id="navSystem" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                 🧰 システム系
-               </a>
-               <ul class="dropdown-menu" aria-labelledby="navSystem">
-                 <li><a class="dropdown-item" href="/admin/users">👤 ユーザー管理</a></li>
-                 <li><hr class="dropdown-divider"></li>
-                 <li><a class="dropdown-item" href="/admin/maintenance">🛠 メンテナンス切換</a></li>
-                 <li><a class="dropdown-item" href="/admin/mail-delivery">📧 メール送信ログ</a></li>
-                 <li><a class="dropdown-item" href="/admin/logs">📑 アクセスログ</a></li>
-                 <li><a class="dropdown-item" href="/service_logs/">📡 システムログ</a></li>
-                 <!-- ▼ 追加：ノード監視（スピードテストの上に配置） -->
-                 <li><a class="dropdown-item" href="/admin/nodes">🖥 ノード監視</a></li>
-                 <!-- ▲ 追加ここまで -->
-                 <li><a class="dropdown-item" href="/speedtest">🚀 スピードテスト</a></li>
-                 {# ※ タイマー＆アラームは上に移動したためここからは削除 #}
-               </ul>
-             </li>
-           {% else %}
+ {% block records_content %}
++<div class="card mb-4" id="new">
++  <div class="card-body">
++    <h5 class="card-title">新規追加</h5>
++    {% set item = None %}
++    {% set action_url = url_for('records.maintenance_create') %}
++    {% set show_back = true %}
++    {% include "records/maintenance/_form.html" %}
++  </div>
++</div>
++
+ <div class="card mb-4">
+   <div class="card-body">
+     <h5 class="card-title">直近交換サマリ</h5>
+     <table class="table table-sm">
+       <thead>
+         <tr>
+           <th>項目</th>
+           <th>日付</th>
+           <th class="text-end">メーター</th>
+           <th>備考</th>
+         </tr>
+       </thead>
+       <tbody>
+         {% for row in latest_rows %}
+         <tr>
+           <td>{{ row.item }}</td>
+           <td>{{ row.event_date }}</td>
+           <td class="text-end">{{ row.odometer_km }}</td>
+           <td>{{ row.note or '' }}</td>
+         </tr>
+         {% else %}
+         <tr><td colspan="4" class="text-center text-muted">データがありません。</td></tr>
+         {% endfor %}
+       </tbody>
+     </table>
