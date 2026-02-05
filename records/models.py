@@ -30,6 +30,61 @@ def ensure_uber_schema(db=None) -> None:
         db.close()
 
 
+def ensure_maintenance_items_schema(db=None) -> None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS maintenance_items (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(191) NOT NULL,
+            target_km INT NULL,
+            sort_order INT NOT NULL,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            INDEX(sort_order),
+            INDEX(is_active)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute("SELECT COUNT(*) FROM maintenance_items")
+    has_rows = cur.fetchone()[0] > 0
+    if not has_rows:
+        now = now_ts()
+        seed_items = [
+            ("オイル交換", 1),
+            ("プラグ交換", 2),
+            ("リアタイヤ交換", 3),
+            ("フロントタイヤ交換", 4),
+            ("Vベルト交換", 5),
+            ("ウェイトローラー交換", 6),
+            ("エアフィルター交換", 7),
+            ("ブレーキフルード交換", 8),
+            ("リアブレーキパッド交換", 9),
+            ("フロントブレーキパッド交換", 10),
+        ]
+        cur.executemany(
+            """
+            INSERT INTO maintenance_items (
+                name,
+                target_km,
+                sort_order,
+                is_active,
+                created_at,
+                updated_at
+            ) VALUES (%s, %s, %s, 1, %s, %s)
+            """,
+            [(name, None, order, now, now) for name, order in seed_items],
+        )
+    db.commit()
+    if close_db:
+        db.close()
+
+
 def ensure_maintenance_schema(db=None) -> None:
     close_db = False
     if db is None:
@@ -52,6 +107,32 @@ def ensure_maintenance_schema(db=None) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'bike_maintenance_log'
+        """
+    )
+    columns = {row[0] for row in cur.fetchall()}
+    if "item_id" not in columns:
+        cur.execute(
+            "ALTER TABLE bike_maintenance_log ADD COLUMN item_id INT NULL AFTER odometer_km"
+        )
+    cur.execute(
+        """
+        SELECT index_name
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'bike_maintenance_log'
+          AND index_name = 'idx_bike_maintenance_item_id'
+        """
+    )
+    if not cur.fetchone():
+        cur.execute(
+            "CREATE INDEX idx_bike_maintenance_item_id ON bike_maintenance_log (item_id)"
+        )
     db.commit()
     if close_db:
         db.close()
@@ -120,6 +201,7 @@ def ensure_records_schema() -> None:
     db = get_db()
     try:
         ensure_uber_schema(db)
+        ensure_maintenance_items_schema(db)
         ensure_maintenance_schema(db)
         ensure_fuel_schema(db)
     finally:
