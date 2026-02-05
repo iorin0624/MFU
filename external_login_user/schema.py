@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
   nickname       VARCHAR(50)     NULL,
   x_id           VARCHAR(15)     NULL,
   instagram_id   VARCHAR(30)     NULL,
+  buyer_email    VARCHAR(255)    NULL,
   amount_yen     INT UNSIGNED NOT NULL,
   lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0,
   status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
@@ -175,6 +176,7 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
+            _ensure_col("mfu_payment_request", "buyer_email", "buyer_email VARCHAR(255) NULL AFTER instagram_id")
             _ensure_col("mfu_payment_request", "lecture_auto_approve",
                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
 

@@ -207,6 +207,7 @@ def _create_payment_request(
     nickname: str | None,
     x_id: str | None,
     instagram_id: str | None,
+    buyer_email: str | None,
     lecture_auto_approve: bool = False,
 ) -> str:
     """支払いリクエストを発行し、トークンを返す。"""
@@ -215,9 +216,10 @@ def _create_payment_request(
     try:
         cur.execute("""
             INSERT INTO mfu_payment_request (
-              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, amount_yen, lecture_auto_approve
+              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, buyer_email,
+              amount_yen, lecture_auto_approve
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             token,
             event_id,
@@ -226,6 +228,7 @@ def _create_payment_request(
             nickname,
             x_id,
             instagram_id,
+            buyer_email,
             int(amount_yen),
             1 if lecture_auto_approve else 0,
         ))
@@ -690,6 +693,10 @@ def pay_start(event_uuid: str):
             if not methods.get("card"):
                 flash("このイベントではクレジットカード決済は利用できません。", "warning")
                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+            buyer_email = (me.get("email") or "").strip()
+            if not buyer_email:
+                flash("クレジットカード決済にはメールアドレスの登録が必要です。プロフィールから登録してください。", "warning")
+                return redirect(url_for("external_login_user.profile", next=request.url, reason="email"))
             pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
             payment_token = _create_payment_request(
                 ev["id"],
@@ -699,6 +706,7 @@ def pay_start(event_uuid: str):
                 nickname=me.get("nickname"),
                 x_id=me.get("x_id"),
                 instagram_id=me.get("instagram_id"),
+                buyer_email=buyer_email,
                 lecture_auto_approve=lecture_auto_approve,
             )  # type: ignore
             if lecture_auto_approve:
@@ -757,6 +765,10 @@ def pay_start(event_uuid: str):
     if methods.get("bank") and not (methods.get("card") or methods.get("paypay")):
         return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
 
+    buyer_email = (me.get("email") or "").strip()
+    if not buyer_email:
+        flash("クレジットカード決済にはメールアドレスの登録が必要です。プロフィールから登録してください。", "warning")
+        return redirect(url_for("external_login_user.profile", next=request.url, reason="email"))
     pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
     payment_token = _create_payment_request(
         ev["id"],
@@ -766,6 +778,7 @@ def pay_start(event_uuid: str):
         nickname=me.get("nickname"),
         x_id=me.get("x_id"),
         instagram_id=me.get("instagram_id"),
+        buyer_email=buyer_email,
         lecture_auto_approve=lecture_auto_approve,
     )  # type: ignore
     if lecture_auto_approve:
@@ -1517,6 +1530,10 @@ def lecture_pay_start(event_uuid: str):
             if not methods.get("card"):
                 flash("この講座ではクレジットカード決済は利用できません。", "warning")
                 return redirect(url_for("external_login_user.pay_options", event_uuid=event_uuid))
+            buyer_email = (me.get("email") or "").strip()
+            if not buyer_email:
+                flash("クレジットカード決済にはメールアドレスの登録が必要です。プロフィールから登録してください。", "warning")
+                return redirect(url_for("external_login_user.profile", next=request.url, reason="email"))
             # Square へ（戻りは講座専用の return へ）
             pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
             payment_token = _create_payment_request(
@@ -1527,6 +1544,7 @@ def lecture_pay_start(event_uuid: str):
                 nickname=me.get("nickname"),
                 x_id=me.get("x_id"),
                 instagram_id=me.get("instagram_id"),
+                buyer_email=buyer_email,
                 lecture_auto_approve=auto_approve_hit,
             )  # type: ignore
             if auto_approve_hit:
@@ -1589,6 +1607,10 @@ def lecture_pay_start(event_uuid: str):
         return redirect(url_for("external_login_user.pay_bank", event_uuid=event_uuid))
 
     # ここまで来たらカードのみ → Squareへ
+    buyer_email = (me.get("email") or "").strip()
+    if not buyer_email:
+        flash("クレジットカード決済にはメールアドレスの登録が必要です。プロフィールから登録してください。", "warning")
+        return redirect(url_for("external_login_user.profile", next=request.url, reason="email"))
     pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(ev["id"])  # type: ignore
     payment_token = _create_payment_request(
         ev["id"],
@@ -1598,6 +1620,7 @@ def lecture_pay_start(event_uuid: str):
         nickname=me.get("nickname"),
         x_id=me.get("x_id"),
         instagram_id=me.get("instagram_id"),
+        buyer_email=buyer_email,
         lecture_auto_approve=auto_approve_hit,
     )  # type: ignore
     if auto_approve_hit:
