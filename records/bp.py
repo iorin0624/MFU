@@ -84,7 +84,8 @@ def _parse_decimal(value: str, field_name: str) -> Decimal | None:
 @records_bp.get("/")
 @login_required
 def index():
-    return render_template("index.html")
+    # Template collision avoidance: always use the records/ namespace.
+    return render_template("records/index.html")
 
 
 @records_bp.get("/uber")
@@ -140,7 +141,7 @@ def uber_list():
     summary_avg = round(total_sum / deliveries_sum) if deliveries_sum else None
 
     return render_template(
-        "uber/list.html",
+        "records/uber/list.html",
         rows=rows,
         summary={
             "deliveries_sum": deliveries_sum,
@@ -155,7 +156,7 @@ def uber_list():
 @records_bp.get("/uber/new")
 @login_required
 def uber_new():
-    return render_template("uber/form.html", item=None)
+    return render_template("records/uber/form.html", item=None)
 
 
 @records_bp.post("/uber/new")
@@ -221,7 +222,7 @@ def uber_edit(record_id: int):
     if not item:
         flash("対象の記録が見つかりません。", "warning")
         return redirect(url_for("records.uber_list"))
-    return render_template("uber/form.html", item=item)
+    return render_template("records/uber/form.html", item=item)
 
 
 @records_bp.post("/uber/<int:record_id>/edit")
@@ -312,7 +313,7 @@ def maintenance_list():
     db.close()
 
     return render_template(
-        "maintenance/list.html",
+        "records/maintenance/list.html",
         rows=rows,
         latest_rows=latest_rows,
     )
@@ -321,7 +322,7 @@ def maintenance_list():
 @records_bp.get("/maintenance/new")
 @login_required
 def maintenance_new():
-    return render_template("maintenance/form.html", item=None)
+    return render_template("records/maintenance/form.html", item=None)
 
 
 @records_bp.post("/maintenance/new")
@@ -369,7 +370,7 @@ def maintenance_edit(record_id: int):
     if not item:
         flash("対象の記録が見つかりません。", "warning")
         return redirect(url_for("records.maintenance_list"))
-    return render_template("maintenance/form.html", item=item)
+    return render_template("records/maintenance/form.html", item=item)
 
 
 @records_bp.post("/maintenance/<int:record_id>/edit")
@@ -462,13 +463,13 @@ def fuel_list():
         reverse=True,
     )
 
-    return render_template("fuel/list.html", rows=computed)
+    return render_template("records/fuel/list.html", rows=computed)
 
 
 @records_bp.get("/fuel/new")
 @login_required
 def fuel_new():
-    return render_template("fuel/form.html", item=None)
+    return render_template("records/fuel/form.html", item=None)
 
 
 @records_bp.post("/fuel/new")
@@ -522,7 +523,7 @@ def fuel_edit(record_id: int):
     if not item:
         flash("対象の記録が見つかりません。", "warning")
         return redirect(url_for("records.fuel_list"))
-    return render_template("fuel/form.html", item=item)
+    return render_template("records/fuel/form.html", item=item)
 
 
 @records_bp.post("/fuel/<int:record_id>/edit")
