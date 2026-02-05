@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from threading import Lock
 from zoneinfo import ZoneInfo
@@ -87,6 +87,13 @@ def _parse_decimal(
     except (InvalidOperation, ValueError):
         flash(f"{field_name}は数値で入力してください。", "warning")
         return None
+
+
+def _round_decimal(value: Decimal | None, places: int) -> Decimal | None:
+    if value is None:
+        return None
+    quantizer = Decimal("1").scaleb(-places)
+    return value.quantize(quantizer, rounding=ROUND_HALF_UP)
 
 
 @records_bp.get("/")
@@ -567,7 +574,7 @@ def fuel_list():
             liters = float(row["liters"])
             if trip_km_val > 0 and liters > 0:
                 km_per_l = trip_km_val / liters
-                if row.get("yen_per_liter"):
+                if row.get("yen_per_liter") is not None:
                     yen_per_km = (row["yen_per_liter"] * liters) / trip_km_val
         row["km_per_l"] = km_per_l
         row["yen_per_km"] = yen_per_km
@@ -576,7 +583,7 @@ def fuel_list():
     computed.sort(
         key=lambda r: (
             r["fill_date"],
-            r["odometer_km"],
+            r["odometer_km"] or 0,
             r["id"],
         ),
         reverse=True,
@@ -606,15 +613,21 @@ def fuel_create_legacy():
 @login_required
 def fuel_create():
     fill_date = _parse_date(request.form.get("fill_date", ""), "日付")
-    odometer_km = _parse_decimal(
-        request.form.get("odometer_km", ""),
-        "メーター",
-        allow_empty=True,
+    odometer_km = _round_decimal(
+        _parse_decimal(
+            request.form.get("odometer_km", ""),
+            "メーター",
+            allow_empty=True,
+        ),
+        1,
     )
-    trip_km = _parse_decimal(
-        request.form.get("trip_km", ""),
-        "トリップ",
-        allow_empty=True,
+    trip_km = _round_decimal(
+        _parse_decimal(
+            request.form.get("trip_km", ""),
+            "トリップ",
+            allow_empty=True,
+        ),
+        1,
     )
     liters = _parse_decimal(request.form.get("liters", ""), "給油量")
     yen_per_liter = _parse_int(
@@ -625,6 +638,9 @@ def fuel_create():
     note = request.form.get("note", "").strip() or None
     is_full = 1 if request.form.get("is_full") == "on" else 0
     if fill_date is None or liters is None:
+        return redirect(url_for("records.fuel_list"))
+    if liters <= 0:
+        flash("給油量は0より大きい値を入力してください。", "warning")
         return redirect(url_for("records.fuel_list"))
     if odometer_km is None and trip_km is None:
         flash("メーターかトリップを入力してください。", "warning")
@@ -683,15 +699,21 @@ def fuel_edit(record_id: int):
 @login_required
 def fuel_update(record_id: int):
     fill_date = _parse_date(request.form.get("fill_date", ""), "日付")
-    odometer_km = _parse_decimal(
-        request.form.get("odometer_km", ""),
-        "メーター",
-        allow_empty=True,
+    odometer_km = _round_decimal(
+        _parse_decimal(
+            request.form.get("odometer_km", ""),
+            "メーター",
+            allow_empty=True,
+        ),
+        1,
     )
-    trip_km = _parse_decimal(
-        request.form.get("trip_km", ""),
-        "トリップ",
-        allow_empty=True,
+    trip_km = _round_decimal(
+        _parse_decimal(
+            request.form.get("trip_km", ""),
+            "トリップ",
+            allow_empty=True,
+        ),
+        1,
     )
     liters = _parse_decimal(request.form.get("liters", ""), "給油量")
     yen_per_liter = _parse_int(
@@ -702,6 +724,9 @@ def fuel_update(record_id: int):
     note = request.form.get("note", "").strip() or None
     is_full = 1 if request.form.get("is_full") == "on" else 0
     if fill_date is None or liters is None:
+        return redirect(url_for("records.fuel_edit", record_id=record_id))
+    if liters <= 0:
+        flash("給油量は0より大きい値を入力してください。", "warning")
         return redirect(url_for("records.fuel_edit", record_id=record_id))
     if odometer_km is None and trip_km is None:
         flash("メーターかトリップを入力してください。", "warning")

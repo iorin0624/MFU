@@ -30,14 +30,15 @@
       <th>備考</th>
       <th class="text-end">km/L</th>
       <th class="text-end">円/km</th>
-      <th></th>
+      <th>編集</th>
+      <th>削除</th>
     </tr>
   </thead>
   <tbody>
     {% for row in rows %}
     <tr>
       <td>{{ row.fill_date }}</td>
-      <td class="text-end">{{ row.odometer_km }}</td>
+      <td class="text-end">{{ row.odometer_km if row.odometer_km is not none else '—' }}</td>
       <td class="text-end">{{ row.trip_km if row.trip_km is not none else '—' }}</td>
       <td class="text-end">{{ row.liters }}</td>
       <td class="text-end">{{ row.yen_per_liter if row.yen_per_liter is not none else '—' }}</td>
@@ -59,13 +60,15 @@
       </td>
       <td class="text-end">
         <a href="{{ url_for('records.fuel_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
+      </td>
+      <td class="text-end">
         <form method="post" action="{{ url_for('records.fuel_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
           <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
         </form>
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="10" class="text-center text-muted">データがありません。</td></tr>
+    <tr><td colspan="11" class="text-center text-muted">データがありません。</td></tr>
     {% endfor %}
   </tbody>
 </table>
