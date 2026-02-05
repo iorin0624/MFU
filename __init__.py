@@ -2399,22 +2399,24 @@ def before_every_request():
 
     # アプリ内ブラウザ（LINE/X/Instagram）への警告
     if "user" not in session:
-        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc","/external-login/","/e/",)
+        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc")
         if not any(request.path.startswith(p) for p in skip_paths):
             ua = request.headers.get("User-Agent", "")
             ref = request.headers.get("Referer", "")
 
-            #元コード↓
-            inapp_keywords = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
-            #inapp_keywords = ["Instagram", "Twitter", "FBAN", "FBAV"]
-            inapp = any(k in ua for k in inapp_keywords)
+            is_instagram = "Instagram" in ua
+            is_line = "Line/" in ua
+            is_x = ("Twitter" in ua) or ref.startswith("https://t.co/")
 
-            # 👇 X (旧Twitter) のアプリ内ブラウザは UA では判定できないので Ref で判定
-            if ref.startswith("https://t.co/"):
-                inapp = True
-
-            if inapp or request.cookies.get("InAppView") == "1":
+            if request.cookies.get("InAppView") == "1":
                 return render_template("inapp_warning.html"), 200
+
+            if is_instagram or is_x:
+                return render_template("inapp_warning.html"), 200
+
+            if is_line:
+                if not request.path.startswith(("/external-login/", "/e/")):
+                    return render_template("inapp_warning.html"), 200
 
 @app.after_request
 def finalize_response(response):
