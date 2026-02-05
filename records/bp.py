@@ -4,6 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from functools import wraps
 from threading import Lock
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
@@ -110,7 +111,7 @@ def uber_list():
     )
     rows = cur.fetchall()
 
-    today = date.today()
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
     month_start = date(today.year, today.month, 1)
     if today.month == 12:
         month_end = date(today.year + 1, 1, 1)
@@ -243,6 +244,7 @@ def uber_list():
         "records/uber/list.html",
         rows=rows,
         monthly_rows=monthly_rows,
+        default_work_date=today,
         summary={
             "deliveries_sum": deliveries_sum,
             "net_sum": summary.get("net_sum") or 0,
@@ -256,12 +258,9 @@ def uber_list():
 @records_bp.get("/uber/new")
 @login_required
 def uber_new():
-    return render_template("records/uber/form.html", item=None)
+    return redirect(url_for("records.uber_list"))
 
-
-@records_bp.post("/uber/new")
-@login_required
-def uber_create():
+def _handle_uber_upsert(redirect_endpoint: str):
     work_date = _parse_date(request.form.get("work_date", ""), "日付")
     deliveries = _parse_int(request.form.get("deliveries", ""), "件数")
     net_yen = _parse_int(request.form.get("net_yen", ""), "正味の料金")
@@ -269,10 +268,10 @@ def uber_create():
     other_yen = _parse_int(request.form.get("other_yen", "0"), "その他")
     tip_yen = _parse_int(request.form.get("tip_yen", "0"), "チップ")
     if None in (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen):
-        return redirect(url_for("records.uber_new"))
+        return redirect(url_for(redirect_endpoint))
     if deliveries == 0 and net_yen == 0 and promo_yen == 0 and other_yen == 0 and tip_yen == 0:
         flash("件数が0で金額もすべて0のデータは登録できません。", "warning")
-        return redirect(url_for("records.uber_new"))
+        return redirect(url_for(redirect_endpoint))
 
     now = now_ts()
     db = get_db()
@@ -311,7 +310,19 @@ def uber_create():
     db.commit()
     db.close()
     flash("Uber記録を保存しました。", "success")
-    return redirect(url_for("records.uber_list"))
+    return redirect(url_for(redirect_endpoint))
+
+
+@records_bp.post("/uber")
+@login_required
+def uber_create_or_update():
+    return _handle_uber_upsert("records.uber_list")
+
+
+@records_bp.post("/uber/new")
+@login_required
+def uber_create():
+    return _handle_uber_upsert("records.uber_list")
 
 
 @records_bp.get("/uber/<int:record_id>/edit")
@@ -325,7 +336,7 @@ def uber_edit(record_id: int):
     if not item:
         flash("対象の記録が見つかりません。", "warning")
         return redirect(url_for("records.uber_list"))
-    return render_template("records/uber/form.html", item=item)
+    return render_template("records/uber/form.html", item=item, default_work_date=item.get("work_date"))
 
 
 @records_bp.post("/uber/<int:record_id>/edit")
