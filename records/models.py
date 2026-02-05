@@ -210,3 +210,105 @@ def ensure_records_schema() -> None:
 
 def now_ts() -> datetime:
     return datetime.now()
+
+
+def list_maintenance_items(
+    *,
+    include_inactive: bool = False,
+    db=None,
+) -> list[dict]:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor(dictionary=True)
+    if include_inactive:
+        cur.execute(
+            """
+            SELECT id, name, target_km, sort_order, is_active
+            FROM maintenance_items
+            ORDER BY sort_order, id
+            """
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id, name, target_km, sort_order
+            FROM maintenance_items
+            WHERE is_active = 1
+            ORDER BY sort_order, id
+            """
+        )
+    rows = cur.fetchall()
+    if close_db:
+        db.close()
+    return rows
+
+
+def insert_maintenance_item(
+    name: str,
+    target_km: int | None,
+    sort_order: int | None,
+    is_active: bool,
+    *,
+    db=None,
+) -> int:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor()
+    if sort_order is None:
+        cur.execute("SELECT COALESCE(MAX(sort_order), 0) FROM maintenance_items")
+        sort_order = int(cur.fetchone()[0] or 0) + 10
+    now = now_ts()
+    cur.execute(
+        """
+        INSERT INTO maintenance_items (
+            name,
+            target_km,
+            sort_order,
+            is_active,
+            created_at,
+            updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (name, target_km, sort_order, 1 if is_active else 0, now, now),
+    )
+    item_id = cur.lastrowid
+    db.commit()
+    if close_db:
+        db.close()
+    return int(item_id)
+
+
+def update_maintenance_item(
+    item_id: int,
+    name: str,
+    target_km: int | None,
+    sort_order: int,
+    is_active: bool,
+    *,
+    db=None,
+) -> None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor()
+    now = now_ts()
+    cur.execute(
+        """
+        UPDATE maintenance_items
+        SET name = %s,
+            target_km = %s,
+            sort_order = %s,
+            is_active = %s,
+            updated_at = %s
+        WHERE id = %s
+        """,
+        (name, target_km, sort_order, 1 if is_active else 0, now, item_id),
+    )
+    db.commit()
+    if close_db:
+        db.close()
