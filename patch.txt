@@ -1,65 +1,67 @@
-diff --git a/records/templates/uber/list.html b/records/templates/uber/list.html
-new file mode 100644
-index 0000000000000000000000000000000000000000..78bce6b4432125198c6cee5cc55744486ec22fe2
---- /dev/null
-+++ b/records/templates/uber/list.html
-@@ -0,0 +1,59 @@
-+{% extends "base_records.html" %}
+diff --git a/records/bp.py b/records/bp.py
+index 527c6c8dcd85de55684914c9377c0ba20f38ca10..3af31a8c35b31ddb0c9ed706c64c323b3704af8e 100644
+--- a/records/bp.py
++++ b/records/bp.py
+@@ -1,48 +1,60 @@
+ from __future__ import annotations
+ 
+ from datetime import date, datetime
+ from decimal import Decimal, InvalidOperation
+ from functools import wraps
++from threading import Lock
+ 
+ from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+ 
+ from app.utils.db import get_db
+ 
+ from .models import ensure_records_schema, now_ts
+ 
+ records_bp = Blueprint(
+     "records",
+     __name__,
+     template_folder="templates",
+     static_folder="static",
+ )
+ 
+ 
+-@records_bp.before_app_first_request
++_schema_init_lock = Lock()
++_schema_initialized = False
 +
-+{% block records_title %}Uber 日次記録{% endblock %}
 +
-+{% block records_actions %}
-+  <a href="{{ url_for('records.uber_new') }}" class="btn btn-primary">新規追加</a>
-+{% endblock %}
-+
-+{% block records_content %}
-+<div class="card mb-4">
-+  <div class="card-body">
-+    <h5 class="card-title">今月サマリ ({{ summary.month_start.strftime('%Y-%m') }})</h5>
-+    <div class="row">
-+      <div class="col-md-3"><strong>件数合計:</strong> {{ summary.deliveries_sum }}</div>
-+      <div class="col-md-3"><strong>正味合計:</strong> {{ summary.net_sum }}</div>
-+      <div class="col-md-3"><strong>全体金額:</strong> {{ summary.total_sum }}</div>
-+      <div class="col-md-3"><strong>平均:</strong> {{ summary.avg_yen if summary.avg_yen is not none else '—' }}</div>
-+    </div>
-+  </div>
-+</div>
-+
-+<table class="table table-striped align-middle">
-+  <thead>
-+    <tr>
-+      <th>日付</th>
-+      <th class="text-end">件数</th>
-+      <th class="text-end">正味</th>
-+      <th class="text-end">プロモ</th>
-+      <th class="text-end">その他</th>
-+      <th class="text-end">チップ</th>
-+      <th class="text-end">全体金額</th>
-+      <th class="text-end">1件平均</th>
-+      <th></th>
-+    </tr>
-+  </thead>
-+  <tbody>
-+    {% for row in rows %}
-+    <tr>
-+      <td>{{ row.work_date }}</td>
-+      <td class="text-end">{{ row.deliveries }}</td>
-+      <td class="text-end">{{ row.net_yen }}</td>
-+      <td class="text-end">{{ row.promo_yen }}</td>
-+      <td class="text-end">{{ row.other_yen }}</td>
-+      <td class="text-end">{{ row.tip_yen }}</td>
-+      <td class="text-end">{{ row.total_yen }}</td>
-+      <td class="text-end">{{ row.avg_yen if row.avg_yen is not none else '—' }}</td>
-+      <td class="text-end">
-+        <a href="{{ url_for('records.uber_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
-+        <form method="post" action="{{ url_for('records.uber_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
-+          <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
-+        </form>
-+      </td>
-+    </tr>
-+    {% else %}
-+    <tr><td colspan="9" class="text-center text-muted">データがありません。</td></tr>
-+    {% endfor %}
-+  </tbody>
-+</table>
-+{% endblock %}
++@records_bp.before_app_request
+ def _init_records_schema() -> None:
+-    ensure_records_schema()
++    global _schema_initialized
++    if _schema_initialized:
++        return
++    with _schema_init_lock:
++        if _schema_initialized:
++            return
++        ensure_records_schema()
++        _schema_initialized = True
+ 
+ 
+ def login_required(view):
+     @wraps(view)
+     def wrapper(*args, **kwargs):
+         if not session.get("user"):
+             flash("ログインが必要です。", "warning")
+             return redirect(url_for("login"))
+         return view(*args, **kwargs)
+ 
+     return wrapper
+ 
+ 
+ def _parse_date(value: str, field_name: str) -> date | None:
+     if not value:
+         flash(f"{field_name}を入力してください。", "warning")
+         return None
+     try:
+         return datetime.strptime(value, "%Y-%m-%d").date()
+     except ValueError:
+         flash(f"{field_name}の形式が正しくありません。", "warning")
+         return None
+ 
+ 
+ def _parse_int(value: str, field_name: str, *, allow_empty: bool = False) -> int | None:

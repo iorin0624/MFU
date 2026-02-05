@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from functools import wraps
+from threading import Lock
 
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
@@ -18,9 +19,20 @@ records_bp = Blueprint(
 )
 
 
-@records_bp.before_app_first_request
+_schema_init_lock = Lock()
+_schema_initialized = False
+
+
+@records_bp.before_app_request
 def _init_records_schema() -> None:
-    ensure_records_schema()
+    global _schema_initialized
+    if _schema_initialized:
+        return
+    with _schema_init_lock:
+        if _schema_initialized:
+            return
+        ensure_records_schema()
+        _schema_initialized = True
 
 
 def login_required(view):
