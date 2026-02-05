@@ -453,9 +453,10 @@ def maintenance_list():
 @records_bp.get("/maintenance/new")
 @login_required
 def maintenance_new():
-    return render_template("records/maintenance/form.html", item=None)
+    return redirect(url_for("records.maintenance_list"), code=302)
 
 
+@records_bp.post("/maintenance")
 @records_bp.post("/maintenance/new")
 @login_required
 def maintenance_create():
@@ -466,7 +467,7 @@ def maintenance_create():
     if not item:
         flash("項目を入力してください。", "warning")
     if event_date is None or odometer_km is None or not item:
-        return redirect(url_for("records.maintenance_new"))
+        return redirect(url_for("records.maintenance_list", _anchor="new"))
 
     now = now_ts()
     db = get_db()
