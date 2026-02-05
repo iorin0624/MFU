@@ -2665,6 +2665,9 @@ app.register_blueprint(payment_bp)
 
 app.register_blueprint(receipts_bp)
 
+from app.records.bp import records_bp
+app.register_blueprint(records_bp, url_prefix="/records")
+
 from app.utils.logs import log_request_raw, write_login_log, log_access
 
 from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
