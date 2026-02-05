@@ -120,9 +120,9 @@ def uber_list():
     cur.execute(
         """
         SELECT
-            COALESCE(SUM(deliveries), 0) AS deliveries_sum,
-            COALESCE(SUM(net_yen), 0) AS net_sum,
-            COALESCE(SUM(net_yen + promo_yen + other_yen + tip_yen), 0) AS total_sum
+            COALESCE(SUM(CASE WHEN deliveries > 0 THEN deliveries ELSE 0 END), 0) AS deliveries_sum,
+            COALESCE(SUM(CASE WHEN deliveries > 0 THEN net_yen ELSE 0 END), 0) AS net_sum,
+            COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + other_yen + tip_yen) ELSE 0 END), 0) AS total_sum
         FROM uber_daily
         WHERE work_date >= %s AND work_date < %s
         """,
@@ -163,10 +163,10 @@ def uber_list():
         monthly_agg AS (
             SELECT
                 month_start,
-                COUNT(*) AS days_count,
-                COALESCE(SUM(deliveries), 0) AS deliveries_sum,
-                COALESCE(SUM(net_yen), 0) AS net_sum,
-                COALESCE(SUM(net_yen + promo_yen + other_yen + tip_yen), 0) AS total_sum
+                COALESCE(SUM(CASE WHEN deliveries > 0 THEN 1 ELSE 0 END), 0) AS days_count,
+                COALESCE(SUM(CASE WHEN deliveries > 0 THEN deliveries ELSE 0 END), 0) AS deliveries_sum,
+                COALESCE(SUM(CASE WHEN deliveries > 0 THEN net_yen ELSE 0 END), 0) AS net_sum,
+                COALESCE(SUM(CASE WHEN deliveries > 0 THEN (net_yen + promo_yen + other_yen + tip_yen) ELSE 0 END), 0) AS total_sum
             FROM daily_base
             GROUP BY month_start
         ),
@@ -270,6 +270,9 @@ def uber_create():
     tip_yen = _parse_int(request.form.get("tip_yen", "0"), "チップ")
     if None in (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen):
         return redirect(url_for("records.uber_new"))
+    if deliveries == 0 and net_yen == 0 and promo_yen == 0 and other_yen == 0 and tip_yen == 0:
+        flash("件数が0で金額もすべて0のデータは登録できません。", "warning")
+        return redirect(url_for("records.uber_new"))
 
     now = now_ts()
     db = get_db()
@@ -335,6 +338,9 @@ def uber_update(record_id: int):
     other_yen = _parse_int(request.form.get("other_yen", "0"), "その他")
     tip_yen = _parse_int(request.form.get("tip_yen", "0"), "チップ")
     if None in (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen):
+        return redirect(url_for("records.uber_edit", record_id=record_id))
+    if deliveries == 0 and net_yen == 0 and promo_yen == 0 and other_yen == 0 and tip_yen == 0:
+        flash("件数が0で金額もすべて0のデータは登録できません。", "warning")
         return redirect(url_for("records.uber_edit", record_id=record_id))
 
     now = now_ts()
