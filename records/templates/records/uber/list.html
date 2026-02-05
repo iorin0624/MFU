@@ -6,11 +6,21 @@
   {{ "{:,}".format(value) if value is not none else '' }}
 {%- endmacro %}
 
-{% block records_actions %}
-  <a href="{{ url_for('records.uber_new') }}" class="btn btn-primary">新規追加</a>
-{% endblock %}
+{% block records_actions %}{% endblock %}
 
 {% block records_content %}
+<div class="card mb-4">
+  <div class="card-body">
+    <h5 class="card-title">Uber 新規追加</h5>
+    <form method="post" action="{{ url_for('records.uber_create_or_update') }}">
+      {% include "records/uber/_form_fields.html" with context %}
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="card mb-4">
   <div class="card-body">
     <h5 class="card-title">今月サマリ ({{ summary.month_start.strftime('%Y-%m') }})</h5>
