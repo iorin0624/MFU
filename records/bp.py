@@ -419,8 +419,20 @@ def maintenance_list():
     cur = db.cursor(dictionary=True)
     cur.execute(
         """
-        SELECT *
-        FROM bike_maintenance_log
+        SELECT id, name, target_km, sort_order
+        FROM maintenance_items
+        WHERE is_active = 1
+        ORDER BY sort_order, id
+        """
+    )
+    maintenance_items = cur.fetchall()
+    cur.execute(
+        """
+        SELECT
+            m.*,
+            COALESCE(mi.name, m.item) AS item_name
+        FROM bike_maintenance_log m
+        LEFT JOIN maintenance_items mi ON mi.id = m.item_id
         ORDER BY event_date DESC, odometer_km DESC, id DESC
         """
     )
@@ -428,25 +440,87 @@ def maintenance_list():
 
     cur.execute(
         """
-        SELECT m.*
-        FROM bike_maintenance_log m
-        WHERE m.id = (
+        SELECT
+            mi.id AS item_id,
+            mi.name AS item_name,
+            mi.target_km,
+            m.id AS log_id,
+            m.event_date,
+            m.odometer_km,
+            m.note
+        FROM maintenance_items mi
+        LEFT JOIN bike_maintenance_log m
+          ON m.id = (
             SELECT m2.id
             FROM bike_maintenance_log m2
-            WHERE m2.item = m.item
+            WHERE m2.item_id = mi.id
+               OR (m2.item_id IS NULL AND m2.item = mi.name)
             ORDER BY m2.event_date DESC, m2.odometer_km DESC, m2.id DESC
             LIMIT 1
         )
-        ORDER BY m.item
+        WHERE mi.is_active = 1
+        ORDER BY mi.sort_order, mi.id
         """
     )
     latest_rows = cur.fetchall()
     db.close()
 
+    current_odometer_raw = request.args.get("current_odometer", "").strip()
+    current_odometer = _parse_int(
+        current_odometer_raw, "現在メーター", allow_empty=True
+    )
+    current_odometer_value = (
+        current_odometer_raw if current_odometer is not None or not current_odometer_raw else ""
+    )
+    summary_rows = []
+    for row in latest_rows:
+        has_log = row.get("log_id") is not None
+        target_km = row.get("target_km")
+        if not has_log:
+            summary_rows.append(
+                {
+                    "item_name": row["item_name"],
+                    "event_date": "#CALC!",
+                    "odometer_km": "#N/A",
+                    "note": "#N/A",
+                    "since_km": "#N/A",
+                    "target_km": "#N/A",
+                    "remaining_km": "#N/A",
+                }
+            )
+            continue
+
+        if current_odometer is None:
+            since_display = "#CALC!"
+            remaining_display = "#N/A" if target_km is None else "#CALC!"
+        else:
+            since_km = current_odometer - int(row["odometer_km"])
+            since_display = since_km
+            if target_km is None:
+                remaining_display = "#N/A"
+            else:
+                remaining_display = target_km - since_km
+
+        summary_rows.append(
+            {
+                "item_name": row["item_name"],
+                "event_date": row["event_date"],
+                "odometer_km": row["odometer_km"],
+                "note": row.get("note") or "",
+                "since_km": since_display,
+                "target_km": "#N/A" if target_km is None else target_km,
+                "remaining_km": remaining_display,
+            }
+        )
+
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
     return render_template(
         "records/maintenance/list.html",
         rows=rows,
-        latest_rows=latest_rows,
+        maintenance_items=maintenance_items,
+        summary_rows=summary_rows,
+        default_event_date=today,
+        current_odometer=current_odometer_value,
     )
 
 
@@ -462,28 +536,37 @@ def maintenance_new():
 def maintenance_create():
     event_date = _parse_date(request.form.get("event_date", ""), "日付")
     odometer_km = _parse_int(request.form.get("odometer_km", ""), "メーター")
-    item = request.form.get("item", "").strip()
+    item_id = _parse_int(request.form.get("item_id", ""), "項目")
     note = request.form.get("note", "").strip() or None
-    if not item:
-        flash("項目を入力してください。", "warning")
-    if event_date is None or odometer_km is None or not item:
+    if event_date is None or odometer_km is None or item_id is None:
         return redirect(url_for("records.maintenance_list", _anchor="new"))
 
     now = now_ts()
     db = get_db()
     cur = db.cursor()
     cur.execute(
+        "SELECT name FROM maintenance_items WHERE id = %s AND is_active = 1",
+        (item_id,),
+    )
+    item_row = cur.fetchone()
+    if not item_row:
+        db.close()
+        flash("項目を選択してください。", "warning")
+        return redirect(url_for("records.maintenance_list", _anchor="new"))
+    item_name = item_row[0]
+    cur.execute(
         """
         INSERT INTO bike_maintenance_log (
             event_date,
             odometer_km,
+            item_id,
             item,
             note,
             created_at,
             updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
         """,
-        (event_date, odometer_km, item, note, now, now),
+        (event_date, odometer_km, item_id, item_name, note, now, now),
     )
     db.commit()
     db.close()
@@ -498,11 +581,33 @@ def maintenance_edit(record_id: int):
     cur = db.cursor(dictionary=True)
     cur.execute("SELECT * FROM bike_maintenance_log WHERE id = %s", (record_id,))
     item = cur.fetchone()
+    cur.execute(
+        """
+        SELECT id, name, target_km, sort_order
+        FROM maintenance_items
+        WHERE is_active = 1
+        ORDER BY sort_order, id
+        """
+    )
+    maintenance_items = cur.fetchall()
     db.close()
     if not item:
         flash("対象の記録が見つかりません。", "warning")
         return redirect(url_for("records.maintenance_list"))
-    return render_template("records/maintenance/form.html", item=item)
+    if item.get("item_id") is None and item.get("item"):
+        matched = next(
+            (mi for mi in maintenance_items if mi["name"] == item["item"]),
+            None,
+        )
+        if matched:
+            item["item_id"] = matched["id"]
+    today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
+    return render_template(
+        "records/maintenance/form.html",
+        item=item,
+        maintenance_items=maintenance_items,
+        default_event_date=today,
+    )
 
 
 @records_bp.post("/maintenance/<int:record_id>/edit")
@@ -510,27 +615,36 @@ def maintenance_edit(record_id: int):
 def maintenance_update(record_id: int):
     event_date = _parse_date(request.form.get("event_date", ""), "日付")
     odometer_km = _parse_int(request.form.get("odometer_km", ""), "メーター")
-    item = request.form.get("item", "").strip()
+    item_id = _parse_int(request.form.get("item_id", ""), "項目")
     note = request.form.get("note", "").strip() or None
-    if not item:
-        flash("項目を入力してください。", "warning")
-    if event_date is None or odometer_km is None or not item:
+    if event_date is None or odometer_km is None or item_id is None:
         return redirect(url_for("records.maintenance_edit", record_id=record_id))
 
     now = now_ts()
     db = get_db()
     cur = db.cursor()
     cur.execute(
+        "SELECT name FROM maintenance_items WHERE id = %s AND is_active = 1",
+        (item_id,),
+    )
+    item_row = cur.fetchone()
+    if not item_row:
+        db.close()
+        flash("項目を選択してください。", "warning")
+        return redirect(url_for("records.maintenance_edit", record_id=record_id))
+    item_name = item_row[0]
+    cur.execute(
         """
         UPDATE bike_maintenance_log
         SET event_date = %s,
             odometer_km = %s,
+            item_id = %s,
             item = %s,
             note = %s,
             updated_at = %s
         WHERE id = %s
         """,
-        (event_date, odometer_km, item, note, now, record_id),
+        (event_date, odometer_km, item_id, item_name, note, now, record_id),
     )
     db.commit()
     db.close()

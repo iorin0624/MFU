@@ -1,8 +1,8 @@
 diff --git a/records/templates/records/maintenance/list.html b/records/templates/records/maintenance/list.html
-index 1f614d9ed1b141f5ba05d75936e571e72a156912..9025d1c9ededc7900e6a08abae74cb20720f82c7 100644
+index 9025d1c9ededc7900e6a08abae74cb20720f82c7..5be939f14860b41c119cbe992986829fde2a2923 100644
 --- a/records/templates/records/maintenance/list.html
 +++ b/records/templates/records/maintenance/list.html
-@@ -1,37 +1,47 @@
+@@ -1,80 +1,93 @@
  {% extends "records/base_records.html" %}
  
  {% block records_title %}整備記録{% endblock %}
@@ -10,25 +10,32 @@ index 1f614d9ed1b141f5ba05d75936e571e72a156912..9025d1c9ededc7900e6a08abae74cb20
  {% block records_actions %}
    <div class="d-flex flex-wrap gap-2">
      {% include "records/_back_to_index.html" %}
--    <a href="{{ url_for('records.maintenance_new') }}" class="btn btn-primary">新規追加</a>
-+    <a href="{{ url_for('records.maintenance_list', _anchor='new') }}" class="btn btn-primary">新規追加</a>
+     <a href="{{ url_for('records.maintenance_list', _anchor='new') }}" class="btn btn-primary">新規追加</a>
    </div>
  {% endblock %}
  
  {% block records_content %}
-+<div class="card mb-4" id="new">
-+  <div class="card-body">
-+    <h5 class="card-title">新規追加</h5>
-+    {% set item = None %}
-+    {% set action_url = url_for('records.maintenance_create') %}
-+    {% set show_back = true %}
-+    {% include "records/maintenance/_form.html" %}
-+  </div>
-+</div>
-+
+ <div class="card mb-4" id="new">
+   <div class="card-body">
+     <h5 class="card-title">新規追加</h5>
+     {% set item = None %}
+     {% set action_url = url_for('records.maintenance_create') %}
+     {% set show_back = true %}
+     {% include "records/maintenance/_form.html" %}
+   </div>
+ </div>
+ 
  <div class="card mb-4">
    <div class="card-body">
-     <h5 class="card-title">直近交換サマリ</h5>
+-    <h5 class="card-title">直近交換サマリ</h5>
++    <div class="d-flex flex-wrap justify-content-between gap-2 align-items-center">
++      <h5 class="card-title mb-0">直近交換サマリ</h5>
++      <form method="get" class="d-flex align-items-center gap-2">
++        <label class="form-label mb-0">現在メーター</label>
++        <input type="number" name="current_odometer" class="form-control form-control-sm" value="{{ current_odometer }}">
++        <button type="submit" class="btn btn-sm btn-outline-primary">更新</button>
++      </form>
++    </div>
      <table class="table table-sm">
        <thead>
          <tr>
@@ -36,18 +43,62 @@ index 1f614d9ed1b141f5ba05d75936e571e72a156912..9025d1c9ededc7900e6a08abae74cb20
            <th>日付</th>
            <th class="text-end">メーター</th>
            <th>備考</th>
++          <th class="text-end">交換してから</th>
++          <th class="text-end">交換目安</th>
++          <th class="text-end">後どれぐらい？</th>
          </tr>
        </thead>
        <tbody>
-         {% for row in latest_rows %}
+-        {% for row in latest_rows %}
++        {% for row in summary_rows %}
          <tr>
-           <td>{{ row.item }}</td>
+-          <td>{{ row.item }}</td>
++          <td>{{ row.item_name }}</td>
            <td>{{ row.event_date }}</td>
            <td class="text-end">{{ row.odometer_km }}</td>
-           <td>{{ row.note or '' }}</td>
+-          <td>{{ row.note or '' }}</td>
++          <td>{{ row.note }}</td>
++          <td class="text-end">{{ row.since_km }}</td>
++          <td class="text-end">{{ row.target_km }}</td>
++          <td class="text-end">{{ row.remaining_km }}</td>
          </tr>
          {% else %}
-         <tr><td colspan="4" class="text-center text-muted">データがありません。</td></tr>
+-        <tr><td colspan="4" class="text-center text-muted">データがありません。</td></tr>
++        <tr><td colspan="7" class="text-center text-muted">データがありません。</td></tr>
          {% endfor %}
        </tbody>
      </table>
+   </div>
+ </div>
+ 
+ <table class="table table-striped align-middle">
+   <thead>
+     <tr>
+       <th>日付</th>
+       <th class="text-end">メーター</th>
+       <th>項目</th>
+       <th>備考</th>
+       <th></th>
+     </tr>
+   </thead>
+   <tbody>
+     {% for row in rows %}
+     <tr>
+       <td>{{ row.event_date }}</td>
+       <td class="text-end">{{ row.odometer_km }}</td>
+-      <td>{{ row.item }}</td>
++      <td>{{ row.item_name }}</td>
+       <td>{{ row.note or '' }}</td>
+       <td class="text-end">
+         <a href="{{ url_for('records.maintenance_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
+         <form method="post" action="{{ url_for('records.maintenance_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
+           <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
+         </form>
+       </td>
+     </tr>
+     {% else %}
+     <tr><td colspan="5" class="text-center text-muted">データがありません。</td></tr>
+     {% endfor %}
+   </tbody>
+ </table>
+ {% endblock %}
