@@ -129,6 +129,105 @@ def uber_list():
         (month_start, month_end),
     )
     summary = cur.fetchone() or {}
+
+    cur.execute("SELECT MIN(work_date) AS min_date FROM uber_daily")
+    min_row = cur.fetchone() or {}
+    min_date = min_row.get("min_date")
+    if min_date is None:
+        min_month_start = date(today.year, 1, 1)
+    else:
+        min_month_start = date(min_date.year, min_date.month, 1)
+
+    cur.execute(
+        """
+        WITH RECURSIVE months AS (
+            SELECT CAST(%s AS DATE) AS month_start
+            UNION ALL
+            SELECT DATE_ADD(month_start, INTERVAL 1 MONTH)
+            FROM months
+            WHERE month_start < %s
+        ),
+        daily_base AS (
+            SELECT
+                CAST(DATE_FORMAT(work_date, '%Y-%m-01') AS DATE) AS month_start,
+                deliveries,
+                net_yen,
+                promo_yen,
+                other_yen,
+                tip_yen,
+                ROUND(net_yen / NULLIF(deliveries, 0)) AS net_per_delivery,
+                ROUND((net_yen + promo_yen + other_yen + tip_yen) / NULLIF(deliveries, 0)) AS total_per_delivery
+            FROM uber_daily
+            WHERE work_date >= %s AND work_date < %s
+        ),
+        monthly_agg AS (
+            SELECT
+                month_start,
+                COUNT(*) AS days_count,
+                COALESCE(SUM(deliveries), 0) AS deliveries_sum,
+                COALESCE(SUM(net_yen), 0) AS net_sum,
+                COALESCE(SUM(net_yen + promo_yen + other_yen + tip_yen), 0) AS total_sum
+            FROM daily_base
+            GROUP BY month_start
+        ),
+        net_median AS (
+            SELECT
+                month_start,
+                AVG(net_per_delivery) AS net_median
+            FROM (
+                SELECT
+                    month_start,
+                    net_per_delivery,
+                    ROW_NUMBER() OVER (PARTITION BY month_start ORDER BY net_per_delivery) AS rn,
+                    COUNT(*) OVER (PARTITION BY month_start) AS cnt
+                FROM daily_base
+                WHERE deliveries > 0
+            ) ranked
+            WHERE rn IN (FLOOR((cnt + 1) / 2), FLOOR((cnt + 2) / 2))
+            GROUP BY month_start
+        ),
+        total_median AS (
+            SELECT
+                month_start,
+                AVG(total_per_delivery) AS total_median
+            FROM (
+                SELECT
+                    month_start,
+                    total_per_delivery,
+                    ROW_NUMBER() OVER (PARTITION BY month_start ORDER BY total_per_delivery) AS rn,
+                    COUNT(*) OVER (PARTITION BY month_start) AS cnt
+                FROM daily_base
+                WHERE deliveries > 0
+            ) ranked
+            WHERE rn IN (FLOOR((cnt + 1) / 2), FLOOR((cnt + 2) / 2))
+            GROUP BY month_start
+        )
+        SELECT
+            YEAR(months.month_start) AS year,
+            MONTH(months.month_start) AS month,
+            COALESCE(monthly_agg.days_count, 0) AS days_count,
+            COALESCE(monthly_agg.deliveries_sum, 0) AS deliveries_sum,
+            COALESCE(monthly_agg.net_sum, 0) AS net_sum,
+            COALESCE(monthly_agg.total_sum, 0) AS total_sum,
+            CASE
+                WHEN COALESCE(monthly_agg.deliveries_sum, 0) = 0 THEN NULL
+                ELSE ROUND(monthly_agg.net_sum / monthly_agg.deliveries_sum)
+            END AS net_avg,
+            net_median.net_median AS net_median,
+            CASE
+                WHEN COALESCE(monthly_agg.deliveries_sum, 0) = 0 THEN NULL
+                ELSE ROUND(monthly_agg.total_sum / monthly_agg.deliveries_sum)
+            END AS total_avg,
+            total_median.total_median AS total_median
+        FROM months
+        LEFT JOIN monthly_agg ON monthly_agg.month_start = months.month_start
+        LEFT JOIN net_median ON net_median.month_start = months.month_start
+        LEFT JOIN total_median ON total_median.month_start = months.month_start
+        ORDER BY months.month_start DESC
+        """,
+        (min_month_start, month_start, min_month_start, month_end),
+    )
+    monthly_rows = cur.fetchall()
     db.close()
 
     for row in rows:
@@ -143,6 +242,7 @@ def uber_list():
     return render_template(
         "records/uber/list.html",
         rows=rows,
+        monthly_rows=monthly_rows,
         summary={
             "deliveries_sum": deliveries_sum,
             "net_sum": summary.get("net_sum") or 0,
