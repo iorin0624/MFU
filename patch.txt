@@ -1,64 +1,230 @@
-diff --git a/utils/logs.py b/utils/logs.py
-index 6faaed7fee723df9cddd7e38f296c5a54c065988..a45b4dd26ece77ad30a233032f08339342157b3d 100644
---- a/utils/logs.py
-+++ b/utils/logs.py
-@@ -548,50 +548,59 @@ def _client_ip() -> str:
-         return fwd.split(",")[0].strip()
-     return _req.remote_addr or "-"
+diff --git a/payment/__init__.py b/payment/__init__.py
+index 645efc73cfbb3b7743c282941ccd07a4503ecebf..7a1185b2a9734faf30330335cea28834ee0ff91a 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -212,50 +212,89 @@ def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
  
- 
- def _latency_ms() -> int:
-     """before_request で mark_request_start() を仕込んである場合のみ計測。"""
-     try:
-         if hasattr(g, "request_time_start"):
-             return int((time.time() - g.request_time_start) * 1000)
+         base_url = _app_base_url().rstrip("/")
+         return f"{base_url}/external-login/events/{event_uuid_str}/members/{member_id}/receipt.pdf"
      except Exception:
-         pass
-     return 0
+         logging.exception("build_receipt_pdf_url failed")
+         return None
  
+ def _sanitize_handle(s: str | None) -> str | None:
+     if not s:
+         return None
+     s = s.strip()
+     if s.startswith("@"):
+         s = s[1:]
+     s = s.strip()
+     return s.lower() or None
  
- def build_access_log_fields(flask_request, flask_response, flask_session, endpoint: Optional[str]) -> dict:
-     """DB保存用のフィールド辞書を作成（log_request_raw にそのまま渡せる形）。"""
+ def _normalize_handle(v: str | None) -> str:
+     if not v:
+         return ""
+     v = v.strip()
+     if v.startswith("@"):
+         v = v[1:]
+     # Python なので lower()
+     return v.strip().lower()
  
-     # --- user="" に入れる表示名を決定 ---
-     username = ""
++def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
++    if not payment_token:
++        return None
++    cur = conn.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT user_id, buyer_email
++              FROM mfu_payment_request
++             WHERE token=%s
++             ORDER BY id DESC
++             LIMIT 1
++        """, (payment_token,))
++        row = cur.fetchone() or {}
++    finally:
++        try:
++            cur.close()
++        except Exception:
++            pass
++    user_id = row.get("user_id")
++    fallback_email = (row.get("buyer_email") or "").strip()
++    if not user_id:
++        return fallback_email or None
++    cur = conn.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT email
++              FROM external_login_user
++             WHERE id=%s
++             LIMIT 1
++        """, (user_id,))
++        urow = cur.fetchone() or {}
++    finally:
++        try:
++            cur.close()
++        except Exception:
++            pass
++    email = (urow.get("email") or "").strip()
++    return email or fallback_email or None
++
+ # ───────────────────────────────────────────────────────────
+ # Square 顧客ヘルパ
+ # ───────────────────────────────────────────────────────────
+ def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
+     import hashlib
+     base = _square_api_base()
+     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
+ 
+     h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
+     ref = f"ev:{event_uuid[:8]}:{h}"
+ 
+     # 検索
      try:
-         getter = getattr(flask_session, "get", None)
-         if getter:
-             # ① 外部ログインユーザー（LINEログイン等）
-             ext_user_id = flask_session.get("ext_user_id")
-             nickname    = (flask_session.get("ext_user_nickname") or "").strip()
-+            if ext_user_id is None:
-+                try:
-+                    from app.external_login_user.ext_session import get_ext_session
-+                    ext_session = get_ext_session()
-+                    ext_user_id = ext_session.get("ext_user_id")
-+                    nickname = (ext_session.get("ext_user_nickname") or "").strip()
-+                except Exception:
-+                    ext_user_id = None
-+                    nickname = ""
- 
-             if ext_user_id is not None:
-                 try:
-                     ext_id_int = int(ext_user_id)
-                 except Exception:
-                     ext_id_int = ext_user_id  # 念のためそのまま
- 
-                 # 形式: LINE_通しID_ユーザー名
-                 # 例: user="LINE_123_いおりん"
-                 if nickname:
-                     username = f"LINE_{ext_id_int}_{nickname}"
-                 else:
-                     username = f"LINE_{ext_id_int}_"
-             else:
-                 # ② 従来のMFU内部ログインユーザー（/login の username）
-                 raw = (flask_session.get("user") or "").strip()
-                 if raw:
-                     username = raw
+         sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
+                               json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
+         if sresp.status_code < 400:
+             customers = (sresp.json() or {}).get("customers") or []
+             if customers:
+                 return customers[0]["id"]
      except Exception:
-         username = ""
+         logging.exception("search_customers failed")
  
-     return dict(
-         ip=_client_ip(),
-         method=flask_request.method,
-         path=flask_request.path or "",
+     # 作成
+     cresp = requests.post(f"{base}/v2/customers", headers=headers,
+                           json={"given_name": nickname, "reference_id": ref}, timeout=15)
+@@ -1064,85 +1103,135 @@ def api_charge(event_uuid: str):
+     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
+     _wt_in = data.get("walletType", data.get("wallet_type"))
+     if isinstance(_wt_in, str):
+         _wt_in = _wt_in.strip().upper()
+     else:
+         _wt_in = ""
+     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
+ 
+     if not nickname or not source_id or (not x_id and not instagram_id):
+         return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
+ 
+     conn = _get_db()
+     try:
+         if not payment_token:
+             return jsonify({"message": "支払いトークンが見つかりません。イベントページから開き直してください。"}), 400
+         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
+         if payment_token and token_amount is None:
+             return jsonify({"message": "支払いトークンが無効です"}), 400
+         # ★ 常に最新金額を取得（トークンがあれば優先）
+         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
+         if not ev or amount <= 0:
+             return jsonify({"message": "イベントが見つからない/無効です"}), 404
+         if token_amount is not None and token_amount > 0:
+             amount = token_amount
+ 
++        buyer_email = _resolve_buyer_email(conn, payment_token)
++        if not buyer_email:
++            return jsonify({"message": "メールアドレスが未登録のため決済できません。プロフィールから登録してください。"}), 400
++
+         # 二重決済ブロック（event_payments に対して）—削除
+         cur = conn.cursor()
+ 
+         access_token = _square_access_token()
+         location_id  = _square_location_id()
+         if not access_token or not location_id:
+             return jsonify({"message": "Square設定が未完了です"}), 500
+ 
+         idemp = str(uuid.uuid4())
+ 
+         # ★ 先にPENDINGで1行作成（wallet_type を保存）
+         cur.execute("""
+             INSERT INTO event_payments
+               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
+                idempotency_key, square_status, wallet_type, payment_token)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
+         """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type, payment_token))
+         pay_row_id = cur.lastrowid
+         conn.commit()
+ 
++        order_id = None
++        order_title = ev.get("title") or "イベント"
++        order_body = {
++            "order": {
++                "location_id": location_id,
++                "line_items": [
++                    {
++                        "name": order_title,
++                        "quantity": "1",
++                        "base_price_money": {"amount": int(amount), "currency": "JPY"},
++                    }
++                ],
++            }
++        }
++        order_resp = requests.post(
++            f"{_square_api_base()}/v2/orders",
++            headers={"Authorization": f"Bearer {access_token}",
++                     "Content-Type": "application/json", "Accept": "application/json"},
++            json=order_body, timeout=25
++        )
++        if order_resp.status_code < 400:
++            try:
++                order_payload = order_resp.json()
++            except Exception:
++                order_payload = {}
++            order = order_payload.get("order") or {}
++            order_id = order.get("id")
++        else:
++            try:
++                order_payload = order_resp.json()
++            except Exception:
++                order_payload = {}
++            errs = (order_payload.get("errors") or [])
++            code = errs[0].get("code") if errs else None
++            detail = errs[0].get("detail") if errs else order_resp.text
++            cur.execute("""
++                UPDATE event_payments
++                   SET square_status='FAILED', error_code=%s, error_detail=%s
++                 WHERE id=%s
++            """, (code, detail, pay_row_id))
++            conn.commit()
++            return jsonify({"message": "注文情報の作成に失敗しました"}), 502
++
+         # 顧客ID
+         try:
+             customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
+         except Exception:
+             return jsonify({"message": "顧客の作成に失敗しました"}), 500
+ 
+         # CreatePayment
+         body = {
+             "idempotency_key": idemp,
+             "source_id": source_id,
+             "amount_money": {"amount": int(amount), "currency": "JPY"},
+             "location_id": location_id,
+             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
+             "customer_id": customer_id,
++            "buyer_email_address": buyer_email,
+         }
++        if order_id:
++            body["order_id"] = order_id
+ 
+         resp = requests.post(
+             f"{_square_api_base()}/v2/payments",
+             headers={"Authorization": f"Bearer {access_token}",
+                      "Content-Type":"application/json", "Accept":"application/json"},
+             json=body, timeout=25
+         )
+         ok = resp.status_code < 400
+         try:
+             payload = resp.json()
+         except Exception:
+             payload = {}
+ 
+         if ok:
+             p = payload.get("payment", {}) or {}
+             status  = p.get("status") or "AUTHORIZED"
+             details = p.get("card_details") or {}
+             card    = details.get("card") or {}
+             cur.execute("""
+                 UPDATE event_payments
+                    SET square_payment_id=%s, square_status=%s,
+                        card_brand=%s, card_last4=%s, card_exp_mm=%s, card_exp_yyyy=%s,
+                        square_receipt_url=%s,
+                        error_code=NULL, error_detail=NULL
+                  WHERE id=%s
