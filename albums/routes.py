@@ -36,13 +36,15 @@ from flask import g  # 追加
 from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
 from app.external_login_user.utils import _get_ext_user_by_social
+from app.external_login_user.ext_session import get_ext_session
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
 print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
 
 
 def _get_ext_user_nickname() -> str | None:
-    ext_social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    ext_social_id = ext_session.get("ext_user_social_id")
     if not ext_social_id:
         return None
     try:
@@ -55,7 +57,8 @@ def _get_ext_user_nickname() -> str | None:
     return nickname or None
 
 def _is_ext_logged_in() -> bool:
-    return bool(session.get("ext_user_social_id"))
+    ext_session = get_ext_session()
+    return bool(ext_session.get("ext_user_social_id"))
 
 def _fetch_event_process_members(event_id: int) -> list[dict]:
     """イベント参加者一覧を取得（process フラグ含む）"""
@@ -875,14 +878,23 @@ def _event_join_url(event_id: int) -> str | None:
     return url_for('external_login_user.join_event', event_uuid=ev_uuid_str)
 
 def _is_event_member_approved(event_id: int) -> bool:
-    sid = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    sid = ext_session.get("ext_user_social_id")
     if not sid:
-        session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
+        ext_session["after_login_redirect"] = url_for(
+            'album.album_access',
+            album_id=ext_session.get("_gate_album_id"),
+            _external=True,
+        )
         return False
     u = db_get_one("SELECT id FROM external_login_user WHERE social_id=%s", (sid,))
     if not u:
-        session["ext_user_onboarding"] = True
-        session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
+        ext_session["ext_user_onboarding"] = True
+        ext_session["after_login_redirect"] = url_for(
+            'album.album_access',
+            album_id=ext_session.get("_gate_album_id"),
+            _external=True,
+        )
         return False
     ext_user_id = int(u["id"])
     mem = db_get_one("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
@@ -892,7 +904,8 @@ def event_gate(view_func):
     """イベント連携アルバム用ゲート（access_mode='event' だけ処理）。他はスルー"""
     @wraps(view_func)
     def _wrapped(album_id, *args, **kwargs):
-        session["_gate_album_id"] = album_id  # ログイン後の戻り先
+        ext_session = get_ext_session()
+        ext_session["_gate_album_id"] = album_id  # ログイン後の戻り先
         meta = _fetch_album_meta(album_id)
         if not meta:
             return "アルバムが存在しません", 404
@@ -1670,9 +1683,10 @@ def upload_child(album_id, child_id):
                 is_event_login = bool(_is_ext_logged_in() and event_meta and event_meta.get("access_mode") == "event")
                 if is_event_login and event_meta and event_meta.get("event_id"):
                     event_id = int(event_meta["event_id"])
-                    ext_user_id = session.get("ext_user_id")
+                    ext_session = get_ext_session()
+                    ext_user_id = ext_session.get("ext_user_id")
                     if not ext_user_id:
-                        ext_social_id = session.get("ext_user_social_id")
+                        ext_social_id = ext_session.get("ext_user_social_id")
                         if ext_social_id:
                             ext_user = _get_ext_user_by_social(ext_social_id)
                             if ext_user:
@@ -1987,9 +2001,10 @@ def view_child(album_id, child_id):
             member["request_flag"] = int(status.get("request_flag", 0))
             member["complete_flag"] = int(status.get("complete_flag", 0))
         if is_event_login:
-            current_ext_user_id = session.get("ext_user_id")
+            ext_session = get_ext_session()
+            current_ext_user_id = ext_session.get("ext_user_id")
             if not current_ext_user_id:
-                ext_social_id = session.get("ext_user_social_id")
+                ext_social_id = ext_session.get("ext_user_social_id")
                 if ext_social_id:
                     ext_user = _get_ext_user_by_social(ext_social_id)
                     if ext_user:
@@ -2063,9 +2078,10 @@ def update_process_status(album_id, child_id):
     prev_complete_flag = None
     requester_id = None
     if _is_ext_logged_in():
-        requester_id = session.get("ext_user_id")
+        ext_session = get_ext_session()
+        requester_id = ext_session.get("ext_user_id")
         if not requester_id:
-            ext_social_id = session.get("ext_user_social_id")
+            ext_social_id = ext_session.get("ext_user_social_id")
             if ext_social_id:
                 ext_user = _get_ext_user_by_social(ext_social_id)
                 if ext_user:
@@ -2188,9 +2204,10 @@ def request_process(album_id, child_id):
 
     requester_id = None
     if _is_ext_logged_in():
-        requester_id = session.get("ext_user_id")
+        ext_session = get_ext_session()
+        requester_id = ext_session.get("ext_user_id")
         if not requester_id:
-            ext_social_id = session.get("ext_user_social_id")
+            ext_social_id = ext_session.get("ext_user_social_id")
             if ext_social_id:
                 ext_user = _get_ext_user_by_social(ext_social_id)
                 if ext_user:
@@ -2656,7 +2673,8 @@ def begin_process(album_id, child_id):
 
     username = (request.form.get("username") or "").strip()
     if not username:
-        ext_social_id = session.get("ext_user_social_id")
+        ext_session = get_ext_session()
+        ext_social_id = ext_session.get("ext_user_social_id")
         if ext_social_id:
             ext_user = _get_ext_user_by_social(ext_social_id)
             if ext_user:

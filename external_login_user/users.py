@@ -47,11 +47,12 @@ from app.utils.db import get_db
 from app.utils.mail import send_mail
 from .utils import (
     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
-    _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
+    _require_ext_login, _require_mfu_login_redirect, _uuid_bytes_to_str,
     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
     _event_by_uuid_str, _membership_status,
     avatar_url_for,  # ← 追加
 )
+from .ext_session import get_ext_session
 from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
 
@@ -559,7 +560,8 @@ def _maybe_flash_email_verify_banner_for_top():
     （テンプレに手を入れず既存のflash表示領域を利用）
     """
     try:
-        uid = session.get("ext_user_id")
+        ext_session = get_ext_session()
+        uid = ext_session.get("ext_user_id")
         if not uid:
             return
 
@@ -668,7 +670,8 @@ def _calc_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
 def index():
     # ---- 未ログイン時は当該バナーのフラッシュを除去してから描画 --------------------
     try:
-        if not session.get("ext_user_id"):
+        ext_session = get_ext_session()
+        if not ext_session.get("ext_user_id"):
             fl = session.get("_flashes")
             if isinstance(fl, list) and fl:
                 def _is_unverified_banner(t):
@@ -697,7 +700,7 @@ def index():
 
     # ---- ログイン済みなら「未確認」バナーをここでだけ出す ------------------------
     try:
-        uid = session.get("ext_user_id")
+        uid = ext_session.get("ext_user_id")
         if uid:
             db = get_db(); cur = db.cursor(dictionary=True)
             try:
@@ -743,7 +746,7 @@ def index():
             pass
     # -----------------------------------------------------------------------
 
-    social_id = session.get("ext_user_social_id")
+    social_id = ext_session.get("ext_user_social_id")
     me = _get_ext_user_by_social(social_id) if social_id else None
 
     events_upcoming, events_past = [], []
@@ -865,8 +868,8 @@ def me():
 # LINEログイン（単一定義）
 # =========================
 def _state_signer():
-    # Flask の secret_key を使って署名
-    return URLSafeSerializer(current_app.secret_key, salt="line-state-v2")
+    secret = current_app.config.get("EXTERNAL_SECRET_KEY") or current_app.secret_key
+    return URLSafeSerializer(secret, salt="line-state-v2")
 
 def _ua_sha256(ua: str) -> str:
     return hashlib.sha256((ua or "").encode("utf-8")).hexdigest()
@@ -912,8 +915,9 @@ def _mark_jti_used(jti: str):
 
 @bp.route("/line/login")
 def line_login():
+    ext_session = get_ext_session()
     # 1) next を安全化
-    raw_next = (request.args.get("next") or session.get("ext_after_login_next") or request.referrer or "").strip()
+    raw_next = (request.args.get("next") or ext_session.get("ext_after_login_next") or request.referrer or "").strip()
 
     def _to_local_next(u: str) -> str | None:
         if not u:
@@ -929,7 +933,7 @@ def line_login():
         return None
 
     local_next = _to_local_next(raw_next) or "/external-login/"
-    session["ext_after_login_next"] = local_next  # ← セッションにも保持
+    ext_session["ext_after_login_next"] = local_next  # ← セッションにも保持
 
     # 2) 署名付き state を作って callback で検証できるようにする
     state_payload = {
@@ -999,7 +1003,8 @@ def line_callback():
         flash("LINEユーザーIDを取得できませんでした。", "error")
         return redirect(url_for("external_login_user.index"))
 
-    session["ext_user_social_id"] = sub
+    ext_session = get_ext_session()
+    ext_session["ext_user_social_id"] = sub
 
     # ---- 画像ダウンロード→サーバー保存（5MBまで / GIFはそのまま、他は最大辺1024px）----
     def _download_and_save_avatar(url: str, *, timeout: int = 8) -> str | None:
@@ -1169,8 +1174,9 @@ def line_callback():
         except Exception: pass
 
     # セッションへ格納
-    session["ext_user_id"] = ext_user_id
-    session["ext_user_nickname"] = nickname_for_log
+    ext_session = get_ext_session()
+    ext_session["ext_user_id"] = ext_user_id
+    ext_session["ext_user_nickname"] = nickname_for_log
 
     # 追加：LINEログインは長期セッション扱いにする
     session.permanent = True
@@ -1182,12 +1188,12 @@ def line_callback():
     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
     # ・メール未登録のみ: ext_user_need_email=True（初回メッセージは出さず、メール注意喚起のみ）
     if onboarding:
-        session["ext_user_onboarding"] = True
+        ext_session["ext_user_onboarding"] = True
     else:
         session.pop("ext_user_onboarding", None)
 
     if needs_email:
-        session["ext_user_need_email"] = True
+        ext_session["ext_user_need_email"] = True
         # 改行を反映させたフラッシュ（<br>化）
         from markupsafe import Markup, escape
         email_notice = (
@@ -1216,24 +1222,25 @@ def profile():
     """
     外部参加者のプロフィール編集。
     - 画像アップロード: <input type="file" name="avatar_file">
-    - CSRF: session["ext_csrf"] と hidden input csrf_token を比較
+    - CSRF: ext_session["ext_csrf"] と hidden input csrf_token を比較
     - メールアドレス: 変更時は email_verified_at をクリアし確認メール送信
     - 保存後は ext_after_login_next（join等）に戻す
     - ★通知設定: notify_album_upload / notify_album_process をON/OFF保存
     - ★決済モード: payment_mode (manual / auto)
     """
     # ===== ログイン必須 =====
-    social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    social_id = ext_session.get("ext_user_social_id")
     if not social_id:
         return redirect(url_for(
             "external_login_user.line_login",
-            next=session.get("ext_after_login_next") or request.url
+            next=ext_session.get("ext_after_login_next") or request.url
         ))
 
     # ===== CSRF 準備 =====
     if "ext_csrf" not in session:
-        session["ext_csrf"] = secrets.token_hex(16)
-    csrf_token = session["ext_csrf"]
+        ext_session["ext_csrf"] = secrets.token_hex(16)
+    csrf_token = ext_session["ext_csrf"]
 
     # ===== ユーザー取得（編集に必要な項目を全部）=====
     db = get_db()
@@ -1265,7 +1272,7 @@ def profile():
         return redirect(
             url_for(
                 "external_login_user.line_login",
-                next=session.get("ext_after_login_next") or request.url,
+                next=ext_session.get("ext_after_login_next") or request.url,
             )
         )
 
@@ -1335,7 +1342,8 @@ def profile():
     avatar_src = _build_avatar_src(me)
 
     # 初回判定（セッション or ニックネーム未設定）
-    onboarding = bool(session.get("ext_user_onboarding")) \
+    ext_session = get_ext_session()
+    onboarding = bool(ext_session.get("ext_user_onboarding")) \
         or not (me.get("nickname") and str(me.get("nickname")).strip()) \
         or me.get("nickname") == "（未設定）"
 
@@ -1363,14 +1371,14 @@ def profile():
             if local_next:
                 # ガード：現在のセッションに「イベント参加URL」がある場合、
                 # 新しい next が単なるマイページ（/external-login/）なら上書きしない
-                current_next = session.get("ext_after_login_next") or ""
+                current_next = ext_session.get("ext_after_login_next") or ""
                 is_current_join = "/events/join/" in current_next
                 is_new_simple = local_next.strip() in ("/external-login/", "/external-login")
 
                 if not (is_current_join and is_new_simple):
-                    session["ext_after_login_next"] = local_next
+                    ext_session["ext_after_login_next"] = local_next
                     # メール確認後の戻り先としても同期しておく
-                    session["ext_after_verify_next"] = local_next
+                    ext_session["ext_after_verify_next"] = local_next
 
         # 旧テンプレ互換の form データ
         form = {
@@ -1394,7 +1402,7 @@ def profile():
             errors={},
             onboarding=onboarding,
             csrf_token=csrf_token,
-            next_url=(session.get("ext_after_login_next") or ""),
+            next_url=(ext_session.get("ext_after_login_next") or ""),
             avatar_src=avatar_src,
             card_summary=card_summary,
         )
@@ -1406,15 +1414,15 @@ def profile():
         cur.close()
         db.close()
         flash("フォームの有効期限が切れました。もう一度お試しください。", "warning")
-        session["ext_csrf"] = secrets.token_hex(16)
+        ext_session["ext_csrf"] = secrets.token_hex(16)
         return render_template(
             "ext_profile.html",
             me=me,
             form=dict(request.form),
             errors={"csrf_token": "無効なトークンです。"},
             onboarding=onboarding,
-            csrf_token=session["ext_csrf"],
-            next_url=(session.get("ext_after_login_next") or ""),
+            csrf_token=ext_session["ext_csrf"],
+            next_url=(ext_session.get("ext_after_login_next") or ""),
             avatar_src=avatar_src,
             card_summary=card_summary,
         ), 400
@@ -1465,7 +1473,8 @@ def profile():
     if errors:
         cur.close()
         db.close()
-        session["ext_csrf"] = secrets.token_hex(16)
+        ext_session = get_ext_session()
+        ext_session["ext_csrf"] = secrets.token_hex(16)
         a_url_now = _build_avatar_src(me) or ""
         form_back = {
             "nickname": nickname,
@@ -1484,8 +1493,8 @@ def profile():
             form=form_back,
             errors=errors,
             onboarding=onboarding,
-            csrf_token=session["ext_csrf"],
-            next_url=(session.get("ext_after_login_next") or ""),
+            csrf_token=ext_session["ext_csrf"],
+            next_url=(ext_session.get("ext_after_login_next") or ""),
             avatar_src=a_url_now,
             card_summary=card_summary,
         ), 400
@@ -1551,11 +1560,13 @@ def profile():
 
     # 初回フラグを落とす
     if onboarding:
-        session["ext_user_onboarding"] = False
+        ext_session = get_ext_session()
+        ext_session["ext_user_onboarding"] = False
 
     # ===== リダイレクト（join 等へ）=====
+    ext_session = get_ext_session()
     next_url = (
-        session.get("ext_after_login_next")
+        ext_session.get("ext_after_login_next")
         or (request.args.get("next") or "").strip()
         or (request.form.get("next") or "").strip()
     )
@@ -1574,15 +1585,15 @@ def profile():
 
     # メール確認が必要な場合、確認完了後に戻る先をセッションに保存しておく
     if needs_verify and next_url:
-        session["ext_after_verify_next"] = next_url
+        ext_session["ext_after_verify_next"] = next_url
 
     # イベント参加URL（/join/）が含まれている場合は、完了するまで保持し続けたいので pop しない
-    current_next = session.get("ext_after_login_next") or ""
+    current_next = ext_session.get("ext_after_login_next") or ""
     is_join_url = "/events/join/" in current_next
 
     # メール確認が不要、かつイベント参加URLでもない場合のみ pop する
     if not needs_verify and not is_join_url:
-        session.pop("ext_after_login_next", None)
+        ext_session.pop("ext_after_login_next", None)
 
     def _is_safe_local(url: str) -> bool:
         return bool(url) and url.startswith("/") and not url.startswith("//")
@@ -1624,9 +1635,10 @@ def _mark_lecture_auto_approve_by_iv(
     if not iv_token:
         return False
     try:
-        store = session.get("lecture_auto_approve_by_iv") or {}
+        ext_session = get_ext_session()
+        store = ext_session.get("lecture_auto_approve_by_iv") or {}
         store[event_uuid] = True
-        session["lecture_auto_approve_by_iv"] = store
+        ext_session["lecture_auto_approve_by_iv"] = store
     except Exception:
         pass
 
@@ -1729,23 +1741,24 @@ def join_event(event_uuid: str):
     import secrets
 
     # --- ログインチェック（next でこのページに戻す。iv も保持される） ---
-    social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    social_id = ext_session.get("ext_user_social_id")
     if not social_id:
-        session["ext_after_login_next"] = request.url
+        ext_session["ext_after_login_next"] = request.url
         login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
         return redirect(login_url)
 
     # --- CSRF トークン ---
-    if "ext_csrf" not in session:
-        session["ext_csrf"] = secrets.token_hex(16)
-    csrf_token = session["ext_csrf"]
+    if "ext_csrf" not in ext_session.to_dict():
+        ext_session["ext_csrf"] = secrets.token_hex(16)
+    csrf_token = ext_session["ext_csrf"]
 
     # --- 送信トークン（多重送信防止） ---
     def _issue_submit_token() -> str:
         token = secrets.token_hex(16)
-        store = session.get("ext_join_submit_tokens") or {}
+        store = ext_session.get("ext_join_submit_tokens") or {}
         store[event_uuid] = token
-        session["ext_join_submit_tokens"] = store
+        ext_session["ext_join_submit_tokens"] = store
         return token
 
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -1772,7 +1785,7 @@ def join_event(event_uuid: str):
     # ニックネームが未設定、または「（未設定）」の場合はプロフィール編集へ誘導
     is_profile_incomplete = not (nick and str(nick).strip()) or nick == "（未設定）"
     if is_profile_incomplete:
-        session["ext_after_login_next"] = request.url
+        ext_session["ext_after_login_next"] = request.url
         flash("イベントに参加する前に、プロフィールの作成をお願いします。", "info")
         return redirect(url_for("external_login_user.profile", next=request.url))
 
@@ -1795,9 +1808,9 @@ def join_event(event_uuid: str):
     iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
     is_lecture = _is_lecture_event_from_event(ev)
     if iv_param and is_lecture:
-        store = session.get("lecture_invite_tokens") or {}
+        store = ext_session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv_param
-        session["lecture_invite_tokens"] = store
+        ext_session["lecture_invite_tokens"] = store
         _mark_lecture_auto_approve_by_iv(
             event_id=ev["id"],
             event_uuid=event_uuid,
@@ -1829,7 +1842,7 @@ def join_event(event_uuid: str):
         require_payment = int(m.get("require_payment") or 1) if m else 1
         payment_status = (m.get("payment_status") or "unpaid").strip() if m else "unpaid"
         if require_payment != 0 and payment_status != "paid":
-            iv_redirect = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or iv_param
+            iv_redirect = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid) or iv_param
             if iv_redirect:
                 return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid, iv=iv_redirect))
             return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid))
@@ -1837,7 +1850,7 @@ def join_event(event_uuid: str):
     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if not iv:
-        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+        iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
     auto_hit_by_lecture = False
     if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
@@ -1859,14 +1872,14 @@ def join_event(event_uuid: str):
             abort(400, "invalid csrf token")
         # 多重送信防止（同一トークンは1回のみ）
         submit_token = request.form.get("submit_token", "")
-        token_store = session.get("ext_join_submit_tokens") or {}
+        token_store = ext_session.get("ext_join_submit_tokens") or {}
         stored_submit_token = token_store.get(event_uuid)
         if not submit_token or not stored_submit_token or submit_token != stored_submit_token:
             cur.close(); db.close()
             flash("すでに送信されています。ページを更新してから再度お試しください。", "error")
             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
         token_store.pop(event_uuid, None)
-        session["ext_join_submit_tokens"] = token_store
+        ext_session["ext_join_submit_tokens"] = token_store
 
         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
         # ★ 'other' を許可
@@ -2072,8 +2085,9 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
     if not ev:
         abort(404, "イベントが見つかりません")
 
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
-    if not me and not _is_mfu_logged_in():
+    ext_session = get_ext_session()
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))
+    if not me:
         abort(401)
 
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -2098,9 +2112,8 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
         if not row:
             abort(404, "参加者が見つかりません")
 
-        if not _is_mfu_logged_in():
-            if not me or row.get("user_id") != me.get("id"):
-                abort(403, "権限がありません")
+        if row.get("user_id") != me.get("id"):
+            abort(403, "権限がありません")
 
         paid_amount = row.get("paid_amount_yen")
         pay_date = _to_jst_date(row.get("paid_at"))
@@ -2193,7 +2206,8 @@ def view_event(event_uuid: str):
     if not ev:
         abort(404, "イベントが見つかりません")
 
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    ext_session = get_ext_session()
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))
     if not me:
         abort(401)
 
@@ -2253,15 +2267,12 @@ def view_event(event_uuid: str):
         )
 
     # 表示モード
-    if _is_mfu_logged_in():
-        view_mode = "admin"
+    if str(my_status).lower() == "approved":
+        view_mode = "member"
+    elif str(my_status).lower() in ("pending", "rejected"):
+        view_mode = "member_limited"
     else:
-        if str(my_status).lower() == "approved":
-            view_mode = "member"
-        elif str(my_status).lower() in ("pending", "rejected"):
-            view_mode = "member_limited"
-        else:
-            view_mode = "guest"
+        view_mode = "guest"
 
     # 各種リンク生成（略：元コードそのまま）
     album_url = url_for("album.album_access", album_id=ev["album_id"]) if ev.get("album_id") else None
@@ -2406,7 +2417,8 @@ def update_my_role(event_uuid: str):
     guard = _require_ext_login()
     if guard: return guard
 
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+    ext_session = get_ext_session()
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -2466,7 +2478,8 @@ def update_my_process(event_uuid: str):
     if guard:
         return guard
 
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+    ext_session = get_ext_session()
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -2503,13 +2516,8 @@ def update_my_process(event_uuid: str):
 # =========================
 @bp.route("/logout")
 def logout():
-    # 主要キーを削除
-    for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname",
-              "ext_after_login_next", "ext_user_onboarding",
-              "ext_user_need_email", "ext_user_email_unverified"):
-        session.pop(k, None)
-    # フラッシュ全消し
-    session.pop("_flashes", None)
+    ext_session = get_ext_session()
+    ext_session.clear()
 
     # 任意：ログアウト完了メッセージ（info）
     # flash("ログアウトしました。", "info")
@@ -2527,19 +2535,15 @@ def member_list(event_uuid: str):
     if not ev:
         abort(404, "イベントが見つかりません")
 
-    # 管理者はOK / 参加者は承認済みのみ
-    if _is_mfu_logged_in():
-        allow = True
-    else:
-        sid = session.get("ext_user_social_id")
-        if not sid:
-            flash("参加者または管理者のみ閲覧できます。まずは参加申請してください。", "warning")
-            return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
-        me = _get_ext_user_by_social(sid)  # type: ignore
-        allow = (_membership_status(ev["id"], me["id"]) == "approved")  # type: ignore
-        if not allow:
-            flash("承認後に閲覧できます。", "info")
-            return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+    ext_session = get_ext_session()
+    sid = ext_session.get("ext_user_social_id")
+    if not sid:
+        flash("参加者のみ閲覧できます。まずは参加申請してください。", "warning")
+        return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+    me = _get_ext_user_by_social(sid)  # type: ignore
+    if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
+        flash("承認後に閲覧できます。", "info")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
     db = get_db(); cur = db.cursor()
     try:
@@ -2647,18 +2651,15 @@ def member_sns_clip(event_uuid: str):
         abort(404, "イベントが見つかりません")
 
     # --- 閲覧権限チェック（member_list と同じロジック） ---
-    if _is_mfu_logged_in():
-        allow = True
-    else:
-        sid = session.get("ext_user_social_id")
-        if not sid:
-            flash("参加者または管理者のみ閲覧できます。まずは参加申請してください。", "warning")
-            return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
-        me = _get_ext_user_by_social(sid)  # type: ignore
-        allow = (_membership_status(ev["id"], me["id"]) == "approved")  # type: ignore
-        if not allow:
-            flash("承認後に閲覧できます。", "info")
-            return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+    ext_session = get_ext_session()
+    sid = ext_session.get("ext_user_social_id")
+    if not sid:
+        flash("参加者のみ閲覧できます。まずは参加申請してください。", "warning")
+        return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+    me = _get_ext_user_by_social(sid)  # type: ignore
+    if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
+        flash("承認後に閲覧できます。", "info")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
     # --- 参加者一覧取得（member_list と同じ SQL ベース） ---
     db = get_db(); cur = db.cursor()
@@ -2843,7 +2844,8 @@ def event_pass(event_uuid: str):
         abort(404, "イベントが見つかりません")
 
     # ログイン中ユーザー
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    ext_session = get_ext_session()
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))
     if not me:
         abort(401)
 
@@ -2992,7 +2994,8 @@ def event_pass_checkin(event_uuid: str):
         return guard
 
     # ログイン中ユーザー
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    ext_session = get_ext_session()
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))
     if not me:
         abort(401)
 
@@ -3198,10 +3201,11 @@ def avatar_file(name: str):
 # =========================
 @bp.route("/email", methods=["GET", "POST"])
 def email_start():
-    if not session.get("ext_user_social_id"):
+    ext_session = get_ext_session()
+    if not ext_session.get("ext_user_social_id"):
         return redirect(url_for("external_login_user.index"))
 
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
     if not me:
         return redirect(url_for("external_login_user.profile"))
 
@@ -3328,7 +3332,13 @@ def email_verify():
         except Exception: pass
 
     # 完了後の戻り先を決定（DB保存値を優先し、なければセッション、それもなければマイページ）
-    next_url = db_redirect_url or session.pop("ext_after_verify_next", None) or session.pop("ext_after_login_next", None) or "https://mfu.iori0624.jp/e/"
+    ext_session = get_ext_session()
+    next_url = (
+        db_redirect_url
+        or ext_session.pop("ext_after_verify_next", None)
+        or ext_session.pop("ext_after_login_next", None)
+        or "https://mfu.iori0624.jp/e/"
+    )
     
     from flask import render_template_string
     return render_template_string("""
@@ -3349,8 +3359,9 @@ def email_verify():
 @bp.route("/admin/avatars/backfill", methods=["GET", "POST"])
 def backfill_avatars():
     # 管理者のみ
-    if not _is_mfu_logged_in():
-        abort(403)
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
 
     limit = 200
     try:
@@ -3410,7 +3421,8 @@ def resend_verify_email():
     - トークン発行 → 確認メール送信 → フラッシュ表示
     """
     # ログインチェック（未ログインならトップへ）
-    social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    social_id = ext_session.get("ext_user_social_id")
     if not social_id:
         flash("ログイン状態が無効です。もう一度お試しください。", "warning")
         return redirect(url_for("external_login_user.index"))
@@ -3441,8 +3453,8 @@ def resend_verify_email():
     # トークン発行して送信
     try:
         # セッションから戻り先を取得（イベント参加URLを最優先する）
-        n1 = session.get("ext_after_login_next") or ""
-        n2 = session.get("ext_after_verify_next") or ""
+        n1 = ext_session.get("ext_after_login_next") or ""
+        n2 = ext_session.get("ext_after_verify_next") or ""
         
         if "/events/join/" in n1:
             next_url = n1
@@ -3464,7 +3476,8 @@ def resend_verify_email():
 @bp.get("/profile/email/verify/latest-status", endpoint="latest_verify_email_status")
 def latest_verify_email_status():
     """メール確認用の最新送信履歴（直近1件）を取得して返す。"""
-    uid = session.get("ext_user_id")
+    ext_session = get_ext_session()
+    uid = ext_session.get("ext_user_id")
     if not uid:
         return jsonify({"has_record": False, "error": "unauthorized"}), 401
 
@@ -3540,7 +3553,8 @@ def unverified():
     以外は before_request でブロックされる想定。
     """
     # 未ログイン or 既に確認済みならトップへ
-    uid = session.get("ext_user_id")
+    ext_session = get_ext_session()
+    uid = ext_session.get("ext_user_id")
     if not uid:
         return redirect(url_for("external_login_user.index"))
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -3710,7 +3724,8 @@ def pin_request():
     # ★ ここを追加：成功時はセッションに保存して次画面で省力化
     if ok:
         try:
-            session["pin_email"] = email
+            ext_session = get_ext_session()
+            ext_session["pin_email"] = email
         except Exception:
             pass
 
@@ -3731,7 +3746,8 @@ def pin_login():
     # ★ ここを追加：メール未入力ならセッションの保存値を使う
     if not email:
         try:
-            email = (session.get("pin_email") or "").strip()
+            ext_session = get_ext_session()
+            email = (ext_session.get("pin_email") or "").strip()
         except Exception:
             email = ""
 
@@ -3793,19 +3809,20 @@ def pin_login():
         flash("このメールアドレスに対応するユーザーが見つかりません。プロフィールから登録してください。", "warning")
         return redirect(url_for("external_login_user.profile"))
 
-    session["ext_user_social_id"] = target["social_id"]
-    session["ext_user_id"] = target["id"]
-    session["ext_user_nickname"] = target.get("nickname") or "（未設定）"
+    ext_session = get_ext_session()
+    ext_session["ext_user_social_id"] = target["social_id"]
+    ext_session["ext_user_id"] = target["id"]
+    ext_session["ext_user_nickname"] = target.get("nickname") or "（未設定）"
 
     # ★ ここを追加：ログイン後にセッション中の pin_email を掃除
     try:
-        session.pop("pin_email", None)
+        ext_session.pop("pin_email", None)
     except Exception:
         pass
 
     _write_login_log(target["id"], target.get("nickname") or "", "PIN_LOGIN")
     flash("PINコードでログインしました。", "success")
-    return redirect(session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
+    return redirect(ext_session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
 
 # === 直リンク：イベント → アルバム ================================
 @bp.route("/events/<event_uuid>/album")
@@ -3817,9 +3834,10 @@ def event_album_direct(event_uuid: str):
     承認済みメンバー（または管理者）のみアルバムへリダイレクト。
     """
     # --- 未ログインなら next を保持してログインへ ---
-    sid = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    sid = ext_session.get("ext_user_social_id")
     if not sid:
-        session["ext_after_login_next"] = request.url
+        ext_session["ext_after_login_next"] = request.url
         return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
 
     # --- イベント取得 ---
@@ -3831,14 +3849,13 @@ def event_album_direct(event_uuid: str):
     me = _get_ext_user_by_social(sid)  # type: ignore
     if not me:
         # 理論上ここには来にくいが、安全側
-        session["ext_after_login_next"] = request.url
+        ext_session["ext_after_login_next"] = request.url
         return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
 
     # --- アクセス可否（管理者は素通し／一般は承認済みのみ） ---
-    if not _is_mfu_logged_in():
-        if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
-            flash("アルバムは承認後に閲覧できます。", "info")
-            return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+    if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
+        flash("アルバムは承認後に閲覧できます。", "info")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
     # --- アルバムへ ---
     album_id = ev.get("album_id")
@@ -3857,10 +3874,10 @@ def event_album_direct(event_uuid: str):
 #  - GET  /updates/text  : 本文のみ text/plain（未ログイン可）
 #  - POST /updates/ack   : 既読化
 # 備考:
-#  - 既読キー: external_login_user.update_seen_hash（なければ session['ext_update_seen_hash']）
+#  - 既読キー: external_login_user.update_seen_hash（なければ ext_session['ext_update_seen_hash']）
 # ==========================================================================
 
-from flask import current_app, session, jsonify, abort, Response
+from flask import current_app, jsonify, abort, Response
 from app.utils.db import get_db
 import hashlib
 import os
@@ -3905,7 +3922,8 @@ def _get_seen_hash(social_id: str) -> str | None:
     except Exception as e:
         current_app.logger.info("get_seen_hash: fallback to session (%s)", e)
 
-    return session.get("ext_update_seen_hash")  # ないなら None
+    ext_session = get_ext_session()
+    return ext_session.get("ext_update_seen_hash")  # ないなら None
 
 
 def _set_seen_hash(social_id: str, cur_hash: str) -> None:
@@ -3927,7 +3945,8 @@ def _set_seen_hash(social_id: str, cur_hash: str) -> None:
                 pass
     except Exception as e:
         current_app.logger.info("set_seen_hash: fallback to session (%s)", e)
-        session["ext_update_seen_hash"] = cur_hash
+        ext_session = get_ext_session()
+        ext_session["ext_update_seen_hash"] = cur_hash
 
 
 def _no_cache(resp: Response) -> Response:
@@ -3950,7 +3969,8 @@ def updates_check():
     - hash: 現在の内容SHA1
     - seen: 既読かどうか（= DB/セッションのハッシュが一致）
     """
-    social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    social_id = ext_session.get("ext_user_social_id")
     if not social_id:
         return jsonify({"show": False})
 
@@ -3986,7 +4006,8 @@ def updates_ack():
     「次回以降表示しない」押下時に既読化。
     CSRFは省略（同一オリジン・要ログインの軽量操作）。必要なら拡張してください。
     """
-    social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    social_id = ext_session.get("ext_user_social_id")
     if not social_id:
         abort(401)
 
