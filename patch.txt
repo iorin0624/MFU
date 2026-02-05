@@ -1,83 +1,202 @@
-diff --git a/__init__.py b/__init__.py
-index 7904fb8fd656f78fc7816587447ab26dc051fdfd..031122f0542f6c470b7a0c5fc857e119300e51c7 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -2377,67 +2377,69 @@ def before_every_request():
-     until_time = None
-     if until_row and until_row["value"]:
-         try:
-             utc_dt = dateutil_parser.isoparse(until_row["value"])
-             until_time = utc_dt.astimezone(JST)
-         except Exception as e:
-             app.logger.warning(f"[Timer Parse Error] {e}")
+diff --git a/utils/whois_util.py b/utils/whois_util.py
+index e850cb0da0da66684979bd4845bf5f4088d4fccf..570680756ae625dbc7f685ef3e1d58c00d0adb9f 100644
+--- a/utils/whois_util.py
++++ b/utils/whois_util.py
+@@ -8,55 +8,59 @@ import ipaddress
+ from typing import Optional
+ from pathlib import Path
+ from urllib.request import urlopen, Request
+ from urllib.error import URLError, HTTPError
  
-     if mode and mode["value"] == "on":
-         now = datetime.utcnow().replace(tzinfo=timezone.utc)
-         if until_time and now >= until_time.astimezone(timezone.utc):
-             flag_path = "/tmp/mfu_restart.flag"
-             if os.path.exists(flag_path):
-                 os.remove(flag_path)
-                 threading.Thread(target=delayed_restart).start()
-                 return "🌀 自動再起動中...", 503
-             else:
-                 threading.Thread(target=auto_end_maintenance).start()
-                 return "🌀 メンテナンス解除中...", 503
+ WHOIS_CACHE_DIR = "/mnt/mfu/whois_cache"
+ os.makedirs(WHOIS_CACHE_DIR, exist_ok=True)
  
-         if session.get("user") != "admin" and not request.path.startswith(("/login", "/static", "/favicon", "/api")):
-             return render_template("maintenance.html", until_time=until_time), 503
+ SUCCESS_TTL_SEC = 86400 * 7
+ FAIL_TTL_SEC = 3600
  
-     # アプリ内ブラウザ（LINE/X/Instagram）への警告
-     if "user" not in session:
--        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc","/external-login/","/e/",)
-+        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc")
-         if not any(request.path.startswith(p) for p in skip_paths):
-             ua = request.headers.get("User-Agent", "")
-             ref = request.headers.get("Referer", "")
+ def _cache_path(ip: str) -> Path:
+     key = hashlib.md5(ip.encode()).hexdigest()
+     return Path(WHOIS_CACHE_DIR) / f"{key}.json"
  
--            #元コード↓
--            inapp_keywords = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
--            #inapp_keywords = ["Instagram", "Twitter", "FBAN", "FBAV"]
--            inapp = any(k in ua for k in inapp_keywords)
-+            is_instagram = "Instagram" in ua
-+            is_line = "Line/" in ua
-+            is_x = ("Twitter" in ua) or ref.startswith("https://t.co/")
+ def _load_cache(ip: str, *, force_refresh: bool) -> Optional[dict]:
+     if force_refresh:
+         return None
+     cache_file = _cache_path(ip)
+     if not cache_file.exists():
+         return None
+     try:
+         data = json.loads(cache_file.read_text())
+     except Exception:
+         return None
++    netname = data.get("netname") or ""
++    org = data.get("org") or ""
++    display_name = data.get("display_name") or ""
++    if _is_generic_jpnic_name(netname) or _is_generic_jpnic_name(org) or _is_generic_jpnic_name(display_name):
++        return None
+     expires_at = data.get("expires_at")
+     if expires_at and time.time() > expires_at:
+         return None
+     if expires_at is None:
+-        netname = data.get("netname")
+         if netname and netname != "不明" and not str(netname).startswith("取得エラー"):
+             return data
+         return None
+     return data
  
--            # 👇 X (旧Twitter) のアプリ内ブラウザは UA では判定できないので Ref で判定
--            if ref.startswith("https://t.co/"):
--                inapp = True
-+            if request.cookies.get("InAppView") == "1":
-+                return render_template("inapp_warning.html"), 200
+ def _save_cache(ip: str, info: dict, ttl: int) -> None:
+     cache_file = _cache_path(ip)
+     data = dict(info)
+     data["fetched_at"] = time.time()
+     data["expires_at"] = time.time() + ttl
+     try:
+         cache_file.write_text(json.dumps(data, ensure_ascii=False))
+     except Exception:
+         pass
  
--            if inapp or request.cookies.get("InAppView") == "1":
-+            if is_instagram or is_x:
-                 return render_template("inapp_warning.html"), 200
+ def _fetch_rdap(ip: str) -> Optional[dict]:
+     url = f"https://rdap.org/ip/{ip}"
+     req = Request(url, headers={"User-Agent": "MFU/rdap"})
+     try:
+         with urlopen(req, timeout=8) as resp:
+             if resp.status != 200:
+                 return None
+             return json.loads(resp.read().decode("utf-8", errors="ignore"))
+     except (URLError, HTTPError, json.JSONDecodeError, TimeoutError):
+         return None
+@@ -169,87 +173,118 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
+     """IPからnetnameとcountryを取得（キャッシュ付き）"""
+     cached = _load_cache(ip, force_refresh=force_refresh)
+     if cached:
+         return cached
  
-+            if is_line:
-+                if not request.path.startswith(("/external-login/", "/e/")):
-+                    return render_template("inapp_warning.html"), 200
+     try:
+         ip_obj = ipaddress.ip_address(ip)
+         is_ipv6 = ip_obj.version == 6
+     except ValueError:
+         is_ipv6 = False
+ 
+     info = {
+         "netname": "不明",
+         "country": "不明",
+         "org": "",
+         "asname": "",
+         "source": "",
+     }
+ 
+     rdap_name = ""
+     rdap_org = ""
+     rdap_country = ""
+     rdap = _fetch_rdap(ip)
+     if rdap:
+         rdap_name, rdap_org, rdap_country = _extract_rdap_name(rdap)
+-        if rdap_name:
++        if rdap_name and not _is_generic_jpnic_name(rdap_name):
+             info["netname"] = rdap_name
+         if rdap_org:
+             info["org"] = rdap_org
+         if rdap_country:
+             info["country"] = rdap_country
+         info["source"] = "rdap"
+ 
+     whois_text = ""
+     try:
+         whois_text = subprocess.check_output(["whois", ip], timeout=10).decode(errors="ignore")
+     except Exception:
+         whois_text = ""
+ 
+     whois_info = {
+         "netname": "",
+         "network_name": "",
+         "country": "",
+         "org": "",
+         "asname": "",
+     }
+     if whois_text:
+         whois_info = _extract_whois_info(whois_text)
+         if info["netname"] == "不明" and whois_info["netname"]:
+             info["netname"] = whois_info["netname"]
+         if not info["org"] and whois_info["org"]:
+             info["org"] = whois_info["org"]
+         if not info["asname"] and whois_info["asname"]:
+             info["asname"] = whois_info["asname"]
+         if info["country"] == "不明" and whois_info["country"]:
+             info["country"] = whois_info["country"]
+         if not info["source"]:
+             info["source"] = "whois"
+ 
+     if info["netname"] == "不明" and not is_ipv6:
+         if info["org"]:
+             info["netname"] = info["org"]
+         elif info["asname"]:
+             info["netname"] = info["asname"]
+ 
+-    if is_ipv6:
+-        display_name = _pick_best_display_name(
+-            whois_info,
+-            rdap_org,
+-            info["asname"],
+-            rdap_name,
+-        )
+-        info["display_name"] = display_name or info["netname"]
+-        if display_name:
+-            info["netname"] = display_name
+-        if _is_generic_jpnic_name(info["org"]):
+-            info["org"] = ""
+-
+-    is_failure = info["netname"] in ("不明", "")
++    display_name = _pick_best_display_name(
++        whois_info,
++        rdap_org,
++        info["asname"],
++        rdap_name,
++    )
++    info["display_name"] = display_name or info["netname"]
++    if display_name:
++        info["netname"] = display_name
++    if _is_generic_jpnic_name(info["org"]):
++        info["org"] = ""
 +
- @app.after_request
- def finalize_response(response):
-     # --- 1) No-Cache ヘッダ ---
-     try:
-         if (request.endpoint or "") != "static":
-             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-             response.headers["Pragma"] = "no-cache"
-             response.headers["Expires"] = "0"
-     except Exception as e:
-         app.logger.warning(f"after_request(no-cache) failed: {e}")
++    is_failure = info["netname"] in ("不明", "") or _is_generic_jpnic_name(info["netname"])
+     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
+     return info
  
-     # --- 2) アクセスログ（委譲） ---
-     try:
-         log_access(request, response, session, endpoint=request.endpoint)
-     except Exception as e:
-         app.logger.warning(f"log_access failed: {e}")
- 
-     return response
- 
- # ─────────────────────────────────────────
- # 管理: ノードメトリクス集約表示（103.16 / 103.15）
- # ─────────────────────────────────────────
- @app.route("/admin/nodes")
- @admin_required
- def admin_nodes():
+ if __name__ == "__main__":
+     import sys
+-    target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
+-    force = "--refresh" in sys.argv
+-    print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
++
++    def _run_selftest() -> None:
++        whois_info = {
++            "network_name": "Japan Network Information Center",
++            "netname": "",
++            "org": "SOME-ISP",
++            "asname": "",
++            "country": "",
++        }
++        picked = _pick_best_display_name(whois_info, "", "", "")
++        assert picked == "SOME-ISP", f"unexpected display name: {picked}"
++
++        ip = "203.0.113.1"
++        cache_file = _cache_path(ip)
++        try:
++            cache_file.write_text(json.dumps({
++                "netname": "JPNIC",
++                "org": "",
++                "display_name": "",
++                "expires_at": time.time() + 60,
++            }, ensure_ascii=False))
++            assert _load_cache(ip, force_refresh=False) is None, "generic JPNIC cache should be ignored"
++        finally:
++            try:
++                cache_file.unlink()
++            except Exception:
++                pass
++        print("selftest ok")
++
++    if "--selftest" in sys.argv:
++        _run_selftest()
++    else:
++        target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
++        force = "--refresh" in sys.argv
++        print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
