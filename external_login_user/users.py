@@ -1740,6 +1740,14 @@ def join_event(event_uuid: str):
         session["ext_csrf"] = secrets.token_hex(16)
     csrf_token = session["ext_csrf"]
 
+    # --- 送信トークン（多重送信防止） ---
+    def _issue_submit_token() -> str:
+        token = secrets.token_hex(16)
+        store = session.get("ext_join_submit_tokens") or {}
+        store[event_uuid] = token
+        session["ext_join_submit_tokens"] = store
+        return token
+
     db = get_db(); cur = db.cursor(dictionary=True)
 
     # --- 外部ユーザーを取得（social_id → external_login_user.id） ---
@@ -1849,6 +1857,16 @@ def join_event(event_uuid: str):
         if not token or token != csrf_token:
             cur.close(); db.close()
             abort(400, "invalid csrf token")
+        # 多重送信防止（同一トークンは1回のみ）
+        submit_token = request.form.get("submit_token", "")
+        token_store = session.get("ext_join_submit_tokens") or {}
+        stored_submit_token = token_store.get(event_uuid)
+        if not submit_token or not stored_submit_token or submit_token != stored_submit_token:
+            cur.close(); db.close()
+            flash("すでに送信されています。ページを更新してから再度お試しください。", "error")
+            return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
+        token_store.pop(event_uuid, None)
+        session["ext_join_submit_tokens"] = token_store
 
         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
         # ★ 'other' を許可
@@ -1860,6 +1878,26 @@ def join_event(event_uuid: str):
         if role not in ("cosplayer", "other"):
             costume = None  # サーバ側でも空に
         process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
+        requires_costume = role in ("cosplayer", "other")
+        if requires_costume and not costume:
+            submit_token = _issue_submit_token()
+            flash("「衣装／その他のメモ」を入力してください。", "error")
+            for k in ("starts_at", "fee_yen", "place_name", "address"):
+                ev.setdefault(k, None)
+            status = (m and m.get("status")) or None
+            if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
+                status = None
+            cur.close(); db.close()
+            return render_template(
+                "event_join.html",
+                ev=ev,
+                status=status,
+                form_role=role,
+                form_costume="",
+                form_process=bool(process_flag),
+                csrf_token=csrf_token,
+                submit_token=submit_token,
+            )
 
         # ステータス決定（自動承認 or 手動承認待ち）
         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
@@ -2010,6 +2048,7 @@ def join_event(event_uuid: str):
     form_costume = (m and (m.get("costume_label") or "")) or ""
     form_process = bool(m and int(m.get("process") or 0) == 1)
 
+    submit_token = _issue_submit_token()
     cur.close(); db.close()
     return render_template(
         "event_join.html",
@@ -2019,6 +2058,7 @@ def join_event(event_uuid: str):
         form_costume=form_costume,
         form_process=form_process,
         csrf_token=csrf_token,
+        submit_token=submit_token,
     )
 
 
