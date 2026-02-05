@@ -234,9 +234,9 @@ def _normalize_handle(v: str | None) -> str:
     # Python なので lower()
     return v.strip().lower()
 
-def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
+def _resolve_buyer_identity(conn, payment_token: str | None) -> tuple[int | None, str | None]:
     if not payment_token:
-        return None
+        return None, None
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -255,7 +255,7 @@ def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
     user_id = row.get("user_id")
     fallback_email = (row.get("buyer_email") or "").strip()
     if not user_id:
-        return fallback_email or None
+        return None, fallback_email or None
     cur = conn.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -271,35 +271,82 @@ def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
         except Exception:
             pass
     email = (urow.get("email") or "").strip()
-    return email or fallback_email or None
+    return user_id, (email or fallback_email or None)
 
 # ───────────────────────────────────────────────────────────
 # Square 顧客ヘルパ
 # ───────────────────────────────────────────────────────────
-def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
-    import hashlib
+def _mask_email(email: str | None) -> str:
+    if not email:
+        return ""
+    email = email.strip()
+    if "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    local_mask = (local[:1] + "***") if local else "***"
+    if domain:
+        domain_parts = domain.split(".")
+        domain_mask = domain_parts[0][:1] + "***"
+        if len(domain_parts) > 1:
+            domain_mask = domain_mask + "." + domain_parts[-1]
+    else:
+        domain_mask = "***"
+    return f"{local_mask}@{domain_mask}"
+
+def _ensure_customer_id_for_user(access_token: str, user_id: int, nickname: str, buyer_email: str | None) -> str:
     base = _square_api_base()
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
-
-    h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
-    ref = f"ev:{event_uuid[:8]}:{h}"
+    ref = f"mfu_user:{user_id}"
 
     # 検索
     try:
         sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
                               json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
         if sresp.status_code < 400:
-            customers = (sresp.json() or {}).get("customers") or []
+            try:
+                payload = sresp.json() or {}
+            except Exception:
+                payload = {}
+            customers = payload.get("customers") or []
             if customers:
-                return customers[0]["id"]
+                customer = customers[0]
+                customer_id = customer.get("id")
+                if not customer_id:
+                    raise RuntimeError("customer_id not found")
+                needs_email = not (customer.get("email_address") or "").strip()
+                if buyer_email and (needs_email or nickname):
+                    update_body = {"customer": {"given_name": nickname}}
+                    if needs_email:
+                        update_body["customer"]["email_address"] = buyer_email
+                    try:
+                        uresp = requests.put(f"{base}/v2/customers/{customer_id}", headers=headers,
+                                             json=update_body, timeout=15)
+                        if uresp.status_code >= 400:
+                            logging.warning("update_customer failed: status=%s email=%s",
+                                            uresp.status_code, _mask_email(buyer_email))
+                    except Exception:
+                        logging.exception("update_customer exception: email=%s", _mask_email(buyer_email))
+                return customer_id
     except Exception:
         logging.exception("search_customers failed")
 
     # 作成
-    cresp = requests.post(f"{base}/v2/customers", headers=headers,
-                          json={"given_name": nickname, "reference_id": ref}, timeout=15)
+    create_body = {"given_name": nickname, "reference_id": ref}
+    if buyer_email:
+        create_body["email_address"] = buyer_email
+    try:
+        cresp = requests.post(f"{base}/v2/customers", headers=headers,
+                              json=create_body, timeout=15)
+    except Exception:
+        logging.exception("create_customer failed: email=%s", _mask_email(buyer_email))
+        raise
     cresp.raise_for_status()
-    return (cresp.json() or {}).get("customer", {}).get("id")
+    try:
+        payload = cresp.json() or {}
+    except Exception:
+        logging.exception("create_customer json decode failed: email=%s", _mask_email(buyer_email))
+        raise
+    return (payload.get("customer", {}) or {}).get("id")
 
 # ───────────────────────────────────────────────────────────
 # Discord通知（必要時）
@@ -1125,7 +1172,9 @@ def api_charge(event_uuid: str):
         if token_amount is not None and token_amount > 0:
             amount = token_amount
 
-        buyer_email = _resolve_buyer_email(conn, payment_token)
+        user_id, buyer_email = _resolve_buyer_identity(conn, payment_token)
+        if not user_id:
+            return jsonify({"message": "ユーザー情報が取得できないため決済できません。もう一度お試しください。"}), 400
         if not buyer_email:
             return jsonify({"message": "メールアドレスが未登録のため決済できません。プロフィールから登録してください。"}), 400
 
@@ -1194,7 +1243,7 @@ def api_charge(event_uuid: str):
 
         # 顧客ID
         try:
-            customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
+            customer_id = _ensure_customer_id_for_user(access_token, user_id, nickname, buyer_email)
         except Exception:
             return jsonify({"message": "顧客の作成に失敗しました"}), 500
 
