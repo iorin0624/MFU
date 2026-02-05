@@ -6,6 +6,7 @@ from urllib.parse import quote_plus
 from flask import current_app, request, session, redirect, url_for, abort, flash
 
 from . import bp, oauth  # oauth は None の可能性あり
+from .ext_session import get_ext_session
 from app.utils.db import get_db
 
 # ---- 環境値 → 関数 ----
@@ -67,7 +68,8 @@ def _to_local_next(u: str) -> str:
 
 def _require_ext_login():
     """未ログインなら安全化した next を保持して LINE ログインへ"""
-    if session.get("ext_user_id"):
+    ext_session = get_ext_session()
+    if ext_session.get("ext_user_id"):
         return None
 
     raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
@@ -88,11 +90,8 @@ def _require_ext_login():
         return "/external-login/"
 
     local_next = _to_local_next(raw_next)
-    session["ext_after_login_next"] = local_next
+    ext_session["ext_after_login_next"] = local_next
     return redirect(url_for("external_login_user.line_login", next=local_next))
-
-def _is_mfu_logged_in() -> bool:
-    return bool(session.get("user"))
 
 # ---- ID/DB ヘルパ ----
 def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:
@@ -451,4 +450,3 @@ def extract_lat_lng_from_maps_url(maps_url: str):
 
     # どれにもマッチしなければ諦める
     return (None, None)
-

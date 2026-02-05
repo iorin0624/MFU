@@ -5,11 +5,12 @@ import uuid
 from typing import Tuple, Optional, Dict, Any
 
 from flask import (
-    request, session, redirect, url_for, render_template,
+    request, redirect, url_for, render_template,
     flash, current_app, jsonify
 )
 
 from . import bp
+from .ext_session import get_ext_session
 from app.utils.db import get_db
 
 from pathlib import Path
@@ -260,21 +261,22 @@ def card():
     """
     current_app.logger.info("[auto_payment.card] GET /card called")
 
-    social_id = session.get("ext_user_social_id")
+    ext_session = get_ext_session()
+    social_id = ext_session.get("ext_user_social_id")
     current_app.logger.debug(
         "[auto_payment.card] session.ext_user_social_id=%r", social_id
     )
     if not social_id:
         return redirect(url_for(
             "external_login_user.line_login",
-            next=session.get("ext_after_login_next") or request.url
+            next=ext_session.get("ext_after_login_next") or request.url
         ))
 
     # CSRF トークン
-    if "ext_csrf" not in session:
-        session["ext_csrf"] = secrets.token_hex(16)
+    if "ext_csrf" not in ext_session.to_dict():
+        ext_session["ext_csrf"] = secrets.token_hex(16)
         current_app.logger.debug("[auto_payment.card] generated new ext_csrf")
-    csrf_token = session["ext_csrf"]
+    csrf_token = ext_session["ext_csrf"]
 
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -296,7 +298,7 @@ def card():
         db.close()
         return redirect(url_for(
             "external_login_user.line_login",
-            next=session.get("ext_after_login_next") or request.url
+            next=ext_session.get("ext_after_login_next") or request.url
         ))
 
     # 既存カードサマリ
@@ -383,15 +385,16 @@ def card_token():
         )
         return jsonify({"ok": False, "message": "token が空です。"}), 400
 
-    if not req_csrf or req_csrf != session.get("ext_csrf"):
+    ext_session = get_ext_session()
+    if not req_csrf or req_csrf != ext_session.get("ext_csrf"):
         current_app.logger.error(
             "[auto_payment.card_token] CSRF mismatch: req=%r, sess=%r",
             req_csrf,
-            session.get("ext_csrf"),
+            ext_session.get("ext_csrf"),
         )
         return jsonify({"ok": False, "message": "CSRF 検証エラーです。再読み込みしてください。"}), 400
 
-    social_id = session.get("ext_user_social_id")
+    social_id = ext_session.get("ext_user_social_id")
     current_app.logger.debug(
         "[auto_payment.card_token] session.ext_user_social_id=%r",
         social_id,
