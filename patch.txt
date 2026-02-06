@@ -1,62 +1,161 @@
-diff --git a/utils/upload_history.py b/utils/upload_history.py
-index bfdc0cb3f889db4509a62160865c1b9bd1fe9cdc..57baedee5bf76f18e2eda242dda7b059c68aa01b 100644
---- a/utils/upload_history.py
-+++ b/utils/upload_history.py
-@@ -1,54 +1,57 @@
- from flask import Blueprint, render_template, session, redirect, url_for, abort, request
- import os
- import shutil
- from app.utils.db import get_db
-+from app.utils.feature_access import require_feature
- 
- upload_history_bp = Blueprint("upload_history", __name__)
- 
- UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
- 
- @upload_history_bp.route("/upload_list")
-+@require_feature("upload")
- def upload_list():
-     if "user" not in session:
-         return redirect(url_for("login"))
- 
-     username = session["user"]
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
- 
-     if username == "admin":
-         cursor.execute("SELECT * FROM uploads ORDER BY created_at DESC")
-     else:
-         cursor.execute("SELECT * FROM uploads WHERE username = %s ORDER BY created_at DESC", (username,))
-     uploads = cursor.fetchall()
-     db.close()
- 
-     return render_template("upload_list.html", uploads=uploads, is_admin=(username == "admin"))
+diff --git a/utils/feature_access.py b/utils/feature_access.py
+index 00415995bc82918b585a9b97c519c4c0823232fe..4e8d45970e40d0b4875a06fce9262662efd00e49 100644
+--- a/utils/feature_access.py
++++ b/utils/feature_access.py
+@@ -10,72 +10,104 @@ _SCHEMA_LOCK = Lock()
+ _SCHEMA_INITIALIZED = False
  
  
- @upload_history_bp.route("/upload_delete/<uuid>", methods=["POST"])
-+@require_feature("upload")
- def upload_delete(uuid):
-     if "user" not in session:
-         return redirect(url_for("login"))
+ _FEATURE_SEED = [
+     ("upload", "アップロード", 1),
+     ("albums", "アルバム管理", 1),
+     ("events", "イベント・チケット", 1),
+     ("records", "記録", 1),
+     ("admin_tools", "管理ツール", 1),
+ ]
  
-     username = session["user"]
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
  
-     # admin以外は本人のアップロードのみ削除可
-     cursor.execute("SELECT * FROM uploads WHERE uuid = %s", (uuid,))
-     upload = cursor.fetchone()
+ def _safe_log(message: str, *, exc: Exception | None = None) -> None:
+     try:
+         if exc:
+             current_app.logger.warning(message, exc_info=exc)
+         else:
+             current_app.logger.warning(message)
+     except Exception:
+         if exc:
+             print(f"[feature_access] {message}: {exc}")
+         else:
+             print(f"[feature_access] {message}")
  
-     if not upload:
-         db.close()
-         return abort(404)
  
-     if username != "admin" and upload["username"] != username:
-         db.close()
-         return abort(403)
++def _column_exists(cur, table: str, column: str) -> bool:
++    cur.execute(
++        """
++        SELECT 1
++          FROM information_schema.columns
++         WHERE table_schema = DATABASE()
++           AND table_name = %s
++           AND column_name = %s
++         LIMIT 1
++        """,
++        (table, column),
++    )
++    return cur.fetchone() is not None
++
++
++def _ensure_feature_columns(cur) -> None:
++    columns = {
++        "category": "ALTER TABLE mfu_features ADD COLUMN category VARCHAR(64) NOT NULL DEFAULT 'other'",
++        "order_no": "ALTER TABLE mfu_features ADD COLUMN order_no INT NOT NULL DEFAULT 0",
++        "description": "ALTER TABLE mfu_features ADD COLUMN description VARCHAR(255) NULL",
++        "deprecated": "ALTER TABLE mfu_features ADD COLUMN deprecated TINYINT(1) NOT NULL DEFAULT 0",
++    }
++    for column, ddl in columns.items():
++        if not _column_exists(cur, "mfu_features", column):
++            cur.execute(ddl)
++
++
+ def ensure_feature_access_schema() -> None:
+     global _SCHEMA_INITIALIZED
+     if _SCHEMA_INITIALIZED:
+         return
+     with _SCHEMA_LOCK:
+         if _SCHEMA_INITIALIZED:
+             return
+         try:
+             db = get_db()
+             cur = db.cursor()
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS mfu_features (
+                     feature_key VARCHAR(64) PRIMARY KEY,
+                     label VARCHAR(128) NOT NULL,
+                     is_enabled_global TINYINT(1) NOT NULL DEFAULT 1,
++                    category VARCHAR(64) NOT NULL DEFAULT 'other',
++                    order_no INT NOT NULL DEFAULT 0,
++                    description VARCHAR(255) NULL,
++                    deprecated TINYINT(1) NOT NULL DEFAULT 0,
+                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                         ON UPDATE CURRENT_TIMESTAMP
+                 )
+                 """
+             )
++            _ensure_feature_columns(cur)
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS mfu_user_features (
+                     id INT AUTO_INCREMENT PRIMARY KEY,
+                     user_id VARCHAR(64) NOT NULL,
+                     feature_key VARCHAR(64) NOT NULL,
+                     is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                     UNIQUE KEY uq_user_feature (user_id, feature_key),
+                     INDEX (feature_key)
+                 )
+                 """
+             )
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS mfu_nav_items (
+                     id INT AUTO_INCREMENT PRIMARY KEY,
+                     parent_id INT NULL,
+                     label VARCHAR(128) NOT NULL,
+                     url VARCHAR(255) NOT NULL,
+                     order_no INT NOT NULL DEFAULT 0,
+                     is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+                     feature_key VARCHAR(64) NULL,
+                     open_in_new_tab TINYINT(1) NOT NULL DEFAULT 0,
+                     is_external TINYINT(1) NOT NULL DEFAULT 0,
+@@ -143,50 +175,51 @@ def _seed_nav_items(cur) -> None:
+             ("🧾 受領書", "/receipts", 40, 1, "events"),
+             ("📅 イベント一覧", "/external-login/admin/events", 50, 1, "events"),
+             ("🗓 予定", "/suc/admin", 60, 1, "admin_tools"),
+             ("📃 記録", "/records/", 70, 1, "records"),
+             ("⏰ タイマー＆アラーム", "/admin/timer", 80, 1, "admin_tools"),
+         ],
+     )
  
-     # files, messages, uploads テーブルから削除
-     cursor.execute("DELETE FROM files WHERE upload_id = %s", (upload["id"],))
-     cursor.execute("DELETE FROM messages WHERE uuid = %s", (uuid,))
-     cursor.execute("DELETE FROM uploads WHERE id = %s", (upload["id"],))
-     db.commit()
+     cur.execute(
+         """
+         INSERT INTO mfu_nav_items (label, url, order_no, is_enabled, feature_key)
+         VALUES (%s, %s, %s, %s, %s)
+         """,
+         ("🧰 システム系", "/", 90, 1, "admin_tools"),
+     )
+     system_parent_id = cur.lastrowid
+     cur.executemany(
+         """
+         INSERT INTO mfu_nav_items
+         (label, url, parent_id, order_no, is_enabled, feature_key)
+         VALUES (%s, %s, %s, %s, %s, %s)
+         """,
+         [
+             ("👤 ユーザー管理", "/admin/users", system_parent_id, 10, 1, "admin_tools"),
+             ("🔐 機能付与", "/admin/user-features", system_parent_id, 15, 1, "admin_tools"),
++            ("🧩 機能キー管理", "/admin/features", system_parent_id, 18, 1, "admin_tools"),
+             ("🧭 ナビ編集", "/admin/nav", system_parent_id, 20, 1, "admin_tools"),
+             ("🛠 メンテナンス切換", "/admin/maintenance", system_parent_id, 30, 1, "admin_tools"),
+             ("📧 メール送信ログ", "/admin/mail-delivery", system_parent_id, 40, 1, "admin_tools"),
+             ("📑 アクセスログ", "/admin/logs", system_parent_id, 50, 1, "admin_tools"),
+             ("📡 システムログ", "/service_logs/", system_parent_id, 60, 1, "admin_tools"),
+             ("🖥 ノード監視", "/admin/nodes", system_parent_id, 70, 1, "admin_tools"),
+             ("🚀 スピードテスト", "/speedtest", system_parent_id, 80, 1, "admin_tools"),
+         ],
+     )
+ 
+ 
+ def _redirect_login():
+     path = request.full_path or request.path or "/"
+     if request.path.startswith("/external-login/admin"):
+         return redirect(url_for("login", next=path))
+     if request.path.startswith("/external-login"):
+         return redirect(url_for("external_login_user.line_login", next=path))
+     return redirect(url_for("login", next=path))
+ 
+ 
+ def user_has_feature(user_id: str, feature_key: str) -> bool:
+     if not user_id or not feature_key:
+         return False
+     if user_id == "admin":
+         return True

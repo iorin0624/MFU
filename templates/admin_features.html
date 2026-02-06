@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}機能キー管理{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">機能キー管理</h1>
+  <a href="/admin/features/split" class="btn btn-outline-secondary btn-sm">分割へ</a>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header py-2">新規追加</div>
+  <div class="card-body">
+    <form method="post" class="row g-3">
+      <input type="hidden" name="mode" value="new">
+      <div class="col-md-4">
+        <label class="form-label">機能キー</label>
+        <input type="text" name="feature_key" class="form-control" placeholder="feature_key" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">ラベル</label>
+        <input type="text" name="label" class="form-control" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">カテゴリ</label>
+        <input type="text" name="category" class="form-control" value="other">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">順序</label>
+        <input type="number" name="order_no" class="form-control" value="0">
+      </div>
+      <div class="col-md-9">
+        <label class="form-label">説明</label>
+        <input type="text" name="description" class="form-control">
+      </div>
+      <div class="col-12">
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="checkbox" name="is_enabled_global" id="new_enabled_global" checked>
+          <label class="form-check-label" for="new_enabled_global">全体有効</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="checkbox" name="deprecated" id="new_deprecated">
+          <label class="form-check-label" for="new_deprecated">非推奨</label>
+        </div>
+      </div>
+      <div class="col-12">
+        <button type="submit" class="btn btn-primary">追加</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-bordered align-middle">
+    <thead class="table-light">
+      <tr>
+        <th style="width: 16%">機能キー</th>
+        <th style="width: 18%">ラベル</th>
+        <th style="width: 10%">カテゴリ</th>
+        <th style="width: 8%">順序</th>
+        <th>説明</th>
+        <th style="width: 10%">全体有効</th>
+        <th style="width: 10%">非推奨</th>
+        <th style="width: 12%">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for feature in features %}
+        <tr>
+          <form method="post">
+            <input type="hidden" name="mode" value="update">
+            <input type="hidden" name="feature_key" value="{{ feature.feature_key }}">
+            <td><code>{{ feature.feature_key }}</code></td>
+            <td>
+              <input type="text" name="label" class="form-control form-control-sm" value="{{ feature.label }}" required>
+            </td>
+            <td>
+              <input type="text" name="category" class="form-control form-control-sm" value="{{ feature.category }}">
+            </td>
+            <td>
+              <input type="number" name="order_no" class="form-control form-control-sm" value="{{ feature.order_no }}">
+            </td>
+            <td>
+              <input type="text" name="description" class="form-control form-control-sm" value="{{ feature.description or '' }}">
+            </td>
+            <td class="text-center">
+              <input class="form-check-input" type="checkbox" name="is_enabled_global"
+                     {% if feature.is_enabled_global %}checked{% endif %}>
+            </td>
+            <td class="text-center">
+              <input class="form-check-input" type="checkbox" name="deprecated"
+                     {% if feature.deprecated %}checked{% endif %}>
+            </td>
+            <td>
+              <button type="submit" class="btn btn-sm btn-outline-primary">保存</button>
+            </td>
+          </form>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
