@@ -38,6 +38,11 @@ from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
 from app.external_login_user.utils import _get_ext_user_by_social
 from app.external_login_user.ext_session import get_ext_session
+from app.albums.utils import (
+    get_current_ext_user_id,
+    migrate_after_login_redirect,
+    set_ext_after_login_next,
+)
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
 print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
@@ -90,26 +95,7 @@ def _get_ext_user_nickname() -> str | None:
     return nickname or None
 
 def _get_album_user_id() -> int | None:
-    ext_session = get_ext_session()
-    ext_user_id = ext_session.get("ext_user_id")
-    if ext_user_id:
-        try:
-            return int(ext_user_id)
-        except (TypeError, ValueError):
-            return None
-    ext_social_id = ext_session.get("ext_user_social_id")
-    if not ext_social_id:
-        return None
-    try:
-        ext_user = _get_ext_user_by_social(ext_social_id)
-    except Exception:
-        return None
-    if not ext_user:
-        return None
-    try:
-        return int(ext_user.get("id"))
-    except (TypeError, ValueError):
-        return None
+    return get_current_ext_user_id()
 
 def _is_ext_logged_in() -> bool:
     ext_session = get_ext_session()
@@ -942,21 +928,18 @@ def _event_join_url(event_id: int) -> str | None:
 
 def _is_event_member_approved(event_id: int) -> bool:
     ext_session = get_ext_session()
+    migrate_after_login_redirect()
     sid = ext_session.get("ext_user_social_id")
     if not sid:
-        ext_session["after_login_redirect"] = url_for(
-            'album.album_access',
-            album_id=ext_session.get("_gate_album_id"),
-            _external=True,
+        set_ext_after_login_next(
+            url_for('album.album_access', album_id=ext_session.get("_gate_album_id"))
         )
         return False
     u = db_get_one("SELECT id FROM external_login_user WHERE social_id=%s", (sid,))
     if not u:
         ext_session["ext_user_onboarding"] = True
-        ext_session["after_login_redirect"] = url_for(
-            'album.album_access',
-            album_id=ext_session.get("_gate_album_id"),
-            _external=True,
+        set_ext_after_login_next(
+            url_for('album.album_access', album_id=ext_session.get("_gate_album_id"))
         )
         return False
     ext_user_id = int(u["id"])
@@ -1746,14 +1729,7 @@ def upload_child(album_id, child_id):
                 is_event_login = bool(_is_ext_logged_in() and event_meta and event_meta.get("access_mode") == "event")
                 if is_event_login and event_meta and event_meta.get("event_id"):
                     event_id = int(event_meta["event_id"])
-                    ext_session = get_ext_session()
-                    ext_user_id = ext_session.get("ext_user_id")
-                    if not ext_user_id:
-                        ext_social_id = ext_session.get("ext_user_social_id")
-                        if ext_social_id:
-                            ext_user = _get_ext_user_by_social(ext_social_id)
-                            if ext_user:
-                                ext_user_id = ext_user.get("id")
+                    ext_user_id = get_current_ext_user_id()
                     if ext_user_id:
                         _ensure_album_process_table()
                         prev_complete_flag = None
@@ -2064,18 +2040,7 @@ def view_child(album_id, child_id):
             member["request_flag"] = int(status.get("request_flag", 0))
             member["complete_flag"] = int(status.get("complete_flag", 0))
         if is_event_login:
-            ext_session = get_ext_session()
-            current_ext_user_id = ext_session.get("ext_user_id")
-            if not current_ext_user_id:
-                ext_social_id = ext_session.get("ext_user_social_id")
-                if ext_social_id:
-                    ext_user = _get_ext_user_by_social(ext_social_id)
-                    if ext_user:
-                        current_ext_user_id = ext_user.get("id")
-        try:
-            current_ext_user_id = int(current_ext_user_id) if current_ext_user_id else None
-        except (TypeError, ValueError):
-            current_ext_user_id = None
+            current_ext_user_id = get_current_ext_user_id()
         current_user_process_status = status_map.get(current_ext_user_id) if current_ext_user_id else None
     if mode == "process" and is_event_album:
         template_name = "view_child_process_event.html"
@@ -2139,21 +2104,7 @@ def update_process_status(album_id, child_id):
     request_flag = 1 if data.get("request_flag") else 0
     complete_flag = 1 if data.get("complete_flag") else 0
     prev_complete_flag = None
-    requester_id = None
-    if _is_ext_logged_in():
-        ext_session = get_ext_session()
-        requester_id = ext_session.get("ext_user_id")
-        if not requester_id:
-            ext_social_id = ext_session.get("ext_user_social_id")
-            if ext_social_id:
-                ext_user = _get_ext_user_by_social(ext_social_id)
-                if ext_user:
-                    requester_id = ext_user.get("id")
-    if requester_id is not None:
-        try:
-            requester_id = int(requester_id)
-        except (TypeError, ValueError):
-            requester_id = None
+    requester_id = get_current_ext_user_id() if _is_ext_logged_in() else None
 
     event_meta = _fetch_album_meta(album_id)
     if not event_meta or not event_meta.get("event_id"):
@@ -2264,21 +2215,7 @@ def request_process(album_id, child_id):
 
     _ensure_album_process_table()
 
-    requester_id = None
-    if _is_ext_logged_in():
-        ext_session = get_ext_session()
-        requester_id = ext_session.get("ext_user_id")
-        if not requester_id:
-            ext_social_id = ext_session.get("ext_user_social_id")
-            if ext_social_id:
-                ext_user = _get_ext_user_by_social(ext_social_id)
-                if ext_user:
-                    requester_id = ext_user.get("id")
-    if requester_id is not None:
-        try:
-            requester_id = int(requester_id)
-        except (TypeError, ValueError):
-            requester_id = None
+    requester_id = get_current_ext_user_id() if _is_ext_logged_in() else None
 
     request_targets: list[int] = []
     for m in members:
