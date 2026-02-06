@@ -3,15 +3,9 @@
 {% block title %}メール送信ログ | MFU{% endblock %}
 
 {% block content %}
-<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 gap-2">
-  <div>
-    <h2 class="mb-0">📧 メール送信ログ（配送結果）</h2>
-    <div id="mail-delivery-refresh-status" class="text-muted small mt-1" aria-live="polite"></div>
-  </div>
-  <div class="d-flex align-items-center gap-2">
-    <span class="text-muted small">合計 {{ total }} 件</span>
-    <button class="btn btn-outline-primary btn-sm" type="button" id="mail-delivery-refresh">配送状況を更新</button>
-  </div>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">📧 メール送信ログ（配送結果）</h2>
+  <span class="text-muted small">合計 {{ total }} 件</span>
 </div>
 
 <form class="row g-2 align-items-end mb-3" method="get" action="{{ url_for('admin_mail_delivery_logs') }}">
@@ -129,45 +123,5 @@
   tooltipTriggerList.forEach(function (tooltipTriggerEl) {
     new bootstrap.Tooltip(tooltipTriggerEl);
   });
-
-  const refreshButton = document.getElementById('mail-delivery-refresh');
-  const refreshStatus = document.getElementById('mail-delivery-refresh-status');
-  if (refreshButton) {
-    const defaultLabel = refreshButton.textContent;
-    refreshButton.addEventListener('click', async () => {
-      refreshButton.disabled = true;
-      refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
-      if (refreshStatus) {
-        refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
-      }
-
-      const params = new URLSearchParams(window.location.search);
-      const limit = Number(params.get('limit')) || {{ filters.limit }};
-      const maxRows = Math.min(Math.max(limit, 20), 500);
-      try {
-        const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-        });
-        if (!response.ok) {
-          throw new Error('refresh_failed');
-        }
-        const result = await response.json();
-        if (refreshStatus) {
-          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
-        }
-        window.location.reload();
-      } catch (error) {
-        if (refreshStatus) {
-          refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
-        }
-      } finally {
-        refreshButton.disabled = false;
-        refreshButton.textContent = defaultLabel;
-      }
-    });
-  }
 </script>
 {% endblock %}
