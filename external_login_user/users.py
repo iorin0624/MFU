@@ -35,7 +35,7 @@ from weasyprint import HTML
 # =========================
 from flask import (
     request, session, redirect, url_for, render_template,
-    abort, flash, current_app, send_from_directory, make_response, jsonify
+    abort, flash, current_app, send_from_directory, make_response
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
@@ -140,7 +140,7 @@ def _get_admin_payer_profile(cur):
     return _fetchone_dict(cur)
 
 
-def _send_verify_mail(to_email: str, token_raw: str, *, external_login_user_id: int | None = None):
+def _send_verify_mail(to_email: str, token_raw: str):
     """メールアドレス確認メール（イベント非関連）→ send_mail に統一"""
     verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
     subject = "イベント管理システムからメールアドレス確認のお願い"
@@ -156,8 +156,6 @@ def _send_verify_mail(to_email: str, token_raw: str, *, external_login_user_id: 
         subject=subject,
         body=body,
         event_uuid=None,
-        external_login_user_id=external_login_user_id,
-        mail_kind="VERIFY_EMAIL",
     )
 
 
@@ -1566,7 +1564,7 @@ def profile():
         if email_in and (email_changed or (email_in and not was_verified)):
             # next_url を DB に保存するために渡す
             t_raw = _issue_email_verify_token(me["id"], email_in, redirect_url=next_url)  # 24h
-            _send_verify_mail(email_in, t_raw, external_login_user_id=me["id"])
+            _send_verify_mail(email_in, t_raw)
             flash("確認メールを送信しました。受信ボックスをご確認ください。", "info")
             needs_verify = True
     except Exception:
@@ -3203,7 +3201,7 @@ def email_start():
         return redirect(url_for("external_login_user.email_start"))
 
     t_raw = _issue_email_verify_token(me["id"], email)  # type: ignore
-    _send_verify_mail(email, t_raw, external_login_user_id=me["id"])
+    _send_verify_mail(email, t_raw)
     flash("確認メールを送信しました。受信ボックスをご確認ください。", "success")
     return redirect(url_for("external_login_user.email_start"))
 
@@ -3412,7 +3410,7 @@ def resend_verify_email():
             next_url = n1 or n2 or None
 
         token_raw = _issue_email_verify_token(me["id"], email, redirect_url=next_url)  # 24h 有効
-        _send_verify_mail(email, token_raw, external_login_user_id=me["id"])
+        _send_verify_mail(email, token_raw)
         flash("確認メールを再送しました。受信ボックスをご確認ください。", "info")
     except Exception:
         current_app.logger.exception("resend verify mail failed")
@@ -3420,75 +3418,6 @@ def resend_verify_email():
 
     # トップへ戻る（バナーは email_verified_at が NULL の間だけ表示されます）
     return redirect(url_for("external_login_user.index"))
-
-@bp.get("/profile/email/verify/latest-status", endpoint="latest_verify_email_status")
-def latest_verify_email_status():
-    """メール確認用の最新送信履歴（直近1件）を取得して返す。"""
-    uid = session.get("ext_user_id")
-    if not uid:
-        return jsonify({"has_record": False, "error": "unauthorized"}), 401
-
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
-        row = cur.fetchone()
-    finally:
-        try:
-            cur.close(); db.close()
-        except Exception:
-            pass
-
-    email = (row.get("email") or "").strip() if row else ""
-    if not email or "@" not in email:
-        return jsonify(
-            {
-                "has_record": False,
-                "sent_at": None,
-                "submit_status": None,
-                "delivery_status": None,
-                "display_status_ja": "未送信",
-                "message_ja": "メールアドレスが未登録です。",
-            }
-        )
-
-    from app.utils.mail_delivery import (
-        fetch_latest_mail_delivery_for_external_user,
-        build_mail_delivery_display,
-    )
-
-    row = fetch_latest_mail_delivery_for_external_user(
-        external_login_user_id=uid,
-        email=email,
-        mail_kind="VERIFY_EMAIL",
-    )
-    if not row:
-        return jsonify(
-            {
-                "has_record": False,
-                "sent_at": None,
-                "submit_status": None,
-                "delivery_status": None,
-                "display_status_ja": "未送信",
-                "message_ja": "送信履歴が見つかりませんでした。",
-            }
-        )
-
-    submit_at = row.get("submit_at")
-    sent_at = submit_at.isoformat() if hasattr(submit_at, "isoformat") else str(submit_at)
-    submit_status = row.get("submit_status")
-    delivery_status = row.get("last_delivery_status")
-    display_status_ja, message_ja = build_mail_delivery_display(submit_status, delivery_status)
-
-    return jsonify(
-        {
-            "has_record": True,
-            "sent_at": sent_at,
-            "submit_status": submit_status,
-            "delivery_status": delivery_status,
-            "display_status_ja": display_status_ja,
-            "message_ja": message_ja,
-        }
-    )
 
 @bp.route("/unverified")
 def unverified():

@@ -10,11 +10,7 @@ CREATE TABLE IF NOT EXISTS mfu_mail_delivery_log (
     last_delivery_detail VARCHAR(1000) NULL,
     last_delivery_queue_id VARCHAR(64) NULL,
     last_delivery_checked_at DATETIME NULL,
-    external_login_user_id BIGINT NULL,
-    mail_kind VARCHAR(64) NULL,
     UNIQUE KEY uniq_message_id (message_id),
     KEY idx_submit_at (submit_at),
-    KEY idx_last_delivery_status (last_delivery_status),
-    KEY idx_ext_user_submit (external_login_user_id, submit_at),
-    KEY idx_mail_kind_submit (mail_kind, submit_at)
+    KEY idx_last_delivery_status (last_delivery_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

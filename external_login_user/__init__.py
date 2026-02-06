@@ -236,7 +236,6 @@ _ALLOW_UNVERIFIED_ENDPOINTS = {
     "external_login_user.profile",
     "external_login_user.logout",
     "external_login_user.resend_verify_email",
-    "external_login_user.latest_verify_email_status",
     "external_login_user.unverified",
     "external_login_user.avatar_file",   # ★ 追加：アバター画像の配信は許可
 }
