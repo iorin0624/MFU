@@ -110,48 +110,6 @@ def admin_required(func):
     return wrapper
 
 
-def _local_tzinfo():
-    local_tz = datetime.now().astimezone().tzinfo
-    return local_tz or timezone.utc
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _normalize_utc_dt(value, *, label: str = "") -> datetime | None:
-    if value is None:
-        return None
-
-    dt = None
-    if isinstance(value, datetime):
-        dt = value
-    elif isinstance(value, str):
-        s = value.strip()
-        if not s:
-            return None
-        try:
-            if s.endswith("Z"):
-                s = s[:-1] + "+00:00"
-            dt = datetime.fromisoformat(s)
-        except Exception:
-            if label:
-                current_app.logger.warning("%s の復元に失敗: type=%s", label, type(value).__name__)
-            return None
-    else:
-        if label:
-            current_app.logger.debug("%s の型が想定外: %s", label, type(value).__name__)
-        return None
-
-    if dt.tzinfo is None:
-        local_tz = _local_tzinfo()
-        if label:
-            current_app.logger.debug("%s がnaiveのためローカルTZ(%s)で補正", label, local_tz)
-        dt = dt.replace(tzinfo=local_tz)
-
-    return dt.astimezone(timezone.utc)
-
-
 def _save_stream(file_storage, dest_path):
     """アップロードストリームを保存（最小実装）"""
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -435,10 +393,10 @@ def index():
 def login():
     def _preauth_active():
         preauth_user = session.get("preauth_user")
-        expires_at = _normalize_utc_dt(session.get("preauth_expires_at"), label="preauth_expires_at")
+        expires_at = session.get("preauth_expires_at")
         if not preauth_user or not expires_at:
             return None
-        if _utc_now() > expires_at:
+        if datetime.now() > expires_at:
             session.pop("preauth_user", None)
             session.pop("preauth_expires_at", None)
             session.pop("preauth_totp_attempts", None)
@@ -474,7 +432,7 @@ def login():
             totp_status = get_totp_status(username)
             if totp_status.get("enabled") and totp_status.get("has_secret") and not is_local:
                 session["preauth_user"] = username
-                session["preauth_expires_at"] = _utc_now() + timedelta(minutes=5)
+                session["preauth_expires_at"] = datetime.now() + timedelta(minutes=5)
                 session.pop("preauth_totp_attempts", None)
                 session.pop("preauth_totp_locked_until", None)
                 return render_template(
