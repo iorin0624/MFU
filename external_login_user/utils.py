@@ -5,6 +5,7 @@ from typing import Optional
 from urllib.parse import quote_plus, urlparse
 from flask import current_app, request, session, redirect, url_for, abort, flash
 
+from . import bp, oauth  # oauth は None の可能性あり
 from .ext_session import get_ext_session
 from app.utils.db import get_db
 
@@ -251,6 +252,7 @@ def avatar_url_for(user: dict | None) -> str | None:
 
 # ==== Discordワンクリック承認/拒否 用トークン ====
 import hmac, time, hashlib, base64
+from flask import current_app
 
 def _sign_discord_action(event_id: int, user_id: int, action: str, *, ttl_sec: int = 24*3600) -> str:
     """
@@ -289,9 +291,34 @@ def _verify_discord_action(token: str) -> tuple[int,int,str] | None:
     except Exception:
         return None
 
+# 公開（テンプレから呼ぶ）
+@bp.app_template_global()
+def my_role_label(role: str) -> str:
+    m = {"none":"—","camera":"カメラマン","assistant":"アシスタント","cosplayer":"衣装"}
+    return m.get((role or "none").lower(), "—")
+
 # utils.py など（既存の import の近くでOK）
 import re
 from markupsafe import Markup, escape
+
+@bp.app_template_filter("linkify")
+def jinja_linkify(text: str | None):
+    """
+    プレーンテキスト内の http(s)://... を <a href=...> に変換。
+    先に escape するので XSS 安全。戻りは Markup を返す。
+    """
+    if not text:
+        return ""
+    s = escape(text)  # まず全部エスケープ
+
+    # URL検出（空白/<>\"') などで区切る。最後の句読点などは含めないように調整。
+    pattern = re.compile(r'(https?://[^\s<>"\')\]]+)')
+
+    def repl(m: re.Match):
+        url = m.group(1)
+        return Markup(f'<a href="{url}" target="_blank" rel="noopener nofollow">{url}</a>')
+
+    return Markup(pattern.sub(repl, s))
 
 
 # utils.py の import 群の下あたりに追加
