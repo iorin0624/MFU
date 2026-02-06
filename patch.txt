@@ -1,254 +1,48 @@
-diff --git a/external_login_user/template/ext_unverified.html b/external_login_user/template/ext_unverified.html
-index 4e15530d8840e73faca8dd0e27dfe3914388323f..17be0df9ea78927c7553a565bf02e2aa82cb5923 100644
---- a/external_login_user/template/ext_unverified.html
-+++ b/external_login_user/template/ext_unverified.html
-@@ -4,150 +4,249 @@
-   <meta charset="UTF-8">
-   <title>メールアドレス確認のお願い</title>
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
- </head>
- <body class="container py-4" style="max-width:720px;">
+diff --git a/utils/poll_mail_delivery.py b/utils/poll_mail_delivery.py
+index b7b2d3f8ef325704de59b5e15bc09ce75e3f02a5..34bb19b829db0d7fa4932bb12edcfdaed53243b9 100644
+--- a/utils/poll_mail_delivery.py
++++ b/utils/poll_mail_delivery.py
+@@ -1,42 +1,41 @@
+ #!/usr/bin/env python3
+ from __future__ import annotations
  
-   {# フラッシュメッセージ #}
-   {% with messages = get_flashed_messages(with_categories=true) %}
-     {% for cat, msg in messages %}
-       <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg|safe }}</div>
-     {% endfor %}
-   {% endwith %}
+ import json
+ import os
+ import sys
+ from datetime import datetime
  
-   <div class="alert alert-warning" role="alert" style="margin-bottom:16px;">
-     <div style="font-weight:600;">メール確認のお願い</div>
-     <div style="margin-top:6px;line-height:1.7;">
-       メールアドレスの確認が完了していません。<br>
-       イベント管理システムからお送りした<strong>「メールアドレス確認のお願い」</strong>メール内のリンクをタップして認証を完了してください。<br>
-       届いていない場合は<strong>迷惑メールフォルダ</strong>をご確認のうえ、下のボタンで再送できます。<br>
-       <br>
-       メールアドレスの確認が取れましたら、イベントの詳細が確認出来ます。<br>
-       ※クレジットカード会社に不正利用をしていない証明提出のため、ご理解、ご協力お願いいたします。<br>
-     </div>
+ # Flask app を起動して current_app / get_db を使えるようにする必要があるため
+ # MFU のアプリファクトリ(create_app)を import して app_context を張ります。
+ #
+ # ※ ここはあなたのMFUの実装に合わせて import パスを調整してください。
+ #   例: "from app import create_app" だったり "from app.main import create_app" だったりします。
+-from app import create_app  # ←必要なら修正
++from app import app  # ←必要なら修正
  
-+    <div id="verify-mail-guidance" class="alert alert-info mt-3 mb-0">
-+      <div class="text-muted small">送信状況を確認中です...</div>
-+    </div>
-+
-     <div class="mt-2 text-danger" style="line-height:1.7;">
-       メールは <code>@mail.iori0624.jp</code> から送信しています。<br>
-       受信トレイに見当たらない場合は、<strong>迷惑メールフォルダ</strong>を必ずご確認ください。<br><br>
-       特に、docomo／au／SoftBank などのキャリアメールをご利用の場合、<strong>ドメイン指定受信</strong>や<strong>URL付きメール拒否</strong>の設定があると受信できないことがあります。<br><br>
-       「<code>@mail.iori0624.jp</code>」からのメールを受信できるよう、設定のご確認・変更をお願いいたします。
-     </div>
-   </div>
+ from app.utils.mail_delivery import poll_mail_delivery_statuses  # ←このモジュールの配置に合わせて修正
  
-   {% if email %}
-     <p class="text-muted" style="margin:8px 0 20px 0;">現在登録中のメール：<code>{{ email }}</code></p>
-   {% else %}
-     <div class="alert alert-info" role="alert" style="margin-bottom:16px;">
-       まだメールアドレスが未登録です。プロフィール画面でメールアドレスを登録してください。
-     </div>
-   {% endif %}
  
-   <div class="card mb-3">
-     <div class="card-body">
-       <div class="fw-semibold">最新の送信履歴</div>
-       <div class="text-muted small mb-2">確認メールの送信履歴（直近1件）を表示します。</div>
-       <div id="verify-mail-status" class="border rounded p-3 bg-light">
-         <div class="text-muted">読み込み中...</div>
-       </div>
-     </div>
-   </div>
+ def main() -> int:
+     max_rows = int(os.environ.get("MFU_MAIL_STATUS_POLL_MAX_ROWS", "200"))
+     timeout_sec_env = os.environ.get("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC")
+     timeout_sec = int(timeout_sec_env) if timeout_sec_env else None
  
-   <div class="d-flex gap-2" style="display:flex; gap:8px; flex-wrap:wrap;">
-     <a class="btn btn-primary" href="{{ url_for('external_login_user.profile', next=next) }}">プロフィールを編集</a>
+-    app = create_app()
+     with app.app_context():
+         summary = poll_mail_delivery_statuses(max_rows=max_rows, timeout_sec=timeout_sec)
  
-     <form method="post" action="{{ url_for('external_login_user.resend_verify_email') }}">
-       <button type="submit" class="btn btn-outline-primary">確認メールを再送</button>
-     </form>
+     # systemd/journal に残す（grepしやすい）
+     payload = {
+         "ts": datetime.now().isoformat(timespec="seconds"),
+         "summary": summary,
+     }
+     print(json.dumps(payload, ensure_ascii=False))
+     return 0
  
-     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">トップへ戻る</a>
  
-     <a class="btn btn-outline-danger ms-auto" href="{{ url_for('external_login_user.logout') }}"
-        style="margin-left:auto;">ログアウト</a>
-   </div>
- 
-   <!-- 任意：BootstrapのJSが必要なら（モーダル等を使う場合のみ） -->
-   <!-- <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script> -->
-   <script>
-     (() => {
-       const statusBox = document.getElementById("verify-mail-status");
-+      const guidanceBox = document.getElementById("verify-mail-guidance");
-       if (!statusBox) {
-         return;
-       }
- 
-       const maxPolls = 10;
-       const intervalMs = 5000;
-       let pollCount = 0;
-       let timerId = null;
- 
-       const doneStatuses = new Set(["sent", "delivered", "bounced", "failed"]);
- 
-+      const guidanceTemplates = {
-+        no_record: {
-+          level: "info",
-+          title: "送信履歴がありません",
-+          body: [
-+            "「確認メールを再送」ボタンを押して、確認メールを送信してください。",
-+            "受信トレイに無い場合は迷惑メールフォルダもご確認ください。"
-+          ]
-+        },
-+        queued: {
-+          level: "info",
-+          title: "確認メールを送信中です",
-+          body: [
-+            "数十秒〜数分かかる場合があります。",
-+            "しばらくしてから受信トレイと迷惑メールフォルダをご確認ください。"
-+          ]
-+        },
-+        sent: {
-+          level: "primary",
-+          title: "確認メールの送信は完了しています",
-+          body: [
-+            "受信トレイに見当たらない場合は迷惑メールフォルダをご確認ください。",
-+            "キャリアメールの場合は「URL付きメール拒否」「ドメイン指定受信」設定もご確認ください。"
-+          ]
-+        },
-+        delivered: {
-+          level: "warning",
-+          title: "配信完了になっています",
-+          body: [
-+            "受信側には到達している可能性が高いです。",
-+            "受信トレイに無い場合、迷惑メールフォルダ／プロモーション等をご確認ください。",
-+            "キャリアメールの場合は受信設定（URL拒否・ドメイン指定）をご確認ください。"
-+          ]
-+        },
-+        bounced: {
-+          level: "danger",
-+          title: "配信できませんでした（不達）",
-+          body: [
-+            "メールアドレスの誤り、受信拒否、メールボックス容量超過などが考えられます。",
-+            "アドレスを修正するか、別メール（Gmail等）での登録をおすすめします。"
-+          ]
-+        },
-+        failed: {
-+          level: "danger",
-+          title: "送信に失敗しました",
-+          body: [
-+            "時間をおいて再送してください。",
-+            "改善しない場合は運営にご連絡ください。"
-+          ]
-+        },
-+        unknown: {
-+          level: "secondary",
-+          title: "配送状況を確認中です",
-+          body: [
-+            "状況が更新されるまで少し待ってから、もう一度ご確認ください。",
-+            "届かない場合は迷惑メールフォルダもご確認ください。"
-+          ]
-+        }
-+      };
-+
-+      const renderGuidance = (data) => {
-+        if (!guidanceBox) {
-+          return;
-+        }
-+
-+        let template = guidanceTemplates.unknown;
-+        if (!data || !data.has_record) {
-+          template = guidanceTemplates.no_record;
-+        } else {
-+          const rawStatus = (data.delivery_status || "").toLowerCase();
-+          if (rawStatus === "queued" || rawStatus === "sending") {
-+            template = guidanceTemplates.queued;
-+          } else if (guidanceTemplates[rawStatus]) {
-+            template = guidanceTemplates[rawStatus];
-+          }
-+        }
-+
-+        guidanceBox.className = `alert alert-${template.level} mt-3 mb-0`;
-+        guidanceBox.innerHTML = `
-+          <div class="fw-semibold">${template.title}</div>
-+          <div class="mt-1">${template.body.join("<br>")}</div>
-+        `;
-+
-+        if (data && data.message_ja) {
-+          const note = document.createElement("div");
-+          note.className = "small text-muted mt-2";
-+          note.textContent = data.message_ja;
-+          guidanceBox.appendChild(note);
-+        }
-+      };
-+
-       const renderStatus = (data) => {
-         if (!data || !data.has_record) {
-           statusBox.innerHTML = `
-             <div>送信履歴はありません。</div>
-             <div class="text-muted small">確認メールの再送をお試しください。</div>
-           `;
-           return;
-         }
- 
-         let sentAtText = "不明";
-         if (data.sent_at) {
-           const sentDate = new Date(data.sent_at);
-           sentAtText = Number.isNaN(sentDate.getTime())
-             ? data.sent_at
-             : sentDate.toLocaleString("ja-JP");
-         }
- 
-         const messageLine = data.message_ja
-           ? `<div class="text-muted small mt-1">${data.message_ja}</div>`
-           : "";
- 
-         statusBox.innerHTML = `
-           <div>送信日時：${sentAtText}</div>
-           <div>状態：${data.display_status_ja || "確認中"}</div>
-           ${messageLine}
-         `;
-       };
- 
-       const fetchStatus = async () => {
-         pollCount += 1;
-         try {
-           const response = await fetch(
-             "{{ url_for('external_login_user.latest_verify_email_status') }}",
-             { method: "GET", headers: { "Accept": "application/json" } }
-           );
-           if (!response.ok) {
-             statusBox.innerHTML = `<div class="text-muted">送信履歴の取得に失敗しました。</div>`;
-+            renderGuidance(null);
-             return;
-           }
-           const data = await response.json();
-           renderStatus(data);
-+          renderGuidance(data);
- 
-           const deliveryStatus = (data.delivery_status || "").toLowerCase();
-           if (doneStatuses.has(deliveryStatus)) {
-             stopPolling();
-           }
-         } catch (error) {
-           statusBox.innerHTML = `<div class="text-muted">送信履歴の取得に失敗しました。</div>`;
-+          renderGuidance(null);
-         }
-       };
- 
-       const stopPolling = () => {
-         if (timerId) {
-           clearInterval(timerId);
-           timerId = null;
-         }
-       };
- 
-       fetchStatus();
-       timerId = setInterval(() => {
-         if (pollCount >= maxPolls) {
-           stopPolling();
-           return;
-         }
-         fetchStatus();
-       }, intervalMs);
-     })();
-   </script>
- </body>
- </html>
+ if __name__ == "__main__":
+     try:
+         raise SystemExit(main())
+     except Exception as e:
+         print(f"[poll_mail_delivery] ERROR: {e.__class__.__name__}: {e}", file=sys.stderr)
+         raise

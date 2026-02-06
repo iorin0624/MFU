@@ -26,10 +26,6 @@
       ※クレジットカード会社に不正利用をしていない証明提出のため、ご理解、ご協力お願いいたします。<br>
     </div>
 
-    <div id="verify-mail-guidance" class="alert alert-info mt-3 mb-0">
-      <div class="text-muted small">送信状況を確認中です...</div>
-    </div>
-
     <div class="mt-2 text-danger" style="line-height:1.7;">
       メールは <code>@mail.iori0624.jp</code> から送信しています。<br>
       受信トレイに見当たらない場合は、<strong>迷惑メールフォルダ</strong>を必ずご確認ください。<br><br>
@@ -74,7 +70,6 @@
   <script>
     (() => {
       const statusBox = document.getElementById("verify-mail-status");
-      const guidanceBox = document.getElementById("verify-mail-guidance");
       if (!statusBox) {
         return;
       }
@@ -85,97 +80,6 @@
       let timerId = null;
 
       const doneStatuses = new Set(["sent", "delivered", "bounced", "failed"]);
-
-      const guidanceTemplates = {
-        no_record: {
-          level: "info",
-          title: "送信履歴がありません",
-          body: [
-            "「確認メールを再送」ボタンを押して、確認メールを送信してください。",
-            "受信トレイに無い場合は迷惑メールフォルダもご確認ください。"
-          ]
-        },
-        queued: {
-          level: "info",
-          title: "確認メールを送信中です",
-          body: [
-            "数十秒〜数分かかる場合があります。",
-            "しばらくしてから受信トレイと迷惑メールフォルダをご確認ください。"
-          ]
-        },
-        sent: {
-          level: "primary",
-          title: "確認メールの送信は完了しています",
-          body: [
-            "受信トレイに見当たらない場合は迷惑メールフォルダをご確認ください。",
-            "キャリアメールの場合は「URL付きメール拒否」「ドメイン指定受信」設定もご確認ください。"
-          ]
-        },
-        delivered: {
-          level: "warning",
-          title: "配信完了になっています",
-          body: [
-            "受信側には到達している可能性が高いです。",
-            "受信トレイに無い場合、迷惑メールフォルダ／プロモーション等をご確認ください。",
-            "キャリアメールの場合は受信設定（URL拒否・ドメイン指定）をご確認ください。"
-          ]
-        },
-        bounced: {
-          level: "danger",
-          title: "配信できませんでした（不達）",
-          body: [
-            "メールアドレスの誤り、受信拒否、メールボックス容量超過などが考えられます。",
-            "アドレスを修正するか、別メール（Gmail等）での登録をおすすめします。"
-          ]
-        },
-        failed: {
-          level: "danger",
-          title: "送信に失敗しました",
-          body: [
-            "時間をおいて再送してください。",
-            "改善しない場合は運営にご連絡ください。"
-          ]
-        },
-        unknown: {
-          level: "secondary",
-          title: "配送状況を確認中です",
-          body: [
-            "状況が更新されるまで少し待ってから、もう一度ご確認ください。",
-            "届かない場合は迷惑メールフォルダもご確認ください。"
-          ]
-        }
-      };
-
-      const renderGuidance = (data) => {
-        if (!guidanceBox) {
-          return;
-        }
-
-        let template = guidanceTemplates.unknown;
-        if (!data || !data.has_record) {
-          template = guidanceTemplates.no_record;
-        } else {
-          const rawStatus = (data.delivery_status || "").toLowerCase();
-          if (rawStatus === "queued" || rawStatus === "sending") {
-            template = guidanceTemplates.queued;
-          } else if (guidanceTemplates[rawStatus]) {
-            template = guidanceTemplates[rawStatus];
-          }
-        }
-
-        guidanceBox.className = `alert alert-${template.level} mt-3 mb-0`;
-        guidanceBox.innerHTML = `
-          <div class="fw-semibold">${template.title}</div>
-          <div class="mt-1">${template.body.join("<br>")}</div>
-        `;
-
-        if (data && data.message_ja) {
-          const note = document.createElement("div");
-          note.className = "small text-muted mt-2";
-          note.textContent = data.message_ja;
-          guidanceBox.appendChild(note);
-        }
-      };
 
       const renderStatus = (data) => {
         if (!data || !data.has_record) {
@@ -214,12 +118,10 @@
           );
           if (!response.ok) {
             statusBox.innerHTML = `<div class="text-muted">送信履歴の取得に失敗しました。</div>`;
-            renderGuidance(null);
             return;
           }
           const data = await response.json();
           renderStatus(data);
-          renderGuidance(data);
 
           const deliveryStatus = (data.delivery_status || "").toLowerCase();
           if (doneStatuses.has(deliveryStatus)) {
@@ -227,7 +129,6 @@
           }
         } catch (error) {
           statusBox.innerHTML = `<div class="text-muted">送信履歴の取得に失敗しました。</div>`;
-          renderGuidance(null);
         }
       };
 
