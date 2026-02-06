@@ -570,15 +570,6 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
             # ① 外部ログインユーザー（LINEログイン等）
             ext_user_id = flask_session.get("ext_user_id")
             nickname    = (flask_session.get("ext_user_nickname") or "").strip()
-            if ext_user_id is None:
-                try:
-                    from app.external_login_user.ext_session import get_ext_session
-                    ext_session = get_ext_session()
-                    ext_user_id = ext_session.get("ext_user_id")
-                    nickname = (ext_session.get("ext_user_nickname") or "").strip()
-                except Exception:
-                    ext_user_id = None
-                    nickname = ""
 
             if ext_user_id is not None:
                 try:

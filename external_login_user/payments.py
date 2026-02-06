@@ -7,11 +7,10 @@ import uuid
 from datetime import datetime, timedelta
 
 from flask import (
-    request, redirect, url_for, flash, abort, render_template, current_app
+    request, session, redirect, url_for, flash, abort, render_template, current_app
 )
 
 from . import bp
-from .ext_session import get_ext_session
 from .utils import (
     _require_ext_login, _get_ext_user_by_social, _event_by_uuid_str,
     _membership_status, _member_payment_status, _get_member_require_payment,
@@ -158,18 +157,16 @@ def _is_lecture_event(ev: dict) -> bool:
 
 def _lecture_auto_approve_from_iv_session(event_uuid: str) -> bool:
     try:
-        ext_session = get_ext_session()
-        return bool((ext_session.get("lecture_auto_approve_by_iv") or {}).get(event_uuid))
+        return bool((session.get("lecture_auto_approve_by_iv") or {}).get(event_uuid))
     except Exception:
         return False
 
 def _clear_lecture_auto_approve_iv_session(event_uuid: str) -> None:
     try:
-        ext_session = get_ext_session()
-        store = ext_session.get("lecture_auto_approve_by_iv") or {}
+        store = session.get("lecture_auto_approve_by_iv") or {}
         if event_uuid in store:
             store.pop(event_uuid, None)
-            ext_session["lecture_auto_approve_by_iv"] = store
+            session["lecture_auto_approve_by_iv"] = store
     except Exception:
         pass
 
@@ -547,8 +544,7 @@ def pay_start(event_uuid: str):
     if guard:
         return guard
 
-    ext_session = get_ext_session()
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -665,11 +661,11 @@ def pay_start(event_uuid: str):
     lecture_auto_approve = False
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if not iv:
-        iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     if iv:
-        store = ext_session.get("lecture_invite_tokens") or {}
+        store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
-        ext_session["lecture_invite_tokens"] = store
+        session["lecture_invite_tokens"] = store
     auto_approve_hit = bool(
         lecture
         and int(ev.get("auto_approve_by_invite") or 0) == 1
@@ -678,9 +674,9 @@ def pay_start(event_uuid: str):
         and iv == ev.get("invite_token")
     )
     if auto_approve_hit:
-        store = ext_session.get("lecture_auto_approve_by_iv") or {}
+        store = session.get("lecture_auto_approve_by_iv") or {}
         store[event_uuid] = True
-        ext_session["lecture_auto_approve_by_iv"] = store
+        session["lecture_auto_approve_by_iv"] = store
     if lecture and (auto_approve_hit or _lecture_auto_approve_from_iv_session(event_uuid)):
         lecture_auto_approve = True
 
@@ -703,7 +699,7 @@ def pay_start(event_uuid: str):
             )  # type: ignore
             if lecture_auto_approve:
                 _clear_lecture_auto_approve_iv_session(event_uuid)
-            ext_session["pay_ctx"] = {
+            session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
                 "mfu_event_uuid": event_uuid,
                 "ext_user_id": me["id"],
@@ -770,7 +766,7 @@ def pay_start(event_uuid: str):
     )  # type: ignore
     if lecture_auto_approve:
         _clear_lecture_auto_approve_iv_session(event_uuid)
-    ext_session["pay_ctx"] = {
+    session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
         "mfu_event_uuid": event_uuid,
         "ext_user_id": me["id"],
@@ -812,8 +808,7 @@ def pay_return(event_uuid: str):
     if guard:
         return guard
 
-    ext_session = get_ext_session()
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -836,7 +831,7 @@ def pay_return(event_uuid: str):
     except Exception:
         payment_row_id = None
     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
-    token = (q.get("payment_token") or (ext_session.get("pay_ctx") or {}).get("payment_token") or None)
+    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
 
     # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
     paid_amount_yen = None
@@ -852,7 +847,7 @@ def pay_return(event_uuid: str):
             paid_amount_yen = None
     if paid_amount_yen is None:
         try:
-            sess_amt = (ext_session.get("pay_ctx") or {}).get("expected_amount_yen")
+            sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
             if sess_amt is not None and int(sess_amt) > 0:
                 paid_amount_yen = int(sess_amt)
         except Exception:
@@ -934,8 +929,8 @@ def pay_return(event_uuid: str):
 
         # セッションクリア＆通知（既存ロジックそのまま）
         try:
-            (ext_session.get("pay_ctx") or {}).clear()
-            ext_session.pop("pay_ctx", None)
+            (session.get("pay_ctx") or {}).clear()
+            session.pop("pay_ctx", None)
         except Exception:
             pass
 
@@ -1002,7 +997,7 @@ def pay_return(event_uuid: str):
         # ★ 講座モード：支払い後は参加申請へ誘導
         if lecture:
             flash("続いて、参加申請（必要項目の入力）をお願いします。", "info")
-            iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid)
+            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
             if iv:
                 return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
@@ -1010,7 +1005,7 @@ def pay_return(event_uuid: str):
     elif is_success and already:
         flash("お支払いは反映済みです。", "info")
         if lecture:
-            iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid)
+            iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
             if iv:
                 return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
             return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
@@ -1041,10 +1036,9 @@ def pay_options(event_uuid: str):
 
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if iv and is_lecture:
-        ext_session = get_ext_session()
-        store = ext_session.get("lecture_invite_tokens") or {}
+        store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
-        ext_session["lecture_invite_tokens"] = store
+        session["lecture_invite_tokens"] = store
 
     if is_lecture and enabled == ["card"]:
         return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, iv=iv or None))
@@ -1074,8 +1068,7 @@ def pay_paypay(event_uuid: str):
     if guard:
         return guard
 
-    ext_session = get_ext_session()
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404)
@@ -1198,8 +1191,7 @@ def pay_bank(event_uuid: str):
     if guard:
         return guard
 
-    ext_session = get_ext_session()
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404)
@@ -1407,16 +1399,14 @@ def lecture_start(event_uuid: str):
 
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if iv:
-        ext_session = get_ext_session()
-        store = ext_session.get("lecture_invite_tokens") or {}
+        store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
-        ext_session["lecture_invite_tokens"] = store
+        session["lecture_invite_tokens"] = store
 
     # 未ログインなら、講座用支払ページを next にしてLINEログインへ
-    ext_session = get_ext_session()
-    if not ext_session.get("ext_user_social_id"):
+    if not session.get("ext_user_social_id"):
         next_url = url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, _external=False)
-        ext_session["ext_after_login_next"] = next_url
+        session["ext_after_login_next"] = next_url
         return redirect(url_for("external_login_user.line_login", next=next_url))
 
     # 既にログイン済みならそのまま支払ステップへ
@@ -1435,8 +1425,7 @@ def lecture_pay_start(event_uuid: str):
     if guard:
         return guard
 
-    ext_session = get_ext_session()
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -1446,11 +1435,11 @@ def lecture_pay_start(event_uuid: str):
 
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if not iv:
-        iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     if iv:
-        store = ext_session.get("lecture_invite_tokens") or {}
+        store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
-        ext_session["lecture_invite_tokens"] = store
+        session["lecture_invite_tokens"] = store
     auto_approve_hit = bool(
         int(ev.get("auto_approve_by_invite") or 0) == 1
         and ev.get("invite_token")
@@ -1531,7 +1520,7 @@ def lecture_pay_start(event_uuid: str):
             )  # type: ignore
             if auto_approve_hit:
                 _clear_lecture_auto_approve_iv_session(event_uuid)
-            ext_session["pay_ctx"] = {
+            session["pay_ctx"] = {
                 "mfu_event_id": ev["id"],
                 "mfu_event_uuid": event_uuid,
                 "ext_user_id": me["id"],
@@ -1602,7 +1591,7 @@ def lecture_pay_start(event_uuid: str):
     )  # type: ignore
     if auto_approve_hit:
         _clear_lecture_auto_approve_iv_session(event_uuid)
-    ext_session["pay_ctx"] = {
+    session["pay_ctx"] = {
         "mfu_event_id": ev["id"],
         "mfu_event_uuid": event_uuid,
         "ext_user_id": me["id"],
@@ -1645,8 +1634,7 @@ def lecture_return(event_uuid: str):
     if guard:
         return guard
 
-    ext_session = get_ext_session()
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         abort(404, "イベントが見つかりません")
@@ -1655,10 +1643,10 @@ def lecture_return(event_uuid: str):
     q = request.args
     status = (q.get("status") or q.get("square_status") or "").strip().lower()
     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
-    token = (q.get("payment_token") or (ext_session.get("pay_ctx") or {}).get("payment_token") or None)
-    iv = (q.get("iv") or q.get("vi") or (ext_session.get("pay_ctx") or {}).get("invite_token") or "").strip()
+    token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+    iv = (q.get("iv") or q.get("vi") or (session.get("pay_ctx") or {}).get("invite_token") or "").strip()
     if not iv:
-        iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+        iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
 
     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
     try:
@@ -1682,7 +1670,7 @@ def lecture_return(event_uuid: str):
             paid_amount_yen = None
     if paid_amount_yen is None:
         try:
-            sess_amt = (ext_session.get("pay_ctx") or {}).get("expected_amount_yen")
+            sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
             if sess_amt is not None and int(sess_amt) > 0:
                 paid_amount_yen = int(sess_amt)
         except Exception:
@@ -1754,14 +1742,14 @@ def lecture_return(event_uuid: str):
         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
 
         if iv:
-            store = ext_session.get("lecture_invite_tokens") or {}
+            store = session.get("lecture_invite_tokens") or {}
             store[event_uuid] = iv
-            ext_session["lecture_invite_tokens"] = store
+            session["lecture_invite_tokens"] = store
 
         # セッションのフォールバック情報はクリア
         try:
-            (ext_session.get("pay_ctx") or {}).clear()
-            ext_session.pop("pay_ctx", None)
+            (session.get("pay_ctx") or {}).clear()
+            session.pop("pay_ctx", None)
         except Exception:
             pass
 
@@ -1829,7 +1817,7 @@ def lecture_return(event_uuid: str):
         flash("お支払い結果の反映を確認できませんでした。時間をおいて再読込してください。", "warning")
 
     # 支払後は必ず参加申請ページへ
-    iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid)
+    iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid)
     if iv:
         return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid, iv=iv))
     return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))

@@ -84,11 +84,9 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 load_dotenv()
 app.secret_key = os.environ.get("SECRET_KEY")
-app.config["EXTERNAL_SECRET_KEY"] = os.environ.get("EXTERNAL_SECRET_KEY")
 
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 
-app.config["SESSION_COOKIE_NAME"] = "mfu_admin_session"
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
 
@@ -2430,15 +2428,6 @@ def finalize_response(response):
             response.headers["Expires"] = "0"
     except Exception as e:
         app.logger.warning(f"after_request(no-cache) failed: {e}")
-
-    # --- 1.5) External セッション保存（必要な場合のみ） ---
-    try:
-        from app.external_login_user.ext_session import save_ext_session
-        ext_session = getattr(g, "ext_session", None)
-        if ext_session is not None:
-            response = save_ext_session(response, ext_session)
-    except Exception as e:
-        app.logger.warning(f"after_request(external_session) failed: {e}")
 
     # --- 2) アクセスログ（委譲） ---
     try:
