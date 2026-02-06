@@ -2945,6 +2945,12 @@ def finalize_response(response):
     except Exception as e:
         app.logger.warning(f"log_access failed: {e}")
 
+    # --- 3) admin session サイズデバッグ（キー別・上位5件） ---
+    try:
+        _log_admin_session_sizes()
+    except Exception as e:
+        app.logger.warning(f"admin session size log failed: {e}")
+
     return response
 
 
@@ -2961,6 +2967,38 @@ def inject_feature_context():
 @app.errorhandler(403)
 def handle_forbidden(_error):
     return render_template("errors/403.html"), 403
+
+
+def _log_admin_session_sizes() -> None:
+    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    has_cookie = bool(request.cookies.get(cookie_name))
+    if not session and not has_cookie:
+        return
+
+    try:
+        data = dict(session)
+    except Exception:
+        data = {}
+
+    items = []
+    for key, value in data.items():
+        try:
+            payload = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+            size = len(payload)
+        except Exception:
+            size = len(str(value).encode("utf-8", "ignore"))
+        items.append((size, key))
+
+    items.sort(reverse=True)
+    top_items = items[:5]
+    top_str = ", ".join([f"{key}={size}B" for size, key in top_items])
+    app.logger.info(
+        "admin_session_sizes endpoint=%s path=%s keys=%s top5=[%s]",
+        request.endpoint,
+        request.path,
+        len(items),
+        top_str,
+    )
 
 # ─────────────────────────────────────────
 # 管理: ノードメトリクス集約表示（103.16 / 103.15）
