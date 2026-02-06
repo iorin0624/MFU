@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from flask import Blueprint
 from flask import request, flash, redirect, url_for, current_app, g
+from app.utils.feature_access import enforce_feature_access
 
 from .ext_session import get_ext_session, save_ext_session
 
@@ -38,6 +39,15 @@ bp = Blueprint("external_login_user", __name__, template_folder="template")
 @bp.before_request
 def _load_external_session():
     get_ext_session()
+    return None
+
+
+@bp.before_request
+def _guard_admin_features():
+    if request.path.startswith(("/external-login/admin", "/e/admin")):
+        response = enforce_feature_access("events")
+        if response is not None:
+            return response
     return None
 
 
