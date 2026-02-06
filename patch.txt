@@ -1,83 +1,83 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index 76c80bca8b8c04aa630aed23a0f9b3ac9e34b869..1ab3d45a3f7b6dcf1c3503f80d60123812cbd3b9 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -23,53 +23,78 @@ import shutil
- import uuid
- import json
- import secrets
- from functools import wraps
- from datetime import datetime
- import subprocess
- import shlex
+diff --git a/__init__.py b/__init__.py
+index 211b0cc2690be45595af965043ed554935054593..6d4cd4f1fa4f34ad0f94ddd4cab12149358effa6 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -2869,67 +2869,76 @@ def before_every_request():
+     until_time = None
+     if until_row and until_row["value"]:
+         try:
+             utc_dt = dateutil_parser.isoparse(until_row["value"])
+             until_time = utc_dt.astimezone(JST)
+         except Exception as e:
+             app.logger.warning(f"[Timer Parse Error] {e}")
  
- from mysql.connector import errors as MySQLErrors
- from app.utils.db import get_db  #
- from app.utils.feature_access import enforce_feature_access
- from flask import g  # 追加
+     if mode and mode["value"] == "on":
+         now = datetime.utcnow().replace(tzinfo=timezone.utc)
+         if until_time and now >= until_time.astimezone(timezone.utc):
+             flag_path = "/tmp/mfu_restart.flag"
+             if os.path.exists(flag_path):
+                 os.remove(flag_path)
+                 threading.Thread(target=delayed_restart).start()
+                 return "🌀 自動再起動中...", 503
+             else:
+                 threading.Thread(target=auto_end_maintenance).start()
+                 return "🌀 メンテナンス解除中...", 503
  
- # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
- from app.albums.photo_namer import get_datetime_from_image
- from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
- from app.external_login_user.utils import _get_ext_user_by_social
- from app.external_login_user.ext_session import get_ext_session
+         if session.get("user") != "admin" and not request.path.startswith(("/login", "/static", "/favicon", "/api")):
+             return render_template("maintenance.html", until_time=until_time), 503
  
- album_bp = Blueprint('album', __name__, template_folder='templates')
- print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
+     # アプリ内ブラウザ（LINE/X/Instagram）への警告
+     if "user" not in session:
+-        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc")
++        skip_paths = (
++            "/static",
++            "/favicon",
++            "/api",
++            "/admin",
++            "/maintenance",
++            "/suc",
++            "/external-login",
++            "/e",
++        )
+         if not any(request.path.startswith(p) for p in skip_paths):
+             ua = request.headers.get("User-Agent", "")
+             ref = request.headers.get("Referer", "")
  
+             is_instagram = "Instagram" in ua
+             is_line = "Line/" in ua
+             is_x = ("Twitter" in ua) or ref.startswith("https://t.co/")
  
- @album_bp.before_request
- def _album_feature_guard():
-+    if session.get("user"):
-+        response = enforce_feature_access("albums")
-+        if response is not None:
-+            return response
-+        return None
-+
-+    public_endpoints = {
-+        "album.album_access",
-+        "album.album_home",
-+        "album.view_child",
-+        "album.image",
-+        "album.album_thumb",
-+        "album.movie_raw",
-+        "album.movie_poster",
-+        "album.update_process_status",
-+    }
-+
-+    endpoint = request.endpoint
-+    if endpoint is None:
-+        return None
-+
-+    if endpoint in public_endpoints:
-+        return None
-+
-     response = enforce_feature_access("albums")
-     if response is not None:
-         return response
-+    return None
+             if request.cookies.get("InAppView") == "1":
+                 return render_template("inapp_warning.html"), 200
  
+             if is_instagram or is_x:
+                 return render_template("inapp_warning.html"), 200
  
- def _get_ext_user_nickname() -> str | None:
-     ext_session = get_ext_session()
-     ext_social_id = ext_session.get("ext_user_social_id")
-     if not ext_social_id:
-         return None
+             if is_line:
+-                if not request.path.startswith(("/external-login/", "/e/")):
++                if not request.path.startswith(("/external-login", "/e")):
+                     return render_template("inapp_warning.html"), 200
+ 
+ @app.after_request
+ def finalize_response(response):
+     # --- 1) No-Cache ヘッダ ---
      try:
-         ext_user = _get_ext_user_by_social(ext_social_id)
-     except Exception:
-         return None
-     if not ext_user:
-         return None
-     nickname = (ext_user.get("nickname") or "").strip()
-     return nickname or None
+         if (request.endpoint or "") != "static":
+             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+             response.headers["Pragma"] = "no-cache"
+             response.headers["Expires"] = "0"
+     except Exception as e:
+         app.logger.warning(f"after_request(no-cache) failed: {e}")
  
- def _is_ext_logged_in() -> bool:
-     ext_session = get_ext_session()
-     return bool(ext_session.get("ext_user_social_id"))
- 
- def _fetch_event_process_members(event_id: int) -> list[dict]:
-     """イベント参加者一覧を取得（process フラグ含む）"""
-     rows: list[dict] = []
+     # --- 1.5) External セッション保存（必要な場合のみ） ---
      try:
-         conn = get_db()
+         from app.external_login_user.ext_session import save_ext_session
+         ext_session = getattr(g, "ext_session", None)
+         if ext_session is not None:
+             response = save_ext_session(response, ext_session)
+     except Exception as e:
+         app.logger.warning(f"after_request(external_session) failed: {e}")
+ 
+     # --- 2) アクセスログ（委譲） ---
+     try:
+         log_access(request, response, session, endpoint=request.endpoint)
