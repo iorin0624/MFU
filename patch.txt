@@ -1,76 +1,76 @@
-diff --git a/records/templates/records/fuel/list.html b/records/templates/records/fuel/list.html
-index e4e0b5f2801498528cf2a8061f973f87cc51399c..fa200d92da1e87ba12eea02a99f9476540216ef9 100644
---- a/records/templates/records/fuel/list.html
-+++ b/records/templates/records/fuel/list.html
-@@ -8,65 +8,68 @@
- <div class="card mb-4">
-   <div class="card-body">
-     <h5 class="card-title">給油記録 新規追加</h5>
-     <form method="post" action="{{ url_for('records.fuel_create') }}">
-       {% set item = none %}
-       {% include "records/fuel/_form_fields.html" with context %}
-       <div class="d-flex gap-2">
-         <button type="submit" class="btn btn-primary">保存</button>
-       </div>
-     </form>
-   </div>
- </div>
- 
- <table class="table table-striped align-middle">
-   <thead>
-     <tr>
-       <th>日付</th>
-       <th class="text-end">メーター</th>
-       <th class="text-end">トリップ(km)</th>
-       <th class="text-end">給油量(L)</th>
-       <th class="text-end">円/L</th>
-       <th>満タン</th>
-       <th>備考</th>
-       <th class="text-end">km/L</th>
-       <th class="text-end">円/km</th>
--      <th></th>
-+      <th>編集</th>
-+      <th>削除</th>
-     </tr>
-   </thead>
-   <tbody>
-     {% for row in rows %}
-     <tr>
-       <td>{{ row.fill_date }}</td>
--      <td class="text-end">{{ row.odometer_km }}</td>
-+      <td class="text-end">{{ row.odometer_km if row.odometer_km is not none else '—' }}</td>
-       <td class="text-end">{{ row.trip_km if row.trip_km is not none else '—' }}</td>
-       <td class="text-end">{{ row.liters }}</td>
-       <td class="text-end">{{ row.yen_per_liter if row.yen_per_liter is not none else '—' }}</td>
-       <td>{{ 'はい' if row.is_full else 'いいえ' }}</td>
-       <td>{{ row.note or '' }}</td>
-       <td class="text-end">
-         {% if row.km_per_l is not none %}
-           {{ '%.2f'|format(row.km_per_l) }}
-         {% else %}
-           —
-         {% endif %}
-       </td>
-       <td class="text-end">
-         {% if row.yen_per_km is not none %}
-           {{ '%.2f'|format(row.yen_per_km) }}
-         {% else %}
-           —
-         {% endif %}
-       </td>
-       <td class="text-end">
-         <a href="{{ url_for('records.fuel_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
-+      </td>
-+      <td class="text-end">
-         <form method="post" action="{{ url_for('records.fuel_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
-           <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
-         </form>
-       </td>
-     </tr>
-     {% else %}
--    <tr><td colspan="10" class="text-center text-muted">データがありません。</td></tr>
-+    <tr><td colspan="11" class="text-center text-muted">データがありません。</td></tr>
-     {% endfor %}
-   </tbody>
- </table>
- {% endblock %}
+diff --git a/records/templates/records/fuel/_form_fields.html b/records/templates/records/fuel/_form_fields.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f6e4a4f434b4b1e6e74444c084fa3519e08b92f
+--- /dev/null
++++ b/records/templates/records/fuel/_form_fields.html
+@@ -0,0 +1,70 @@
++<div class="row mb-3">
++  <div class="col-md-4">
++    <label class="form-label">日付</label>
++    <input
++      type="date"
++      name="fill_date"
++      class="form-control"
++      value="{{ item.fill_date if item else default_fill_date }}"
++      required
++    >
++  </div>
++  <div class="col-md-4">
++    <label class="form-label">メーター(km)</label>
++    <input
++      type="number"
++      step="0.1"
++      name="odometer_km"
++      class="form-control"
++      value="{{ item.odometer_km if item else '' }}"
++    >
++  </div>
++  <div class="col-md-4">
++    <label class="form-label">トリップ(km)</label>
++    <input
++      type="number"
++      step="0.1"
++      name="trip_km"
++      class="form-control"
++      value="{{ item.trip_km if item else '' }}"
++    >
++  </div>
++</div>
++<div class="row mb-3">
++  <div class="col-md-4">
++    <label class="form-label">給油量(L)</label>
++    <input
++      type="number"
++      step="0.01"
++      name="liters"
++      class="form-control"
++      value="{{ item.liters if item else '' }}"
++      required
++    >
++  </div>
++  <div class="col-md-4">
++    <label class="form-label">円/L</label>
++    <input
++      type="number"
++      name="yen_per_liter"
++      class="form-control"
++      value="{{ item.yen_per_liter if item and item.yen_per_liter is not none else '' }}"
++    >
++  </div>
++  <div class="col-md-4 d-flex align-items-center">
++    <div class="form-check mt-4">
++      <input
++        class="form-check-input"
++        type="checkbox"
++        name="is_full"
++        id="is_full"
++        {% if item is none or item.is_full %}checked{% endif %}
++      >
++      <label class="form-check-label" for="is_full">満タン</label>
++    </div>
++  </div>
++</div>
++<div class="mb-3">
++  <label class="form-label">備考</label>
++  <textarea name="note" class="form-control" rows="3">{{ item.note if item else '' }}</textarea>
++</div>
