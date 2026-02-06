@@ -22,14 +22,7 @@
 
 <div class="card mb-4">
   <div class="card-body">
-    <div class="d-flex flex-wrap justify-content-between gap-2 align-items-center">
-      <h5 class="card-title mb-0">直近交換サマリ</h5>
-      <form method="get" class="d-flex align-items-center gap-2">
-        <label class="form-label mb-0">現在メーター</label>
-        <input type="number" name="current_odometer" class="form-control form-control-sm" value="{{ current_odometer }}">
-        <button type="submit" class="btn btn-sm btn-outline-primary">更新</button>
-      </form>
-    </div>
+    <h5 class="card-title">直近交換サマリ</h5>
     <table class="table table-sm">
       <thead>
         <tr>
@@ -37,24 +30,18 @@
           <th>日付</th>
           <th class="text-end">メーター</th>
           <th>備考</th>
-          <th class="text-end">交換してから</th>
-          <th class="text-end">交換目安</th>
-          <th class="text-end">後どれぐらい？</th>
         </tr>
       </thead>
       <tbody>
-        {% for row in summary_rows %}
+        {% for row in latest_rows %}
         <tr>
-          <td>{{ row.item_name }}</td>
+          <td>{{ row.item }}</td>
           <td>{{ row.event_date }}</td>
           <td class="text-end">{{ row.odometer_km }}</td>
-          <td>{{ row.note }}</td>
-          <td class="text-end">{{ row.since_km }}</td>
-          <td class="text-end">{{ row.target_km }}</td>
-          <td class="text-end">{{ row.remaining_km }}</td>
+          <td>{{ row.note or '' }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7" class="text-center text-muted">データがありません。</td></tr>
+        <tr><td colspan="4" class="text-center text-muted">データがありません。</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -76,7 +63,7 @@
     <tr>
       <td>{{ row.event_date }}</td>
       <td class="text-end">{{ row.odometer_km }}</td>
-      <td>{{ row.item_name }}</td>
+      <td>{{ row.item }}</td>
       <td>{{ row.note or '' }}</td>
       <td class="text-end">
         <a href="{{ url_for('records.maintenance_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
