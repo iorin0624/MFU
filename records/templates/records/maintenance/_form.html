@@ -2,7 +2,7 @@
   <div class="row mb-3">
     <div class="col-md-4">
       <label class="form-label">日付</label>
-      <input type="date" name="event_date" class="form-control" value="{{ item.event_date if item else default_event_date }}" required>
+      <input type="date" name="event_date" class="form-control" value="{{ item.event_date if item else '' }}" required>
     </div>
     <div class="col-md-4">
       <label class="form-label">メーター(km)</label>
@@ -10,14 +10,7 @@
     </div>
     <div class="col-md-4">
       <label class="form-label">項目</label>
-      <select name="item_id" class="form-select" required>
-        <option value="">選択してください</option>
-        {% for option in maintenance_items %}
-          <option value="{{ option.id }}" {% if item and item.item_id == option.id %}selected{% endif %}>
-            {{ option.name }}
-          </option>
-        {% endfor %}
-      </select>
+      <input type="text" name="item" class="form-control" value="{{ item.item if item else '' }}" required>
     </div>
   </div>
   <div class="mb-3">
