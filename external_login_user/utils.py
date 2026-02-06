@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os, re, uuid, base64, secrets
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from flask import current_app, request, session, redirect, url_for, abort, flash
 
 from . import bp, oauth  # oauth は None の可能性あり
@@ -38,33 +38,40 @@ def _require_mfu_login_redirect():
         return redirect("/login")
     return None
 
-def _to_local_next(u: str) -> str:
-    # ここに“ログイン後に戻したい”プレフィックスを追加
-    ALLOW_PREFIXES = (
-        "/external-login/",      # 既定
-        # "/albums/share/",      # 例：共有アルバム系も戻したい場合
-        # "/payments/",          # 例：決済フローも戻したい場合
-    )
+ALLOWED_NEXT_PREFIXES = (
+    "/external-login",
+    "/e",
+    "/albums",
+    "/album",
+    "/payment",
+)
+MAX_NEXT_LENGTH = 512
 
-    if not u:
-        return "/external-login/"
+def sanitize_next_path(raw: str | None, *, default: str = "/external-login/") -> str:
+    """next の保存値は相対パスのみ許可し、長すぎる値は破棄する。"""
+    if not raw or not isinstance(raw, str):
+        return default
 
-    from urllib.parse import urlparse
+    raw = raw.strip()
+    if not raw or len(raw) > MAX_NEXT_LENGTH:
+        return default
+
     try:
-        p = urlparse(u)
-        path = p.path or ""
-        qs   = ("?" + p.query) if p.query else ""
+        parsed = urlparse(raw)
+        path = parsed.path or ""
     except Exception:
-        # 解析できない文字列は破棄
-        return "/external-login/"
+        return default
 
-    # ローカル絶対パスのみ許可（//で始まるスキーム相対URLは拒否）
-    if path.startswith("/") and not path.startswith("//"):
-        if any(path.startswith(pre) for pre in ALLOW_PREFIXES):
-            return path + qs
+    if not path.startswith("/") or path.startswith("//"):
+        return default
 
-    # 不適切なものは既定にフォールバック
-    return "/external-login/"
+    if not any(path.startswith(prefix) for prefix in ALLOWED_NEXT_PREFIXES):
+        return default
+
+    return path
+
+def _to_local_next(u: str) -> str:
+    return sanitize_next_path(u, default="/external-login/")
 
 
 def _require_ext_login():
@@ -73,24 +80,7 @@ def _require_ext_login():
     if ext_session.get("ext_user_id"):
         return None
 
-    raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
-
-    # 絶対URLや外部ドメインを排除し、/external-login/ 配下の相対URLだけ許可
-    from urllib.parse import urlparse
-    def _to_local_next(u: str) -> str:
-        if not u:
-            return "/external-login/"
-        if u.startswith("/") and not u.startswith("//"):
-            return u
-        try:
-            p = urlparse(u)
-            if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
-                return p.path + (("?" + p.query) if p.query else "")
-        except Exception:
-            pass
-        return "/external-login/"
-
-    local_next = _to_local_next(raw_next)
+    local_next = sanitize_next_path(request.path)
     ext_session["ext_after_login_next"] = local_next
     return redirect(url_for("external_login_user.line_login", next=local_next))
 
