@@ -11,7 +11,6 @@ from flask import (
 
 from . import bp
 from .ext_session import get_ext_session
-from .utils import sanitize_next_path
 from app.utils.db import get_db
 
 from pathlib import Path
@@ -270,7 +269,7 @@ def card():
     if not social_id:
         return redirect(url_for(
             "external_login_user.line_login",
-            next=sanitize_next_path(ext_session.get("ext_after_login_next") or request.path),
+            next=ext_session.get("ext_after_login_next") or request.url
         ))
 
     # CSRF トークン
@@ -299,7 +298,7 @@ def card():
         db.close()
         return redirect(url_for(
             "external_login_user.line_login",
-            next=sanitize_next_path(ext_session.get("ext_after_login_next") or request.path),
+            next=ext_session.get("ext_after_login_next") or request.url
         ))
 
     # 既存カードサマリ

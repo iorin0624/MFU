@@ -50,7 +50,6 @@ from .utils import (
     _require_ext_login, _require_mfu_login_redirect, _uuid_bytes_to_str,
     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
     _event_by_uuid_str, _membership_status,
-    sanitize_next_path,
     avatar_url_for,  # ← 追加
 )
 from .ext_session import get_ext_session
@@ -892,7 +891,14 @@ def _client_ip_prefix(addr: str) -> str:
         return ""
 
 def _sanitize_next(candidate: str) -> str:
-    return sanitize_next_path(candidate, default=url_for(".index"))
+    # 絶対URLは禁止、/external-login 配下のみ許可
+    if not isinstance(candidate, str):
+        return url_for(".index")
+    if candidate.startswith(("http://", "https://")):
+        return url_for(".index")
+    if not candidate.startswith(("/external-login", "/e")):
+        return url_for(".index")
+    return candidate
 
 def _now_ts() -> int:
     return int(time.time())
@@ -912,7 +918,21 @@ def line_login():
     ext_session = get_ext_session()
     # 1) next を安全化
     raw_next = (request.args.get("next") or ext_session.get("ext_after_login_next") or request.referrer or "").strip()
-    local_next = sanitize_next_path(raw_next, default="/external-login/")
+
+    def _to_local_next(u: str) -> str | None:
+        if not u:
+            return None
+        if u.startswith("/") and not u.startswith("//"):
+            return u
+        try:
+            p = urlparse(u)
+            if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+                return p.path + (("?" + p.query) if p.query else "")
+        except Exception:
+            pass
+        return None
+
+    local_next = _to_local_next(raw_next) or "/external-login/"
     ext_session["ext_after_login_next"] = local_next  # ← セッションにも保持
 
     # 2) 署名付き state を作って callback で検証できるようにする
@@ -1212,7 +1232,7 @@ def profile():
     if not social_id:
         return redirect(url_for(
             "external_login_user.line_login",
-            next=sanitize_next_path(ext_session.get("ext_after_login_next") or request.path),
+            next=ext_session.get("ext_after_login_next") or request.url
         ))
 
     # ===== CSRF 準備 =====
@@ -1250,7 +1270,7 @@ def profile():
         return redirect(
             url_for(
                 "external_login_user.line_login",
-                next=sanitize_next_path(ext_session.get("ext_after_login_next") or request.path),
+                next=ext_session.get("ext_after_login_next") or request.url,
             )
         )
 
@@ -1329,9 +1349,23 @@ def profile():
     if request.method == "GET":
         # ?next= が来たら join 戻し用に保存（安全化）
         raw_next = (request.args.get("next") or "").strip()
+        from urllib.parse import urlparse
+
+        def _to_local_next(u: str) -> str | None:
+            if not u:
+                return None
+            if u.startswith("/") and not u.startswith("//"):
+                return u
+            try:
+                p = urlparse(u)
+                if (p.path or "").startswith("/external-login/"):
+                    return p.path + (("?" + p.query) if p.query else "")
+            except Exception:
+                pass
+            return None
 
         if raw_next:
-            local_next = sanitize_next_path(raw_next)
+            local_next = _to_local_next(raw_next)
             if local_next:
                 # ガード：現在のセッションに「イベント参加URL」がある場合、
                 # 新しい next が単なるマイページ（/external-login/）なら上書きしない
@@ -1708,17 +1742,8 @@ def join_event(event_uuid: str):
     ext_session = get_ext_session()
     social_id = ext_session.get("ext_user_social_id")
     if not social_id:
-        iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
-        if iv_param:
-            store = ext_session.get("ext_join_invite_tokens") or {}
-            store[event_uuid] = iv_param
-            ext_session["ext_join_invite_tokens"] = store
-        ext_session["ext_after_login_next"] = sanitize_next_path(request.path)
-        login_url = url_for(
-            "external_login_user.line_login",
-            next=sanitize_next_path(request.path),
-            _external=False,
-        )
+        ext_session["ext_after_login_next"] = request.url
+        login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
         return redirect(login_url)
 
     # --- CSRF トークン ---
@@ -1745,11 +1770,7 @@ def join_event(event_uuid: str):
     """, (social_id,))
     u = cur.fetchone()
     if not u:
-        login_url = url_for(
-            "external_login_user.line_login",
-            next=sanitize_next_path(request.path),
-            _external=False,
-        )
+        login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
         return redirect(login_url)
 
     ext_uid  = u["id"]
@@ -1762,14 +1783,9 @@ def join_event(event_uuid: str):
     # ニックネームが未設定、または「（未設定）」の場合はプロフィール編集へ誘導
     is_profile_incomplete = not (nick and str(nick).strip()) or nick == "（未設定）"
     if is_profile_incomplete:
-        iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
-        if iv_param:
-            store = ext_session.get("ext_join_invite_tokens") or {}
-            store[event_uuid] = iv_param
-            ext_session["ext_join_invite_tokens"] = store
-        ext_session["ext_after_login_next"] = sanitize_next_path(request.path)
+        ext_session["ext_after_login_next"] = request.url
         flash("イベントに参加する前に、プロフィールの作成をお願いします。", "info")
-        return redirect(url_for("external_login_user.profile", next=sanitize_next_path(request.path)))
+        return redirect(url_for("external_login_user.profile", next=request.url))
 
     # --- イベント本体（テンプレが参照する列は必ず選ぶ） ---
     cur.execute("""
@@ -1788,8 +1804,6 @@ def join_event(event_uuid: str):
         abort(404, "event not found")
 
     iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
-    if not iv_param:
-        iv_param = (ext_session.get("ext_join_invite_tokens") or {}).get(event_uuid) or ""
     is_lecture = _is_lecture_event_from_event(ev)
     if iv_param and is_lecture:
         store = ext_session.get("lecture_invite_tokens") or {}
@@ -1834,11 +1848,7 @@ def join_event(event_uuid: str):
     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if not iv:
-        iv = (
-            (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid)
-            or (ext_session.get("ext_join_invite_tokens") or {}).get(event_uuid)
-            or ""
-        )
+        iv = (ext_session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
     auto_hit_by_lecture = False
     if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
@@ -3825,9 +3835,8 @@ def event_album_direct(event_uuid: str):
     ext_session = get_ext_session()
     sid = ext_session.get("ext_user_social_id")
     if not sid:
-        safe_next = sanitize_next_path(request.path)
-        ext_session["ext_after_login_next"] = safe_next
-        return redirect(url_for("external_login_user.line_login", next=safe_next, _external=False))
+        ext_session["ext_after_login_next"] = request.url
+        return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
 
     # --- イベント取得 ---
     ev = _event_by_uuid_str(event_uuid)
@@ -3838,9 +3847,8 @@ def event_album_direct(event_uuid: str):
     me = _get_ext_user_by_social(sid)  # type: ignore
     if not me:
         # 理論上ここには来にくいが、安全側
-        safe_next = sanitize_next_path(request.path)
-        ext_session["ext_after_login_next"] = safe_next
-        return redirect(url_for("external_login_user.line_login", next=safe_next, _external=False))
+        ext_session["ext_after_login_next"] = request.url
+        return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
 
     # --- アクセス可否（管理者は素通し／一般は承認済みのみ） ---
     if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
