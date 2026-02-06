@@ -4,9 +4,7 @@ import os
 import logging
 from pathlib import Path
 from flask import Blueprint
-from flask import request, flash, redirect, url_for, current_app, g
-
-from .ext_session import get_ext_session, save_ext_session
+from flask import request, session, flash, redirect, url_for, current_app, g
 
 
 # --- env ロード（ローカル .env を優先しない） ---
@@ -33,20 +31,6 @@ _load_local_env()
 
 # --- Blueprint（テンプレートは従来どおり template/） ---
 bp = Blueprint("external_login_user", __name__, template_folder="template")
-
-
-@bp.before_request
-def _load_external_session():
-    get_ext_session()
-    return None
-
-
-@bp.after_request
-def _store_external_session(response):
-    ext_session = getattr(g, "ext_session", None)
-    if ext_session is not None:
-        return save_ext_session(response, ext_session)
-    return response
 
 # --- OAuth（Authlib は任意） ---
 try:
@@ -142,7 +126,7 @@ def _enforce_lecture_prepaid_on_join():
     講座イベントで未払いの人は /pay/start/<uuid> へ飛ばす。
     ※ 未ログイン時はここでは何もしない（join本体で既存のログインガードが動く）
     """
-    from flask import request, flash, redirect, url_for
+    from flask import request, session, flash, redirect, url_for
 
     # 対象エンドポイントだけ
     if request.endpoint != "external_login_user.join_event":
@@ -153,15 +137,14 @@ def _enforce_lecture_prepaid_on_join():
     if not event_uuid:
         return None
 
-    ext_session = get_ext_session()
     iv = (request.args.get("iv") or "").strip()
     if iv:
-        store = ext_session.get("lecture_invite_tokens") or {}
+        store = session.get("lecture_invite_tokens") or {}
         store[event_uuid] = iv
-        ext_session["lecture_invite_tokens"] = store
+        session["lecture_invite_tokens"] = store
 
     # 未ログインならスルー（join本体に任せる）
-    if not ext_session.get("ext_user_social_id"):
+    if not session.get("ext_user_social_id"):
         return None
 
     # ヘルパ（イベント/ユーザ取得）を遅延インポート（所在差に対応）
@@ -186,7 +169,7 @@ def _enforce_lecture_prepaid_on_join():
     ev = _event_by_uuid_str(event_uuid)
     if not ev:
         return None
-    me = _get_ext_user_by_social(ext_session.get("ext_user_social_id"))  # type: ignore
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
     if not me:
         return None
 
@@ -273,8 +256,7 @@ def _is_email_unverified() -> bool:
     """email 登録済み かつ email_verified_at が NULL なら True（g にキャッシュ）"""
     if hasattr(g, "_ext_email_unverified"):
         return g._ext_email_unverified
-    ext_session = get_ext_session()
-    uid = ext_session.get("ext_user_id")
+    uid = session.get("ext_user_id")
     if not uid:
         g._ext_email_unverified = False
         return False
@@ -293,8 +275,7 @@ def _is_email_unverified() -> bool:
 def _lock_unverified_globally():
     try:
         # 未ログインは対象外
-        ext_session = get_ext_session()
-        if not ext_session.get("ext_user_id"):
+        if not session.get("ext_user_id"):
             return None
         # 未確認でなければ素通り
         if not _is_email_unverified():
