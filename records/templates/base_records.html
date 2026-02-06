@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+  {{ super() }}
+  <link rel="stylesheet" href="{{ url_for('records.static', filename='records.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="records-wrap">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h1 class="h3 mb-0">{% block records_title %}記録管理{% endblock %}</h1>
+    {% block records_actions %}{% endblock %}
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }}" role="alert">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  {% block records_content %}{% endblock %}
+</div>
+{% endblock %}
