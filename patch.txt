@@ -1,8 +1,8 @@
 diff --git a/payment/__init__.py b/payment/__init__.py
-index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a4c51b309 100644
+index 645efc73cfbb3b7743c282941ccd07a4503ecebf..7a1185b2a9734faf30330335cea28834ee0ff91a 100644
 --- a/payment/__init__.py
 +++ b/payment/__init__.py
-@@ -212,116 +212,163 @@ def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
+@@ -212,50 +212,89 @@ def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
  
          base_url = _app_base_url().rstrip("/")
          return f"{base_url}/external-login/events/{event_uuid_str}/members/{member_id}/receipt.pdf"
@@ -28,159 +28,71 @@ index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a
      # Python なので lower()
      return v.strip().lower()
  
--def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
-+def _resolve_buyer_identity(conn, payment_token: str | None) -> tuple[int | None, str | None]:
-     if not payment_token:
--        return None
-+        return None, None
-     cur = conn.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT user_id, buyer_email
-               FROM mfu_payment_request
-              WHERE token=%s
-              ORDER BY id DESC
-              LIMIT 1
-         """, (payment_token,))
-         row = cur.fetchone() or {}
-     finally:
-         try:
-             cur.close()
-         except Exception:
-             pass
-     user_id = row.get("user_id")
-     fallback_email = (row.get("buyer_email") or "").strip()
-     if not user_id:
--        return fallback_email or None
-+        return None, fallback_email or None
-     cur = conn.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT email
-               FROM external_login_user
-              WHERE id=%s
-              LIMIT 1
-         """, (user_id,))
-         urow = cur.fetchone() or {}
-     finally:
-         try:
-             cur.close()
-         except Exception:
-             pass
-     email = (urow.get("email") or "").strip()
--    return email or fallback_email or None
-+    return user_id, (email or fallback_email or None)
- 
++def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
++    if not payment_token:
++        return None
++    cur = conn.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT user_id, buyer_email
++              FROM mfu_payment_request
++             WHERE token=%s
++             ORDER BY id DESC
++             LIMIT 1
++        """, (payment_token,))
++        row = cur.fetchone() or {}
++    finally:
++        try:
++            cur.close()
++        except Exception:
++            pass
++    user_id = row.get("user_id")
++    fallback_email = (row.get("buyer_email") or "").strip()
++    if not user_id:
++        return fallback_email or None
++    cur = conn.cursor(dictionary=True)
++    try:
++        cur.execute("""
++            SELECT email
++              FROM external_login_user
++             WHERE id=%s
++             LIMIT 1
++        """, (user_id,))
++        urow = cur.fetchone() or {}
++    finally:
++        try:
++            cur.close()
++        except Exception:
++            pass
++    email = (urow.get("email") or "").strip()
++    return email or fallback_email or None
++
  # ───────────────────────────────────────────────────────────
  # Square 顧客ヘルパ
  # ───────────────────────────────────────────────────────────
--def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
--    import hashlib
-+def _mask_email(email: str | None) -> str:
-+    if not email:
-+        return ""
-+    email = email.strip()
-+    if "@" not in email:
-+        return "***"
-+    local, domain = email.split("@", 1)
-+    local_mask = (local[:1] + "***") if local else "***"
-+    if domain:
-+        domain_parts = domain.split(".")
-+        domain_mask = domain_parts[0][:1] + "***"
-+        if len(domain_parts) > 1:
-+            domain_mask = domain_mask + "." + domain_parts[-1]
-+    else:
-+        domain_mask = "***"
-+    return f"{local_mask}@{domain_mask}"
-+
-+def _ensure_customer_id_for_user(access_token: str, user_id: int, nickname: str, buyer_email: str | None) -> str:
+ def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
+     import hashlib
      base = _square_api_base()
      headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
--
--    h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
--    ref = f"ev:{event_uuid[:8]}:{h}"
-+    ref = f"mfu_user:{user_id}"
+ 
+     h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
+     ref = f"ev:{event_uuid[:8]}:{h}"
  
      # 検索
      try:
          sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
                                json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
          if sresp.status_code < 400:
--            customers = (sresp.json() or {}).get("customers") or []
-+            try:
-+                payload = sresp.json() or {}
-+            except Exception:
-+                payload = {}
-+            customers = payload.get("customers") or []
+             customers = (sresp.json() or {}).get("customers") or []
              if customers:
--                return customers[0]["id"]
-+                customer = customers[0]
-+                customer_id = customer.get("id")
-+                if not customer_id:
-+                    raise RuntimeError("customer_id not found")
-+                needs_email = not (customer.get("email_address") or "").strip()
-+                if buyer_email and (needs_email or nickname):
-+                    update_body = {"customer": {"given_name": nickname}}
-+                    if needs_email:
-+                        update_body["customer"]["email_address"] = buyer_email
-+                    try:
-+                        uresp = requests.put(f"{base}/v2/customers/{customer_id}", headers=headers,
-+                                             json=update_body, timeout=15)
-+                        if uresp.status_code >= 400:
-+                            logging.warning("update_customer failed: status=%s email=%s",
-+                                            uresp.status_code, _mask_email(buyer_email))
-+                    except Exception:
-+                        logging.exception("update_customer exception: email=%s", _mask_email(buyer_email))
-+                return customer_id
+                 return customers[0]["id"]
      except Exception:
          logging.exception("search_customers failed")
  
      # 作成
--    cresp = requests.post(f"{base}/v2/customers", headers=headers,
--                          json={"given_name": nickname, "reference_id": ref}, timeout=15)
-+    create_body = {"given_name": nickname, "reference_id": ref}
-+    if buyer_email:
-+        create_body["email_address"] = buyer_email
-+    try:
-+        cresp = requests.post(f"{base}/v2/customers", headers=headers,
-+                              json=create_body, timeout=15)
-+    except Exception:
-+        logging.exception("create_customer failed: email=%s", _mask_email(buyer_email))
-+        raise
-     cresp.raise_for_status()
--    return (cresp.json() or {}).get("customer", {}).get("id")
-+    try:
-+        payload = cresp.json() or {}
-+    except Exception:
-+        logging.exception("create_customer json decode failed: email=%s", _mask_email(buyer_email))
-+        raise
-+    return (payload.get("customer", {}) or {}).get("id")
- 
- # ───────────────────────────────────────────────────────────
- # Discord通知（必要時）
- # ───────────────────────────────────────────────────────────
- def _get_discord_webhook_url(conn, username: str = "admin") -> str | None:
-     try:
-         cur = conn.cursor()
-         cur.execute("""
-             SELECT webhook_url
-               FROM users
-              WHERE username = %s
-                AND webhook_url IS NOT NULL
-                AND webhook_url <> ''
-              LIMIT 1
-         """, (username,))
-         row = cur.fetchone()
-         if not row:
-             return None
-         return row[0] if not isinstance(row, dict) else row.get("webhook_url")
-     except Exception:
-         logging.exception("failed to load discord webhook url by username")
-         return None
- 
- def _discord_notify(webhook_url, *, title, description, fields=(), color=0x2ECC71):
-     try:
-@@ -1103,51 +1150,53 @@ def api_charge(event_uuid: str):
+     cresp = requests.post(f"{base}/v2/customers", headers=headers,
+                           json={"given_name": nickname, "reference_id": ref}, timeout=15)
+@@ -1064,85 +1103,135 @@ def api_charge(event_uuid: str):
      # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
      _wt_in = data.get("walletType", data.get("wallet_type"))
      if isinstance(_wt_in, str):
@@ -206,13 +118,10 @@ index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a
          if token_amount is not None and token_amount > 0:
              amount = token_amount
  
--        buyer_email = _resolve_buyer_email(conn, payment_token)
-+        user_id, buyer_email = _resolve_buyer_identity(conn, payment_token)
-+        if not user_id:
-+            return jsonify({"message": "ユーザー情報が取得できないため決済できません。もう一度お試しください。"}), 400
-         if not buyer_email:
-             return jsonify({"message": "メールアドレスが未登録のため決済できません。プロフィールから登録してください。"}), 400
- 
++        buyer_email = _resolve_buyer_email(conn, payment_token)
++        if not buyer_email:
++            return jsonify({"message": "メールアドレスが未登録のため決済できません。プロフィールから登録してください。"}), 400
++
          # 二重決済ブロック（event_payments に対して）—削除
          cur = conn.cursor()
  
@@ -233,36 +142,52 @@ index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a
          pay_row_id = cur.lastrowid
          conn.commit()
  
-         order_id = None
-         order_title = ev.get("title") or "イベント"
-@@ -1172,51 +1221,51 @@ def api_charge(event_uuid: str):
-         if order_resp.status_code < 400:
-             try:
-                 order_payload = order_resp.json()
-             except Exception:
-                 order_payload = {}
-             order = order_payload.get("order") or {}
-             order_id = order.get("id")
-         else:
-             try:
-                 order_payload = order_resp.json()
-             except Exception:
-                 order_payload = {}
-             errs = (order_payload.get("errors") or [])
-             code = errs[0].get("code") if errs else None
-             detail = errs[0].get("detail") if errs else order_resp.text
-             cur.execute("""
-                 UPDATE event_payments
-                    SET square_status='FAILED', error_code=%s, error_detail=%s
-                  WHERE id=%s
-             """, (code, detail, pay_row_id))
-             conn.commit()
-             return jsonify({"message": "注文情報の作成に失敗しました"}), 502
- 
++        order_id = None
++        order_title = ev.get("title") or "イベント"
++        order_body = {
++            "order": {
++                "location_id": location_id,
++                "line_items": [
++                    {
++                        "name": order_title,
++                        "quantity": "1",
++                        "base_price_money": {"amount": int(amount), "currency": "JPY"},
++                    }
++                ],
++            }
++        }
++        order_resp = requests.post(
++            f"{_square_api_base()}/v2/orders",
++            headers={"Authorization": f"Bearer {access_token}",
++                     "Content-Type": "application/json", "Accept": "application/json"},
++            json=order_body, timeout=25
++        )
++        if order_resp.status_code < 400:
++            try:
++                order_payload = order_resp.json()
++            except Exception:
++                order_payload = {}
++            order = order_payload.get("order") or {}
++            order_id = order.get("id")
++        else:
++            try:
++                order_payload = order_resp.json()
++            except Exception:
++                order_payload = {}
++            errs = (order_payload.get("errors") or [])
++            code = errs[0].get("code") if errs else None
++            detail = errs[0].get("detail") if errs else order_resp.text
++            cur.execute("""
++                UPDATE event_payments
++                   SET square_status='FAILED', error_code=%s, error_detail=%s
++                 WHERE id=%s
++            """, (code, detail, pay_row_id))
++            conn.commit()
++            return jsonify({"message": "注文情報の作成に失敗しました"}), 502
++
          # 顧客ID
          try:
--            customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
-+            customer_id = _ensure_customer_id_for_user(access_token, user_id, nickname, buyer_email)
+             customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
          except Exception:
              return jsonify({"message": "顧客の作成に失敗しました"}), 500
  
@@ -274,10 +199,10 @@ index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a
              "location_id": location_id,
              "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
              "customer_id": customer_id,
-             "buyer_email_address": buyer_email,
++            "buyer_email_address": buyer_email,
          }
-         if order_id:
-             body["order_id"] = order_id
++        if order_id:
++            body["order_id"] = order_id
  
          resp = requests.post(
              f"{_square_api_base()}/v2/payments",
@@ -288,3 +213,18 @@ index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a
          ok = resp.status_code < 400
          try:
              payload = resp.json()
+         except Exception:
+             payload = {}
+ 
+         if ok:
+             p = payload.get("payment", {}) or {}
+             status  = p.get("status") or "AUTHORIZED"
+             details = p.get("card_details") or {}
+             card    = details.get("card") or {}
+             cur.execute("""
+                 UPDATE event_payments
+                    SET square_payment_id=%s, square_status=%s,
+                        card_brand=%s, card_last4=%s, card_exp_mm=%s, card_exp_yyyy=%s,
+                        square_receipt_url=%s,
+                        error_code=NULL, error_detail=NULL
+                  WHERE id=%s
