@@ -45,9 +45,34 @@ print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loade
 
 @album_bp.before_request
 def _album_feature_guard():
+    if session.get("user"):
+        response = enforce_feature_access("albums")
+        if response is not None:
+            return response
+        return None
+
+    public_endpoints = {
+        "album.album_access",
+        "album.album_home",
+        "album.view_child",
+        "album.image",
+        "album.album_thumb",
+        "album.movie_raw",
+        "album.movie_poster",
+        "album.update_process_status",
+    }
+
+    endpoint = request.endpoint
+    if endpoint is None:
+        return None
+
+    if endpoint in public_endpoints:
+        return None
+
     response = enforce_feature_access("albums")
     if response is not None:
         return response
+    return None
 
 
 def _get_ext_user_nickname() -> str | None:
