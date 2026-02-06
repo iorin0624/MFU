@@ -76,8 +76,18 @@ def get_ext_session() -> ExternalSession:
     sess = getattr(g, "ext_session", None)
     if sess is None:
         sess = load_ext_session()
+        _prune_auth_keys(sess)
         g.ext_session = sess
     return sess
+
+
+def _prune_auth_keys(sess: ExternalSession) -> None:
+    auth_keys = [key for key in sess.to_dict().keys() if key.startswith("auth_")]
+    if not auth_keys:
+        return
+    for key in auth_keys:
+        sess.pop(key, None)
+    current_app.logger.warning("ext_session auth_* keys removed: %s", auth_keys)
 
 
 def save_ext_session(response, ext_session: ExternalSession):

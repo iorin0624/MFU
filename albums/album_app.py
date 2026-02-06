@@ -16,6 +16,13 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic'}
 
 ADMIN_PASSWORD = 'adminpass'  # 簡易的な管理者用パスワード（後で強化可）
 
+def _is_ext_logged_in() -> bool:
+    ext_session = get_ext_session()
+    return bool(ext_session.get("ext_user_id") or ext_session.get("ext_user_social_id"))
+
+def _is_album_access_allowed() -> bool:
+    return session.get("user") == "admin" or _is_ext_logged_in()
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -39,8 +46,11 @@ def album_access(album_id):
     if request.method == 'POST':
         password = request.form['password'].encode('utf-8')
         if bcrypt.checkpw(password, meta['password_hash'].encode('utf-8')):
-            ext_session = get_ext_session()
-            ext_session[f'auth_{album_id}'] = True
+            if not _is_ext_logged_in():
+                ext_session = get_ext_session()
+                next_path = url_for('album.album_home', album_id=album_id)
+                ext_session["ext_after_login_next"] = next_path
+                return redirect(url_for("external_login_user.line_login", next=next_path))
             return redirect(url_for('album.album_home', album_id=album_id))
         else:
             return 'パスワードが違います', 403
@@ -48,16 +58,14 @@ def album_access(album_id):
 
 @album_bp.route('/<album_id>/')
 def album_home(album_id):
-    ext_session = get_ext_session()
-    if not ext_session.get(f'auth_{album_id}'):
+    if not _is_album_access_allowed():
         return redirect(url_for('album.album_access', album_id=album_id))
     meta = load_meta(album_id)
     return render_template('album_home.html', album_id=album_id, meta=meta)
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
 def create_child(album_id):
-    ext_session = get_ext_session()
-    if not ext_session.get(f'auth_{album_id}'):
+    if not _is_album_access_allowed():
         return redirect(url_for('album.album_access', album_id=album_id))
     folder_name = request.form['child_name']
     child_uuid = str(uuid.uuid4())
@@ -72,8 +80,7 @@ def create_child(album_id):
 
 @album_bp.route('/<album_id>/upload/<child_id>', methods=['GET', 'POST'])
 def upload(album_id, child_id):
-    ext_session = get_ext_session()
-    if not ext_session.get(f'auth_{album_id}'):
+    if not _is_album_access_allowed():
         return redirect(url_for('album.album_access', album_id=album_id))
     child_path = os.path.join(ALBUM_ROOT, album_id, child_id)
     if not os.path.exists(child_path):
@@ -94,8 +101,7 @@ def upload(album_id, child_id):
 
 @album_bp.route('/<album_id>/view/<child_id>')
 def view_child(album_id, child_id):
-    ext_session = get_ext_session()
-    if not ext_session.get(f'auth_{album_id}'):
+    if not _is_album_access_allowed():
         return redirect(url_for('album.album_access', album_id=album_id))
     child_path = os.path.join(ALBUM_ROOT, album_id, child_id)
     files = sorted(f for f in os.listdir(child_path) if allowed_file(f))
@@ -103,8 +109,7 @@ def view_child(album_id, child_id):
 
 @album_bp.route('/<album_id>/download/<child_id>/<filename>')
 def download(album_id, child_id, filename):
-    ext_session = get_ext_session()
-    if not ext_session.get(f'auth_{album_id}'):
+    if not _is_album_access_allowed():
         return redirect(url_for('album.album_access', album_id=album_id))
     return send_from_directory(os.path.join(ALBUM_ROOT, album_id, child_id), filename, as_attachment=True)
 
