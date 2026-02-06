@@ -1881,9 +1881,6 @@ def admin_mail_delivery_logs():
         (*params, per_page, offset),
     )
     rows = cur.fetchall() or []
-    for row in rows:
-        submit_at = row.get("submit_at")
-        row["submit_at_ts"] = int(submit_at.timestamp()) if submit_at else None
 
     cur.execute(
         f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",

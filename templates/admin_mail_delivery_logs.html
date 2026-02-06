@@ -59,7 +59,7 @@
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr data-submit-ts="{{ row.submit_at_ts or '' }}" data-delivery-status="{{ row.last_delivery_status or '' }}">
+      <tr>
         <td class="text-nowrap">{{ row.submit_at }}</td>
         <td>{{ row.to_addresses or '-' }}</td>
         <td>{{ row.subject or '-' }}</td>
@@ -137,70 +137,43 @@
 
     const refreshButton = document.getElementById('mail-delivery-refresh');
     const refreshStatus = document.getElementById('mail-delivery-refresh-status');
-    const runRefresh = async () => {
-      if (!refreshButton) {
-        return;
-      }
-      const defaultLabel = refreshButton.textContent;
-      refreshButton.disabled = true;
-      refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
-      if (refreshStatus) {
-        refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
-      }
-
-      const params = new URLSearchParams(window.location.search);
-      const limit = Number(params.get('limit')) || {{ filters.limit }};
-      const maxRows = Math.min(Math.max(limit, 20), 500);
-      const timeoutSec = 45;
-      try {
-        const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows + '&timeout_sec=' + timeoutSec, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-        });
-        if (!response.ok) {
-          throw new Error('refresh_failed');
-        }
-        const result = await response.json();
-        if (refreshStatus) {
-          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
-        }
-        window.location.reload();
-      } catch (error) {
-        if (refreshStatus) {
-          refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
-        }
-      } finally {
-        refreshButton.disabled = false;
-        refreshButton.textContent = defaultLabel;
-      }
-    };
-
     if (refreshButton) {
+      const defaultLabel = refreshButton.textContent;
       refreshButton.addEventListener('click', async () => {
-        await runRefresh();
-      });
-    }
-
-    const rows = Array.from(document.querySelectorAll('tbody tr[data-submit-ts]'));
-    const pendingStatuses = new Set(['queued', 'deferred', 'unknown']);
-    const pendingRows = rows.filter((row) => pendingStatuses.has(row.dataset.deliveryStatus || ''));
-    if (pendingRows.length > 0) {
-      const latestSubmit = pendingRows.reduce((maxValue, row) => {
-        const ts = Number(row.dataset.submitTs || 0);
-        return Math.max(maxValue, ts);
-      }, 0);
-      if (latestSubmit > 0) {
-        const now = Math.floor(Date.now() / 1000);
-        const elapsedSec = now - latestSubmit;
-        if (elapsedSec <= 30) {
-          const delayMs = Math.max(0, (30 - elapsedSec) * 1000);
-          setTimeout(() => {
-            runRefresh();
-          }, delayMs);
+        refreshButton.disabled = true;
+        refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
+        if (refreshStatus) {
+          refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
         }
-      }
+
+        const params = new URLSearchParams(window.location.search);
+        const limit = Number(params.get('limit')) || {{ filters.limit }};
+        const maxRows = Math.min(Math.max(limit, 20), 500);
+        const timeoutSec = 45;
+        try {
+          const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows + '&timeout_sec=' + timeoutSec, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+          });
+          if (!response.ok) {
+            throw new Error('refresh_failed');
+          }
+          const result = await response.json();
+          if (refreshStatus) {
+            refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
+          }
+          window.location.reload();
+        } catch (error) {
+          if (refreshStatus) {
+            refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
+          }
+        } finally {
+          refreshButton.disabled = false;
+          refreshButton.textContent = defaultLabel;
+        }
+      });
     }
   });
 </script>
