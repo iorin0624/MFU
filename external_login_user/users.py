@@ -896,7 +896,7 @@ def _sanitize_next(candidate: str) -> str:
         return url_for(".index")
     if candidate.startswith(("http://", "https://")):
         return url_for(".index")
-    if not candidate.startswith("/external-login"):
+    if not candidate.startswith(("/external-login", "/e")):
         return url_for(".index")
     return candidate
 
