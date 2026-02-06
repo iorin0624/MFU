@@ -1,307 +1,83 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index a8e9344d4f0da690d018ad9cb2d60d0bb16c5cd2..fd437b28dc64d4c82c8c6e7e341055872d7c1bd8 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -646,121 +646,83 @@ def _parse_lat_lng_from_maps_url(maps_url: str):
+diff --git a/albums/routes.py b/albums/routes.py
+index 76c80bca8b8c04aa630aed23a0f9b3ac9e34b869..1ab3d45a3f7b6dcf1c3503f80d60123812cbd3b9 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -23,53 +23,78 @@ import shutil
+ import uuid
+ import json
+ import secrets
+ from functools import wraps
+ from datetime import datetime
+ import subprocess
+ import shlex
  
- # --- 2点間距離[m]（ハーサイン） -----------------------------------------
- def _calc_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-     """
-     2点の距離[m]をざっくり計算。
-     イベント会場付近かどうか判定する用途なら十分な精度。
-     """
-     R = 6371000.0  # 地球半径[m]
+ from mysql.connector import errors as MySQLErrors
+ from app.utils.db import get_db  #
+ from app.utils.feature_access import enforce_feature_access
+ from flask import g  # 追加
  
-     phi1 = math.radians(lat1)
-     phi2 = math.radians(lat2)
-     dphi = math.radians(lat2 - lat1)
-     dlambda = math.radians(lng2 - lng1)
+ # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
+ from app.albums.photo_namer import get_datetime_from_image
+ from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
+ from app.external_login_user.utils import _get_ext_user_by_social
+ from app.external_login_user.ext_session import get_ext_session
  
-     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-     return R * c
+ album_bp = Blueprint('album', __name__, template_folder='templates')
+ print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
  
  
+ @album_bp.before_request
+ def _album_feature_guard():
++    if session.get("user"):
++        response = enforce_feature_access("albums")
++        if response is not None:
++            return response
++        return None
++
++    public_endpoints = {
++        "album.album_access",
++        "album.album_home",
++        "album.view_child",
++        "album.image",
++        "album.album_thumb",
++        "album.movie_raw",
++        "album.movie_poster",
++        "album.update_process_status",
++    }
++
++    endpoint = request.endpoint
++    if endpoint is None:
++        return None
++
++    if endpoint in public_endpoints:
++        return None
++
+     response = enforce_feature_access("albums")
+     if response is not None:
+         return response
++    return None
  
- # =========================
- # TOP（=マイページ）
- # =========================
- @bp.route("/")
- def index():
--    # ---- 未ログイン時は当該バナーのフラッシュを除去してから描画 --------------------
--    try:
--        ext_session = get_ext_session()
--        if not ext_session.get("ext_user_id"):
--            fl = session.get("_flashes")
--            if isinstance(fl, list) and fl:
--                def _is_unverified_banner(t):
--                    try:
--                        cat, msg = t
--                        cat_str = str(cat or "")
--                        # 複数カテゴリ対応: "warning unverified_email" など
--                        if "unverified_email" in cat_str:
--                            return True
--                        s = str(msg)
--                        return ("warning" in cat_str) and (
--                            "メール確認のお願い" in s
--                            or "メールアドレスの確認が完了していません" in s
--                        )
--                    except Exception:
--                        return False
--                new_fl = [t for t in fl if not _is_unverified_banner(t)]
--                if len(new_fl) != len(fl):
--                    session["_flashes"] = new_fl
--    except Exception:
--        try:
--            current_app.logger.exception("cleanup flashes for anonymous failed")
--        except Exception:
--            pass
-+    # ---- 未確認バナー（セッションに保存しない） ------------------------------
-+    unverified_banner_message = None
-+    unverified_banner_resend_url = None
-     # -----------------------------------------------------------------------
  
-     # ---- ログイン済みなら「未確認」バナーをここでだけ出す ------------------------
+ def _get_ext_user_nickname() -> str | None:
+     ext_session = get_ext_session()
+     ext_social_id = ext_session.get("ext_user_social_id")
+     if not ext_social_id:
+         return None
      try:
-+        ext_session = get_ext_session()
-         uid = ext_session.get("ext_user_id")
-         if uid:
-             db = get_db(); cur = db.cursor(dictionary=True)
-             try:
-                 cur.execute("""
-                     SELECT email, email_verified_at
-                       FROM external_login_user
-                      WHERE id=%s
-                      LIMIT 1
-                 """, (uid,))
-                 row = cur.fetchone()
-             finally:
-                 try: cur.close(); db.close()
-                 except Exception: pass
- 
-             email = (row.get("email") or "").strip() if row else ""
-             unverified = bool(email and row and not row.get("email_verified_at"))
-             if unverified:
--                from markupsafe import Markup, escape
-                 msg = (
-                     "メールアドレスの確認が完了していません。\n"
-                     "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
-                     "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
-                 )
--                body = Markup("<br>".join(escape(msg).split("\n")))
--                resend_url = url_for("external_login_user.resend_verify_email")
--                btn = Markup(
--                    f'''<form method="post" action="{escape(resend_url)}" style="display:inline;margin-left:8px;">
--                            <button type="submit" class="btn btn-sm btn-primary">確認メールを再送する</button>
--                        </form>'''
--                )
--                # ★ カテゴリ: "warning unverified_email"（黄色スタイル + 後段の特定しやすさ）
--                flash(
--                    Markup(
--                        '<div style="font-weight:600;">メール確認のお願い</div>'
--                        f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
--                    ),
--                    "warning unverified_email"
--                )
-+                unverified_banner_message = msg
-+                unverified_banner_resend_url = url_for("external_login_user.resend_verify_email")
+         ext_user = _get_ext_user_by_social(ext_social_id)
      except Exception:
-         try:
-             current_app.logger.exception("top banner check failed")
-         except Exception:
-             pass
-     # -----------------------------------------------------------------------
+         return None
+     if not ext_user:
+         return None
+     nickname = (ext_user.get("nickname") or "").strip()
+     return nickname or None
  
-     social_id = ext_session.get("ext_user_social_id")
-     me = _get_ext_user_by_social(social_id) if social_id else None
- 
-     events_upcoming, events_past = [], []
-     if me:
-         db = get_db(); cur = db.cursor(dictionary=True)
-         cur.execute("""
-           SELECT
-             e.id, e.event_uuid, e.title,
-             e.starts_at, e.fee_yen, e.album_id,
-             m.id AS member_id,
-             COALESCE(m.status,'pending')                        AS status,
-             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
-             m.receipt_url,
-             COALESCE(m.bank_transfer,0) AS bank_transfer,
-             COALESCE(m.paypay_transfer,0) AS paypay_transfer,
-             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
-           FROM mfu_event e
-@@ -831,51 +793,53 @@ def index():
-             else:
-                 (events_upcoming if dt.date() >= now.date() else events_past).append(item)
- 
-         def _key_asc(x):
-             from datetime import datetime as _dt
-             v = x.get("starts_at")
-             try:
-                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
-             except Exception:
-                 return _dt.max
- 
-         def _key_desc(x):
-             from datetime import datetime as _dt
-             v = x.get("starts_at")
-             try:
-                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
-             except Exception:
-                 return _dt.min
- 
-         events_upcoming.sort(key=_key_asc)
-         events_past.sort(key=_key_desc, reverse=True)
- 
-     resp = make_response(render_template("ext_index.html",
-                            login=bool(me), me=me,
-                            events_upcoming=events_upcoming,
--                           events_past=events_past))
-+                           events_past=events_past,
-+                           unverified_banner_message=unverified_banner_message,
-+                           unverified_banner_resend_url=unverified_banner_resend_url))
-     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-     resp.headers["Pragma"] = "no-cache"
-     return resp
- 
- 
- @bp.route("/me")
- def me():
-     return redirect(url_for("external_login_user.index"))
- 
- 
- # =========================
- # LINEログイン（単一定義）
- # =========================
- def _state_signer():
-     secret = current_app.config.get("EXTERNAL_SECRET_KEY") or current_app.secret_key
-     return URLSafeSerializer(secret, salt="line-state-v2")
- 
- def _ua_sha256(ua: str) -> str:
-     return hashlib.sha256((ua or "").encode("utf-8")).hexdigest()
- 
- def _client_ip_prefix(addr: str) -> str:
-     """
-     端末の IP をプレフィックスに丸めて格納。
-     - IPv6: /64 に丸める（モバイル環境での変動をある程度許容）
-     - IPv4: /24 に丸める
-@@ -3832,63 +3796,63 @@ def event_album_direct(event_uuid: str):
-       /external-login/events/<event_uuid>/album
-     未ログインならLINEログインへ飛ばし、ログイン後にこのURLへ戻す。
-     承認済みメンバー（または管理者）のみアルバムへリダイレクト。
-     """
-     # --- 未ログインなら next を保持してログインへ ---
+ def _is_ext_logged_in() -> bool:
      ext_session = get_ext_session()
-     sid = ext_session.get("ext_user_social_id")
-     if not sid:
-         ext_session["ext_after_login_next"] = request.url
-         return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
+     return bool(ext_session.get("ext_user_social_id"))
  
-     # --- イベント取得 ---
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
- 
-     # --- 自分の外部ユーザー行 ---
-     me = _get_ext_user_by_social(sid)  # type: ignore
-     if not me:
-         # 理論上ここには来にくいが、安全側
-         ext_session["ext_after_login_next"] = request.url
-         return redirect(url_for("external_login_user.line_login", next=request.url, _external=False))
- 
-     # --- アクセス可否（管理者は素通し／一般は承認済みのみ） ---
-     if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
--        flash("アルバムは承認後に閲覧できます。", "info")
-+        current_app.logger.info("event_album_direct blocked status=not_approved event_id=%s user_id=%s", ev["id"], me["id"])
-         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     # --- アルバムへ（SSOチケット経由） ---
-     album_id = ev.get("album_id")
-     if not album_id:
--        flash("このイベントのアルバムはまだ準備中です。", "warning")
-+        current_app.logger.info("event_album_direct blocked status=album_missing event_id=%s user_id=%s", ev["id"], me["id"])
-         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     next_path = url_for("album.album_access", album_id=album_id)
-     ticket = _issue_album_sso_ticket(me["id"], redirect_path=next_path)
-     if not ticket:
--        flash("アルバムへの遷移に失敗しました。お手数ですが再度お試しください。", "warning")
-+        current_app.logger.info("event_album_direct blocked status=ticket_failed event_id=%s user_id=%s", ev["id"], me["id"])
-         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     albums_sso_url = current_app.config.get("ALBUM_SSO_URL") or "https://mfu.iori0624.jp/albums/sso"
-     query = {"ticket": ticket}
-     safe_next = _sanitize_album_next_path(next_path)
-     if safe_next:
-         query["next"] = safe_next
-     return redirect(f"{albums_sso_url}?{urlencode(query)}")
- 
- 
- def _sanitize_album_next_path(next_path: str | None) -> str | None:
-     if not next_path:
-         return None
-     candidate = next_path.strip()
-     if not candidate.startswith("/"):
-         return None
-     if candidate.startswith("//"):
-         return None
-     if "://" in candidate:
-         return None
-     if ".." in candidate:
-         return None
-     if not (candidate.startswith("/albums") or candidate.startswith("/album")):
-         return None
-     return candidate
-@@ -3923,51 +3887,51 @@ def _issue_album_sso_ticket(ext_user_id: int, redirect_path: str | None = None)
-         return None
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
- 
- 
- @bp.route("/sso/albums", methods=["GET"])
- def sso_issue_albums():
-     ext_session = get_ext_session()
-     ext_user_id = ext_session.get("ext_user_id")
-     if not ext_user_id:
-         current_app.logger.info("sso_issue_albums status=unauthorized")
-         next_url = request.url
-         ext_session["ext_after_login_next"] = next_url
-         return redirect(url_for("external_login_user.line_login", next=next_url, _external=False))
- 
-     raw_next = (request.args.get("next") or "").strip()
-     safe_next = _sanitize_album_next_path(raw_next)
-     if raw_next and not safe_next:
-         current_app.logger.info("sso_issue_albums status=invalid_next subject_id=%s", ext_user_id)
- 
-     ticket = _issue_album_sso_ticket(int(ext_user_id), redirect_path=safe_next)
-     if not ticket:
--        flash("アルバムへの遷移に失敗しました。お手数ですが再度お試しください。", "warning")
-+        current_app.logger.info("sso_issue_albums status=issue_failed subject_id=%s", ext_user_id)
-         return redirect(url_for("external_login_user.index"))
- 
-     albums_sso_url = current_app.config.get("ALBUM_SSO_URL") or "https://mfu.iori0624.jp/albums/sso"
-     query = {"ticket": ticket}
-     if safe_next:
-         query["next"] = safe_next
-     return redirect(f"{albums_sso_url}?{urlencode(query)}")
- 
- 
- # ===== アップデート情報（テキスト→SHA1で既読管理） =========================
- # 保存: /mnt/mfu/app/external_login_user/template/update_file.txt
- # エンドポイント:
- #  - GET  /updates/check : {show, text, hash, seen} を返す（ログイン必須）
- #  - GET  /updates/text  : 本文のみ text/plain（未ログイン可）
- #  - POST /updates/ack   : 既読化
- # 備考:
- #  - 既読キー: external_login_user.update_seen_hash（なければ ext_session['ext_update_seen_hash']）
- # ==========================================================================
- 
- from flask import current_app, jsonify, abort, Response
- from app.utils.db import get_db
- import hashlib
- import os
- 
- UPDATE_FILE = "/mnt/mfu/app/external_login_user/template/update_file.txt"
+ def _fetch_event_process_members(event_id: int) -> list[dict]:
+     """イベント参加者一覧を取得（process フラグ含む）"""
+     rows: list[dict] = []
+     try:
+         conn = get_db()
