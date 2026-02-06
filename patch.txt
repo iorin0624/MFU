@@ -1,217 +1,254 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 1bb067da1ee083fd221b7c9f3fe3374f8b945a43..be96243fce096e41fee794739bd9ce3f9c00c23b 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -1718,50 +1718,58 @@ def _lecture_auto_approve_from_payment_request(
+diff --git a/external_login_user/template/ext_unverified.html b/external_login_user/template/ext_unverified.html
+index 4e15530d8840e73faca8dd0e27dfe3914388323f..17be0df9ea78927c7553a565bf02e2aa82cb5923 100644
+--- a/external_login_user/template/ext_unverified.html
++++ b/external_login_user/template/ext_unverified.html
+@@ -4,150 +4,249 @@
+   <meta charset="UTF-8">
+   <title>メールアドレス確認のお願い</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+ </head>
+ <body class="container py-4" style="max-width:720px;">
  
- @bp.route("/events/join/<event_uuid>", methods=["GET", "POST"])
- def join_event(event_uuid: str):
-     """
-     仕様:
-       - 未ログイン時は LINE ログインへ。next に現在URL(含iv)を渡す。
-       - ログイン後/初回プロフィール作成後も常にこのフォームへ戻す。
-       - GET: 既存メンバーは状態表示、未申請は「役割/衣装」入力フォームを表示。
-       - POST: 自動承認トークン(iv)が一致すれば 'approved'、なければ 'pending' で upsert。
-               送信後はイベントページ（/events/view/<uuid>）へ遷移。
-     """
-     import secrets
+   {# フラッシュメッセージ #}
+   {% with messages = get_flashed_messages(with_categories=true) %}
+     {% for cat, msg in messages %}
+       <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg|safe }}</div>
+     {% endfor %}
+   {% endwith %}
  
-     # --- ログインチェック（next でこのページに戻す。iv も保持される） ---
-     social_id = session.get("ext_user_social_id")
-     if not social_id:
-         session["ext_after_login_next"] = request.url
-         login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
-         return redirect(login_url)
+   <div class="alert alert-warning" role="alert" style="margin-bottom:16px;">
+     <div style="font-weight:600;">メール確認のお願い</div>
+     <div style="margin-top:6px;line-height:1.7;">
+       メールアドレスの確認が完了していません。<br>
+       イベント管理システムからお送りした<strong>「メールアドレス確認のお願い」</strong>メール内のリンクをタップして認証を完了してください。<br>
+       届いていない場合は<strong>迷惑メールフォルダ</strong>をご確認のうえ、下のボタンで再送できます。<br>
+       <br>
+       メールアドレスの確認が取れましたら、イベントの詳細が確認出来ます。<br>
+       ※クレジットカード会社に不正利用をしていない証明提出のため、ご理解、ご協力お願いいたします。<br>
+     </div>
  
-     # --- CSRF トークン ---
-     if "ext_csrf" not in session:
-         session["ext_csrf"] = secrets.token_hex(16)
-     csrf_token = session["ext_csrf"]
- 
-+    # --- 送信トークン（多重送信防止） ---
-+    def _issue_submit_token() -> str:
-+        token = secrets.token_hex(16)
-+        store = session.get("ext_join_submit_tokens") or {}
-+        store[event_uuid] = token
-+        session["ext_join_submit_tokens"] = store
-+        return token
++    <div id="verify-mail-guidance" class="alert alert-info mt-3 mb-0">
++      <div class="text-muted small">送信状況を確認中です...</div>
++    </div>
 +
-     db = get_db(); cur = db.cursor(dictionary=True)
+     <div class="mt-2 text-danger" style="line-height:1.7;">
+       メールは <code>@mail.iori0624.jp</code> から送信しています。<br>
+       受信トレイに見当たらない場合は、<strong>迷惑メールフォルダ</strong>を必ずご確認ください。<br><br>
+       特に、docomo／au／SoftBank などのキャリアメールをご利用の場合、<strong>ドメイン指定受信</strong>や<strong>URL付きメール拒否</strong>の設定があると受信できないことがあります。<br><br>
+       「<code>@mail.iori0624.jp</code>」からのメールを受信できるよう、設定のご確認・変更をお願いいたします。
+     </div>
+   </div>
  
-     # --- 外部ユーザーを取得（social_id → external_login_user.id） ---
-     cur.execute("""
-         SELECT id, email, nickname, x_id, instagram_id
-           FROM external_login_user
-          WHERE social_id=%s
-          LIMIT 1
-     """, (social_id,))
-     u = cur.fetchone()
-     if not u:
-         login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
-         return redirect(login_url)
+   {% if email %}
+     <p class="text-muted" style="margin:8px 0 20px 0;">現在登録中のメール：<code>{{ email }}</code></p>
+   {% else %}
+     <div class="alert alert-info" role="alert" style="margin-bottom:16px;">
+       まだメールアドレスが未登録です。プロフィール画面でメールアドレスを登録してください。
+     </div>
+   {% endif %}
  
-     ext_uid  = u["id"]
-     to_email = u.get("email")
-     nick     = u.get("nickname")
-     xid      = u.get("x_id") or ""
-     igid     = u.get("instagram_id") or ""
+   <div class="card mb-3">
+     <div class="card-body">
+       <div class="fw-semibold">最新の送信履歴</div>
+       <div class="text-muted small mb-2">確認メールの送信履歴（直近1件）を表示します。</div>
+       <div id="verify-mail-status" class="border rounded p-3 bg-light">
+         <div class="text-muted">読み込み中...</div>
+       </div>
+     </div>
+   </div>
  
-     # --- プロフィール未設定チェック ---
-     # ニックネームが未設定、または「（未設定）」の場合はプロフィール編集へ誘導
-     is_profile_incomplete = not (nick and str(nick).strip()) or nick == "（未設定）"
-     if is_profile_incomplete:
-         session["ext_after_login_next"] = request.url
-@@ -1827,61 +1835,91 @@ def join_event(event_uuid: str):
-             return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid))
+   <div class="d-flex gap-2" style="display:flex; gap:8px; flex-wrap:wrap;">
+     <a class="btn btn-primary" href="{{ url_for('external_login_user.profile', next=next) }}">プロフィールを編集</a>
  
-     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
-     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
-     if not iv:
-         iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
-     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
-     auto_hit_by_lecture = False
-     if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-         auto_hit_by_lecture = _lecture_auto_approve_from_payment_request(
-             event_id=ev["id"],
-             user_id=ext_uid,
-             payment_row_id=m.get("payment_row_id"),
-         )
-         auto_hit = auto_hit or auto_hit_by_lecture
+     <form method="post" action="{{ url_for('external_login_user.resend_verify_email') }}">
+       <button type="submit" class="btn btn-outline-primary">確認メールを再送</button>
+     </form>
  
-     # =========================
-     # POST: フォーム送信（申請）
-     # =========================
-     if request.method == "POST":
-         # CSRF
-         token = request.form.get("csrf_token", "")
-         if not token or token != csrf_token:
-             cur.close(); db.close()
-             abort(400, "invalid csrf token")
-+        # 多重送信防止（同一トークンは1回のみ）
-+        submit_token = request.form.get("submit_token", "")
-+        token_store = session.get("ext_join_submit_tokens") or {}
-+        stored_submit_token = token_store.get(event_uuid)
-+        if not submit_token or not stored_submit_token or submit_token != stored_submit_token:
-+            cur.close(); db.close()
-+            flash("すでに送信されています。ページを更新してから再度お試しください。", "error")
-+            return redirect(url_for("external_login_user.join_event", event_uuid=event_uuid))
-+        token_store.pop(event_uuid, None)
-+        session["ext_join_submit_tokens"] = token_store
+     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">トップへ戻る</a>
  
-         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
-         # ★ 'other' を許可
-         if role not in ("camera", "assistant", "cosplayer", "other"):
-             role = "cosplayer"
+     <a class="btn btn-outline-danger ms-auto" href="{{ url_for('external_login_user.logout') }}"
+        style="margin-left:auto;">ログアウト</a>
+   </div>
  
-         costume = (request.form.get("costume_label") or "").strip() or None
-         # ★ 「衣装／その他」のときだけ保持
-         if role not in ("cosplayer", "other"):
-             costume = None  # サーバ側でも空に
-         process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
-+        requires_costume = role in ("cosplayer", "other")
-+        if requires_costume and not costume:
-+            submit_token = _issue_submit_token()
-+            flash("「衣装／その他のメモ」を入力してください。", "error")
-+            for k in ("starts_at", "fee_yen", "place_name", "address"):
-+                ev.setdefault(k, None)
-+            status = (m and m.get("status")) or None
-+            if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-+                status = None
-+            cur.close(); db.close()
-+            return render_template(
-+                "event_join.html",
-+                ev=ev,
-+                status=status,
-+                form_role=role,
-+                form_costume="",
-+                form_process=bool(process_flag),
-+                csrf_token=csrf_token,
-+                submit_token=submit_token,
-+            )
+   <!-- 任意：BootstrapのJSが必要なら（モーダル等を使う場合のみ） -->
+   <!-- <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script> -->
+   <script>
+     (() => {
+       const statusBox = document.getElementById("verify-mail-status");
++      const guidanceBox = document.getElementById("verify-mail-guidance");
+       if (!statusBox) {
+         return;
+       }
  
-         # ステータス決定（自動承認 or 手動承認待ち）
-         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
-         new_status = "approved" if (auto_hit or already_approved) else "pending"
-         should_notify = not (already_approved and auto_hit_by_lecture)
+       const maxPolls = 10;
+       const intervalMs = 5000;
+       let pollCount = 0;
+       let timerId = null;
  
-         # upsert
-         if m:
-             cur.execute("""
-                 UPDATE mfu_event_member
-                    SET status=%s,
-                        participant_role=%s,
-                        costume_label=%s,
-                        process=%s,
-                        joined_at=COALESCE(joined_at, NOW())
-                  WHERE id=%s AND event_id=%s
-                  LIMIT 1
-             """, (new_status, role, costume, process_flag, m["id"], ev["id"]))
-         else:
-             cur.execute("""
-                 INSERT INTO mfu_event_member
-                   (event_id, user_id, status, participant_role, costume_label, process, joined_at)
-                 VALUES (%s, %s, %s, %s, %s, %s, NOW())
-             """, (ev["id"], ext_uid, new_status, role, costume, process_flag))
-         db.commit()
-@@ -1988,59 +2026,61 @@ def join_event(event_uuid: str):
-                     current_app.logger.warning("join: admin webhook_url not set")
+       const doneStatuses = new Set(["sent", "delivered", "bounced", "failed"]);
  
-             except Exception:
-                 current_app.logger.exception("join: admin mail/discord failed")
++      const guidanceTemplates = {
++        no_record: {
++          level: "info",
++          title: "送信履歴がありません",
++          body: [
++            "「確認メールを再送」ボタンを押して、確認メールを送信してください。",
++            "受信トレイに無い場合は迷惑メールフォルダもご確認ください。"
++          ]
++        },
++        queued: {
++          level: "info",
++          title: "確認メールを送信中です",
++          body: [
++            "数十秒〜数分かかる場合があります。",
++            "しばらくしてから受信トレイと迷惑メールフォルダをご確認ください。"
++          ]
++        },
++        sent: {
++          level: "primary",
++          title: "確認メールの送信は完了しています",
++          body: [
++            "受信トレイに見当たらない場合は迷惑メールフォルダをご確認ください。",
++            "キャリアメールの場合は「URL付きメール拒否」「ドメイン指定受信」設定もご確認ください。"
++          ]
++        },
++        delivered: {
++          level: "warning",
++          title: "配信完了になっています",
++          body: [
++            "受信側には到達している可能性が高いです。",
++            "受信トレイに無い場合、迷惑メールフォルダ／プロモーション等をご確認ください。",
++            "キャリアメールの場合は受信設定（URL拒否・ドメイン指定）をご確認ください。"
++          ]
++        },
++        bounced: {
++          level: "danger",
++          title: "配信できませんでした（不達）",
++          body: [
++            "メールアドレスの誤り、受信拒否、メールボックス容量超過などが考えられます。",
++            "アドレスを修正するか、別メール（Gmail等）での登録をおすすめします。"
++          ]
++        },
++        failed: {
++          level: "danger",
++          title: "送信に失敗しました",
++          body: [
++            "時間をおいて再送してください。",
++            "改善しない場合は運営にご連絡ください。"
++          ]
++        },
++        unknown: {
++          level: "secondary",
++          title: "配送状況を確認中です",
++          body: [
++            "状況が更新されるまで少し待ってから、もう一度ご確認ください。",
++            "届かない場合は迷惑メールフォルダもご確認ください。"
++          ]
++        }
++      };
++
++      const renderGuidance = (data) => {
++        if (!guidanceBox) {
++          return;
++        }
++
++        let template = guidanceTemplates.unknown;
++        if (!data || !data.has_record) {
++          template = guidanceTemplates.no_record;
++        } else {
++          const rawStatus = (data.delivery_status || "").toLowerCase();
++          if (rawStatus === "queued" || rawStatus === "sending") {
++            template = guidanceTemplates.queued;
++          } else if (guidanceTemplates[rawStatus]) {
++            template = guidanceTemplates[rawStatus];
++          }
++        }
++
++        guidanceBox.className = `alert alert-${template.level} mt-3 mb-0`;
++        guidanceBox.innerHTML = `
++          <div class="fw-semibold">${template.title}</div>
++          <div class="mt-1">${template.body.join("<br>")}</div>
++        `;
++
++        if (data && data.message_ja) {
++          const note = document.createElement("div");
++          note.className = "small text-muted mt-2";
++          note.textContent = data.message_ja;
++          guidanceBox.appendChild(note);
++        }
++      };
++
+       const renderStatus = (data) => {
+         if (!data || !data.has_record) {
+           statusBox.innerHTML = `
+             <div>送信履歴はありません。</div>
+             <div class="text-muted small">確認メールの再送をお試しください。</div>
+           `;
+           return;
+         }
  
-         # 送信後はイベントページへ
-         if new_status == "pending":
-             flash("参加申請を受け付けました。承認までお待ちください。", "success")
-         else:
-             flash("参加が承認されました。", "success")
-         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
+         let sentAtText = "不明";
+         if (data.sent_at) {
+           const sentDate = new Date(data.sent_at);
+           sentAtText = Number.isNaN(sentDate.getTime())
+             ? data.sent_at
+             : sentDate.toLocaleString("ja-JP");
+         }
  
-     # =========================
-     # GET: 表示
-     # =========================
-     for k in ("starts_at", "fee_yen", "place_name", "address"):
-         ev.setdefault(k, None)
+         const messageLine = data.message_ja
+           ? `<div class="text-muted small mt-1">${data.message_ja}</div>`
+           : "";
  
-     status = (m and m.get("status")) or None
-     if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-         status = None
-     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
-     form_costume = (m and (m.get("costume_label") or "")) or ""
-     form_process = bool(m and int(m.get("process") or 0) == 1)
+         statusBox.innerHTML = `
+           <div>送信日時：${sentAtText}</div>
+           <div>状態：${data.display_status_ja || "確認中"}</div>
+           ${messageLine}
+         `;
+       };
  
-+    submit_token = _issue_submit_token()
-     cur.close(); db.close()
-     return render_template(
-         "event_join.html",
-         ev=ev,
-         status=status,
-         form_role=form_role,
-         form_costume=form_costume,
-         form_process=form_process,
-         csrf_token=csrf_token,
-+        submit_token=submit_token,
-     )
+       const fetchStatus = async () => {
+         pollCount += 1;
+         try {
+           const response = await fetch(
+             "{{ url_for('external_login_user.latest_verify_email_status') }}",
+             { method: "GET", headers: { "Accept": "application/json" } }
+           );
+           if (!response.ok) {
+             statusBox.innerHTML = `<div class="text-muted">送信履歴の取得に失敗しました。</div>`;
++            renderGuidance(null);
+             return;
+           }
+           const data = await response.json();
+           renderStatus(data);
++          renderGuidance(data);
  
+           const deliveryStatus = (data.delivery_status || "").toLowerCase();
+           if (doneStatuses.has(deliveryStatus)) {
+             stopPolling();
+           }
+         } catch (error) {
+           statusBox.innerHTML = `<div class="text-muted">送信履歴の取得に失敗しました。</div>`;
++          renderGuidance(null);
+         }
+       };
  
- @bp.route("/events/<event_uuid>/members/<int:member_id>/receipt.pdf")
- def member_receipt_pdf(event_uuid: str, member_id: int):
-     guard = _require_ext_login()
-     if guard:
-         return guard
+       const stopPolling = () => {
+         if (timerId) {
+           clearInterval(timerId);
+           timerId = null;
+         }
+       };
  
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
- 
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
-     if not me and not _is_mfu_logged_in():
-         abort(401)
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT
-               m.id AS member_id,
-               m.user_id,
-               m.event_id,
-               m.paid_amount_yen,
+       fetchStatus();
+       timerId = setInterval(() => {
+         if (pollCount >= maxPolls) {
+           stopPolling();
+           return;
+         }
+         fetchStatus();
+       }, intervalMs);
+     })();
+   </script>
+ </body>
+ </html>
