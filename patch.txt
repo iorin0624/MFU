@@ -1,278 +1,168 @@
-diff --git a/utils/mail_delivery.py b/utils/mail_delivery.py
+diff --git a/static/external_login_user/admin_ext_users.js b/static/external_login_user/admin_ext_users.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..03e7f3162154701e5f8babc0ac395594f5756603
+index 0000000000000000000000000000000000000000..95612fd80ce84bd771b2651036eb344b006b900f
 --- /dev/null
-+++ b/utils/mail_delivery.py
-@@ -0,0 +1,272 @@
-+from __future__ import annotations
++++ b/static/external_login_user/admin_ext_users.js
+@@ -0,0 +1,162 @@
++(function () {
++  const ctx = window.__EXT_USERS__ || {};
++  const tbody = document.getElementById('userTbody');
++  const totalCount = document.getElementById('totalCount');
++  const searchInput = document.getElementById('searchInput');
++  const searchBtn = document.getElementById('searchBtn');
++  const clearBtn = document.getElementById('clearBtn');
 +
-+import os
-+import uuid
-+from datetime import datetime, timedelta
++  if (!tbody || !ctx.dataUrl) return;
 +
-+import requests
-+from flask import current_app
++  function escapeHtml(text) {
++    return String(text || '')
++      .replace(/&/g, '&amp;')
++      .replace(/</g, '&lt;')
++      .replace(/>/g, '&gt;')
++      .replace(/"/g, '&quot;')
++      .replace(/'/g, '&#39;');
++  }
 +
-+from app.utils.db import get_db
++  function formatDateJst(value) {
++    if (!value) return '';
++    const date = new Date(value);
++    if (Number.isNaN(date.getTime())) return escapeHtml(value);
++    const formatter = new Intl.DateTimeFormat('ja-JP', {
++      timeZone: 'Asia/Tokyo',
++      year: 'numeric',
++      month: '2-digit',
++      day: '2-digit',
++      hour: '2-digit',
++      minute: '2-digit',
++      hour12: false
++    });
++    const parts = formatter.formatToParts(date);
++    const lookup = Object.fromEntries(parts.map((p) => [p.type, p.value]));
++    return `${lookup.year}/${lookup.month}/${lookup.day} ${lookup.hour}:${lookup.minute} JST`;
++  }
 +
-+DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
-+DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
-+DEFAULT_POLL_LIMIT_HOURS = 24
-+DEFAULT_HTTP_TIMEOUT_SEC = 5
++  function formatExistingDates() {
++    const elements = document.querySelectorAll('.email-verified-at[data-value]');
++    elements.forEach((el) => {
++      const raw = el.getAttribute('data-value') || '';
++      if (!raw) return;
++      el.textContent = formatDateJst(raw);
++    });
++  }
 +
++  function buildRow(item) {
++    const avatar = item.avatar_file
++      ? `/external-login/avatars/${encodeURIComponent(item.avatar_file)}`
++      : item.avatar_url || 'https://via.placeholder.com/48?text=—';
++    const nickname = escapeHtml(item.nickname || '-');
++    const socialId = escapeHtml(item.social_id || '-');
++    const email = item.email ? escapeHtml(item.email) : '';
++    const emailVerifiedAt = item.email_verified_at ? formatDateJst(item.email_verified_at) : '';
++    const xId = item.x_id ? escapeHtml(item.x_id) : '';
++    const igId = item.instagram_id ? escapeHtml(item.instagram_id) : '';
++    const notifyUpload = item.notify_album_upload ? '🔵' : '🔴';
++    const notifyProcess = item.notify_album_process ? '🔵' : '🔴';
++    const cardCount = Number(item.card_count || 0) > 0 ? '登録あり' : '未登録';
 +
-+def _get_config_value(name: str, default):
-+    try:
-+        return current_app.config.get(name, default)
-+    except Exception:
-+        return os.environ.get(name, default)
++    let snsHtml = '<span class="text-muted">-</span>';
++    if (xId || igId) {
++      const parts = [];
++      if (xId) {
++        parts.push(`<a href="https://x.com/${xId}" target="_blank" rel="noopener">X: @${xId}</a>`);
++      }
++      if (igId) {
++        parts.push(`<a href="https://www.instagram.com/${igId}/" target="_blank" rel="noopener">IG: @${igId}</a>`);
++      }
++      snsHtml = parts.join('<br>');
++    }
 +
++    let emailHtml = '<span class="text-muted">-</span>';
++    if (email) {
++      const badge = emailVerifiedAt
++        ? `<span class="badge bg-success">確認済</span><span class="text-muted ms-1">${emailVerifiedAt}</span>`
++        : '<span class="badge bg-secondary">未確認</span>';
++      emailHtml = `<div>${email}</div><div class="small mt-1">${badge}</div>`;
++    }
 +
-+def _clamp(value: str | None, max_len: int) -> str | None:
-+    if value is None:
-+        return None
-+    text = str(value)
-+    return text if len(text) <= max_len else text[:max_len]
++    return `
++      <tr data-id="${escapeHtml(item.id)}">
++        <td class="text-muted">#${escapeHtml(item.id)}</td>
++        <td>
++          <img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">
++        </td>
++        <td>
++          <div class="fw-semibold">${nickname}</div>
++          <div class="small text-muted">social_id: ${socialId}</div>
++        </td>
++        <td>
++          ${emailHtml}
++        </td>
++        <td>
++          ${snsHtml}
++        </td>
++        <td>
++          <div>アップ ${notifyUpload}</div>
++          <div>加工 ${notifyProcess}</div>
++        </td>
++        <td>
++          ${cardCount}
++        </td>
++        <td class="text-end">
++          <a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${escapeHtml(item.id)}/edit">編集</a>
++        </td>
++      </tr>
++    `;
++  }
 +
++  function renderItems(items) {
++    if (!items.length) {
++      tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
++      return;
++    }
++    tbody.innerHTML = items.map(buildRow).join('');
++  }
 +
-+def ensure_mail_delivery_schema() -> None:
-+    db = get_db()
-+    cur = db.cursor()
-+    cur.execute(
-+        """
-+        CREATE TABLE IF NOT EXISTS mfu_mail_delivery_log (
-+            id INT AUTO_INCREMENT PRIMARY KEY,
-+            mfu_mail_uuid CHAR(36) NOT NULL,
-+            message_id VARCHAR(255) NOT NULL,
-+            to_addresses VARCHAR(1024) NULL,
-+            subject VARCHAR(255) NULL,
-+            submit_status VARCHAR(32) NOT NULL,
-+            submit_at DATETIME NOT NULL,
-+            last_delivery_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
-+            last_delivery_detail VARCHAR(1000) NULL,
-+            last_delivery_queue_id VARCHAR(64) NULL,
-+            last_delivery_checked_at DATETIME NULL,
-+            UNIQUE KEY uniq_message_id (message_id),
-+            KEY idx_submit_at (submit_at),
-+            KEY idx_last_delivery_status (last_delivery_status)
-+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+        """
-+    )
-+    db.commit()
-+    db.close()
++  async function fetchItems(query) {
++    const params = new URLSearchParams();
++    if (query) params.set('q', query);
++    params.set('per_page', '0');
++    const url = `${ctx.dataUrl}?${params.toString()}`;
++    const res = await fetch(url, { credentials: 'same-origin' });
++    if (!res.ok) throw new Error('fetch_failed');
++    return res.json();
++  }
 +
++  async function runSearch() {
++    const q = (searchInput ? searchInput.value : '').trim();
++    try {
++      const data = await fetchItems(q);
++      const items = data.items || [];
++      if (totalCount) totalCount.textContent = String(data.total || items.length);
++      renderItems(items);
++    } catch (err) {
++      console.error(err);
++    }
++  }
 +
-+def generate_message_id() -> tuple[str, str]:
-+    mfu_mail_uuid = str(uuid.uuid4())
-+    domain = _get_config_value("MFU_MAIL_MESSAGE_ID_DOMAIN", DEFAULT_MESSAGE_ID_DOMAIN)
-+    domain = (domain or DEFAULT_MESSAGE_ID_DOMAIN).strip() or DEFAULT_MESSAGE_ID_DOMAIN
-+    message_id = f"{mfu_mail_uuid}@{domain}"
-+    return mfu_mail_uuid, message_id
++  formatExistingDates();
 +
++  if (searchBtn) {
++    searchBtn.addEventListener('click', runSearch);
++  }
 +
-+def record_mail_submission(
-+    *,
-+    mfu_mail_uuid: str,
-+    message_id: str,
-+    to_addresses: str,
-+    subject: str,
-+    submit_status: str,
-+    last_delivery_status: str,
-+    last_delivery_detail: str | None = None,
-+) -> None:
-+    ensure_mail_delivery_schema()
-+    submit_at = datetime.now()
-+    db = get_db()
-+    cur = db.cursor()
-+    cur.execute(
-+        """
-+        INSERT INTO mfu_mail_delivery_log (
-+            mfu_mail_uuid,
-+            message_id,
-+            to_addresses,
-+            subject,
-+            submit_status,
-+            submit_at,
-+            last_delivery_status,
-+            last_delivery_detail,
-+            last_delivery_queue_id,
-+            last_delivery_checked_at
-+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL)
-+        ON DUPLICATE KEY UPDATE
-+            submit_status = VALUES(submit_status),
-+            submit_at = VALUES(submit_at),
-+            last_delivery_status = VALUES(last_delivery_status),
-+            last_delivery_detail = VALUES(last_delivery_detail)
-+        """,
-+        (
-+            mfu_mail_uuid,
-+            message_id,
-+            _clamp(to_addresses, 1024),
-+            _clamp(subject, 255),
-+            submit_status,
-+            submit_at,
-+            last_delivery_status,
-+            _clamp(last_delivery_detail, 1000),
-+        ),
-+    )
-+    db.commit()
-+    db.close()
++  if (searchInput) {
++    searchInput.addEventListener('keydown', (event) => {
++      if (event.key === 'Enter') {
++        event.preventDefault();
++        runSearch();
++      }
++    });
++  }
 +
-+
-+def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
-+    cutoff = datetime.now() - timedelta(hours=limit_hours)
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    cur.execute(
-+        """
-+        SELECT id, message_id, last_delivery_status, submit_at
-+          FROM mfu_mail_delivery_log
-+         WHERE submit_status = 'queued'
-+           AND last_delivery_status NOT IN ('sent', 'bounced')
-+           AND submit_at >= %s
-+         ORDER BY submit_at ASC
-+         LIMIT %s
-+        """,
-+        (cutoff, max_rows),
-+    )
-+    rows = cur.fetchall() or []
-+    db.close()
-+    return rows
-+
-+
-+def _update_delivery_row(
-+    *,
-+    row_id: int,
-+    status: str,
-+    detail: str | None,
-+    queue_id: str | None,
-+    checked_at: datetime,
-+) -> None:
-+    db = get_db()
-+    cur = db.cursor()
-+    cur.execute(
-+        """
-+        UPDATE mfu_mail_delivery_log
-+           SET last_delivery_status = %s,
-+               last_delivery_detail = %s,
-+               last_delivery_queue_id = %s,
-+               last_delivery_checked_at = %s
-+         WHERE id = %s
-+        """,
-+        (
-+            status,
-+            _clamp(detail, 1000),
-+            _clamp(queue_id, 64),
-+            checked_at,
-+            row_id,
-+        ),
-+    )
-+    db.commit()
-+    db.close()
-+
-+
-+def _touch_delivery_row(
-+    *,
-+    row_id: int,
-+    detail: str | None,
-+    checked_at: datetime,
-+) -> None:
-+    db = get_db()
-+    cur = db.cursor()
-+    cur.execute(
-+        """
-+        UPDATE mfu_mail_delivery_log
-+           SET last_delivery_detail = %s,
-+               last_delivery_checked_at = %s
-+         WHERE id = %s
-+        """,
-+        (
-+            _clamp(detail, 1000),
-+            checked_at,
-+            row_id,
-+        ),
-+    )
-+    db.commit()
-+    db.close()
-+
-+
-+def poll_mail_delivery_statuses(max_rows: int = 200) -> dict:
-+    ensure_mail_delivery_schema()
-+    base_url = _get_config_value(
-+        "MFU_POSTFIX_STATUS_API_BASE_URL", DEFAULT_POSTFIX_STATUS_API_BASE_URL
-+    )
-+    api_key = _get_config_value("MFU_POSTFIX_STATUS_API_KEY", "")
-+    limit_hours = int(
-+        _get_config_value("MFU_MAIL_STATUS_POLL_LIMIT_HOURS", DEFAULT_POLL_LIMIT_HOURS)
-+    )
-+    timeout_sec = int(
-+        _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
-+    )
-+
-+    base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
-+    headers = {"X-API-Key": api_key} if api_key else {}
-+
-+    rows = _fetch_poll_targets(limit_hours=limit_hours, max_rows=max_rows)
-+    now = datetime.now()
-+    summary = {"checked": 0, "updated": 0, "errors": 0}
-+
-+    for row in rows:
-+        summary["checked"] += 1
-+        message_id = row.get("message_id")
-+        row_id = row.get("id")
-+        if not message_id or not row_id:
-+            continue
-+
-+        url = f"{base_url}/api/mail/status"
-+        try:
-+            resp = requests.get(
-+                url,
-+                params={"message_id": message_id},
-+                headers=headers,
-+                timeout=timeout_sec,
-+            )
-+        except requests.RequestException as exc:
-+            summary["errors"] += 1
-+            _touch_delivery_row(
-+                row_id=row_id,
-+                detail=f"poll_error: {exc.__class__.__name__}",
-+                checked_at=now,
-+            )
-+            continue
-+
-+        if resp.status_code != 200:
-+            summary["errors"] += 1
-+            _touch_delivery_row(
-+                row_id=row_id,
-+                detail=f"poll_http_status: {resp.status_code}",
-+                checked_at=now,
-+            )
-+            continue
-+
-+        try:
-+            payload = resp.json()
-+        except ValueError:
-+            summary["errors"] += 1
-+            _touch_delivery_row(
-+                row_id=row_id,
-+                detail="poll_error: invalid_json",
-+                checked_at=now,
-+            )
-+            continue
-+
-+        status = str(payload.get("status") or "unknown")
-+        detail = payload.get("detail")
-+        queue_id = payload.get("queue_id")
-+        if status not in ("sent", "deferred", "bounced", "unknown"):
-+            status = "unknown"
-+
-+        _update_delivery_row(
-+            row_id=row_id,
-+            status=status,
-+            detail=detail,
-+            queue_id=queue_id,
-+            checked_at=now,
-+        )
-+        summary["updated"] += 1
-+
-+    return summary
++  if (clearBtn) {
++    clearBtn.addEventListener('click', () => {
++      if (searchInput) searchInput.value = '';
++      runSearch();
++    });
++  }
++})();
