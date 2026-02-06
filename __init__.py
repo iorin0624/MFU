@@ -41,7 +41,9 @@ from flask import (
     send_from_directory, send_file, abort, jsonify, current_app, after_this_request, g, Response,
 )
 import flask as flask_module
+from flask.sessions import SecureCookieSessionInterface
 from flask_login import LoginManager
+from itsdangerous import BadSignature
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename, safe_join
 
@@ -95,9 +97,80 @@ app.config["EXTERNAL_SECRET_KEY"] = os.environ.get("EXTERNAL_SECRET_KEY")
 
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 
-app.config["SESSION_COOKIE_NAME"] = "mfu_admin_session"
+app.config["ADMIN_SESSION_COOKIE_NAME"] = "mfu_admin_session"
+app.config["USER_SESSION_COOKIE_NAME"] = "mfu_user_session"
+app.config["SESSION_COOKIE_NAME"] = app.config["ADMIN_SESSION_COOKIE_NAME"]
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
+
+
+class PathAwareSessionInterface(SecureCookieSessionInterface):
+    def _cookie_names(self, app) -> tuple[str, str]:
+        admin_cookie = app.config.get("ADMIN_SESSION_COOKIE_NAME", "mfu_admin_session")
+        user_cookie = app.config.get("USER_SESSION_COOKIE_NAME", "mfu_user_session")
+        return admin_cookie, user_cookie
+
+    def open_session(self, app, request):
+        admin_cookie, user_cookie = self._cookie_names(app)
+        serializer = self.get_signing_serializer(app)
+        if serializer is None:
+            return self.session_class()
+
+        path = request.path or ""
+        if path.startswith("/admin"):
+            raw = request.cookies.get(admin_cookie) or request.cookies.get(user_cookie)
+        else:
+            raw = request.cookies.get(user_cookie)
+
+        if not raw:
+            return self.session_class()
+
+        try:
+            data = serializer.loads(raw)
+            return self.session_class(data)
+        except BadSignature:
+            return self.session_class()
+
+    def save_session(self, app, session, response):
+        admin_cookie, user_cookie = self._cookie_names(app)
+        path = request.path or ""
+        cookie_name = admin_cookie if path.startswith("/admin") else user_cookie
+        domain = self.get_cookie_domain(app)
+        cookie_path = app.config.get("SESSION_COOKIE_PATH") or ("/admin" if cookie_name == admin_cookie else "/")
+
+        if not session:
+            if session.modified:
+                response.delete_cookie(
+                    cookie_name,
+                    domain=domain,
+                    path=cookie_path,
+                    samesite=app.config.get("SESSION_COOKIE_SAMESITE"),
+                    secure=app.config.get("SESSION_COOKIE_SECURE"),
+                    httponly=app.config.get("SESSION_COOKIE_HTTPONLY", True),
+                )
+            return
+
+        if not session.modified and not app.config.get("SESSION_REFRESH_EACH_REQUEST", False):
+            return
+
+        serializer = self.get_signing_serializer(app)
+        if serializer is None:
+            return
+
+        val = serializer.dumps(dict(session))
+        response.set_cookie(
+            cookie_name,
+            val,
+            expires=self.get_expiration_time(app, session),
+            httponly=app.config.get("SESSION_COOKIE_HTTPONLY", True),
+            domain=domain,
+            path=cookie_path,
+            secure=app.config.get("SESSION_COOKIE_SECURE"),
+            samesite=app.config.get("SESSION_COOKIE_SAMESITE"),
+        )
+
+
+app.session_interface = PathAwareSessionInterface()
 
 app.config["MFU_POSTFIX_STATUS_API_BASE_URL"] = os.environ.get(
     "MFU_POSTFIX_STATUS_API_BASE_URL", "http://192.168.103.15:18080"
@@ -131,14 +204,13 @@ flash = ext_flash
 # =====================================
 
 from functools import wraps
-from flask import session
 
 def admin_required(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         user_id = session.get("user")
         if not user_id:
-            return redirect(url_for("login", next=(request.full_path or request.path or "/")))
+            return redirect(url_for("admin_login", next=(request.full_path or request.path or "/")))
         if user_id != "admin":
             abort(403)
         return func(*args, **kwargs)
@@ -466,7 +538,9 @@ def _unauthorized():
     # 外部ログイン系は LINE へ（元URLを next に積む）
     if request.path.startswith("/external-login"):
         return redirect(url_for("external_login_user.line_login", next=request.full_path))
-    # それ以外（管理系など）は従来どおり
+    if request.path.startswith("/admin"):
+        return redirect(url_for("admin_login", next=path))
+    # それ以外（ユーザー系）
     return redirect(url_for("login", next=path))
 
 WELL_KNOWN_DIR = os.path.join(BASE_DIR, ".well-known")
@@ -479,8 +553,7 @@ def well_known(filename):
 def index():
     return redirect(url_for("upload"))
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
+def _handle_login():
     def _preauth_active():
         preauth_user = session.get("preauth_user")
         expires_at = _normalize_utc_dt(session.get("preauth_expires_at"), label="preauth_expires_at")
@@ -551,7 +624,8 @@ def login():
                 except Exception:
                     pass
 
-            return redirect(url_for("upload"))
+            destination = url_for("admin_logs") if request.path.startswith("/admin") else url_for("upload")
+            return redirect(destination)
 
         return render_template("login.html", error="ログイン失敗", username=username)
 
@@ -562,10 +636,27 @@ def login():
         preauth_username=preauth_user or "",
     )
 
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    return _handle_login()
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    return _handle_login()
+
+
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
 
 # =====================================
 # ② アップロード（画面 & 実処理）
@@ -2860,7 +2951,7 @@ def before_every_request():
     #    どちらも 404 にすることで /admin の存在自体を隠す
     if request.path.startswith("/admin"):
         if not session.get("user"):
-            return redirect(url_for("login", next=(request.full_path or request.path or "/")))
+            return redirect(url_for("admin_login", next=(request.full_path or request.path or "/")))
         if session.get("user") != "admin":
             abort(403)
 
@@ -2953,9 +3044,7 @@ def finalize_response(response):
 
     # --- 3) admin session サイズガード/ログ ---
     try:
-        if _should_freeze_admin_session_update(request.path):
-            _freeze_admin_session_update()
-        elif _should_handle_admin_session_update(request.path):
+        if _should_handle_admin_session_update(request.path):
             _trim_admin_session_if_needed(endpoint=request.endpoint, path=request.path, status=response.status_code)
             _schedule_admin_session_size_log(response)
     except Exception as e:
@@ -2979,17 +3068,9 @@ def handle_forbidden(_error):
     return render_template("errors/403.html"), 403
 
 
-ADMIN_SESSION_MAX_BYTES = 3950
+ADMIN_SESSION_MAX_BYTES = 3500
 ADMIN_SESSION_HANDLE_PATH_PREFIXES = ("/admin",)
-ADMIN_SESSION_FROZEN_PATH_PREFIXES = (
-    "/external-login",
-    "/e",
-    "/album",
-    "/albums",
-    "/payment",
-)
-ADMIN_SESSION_SAFE_DROP_KEYS = {
-    "_flashes",
+ADMIN_SESSION_FORBIDDEN_PAYLOAD_KEYS = {
     "nav",
     "nav_items",
     "features",
@@ -3003,35 +3084,13 @@ ADMIN_SESSION_SAFE_DROP_KEYS = {
     "ext_user_onboarding",
     "ext_user_need_email",
 }
-ADMIN_SESSION_FORBIDDEN_PAYLOAD_KEYS = {
-    "nav",
-    "nav_items",
-    "features",
-    "permissions",
-    "settings",
-    "next",
-}
+ADMIN_SESSION_FORBIDDEN_KEY_PREFIXES = ("auth_", "view_auth_", "ext_")
 
 
 def _should_handle_admin_session_update(path: str | None) -> bool:
     if not path:
         return False
     return path.startswith(ADMIN_SESSION_HANDLE_PATH_PREFIXES)
-
-
-def _should_freeze_admin_session_update(path: str | None) -> bool:
-    if not path:
-        return False
-    return path.startswith(ADMIN_SESSION_FROZEN_PATH_PREFIXES)
-
-
-def _freeze_admin_session_update() -> None:
-    try:
-        session.modified = False
-        if hasattr(session, "new"):
-            session.new = False
-    except Exception:
-        pass
 
 
 def _estimate_session_value_size(value) -> int:
@@ -3060,78 +3119,48 @@ def _collect_admin_session_sizes() -> tuple[int, list[tuple[str, int]]]:
 def _purge_admin_session_forbidden_payloads() -> list[str]:
     removed: list[str] = []
     for key in list(session.keys()):
-        if key not in ADMIN_SESSION_FORBIDDEN_PAYLOAD_KEYS:
-            continue
-        value = session.get(key)
-        if isinstance(value, (dict, list, tuple, set)):
+        if key in ADMIN_SESSION_FORBIDDEN_PAYLOAD_KEYS or key.startswith(ADMIN_SESSION_FORBIDDEN_KEY_PREFIXES):
             session.pop(key, None)
             removed.append(key)
+            continue
+        if key == "_flashes":
+            flashes = session.get("_flashes")
+            if isinstance(flashes, list):
+                for entry in flashes:
+                    if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+                        continue
+                    _category, message = entry
+                    msg_text = str(message)
+                    if len(msg_text.encode("utf-8", "ignore")) > 200:
+                        session.pop("_flashes", None)
+                        removed.append("_flashes")
+                        break
     if removed:
         app.logger.warning("admin_session_forbidden_payload_removed keys=%s", removed)
     return removed
 
 
-def _trim_flash_messages(flashes: list) -> tuple[list, bool]:
-    trimmed = []
-    changed = False
-    for entry in flashes:
-        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
-            trimmed.append(entry)
-            continue
-        category, message = entry
-        msg_text = str(message)
-        msg_bytes = len(msg_text.encode("utf-8", "ignore"))
-        if msg_bytes > 200:
-            trimmed.append((category, "メッセージが長いため省略されました。"))
-            changed = True
-        else:
-            trimmed.append(entry)
-    return trimmed, changed
-
-
 def _trim_admin_session_if_needed(*, endpoint: str | None, path: str, status: int) -> None:
-    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    cookie_name = app.config.get("ADMIN_SESSION_COOKIE_NAME", "session")
     has_cookie = bool(request.cookies.get(cookie_name))
     if not session and not has_cookie:
         return
 
-    _purge_admin_session_forbidden_payloads()
-
-    total, items = _collect_admin_session_sizes()
-    if total <= ADMIN_SESSION_MAX_BYTES:
-        return
-
-    dropped_keys: list[str] = []
-    flashes = session.get("_flashes")
-    if isinstance(flashes, list):
-        trimmed, changed = _trim_flash_messages(flashes)
-        if changed:
-            session["_flashes"] = trimmed
-            dropped_keys.append("_flashes:trimmed")
-
+    removed = _purge_admin_session_forbidden_payloads()
     total, items = _collect_admin_session_sizes()
     if total > ADMIN_SESSION_MAX_BYTES:
-        for key, size in items:
-            if key in ADMIN_SESSION_SAFE_DROP_KEYS or key.startswith(("auth_", "view_auth_", "ext_")):
-                session.pop(key, None)
-                dropped_keys.append(key)
-                total -= size
-                if total <= ADMIN_SESSION_MAX_BYTES:
-                    break
-
-    if dropped_keys:
         app.logger.warning(
-            "admin_session_trimmed ep=%s path=%s status=%s session_bytes_total=%s dropped=%s",
+            "admin_session_guard_exceeded ep=%s path=%s status=%s session_bytes_total=%s removed=%s",
             endpoint,
             path,
             status,
             total,
-            dropped_keys,
+            removed,
         )
 
 
 def _response_sets_admin_session_cookie(response) -> bool:
-    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    cookie_name = app.config.get("ADMIN_SESSION_COOKIE_NAME", "session")
     for header in response.headers.getlist("Set-Cookie"):
         if header.startswith(f"{cookie_name}="):
             return True
@@ -3139,15 +3168,11 @@ def _response_sets_admin_session_cookie(response) -> bool:
 
 
 def _schedule_admin_session_size_log(response) -> None:
-    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
-    has_cookie = bool(request.cookies.get(cookie_name))
-    if not session and not has_cookie:
+    if not _response_sets_admin_session_cookie(response):
         return
 
-    _purge_admin_session_forbidden_payloads()
-
     total, items = _collect_admin_session_sizes()
-    top_items = items[:10]
+    top_items = items[:5]
     endpoint = request.endpoint
     path = request.path
     status = response.status_code
