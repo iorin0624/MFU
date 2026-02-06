@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}ナビ項目一覧{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">ナビ項目一覧</h1>
+  <a href="/admin/nav/new" class="btn btn-primary btn-sm">新規追加</a>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-bordered align-middle">
+    <thead class="table-light">
+      <tr>
+        <th style="width: 20%">ラベル</th>
+        <th>URL</th>
+        <th style="width: 12%">機能キー</th>
+        <th style="width: 8%">順序</th>
+        <th style="width: 8%">有効</th>
+        <th style="width: 16%">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in nav_items %}
+        <tr>
+          <td><strong>{{ item.label }}</strong></td>
+          <td>{{ item.url }}</td>
+          <td>{{ item.feature_key or "-" }}</td>
+          <td>{{ item.order_no }}</td>
+          <td>{{ "✓" if item.is_enabled else "-" }}</td>
+          <td>
+            <a href="/admin/nav/{{ item.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
+            <form method="post" action="/admin/nav/{{ item.id }}/delete" class="d-inline">
+              <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
+            </form>
+          </td>
+        </tr>
+        {% for child in item.children %}
+          <tr>
+            <td class="ps-4">↳ {{ child.label }}</td>
+            <td>{{ child.url }}</td>
+            <td>{{ child.feature_key or "-" }}</td>
+            <td>{{ child.order_no }}</td>
+            <td>{{ "✓" if child.is_enabled else "-" }}</td>
+            <td>
+              <a href="/admin/nav/{{ child.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
+              <form method="post" action="/admin/nav/{{ child.id }}/delete" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<a href="/admin/user-features" class="btn btn-outline-secondary">機能付与へ</a>
+{% endblock %}
