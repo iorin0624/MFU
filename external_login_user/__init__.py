@@ -51,28 +51,6 @@ def _guard_admin_features():
     return None
 
 
-@bp.before_request
-def _auto_line_login_on_inapp_browser():
-    if request.method not in ("GET", "HEAD"):
-        return None
-
-    path = request.path or ""
-    if path not in ("/external-login", "/external-login/", "/e", "/e/"):
-        return None
-
-    ext_session = get_ext_session()
-    if ext_session.get("ext_user_id"):
-        return None
-
-    ua = request.headers.get("User-Agent", "")
-    if "Line/" not in ua:
-        return None
-
-    next_url = request.url
-    ext_session["ext_after_login_next"] = next_url
-    return redirect(url_for("external_login_user.line_login", next=next_url, _external=False))
-
-
 @bp.after_request
 def _store_external_session(response):
     ext_session = getattr(g, "ext_session", None)
