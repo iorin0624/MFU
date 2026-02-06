@@ -52,8 +52,6 @@ def import_uber_xlsx(path: str) -> int:
         promo_yen = int(row[3] or 0)
         other_yen = int(row[4] or 0)
         tip_yen = int(row[5] or 0)
-        if deliveries == 0 and net_yen == 0 and promo_yen == 0 and other_yen == 0 and tip_yen == 0:
-            continue
         now = datetime.now()
         cur.execute(
             """

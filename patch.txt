@@ -1,0 +1,121 @@
+diff --git a/records/templates/records/uber/list.html b/records/templates/records/uber/list.html
+index 976b4b6b91f8966e92540f74a425c37f3dc8f35d..62fe0c2e064fe1f95a64023639a6d8bc9a56db6a 100644
+--- a/records/templates/records/uber/list.html
++++ b/records/templates/records/uber/list.html
+@@ -1,59 +1,105 @@
+ {% extends "records/base_records.html" %}
+ 
+ {% block records_title %}Uber 日次記録{% endblock %}
+ 
++{% macro fmt_number(value) -%}
++  {{ "{:,}".format(value) if value is not none else '' }}
++{%- endmacro %}
++
+ {% block records_actions %}
+   <a href="{{ url_for('records.uber_new') }}" class="btn btn-primary">新規追加</a>
+ {% endblock %}
+ 
+ {% block records_content %}
+ <div class="card mb-4">
+   <div class="card-body">
+     <h5 class="card-title">今月サマリ ({{ summary.month_start.strftime('%Y-%m') }})</h5>
+     <div class="row">
+-      <div class="col-md-3"><strong>件数合計:</strong> {{ summary.deliveries_sum }}</div>
+-      <div class="col-md-3"><strong>正味合計:</strong> {{ summary.net_sum }}</div>
+-      <div class="col-md-3"><strong>全体金額:</strong> {{ summary.total_sum }}</div>
+-      <div class="col-md-3"><strong>平均:</strong> {{ summary.avg_yen if summary.avg_yen is not none else '—' }}</div>
++      <div class="col-md-3"><strong>件数合計:</strong> {{ fmt_number(summary.deliveries_sum) }}</div>
++      <div class="col-md-3"><strong>正味合計:</strong> {{ fmt_number(summary.net_sum) }}</div>
++      <div class="col-md-3"><strong>全体金額:</strong> {{ fmt_number(summary.total_sum) }}</div>
++      <div class="col-md-3"><strong>平均:</strong> {{ fmt_number(summary.avg_yen) if summary.avg_yen is not none else '—' }}</div>
++    </div>
++  </div>
++</div>
++
++<div class="card mb-4">
++  <div class="card-body">
++    <h5 class="card-title">月毎のリスト</h5>
++    <div class="table-responsive">
++      <table class="table table-striped align-middle">
++        <thead>
++          <tr>
++            <th>年</th>
++            <th>月</th>
++            <th class="text-end">日数</th>
++            <th class="text-end">件数</th>
++            <th class="text-end">正味金額</th>
++            <th class="text-end">全体金額</th>
++            <th class="text-end">正味平均</th>
++            <th class="text-end">正味中央値</th>
++            <th class="text-end">全体平均</th>
++            <th class="text-end">全体中央値</th>
++          </tr>
++        </thead>
++        <tbody>
++          {% for row in monthly_rows %}
++          <tr>
++            <td>{{ row.year }}</td>
++            <td>{{ "{:02d}".format(row.month) }}</td>
++            <td class="text-end">{{ fmt_number(row.days_count) }}</td>
++            <td class="text-end">{{ fmt_number(row.deliveries_sum) }}</td>
++            <td class="text-end">{{ fmt_number(row.net_sum) }}</td>
++            <td class="text-end">{{ fmt_number(row.total_sum) }}</td>
++            <td class="text-end">{{ fmt_number(row.net_avg) }}</td>
++            <td class="text-end">{{ fmt_number(row.net_median) }}</td>
++            <td class="text-end">{{ fmt_number(row.total_avg) }}</td>
++            <td class="text-end">{{ fmt_number(row.total_median) }}</td>
++          </tr>
++          {% else %}
++          <tr><td colspan="10" class="text-center text-muted">データがありません。</td></tr>
++          {% endfor %}
++        </tbody>
++      </table>
+     </div>
+   </div>
+ </div>
+ 
+ <table class="table table-striped align-middle">
+   <thead>
+     <tr>
+       <th>日付</th>
+       <th class="text-end">件数</th>
+       <th class="text-end">正味</th>
+       <th class="text-end">プロモ</th>
+       <th class="text-end">その他</th>
+       <th class="text-end">チップ</th>
+       <th class="text-end">全体金額</th>
+       <th class="text-end">1件平均</th>
+       <th></th>
+     </tr>
+   </thead>
+   <tbody>
+     {% for row in rows %}
+     <tr>
+       <td>{{ row.work_date }}</td>
+-      <td class="text-end">{{ row.deliveries }}</td>
+-      <td class="text-end">{{ row.net_yen }}</td>
+-      <td class="text-end">{{ row.promo_yen }}</td>
+-      <td class="text-end">{{ row.other_yen }}</td>
+-      <td class="text-end">{{ row.tip_yen }}</td>
+-      <td class="text-end">{{ row.total_yen }}</td>
+-      <td class="text-end">{{ row.avg_yen if row.avg_yen is not none else '—' }}</td>
++      <td class="text-end">{{ fmt_number(row.deliveries) }}</td>
++      <td class="text-end">{{ fmt_number(row.net_yen) }}</td>
++      <td class="text-end">{{ fmt_number(row.promo_yen) }}</td>
++      <td class="text-end">{{ fmt_number(row.other_yen) }}</td>
++      <td class="text-end">{{ fmt_number(row.tip_yen) }}</td>
++      <td class="text-end">{{ fmt_number(row.total_yen) }}</td>
++      <td class="text-end">{{ fmt_number(row.avg_yen) if row.avg_yen is not none else '—' }}</td>
+       <td class="text-end">
+         <a href="{{ url_for('records.uber_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
+         <form method="post" action="{{ url_for('records.uber_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
+           <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
+         </form>
+       </td>
+     </tr>
+     {% else %}
+     <tr><td colspan="9" class="text-center text-muted">データがありません。</td></tr>
+     {% endfor %}
+   </tbody>
+ </table>
+ {% endblock %}
