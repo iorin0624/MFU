@@ -40,6 +40,7 @@ from flask import (
     Flask, request, session, redirect, render_template, url_for, flash,
     send_from_directory, send_file, abort, jsonify, current_app, after_this_request, g, Response,
 )
+import flask as flask_module
 from flask_login import LoginManager
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename, safe_join
@@ -64,7 +65,6 @@ from app.utils.storage_info import get_storage_info
 from app.utils.thumbs import enqueue_thumb_job
 from app.utils.totp_util import get_totp_status
 from app.utils.whois_util import get_netinfo
-from app.albums import album_bp
 from app.receipts import receipts_bp
 from app.utils.mail import send_mail 
 
@@ -119,6 +119,12 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
 login_manager.user_loader(load_user)
+
+from app.utils.flash import flash as ext_flash, get_flashed_messages as ext_get_flashed_messages
+flask_module.flash = ext_flash
+flask_module.get_flashed_messages = ext_get_flashed_messages
+app.jinja_env.globals["get_flashed_messages"] = ext_get_flashed_messages
+flash = ext_flash
 
 # =====================================
 # 🧠 補助関数群（上段へ集約）
@@ -2947,9 +2953,9 @@ def finalize_response(response):
 
     # --- 3) admin session サイズガード/ログ ---
     try:
-        if _should_skip_admin_session_update(request.path):
+        if _should_freeze_admin_session_update(request.path):
             _freeze_admin_session_update()
-        else:
+        elif _should_handle_admin_session_update(request.path):
             _trim_admin_session_if_needed(endpoint=request.endpoint, path=request.path, status=response.status_code)
             _schedule_admin_session_size_log(response)
     except Exception as e:
@@ -2974,6 +2980,14 @@ def handle_forbidden(_error):
 
 
 ADMIN_SESSION_MAX_BYTES = 3500
+ADMIN_SESSION_HANDLE_PATH_PREFIXES = ("/admin",)
+ADMIN_SESSION_FROZEN_PATH_PREFIXES = (
+    "/external-login",
+    "/e",
+    "/album",
+    "/albums",
+    "/payment",
+)
 ADMIN_SESSION_SAFE_DROP_KEYS = {
     "_flashes",
     "next",
@@ -2986,10 +3000,16 @@ ADMIN_SESSION_SAFE_DROP_KEYS = {
 }
 
 
-def _should_skip_admin_session_update(path: str | None) -> bool:
+def _should_handle_admin_session_update(path: str | None) -> bool:
     if not path:
         return False
-    return path.startswith(("/external-login", "/e", "/albums/sso"))
+    return path.startswith(ADMIN_SESSION_HANDLE_PATH_PREFIXES)
+
+
+def _should_freeze_admin_session_update(path: str | None) -> bool:
+    if not path:
+        return False
+    return path.startswith(ADMIN_SESSION_FROZEN_PATH_PREFIXES)
 
 
 def _freeze_admin_session_update() -> None:

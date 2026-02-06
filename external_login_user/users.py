@@ -672,7 +672,7 @@ def index():
     try:
         ext_session = get_ext_session()
         if not ext_session.get("ext_user_id"):
-            fl = session.get("_flashes")
+            fl = ext_session.get("_flashes")
             if isinstance(fl, list) and fl:
                 def _is_unverified_banner(t):
                     try:
@@ -690,7 +690,7 @@ def index():
                         return False
                 new_fl = [t for t in fl if not _is_unverified_banner(t)]
                 if len(new_fl) != len(fl):
-                    session["_flashes"] = new_fl
+                    ext_session["_flashes"] = new_fl
     except Exception:
         try:
             current_app.logger.exception("cleanup flashes for anonymous failed")
