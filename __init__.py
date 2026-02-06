@@ -2945,11 +2945,15 @@ def finalize_response(response):
     except Exception as e:
         app.logger.warning(f"log_access failed: {e}")
 
-    # --- 3) admin session サイズデバッグ（キー別・上位5件） ---
+    # --- 3) admin session サイズガード/ログ ---
     try:
-        _log_admin_session_sizes()
+        if _should_skip_admin_session_update(request.path):
+            _freeze_admin_session_update()
+        else:
+            _trim_admin_session_if_needed(endpoint=request.endpoint, path=request.path, status=response.status_code)
+            _schedule_admin_session_size_log(response)
     except Exception as e:
-        app.logger.warning(f"admin session size log failed: {e}")
+        app.logger.warning(f"admin session size handling failed: {e}")
 
     return response
 
@@ -2969,36 +2973,154 @@ def handle_forbidden(_error):
     return render_template("errors/403.html"), 403
 
 
-def _log_admin_session_sizes() -> None:
+ADMIN_SESSION_MAX_BYTES = 3500
+ADMIN_SESSION_SAFE_DROP_KEYS = {
+    "_flashes",
+    "next",
+    "return_uri",
+    "return_url",
+    "ext_after_login_next",
+    "ext_after_verify_next",
+    "ext_user_onboarding",
+    "ext_user_need_email",
+}
+
+
+def _should_skip_admin_session_update(path: str | None) -> bool:
+    if not path:
+        return False
+    return path.startswith(("/external-login", "/e", "/albums/sso"))
+
+
+def _freeze_admin_session_update() -> None:
+    try:
+        session.modified = False
+        if hasattr(session, "new"):
+            session.new = False
+    except Exception:
+        pass
+
+
+def _estimate_session_value_size(value) -> int:
+    try:
+        payload = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
+        return len(payload)
+    except Exception:
+        return len(str(value).encode("utf-8", "ignore"))
+
+
+def _collect_admin_session_sizes() -> tuple[int, list[tuple[str, int]]]:
+    try:
+        data = dict(session)
+    except Exception:
+        data = {}
+    items: list[tuple[str, int]] = []
+    total = 0
+    for key, value in data.items():
+        size = _estimate_session_value_size(value)
+        items.append((key, size))
+        total += size
+    items.sort(key=lambda item: item[1], reverse=True)
+    return total, items
+
+
+def _trim_flash_messages(flashes: list) -> tuple[list, bool]:
+    trimmed = []
+    changed = False
+    for entry in flashes:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            trimmed.append(entry)
+            continue
+        category, message = entry
+        msg_text = str(message)
+        msg_bytes = len(msg_text.encode("utf-8", "ignore"))
+        if msg_bytes > 200:
+            trimmed.append((category, "メッセージが長いため省略されました。"))
+            changed = True
+        else:
+            trimmed.append(entry)
+    return trimmed, changed
+
+
+def _trim_admin_session_if_needed(*, endpoint: str | None, path: str, status: int) -> None:
     cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
     has_cookie = bool(request.cookies.get(cookie_name))
     if not session and not has_cookie:
         return
 
-    try:
-        data = dict(session)
-    except Exception:
-        data = {}
+    total, items = _collect_admin_session_sizes()
+    if total <= ADMIN_SESSION_MAX_BYTES:
+        return
 
-    items = []
-    for key, value in data.items():
+    dropped_keys: list[str] = []
+    flashes = session.get("_flashes")
+    if isinstance(flashes, list):
+        trimmed, changed = _trim_flash_messages(flashes)
+        if changed:
+            session["_flashes"] = trimmed
+            dropped_keys.append("_flashes:trimmed")
+
+    total, items = _collect_admin_session_sizes()
+    if total > ADMIN_SESSION_MAX_BYTES:
+        for key, size in items:
+            if key in ADMIN_SESSION_SAFE_DROP_KEYS or key.startswith(("auth_", "view_auth_", "ext_")):
+                session.pop(key, None)
+                dropped_keys.append(key)
+                total -= size
+                if total <= ADMIN_SESSION_MAX_BYTES:
+                    break
+
+    if dropped_keys:
+        app.logger.warning(
+            "admin_session_trimmed ep=%s path=%s status=%s session_bytes_total=%s dropped=%s",
+            endpoint,
+            path,
+            status,
+            total,
+            dropped_keys,
+        )
+
+
+def _response_sets_admin_session_cookie(response) -> bool:
+    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    for header in response.headers.getlist("Set-Cookie"):
+        if header.startswith(f"{cookie_name}="):
+            return True
+    return False
+
+
+def _schedule_admin_session_size_log(response) -> None:
+    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    has_cookie = bool(request.cookies.get(cookie_name))
+    if not session and not has_cookie:
+        return
+
+    total, items = _collect_admin_session_sizes()
+    top_items = items[:10]
+    endpoint = request.endpoint
+    path = request.path
+    status = response.status_code
+    logger = app.logger
+
+    def _log_on_close() -> None:
         try:
-            payload = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
-            size = len(payload)
-        except Exception:
-            size = len(str(value).encode("utf-8", "ignore"))
-        items.append((size, key))
+            if not _response_sets_admin_session_cookie(response):
+                return
+            logger.info(
+                "admin_session_sizes ep=%s path=%s status=%s session_bytes_total=%s top=%s",
+                endpoint,
+                path,
+                status,
+                total,
+                top_items,
+            )
+        except Exception as exc:
+            try:
+                logger.warning("admin session size log failed: %s", exc)
+            except Exception:
+                pass
 
-    items.sort(reverse=True)
-    top_items = items[:5]
-    top_str = ", ".join([f"{key}={size}B" for size, key in top_items])
-    app.logger.info(
-        "admin_session_sizes endpoint=%s path=%s keys=%s top5=[%s]",
-        request.endpoint,
-        request.path,
-        len(items),
-        top_str,
-    )
+    response.call_on_close(_log_on_close)
 
 # ─────────────────────────────────────────
 # 管理: ノードメトリクス集約表示（103.16 / 103.15）
