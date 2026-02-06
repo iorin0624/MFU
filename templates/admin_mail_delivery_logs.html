@@ -65,9 +65,7 @@
         <td>{{ row.subject or '-' }}</td>
         <td class="text-break small">{{ row.message_id }}</td>
         <td>
-          {% if row.submit_status == 'sent' %}
-            <span class="badge bg-success">sent</span>
-          {% elif row.submit_status == 'queued' %}
+          {% if row.submit_status == 'queued' %}
             <span class="badge bg-secondary">queued</span>
           {% else %}
             <span class="badge bg-danger">failed</span>
@@ -127,54 +125,49 @@
 
 {% block body_extra %}
 <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-    tooltipTriggerList.forEach(function (tooltipTriggerEl) {
-      if (window.bootstrap && window.bootstrap.Tooltip) {
-        new bootstrap.Tooltip(tooltipTriggerEl);
+  const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+  tooltipTriggerList.forEach(function (tooltipTriggerEl) {
+    new bootstrap.Tooltip(tooltipTriggerEl);
+  });
+
+  const refreshButton = document.getElementById('mail-delivery-refresh');
+  const refreshStatus = document.getElementById('mail-delivery-refresh-status');
+  if (refreshButton) {
+    const defaultLabel = refreshButton.textContent;
+    refreshButton.addEventListener('click', async () => {
+      refreshButton.disabled = true;
+      refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
+      if (refreshStatus) {
+        refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
+      }
+
+      const params = new URLSearchParams(window.location.search);
+      const limit = Number(params.get('limit')) || {{ filters.limit }};
+      const maxRows = Math.min(Math.max(limit, 20), 500);
+      try {
+        const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+        });
+        if (!response.ok) {
+          throw new Error('refresh_failed');
+        }
+        const result = await response.json();
+        if (refreshStatus) {
+          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
+        }
+        window.location.reload();
+      } catch (error) {
+        if (refreshStatus) {
+          refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
+        }
+      } finally {
+        refreshButton.disabled = false;
+        refreshButton.textContent = defaultLabel;
       }
     });
-
-    const refreshButton = document.getElementById('mail-delivery-refresh');
-    const refreshStatus = document.getElementById('mail-delivery-refresh-status');
-    if (refreshButton) {
-      const defaultLabel = refreshButton.textContent;
-      refreshButton.addEventListener('click', async () => {
-        refreshButton.disabled = true;
-        refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
-        if (refreshStatus) {
-          refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
-        }
-
-        const params = new URLSearchParams(window.location.search);
-        const limit = Number(params.get('limit')) || {{ filters.limit }};
-        const maxRows = Math.min(Math.max(limit, 20), 500);
-        const timeoutSec = 45;
-        try {
-          const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows + '&timeout_sec=' + timeoutSec, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-          });
-          if (!response.ok) {
-            throw new Error('refresh_failed');
-          }
-          const result = await response.json();
-          if (refreshStatus) {
-            refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
-          }
-          window.location.reload();
-        } catch (error) {
-          if (refreshStatus) {
-            refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
-          }
-        } finally {
-          refreshButton.disabled = false;
-          refreshButton.textContent = defaultLabel;
-        }
-      });
-    }
-  });
+  }
 </script>
 {% endblock %}

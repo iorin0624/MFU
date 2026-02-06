@@ -1910,24 +1910,16 @@ def admin_mail_delivery_refresh():
     from app.utils.mail_delivery import poll_mail_delivery_statuses
 
     max_rows = request.args.get("max_rows")
-    timeout_sec = request.args.get("timeout_sec")
     if max_rows is None:
         payload = request.get_json(silent=True) or {}
         max_rows = payload.get("max_rows")
-        if timeout_sec is None:
-            timeout_sec = payload.get("timeout_sec")
     try:
         max_rows_int = int(max_rows or 200)
     except (TypeError, ValueError):
         max_rows_int = 200
     max_rows_int = max(20, min(500, max_rows_int))
 
-    try:
-        timeout_sec_int = int(timeout_sec) if timeout_sec is not None else None
-    except (TypeError, ValueError):
-        timeout_sec_int = None
-
-    summary = poll_mail_delivery_statuses(max_rows=max_rows_int, timeout_sec=timeout_sec_int)
+    summary = poll_mail_delivery_statuses(max_rows=max_rows_int)
     summary["max_rows"] = max_rows_int
     return jsonify(summary)
 
