@@ -1,61 +1,153 @@
-diff --git a/albums/utils.py b/albums/utils.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..07d9b6e81ea0b390918add8aba4221d587b4628f
---- /dev/null
-+++ b/albums/utils.py
-@@ -0,0 +1,55 @@
-+# -*- coding: utf-8 -*-
-+from __future__ import annotations
+diff --git a/external_login_user/utils.py b/external_login_user/utils.py
+index 38c938324024df703593df054c47722044b5d66f..7df33a3a818de9fbd85fe595b2a54819059372b8 100644
+--- a/external_login_user/utils.py
++++ b/external_login_user/utils.py
+@@ -1,118 +1,108 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import os, re, uuid, base64, secrets
+ from typing import Optional
+-from urllib.parse import quote_plus
++from urllib.parse import quote_plus, urlparse
+ from flask import current_app, request, session, redirect, url_for, abort, flash
+ 
+ from . import bp, oauth  # oauth は None の可能性あり
+ from .ext_session import get_ext_session
+ from app.utils.db import get_db
+ 
+ # ---- 環境値 → 関数 ----
+ def LINE_CLIENT_ID() -> str:
+     return os.getenv("LINE_CHANNEL_ID") or ""
+ 
+ def LINE_CLIENT_SECRET() -> str:
+     return os.getenv("LINE_CHANNEL_SECRET") or ""
+ 
+ def LINE_REDIRECT_URI() -> Optional[str]:
+     v = os.getenv("LINE_REDIRECT_URI")
+     return v.strip() if v else None
+ 
+ def PAYMENT_ENTRY_BASE() -> str:
+     return (os.getenv("PAYMENT_ENTRY_BASE") or "/payment/e/").rstrip("/") + "/"
+ 
+ # ---- CSRF, セッション ----
+ def _admin_csrf_token() -> str:
+     ext_session = get_ext_session()
+     t = ext_session.get("admin_csrf")
+     if not t:
+         t = secrets.token_urlsafe(16)
+         ext_session["admin_csrf"] = t
+     return t
+ 
+ def _require_mfu_login_redirect():
+     if not session.get("user"):
+         flash("管理者ページはMFUログインが必要です。", "warning")
+         return redirect("/login")
+     return None
+ 
+-def _to_local_next(u: str) -> str:
+-    # ここに“ログイン後に戻したい”プレフィックスを追加
+-    ALLOW_PREFIXES = (
+-        "/external-login/",      # 既定
+-        # "/albums/share/",      # 例：共有アルバム系も戻したい場合
+-        # "/payments/",          # 例：決済フローも戻したい場合
+-    )
++ALLOWED_NEXT_PREFIXES = (
++    "/external-login",
++    "/e",
++    "/albums",
++    "/album",
++    "/payment",
++)
++MAX_NEXT_LENGTH = 512
 +
-+from app.external_login_user.ext_session import get_ext_session
-+from app.external_login_user.utils import _get_ext_user_by_social, sanitize_next_path
++def sanitize_next_path(raw: str | None, *, default: str = "/external-login/") -> str:
++    """next の保存値は相対パスのみ許可し、長すぎる値は破棄する。"""
++    if not raw or not isinstance(raw, str):
++        return default
+ 
+-    if not u:
+-        return "/external-login/"
++    raw = raw.strip()
++    if not raw or len(raw) > MAX_NEXT_LENGTH:
++        return default
+ 
+-    from urllib.parse import urlparse
+     try:
+-        p = urlparse(u)
+-        path = p.path or ""
+-        qs   = ("?" + p.query) if p.query else ""
++        parsed = urlparse(raw)
++        path = parsed.path or ""
+     except Exception:
+-        # 解析できない文字列は破棄
+-        return "/external-login/"
++        return default
 +
++    if not path.startswith("/") or path.startswith("//"):
++        return default
+ 
+-    # ローカル絶対パスのみ許可（//で始まるスキーム相対URLは拒否）
+-    if path.startswith("/") and not path.startswith("//"):
+-        if any(path.startswith(pre) for pre in ALLOW_PREFIXES):
+-            return path + qs
++    if not any(path.startswith(prefix) for prefix in ALLOWED_NEXT_PREFIXES):
++        return default
+ 
+-    # 不適切なものは既定にフォールバック
+-    return "/external-login/"
++    return path
 +
-+def get_current_ext_user_id() -> int | None:
-+    """外部ログインユーザーIDを取得する（ext_session 優先）。"""
-+    ext_session = get_ext_session()
-+    ext_user_id = ext_session.get("ext_user_id")
-+    if ext_user_id:
-+        try:
-+            return int(ext_user_id)
-+        except (TypeError, ValueError):
-+            return None
-+    ext_social_id = ext_session.get("ext_user_social_id")
-+    if not ext_social_id:
-+        return None
-+    try:
-+        ext_user = _get_ext_user_by_social(ext_social_id)
-+    except Exception:
-+        return None
-+    if not ext_user:
-+        return None
-+    try:
-+        return int(ext_user.get("id"))
-+    except (TypeError, ValueError):
-+        return None
-+
-+
-+def set_ext_after_login_next(raw_next: str) -> str:
-+    """ログイン後遷移先を安全に保存し、旧キーはクリアする。"""
-+    ext_session = get_ext_session()
-+    local_next = sanitize_next_path(raw_next)
-+    ext_session["ext_after_login_next"] = local_next
-+    if ext_session.get("after_login_redirect"):
-+        ext_session.pop("after_login_redirect", None)
-+    return local_next
-+
-+
-+def migrate_after_login_redirect() -> str | None:
-+    """旧キー after_login_redirect が存在すれば新キーへ移行する。"""
-+    ext_session = get_ext_session()
-+    if ext_session.get("ext_after_login_next"):
-+        if ext_session.get("after_login_redirect"):
-+            ext_session.pop("after_login_redirect", None)
-+        return ext_session.get("ext_after_login_next")
-+    legacy = ext_session.get("after_login_redirect")
-+    if not legacy:
-+        return None
-+    local_next = sanitize_next_path(legacy)
-+    ext_session["ext_after_login_next"] = local_next
-+    ext_session.pop("after_login_redirect", None)
-+    return local_next
++def _to_local_next(u: str) -> str:
++    return sanitize_next_path(u, default="/external-login/")
+ 
+ 
+ def _require_ext_login():
+     """未ログインなら安全化した next を保持して LINE ログインへ"""
+     ext_session = get_ext_session()
+     if ext_session.get("ext_user_id"):
+         return None
+ 
+-    raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
+-
+-    # 絶対URLや外部ドメインを排除し、/external-login/ 配下の相対URLだけ許可
+-    from urllib.parse import urlparse
+-    def _to_local_next(u: str) -> str:
+-        if not u:
+-            return "/external-login/"
+-        if u.startswith("/") and not u.startswith("//"):
+-            return u
+-        try:
+-            p = urlparse(u)
+-            if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+-                return p.path + (("?" + p.query) if p.query else "")
+-        except Exception:
+-            pass
+-        return "/external-login/"
+-
+-    local_next = _to_local_next(raw_next)
++    local_next = sanitize_next_path(request.path)
+     ext_session["ext_after_login_next"] = local_next
+     return redirect(url_for("external_login_user.line_login", next=local_next))
+ 
+ # ---- ID/DB ヘルパ ----
+ def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:
+     if not b: return None
+     try:
+         return str(uuid.UUID(bytes=b))
+     except Exception:
+         try:
+             return str(uuid.UUID(hex=b.hex()))
+         except Exception:
+             return None
+ 
+ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
+     """
+     external_login_user を social_id で1件取得して dict で返す。
+     avatar_url / avatar_file も取得して、イベント参加証などでのアイコン表示に使えるようにする。
+     """
+     db = get_db(); cur = db.cursor()
+     cur.execute("""
+         SELECT
+           id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
+           avatar_url, avatar_file,
+           created_at, updated_at
