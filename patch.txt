@@ -1,56 +1,76 @@
-diff --git a/templates/base.html b/templates/base.html
-index 40393349e914468b59896cb66560c97ebb1c1ded..09f16ab498333d52976913caafdafeb2cf4a0aaf 100644
---- a/templates/base.html
-+++ b/templates/base.html
-@@ -19,50 +19,51 @@
+diff --git a/records/templates/records/fuel/list.html b/records/templates/records/fuel/list.html
+index e4e0b5f2801498528cf2a8061f973f87cc51399c..fa200d92da1e87ba12eea02a99f9476540216ef9 100644
+--- a/records/templates/records/fuel/list.html
++++ b/records/templates/records/fuel/list.html
+@@ -8,65 +8,68 @@
+ <div class="card mb-4">
+   <div class="card-body">
+     <h5 class="card-title">給油記録 新規追加</h5>
+     <form method="post" action="{{ url_for('records.fuel_create') }}">
+       {% set item = none %}
+       {% include "records/fuel/_form_fields.html" with context %}
+       <div class="d-flex gap-2">
+         <button type="submit" class="btn btn-primary">保存</button>
+       </div>
+     </form>
+   </div>
+ </div>
  
-       <div class="collapse navbar-collapse" id="navbarMain">
-         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
- 
-           {% if session.get('user') %}
-           <!-- アップロード関係（全ユーザー） -->
-           <li class="nav-item dropdown">
-             <a class="nav-link dropdown-toggle" href="#" id="navUpload" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-              ⬆️ アップロード関係
-             </a>
-             <ul class="dropdown-menu" aria-labelledby="navUpload">
-               <li><a class="dropdown-item" href="/modes">⚙️ モード管理</a></li>
-               <li><a class="dropdown-item" href="/upload_list">📜 アップロード履歴</a></li>
-             </ul>
-           </li>
- 
-           <!-- 単独メニュー（全ユーザー） -->
-           <li class="nav-item"><a class="nav-link" href="/album/admin_create_album/">🖼 アルバム管理</a></li>
-           <li class="nav-item"><a class="nav-link" href="/tickets/admin">🎟 チケット管理</a></li>
-           <li class="nav-item"><a class="nav-link" href="/receipts">🧾 受領書</a></li>
-           <li class="nav-item"><a class="nav-link" href="/external-login/admin/events">📅 イベント一覧</a></li>
- 
-           {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
-           {% if session.user == 'admin' %}
-             <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
-+            <li class="nav-item"><a class="nav-link" href="{{ url_for('records.index') }}">📃 記録</a></li>
-             <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
-           {% endif %}
- 
-           {# ==== ここから：システム系はadminのみ、一般は/account ==== #}
-           {% if session.user == 'admin' %}
-             <!-- システム系（adminのみ） -->
-             <li class="nav-item dropdown">
-               <a class="nav-link dropdown-toggle" href="#" id="navSystem" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                 🧰 システム系
-               </a>
-               <ul class="dropdown-menu" aria-labelledby="navSystem">
-                 <li><a class="dropdown-item" href="/admin/users">👤 ユーザー管理</a></li>
-                 <li><hr class="dropdown-divider"></li>
-                 <li><a class="dropdown-item" href="/admin/maintenance">🛠 メンテナンス切換</a></li>
-                 <li><a class="dropdown-item" href="/admin/mail-delivery">📧 メール送信ログ</a></li>
-                 <li><a class="dropdown-item" href="/admin/logs">📑 アクセスログ</a></li>
-                 <li><a class="dropdown-item" href="/service_logs/">📡 システムログ</a></li>
-                 <!-- ▼ 追加：ノード監視（スピードテストの上に配置） -->
-                 <li><a class="dropdown-item" href="/admin/nodes">🖥 ノード監視</a></li>
-                 <!-- ▲ 追加ここまで -->
-                 <li><a class="dropdown-item" href="/speedtest">🚀 スピードテスト</a></li>
-                 {# ※ タイマー＆アラームは上に移動したためここからは削除 #}
-               </ul>
-             </li>
-           {% else %}
+ <table class="table table-striped align-middle">
+   <thead>
+     <tr>
+       <th>日付</th>
+       <th class="text-end">メーター</th>
+       <th class="text-end">トリップ(km)</th>
+       <th class="text-end">給油量(L)</th>
+       <th class="text-end">円/L</th>
+       <th>満タン</th>
+       <th>備考</th>
+       <th class="text-end">km/L</th>
+       <th class="text-end">円/km</th>
+-      <th></th>
++      <th>編集</th>
++      <th>削除</th>
+     </tr>
+   </thead>
+   <tbody>
+     {% for row in rows %}
+     <tr>
+       <td>{{ row.fill_date }}</td>
+-      <td class="text-end">{{ row.odometer_km }}</td>
++      <td class="text-end">{{ row.odometer_km if row.odometer_km is not none else '—' }}</td>
+       <td class="text-end">{{ row.trip_km if row.trip_km is not none else '—' }}</td>
+       <td class="text-end">{{ row.liters }}</td>
+       <td class="text-end">{{ row.yen_per_liter if row.yen_per_liter is not none else '—' }}</td>
+       <td>{{ 'はい' if row.is_full else 'いいえ' }}</td>
+       <td>{{ row.note or '' }}</td>
+       <td class="text-end">
+         {% if row.km_per_l is not none %}
+           {{ '%.2f'|format(row.km_per_l) }}
+         {% else %}
+           —
+         {% endif %}
+       </td>
+       <td class="text-end">
+         {% if row.yen_per_km is not none %}
+           {{ '%.2f'|format(row.yen_per_km) }}
+         {% else %}
+           —
+         {% endif %}
+       </td>
+       <td class="text-end">
+         <a href="{{ url_for('records.fuel_edit', record_id=row.id) }}" class="btn btn-sm btn-outline-secondary">編集</a>
++      </td>
++      <td class="text-end">
+         <form method="post" action="{{ url_for('records.fuel_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
+           <button type="submit" class="btn btn-sm btn-outline-danger">削除</button>
+         </form>
+       </td>
+     </tr>
+     {% else %}
+-    <tr><td colspan="10" class="text-center text-muted">データがありません。</td></tr>
++    <tr><td colspan="11" class="text-center text-muted">データがありません。</td></tr>
+     {% endfor %}
+   </tbody>
+ </table>
+ {% endblock %}

@@ -41,7 +41,6 @@
           {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
           {% if session.user == 'admin' %}
             <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
-            <li class="nav-item"><a class="nav-link" href="{{ url_for('records.index') }}">📃 記録</a></li>
             <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
           {% endif %}
 
