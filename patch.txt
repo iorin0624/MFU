@@ -1,76 +1,56 @@
-diff --git a/records/templates/records/fuel/_form_fields.html b/records/templates/records/fuel/_form_fields.html
-new file mode 100644
-index 0000000000000000000000000000000000000000..9f6e4a4f434b4b1e6e74444c084fa3519e08b92f
---- /dev/null
-+++ b/records/templates/records/fuel/_form_fields.html
-@@ -0,0 +1,70 @@
-+<div class="row mb-3">
-+  <div class="col-md-4">
-+    <label class="form-label">日付</label>
-+    <input
-+      type="date"
-+      name="fill_date"
-+      class="form-control"
-+      value="{{ item.fill_date if item else default_fill_date }}"
-+      required
-+    >
-+  </div>
-+  <div class="col-md-4">
-+    <label class="form-label">メーター(km)</label>
-+    <input
-+      type="number"
-+      step="0.1"
-+      name="odometer_km"
-+      class="form-control"
-+      value="{{ item.odometer_km if item else '' }}"
-+    >
-+  </div>
-+  <div class="col-md-4">
-+    <label class="form-label">トリップ(km)</label>
-+    <input
-+      type="number"
-+      step="0.1"
-+      name="trip_km"
-+      class="form-control"
-+      value="{{ item.trip_km if item else '' }}"
-+    >
+diff --git a/records/templates/records/uber/list.html b/records/templates/records/uber/list.html
+index 62fe0c2e064fe1f95a64023639a6d8bc9a56db6a..7357dceec18a14476e4d90a683464c13df6e3e7b 100644
+--- a/records/templates/records/uber/list.html
++++ b/records/templates/records/uber/list.html
+@@ -1,38 +1,48 @@
+ {% extends "records/base_records.html" %}
+ 
+ {% block records_title %}Uber 日次記録{% endblock %}
+ 
+ {% macro fmt_number(value) -%}
+   {{ "{:,}".format(value) if value is not none else '' }}
+ {%- endmacro %}
+ 
+-{% block records_actions %}
+-  <a href="{{ url_for('records.uber_new') }}" class="btn btn-primary">新規追加</a>
+-{% endblock %}
++{% block records_actions %}{% endblock %}
+ 
+ {% block records_content %}
++<div class="card mb-4">
++  <div class="card-body">
++    <h5 class="card-title">Uber 新規追加</h5>
++    <form method="post" action="{{ url_for('records.uber_create_or_update') }}">
++      {% include "records/uber/_form_fields.html" with context %}
++      <div class="d-flex gap-2">
++        <button type="submit" class="btn btn-primary">保存</button>
++      </div>
++    </form>
 +  </div>
 +</div>
-+<div class="row mb-3">
-+  <div class="col-md-4">
-+    <label class="form-label">給油量(L)</label>
-+    <input
-+      type="number"
-+      step="0.01"
-+      name="liters"
-+      class="form-control"
-+      value="{{ item.liters if item else '' }}"
-+      required
-+    >
-+  </div>
-+  <div class="col-md-4">
-+    <label class="form-label">円/L</label>
-+    <input
-+      type="number"
-+      name="yen_per_liter"
-+      class="form-control"
-+      value="{{ item.yen_per_liter if item and item.yen_per_liter is not none else '' }}"
-+    >
-+  </div>
-+  <div class="col-md-4 d-flex align-items-center">
-+    <div class="form-check mt-4">
-+      <input
-+        class="form-check-input"
-+        type="checkbox"
-+        name="is_full"
-+        id="is_full"
-+        {% if item is none or item.is_full %}checked{% endif %}
-+      >
-+      <label class="form-check-label" for="is_full">満タン</label>
-+    </div>
-+  </div>
-+</div>
-+<div class="mb-3">
-+  <label class="form-label">備考</label>
-+  <textarea name="note" class="form-control" rows="3">{{ item.note if item else '' }}</textarea>
-+</div>
++
+ <div class="card mb-4">
+   <div class="card-body">
+     <h5 class="card-title">今月サマリ ({{ summary.month_start.strftime('%Y-%m') }})</h5>
+     <div class="row">
+       <div class="col-md-3"><strong>件数合計:</strong> {{ fmt_number(summary.deliveries_sum) }}</div>
+       <div class="col-md-3"><strong>正味合計:</strong> {{ fmt_number(summary.net_sum) }}</div>
+       <div class="col-md-3"><strong>全体金額:</strong> {{ fmt_number(summary.total_sum) }}</div>
+       <div class="col-md-3"><strong>平均:</strong> {{ fmt_number(summary.avg_yen) if summary.avg_yen is not none else '—' }}</div>
+     </div>
+   </div>
+ </div>
+ 
+ <div class="card mb-4">
+   <div class="card-body">
+     <h5 class="card-title">月毎のリスト</h5>
+     <div class="table-responsive">
+       <table class="table table-striped align-middle">
+         <thead>
+           <tr>
+             <th>年</th>
+             <th>月</th>
+             <th class="text-end">日数</th>
+             <th class="text-end">件数</th>
+             <th class="text-end">正味金額</th>
+             <th class="text-end">全体金額</th>
