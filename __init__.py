@@ -2979,7 +2979,7 @@ def handle_forbidden(_error):
     return render_template("errors/403.html"), 403
 
 
-ADMIN_SESSION_MAX_BYTES = 3950
+ADMIN_SESSION_MAX_BYTES = 3500
 ADMIN_SESSION_HANDLE_PATH_PREFIXES = ("/admin",)
 ADMIN_SESSION_FROZEN_PATH_PREFIXES = (
     "/external-login",
@@ -2990,11 +2990,6 @@ ADMIN_SESSION_FROZEN_PATH_PREFIXES = (
 )
 ADMIN_SESSION_SAFE_DROP_KEYS = {
     "_flashes",
-    "nav",
-    "nav_items",
-    "features",
-    "permissions",
-    "settings",
     "next",
     "return_uri",
     "return_url",
@@ -3002,14 +2997,6 @@ ADMIN_SESSION_SAFE_DROP_KEYS = {
     "ext_after_verify_next",
     "ext_user_onboarding",
     "ext_user_need_email",
-}
-ADMIN_SESSION_FORBIDDEN_PAYLOAD_KEYS = {
-    "nav",
-    "nav_items",
-    "features",
-    "permissions",
-    "settings",
-    "next",
 }
 
 
@@ -3057,20 +3044,6 @@ def _collect_admin_session_sizes() -> tuple[int, list[tuple[str, int]]]:
     return total, items
 
 
-def _purge_admin_session_forbidden_payloads() -> list[str]:
-    removed: list[str] = []
-    for key in list(session.keys()):
-        if key not in ADMIN_SESSION_FORBIDDEN_PAYLOAD_KEYS:
-            continue
-        value = session.get(key)
-        if isinstance(value, (dict, list, tuple, set)):
-            session.pop(key, None)
-            removed.append(key)
-    if removed:
-        app.logger.warning("admin_session_forbidden_payload_removed keys=%s", removed)
-    return removed
-
-
 def _trim_flash_messages(flashes: list) -> tuple[list, bool]:
     trimmed = []
     changed = False
@@ -3094,8 +3067,6 @@ def _trim_admin_session_if_needed(*, endpoint: str | None, path: str, status: in
     has_cookie = bool(request.cookies.get(cookie_name))
     if not session and not has_cookie:
         return
-
-    _purge_admin_session_forbidden_payloads()
 
     total, items = _collect_admin_session_sizes()
     if total <= ADMIN_SESSION_MAX_BYTES:
@@ -3144,8 +3115,6 @@ def _schedule_admin_session_size_log(response) -> None:
     if not session and not has_cookie:
         return
 
-    _purge_admin_session_forbidden_payloads()
-
     total, items = _collect_admin_session_sizes()
     top_items = items[:10]
     endpoint = request.endpoint
@@ -3155,6 +3124,8 @@ def _schedule_admin_session_size_log(response) -> None:
 
     def _log_on_close() -> None:
         try:
+            if not _response_sets_admin_session_cookie(response):
+                return
             logger.info(
                 "admin_session_sizes ep=%s path=%s status=%s session_bytes_total=%s top=%s",
                 endpoint,
