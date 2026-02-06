@@ -30,15 +30,11 @@ def _load_cache(ip: str, *, force_refresh: bool) -> Optional[dict]:
         data = json.loads(cache_file.read_text())
     except Exception:
         return None
-    netname = data.get("netname") or ""
-    org = data.get("org") or ""
-    display_name = data.get("display_name") or ""
-    if _is_generic_jpnic_name(netname) or _is_generic_jpnic_name(org) or _is_generic_jpnic_name(display_name):
-        return None
     expires_at = data.get("expires_at")
     if expires_at and time.time() > expires_at:
         return None
     if expires_at is None:
+        netname = data.get("netname")
         if netname and netname != "不明" and not str(netname).startswith("取得エラー"):
             return data
         return None
@@ -195,7 +191,7 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
     rdap = _fetch_rdap(ip)
     if rdap:
         rdap_name, rdap_org, rdap_country = _extract_rdap_name(rdap)
-        if rdap_name and not _is_generic_jpnic_name(rdap_name):
+        if rdap_name:
             info["netname"] = rdap_name
         if rdap_org:
             info["org"] = rdap_org
@@ -235,56 +231,25 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
         elif info["asname"]:
             info["netname"] = info["asname"]
 
-    display_name = _pick_best_display_name(
-        whois_info,
-        rdap_org,
-        info["asname"],
-        rdap_name,
-    )
-    info["display_name"] = display_name or info["netname"]
-    if display_name:
-        info["netname"] = display_name
-    if _is_generic_jpnic_name(info["org"]):
-        info["org"] = ""
+    if is_ipv6:
+        display_name = _pick_best_display_name(
+            whois_info,
+            rdap_org,
+            info["asname"],
+            rdap_name,
+        )
+        info["display_name"] = display_name or info["netname"]
+        if display_name:
+            info["netname"] = display_name
+        if _is_generic_jpnic_name(info["org"]):
+            info["org"] = ""
 
-    is_failure = info["netname"] in ("不明", "") or _is_generic_jpnic_name(info["netname"])
+    is_failure = info["netname"] in ("不明", "")
     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
     return info
 
 if __name__ == "__main__":
     import sys
-
-    def _run_selftest() -> None:
-        whois_info = {
-            "network_name": "Japan Network Information Center",
-            "netname": "",
-            "org": "SOME-ISP",
-            "asname": "",
-            "country": "",
-        }
-        picked = _pick_best_display_name(whois_info, "", "", "")
-        assert picked == "SOME-ISP", f"unexpected display name: {picked}"
-
-        ip = "203.0.113.1"
-        cache_file = _cache_path(ip)
-        try:
-            cache_file.write_text(json.dumps({
-                "netname": "JPNIC",
-                "org": "",
-                "display_name": "",
-                "expires_at": time.time() + 60,
-            }, ensure_ascii=False))
-            assert _load_cache(ip, force_refresh=False) is None, "generic JPNIC cache should be ignored"
-        finally:
-            try:
-                cache_file.unlink()
-            except Exception:
-                pass
-        print("selftest ok")
-
-    if "--selftest" in sys.argv:
-        _run_selftest()
-    else:
-        target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
-        force = "--refresh" in sys.argv
-        print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
+    target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
+    force = "--refresh" in sys.argv
+    print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
