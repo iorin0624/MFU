@@ -10,7 +10,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature
 
 
 EXTERNAL_SESSION_COOKIE_NAME = "mfu_event_session"
-EXTERNAL_SESSION_COOKIE_PATHS = ("/external-login", "/e", "/album", "/albums", "/payment")
+EXTERNAL_SESSION_COOKIE_PATHS = ("/external-login", "/e")
 EXTERNAL_SESSION_SALT = "mfu-external-session"
 
 

@@ -1,63 +1,95 @@
-diff --git a/utils/flash.py b/utils/flash.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..9b9d210515bde019f552d152763ed725bb11841c
---- /dev/null
-+++ b/utils/flash.py
-@@ -0,0 +1,57 @@
-+from __future__ import annotations
-+
-+from collections.abc import Iterable
-+from typing import Any
-+
-+from flask import flash as flask_flash
-+from flask import get_flashed_messages as flask_get_flashed_messages
-+from flask import request
-+
-+from app.external_login_user.ext_session import get_ext_session
-+
-+
-+def _is_admin_path(path: str | None) -> bool:
-+    if not path:
-+        return False
-+    return path.startswith("/admin")
-+
-+
-+def flash(message: Any, category: str = "message") -> None:
-+    if _is_admin_path(request.path):
-+        flask_flash(message, category)
-+        return
-+
-+    ext_session = get_ext_session()
-+    flashes = ext_session.get("_flashes")
-+    if not isinstance(flashes, list):
-+        flashes = []
-+    flashes.append((category, message))
-+    ext_session["_flashes"] = flashes
-+
-+
-+def get_flashed_messages(
-+    with_categories: bool = False,
-+    category_filter: Iterable[str] = (),
-+) -> list:
-+    if _is_admin_path(request.path):
-+        return flask_get_flashed_messages(
-+            with_categories=with_categories,
-+            category_filter=category_filter,
-+        )
-+
-+    ext_session = get_ext_session()
-+    flashes = ext_session.pop("_flashes", None)
-+    if not flashes:
-+        return []
-+
-+    if category_filter:
-+        allowed = set(category_filter)
-+        flashes = [
-+            (category, message)
-+            for category, message in flashes
-+            if category in allowed
-+        ]
-+
-+    if with_categories:
-+        return list(flashes)
-+    return [message for _category, message in flashes]
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 7297370a4daca628e28f800bf83350ec5c44a2b5..904c5c5589545a49aa078b5fd7592a56ef782d3d 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1156,85 +1156,83 @@ def line_callback():
+                             current_app.logger.exception("save avatar for existing user failed")
+ 
+         # ---- ここで [LINE_LOGIN] ログを1行追記（logsテーブルのみ） ----
+         ip_for_log = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                       or request.remote_addr or "-")
+         log_text = f"[LINE_LOGIN] ユーザー: #{ext_user_id}　{nickname_for_log}　がログインしました"
+         try:
+             cur.execute(
+                 "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+                 (ip_for_log, log_text)
+             )
+             db.commit()
+         except Exception:
+             # ログ書き込み失敗は握りつぶし
+             current_app.logger.warning("write [LINE_LOGIN] log failed", exc_info=True)
+ 
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     # セッションへ格納
+     ext_session = get_ext_session()
+     ext_session["ext_user_id"] = ext_user_id
+     ext_session["ext_user_nickname"] = nickname_for_log
+ 
+-    # 追加：LINEログインは長期セッション扱いにする
+-    session.permanent = True
+-
+     # 既存の next を壊さない（上書きしない）
+-    session.setdefault("ext_after_login_next", next_path)
++    if not ext_session.get("ext_after_login_next"):
++        ext_session["ext_after_login_next"] = next_path
+ 
+     # ---- リダイレクト方針 ----
+     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
+     # ・メール未登録のみ: ext_user_need_email=True（初回メッセージは出さず、メール注意喚起のみ）
+     if onboarding:
+         ext_session["ext_user_onboarding"] = True
+     else:
+-        session.pop("ext_user_onboarding", None)
++        ext_session.pop("ext_user_onboarding", None)
+ 
+     if needs_email:
+         ext_session["ext_user_need_email"] = True
+         # 改行を反映させたフラッシュ（<br>化）
+         from markupsafe import Markup, escape
+         email_notice = (
+             "クレジットカード決済時のメールアドレスの入力について\n\n"
+             "クレジットカード会社の規定変更により、クレジットカードでの決済時に、カード名義人のメールアドレスの入力が必要となります。\n"
+             "入力されたメールアドレスは、カード決済時の本人認証処理にて、クレジットカードの不正利用の検知・防止のため、カード発行会社に提供いたします。\n\n"
+             "ご理解、ご協力お願いいたします。\n\n"
+             "登録したメールアドレスに、確認用のメールが送信されます。ご対応お願いいたします。\n"
+         )
+         # \n を <br> にして安全にマーク
+         email_notice_markup = Markup("<br>".join(escape(email_notice).split("\n")))
+         flash(email_notice_markup, "info")
+         # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
+         return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
+     else:
+-        session.pop("ext_user_need_email", None)
++        ext_session.pop("ext_user_need_email", None)
+ 
+     # メール登録済みなら通常遷移
+-    return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
++    return redirect(next_path or ext_session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
+ 
+ # =========================
+ # プロフィール（CSRF, 画像アップ対応・メール確認送信対応）
+ # =========================
+ @bp.route("/profile", methods=["GET", "POST"])
+ def profile():
+     """
+     外部参加者のプロフィール編集。
+     - 画像アップロード: <input type="file" name="avatar_file">
+     - CSRF: ext_session["ext_csrf"] と hidden input csrf_token を比較
+     - メールアドレス: 変更時は email_verified_at をクリアし確認メール送信
+     - 保存後は ext_after_login_next（join等）に戻す
+     - ★通知設定: notify_album_upload / notify_album_process をON/OFF保存
+     - ★決済モード: payment_mode (manual / auto)
+     """
+     # ===== ログイン必須 =====
+     ext_session = get_ext_session()
+     social_id = ext_session.get("ext_user_social_id")
+     if not social_id:
+         return redirect(url_for(
+             "external_login_user.line_login",
+             next=ext_session.get("ext_after_login_next") or request.url
+         ))
+ 
+     # ===== CSRF 準備 =====
