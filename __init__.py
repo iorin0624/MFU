@@ -1217,12 +1217,22 @@ def admin_user_features():
 
     cur.execute(
         """
-        SELECT feature_key, label, is_enabled_global
+        SELECT feature_key, label, is_enabled_global, category, order_no, description
           FROM mfu_features
-         ORDER BY feature_key
+         WHERE deprecated=0
+         ORDER BY category, order_no, feature_key
         """
     )
     features = cur.fetchall()
+
+    grouped_features = []
+    current_category = None
+    for feature in features:
+        category = feature.get("category") or "other"
+        if category != current_category:
+            grouped_features.append({"category": category, "features": []})
+            current_category = category
+        grouped_features[-1]["features"].append(feature)
 
     user_enabled = set()
     if selected_user:
@@ -1238,10 +1248,17 @@ def admin_user_features():
 
     if request.method == "POST" and selected_user:
         selected = set(request.form.getlist("features"))
-        payload = []
-        for feature in features:
-            key = feature["feature_key"]
-            payload.append((selected_user, key, 1 if key in selected else 0))
+        enabled_keys = {feature["feature_key"] for feature in features if feature["is_enabled_global"]}
+        selected = selected & enabled_keys
+        cur.execute(
+            """
+            UPDATE mfu_user_features
+               SET is_enabled=0
+             WHERE user_id=%s
+            """,
+            (selected_user,),
+        )
+        payload = [(selected_user, key, 1) for key in sorted(selected)]
         if payload:
             cur.executemany(
                 """
@@ -1251,7 +1268,7 @@ def admin_user_features():
                 """,
                 payload,
             )
-            db.commit()
+        db.commit()
         flash("機能付与を更新しました。", "success")
         db.close()
         return redirect(url_for("admin_user_features", user_id=selected_user))
@@ -1262,8 +1279,224 @@ def admin_user_features():
         users=users,
         selected_user=selected_user,
         features=features,
+        grouped_features=grouped_features,
         user_enabled=user_enabled,
     )
+
+
+# =======================================
+# 管理: 機能キー管理
+# =======================================
+@app.route("/admin/features", methods=["GET", "POST"])
+@admin_required
+def admin_features():
+    ensure_feature_access_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    if request.method == "POST":
+        mode = (request.form.get("mode") or "").strip()
+        feature_key = (request.form.get("feature_key") or "").strip()
+        label = (request.form.get("label") or "").strip()
+        category = (request.form.get("category") or "").strip() or "other"
+        description = (request.form.get("description") or "").strip() or None
+        is_enabled_global = 1 if request.form.get("is_enabled_global") else 0
+        deprecated = 1 if request.form.get("deprecated") else 0
+        try:
+            order_no = int(request.form.get("order_no") or 0)
+        except ValueError:
+            order_no = 0
+
+        if mode == "new":
+            if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", feature_key):
+                flash("機能キーは英数字と_のみ、64文字以内で入力してください。", "danger")
+            elif not label:
+                flash("ラベルは必須です。", "danger")
+            else:
+                cur.execute("SELECT 1 FROM mfu_features WHERE feature_key=%s", (feature_key,))
+                if cur.fetchone():
+                    flash("同じ機能キーが既に存在します。", "danger")
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO mfu_features
+                        (feature_key, label, is_enabled_global, category, order_no, description, deprecated)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            feature_key,
+                            label,
+                            is_enabled_global,
+                            category,
+                            order_no,
+                            description,
+                            deprecated,
+                        ),
+                    )
+                    db.commit()
+                    flash("機能キーを追加しました。", "success")
+                    db.close()
+                    return redirect(url_for("admin_features"))
+        elif mode == "update":
+            if not feature_key:
+                flash("機能キーが見つかりません。", "danger")
+            elif not label:
+                flash("ラベルは必須です。", "danger")
+            else:
+                cur.execute(
+                    """
+                    UPDATE mfu_features
+                       SET label=%s,
+                           is_enabled_global=%s,
+                           category=%s,
+                           order_no=%s,
+                           description=%s,
+                           deprecated=%s
+                     WHERE feature_key=%s
+                    """,
+                    (
+                        label,
+                        is_enabled_global,
+                        category,
+                        order_no,
+                        description,
+                        deprecated,
+                        feature_key,
+                    ),
+                )
+                db.commit()
+                flash("機能キーを更新しました。", "success")
+                db.close()
+                return redirect(url_for("admin_features"))
+
+    cur.execute(
+        """
+        SELECT feature_key, label, is_enabled_global, category, order_no, description, deprecated
+          FROM mfu_features
+         ORDER BY order_no, feature_key
+        """
+    )
+    features = cur.fetchall()
+    db.close()
+    return render_template("admin_features.html", features=features)
+
+
+# =======================================
+# 管理: 機能キー分割
+# =======================================
+@app.route("/admin/features/split", methods=["GET", "POST"])
+@admin_required
+def admin_features_split():
+    ensure_feature_access_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT feature_key, label, category, is_enabled_global, deprecated
+          FROM mfu_features
+         ORDER BY category, feature_key
+        """
+    )
+    features = cur.fetchall()
+
+    if request.method == "POST":
+        from_feature_key = (request.form.get("from_feature_key") or "").strip()
+        to_raw = (request.form.get("to_feature_keys") or "").strip()
+        policy = (request.form.get("old_feature_policy") or "keep").strip()
+        raw_keys = [key for key in re.split(r"[\s,]+", to_raw) if key]
+        invalid_keys = [key for key in raw_keys if not re.fullmatch(r"[A-Za-z0-9_]{1,64}", key)]
+        to_keys = sorted({key for key in raw_keys if key and key not in invalid_keys})
+        if not from_feature_key:
+            flash("分割元の機能キーを選択してください。", "danger")
+        elif invalid_keys:
+            flash("分割先の機能キーは英数字と_のみで入力してください。", "danger")
+        elif not to_keys:
+            flash("分割先の機能キーを入力してください。", "danger")
+        else:
+            cur.execute(
+                "SELECT 1 FROM mfu_features WHERE feature_key=%s",
+                (from_feature_key,),
+            )
+            if not cur.fetchone():
+                flash("分割元の機能キーが存在しません。", "danger")
+            else:
+                to_keys = [key for key in to_keys if key != from_feature_key]
+                if not to_keys:
+                    flash("分割先の機能キーが分割元と同一です。", "danger")
+                    db.close()
+                    return render_template("admin_features_split.html", features=features)
+                cur.execute(
+                    """
+                    SELECT DISTINCT user_id
+                      FROM mfu_user_features
+                     WHERE feature_key=%s AND is_enabled=1
+                    """,
+                    (from_feature_key,),
+                )
+                users = [row["user_id"] for row in cur.fetchall()]
+                for key in to_keys:
+                    cur.execute(
+                        "SELECT 1 FROM mfu_features WHERE feature_key=%s",
+                        (key,),
+                    )
+                    if not cur.fetchone():
+                        cur.execute(
+                            """
+                            INSERT INTO mfu_features
+                            (feature_key, label, is_enabled_global, category, order_no, description, deprecated)
+                            VALUES (%s, %s, 1, 'other', 0, NULL, 0)
+                            """,
+                            (key, key),
+                        )
+                payload = []
+                for user_id in users:
+                    for key in to_keys:
+                        payload.append((user_id, key, 1))
+                if payload:
+                    cur.executemany(
+                        """
+                        INSERT INTO mfu_user_features (user_id, feature_key, is_enabled)
+                        VALUES (%s, %s, %s)
+                        ON DUPLICATE KEY UPDATE is_enabled=VALUES(is_enabled)
+                        """,
+                        payload,
+                    )
+
+                if policy == "deprecate":
+                    cur.execute(
+                        "UPDATE mfu_features SET deprecated=1 WHERE feature_key=%s",
+                        (from_feature_key,),
+                    )
+                elif policy == "disable_global":
+                    cur.execute(
+                        "UPDATE mfu_features SET is_enabled_global=0 WHERE feature_key=%s",
+                        (from_feature_key,),
+                    )
+                elif policy == "delete":
+                    cur.execute(
+                        """
+                        SELECT COUNT(*) AS cnt
+                          FROM mfu_user_features
+                         WHERE feature_key=%s
+                        """,
+                        (from_feature_key,),
+                    )
+                    row = cur.fetchone()
+                    if row and row.get("cnt"):
+                        flash("旧キーが付与済みのため削除できません。", "warning")
+                    else:
+                        cur.execute(
+                            "DELETE FROM mfu_features WHERE feature_key=%s",
+                            (from_feature_key,),
+                        )
+
+                db.commit()
+                flash("機能キーの分割処理を完了しました。", "success")
+                db.close()
+                return redirect(url_for("admin_features_split"))
+
+    db.close()
+    return render_template("admin_features_split.html", features=features)
 
 
 # =======================================
