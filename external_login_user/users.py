@@ -1238,7 +1238,7 @@ def profile():
         ))
 
     # ===== CSRF 準備 =====
-    if "ext_csrf" not in session:
+    if "ext_csrf" not in ext_session.to_dict():
         ext_session["ext_csrf"] = secrets.token_hex(16)
     csrf_token = ext_session["ext_csrf"]
 
