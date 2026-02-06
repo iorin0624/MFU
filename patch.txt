@@ -1,62 +1,57 @@
-diff --git a/utils/upload_history.py b/utils/upload_history.py
-index bfdc0cb3f889db4509a62160865c1b9bd1fe9cdc..57baedee5bf76f18e2eda242dda7b059c68aa01b 100644
---- a/utils/upload_history.py
-+++ b/utils/upload_history.py
-@@ -1,54 +1,57 @@
- from flask import Blueprint, render_template, session, redirect, url_for, abort, request
- import os
- import shutil
- from app.utils.db import get_db
-+from app.utils.feature_access import require_feature
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index a5ee5587acb1e9e52522d09bb170604438d48adb..6691ae0dcf2f5664e652420a70f745cde922a0b0 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1216,51 +1216,51 @@ def line_callback():
  
- upload_history_bp = Blueprint("upload_history", __name__)
+ # =========================
+ # プロフィール（CSRF, 画像アップ対応・メール確認送信対応）
+ # =========================
+ @bp.route("/profile", methods=["GET", "POST"])
+ def profile():
+     """
+     外部参加者のプロフィール編集。
+     - 画像アップロード: <input type="file" name="avatar_file">
+     - CSRF: ext_session["ext_csrf"] と hidden input csrf_token を比較
+     - メールアドレス: 変更時は email_verified_at をクリアし確認メール送信
+     - 保存後は ext_after_login_next（join等）に戻す
+     - ★通知設定: notify_album_upload / notify_album_process をON/OFF保存
+     - ★決済モード: payment_mode (manual / auto)
+     """
+     # ===== ログイン必須 =====
+     ext_session = get_ext_session()
+     social_id = ext_session.get("ext_user_social_id")
+     if not social_id:
+         return redirect(url_for(
+             "external_login_user.line_login",
+             next=ext_session.get("ext_after_login_next") or request.url
+         ))
  
- UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
+     # ===== CSRF 準備 =====
+-    if "ext_csrf" not in session:
++    if "ext_csrf" not in ext_session.to_dict():
+         ext_session["ext_csrf"] = secrets.token_hex(16)
+     csrf_token = ext_session["ext_csrf"]
  
- @upload_history_bp.route("/upload_list")
-+@require_feature("upload")
- def upload_list():
-     if "user" not in session:
-         return redirect(url_for("login"))
- 
-     username = session["user"]
+     # ===== ユーザー取得（編集に必要な項目を全部）=====
      db = get_db()
-     cursor = db.cursor(dictionary=True)
- 
-     if username == "admin":
-         cursor.execute("SELECT * FROM uploads ORDER BY created_at DESC")
-     else:
-         cursor.execute("SELECT * FROM uploads WHERE username = %s ORDER BY created_at DESC", (username,))
-     uploads = cursor.fetchall()
-     db.close()
- 
-     return render_template("upload_list.html", uploads=uploads, is_admin=(username == "admin"))
- 
- 
- @upload_history_bp.route("/upload_delete/<uuid>", methods=["POST"])
-+@require_feature("upload")
- def upload_delete(uuid):
-     if "user" not in session:
-         return redirect(url_for("login"))
- 
-     username = session["user"]
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
- 
-     # admin以外は本人のアップロードのみ削除可
-     cursor.execute("SELECT * FROM uploads WHERE uuid = %s", (uuid,))
-     upload = cursor.fetchone()
- 
-     if not upload:
-         db.close()
-         return abort(404)
- 
-     if username != "admin" and upload["username"] != username:
-         db.close()
-         return abort(403)
- 
-     # files, messages, uploads テーブルから削除
-     cursor.execute("DELETE FROM files WHERE upload_id = %s", (upload["id"],))
-     cursor.execute("DELETE FROM messages WHERE uuid = %s", (uuid,))
-     cursor.execute("DELETE FROM uploads WHERE id = %s", (upload["id"],))
-     db.commit()
+     cur = db.cursor(dictionary=True)
+     cur.execute(
+         """
+         SELECT id,
+                nickname,
+                x_id,
+                instagram_id,
+                email,
+                avatar_url,
+                avatar_file,
+                email_verified_at,
+                updated_at,
+                COALESCE(payment_mode, 'manual') AS payment_mode,
+                COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+                COALESCE(notify_album_process, 1) AS notify_album_process
+           FROM external_login_user
+          WHERE social_id=%s
+          LIMIT 1
+         """,
+         (social_id,),

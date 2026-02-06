@@ -30,7 +30,6 @@ import shlex
 
 from mysql.connector import errors as MySQLErrors
 from app.utils.db import get_db  #
-from app.utils.feature_access import enforce_feature_access
 from flask import g  # 追加
 
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
@@ -41,13 +40,6 @@ from app.external_login_user.ext_session import get_ext_session
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
 print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
-
-
-@album_bp.before_request
-def _album_feature_guard():
-    response = enforce_feature_access("albums")
-    if response is not None:
-        return response
 
 
 def _get_ext_user_nickname() -> str | None:

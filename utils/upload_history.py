@@ -2,14 +2,12 @@ from flask import Blueprint, render_template, session, redirect, url_for, abort,
 import os
 import shutil
 from app.utils.db import get_db
-from app.utils.feature_access import require_feature
 
 upload_history_bp = Blueprint("upload_history", __name__)
 
 UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
 
 @upload_history_bp.route("/upload_list")
-@require_feature("upload")
 def upload_list():
     if "user" not in session:
         return redirect(url_for("login"))
@@ -29,7 +27,6 @@ def upload_list():
 
 
 @upload_history_bp.route("/upload_delete/<uuid>", methods=["POST"])
-@require_feature("upload")
 def upload_delete(uuid):
     if "user" not in session:
         return redirect(url_for("login"))

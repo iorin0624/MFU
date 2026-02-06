@@ -49,13 +49,6 @@ from werkzeug.utils import secure_filename, safe_join
 # =====================================
 from app.utils.auth import load_user
 from app.utils.db import get_db
-from app.utils.feature_access import (
-    ensure_feature_access_schema,
-    get_allowed_features,
-    get_nav_items_for_user,
-    has_feature,
-    require_feature,
-)
 from app.utils.file_ops import sanitize_filename, generate_thumbnail, create_zip
 from app.utils.image import save_as_jpeg
 from app.utils.logs import log_request_raw
@@ -130,11 +123,8 @@ from flask import session
 def admin_required(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
-        user_id = session.get("user")
-        if not user_id:
-            return redirect(url_for("login", next=(request.full_path or request.path or "/")))
-        if user_id != "admin":
-            abort(403)
+        if session.get("user") != "admin":
+            return "管理者のみアクセス可能", 403
         return func(*args, **kwargs)
     return wrapper
 
@@ -565,7 +555,6 @@ def logout():
 # ② アップロード（画面 & 実処理）
 # =====================================
 @app.route("/upload")
-@require_feature("upload")
 def upload():
     if "user" not in session:
         return redirect(url_for("login"))
@@ -594,7 +583,6 @@ def upload():
     )
 
 @app.route("/submit_upload", methods=["POST"])
-@require_feature("upload")
 def submit_upload():
     # 依存はこのルート内で完結
     import os, re, shutil, threading, secrets, json
@@ -983,7 +971,6 @@ def view_upload(uuid):
 
 @app.route("/upload/<path:subpath>")
 @app.route("/uploads/<path:subpath>")
-@require_feature("upload")
 def uploaded_file(subpath: str):
     """
     /mnt/mfu/uploads をルートに、安全に実体ファイルを配信する。
@@ -1197,243 +1184,6 @@ def admin_users_delete(username):
     finally:
         db.close()
     return redirect(url_for("admin_users"))
-
-
-# =======================================
-# 管理: ユーザー機能付与（ACL）
-# =======================================
-@app.route("/admin/user-features", methods=["GET", "POST"])
-@admin_required
-def admin_user_features():
-    ensure_feature_access_schema()
-    selected_user = (request.values.get("user_id") or "").strip()
-
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    cur.execute("SELECT username, nickname FROM users ORDER BY username")
-    users = cur.fetchall()
-    if not selected_user and users:
-        selected_user = users[0]["username"]
-
-    cur.execute(
-        """
-        SELECT feature_key, label, is_enabled_global
-          FROM mfu_features
-         ORDER BY feature_key
-        """
-    )
-    features = cur.fetchall()
-
-    user_enabled = set()
-    if selected_user:
-        cur.execute(
-            """
-            SELECT feature_key
-              FROM mfu_user_features
-             WHERE user_id=%s AND is_enabled=1
-            """,
-            (selected_user,),
-        )
-        user_enabled = {row["feature_key"] for row in cur.fetchall()}
-
-    if request.method == "POST" and selected_user:
-        selected = set(request.form.getlist("features"))
-        payload = []
-        for feature in features:
-            key = feature["feature_key"]
-            payload.append((selected_user, key, 1 if key in selected else 0))
-        if payload:
-            cur.executemany(
-                """
-                INSERT INTO mfu_user_features (user_id, feature_key, is_enabled)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE is_enabled=VALUES(is_enabled)
-                """,
-                payload,
-            )
-            db.commit()
-        flash("機能付与を更新しました。", "success")
-        db.close()
-        return redirect(url_for("admin_user_features", user_id=selected_user))
-
-    db.close()
-    return render_template(
-        "admin_user_features.html",
-        users=users,
-        selected_user=selected_user,
-        features=features,
-        user_enabled=user_enabled,
-    )
-
-
-# =======================================
-# 管理: ナビ項目編集
-# =======================================
-@app.route("/admin/nav")
-@admin_required
-def admin_nav_list():
-    ensure_feature_access_schema()
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    cur.execute(
-        """
-        SELECT id, parent_id, label, url, order_no, is_enabled,
-               feature_key, open_in_new_tab, is_external
-          FROM mfu_nav_items
-         ORDER BY COALESCE(parent_id, 0), order_no, id
-        """
-    )
-    items = cur.fetchall()
-    db.close()
-
-    parents = []
-    children_map = {}
-    for item in items:
-        if item["parent_id"] is None:
-            parents.append(item)
-        else:
-            children_map.setdefault(item["parent_id"], []).append(item)
-    parents.sort(key=lambda x: (x.get("order_no", 0), x["id"]))
-    for parent in parents:
-        children = children_map.get(parent["id"], [])
-        children.sort(key=lambda x: (x.get("order_no", 0), x["id"]))
-        parent["children"] = children
-
-    return render_template("admin_nav_list.html", nav_items=parents)
-
-
-def _load_nav_item(item_id: int | None):
-    if item_id is None:
-        return None
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    cur.execute("SELECT * FROM mfu_nav_items WHERE id=%s", (item_id,))
-    item = cur.fetchone()
-    db.close()
-    return item
-
-
-@app.route("/admin/nav/new", methods=["GET", "POST"])
-@app.route("/admin/nav/<int:item_id>/edit", methods=["GET", "POST"])
-@admin_required
-def admin_nav_form(item_id=None):
-    ensure_feature_access_schema()
-    item = _load_nav_item(item_id)
-
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    cur.execute(
-        """
-        SELECT id, label
-          FROM mfu_nav_items
-         WHERE parent_id IS NULL
-         ORDER BY order_no, id
-        """
-    )
-    parents = cur.fetchall()
-    cur.execute("SELECT feature_key, label FROM mfu_features ORDER BY feature_key")
-    features = cur.fetchall()
-
-    if request.method == "POST":
-        label = (request.form.get("label") or "").strip()
-        url_value = (request.form.get("url") or "").strip()
-        parent_id_raw = (request.form.get("parent_id") or "").strip()
-        feature_key = (request.form.get("feature_key") or "").strip() or None
-        try:
-            order_no = int(request.form.get("order_no") or 0)
-        except ValueError:
-            order_no = 0
-        is_enabled = 1 if request.form.get("is_enabled") else 0
-        open_in_new_tab = 1 if request.form.get("open_in_new_tab") else 0
-        is_external = 1 if request.form.get("is_external") else 0
-
-        parent_id = int(parent_id_raw) if parent_id_raw else None
-        if item_id and parent_id == item_id:
-            flash("自身を親に設定することはできません。", "danger")
-        elif not label or not url_value:
-            flash("ラベルとURLは必須です。", "danger")
-        elif not is_external and not url_value.startswith("/"):
-            flash("内部リンクは / で始まるURLのみ許可されます。", "danger")
-        else:
-            if item_id:
-                cur.execute(
-                    """
-                    UPDATE mfu_nav_items
-                       SET label=%s,
-                           url=%s,
-                           parent_id=%s,
-                           order_no=%s,
-                           is_enabled=%s,
-                           feature_key=%s,
-                           open_in_new_tab=%s,
-                           is_external=%s
-                     WHERE id=%s
-                    """,
-                    (
-                        label,
-                        url_value,
-                        parent_id,
-                        order_no,
-                        is_enabled,
-                        feature_key,
-                        open_in_new_tab,
-                        is_external,
-                        item_id,
-                    ),
-                )
-                db.commit()
-                db.close()
-                flash("ナビ項目を更新しました。", "success")
-                return redirect(url_for("admin_nav_list"))
-
-            cur.execute(
-                """
-                INSERT INTO mfu_nav_items
-                (label, url, parent_id, order_no, is_enabled, feature_key, open_in_new_tab, is_external)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    label,
-                    url_value,
-                    parent_id,
-                    order_no,
-                    is_enabled,
-                    feature_key,
-                    open_in_new_tab,
-                    is_external,
-                ),
-            )
-            db.commit()
-            db.close()
-            flash("ナビ項目を追加しました。", "success")
-            return redirect(url_for("admin_nav_list"))
-
-    db.close()
-    return render_template(
-        "admin_nav_form.html",
-        item=item,
-        parents=parents,
-        features=features,
-    )
-
-
-@app.post("/admin/nav/<int:item_id>/delete")
-@admin_required
-def admin_nav_delete(item_id: int):
-    ensure_feature_access_schema()
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    cur.execute("SELECT COUNT(*) AS cnt FROM mfu_nav_items WHERE parent_id=%s", (item_id,))
-    row = cur.fetchone()
-    if row and row.get("cnt"):
-        db.close()
-        flash("子項目があるため削除できません。先に子項目を削除してください。", "warning")
-        return redirect(url_for("admin_nav_list"))
-    cur.execute("DELETE FROM mfu_nav_items WHERE id=%s", (item_id,))
-    db.commit()
-    db.close()
-    flash("ナビ項目を削除しました。", "success")
-    return redirect(url_for("admin_nav_list"))
 
 # =======================================
 # 管理: ログ閲覧（高速化版：SQL事前絞り + TTLキャッシュ + has_nextページング）
@@ -2335,7 +2085,6 @@ def template_edit(mode):
     return render_template("template_edit.html", mode=mode, template=row[0] if row else "")
 
 @app.route("/modes", methods=["GET", "POST"])
-@require_feature("upload")
 def mode_list():
     if "user" not in session:
         return redirect(url_for("login"))
@@ -2360,7 +2109,6 @@ def mode_list():
     return render_template("mode_list.html", modes=modes, default_mode=current_default)
 
 @app.route("/modes/add", methods=["GET", "POST"])
-@require_feature("upload")
 def mode_add():
     if "user" not in session:
         return redirect(url_for("login"))
@@ -2391,7 +2139,6 @@ def mode_add():
     return render_template("mode_form.html", action="add", mode_data=None)
 
 @app.route("/modes/edit/<mode>", methods=["GET", "POST"])
-@require_feature("upload")
 def mode_edit_combined(mode):
     if "user" not in session:
         return redirect(url_for("login"))
@@ -2455,7 +2202,6 @@ def mode_edit_combined(mode):
                            template=template)
 
 @app.route("/modes/delete/<mode>")
-@require_feature("upload")
 def mode_delete(mode):
     if "user" not in session:
         return redirect(url_for("login"))
@@ -2612,7 +2358,6 @@ def temp_sensor():
 # =====================================
 @app.before_request
 def before_every_request():
-    ensure_feature_access_schema()
     g._req_start = time.time()
 
     # ★ 管理パス(/admin...) は admin 以外には 404 を返す
@@ -2620,10 +2365,8 @@ def before_every_request():
     #    - 一般ユーザー
     #    どちらも 404 にすることで /admin の存在自体を隠す
     if request.path.startswith("/admin"):
-        if not session.get("user"):
-            return redirect(url_for("login", next=(request.full_path or request.path or "/")))
         if session.get("user") != "admin":
-            abort(403)
+            abort(404)
 
     db = get_db()
     cursor = db.cursor(dictionary=True)
@@ -2704,21 +2447,6 @@ def finalize_response(response):
         app.logger.warning(f"log_access failed: {e}")
 
     return response
-
-
-@app.context_processor
-def inject_feature_context():
-    user_id = session.get("user")
-    return {
-        "allowed_features": get_allowed_features(user_id),
-        "has_feature": has_feature,
-        "nav_items": get_nav_items_for_user(user_id),
-    }
-
-
-@app.errorhandler(403)
-def handle_forbidden(_error):
-    return render_template("errors/403.html"), 403
 
 # ─────────────────────────────────────────
 # 管理: ノードメトリクス集約表示（103.16 / 103.15）

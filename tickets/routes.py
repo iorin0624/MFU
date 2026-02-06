@@ -15,7 +15,6 @@ from PIL import Image, ExifTags  # Exif 読取
 
 from . import tickets_bp
 from app.utils.db import get_db  # 本体の DB 接続
-from app.utils.feature_access import enforce_feature_access
 
 # =========================
 # 設定/ヘルパ
@@ -139,12 +138,9 @@ def _tickets_login_required():
     if p.startswith(public_prefixes):
         return  # ← 認証不要
 
-    # それ以外（= 管理系 /tickets/admin など）はログイン必須 + 機能許可
+    # それ以外（= 管理系 /tickets/admin など）はログイン必須
     if "user" not in session:
         return redirect(url_for("login"))
-    response = enforce_feature_access("events")
-    if response is not None:
-        return response
 
 # =========================
 # 管理：バッチ発行（GET: 画面表示 / POST: 作成→PRG）

@@ -39,7 +39,7 @@ def admin_required(view):
             return redirect(url_for("login", next=(request.full_path or request.path or "/")))
         if user != "admin":
             # ログイン済みだが管理者ではない
-            abort(403)
+            return "管理者のみアクセス可能", 403
         return view(*args, **kwargs)
     return _wrap
 # ---------------------------------------------------------------------------
@@ -1222,3 +1222,4 @@ def admin_api_sync_outlook_6m():
         "last_sync_at": last_sync_at_str,
         "last_sync_range": f"{start_d.strftime(fmt)}..{end_d.strftime(fmt)}"
     }), 200
+
