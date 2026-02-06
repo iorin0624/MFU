@@ -68,8 +68,8 @@ def ensure_fuel_schema(db=None) -> None:
         CREATE TABLE IF NOT EXISTS bike_fuel_log (
             id INT AUTO_INCREMENT PRIMARY KEY,
             fill_date DATE NOT NULL,
-            odometer_km DECIMAL(10, 1) NULL,
-            trip_km DECIMAL(10, 1) NULL,
+            odometer_km DECIMAL(10, 1) NOT NULL,
+            trip_km DECIMAL(8, 2) NULL,
             liters DECIMAL(8, 2) NOT NULL,
             yen_per_liter INT NULL,
             is_full TINYINT(1) NOT NULL DEFAULT 1,
@@ -83,7 +83,7 @@ def ensure_fuel_schema(db=None) -> None:
     )
     cur.execute(
         """
-        SELECT column_name, data_type, numeric_precision, numeric_scale, is_nullable
+        SELECT column_name, data_type, numeric_scale
         FROM information_schema.columns
         WHERE table_schema = DATABASE()
           AND table_name = 'bike_fuel_log'
@@ -91,26 +91,14 @@ def ensure_fuel_schema(db=None) -> None:
     )
     columns = {row[0]: row[1:] for row in cur.fetchall()}
     if "trip_km" not in columns:
-        cur.execute("ALTER TABLE bike_fuel_log ADD COLUMN trip_km DECIMAL(10, 1) NULL")
-
-    def needs_decimal_10_1_nullable(meta: tuple | None) -> bool:
-        if meta is None:
-            return True
-        data_type, precision, scale, is_nullable = meta
-        if data_type != "decimal":
-            return True
-        if precision is not None and precision != 10:
-            return True
-        if scale is not None and scale != 1:
-            return True
-        return is_nullable != "YES"
-
-    if needs_decimal_10_1_nullable(columns.get("odometer_km")):
-        cur.execute(
-            "ALTER TABLE bike_fuel_log MODIFY COLUMN odometer_km DECIMAL(10, 1) NULL"
-        )
-    if needs_decimal_10_1_nullable(columns.get("trip_km")):
-        cur.execute("ALTER TABLE bike_fuel_log MODIFY COLUMN trip_km DECIMAL(10, 1) NULL")
+        cur.execute("ALTER TABLE bike_fuel_log ADD COLUMN trip_km DECIMAL(8, 2) NULL")
+    odometer_meta = columns.get("odometer_km")
+    if odometer_meta is not None:
+        data_type, numeric_scale = odometer_meta
+        if data_type != "decimal" or (numeric_scale is not None and numeric_scale < 1):
+            cur.execute(
+                "ALTER TABLE bike_fuel_log MODIFY COLUMN odometer_km DECIMAL(10, 1) NOT NULL"
+            )
     db.commit()
     if close_db:
         db.close()
