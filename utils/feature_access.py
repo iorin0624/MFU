@@ -32,33 +32,6 @@ def _safe_log(message: str, *, exc: Exception | None = None) -> None:
             print(f"[feature_access] {message}")
 
 
-def _column_exists(cur, table: str, column: str) -> bool:
-    cur.execute(
-        """
-        SELECT 1
-          FROM information_schema.columns
-         WHERE table_schema = DATABASE()
-           AND table_name = %s
-           AND column_name = %s
-         LIMIT 1
-        """,
-        (table, column),
-    )
-    return cur.fetchone() is not None
-
-
-def _ensure_feature_columns(cur) -> None:
-    columns = {
-        "category": "ALTER TABLE mfu_features ADD COLUMN category VARCHAR(64) NOT NULL DEFAULT 'other'",
-        "order_no": "ALTER TABLE mfu_features ADD COLUMN order_no INT NOT NULL DEFAULT 0",
-        "description": "ALTER TABLE mfu_features ADD COLUMN description VARCHAR(255) NULL",
-        "deprecated": "ALTER TABLE mfu_features ADD COLUMN deprecated TINYINT(1) NOT NULL DEFAULT 0",
-    }
-    for column, ddl in columns.items():
-        if not _column_exists(cur, "mfu_features", column):
-            cur.execute(ddl)
-
-
 def ensure_feature_access_schema() -> None:
     global _SCHEMA_INITIALIZED
     if _SCHEMA_INITIALIZED:
@@ -75,17 +48,12 @@ def ensure_feature_access_schema() -> None:
                     feature_key VARCHAR(64) PRIMARY KEY,
                     label VARCHAR(128) NOT NULL,
                     is_enabled_global TINYINT(1) NOT NULL DEFAULT 1,
-                    category VARCHAR(64) NOT NULL DEFAULT 'other',
-                    order_no INT NOT NULL DEFAULT 0,
-                    description VARCHAR(255) NULL,
-                    deprecated TINYINT(1) NOT NULL DEFAULT 0,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                         ON UPDATE CURRENT_TIMESTAMP
                 )
                 """
             )
-            _ensure_feature_columns(cur)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS mfu_user_features (
@@ -197,7 +165,6 @@ def _seed_nav_items(cur) -> None:
         [
             ("👤 ユーザー管理", "/admin/users", system_parent_id, 10, 1, "admin_tools"),
             ("🔐 機能付与", "/admin/user-features", system_parent_id, 15, 1, "admin_tools"),
-            ("🧩 機能キー管理", "/admin/features", system_parent_id, 18, 1, "admin_tools"),
             ("🧭 ナビ編集", "/admin/nav", system_parent_id, 20, 1, "admin_tools"),
             ("🛠 メンテナンス切換", "/admin/maintenance", system_parent_id, 30, 1, "admin_tools"),
             ("📧 メール送信ログ", "/admin/mail-delivery", system_parent_id, 40, 1, "admin_tools"),
