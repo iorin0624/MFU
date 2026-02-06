@@ -8,7 +8,6 @@ from flask import request, flash, redirect, url_for, current_app, g
 from app.utils.feature_access import enforce_feature_access
 
 from .ext_session import get_ext_session, save_ext_session
-from .utils import sanitize_next_path
 
 
 # --- env ロード（ローカル .env を優先しない） ---
@@ -69,7 +68,7 @@ def _auto_line_login_on_inapp_browser():
     if "Line/" not in ua:
         return None
 
-    next_url = sanitize_next_path(request.path)
+    next_url = request.url
     ext_session["ext_after_login_next"] = next_url
     return redirect(url_for("external_login_user.line_login", next=next_url, _external=False))
 
