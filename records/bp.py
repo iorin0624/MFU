@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 from flask import Blueprint, flash, redirect, render_template, request, session, url_for
 
 from app.utils.db import get_db
-from app.utils.feature_access import enforce_feature_access
 
 from .models import (
     ensure_records_schema,
@@ -25,13 +24,6 @@ records_bp = Blueprint(
     template_folder="templates",
     static_folder="static",
 )
-
-
-@records_bp.before_request
-def _records_feature_guard():
-    response = enforce_feature_access("records")
-    if response is not None:
-        return response
 
 
 _schema_init_lock = Lock()
