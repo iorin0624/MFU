@@ -1,57 +1,290 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index a5ee5587acb1e9e52522d09bb170604438d48adb..6691ae0dcf2f5664e652420a70f745cde922a0b0 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -1216,51 +1216,51 @@ def line_callback():
+diff --git a/payment/__init__.py b/payment/__init__.py
+index 7a1185b2a9734faf30330335cea28834ee0ff91a..0025a1d9846ede74ddbeae207ba1448a4c51b309 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -212,116 +212,163 @@ def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
  
- # =========================
- # プロフィール（CSRF, 画像アップ対応・メール確認送信対応）
- # =========================
- @bp.route("/profile", methods=["GET", "POST"])
- def profile():
-     """
-     外部参加者のプロフィール編集。
-     - 画像アップロード: <input type="file" name="avatar_file">
-     - CSRF: ext_session["ext_csrf"] と hidden input csrf_token を比較
-     - メールアドレス: 変更時は email_verified_at をクリアし確認メール送信
-     - 保存後は ext_after_login_next（join等）に戻す
-     - ★通知設定: notify_album_upload / notify_album_process をON/OFF保存
-     - ★決済モード: payment_mode (manual / auto)
-     """
-     # ===== ログイン必須 =====
-     ext_session = get_ext_session()
-     social_id = ext_session.get("ext_user_social_id")
-     if not social_id:
-         return redirect(url_for(
-             "external_login_user.line_login",
-             next=ext_session.get("ext_after_login_next") or request.url
-         ))
+         base_url = _app_base_url().rstrip("/")
+         return f"{base_url}/external-login/events/{event_uuid_str}/members/{member_id}/receipt.pdf"
+     except Exception:
+         logging.exception("build_receipt_pdf_url failed")
+         return None
  
-     # ===== CSRF 準備 =====
--    if "ext_csrf" not in session:
-+    if "ext_csrf" not in ext_session.to_dict():
-         ext_session["ext_csrf"] = secrets.token_hex(16)
-     csrf_token = ext_session["ext_csrf"]
+ def _sanitize_handle(s: str | None) -> str | None:
+     if not s:
+         return None
+     s = s.strip()
+     if s.startswith("@"):
+         s = s[1:]
+     s = s.strip()
+     return s.lower() or None
  
-     # ===== ユーザー取得（編集に必要な項目を全部）=====
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     cur.execute(
-         """
-         SELECT id,
-                nickname,
-                x_id,
-                instagram_id,
-                email,
-                avatar_url,
-                avatar_file,
-                email_verified_at,
-                updated_at,
-                COALESCE(payment_mode, 'manual') AS payment_mode,
-                COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-                COALESCE(notify_album_process, 1) AS notify_album_process
-           FROM external_login_user
-          WHERE social_id=%s
-          LIMIT 1
-         """,
-         (social_id,),
+ def _normalize_handle(v: str | None) -> str:
+     if not v:
+         return ""
+     v = v.strip()
+     if v.startswith("@"):
+         v = v[1:]
+     # Python なので lower()
+     return v.strip().lower()
+ 
+-def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
++def _resolve_buyer_identity(conn, payment_token: str | None) -> tuple[int | None, str | None]:
+     if not payment_token:
+-        return None
++        return None, None
+     cur = conn.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT user_id, buyer_email
+               FROM mfu_payment_request
+              WHERE token=%s
+              ORDER BY id DESC
+              LIMIT 1
+         """, (payment_token,))
+         row = cur.fetchone() or {}
+     finally:
+         try:
+             cur.close()
+         except Exception:
+             pass
+     user_id = row.get("user_id")
+     fallback_email = (row.get("buyer_email") or "").strip()
+     if not user_id:
+-        return fallback_email or None
++        return None, fallback_email or None
+     cur = conn.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT email
+               FROM external_login_user
+              WHERE id=%s
+              LIMIT 1
+         """, (user_id,))
+         urow = cur.fetchone() or {}
+     finally:
+         try:
+             cur.close()
+         except Exception:
+             pass
+     email = (urow.get("email") or "").strip()
+-    return email or fallback_email or None
++    return user_id, (email or fallback_email or None)
+ 
+ # ───────────────────────────────────────────────────────────
+ # Square 顧客ヘルパ
+ # ───────────────────────────────────────────────────────────
+-def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
+-    import hashlib
++def _mask_email(email: str | None) -> str:
++    if not email:
++        return ""
++    email = email.strip()
++    if "@" not in email:
++        return "***"
++    local, domain = email.split("@", 1)
++    local_mask = (local[:1] + "***") if local else "***"
++    if domain:
++        domain_parts = domain.split(".")
++        domain_mask = domain_parts[0][:1] + "***"
++        if len(domain_parts) > 1:
++            domain_mask = domain_mask + "." + domain_parts[-1]
++    else:
++        domain_mask = "***"
++    return f"{local_mask}@{domain_mask}"
++
++def _ensure_customer_id_for_user(access_token: str, user_id: int, nickname: str, buyer_email: str | None) -> str:
+     base = _square_api_base()
+     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
+-
+-    h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
+-    ref = f"ev:{event_uuid[:8]}:{h}"
++    ref = f"mfu_user:{user_id}"
+ 
+     # 検索
+     try:
+         sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
+                               json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
+         if sresp.status_code < 400:
+-            customers = (sresp.json() or {}).get("customers") or []
++            try:
++                payload = sresp.json() or {}
++            except Exception:
++                payload = {}
++            customers = payload.get("customers") or []
+             if customers:
+-                return customers[0]["id"]
++                customer = customers[0]
++                customer_id = customer.get("id")
++                if not customer_id:
++                    raise RuntimeError("customer_id not found")
++                needs_email = not (customer.get("email_address") or "").strip()
++                if buyer_email and (needs_email or nickname):
++                    update_body = {"customer": {"given_name": nickname}}
++                    if needs_email:
++                        update_body["customer"]["email_address"] = buyer_email
++                    try:
++                        uresp = requests.put(f"{base}/v2/customers/{customer_id}", headers=headers,
++                                             json=update_body, timeout=15)
++                        if uresp.status_code >= 400:
++                            logging.warning("update_customer failed: status=%s email=%s",
++                                            uresp.status_code, _mask_email(buyer_email))
++                    except Exception:
++                        logging.exception("update_customer exception: email=%s", _mask_email(buyer_email))
++                return customer_id
+     except Exception:
+         logging.exception("search_customers failed")
+ 
+     # 作成
+-    cresp = requests.post(f"{base}/v2/customers", headers=headers,
+-                          json={"given_name": nickname, "reference_id": ref}, timeout=15)
++    create_body = {"given_name": nickname, "reference_id": ref}
++    if buyer_email:
++        create_body["email_address"] = buyer_email
++    try:
++        cresp = requests.post(f"{base}/v2/customers", headers=headers,
++                              json=create_body, timeout=15)
++    except Exception:
++        logging.exception("create_customer failed: email=%s", _mask_email(buyer_email))
++        raise
+     cresp.raise_for_status()
+-    return (cresp.json() or {}).get("customer", {}).get("id")
++    try:
++        payload = cresp.json() or {}
++    except Exception:
++        logging.exception("create_customer json decode failed: email=%s", _mask_email(buyer_email))
++        raise
++    return (payload.get("customer", {}) or {}).get("id")
+ 
+ # ───────────────────────────────────────────────────────────
+ # Discord通知（必要時）
+ # ───────────────────────────────────────────────────────────
+ def _get_discord_webhook_url(conn, username: str = "admin") -> str | None:
+     try:
+         cur = conn.cursor()
+         cur.execute("""
+             SELECT webhook_url
+               FROM users
+              WHERE username = %s
+                AND webhook_url IS NOT NULL
+                AND webhook_url <> ''
+              LIMIT 1
+         """, (username,))
+         row = cur.fetchone()
+         if not row:
+             return None
+         return row[0] if not isinstance(row, dict) else row.get("webhook_url")
+     except Exception:
+         logging.exception("failed to load discord webhook url by username")
+         return None
+ 
+ def _discord_notify(webhook_url, *, title, description, fields=(), color=0x2ECC71):
+     try:
+@@ -1103,51 +1150,53 @@ def api_charge(event_uuid: str):
+     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
+     _wt_in = data.get("walletType", data.get("wallet_type"))
+     if isinstance(_wt_in, str):
+         _wt_in = _wt_in.strip().upper()
+     else:
+         _wt_in = ""
+     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
+ 
+     if not nickname or not source_id or (not x_id and not instagram_id):
+         return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
+ 
+     conn = _get_db()
+     try:
+         if not payment_token:
+             return jsonify({"message": "支払いトークンが見つかりません。イベントページから開き直してください。"}), 400
+         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
+         if payment_token and token_amount is None:
+             return jsonify({"message": "支払いトークンが無効です"}), 400
+         # ★ 常に最新金額を取得（トークンがあれば優先）
+         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
+         if not ev or amount <= 0:
+             return jsonify({"message": "イベントが見つからない/無効です"}), 404
+         if token_amount is not None and token_amount > 0:
+             amount = token_amount
+ 
+-        buyer_email = _resolve_buyer_email(conn, payment_token)
++        user_id, buyer_email = _resolve_buyer_identity(conn, payment_token)
++        if not user_id:
++            return jsonify({"message": "ユーザー情報が取得できないため決済できません。もう一度お試しください。"}), 400
+         if not buyer_email:
+             return jsonify({"message": "メールアドレスが未登録のため決済できません。プロフィールから登録してください。"}), 400
+ 
+         # 二重決済ブロック（event_payments に対して）—削除
+         cur = conn.cursor()
+ 
+         access_token = _square_access_token()
+         location_id  = _square_location_id()
+         if not access_token or not location_id:
+             return jsonify({"message": "Square設定が未完了です"}), 500
+ 
+         idemp = str(uuid.uuid4())
+ 
+         # ★ 先にPENDINGで1行作成（wallet_type を保存）
+         cur.execute("""
+             INSERT INTO event_payments
+               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
+                idempotency_key, square_status, wallet_type, payment_token)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
+         """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type, payment_token))
+         pay_row_id = cur.lastrowid
+         conn.commit()
+ 
+         order_id = None
+         order_title = ev.get("title") or "イベント"
+@@ -1172,51 +1221,51 @@ def api_charge(event_uuid: str):
+         if order_resp.status_code < 400:
+             try:
+                 order_payload = order_resp.json()
+             except Exception:
+                 order_payload = {}
+             order = order_payload.get("order") or {}
+             order_id = order.get("id")
+         else:
+             try:
+                 order_payload = order_resp.json()
+             except Exception:
+                 order_payload = {}
+             errs = (order_payload.get("errors") or [])
+             code = errs[0].get("code") if errs else None
+             detail = errs[0].get("detail") if errs else order_resp.text
+             cur.execute("""
+                 UPDATE event_payments
+                    SET square_status='FAILED', error_code=%s, error_detail=%s
+                  WHERE id=%s
+             """, (code, detail, pay_row_id))
+             conn.commit()
+             return jsonify({"message": "注文情報の作成に失敗しました"}), 502
+ 
+         # 顧客ID
+         try:
+-            customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
++            customer_id = _ensure_customer_id_for_user(access_token, user_id, nickname, buyer_email)
+         except Exception:
+             return jsonify({"message": "顧客の作成に失敗しました"}), 500
+ 
+         # CreatePayment
+         body = {
+             "idempotency_key": idemp,
+             "source_id": source_id,
+             "amount_money": {"amount": int(amount), "currency": "JPY"},
+             "location_id": location_id,
+             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
+             "customer_id": customer_id,
+             "buyer_email_address": buyer_email,
+         }
+         if order_id:
+             body["order_id"] = order_id
+ 
+         resp = requests.post(
+             f"{_square_api_base()}/v2/payments",
+             headers={"Authorization": f"Bearer {access_token}",
+                      "Content-Type":"application/json", "Accept":"application/json"},
+             json=body, timeout=25
+         )
+         ok = resp.status_code < 400
+         try:
+             payload = resp.json()
