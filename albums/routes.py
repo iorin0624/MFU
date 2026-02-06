@@ -945,13 +945,13 @@ def event_gate(view_func):
 
         # 管理者/オーナーは常に通す
         if session.get('user') == 'admin' or (session.get('user') and session.get('user') == meta.get('owner')):
-            session[f'auth_{album_id}'] = True
+            ext_session[f'auth_{album_id}'] = True
             return redirect(url_for('album.album_home', album_id=album_id))
 
         # イベントモード：承認済みのみ
         if meta.get("access_mode") == "event" and meta.get("event_id"):
             if _is_event_member_approved(int(meta["event_id"])):  # 承認済み
-                session[f'auth_{album_id}'] = True
+                ext_session[f'auth_{album_id}'] = True
                 return redirect(url_for('album.album_home', album_id=album_id))
             flash('このアルバムはイベント参加者専用です。まずは参加申請/承認を受けてください。', 'warning')
             join_url = _event_join_url(int(meta["event_id"]))
@@ -1169,13 +1169,14 @@ def album_access(album_id):
     if not meta:
         return 'アルバムが存在しません', 404
 
+    ext_session = get_ext_session()
     if session.get('user') == 'admin' or session.get('user') == meta.get('owner'):
-        session[f'auth_{album_id}'] = True
+        ext_session[f'auth_{album_id}'] = True
         return redirect(url_for('album.album_home', album_id=album_id))
 
     token = request.args.get('token')
     if token and token == meta.get('access_token'):
-        session[f'auth_{album_id}'] = True
+        ext_session[f'auth_{album_id}'] = True
         return redirect(url_for('album.album_home', album_id=album_id))
 
     if request.method == 'POST':
@@ -1189,10 +1190,11 @@ def album_home(album_id):
     if not meta:
         return 'アルバムが存在しません', 404
 
+    ext_session = get_ext_session()
     user = session.get('user')
     is_admin = (user == 'admin')
     is_owner = user and meta.get('owner') == user
-    is_authed = session.get(f'auth_{album_id}') is True
+    is_authed = ext_session.get(f'auth_{album_id}') is True
     if not (is_admin or is_owner or is_authed):
         return redirect(url_for('album.album_access', album_id=album_id))
 
@@ -1269,7 +1271,8 @@ def create_child(album_id):
         flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
         return redirect(url_for('album.album_home', album_id=album_id))
 
-    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}') and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
 
     folder_name = (request.form.get('child_name') or '').strip()
@@ -2081,7 +2084,8 @@ def view_child(album_id, child_id):
 # =============================================================================
 @album_bp.route('/<album_id>/thumb/<child_id>/<filename>')
 def album_thumb(album_id, child_id, filename):
-    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}') and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
     # 両ルートを探索して実体から返す
     for root in _get_roots_for_album(album_id):
@@ -2096,7 +2100,8 @@ def update_process_status(album_id, child_id):
     if not meta:
         return jsonify({"ok": False, "error": "album_not_found"}), 404
 
-    is_authed = session.get(f'auth_{album_id}') is True
+    ext_session = get_ext_session()
+    is_authed = ext_session.get(f'auth_{album_id}') is True
     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
@@ -2216,7 +2221,8 @@ def request_process(album_id, child_id):
     if not meta:
         return jsonify({"ok": False, "error": "album_not_found"}), 404
 
-    is_authed = session.get(f'auth_{album_id}') is True
+    ext_session = get_ext_session()
+    is_authed = ext_session.get(f'auth_{album_id}') is True
     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
         return jsonify({"ok": False, "error": "forbidden"}), 403
 
@@ -2313,7 +2319,8 @@ def request_process(album_id, child_id):
 
 @album_bp.route('/<album_id>/image/<child_id>/<filename>')
 def image(album_id, child_id, filename):
-    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}') and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
     abs_path = _open_path_anyroot(album_id, child_id, filename, mode='normal')
     if not abs_path:
@@ -2323,7 +2330,8 @@ def image(album_id, child_id, filename):
 # 置き換え：動画本体
 @album_bp.route('/<album_id>/movie/raw/<child_id>/<path:filename>')
 def movie_raw(album_id, child_id, filename):
-    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}') and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
     abs_path = _movie_find_abs(album_id, child_id, filename)
     if not abs_path:
@@ -2333,7 +2341,8 @@ def movie_raw(album_id, child_id, filename):
 # 置き換え：ポスター
 @album_bp.route('/<album_id>/movie/poster/<child_id>/<path:filename>')
 def movie_poster(album_id, child_id, filename):
-    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}') and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
     abs_path = _movie_find_abs(album_id, child_id, filename)
     if not abs_path:
@@ -2343,7 +2352,8 @@ def movie_poster(album_id, child_id, filename):
 # 置き換え：ダウンロード
 @album_bp.route('/<album_id>/movie/download/<child_id>/<path:filename>')
 def movie_download(album_id, child_id, filename):
-    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}') and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
     abs_path = _movie_find_abs(album_id, child_id, filename)
     if not abs_path:
@@ -2523,10 +2533,11 @@ def unlock_any(album_id, child_id):
     if not meta:
         return 'アルバムが存在しません', 404
 
+    ext_session = get_ext_session()
     user = session.get('user')
     is_admin = (user == 'admin')
     is_owner = (user == meta.get('owner'))
-    is_authed = session.get(f'auth_{album_id}') is True
+    is_authed = ext_session.get(f'auth_{album_id}') is True
     if not (is_admin or is_owner or is_authed):
         return redirect(url_for('album.album_access', album_id=album_id))
 

@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any
+
+from flask import flash as flask_flash
+from flask import get_flashed_messages as flask_get_flashed_messages
+from flask import request
+
+from app.external_login_user.ext_session import get_ext_session
+
+
+def _is_admin_path(path: str | None) -> bool:
+    if not path:
+        return False
+    return path.startswith("/admin")
+
+
+def flash(message: Any, category: str = "message") -> None:
+    if _is_admin_path(request.path):
+        flask_flash(message, category)
+        return
+
+    ext_session = get_ext_session()
+    flashes = ext_session.get("_flashes")
+    if not isinstance(flashes, list):
+        flashes = []
+    flashes.append((category, message))
+    ext_session["_flashes"] = flashes
+
+
+def get_flashed_messages(
+    with_categories: bool = False,
+    category_filter: Iterable[str] = (),
+) -> list:
+    if _is_admin_path(request.path):
+        return flask_get_flashed_messages(
+            with_categories=with_categories,
+            category_filter=category_filter,
+        )
+
+    ext_session = get_ext_session()
+    flashes = ext_session.pop("_flashes", None)
+    if not flashes:
+        return []
+
+    if category_filter:
+        allowed = set(category_filter)
+        flashes = [
+            (category, message)
+            for category, message in flashes
+            if category in allowed
+        ]
+
+    if with_categories:
+        return list(flashes)
+    return [message for _category, message in flashes]

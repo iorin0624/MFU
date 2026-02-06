@@ -7,6 +7,7 @@ import json
 import bcrypt
 import secrets
 from werkzeug.utils import secure_filename
+from app.external_login_user.ext_session import get_ext_session
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
 
@@ -38,7 +39,8 @@ def album_access(album_id):
     if request.method == 'POST':
         password = request.form['password'].encode('utf-8')
         if bcrypt.checkpw(password, meta['password_hash'].encode('utf-8')):
-            session[f'auth_{album_id}'] = True
+            ext_session = get_ext_session()
+            ext_session[f'auth_{album_id}'] = True
             return redirect(url_for('album.album_home', album_id=album_id))
         else:
             return 'パスワードが違います', 403
@@ -46,14 +48,16 @@ def album_access(album_id):
 
 @album_bp.route('/<album_id>/')
 def album_home(album_id):
-    if not session.get(f'auth_{album_id}'):
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}'):
         return redirect(url_for('album.album_access', album_id=album_id))
     meta = load_meta(album_id)
     return render_template('album_home.html', album_id=album_id, meta=meta)
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
 def create_child(album_id):
-    if not session.get(f'auth_{album_id}'):
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}'):
         return redirect(url_for('album.album_access', album_id=album_id))
     folder_name = request.form['child_name']
     child_uuid = str(uuid.uuid4())
@@ -68,7 +72,8 @@ def create_child(album_id):
 
 @album_bp.route('/<album_id>/upload/<child_id>', methods=['GET', 'POST'])
 def upload(album_id, child_id):
-    if not session.get(f'auth_{album_id}'):
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}'):
         return redirect(url_for('album.album_access', album_id=album_id))
     child_path = os.path.join(ALBUM_ROOT, album_id, child_id)
     if not os.path.exists(child_path):
@@ -89,7 +94,8 @@ def upload(album_id, child_id):
 
 @album_bp.route('/<album_id>/view/<child_id>')
 def view_child(album_id, child_id):
-    if not session.get(f'auth_{album_id}'):
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}'):
         return redirect(url_for('album.album_access', album_id=album_id))
     child_path = os.path.join(ALBUM_ROOT, album_id, child_id)
     files = sorted(f for f in os.listdir(child_path) if allowed_file(f))
@@ -97,7 +103,8 @@ def view_child(album_id, child_id):
 
 @album_bp.route('/<album_id>/download/<child_id>/<filename>')
 def download(album_id, child_id, filename):
-    if not session.get(f'auth_{album_id}'):
+    ext_session = get_ext_session()
+    if not ext_session.get(f'auth_{album_id}'):
         return redirect(url_for('album.album_access', album_id=album_id))
     return send_from_directory(os.path.join(ALBUM_ROOT, album_id, child_id), filename, as_attachment=True)
 

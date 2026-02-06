@@ -25,10 +25,11 @@ def PAYMENT_ENTRY_BASE() -> str:
 
 # ---- CSRF, セッション ----
 def _admin_csrf_token() -> str:
-    t = session.get("admin_csrf")
+    ext_session = get_ext_session()
+    t = ext_session.get("admin_csrf")
     if not t:
         t = secrets.token_urlsafe(16)
-        session["admin_csrf"] = t
+        ext_session["admin_csrf"] = t
     return t
 
 def _require_mfu_login_redirect():
