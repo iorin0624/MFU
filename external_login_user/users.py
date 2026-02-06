@@ -1178,9 +1178,11 @@ def line_callback():
     ext_session["ext_user_id"] = ext_user_id
     ext_session["ext_user_nickname"] = nickname_for_log
 
+    # 追加：LINEログインは長期セッション扱いにする
+    session.permanent = True
+
     # 既存の next を壊さない（上書きしない）
-    if not ext_session.get("ext_after_login_next"):
-        ext_session["ext_after_login_next"] = next_path
+    session.setdefault("ext_after_login_next", next_path)
 
     # ---- リダイレクト方針 ----
     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
@@ -1188,7 +1190,7 @@ def line_callback():
     if onboarding:
         ext_session["ext_user_onboarding"] = True
     else:
-        ext_session.pop("ext_user_onboarding", None)
+        session.pop("ext_user_onboarding", None)
 
     if needs_email:
         ext_session["ext_user_need_email"] = True
@@ -1207,10 +1209,10 @@ def line_callback():
         # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
         return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
     else:
-        ext_session.pop("ext_user_need_email", None)
+        session.pop("ext_user_need_email", None)
 
     # メール登録済みなら通常遷移
-    return redirect(next_path or ext_session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
+    return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
 
 # =========================
 # プロフィール（CSRF, 画像アップ対応・メール確認送信対応）
