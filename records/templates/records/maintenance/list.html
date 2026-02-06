@@ -10,14 +10,6 @@
 {% endblock %}
 
 {% block records_content %}
-{% macro dash(value) -%}
-  {%- if value is none or value == '' -%}
-    -
-  {%- else -%}
-    {{ value }}
-  {%- endif -%}
-{%- endmacro %}
-
 <div class="card mb-4" id="new">
   <div class="card-body">
     <h5 class="card-title">新規追加</h5>
@@ -54,12 +46,12 @@
         {% for row in summary_rows %}
         <tr>
           <td>{{ row.item_name }}</td>
-          <td>{{ dash(row.event_date) }}</td>
-          <td class="text-end">{{ dash(row.odometer_km) }}</td>
-          <td>{{ dash(row.note) }}</td>
-          <td class="text-end">{{ dash(row.since_km) }}</td>
-          <td class="text-end">{{ dash(row.target_km) }}</td>
-          <td class="text-end">{{ dash(row.remaining_km) }}</td>
+          <td>{{ row.event_date }}</td>
+          <td class="text-end">{{ row.odometer_km }}</td>
+          <td>{{ row.note }}</td>
+          <td class="text-end">{{ row.since_km }}</td>
+          <td class="text-end">{{ row.target_km }}</td>
+          <td class="text-end">{{ row.remaining_km }}</td>
         </tr>
         {% else %}
         <tr><td colspan="7" class="text-center text-muted">データがありません。</td></tr>
@@ -68,10 +60,6 @@
     </table>
   </div>
 </div>
-
-{% if is_admin %}
-  {% include "records/maintenance/_item_admin.html" %}
-{% endif %}
 
 <table class="table table-striped align-middle">
   <thead>

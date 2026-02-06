@@ -10,13 +10,7 @@ from flask import Blueprint, flash, redirect, render_template, request, session,
 
 from app.utils.db import get_db
 
-from .models import (
-    ensure_records_schema,
-    insert_maintenance_item,
-    list_maintenance_items,
-    now_ts,
-    update_maintenance_item,
-)
+from .models import ensure_records_schema, now_ts
 
 records_bp = Blueprint(
     "records",
@@ -100,17 +94,6 @@ def _round_decimal(value: Decimal | None, places: int) -> Decimal | None:
         return None
     quantizer = Decimal("1").scaleb(-places)
     return value.quantize(quantizer, rounding=ROUND_HALF_UP)
-
-
-def _is_admin_user() -> bool:
-    return session.get("user") == "admin"
-
-
-def _require_admin_for_records():
-    if not _is_admin_user():
-        flash("管理者のみ操作できます。", "warning")
-        return redirect(url_for("records.maintenance_list"))
-    return None
 
 
 @records_bp.get("/")
@@ -433,13 +416,16 @@ def uber_delete(record_id: int):
 @login_required
 def maintenance_list():
     db = get_db()
-    maintenance_items = list_maintenance_items(db=db)
-    admin_items = (
-        list_maintenance_items(include_inactive=True, db=db)
-        if _is_admin_user()
-        else []
-    )
     cur = db.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT id, name, target_km, sort_order
+        FROM maintenance_items
+        WHERE is_active = 1
+        ORDER BY sort_order, id
+        """
+    )
+    maintenance_items = cur.fetchall()
     cur.execute(
         """
         SELECT
@@ -494,22 +480,25 @@ def maintenance_list():
             summary_rows.append(
                 {
                     "item_name": row["item_name"],
-                    "event_date": None,
-                    "odometer_km": None,
-                    "note": None,
-                    "since_km": None,
-                    "target_km": None,
-                    "remaining_km": None,
+                    "event_date": "#CALC!",
+                    "odometer_km": "#N/A",
+                    "note": "#N/A",
+                    "since_km": "#N/A",
+                    "target_km": "#N/A",
+                    "remaining_km": "#N/A",
                 }
             )
             continue
 
-        since_display = None
-        remaining_display = None
-        if current_odometer is not None:
+        if current_odometer is None:
+            since_display = "#CALC!"
+            remaining_display = "#N/A" if target_km is None else "#CALC!"
+        else:
             since_km = current_odometer - int(row["odometer_km"])
             since_display = since_km
-            if target_km is not None:
+            if target_km is None:
+                remaining_display = "#N/A"
+            else:
                 remaining_display = target_km - since_km
 
         summary_rows.append(
@@ -517,9 +506,9 @@ def maintenance_list():
                 "item_name": row["item_name"],
                 "event_date": row["event_date"],
                 "odometer_km": row["odometer_km"],
-                "note": row.get("note") or None,
+                "note": row.get("note") or "",
                 "since_km": since_display,
-                "target_km": target_km,
+                "target_km": "#N/A" if target_km is None else target_km,
                 "remaining_km": remaining_display,
             }
         )
@@ -529,11 +518,9 @@ def maintenance_list():
         "records/maintenance/list.html",
         rows=rows,
         maintenance_items=maintenance_items,
-        admin_items=admin_items,
         summary_rows=summary_rows,
         default_event_date=today,
         current_odometer=current_odometer_value,
-        is_admin=_is_admin_user(),
     )
 
 
@@ -675,99 +662,6 @@ def maintenance_delete(record_id: int):
     db.close()
     flash("整備記録を削除しました。", "success")
     return redirect(url_for("records.maintenance_list"))
-
-
-@records_bp.post("/maintenance/items/add")
-@login_required
-def maintenance_item_add():
-    resp = _require_admin_for_records()
-    if resp is not None:
-        return resp
-    name = (request.form.get("name") or "").strip()
-    if not name:
-        flash("項目名を入力してください。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if len(name) > 191:
-        flash("項目名が長すぎます。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    target_km_raw = (request.form.get("target_km") or "").strip()
-    target_km = _parse_int(
-        target_km_raw,
-        "交換目安",
-        allow_empty=True,
-    )
-    sort_order_raw = (request.form.get("sort_order") or "").strip()
-    sort_order = _parse_int(
-        sort_order_raw,
-        "表示順",
-        allow_empty=True,
-    )
-    if target_km_raw and target_km is None:
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if sort_order_raw and sort_order is None:
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if target_km is not None and target_km < 0:
-        flash("交換目安は0以上で入力してください。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if sort_order is not None and sort_order < 0:
-        flash("表示順は0以上で入力してください。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    is_active = request.form.get("is_active") == "1"
-    insert_maintenance_item(
-        name=name,
-        target_km=target_km,
-        sort_order=sort_order,
-        is_active=is_active,
-    )
-    flash("項目を追加しました。", "success")
-    return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-
-
-@records_bp.post("/maintenance/items/<int:item_id>/update")
-@login_required
-def maintenance_item_update(item_id: int):
-    resp = _require_admin_for_records()
-    if resp is not None:
-        return resp
-    name = (request.form.get("name") or "").strip()
-    if not name:
-        flash("項目名を入力してください。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if len(name) > 191:
-        flash("項目名が長すぎます。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    target_km_raw = (request.form.get("target_km") or "").strip()
-    target_km = _parse_int(
-        target_km_raw,
-        "交換目安",
-        allow_empty=True,
-    )
-    sort_order_raw = (request.form.get("sort_order") or "").strip()
-    sort_order = _parse_int(
-        sort_order_raw,
-        "表示順",
-        allow_empty=False,
-    )
-    if target_km_raw and target_km is None:
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if sort_order is None:
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if target_km is not None and target_km < 0:
-        flash("交換目安は0以上で入力してください。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    if sort_order is not None and sort_order < 0:
-        flash("表示順は0以上で入力してください。", "warning")
-        return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
-    is_active = request.form.get("is_active") == "1"
-    update_maintenance_item(
-        item_id=item_id,
-        name=name,
-        target_km=target_km,
-        sort_order=sort_order,
-        is_active=is_active,
-    )
-    flash("項目を更新しました。", "success")
-    return redirect(url_for("records.maintenance_list", _anchor="item-admin"))
 
 
 @records_bp.get("/fuel")
