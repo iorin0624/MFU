@@ -234,45 +234,6 @@ def _normalize_handle(v: str | None) -> str:
     # Python なので lower()
     return v.strip().lower()
 
-def _resolve_buyer_email(conn, payment_token: str | None) -> str | None:
-    if not payment_token:
-        return None
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            SELECT user_id, buyer_email
-              FROM mfu_payment_request
-             WHERE token=%s
-             ORDER BY id DESC
-             LIMIT 1
-        """, (payment_token,))
-        row = cur.fetchone() or {}
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-    user_id = row.get("user_id")
-    fallback_email = (row.get("buyer_email") or "").strip()
-    if not user_id:
-        return fallback_email or None
-    cur = conn.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            SELECT email
-              FROM external_login_user
-             WHERE id=%s
-             LIMIT 1
-        """, (user_id,))
-        urow = cur.fetchone() or {}
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-    email = (urow.get("email") or "").strip()
-    return email or fallback_email or None
-
 # ───────────────────────────────────────────────────────────
 # Square 顧客ヘルパ
 # ───────────────────────────────────────────────────────────
@@ -1125,10 +1086,6 @@ def api_charge(event_uuid: str):
         if token_amount is not None and token_amount > 0:
             amount = token_amount
 
-        buyer_email = _resolve_buyer_email(conn, payment_token)
-        if not buyer_email:
-            return jsonify({"message": "メールアドレスが未登録のため決済できません。プロフィールから登録してください。"}), 400
-
         # 二重決済ブロック（event_payments に対して）—削除
         cur = conn.cursor()
 
@@ -1149,49 +1106,6 @@ def api_charge(event_uuid: str):
         pay_row_id = cur.lastrowid
         conn.commit()
 
-        order_id = None
-        order_title = ev.get("title") or "イベント"
-        order_body = {
-            "order": {
-                "location_id": location_id,
-                "line_items": [
-                    {
-                        "name": order_title,
-                        "quantity": "1",
-                        "base_price_money": {"amount": int(amount), "currency": "JPY"},
-                    }
-                ],
-            }
-        }
-        order_resp = requests.post(
-            f"{_square_api_base()}/v2/orders",
-            headers={"Authorization": f"Bearer {access_token}",
-                     "Content-Type": "application/json", "Accept": "application/json"},
-            json=order_body, timeout=25
-        )
-        if order_resp.status_code < 400:
-            try:
-                order_payload = order_resp.json()
-            except Exception:
-                order_payload = {}
-            order = order_payload.get("order") or {}
-            order_id = order.get("id")
-        else:
-            try:
-                order_payload = order_resp.json()
-            except Exception:
-                order_payload = {}
-            errs = (order_payload.get("errors") or [])
-            code = errs[0].get("code") if errs else None
-            detail = errs[0].get("detail") if errs else order_resp.text
-            cur.execute("""
-                UPDATE event_payments
-                   SET square_status='FAILED', error_code=%s, error_detail=%s
-                 WHERE id=%s
-            """, (code, detail, pay_row_id))
-            conn.commit()
-            return jsonify({"message": "注文情報の作成に失敗しました"}), 502
-
         # 顧客ID
         try:
             customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
@@ -1206,10 +1120,7 @@ def api_charge(event_uuid: str):
             "location_id": location_id,
             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
             "customer_id": customer_id,
-            "buyer_email_address": buyer_email,
         }
-        if order_id:
-            body["order_id"] = order_id
 
         resp = requests.post(
             f"{_square_api_base()}/v2/payments",
