@@ -1,168 +1,207 @@
-diff --git a/static/external_login_user/admin_ext_users.js b/static/external_login_user/admin_ext_users.js
-new file mode 100644
-index 0000000000000000000000000000000000000000..95612fd80ce84bd771b2651036eb344b006b900f
---- /dev/null
-+++ b/static/external_login_user/admin_ext_users.js
-@@ -0,0 +1,162 @@
-+(function () {
-+  const ctx = window.__EXT_USERS__ || {};
-+  const tbody = document.getElementById('userTbody');
-+  const totalCount = document.getElementById('totalCount');
-+  const searchInput = document.getElementById('searchInput');
-+  const searchBtn = document.getElementById('searchBtn');
-+  const clearBtn = document.getElementById('clearBtn');
+diff --git a/utils/whois_util.py b/utils/whois_util.py
+index 2b68a66d953b5b987a7d86452d75fc79f03afe1f..e850cb0da0da66684979bd4845bf5f4088d4fccf 100644
+--- a/utils/whois_util.py
++++ b/utils/whois_util.py
+@@ -79,122 +79,177 @@ def _extract_rdap_name(rdap: dict) -> tuple[str, str, str]:
+             key = item[0]
+             val = item[3]
+             if key in ("fn", "org") and isinstance(val, str):
+                 org = val.strip()
+                 break
+         if org:
+             break
+ 
+     if not org:
+         remarks = rdap.get("remarks") or []
+         for remark in remarks:
+             desc = remark.get("description") if isinstance(remark, dict) else None
+             if isinstance(desc, list):
+                 for d in desc:
+                     if isinstance(d, str) and d.strip():
+                         org = d.strip()
+                         break
+             if org:
+                 break
+ 
+     return name, org, country
+ 
+ def _extract_whois_info(text: str) -> dict:
+     info = {
+         "netname": "",
++        "network_name": "",
+         "country": "",
+         "org": "",
+         "asname": "",
+     }
+     if not text:
+         return info
+     for line in text.splitlines():
+         line = line.strip()
+         if not line:
+             continue
+-        lower = line.lower()
+-        if lower.startswith("netname:"):
+-            info["netname"] = line.split(":", 1)[1].strip()
+-        elif lower.startswith("orgname:"):
+-            info["org"] = info["org"] or line.split(":", 1)[1].strip()
+-        elif lower.startswith("organization:"):
+-            info["org"] = info["org"] or line.split(":", 1)[1].strip()
+-        elif lower.startswith("owner:") and not info["org"]:
+-            info["org"] = line.split(":", 1)[1].strip()
+-        elif lower.startswith("descr:") and not info["org"]:
+-            info["org"] = line.split(":", 1)[1].strip()
+-        elif lower.startswith("country:"):
+-            info["country"] = line.split(":", 1)[1].strip()
+-        elif lower.startswith("as-name:") or lower.startswith("asname:"):
+-            info["asname"] = line.split(":", 1)[1].strip()
+-        elif lower.startswith("origin:") or lower.startswith("originas:"):
+-            info["asname"] = info["asname"] or line.split(":", 1)[1].strip()
++        if ":" not in line:
++            continue
++        key, value = line.split(":", 1)
++        key = key.strip().lower()
++        value = value.strip()
++        key_norm = key.replace(" ", "")
++        if key_norm == "netname":
++            info["netname"] = value
++        elif key_norm == "networkname":
++            info["network_name"] = value
++        elif key_norm == "orgname":
++            info["org"] = info["org"] or value
++        elif key_norm == "organization":
++            info["org"] = info["org"] or value
++        elif key_norm == "owner" and not info["org"]:
++            info["org"] = value
++        elif key_norm == "descr" and not info["org"]:
++            info["org"] = value
++        elif key_norm == "country":
++            info["country"] = value
++        elif key_norm in ("as-name", "asname"):
++            info["asname"] = value
++        elif key_norm in ("origin", "originas"):
++            info["asname"] = info["asname"] or value
+     return info
+ 
++def _is_generic_jpnic_name(name: str) -> bool:
++    if not name:
++        return False
++    lowered = name.lower()
++    return "japan network information center" in lowered or "jpnic" in lowered
 +
-+  if (!tbody || !ctx.dataUrl) return;
++def _pick_best_display_name(
++    whois_info: dict,
++    rdap_org: str,
++    rdap_asname: str,
++    rdap_name: str,
++) -> str:
++    candidates = [
++        whois_info.get("network_name") or whois_info.get("netname") or "",
++        whois_info.get("org") or "",
++        rdap_org or "",
++        rdap_asname or "",
++        rdap_name or "",
++    ]
++    for candidate in candidates:
++        if candidate and not _is_generic_jpnic_name(candidate):
++            return candidate
++    for candidate in candidates:
++        if candidate:
++            return candidate
++    return ""
 +
-+  function escapeHtml(text) {
-+    return String(text || '')
-+      .replace(/&/g, '&amp;')
-+      .replace(/</g, '&lt;')
-+      .replace(/>/g, '&gt;')
-+      .replace(/"/g, '&quot;')
-+      .replace(/'/g, '&#39;');
-+  }
-+
-+  function formatDateJst(value) {
-+    if (!value) return '';
-+    const date = new Date(value);
-+    if (Number.isNaN(date.getTime())) return escapeHtml(value);
-+    const formatter = new Intl.DateTimeFormat('ja-JP', {
-+      timeZone: 'Asia/Tokyo',
-+      year: 'numeric',
-+      month: '2-digit',
-+      day: '2-digit',
-+      hour: '2-digit',
-+      minute: '2-digit',
-+      hour12: false
-+    });
-+    const parts = formatter.formatToParts(date);
-+    const lookup = Object.fromEntries(parts.map((p) => [p.type, p.value]));
-+    return `${lookup.year}/${lookup.month}/${lookup.day} ${lookup.hour}:${lookup.minute} JST`;
-+  }
-+
-+  function formatExistingDates() {
-+    const elements = document.querySelectorAll('.email-verified-at[data-value]');
-+    elements.forEach((el) => {
-+      const raw = el.getAttribute('data-value') || '';
-+      if (!raw) return;
-+      el.textContent = formatDateJst(raw);
-+    });
-+  }
-+
-+  function buildRow(item) {
-+    const avatar = item.avatar_file
-+      ? `/external-login/avatars/${encodeURIComponent(item.avatar_file)}`
-+      : item.avatar_url || 'https://via.placeholder.com/48?text=—';
-+    const nickname = escapeHtml(item.nickname || '-');
-+    const socialId = escapeHtml(item.social_id || '-');
-+    const email = item.email ? escapeHtml(item.email) : '';
-+    const emailVerifiedAt = item.email_verified_at ? formatDateJst(item.email_verified_at) : '';
-+    const xId = item.x_id ? escapeHtml(item.x_id) : '';
-+    const igId = item.instagram_id ? escapeHtml(item.instagram_id) : '';
-+    const notifyUpload = item.notify_album_upload ? '🔵' : '🔴';
-+    const notifyProcess = item.notify_album_process ? '🔵' : '🔴';
-+    const cardCount = Number(item.card_count || 0) > 0 ? '登録あり' : '未登録';
-+
-+    let snsHtml = '<span class="text-muted">-</span>';
-+    if (xId || igId) {
-+      const parts = [];
-+      if (xId) {
-+        parts.push(`<a href="https://x.com/${xId}" target="_blank" rel="noopener">X: @${xId}</a>`);
-+      }
-+      if (igId) {
-+        parts.push(`<a href="https://www.instagram.com/${igId}/" target="_blank" rel="noopener">IG: @${igId}</a>`);
-+      }
-+      snsHtml = parts.join('<br>');
+ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
+     """IPからnetnameとcountryを取得（キャッシュ付き）"""
+     cached = _load_cache(ip, force_refresh=force_refresh)
+     if cached:
+         return cached
+ 
+     try:
+         ip_obj = ipaddress.ip_address(ip)
+         is_ipv6 = ip_obj.version == 6
+     except ValueError:
+         is_ipv6 = False
+ 
+     info = {
+         "netname": "不明",
+         "country": "不明",
+         "org": "",
+         "asname": "",
+         "source": "",
+     }
+ 
++    rdap_name = ""
++    rdap_org = ""
++    rdap_country = ""
+     rdap = _fetch_rdap(ip)
+     if rdap:
+-        name, org, country = _extract_rdap_name(rdap)
+-        if name:
+-            info["netname"] = name
+-        if org:
+-            info["org"] = org
+-        if country:
+-            info["country"] = country
++        rdap_name, rdap_org, rdap_country = _extract_rdap_name(rdap)
++        if rdap_name:
++            info["netname"] = rdap_name
++        if rdap_org:
++            info["org"] = rdap_org
++        if rdap_country:
++            info["country"] = rdap_country
+         info["source"] = "rdap"
+ 
+     whois_text = ""
+     try:
+         whois_text = subprocess.check_output(["whois", ip], timeout=10).decode(errors="ignore")
+     except Exception:
+         whois_text = ""
+ 
++    whois_info = {
++        "netname": "",
++        "network_name": "",
++        "country": "",
++        "org": "",
++        "asname": "",
 +    }
-+
-+    let emailHtml = '<span class="text-muted">-</span>';
-+    if (email) {
-+      const badge = emailVerifiedAt
-+        ? `<span class="badge bg-success">確認済</span><span class="text-muted ms-1">${emailVerifiedAt}</span>`
-+        : '<span class="badge bg-secondary">未確認</span>';
-+      emailHtml = `<div>${email}</div><div class="small mt-1">${badge}</div>`;
-+    }
-+
-+    return `
-+      <tr data-id="${escapeHtml(item.id)}">
-+        <td class="text-muted">#${escapeHtml(item.id)}</td>
-+        <td>
-+          <img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">
-+        </td>
-+        <td>
-+          <div class="fw-semibold">${nickname}</div>
-+          <div class="small text-muted">social_id: ${socialId}</div>
-+        </td>
-+        <td>
-+          ${emailHtml}
-+        </td>
-+        <td>
-+          ${snsHtml}
-+        </td>
-+        <td>
-+          <div>アップ ${notifyUpload}</div>
-+          <div>加工 ${notifyProcess}</div>
-+        </td>
-+        <td>
-+          ${cardCount}
-+        </td>
-+        <td class="text-end">
-+          <a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${escapeHtml(item.id)}/edit">編集</a>
-+        </td>
-+      </tr>
-+    `;
-+  }
-+
-+  function renderItems(items) {
-+    if (!items.length) {
-+      tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
-+      return;
-+    }
-+    tbody.innerHTML = items.map(buildRow).join('');
-+  }
-+
-+  async function fetchItems(query) {
-+    const params = new URLSearchParams();
-+    if (query) params.set('q', query);
-+    params.set('per_page', '0');
-+    const url = `${ctx.dataUrl}?${params.toString()}`;
-+    const res = await fetch(url, { credentials: 'same-origin' });
-+    if (!res.ok) throw new Error('fetch_failed');
-+    return res.json();
-+  }
-+
-+  async function runSearch() {
-+    const q = (searchInput ? searchInput.value : '').trim();
-+    try {
-+      const data = await fetchItems(q);
-+      const items = data.items || [];
-+      if (totalCount) totalCount.textContent = String(data.total || items.length);
-+      renderItems(items);
-+    } catch (err) {
-+      console.error(err);
-+    }
-+  }
-+
-+  formatExistingDates();
-+
-+  if (searchBtn) {
-+    searchBtn.addEventListener('click', runSearch);
-+  }
-+
-+  if (searchInput) {
-+    searchInput.addEventListener('keydown', (event) => {
-+      if (event.key === 'Enter') {
-+        event.preventDefault();
-+        runSearch();
-+      }
-+    });
-+  }
-+
-+  if (clearBtn) {
-+    clearBtn.addEventListener('click', () => {
-+      if (searchInput) searchInput.value = '';
-+      runSearch();
-+    });
-+  }
-+})();
+     if whois_text:
+         whois_info = _extract_whois_info(whois_text)
+         if info["netname"] == "不明" and whois_info["netname"]:
+             info["netname"] = whois_info["netname"]
+         if not info["org"] and whois_info["org"]:
+             info["org"] = whois_info["org"]
+         if not info["asname"] and whois_info["asname"]:
+             info["asname"] = whois_info["asname"]
+         if info["country"] == "不明" and whois_info["country"]:
+             info["country"] = whois_info["country"]
+         if not info["source"]:
+             info["source"] = "whois"
+ 
+     if info["netname"] == "不明" and not is_ipv6:
+         if info["org"]:
+             info["netname"] = info["org"]
+         elif info["asname"]:
+             info["netname"] = info["asname"]
+ 
+     if is_ipv6:
+-        info["display_name"] = info["netname"]
++        display_name = _pick_best_display_name(
++            whois_info,
++            rdap_org,
++            info["asname"],
++            rdap_name,
++        )
++        info["display_name"] = display_name or info["netname"]
++        if display_name:
++            info["netname"] = display_name
++        if _is_generic_jpnic_name(info["org"]):
++            info["org"] = ""
+ 
+     is_failure = info["netname"] in ("不明", "")
+     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
+     return info
+ 
+ if __name__ == "__main__":
+     import sys
+     target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
+     force = "--refresh" in sys.argv
+     print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
