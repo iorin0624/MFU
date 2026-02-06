@@ -71,15 +71,8 @@ def _parse_int(value: str, field_name: str, *, allow_empty: bool = False) -> int
         return None
 
 
-def _parse_decimal(
-    value: str,
-    field_name: str,
-    *,
-    allow_empty: bool = False,
-) -> Decimal | None:
+def _parse_decimal(value: str, field_name: str) -> Decimal | None:
     if value is None or value == "":
-        if allow_empty:
-            return None
         flash(f"{field_name}を入力してください。", "warning")
         return None
     try:
@@ -558,20 +551,25 @@ def fuel_list():
     db.close()
 
     computed = []
+    prev = None
     for row in rows:
+        distance = None
         km_per_l = None
         yen_per_km = None
-        trip_km = row.get("trip_km")
-        if trip_km is not None:
-            trip_km_val = float(trip_km)
-            liters = float(row["liters"])
-            if trip_km_val > 0 and liters > 0:
-                km_per_l = trip_km_val / liters
+        if prev is not None:
+            distance_val = row["odometer_km"] - prev["odometer_km"]
+            if distance_val > 0:
+                distance = distance_val
+                liters = float(row["liters"])
+                if liters > 0:
+                    km_per_l = distance / liters
                 if row.get("yen_per_liter"):
-                    yen_per_km = (row["yen_per_liter"] * liters) / trip_km_val
+                    yen_per_km = (row["yen_per_liter"] * liters) / distance
+        row["distance_km"] = distance
         row["km_per_l"] = km_per_l
         row["yen_per_km"] = yen_per_km
         computed.append(row)
+        prev = row
 
     computed.sort(
         key=lambda r: (
@@ -582,40 +580,20 @@ def fuel_list():
         reverse=True,
     )
 
-    today = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
-    return render_template(
-        "records/fuel/list.html",
-        rows=computed,
-        default_fill_date=today,
-    )
+    return render_template("records/fuel/list.html", rows=computed)
 
 
 @records_bp.get("/fuel/new")
 @login_required
 def fuel_new():
-    return redirect(url_for("records.fuel_list"))
+    return render_template("records/fuel/form.html", item=None)
 
 
 @records_bp.post("/fuel/new")
 @login_required
-def fuel_create_legacy():
-    return fuel_create()
-
-
-@records_bp.post("/fuel")
-@login_required
 def fuel_create():
     fill_date = _parse_date(request.form.get("fill_date", ""), "日付")
-    odometer_km = _parse_decimal(
-        request.form.get("odometer_km", ""),
-        "メーター",
-        allow_empty=True,
-    )
-    trip_km = _parse_decimal(
-        request.form.get("trip_km", ""),
-        "トリップ",
-        allow_empty=True,
-    )
+    odometer_km = _parse_int(request.form.get("odometer_km", ""), "メーター")
     liters = _parse_decimal(request.form.get("liters", ""), "給油量")
     yen_per_liter = _parse_int(
         request.form.get("yen_per_liter", ""),
@@ -624,11 +602,8 @@ def fuel_create():
     )
     note = request.form.get("note", "").strip() or None
     is_full = 1 if request.form.get("is_full") == "on" else 0
-    if fill_date is None or liters is None:
-        return redirect(url_for("records.fuel_list"))
-    if odometer_km is None and trip_km is None:
-        flash("メーターかトリップを入力してください。", "warning")
-        return redirect(url_for("records.fuel_list"))
+    if fill_date is None or odometer_km is None or liters is None:
+        return redirect(url_for("records.fuel_new"))
 
     now = now_ts()
     db = get_db()
@@ -638,26 +613,15 @@ def fuel_create():
         INSERT INTO bike_fuel_log (
             fill_date,
             odometer_km,
-            trip_km,
             liters,
             yen_per_liter,
             is_full,
             note,
             created_at,
             updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (
-            fill_date,
-            odometer_km,
-            trip_km,
-            liters,
-            yen_per_liter,
-            is_full,
-            note,
-            now,
-            now,
-        ),
+        (fill_date, odometer_km, liters, yen_per_liter, is_full, note, now, now),
     )
     db.commit()
     db.close()
@@ -683,16 +647,7 @@ def fuel_edit(record_id: int):
 @login_required
 def fuel_update(record_id: int):
     fill_date = _parse_date(request.form.get("fill_date", ""), "日付")
-    odometer_km = _parse_decimal(
-        request.form.get("odometer_km", ""),
-        "メーター",
-        allow_empty=True,
-    )
-    trip_km = _parse_decimal(
-        request.form.get("trip_km", ""),
-        "トリップ",
-        allow_empty=True,
-    )
+    odometer_km = _parse_int(request.form.get("odometer_km", ""), "メーター")
     liters = _parse_decimal(request.form.get("liters", ""), "給油量")
     yen_per_liter = _parse_int(
         request.form.get("yen_per_liter", ""),
@@ -701,10 +656,7 @@ def fuel_update(record_id: int):
     )
     note = request.form.get("note", "").strip() or None
     is_full = 1 if request.form.get("is_full") == "on" else 0
-    if fill_date is None or liters is None:
-        return redirect(url_for("records.fuel_edit", record_id=record_id))
-    if odometer_km is None and trip_km is None:
-        flash("メーターかトリップを入力してください。", "warning")
+    if fill_date is None or odometer_km is None or liters is None:
         return redirect(url_for("records.fuel_edit", record_id=record_id))
 
     now = now_ts()
@@ -715,7 +667,6 @@ def fuel_update(record_id: int):
         UPDATE bike_fuel_log
         SET fill_date = %s,
             odometer_km = %s,
-            trip_km = %s,
             liters = %s,
             yen_per_liter = %s,
             is_full = %s,
@@ -723,17 +674,7 @@ def fuel_update(record_id: int):
             updated_at = %s
         WHERE id = %s
         """,
-        (
-            fill_date,
-            odometer_km,
-            trip_km,
-            liters,
-            yen_per_liter,
-            is_full,
-            note,
-            now,
-            record_id,
-        ),
+        (fill_date, odometer_km, liters, yen_per_liter, is_full, note, now, record_id),
     )
     db.commit()
     db.close()
