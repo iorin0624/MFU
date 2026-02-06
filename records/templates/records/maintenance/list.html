@@ -5,21 +5,11 @@
 {% block records_actions %}
   <div class="d-flex flex-wrap gap-2">
     {% include "records/_back_to_index.html" %}
-    <a href="{{ url_for('records.maintenance_list', _anchor='new') }}" class="btn btn-primary">新規追加</a>
+    <a href="{{ url_for('records.maintenance_new') }}" class="btn btn-primary">新規追加</a>
   </div>
 {% endblock %}
 
 {% block records_content %}
-<div class="card mb-4" id="new">
-  <div class="card-body">
-    <h5 class="card-title">新規追加</h5>
-    {% set item = None %}
-    {% set action_url = url_for('records.maintenance_create') %}
-    {% set show_back = true %}
-    {% include "records/maintenance/_form.html" %}
-  </div>
-</div>
-
 <div class="card mb-4">
   <div class="card-body">
     <h5 class="card-title">直近交換サマリ</h5>
