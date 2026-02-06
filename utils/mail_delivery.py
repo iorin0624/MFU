@@ -12,7 +12,7 @@ from app.utils.db import get_db
 DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
 DEFAULT_MESSAGE_ID_DOMAIN = "mfu.iori0624.jp"
 DEFAULT_POLL_LIMIT_HOURS = 24
-DEFAULT_HTTP_TIMEOUT_SEC = 15
+DEFAULT_HTTP_TIMEOUT_SEC = 5
 
 
 def _get_config_value(name: str, default):
@@ -190,7 +190,7 @@ def _touch_delivery_row(
     db.close()
 
 
-def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = None) -> dict:
+def poll_mail_delivery_statuses(max_rows: int = 200) -> dict:
     ensure_mail_delivery_schema()
     base_url = _get_config_value(
         "MFU_POSTFIX_STATUS_API_BASE_URL", DEFAULT_POSTFIX_STATUS_API_BASE_URL
@@ -199,11 +199,9 @@ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = N
     limit_hours = int(
         _get_config_value("MFU_MAIL_STATUS_POLL_LIMIT_HOURS", DEFAULT_POLL_LIMIT_HOURS)
     )
-    if timeout_sec is None:
-        timeout_sec = int(
-            _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
-        )
-    timeout_sec = max(1, min(60, int(timeout_sec)))
+    timeout_sec = int(
+        _get_config_value("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC", DEFAULT_HTTP_TIMEOUT_SEC)
+    )
 
     base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
     headers = {"X-API-Key": api_key} if api_key else {}
@@ -227,23 +225,6 @@ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = N
                 headers=headers,
                 timeout=timeout_sec,
             )
-        except requests.Timeout:
-            retry_timeout = min(timeout_sec * 2, 60)
-            try:
-                resp = requests.get(
-                    url,
-                    params={"message_id": message_id},
-                    headers=headers,
-                    timeout=retry_timeout,
-                )
-            except requests.RequestException as exc:
-                summary["errors"] += 1
-                _touch_delivery_row(
-                    row_id=row_id,
-                    detail=f"poll_error: {exc.__class__.__name__}",
-                    checked_at=now,
-                )
-                continue
         except requests.RequestException as exc:
             summary["errors"] += 1
             _touch_delivery_row(
