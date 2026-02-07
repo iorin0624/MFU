@@ -156,7 +156,23 @@
           body: JSON.stringify({ username }),
         });
         if (optionsRes.status === 404) {
-          showPasskeyError("パスキー未登録のためOTPログインに進みます。");
+          const statusRes = await fetch("/auth/mfa/status", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+            body: JSON.stringify({ username }),
+          });
+          const statusData = await statusRes.json().catch(() => ({}));
+          if (statusRes.ok && statusData.ok && statusData.totp_enabled) {
+            showPasskeyError("パスキー未登録のためOTPログインに進みます。");
+            if (onFallback) onFallback(username);
+            return;
+          }
+          if (statusRes.ok && statusData.ok && !statusData.totp_enabled) {
+            loginForm.submit();
+            return;
+          }
+          showPasskeyError(statusData.error || "パスキー情報の取得に失敗しました。");
           if (onFallback) onFallback(username);
           return;
         }

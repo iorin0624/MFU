@@ -30,6 +30,20 @@ _schema_init_lock = Lock()
 _schema_initialized = False
 
 
+@records_bp.app_template_filter("fmt_yen")
+def fmt_yen(value, digits=0):
+    if value is None or value == "":
+        return "-"
+    try:
+        number = float(value)
+    except Exception:
+        return str(value)
+    precision = int(digits)
+    if precision > 0:
+        return f"{round(number, precision):,.{precision}f}"
+    return f"{round(number):,}"
+
+
 @records_bp.before_app_request
 def _init_records_schema() -> None:
     global _schema_initialized

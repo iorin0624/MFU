@@ -178,6 +178,24 @@ def create_preauth():
     )
 
 
+@mfa_bp.post("/auth/mfa/status")
+def mfa_status():
+    payload = request.get_json(silent=True) or {}
+    username = (payload.get("username") or "").strip()
+    if not username:
+        return jsonify(ok=False, error="ユーザー名が必要です"), 400
+
+    user = _get_user_row(username)
+    if not user:
+        return jsonify(ok=False, error="ユーザーが見つかりません"), 404
+
+    totp_status = get_totp_status(username)
+    return jsonify(
+        ok=True,
+        totp_enabled=bool(totp_status.get("enabled") and totp_status.get("has_secret")),
+    )
+
+
 @mfa_bp.post("/mfa/totp/verify")
 def verify_totp():
     payload = request.get_json(silent=True) or {}
