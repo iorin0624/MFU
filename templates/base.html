@@ -21,56 +21,38 @@
         <ul class="navbar-nav me-auto mb-2 mb-lg-0">
 
           {% if session.get('user') %}
-          <!-- アップロード関係（全ユーザー） -->
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" id="navUpload" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-             ⬆️ アップロード関係
-            </a>
-            <ul class="dropdown-menu" aria-labelledby="navUpload">
-              <li><a class="dropdown-item" href="/modes">⚙️ モード管理</a></li>
-              <li><a class="dropdown-item" href="/upload_list">📜 アップロード履歴</a></li>
-            </ul>
-          </li>
-
-          <!-- 単独メニュー（全ユーザー） -->
-          <li class="nav-item"><a class="nav-link" href="/album/admin_create_album/">🖼 アルバム管理</a></li>
-          <li class="nav-item"><a class="nav-link" href="/tickets/admin">🎟 チケット管理</a></li>
-          <li class="nav-item"><a class="nav-link" href="/receipts">🧾 受領書</a></li>
-          <li class="nav-item"><a class="nav-link" href="/external-login/admin/events">📅 イベント一覧</a></li>
-
-          {# 予定とタイマーはシステム系から独立させ、イベント一覧の右隣に（adminのみ表示） #}
-          {% if session.user == 'admin' %}
-            <li class="nav-item"><a class="nav-link" href="/suc/admin">🗓 予定</a></li>
-            <li class="nav-item"><a class="nav-link" href="/admin/timer">⏰ タイマー＆アラーム</a></li>
-          {% endif %}
-
-          {# ==== ここから：システム系はadminのみ、一般は/account ==== #}
-          {% if session.user == 'admin' %}
-            <!-- システム系（adminのみ） -->
-            <li class="nav-item dropdown">
-              <a class="nav-link dropdown-toggle" href="#" id="navSystem" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                🧰 システム系
-              </a>
-              <ul class="dropdown-menu" aria-labelledby="navSystem">
-                <li><a class="dropdown-item" href="/admin/users">👤 ユーザー管理</a></li>
-                <li><hr class="dropdown-divider"></li>
-                <li><a class="dropdown-item" href="/admin/maintenance">🛠 メンテナンス切換</a></li>
-                <li><a class="dropdown-item" href="/admin/logs">📑 アクセスログ</a></li>
-                <li><a class="dropdown-item" href="/service_logs/">📡 システムログ</a></li>
-                <!-- ▼ 追加：ノード監視（スピードテストの上に配置） -->
-                <li><a class="dropdown-item" href="/admin/nodes">🖥 ノード監視</a></li>
-                <!-- ▲ 追加ここまで -->
-                <li><a class="dropdown-item" href="/speedtest">🚀 スピードテスト</a></li>
-                {# ※ タイマー＆アラームは上に移動したためここからは削除 #}
-              </ul>
-            </li>
-          {% else %}
-            <!-- 一般ユーザー用：アカウント -->
-            <li class="nav-item">
-              <a class="nav-link" href="/account">👤 アカウント</a>
-            </li>
-          {% endif %}
-          {# ==== ここまで ==== #}
+            {% for item in nav_items %}
+              {% set show_item = (not item.feature_key) or has_feature(item.feature_key) or session.user == 'admin' %}
+              {% if show_item %}
+                {% if item.children %}
+                  <li class="nav-item dropdown">
+                    <a class="nav-link dropdown-toggle" href="#" id="navItem{{ item.id }}" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                      {{ item.label }}
+                    </a>
+                    <ul class="dropdown-menu" aria-labelledby="navItem{{ item.id }}">
+                      {% for child in item.children %}
+                        {% set show_child = (not child.feature_key) or has_feature(child.feature_key) or session.user == 'admin' %}
+                        {% if show_child %}
+                          <li>
+                            <a class="dropdown-item" href="{{ child.url }}"
+                               {% if child.is_external or child.open_in_new_tab %}target="_blank" rel="noopener"{% endif %}>
+                              {{ child.label }}
+                            </a>
+                          </li>
+                        {% endif %}
+                      {% endfor %}
+                    </ul>
+                  </li>
+                {% else %}
+                  <li class="nav-item">
+                    <a class="nav-link" href="{{ item.url }}"
+                       {% if item.is_external or item.open_in_new_tab %}target="_blank" rel="noopener"{% endif %}>
+                      {{ item.label }}
+                    </a>
+                  </li>
+                {% endif %}
+              {% endif %}
+            {% endfor %}
           {% endif %}
         </ul>
 
