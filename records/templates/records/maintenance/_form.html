@@ -1,0 +1,33 @@
+<form method="post" action="{{ action_url }}">
+  <div class="row mb-3">
+    <div class="col-md-4">
+      <label class="form-label">日付</label>
+      <input type="date" name="event_date" class="form-control" value="{{ item.event_date if item else default_event_date }}" required>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">メーター(km)</label>
+      <input type="number" name="odometer_km" class="form-control" value="{{ item.odometer_km if item else '' }}" required>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">項目</label>
+      <select name="item_id" class="form-select" required>
+        <option value="">選択してください</option>
+        {% for option in maintenance_items %}
+          <option value="{{ option.id }}" {% if item and item.item_id == option.id %}selected{% endif %}>
+            {{ option.name }}
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  <div class="mb-3">
+    <label class="form-label">備考</label>
+    <textarea name="note" class="form-control" rows="3">{{ item.note if item else '' }}</textarea>
+  </div>
+  <div class="d-flex gap-2">
+    <button type="submit" class="btn btn-primary">保存</button>
+    {% if show_back %}
+      <a href="{{ url_for('records.maintenance_list') }}" class="btn btn-outline-secondary">戻る</a>
+    {% endif %}
+  </div>
+</form>

@@ -4,10 +4,11 @@ import smtplib
 import ssl
 from email.header import Header
 from email.mime.text import MIMEText
-from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
+from email.utils import formataddr, formatdate, getaddresses, parseaddr
 from pathlib import Path
 
 from app.utils.logs import write_smtp_log
+from app.utils.mail_delivery import generate_message_id, record_mail_submission
 
 
 # 署名ファイルのパス（このファイルと同じディレクトリ）
@@ -38,6 +39,8 @@ def send_mail(
     debug: bool = False,
     starttls: bool | None = None,
     ignore_quit_errors: bool = True,
+    external_login_user_id: int | None = None,
+    mail_kind: str | None = None,
 ) -> None:
     """
     メール送信ユーティリティ。
@@ -104,7 +107,16 @@ def send_mail(
     msg["To"] = to_header
     msg["Reply-To"] = "admin@mail.iori0624.jp"  # 固定
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-Id"] = make_msgid(domain="mail.iori0624.jp")
+    mfu_mail_uuid, message_id = generate_message_id()
+    message_id_header = f"<{message_id}>"
+    if msg.get("Message-ID"):
+        msg.replace_header("Message-ID", message_id_header)
+    else:
+        msg["Message-ID"] = message_id_header
+    if msg.get("X-MFU-Mail-ID"):
+        msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
+    else:
+        msg["X-MFU-Mail-ID"] = mfu_mail_uuid
 
     # STARTTLS 自動判定
     if starttls is None:
@@ -142,6 +154,19 @@ def send_mail(
 
         sent_ok = True
         _summary_log(True, to_header, subject or "")
+        try:
+            record_mail_submission(
+                mfu_mail_uuid=mfu_mail_uuid,
+                message_id=message_id,
+                to_addresses=to_header,
+                subject=subject or "",
+                submit_status="sent",
+                last_delivery_status="queued",
+                external_login_user_id=external_login_user_id,
+                mail_kind=mail_kind,
+            )
+        except Exception:
+            log.warning("mail submission log failed", exc_info=True)
 
         try:
             smtp.quit()
@@ -156,12 +181,40 @@ def send_mail(
             log.info(f"SMTP post-send error ignored: {e}")
         else:
             _summary_log(False, to_header, subject or "", repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=to_header,
+                    subject=subject or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                    external_login_user_id=external_login_user_id,
+                    mail_kind=mail_kind,
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
             raise
     except Exception as e:
         if sent_ok and ignore_quit_errors:
             log.info(f"SMTP post-send generic error ignored: {e}")
         else:
             _summary_log(False, to_header, subject or "", repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=to_header,
+                    subject=subject or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                    external_login_user_id=external_login_user_id,
+                    mail_kind=mail_kind,
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
             raise
     finally:
         if smtp is not None:
@@ -193,6 +246,17 @@ def send_mime(
         print(f"[SMTP] {s}")
 
     envelope_from = parseaddr(msg.get("From", ""))[1] or "noreply@mail.iori0624.jp"
+
+    mfu_mail_uuid, message_id = generate_message_id()
+    message_id_header = f"<{message_id}>"
+    if msg.get("Message-ID"):
+        msg.replace_header("Message-ID", message_id_header)
+    else:
+        msg["Message-ID"] = message_id_header
+    if msg.get("X-MFU-Mail-ID"):
+        msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
+    else:
+        msg["X-MFU-Mail-ID"] = mfu_mail_uuid
 
     rcpts: list[str] = []
     for h in ("To", "Cc", "Bcc"):
@@ -238,6 +302,17 @@ def send_mime(
 
         sent_ok = True
         _summary_log(True, ", ".join(rcpts), subj)
+        try:
+            record_mail_submission(
+                mfu_mail_uuid=mfu_mail_uuid,
+                message_id=message_id,
+                to_addresses=", ".join(rcpts),
+                subject=subj or "",
+                submit_status="queued",
+                last_delivery_status="queued",
+            )
+        except Exception:
+            log.warning("mail submission log failed", exc_info=True)
 
         try:
             smtp.quit()
@@ -252,12 +327,36 @@ def send_mime(
             log.info(f"SMTP post-send error ignored: {e}")
         else:
             _summary_log(False, ", ".join(rcpts), subj, repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=", ".join(rcpts),
+                    subject=subj or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
             raise
     except Exception as e:
         if sent_ok and ignore_quit_errors:
             log.info(f"SMTP post-send generic error ignored: {e}")
         else:
             _summary_log(False, ", ".join(rcpts), subj, repr(e))
+            try:
+                record_mail_submission(
+                    mfu_mail_uuid=mfu_mail_uuid,
+                    message_id=message_id,
+                    to_addresses=", ".join(rcpts),
+                    subject=subj or "",
+                    submit_status="failed",
+                    last_delivery_status="failed",
+                    last_delivery_detail=repr(e),
+                )
+            except Exception:
+                log.warning("mail submission log failed", exc_info=True)
             raise
     finally:
         if smtp is not None:

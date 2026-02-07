@@ -81,6 +81,9 @@ app = Flask(
 )
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
+def create_app():
+    return app
+
 load_dotenv()
 app.secret_key = os.environ.get("SECRET_KEY")
 
@@ -1759,6 +1762,111 @@ def admin_logs():
 
 
 # =======================================
+# 管理: メール送信ログ（配送結果）
+# =======================================
+@app.route("/admin/mail-delivery")
+@admin_required
+def admin_mail_delivery_logs():
+    from app.utils.mail_delivery import ensure_mail_delivery_schema
+
+    ensure_mail_delivery_schema()
+
+    status = (request.args.get("status") or "all").strip().lower()
+    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
+        status = "all"
+
+    search = (request.args.get("q") or "").strip()
+    try:
+        per_page = int(request.args.get("limit", "200"))
+    except ValueError:
+        per_page = 200
+    per_page = max(20, min(500, per_page))
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    offset = (page - 1) * per_page
+
+    where_sql = "WHERE 1=1"
+    params: list = []
+    if status != "all":
+        where_sql += " AND last_delivery_status = %s"
+        params.append(status)
+    if search:
+        where_sql += " AND (message_id LIKE %s OR mfu_mail_uuid LIKE %s OR subject LIKE %s OR to_addresses LIKE %s)"
+        like = f"%{search}%"
+        params.extend([like, like, like, like])
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        f"""
+        SELECT id, mfu_mail_uuid, message_id, to_addresses, subject, submit_status, submit_at,
+               last_delivery_status, last_delivery_detail, last_delivery_queue_id,
+               last_delivery_checked_at
+          FROM mfu_mail_delivery_log
+          {where_sql}
+         ORDER BY submit_at DESC, id DESC
+         LIMIT %s OFFSET %s
+        """,
+        (*params, per_page, offset),
+    )
+    rows = cur.fetchall() or []
+    for row in rows:
+        submit_at = row.get("submit_at")
+        row["submit_at_ts"] = int(submit_at.timestamp()) if submit_at else None
+
+    cur.execute(
+        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",
+        params,
+    )
+    total = (cur.fetchone() or {}).get("cnt", 0)
+    db.close()
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return render_template(
+        "admin_mail_delivery_logs.html",
+        rows=rows,
+        filters={
+            "status": status,
+            "q": search,
+            "limit": per_page,
+        },
+        page=page,
+        total_pages=total_pages,
+        total=total,
+    )
+
+
+@app.route("/admin/mail-delivery/refresh", methods=["POST"])
+@admin_required
+def admin_mail_delivery_refresh():
+    from app.utils.mail_delivery import poll_mail_delivery_statuses
+
+    max_rows = request.args.get("max_rows")
+    timeout_sec = request.args.get("timeout_sec")
+    if max_rows is None:
+        payload = request.get_json(silent=True) or {}
+        max_rows = payload.get("max_rows")
+        if timeout_sec is None:
+            timeout_sec = payload.get("timeout_sec")
+    try:
+        max_rows_int = int(max_rows or 200)
+    except (TypeError, ValueError):
+        max_rows_int = 200
+    max_rows_int = max(20, min(500, max_rows_int))
+
+    try:
+        timeout_sec_int = int(timeout_sec) if timeout_sec is not None else None
+    except (TypeError, ValueError):
+        timeout_sec_int = None
+
+    summary = poll_mail_delivery_statuses(max_rows=max_rows_int, timeout_sec=timeout_sec_int)
+    summary["max_rows"] = max_rows_int
+    return jsonify(summary)
+
+
+# =======================================
 # 管理: メンテナンスモード
 # =======================================
 @app.route("/admin/maintenance", methods=["GET", "POST"])
@@ -2485,6 +2593,9 @@ from .payment import bp as payment_bp
 app.register_blueprint(payment_bp)
 
 app.register_blueprint(receipts_bp)
+
+from app.records import records_bp
+app.register_blueprint(records_bp, url_prefix="/records")
 
 from app.utils.logs import log_request_raw, write_login_log, log_access
 
