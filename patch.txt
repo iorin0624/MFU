@@ -1,202 +1,73 @@
-diff --git a/utils/whois_util.py b/utils/whois_util.py
-index e850cb0da0da66684979bd4845bf5f4088d4fccf..570680756ae625dbc7f685ef3e1d58c00d0adb9f 100644
---- a/utils/whois_util.py
-+++ b/utils/whois_util.py
-@@ -8,55 +8,59 @@ import ipaddress
- from typing import Optional
- from pathlib import Path
- from urllib.request import urlopen, Request
- from urllib.error import URLError, HTTPError
+diff --git a/templates/login.html b/templates/login.html
+index 9a1aa475a714ccd2b0fa66b203d62bca692d8c64..dc2837cdc67d7e00a4377cc84766e882951d027d 100644
+--- a/templates/login.html
++++ b/templates/login.html
+@@ -134,51 +134,67 @@
+       return data;
+     };
  
- WHOIS_CACHE_DIR = "/mnt/mfu/whois_cache"
- os.makedirs(WHOIS_CACHE_DIR, exist_ok=True)
+     const attemptPasskeyLogin = async ({ onFallback } = {}) => {
+       clearPasskeyError();
+       clearMfaMessages();
+       const username = usernameInput.value.trim();
+       if (!username) {
+         showPasskeyError("ユーザー名を入力してください。");
+         return;
+       }
+       if (!navigator.credentials || !window.PublicKeyCredential) {
+         showPasskeyError("この環境ではパスキーを利用できません。");
+         if (onFallback) onFallback();
+         return;
+       }
  
- SUCCESS_TTL_SEC = 86400 * 7
- FAIL_TTL_SEC = 3600
+       try {
+         const optionsRes = await fetch("/webauthn/auth/options", {
+           method: "POST",
+           headers: { "Content-Type": "application/json" },
+           credentials: "same-origin",
+           body: JSON.stringify({ username }),
+         });
+         if (optionsRes.status === 404) {
+-          showPasskeyError("パスキー未登録のためOTPログインに進みます。");
++          const statusRes = await fetch("/auth/mfa/status", {
++            method: "POST",
++            headers: { "Content-Type": "application/json" },
++            credentials: "same-origin",
++            body: JSON.stringify({ username }),
++          });
++          const statusData = await statusRes.json().catch(() => ({}));
++          if (statusRes.ok && statusData.ok && statusData.totp_enabled) {
++            showPasskeyError("パスキー未登録のためOTPログインに進みます。");
++            if (onFallback) onFallback(username);
++            return;
++          }
++          if (statusRes.ok && statusData.ok && !statusData.totp_enabled) {
++            loginForm.submit();
++            return;
++          }
++          showPasskeyError(statusData.error || "パスキー情報の取得に失敗しました。");
+           if (onFallback) onFallback(username);
+           return;
+         }
+         const optionsData = await optionsRes.json();
+         if (!optionsRes.ok) {
+           showPasskeyError(optionsData.error || "パスキー情報の取得に失敗しました。");
+           if (onFallback) onFallback(username);
+           return;
+         }
  
- def _cache_path(ip: str) -> Path:
-     key = hashlib.md5(ip.encode()).hexdigest()
-     return Path(WHOIS_CACHE_DIR) / f"{key}.json"
- 
- def _load_cache(ip: str, *, force_refresh: bool) -> Optional[dict]:
-     if force_refresh:
-         return None
-     cache_file = _cache_path(ip)
-     if not cache_file.exists():
-         return None
-     try:
-         data = json.loads(cache_file.read_text())
-     except Exception:
-         return None
-+    netname = data.get("netname") or ""
-+    org = data.get("org") or ""
-+    display_name = data.get("display_name") or ""
-+    if _is_generic_jpnic_name(netname) or _is_generic_jpnic_name(org) or _is_generic_jpnic_name(display_name):
-+        return None
-     expires_at = data.get("expires_at")
-     if expires_at and time.time() > expires_at:
-         return None
-     if expires_at is None:
--        netname = data.get("netname")
-         if netname and netname != "不明" and not str(netname).startswith("取得エラー"):
-             return data
-         return None
-     return data
- 
- def _save_cache(ip: str, info: dict, ttl: int) -> None:
-     cache_file = _cache_path(ip)
-     data = dict(info)
-     data["fetched_at"] = time.time()
-     data["expires_at"] = time.time() + ttl
-     try:
-         cache_file.write_text(json.dumps(data, ensure_ascii=False))
-     except Exception:
-         pass
- 
- def _fetch_rdap(ip: str) -> Optional[dict]:
-     url = f"https://rdap.org/ip/{ip}"
-     req = Request(url, headers={"User-Agent": "MFU/rdap"})
-     try:
-         with urlopen(req, timeout=8) as resp:
-             if resp.status != 200:
-                 return None
-             return json.loads(resp.read().decode("utf-8", errors="ignore"))
-     except (URLError, HTTPError, json.JSONDecodeError, TimeoutError):
-         return None
-@@ -169,87 +173,118 @@ def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
-     """IPからnetnameとcountryを取得（キャッシュ付き）"""
-     cached = _load_cache(ip, force_refresh=force_refresh)
-     if cached:
-         return cached
- 
-     try:
-         ip_obj = ipaddress.ip_address(ip)
-         is_ipv6 = ip_obj.version == 6
-     except ValueError:
-         is_ipv6 = False
- 
-     info = {
-         "netname": "不明",
-         "country": "不明",
-         "org": "",
-         "asname": "",
-         "source": "",
-     }
- 
-     rdap_name = ""
-     rdap_org = ""
-     rdap_country = ""
-     rdap = _fetch_rdap(ip)
-     if rdap:
-         rdap_name, rdap_org, rdap_country = _extract_rdap_name(rdap)
--        if rdap_name:
-+        if rdap_name and not _is_generic_jpnic_name(rdap_name):
-             info["netname"] = rdap_name
-         if rdap_org:
-             info["org"] = rdap_org
-         if rdap_country:
-             info["country"] = rdap_country
-         info["source"] = "rdap"
- 
-     whois_text = ""
-     try:
-         whois_text = subprocess.check_output(["whois", ip], timeout=10).decode(errors="ignore")
-     except Exception:
-         whois_text = ""
- 
-     whois_info = {
-         "netname": "",
-         "network_name": "",
-         "country": "",
-         "org": "",
-         "asname": "",
-     }
-     if whois_text:
-         whois_info = _extract_whois_info(whois_text)
-         if info["netname"] == "不明" and whois_info["netname"]:
-             info["netname"] = whois_info["netname"]
-         if not info["org"] and whois_info["org"]:
-             info["org"] = whois_info["org"]
-         if not info["asname"] and whois_info["asname"]:
-             info["asname"] = whois_info["asname"]
-         if info["country"] == "不明" and whois_info["country"]:
-             info["country"] = whois_info["country"]
-         if not info["source"]:
-             info["source"] = "whois"
- 
-     if info["netname"] == "不明" and not is_ipv6:
-         if info["org"]:
-             info["netname"] = info["org"]
-         elif info["asname"]:
-             info["netname"] = info["asname"]
- 
--    if is_ipv6:
--        display_name = _pick_best_display_name(
--            whois_info,
--            rdap_org,
--            info["asname"],
--            rdap_name,
--        )
--        info["display_name"] = display_name or info["netname"]
--        if display_name:
--            info["netname"] = display_name
--        if _is_generic_jpnic_name(info["org"]):
--            info["org"] = ""
--
--    is_failure = info["netname"] in ("不明", "")
-+    display_name = _pick_best_display_name(
-+        whois_info,
-+        rdap_org,
-+        info["asname"],
-+        rdap_name,
-+    )
-+    info["display_name"] = display_name or info["netname"]
-+    if display_name:
-+        info["netname"] = display_name
-+    if _is_generic_jpnic_name(info["org"]):
-+        info["org"] = ""
-+
-+    is_failure = info["netname"] in ("不明", "") or _is_generic_jpnic_name(info["netname"])
-     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
-     return info
- 
- if __name__ == "__main__":
-     import sys
--    target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
--    force = "--refresh" in sys.argv
--    print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
-+
-+    def _run_selftest() -> None:
-+        whois_info = {
-+            "network_name": "Japan Network Information Center",
-+            "netname": "",
-+            "org": "SOME-ISP",
-+            "asname": "",
-+            "country": "",
-+        }
-+        picked = _pick_best_display_name(whois_info, "", "", "")
-+        assert picked == "SOME-ISP", f"unexpected display name: {picked}"
-+
-+        ip = "203.0.113.1"
-+        cache_file = _cache_path(ip)
-+        try:
-+            cache_file.write_text(json.dumps({
-+                "netname": "JPNIC",
-+                "org": "",
-+                "display_name": "",
-+                "expires_at": time.time() + 60,
-+            }, ensure_ascii=False))
-+            assert _load_cache(ip, force_refresh=False) is None, "generic JPNIC cache should be ignored"
-+        finally:
-+            try:
-+                cache_file.unlink()
-+            except Exception:
-+                pass
-+        print("selftest ok")
-+
-+    if "--selftest" in sys.argv:
-+        _run_selftest()
-+    else:
-+        target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
-+        force = "--refresh" in sys.argv
-+        print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
+         const credential = await navigator.credentials.get({
+           publicKey: PasskeyUtils.decodeRequestOptions(optionsData),
+         });
+         const verifyRes = await fetch("/webauthn/auth/verify", {
+           method: "POST",
+           headers: { "Content-Type": "application/json" },
+           credentials: "same-origin",
+           body: JSON.stringify({
+             username,
+             credential: PasskeyUtils.serializeAuthenticationCredential(credential),
+           }),
+         });
+         const verifyData = await verifyRes.json();
+         if (!verifyRes.ok) {
+           showPasskeyError(verifyData.error || "パスキー認証に失敗しました。");
