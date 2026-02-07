@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}機能付与（ACL）{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">機能付与（ACL）</h1>
+</div>
+
+<form method="get" class="row g-2 mb-4">
+  <div class="col-auto">
+    <label class="form-label">ユーザー</label>
+    <select name="user_id" class="form-select" onchange="this.form.submit()">
+      {% for user in users %}
+        <option value="{{ user.username }}" {% if user.username == selected_user %}selected{% endif %}>
+          {{ user.nickname or user.username }} ({{ user.username }})
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+</form>
+
+<form method="post">
+  <input type="hidden" name="user_id" value="{{ selected_user }}">
+  {% for group in grouped_features %}
+    <div class="card mb-3">
+      <div class="card-header py-2">
+        <strong>{{ group.category }}</strong>
+      </div>
+      <div class="list-group list-group-flush">
+        {% for feature in group.features %}
+          <label class="list-group-item d-flex align-items-center">
+            <input class="form-check-input me-2" type="checkbox" name="features" value="{{ feature.feature_key }}"
+                   {% if feature.feature_key in user_enabled %}checked{% endif %}
+                   {% if not feature.is_enabled_global %}disabled{% endif %}>
+            <span class="me-2">{{ feature.label }}</span>
+            {% if feature.description %}
+              <small class="text-muted ms-1">{{ feature.description }}</small>
+            {% endif %}
+            {% if not feature.is_enabled_global %}
+              <span class="badge bg-secondary ms-auto">全体無効</span>
+            {% endif %}
+          </label>
+        {% endfor %}
+      </div>
+    </div>
+  {% endfor %}
+  <button type="submit" class="btn btn-primary">保存</button>
+  <a href="/admin/nav" class="btn btn-outline-secondary">ナビ編集へ</a>
+</form>
+{% endblock %}

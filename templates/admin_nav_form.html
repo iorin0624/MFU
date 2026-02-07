@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}ナビ項目編集{% endblock %}
+
+{% block content %}
+<h1 class="h4 mb-3">{{ "編集" if item else "新規追加" }}</h1>
+
+<form method="post" class="row g-3">
+  <div class="col-md-6">
+    <label class="form-label">ラベル</label>
+    <input type="text" name="label" class="form-control" value="{{ item.label if item else '' }}" required>
+  </div>
+  <div class="col-md-6">
+    <label class="form-label">URL</label>
+    <input type="text" name="url" class="form-control" value="{{ item.url if item else '' }}" required>
+  </div>
+  <div class="col-md-6">
+    <label class="form-label">親メニュー</label>
+    <select name="parent_id" class="form-select">
+      <option value="">（なし）</option>
+      {% for parent in parents %}
+        <option value="{{ parent.id }}" {% if item and item.parent_id == parent.id %}selected{% endif %}>
+          {{ parent.label }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-md-3">
+    <label class="form-label">順序</label>
+    <input type="number" name="order_no" class="form-control" value="{{ item.order_no if item else 0 }}">
+  </div>
+  <div class="col-md-3">
+    <label class="form-label">機能キー</label>
+    <select name="feature_key" class="form-select">
+      <option value="">（常時表示）</option>
+      {% for feature in features %}
+        <option value="{{ feature.feature_key }}" {% if item and item.feature_key == feature.feature_key %}selected{% endif %}>
+          {{ feature.feature_key }} - {{ feature.label }}
+        </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="col-12">
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="is_enabled" id="is_enabled"
+             {% if item is none or item.is_enabled %}checked{% endif %}>
+      <label class="form-check-label" for="is_enabled">有効</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="open_in_new_tab" id="open_in_new_tab"
+             {% if item and item.open_in_new_tab %}checked{% endif %}>
+      <label class="form-check-label" for="open_in_new_tab">新しいタブで開く</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input" type="checkbox" name="is_external" id="is_external"
+             {% if item and item.is_external %}checked{% endif %}>
+      <label class="form-check-label" for="is_external">外部リンク</label>
+    </div>
+  </div>
+  <div class="col-12">
+    <button type="submit" class="btn btn-primary">保存</button>
+    <a href="/admin/nav" class="btn btn-outline-secondary">戻る</a>
+  </div>
+</form>
+{% endblock %}
