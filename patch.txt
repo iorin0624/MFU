@@ -1,90 +1,153 @@
-diff --git a/external_login_user/template/admin_event_edit.html b/external_login_user/template/admin_event_edit.html
-index 421bc2b458375c6e38ceb2e4889a357cb97a394b..7d3b4c4225da79e15a7cf1cb52b65b30587a84ce 100644
---- a/external_login_user/template/admin_event_edit.html
-+++ b/external_login_user/template/admin_event_edit.html
-@@ -382,65 +382,83 @@
-             </div>
-           </div>
-         </div>
-       </div>
+diff --git a/external_login_user/template/_event_invite_block.html b/external_login_user/template/_event_invite_block.html
+index 94852cbf3fe036b5def6163d90a004700f182d5a..537f3441022b73df725eac217619d9d5d3912084 100644
+--- a/external_login_user/template/_event_invite_block.html
++++ b/external_login_user/template/_event_invite_block.html
+@@ -4,128 +4,123 @@
+ {% set wrap_card = invite_wrap_card if invite_wrap_card is defined else true %}
+ 
+ {% if wrap_card %}
+ <div class="card mb-3" id="invite-card">
+   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+     <span>参加承認（自動／手動）</span>
+     <div class="form-check form-switch m-0">
+       <input class="form-check-input" type="checkbox" id="autoApproveSwitch" {{ 'checked' if ev.auto_approve_by_invite else '' }}>
+       <label class="form-check-label ms-2" for="autoApproveSwitch">
+         {{ ev.auto_approve_by_invite and '自動承認（招待リンク一致時）' or '手動承認（従来どおり）' }}
+       </label>
      </div>
    </div>
  
-   <div class="col-12 d-grid d-md-flex gap-2">
-     <button class="btn btn-primary">保存する</button>
-     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">キャンセル</a>
+   <div class="card-body d-grid gap-3">
+     <div class="text-muted small">
+       自動承認をONにすると、<code>iv=招待トークン</code> が一致した招待リンク経由の参加は<strong>即時承認</strong>されます。通常アクセスは従来どおり <code>pending</code> です。
+     </div>
+ 
+     {% set baseJoin = url_for('external_login_user.join_event', event_uuid=ev.event_uuid_str, _external=True) %}
+     {% set token = ev.invite_token or '' %}
+     {% set invite_url = token and (baseJoin ~ '?iv=' ~ token) or baseJoin %}
+ 
+     <div>
+       <label class="form-label fw-bold mb-1">招待リンク</label>
+-      <div class="input-group flex-column flex-md-row gap-2">
+-        <input type="text" class="form-control text-break" id="inviteUrl" value="{{ invite_url }}" readonly>
+-        <div class="d-grid d-md-block flex-md-shrink-0">
+-          <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+-        </div>
++      <div class="d-flex flex-column flex-md-row gap-2">
++        <textarea id="inviteUrl" class="form-control font-monospace break-anywhere" rows="2" readonly style="resize:none">{{ invite_url }}</textarea>
++        <button class="btn btn-outline-secondary w-100 w-md-auto" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+       </div>
+       <div class="mt-2">
+         <div class="form-text">トークン</div>
+-        <div class="p-2 border rounded bg-light text-break">
+-          <code id="inviteToken" class="d-block text-break">{{ token or '-' }}</code>
++        <div class="p-2 border rounded bg-light break-anywhere">
++          <code id="inviteToken" class="d-block break-anywhere">{{ token or '-' }}</code>
+         </div>
+         {% if not token %}
+           <div class="form-text text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</div>
+         {% endif %}
+       </div>
+       <div class="mt-2 d-flex flex-column flex-md-row gap-2">
+-        <div class="d-grid d-md-block flex-md-shrink-0">
+-          <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
+-            {{ token and 'トークン再発行' or 'トークン発行' }}
+-          </button>
+-        </div>
++        <button class="btn btn-outline-danger btn-sm w-100 w-md-auto" type="button" id="issueOrRotateTokenBtn">
++          {{ token and 'トークン再発行' or 'トークン発行' }}
++        </button>
+         <span class="align-self-md-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
+       </div>
+     </div>
    </div>
- </form>
- 
- <hr class="my-4">
- 
- <div class="small text-muted">
-   支払期間は参加者の決済入口（<code>/pay/start/&lt;event_uuid&gt;</code>）でサーバ側ガードがかかります（期間外は進めません）。<br>
-   この管理モジュールは <code>external_login_user</code> Blueprint 配下で提供されています。
  </div>
+ {% else %}
+ <div id="invite-card" class="invite-block">
+   <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+     <div class="fw-semibold">参加承認（自動／手動）</div>
+     <div class="form-check form-switch m-0">
+       <input class="form-check-input" type="checkbox" id="autoApproveSwitch" {{ 'checked' if ev.auto_approve_by_invite else '' }}>
+       <label class="form-check-label ms-2" for="autoApproveSwitch">
+         {{ ev.auto_approve_by_invite and '自動承認（招待リンク一致時）' or '手動承認（従来どおり）' }}
+       </label>
+     </div>
+   </div>
  
- {# ===== ここからJS（このページ内に直置き：メモ自動リサイズ） ===== #}
+   <div class="d-grid gap-3">
+     <div class="text-muted small">
+       自動承認をONにすると、<code>iv=招待トークン</code> が一致した招待リンク経由の参加は<strong>即時承認</strong>されます。通常アクセスは従来どおり <code>pending</code> です。
+     </div>
+ 
+     {% set baseJoin = url_for('external_login_user.join_event', event_uuid=ev.event_uuid_str, _external=True) %}
+     {% set token = ev.invite_token or '' %}
+     {% set invite_url = token and (baseJoin ~ '?iv=' ~ token) or baseJoin %}
+ 
+     <div>
+       <label class="form-label fw-bold mb-1">招待リンク</label>
+-      <div class="input-group flex-column flex-md-row gap-2">
+-        <input type="text" class="form-control text-break" id="inviteUrl" value="{{ invite_url }}" readonly>
+-        <div class="d-grid d-md-block flex-md-shrink-0">
+-          <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+-        </div>
++      <div class="d-flex flex-column flex-md-row gap-2">
++        <textarea id="inviteUrl" class="form-control font-monospace break-anywhere" rows="2" readonly style="resize:none">{{ invite_url }}</textarea>
++        <button class="btn btn-outline-secondary w-100 w-md-auto" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+       </div>
+       <div class="mt-2">
+         <div class="form-text">トークン</div>
+-        <div class="p-2 border rounded bg-light text-break">
+-          <code id="inviteToken" class="d-block text-break">{{ token or '-' }}</code>
++        <div class="p-2 border rounded bg-light break-anywhere">
++          <code id="inviteToken" class="d-block break-anywhere">{{ token or '-' }}</code>
+         </div>
+         {% if not token %}
+           <div class="form-text text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</div>
+         {% endif %}
+       </div>
+       <div class="mt-2 d-flex flex-column flex-md-row gap-2">
+-        <div class="d-grid d-md-block flex-md-shrink-0">
+-          <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
+-            {{ token and 'トークン再発行' or 'トークン発行' }}
+-          </button>
+-        </div>
++        <button class="btn btn-outline-danger btn-sm w-100 w-md-auto" type="button" id="issueOrRotateTokenBtn">
++          {{ token and 'トークン再発行' or 'トークン発行' }}
++        </button>
+         <span class="align-self-md-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
+       </div>
+     </div>
+   </div>
+ </div>
+ {% endif %}
+ 
+-<style>#inviteUrl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;}</style>
++<style>
++.break-anywhere{overflow-wrap:anywhere;word-break:break-word;}
++@media (min-width: 768px){.w-md-auto{width:auto !important;}}
++</style>
  <script>
  (function(){
-   // --- メモ自動リサイズ ---
-   const memo = document.getElementById('memo_all');
--  function autosize(t){ t.style.height='auto'; t.style.height = (t.scrollHeight)+'px'; }
--  if(memo){ autosize(memo); memo.addEventListener('input', ()=>autosize(memo)); }
-+  function autosize(t){
-+    t.style.height = 'auto';
-+    t.style.height = t.scrollHeight + 'px';
-+  }
-+  function autosizeMemo(){
-+    if(!memo) return;
-+    requestAnimationFrame(()=>autosize(memo));
-+  }
-+  if(memo){
-+    autosizeMemo();
-+    ['input','change','paste'].forEach((eventName)=>{
-+      memo.addEventListener(eventName, autosizeMemo);
-+    });
-+  }
-+  document.addEventListener('shown.bs.collapse', (ev)=>{
-+    if(ev.target?.id === 'collapse-extra'){
-+      autosizeMemo();
-+    }
-+  });
+   // --- 依存値（両テンプレから同じキーで渡される前提） ---
+   const csrf     = {{ admin_csrf|tojson }};
+   const baseJoin = {{ url_for('external_login_user.join_event', event_uuid=ev.event_uuid_str, _external=True)|tojson }};
+   const toggleUrl= {{ url_for('external_login_user.admin_toggle_auto_approve', event_id=ev.id)|tojson }};
+   const rotateUrl= {{ url_for('external_login_user.admin_rotate_invite_token', event_id=ev.id)|tojson }};
  
-   // --- アコーディオン全展開 ---
-   const expandAllBtn = document.getElementById('expand-all-accordion');
-   const accordionEl = document.getElementById('event-edit-accordion');
-   if(expandAllBtn && accordionEl){
-     expandAllBtn.addEventListener('click', ()=>{
-       const collapses = accordionEl.querySelectorAll('.accordion-collapse');
-       collapses.forEach((el)=>{
-         if(!el.classList.contains('show')){
-           const instance = window.bootstrap?.Collapse.getOrCreateInstance(el, { toggle: false });
-           instance?.show();
-         }
-       });
-+      autosizeMemo();
-     });
-   }
+   // --- 要素 ---
+   const switchEl = document.getElementById('autoApproveSwitch');
+   const labelEl  = document.querySelector('label[for="autoApproveSwitch"]');
+   const inviteUrlInput = document.getElementById('inviteUrl');
+   const inviteTokenEl  = document.getElementById('inviteToken');
+   const copyBtn  = document.getElementById('copyInviteBtn');
+   const issueBtn = document.getElementById('issueOrRotateTokenBtn');
  
-   // --- 参加費計算 ---
-   const $autoMode = document.getElementById('fee-auto-mode');
-   const $studioFee = document.getElementById('studio-fee');
-   const $payers = document.getElementById('fee-payers');
-   const $feeRate = document.getElementById('fee-rate');
-   const $adminFee = document.getElementById('admin-fee');
-   const $calcBtn = document.getElementById('fee-calc-btn');
-   const $applyBtn = document.getElementById('fee-apply-btn');
-   const $feeInput = document.querySelector('input[name="fee_yen"]');
-   const $calcStatus = document.getElementById('fee-calc-status');
-   const $calcTotal = document.getElementById('fee-calc-total');
-   const $calcBreakdown = document.getElementById('fee-calc-breakdown');
- 
-   function parseNumber(el){
-     if(!el) return null;
-     const raw = (el.value || '').trim();
-     if(!raw) return null;
-     const n = Number(raw);
-     return Number.isFinite(n) ? n : null;
-   }
- 
-   function roundUp10(value){
+   function uiSetToken(token){
+     const has = !!token;
+     const u = has ? (baseJoin + '?iv=' + token) : baseJoin;
+     inviteTokenEl.textContent = has ? token : '-';
+     inviteUrlInput.value = u;
+     copyBtn.disabled = !has;
+     if (has) {
+       issueBtn.textContent = 'トークン再発行';
+     } else {
