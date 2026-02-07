@@ -26,21 +26,24 @@
 
     <div>
       <label class="form-label fw-bold mb-1">招待リンク</label>
-      <div class="input-group flex-column flex-sm-row gap-2">
-        <input type="text" class="form-control" id="inviteUrl" value="{{ invite_url }}" readonly>
-        <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+      <div class="d-flex flex-column flex-md-row gap-2">
+        <textarea id="inviteUrl" class="form-control font-monospace break-anywhere" rows="2" readonly style="resize:none">{{ invite_url }}</textarea>
+        <button class="btn btn-outline-secondary w-100 w-md-auto" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
       </div>
-      <div class="form-text">
-        トークン：<code id="inviteToken">{{ token or '-' }}</code>
+      <div class="mt-2">
+        <div class="form-text">トークン</div>
+        <div class="p-2 border rounded bg-light break-anywhere">
+          <code id="inviteToken" class="d-block break-anywhere">{{ token or '-' }}</code>
+        </div>
         {% if not token %}
-          <span class="text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</span>
+          <div class="form-text text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</div>
         {% endif %}
       </div>
-      <div class="mt-2 d-flex flex-column flex-sm-row gap-2">
-        <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
+      <div class="mt-2 d-flex flex-column flex-md-row gap-2">
+        <button class="btn btn-outline-danger btn-sm w-100 w-md-auto" type="button" id="issueOrRotateTokenBtn">
           {{ token and 'トークン再発行' or 'トークン発行' }}
         </button>
-        <span class="align-self-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
+        <span class="align-self-md-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
       </div>
     </div>
   </div>
@@ -68,28 +71,34 @@
 
     <div>
       <label class="form-label fw-bold mb-1">招待リンク</label>
-      <div class="input-group flex-column flex-sm-row gap-2">
-        <input type="text" class="form-control" id="inviteUrl" value="{{ invite_url }}" readonly>
-        <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+      <div class="d-flex flex-column flex-md-row gap-2">
+        <textarea id="inviteUrl" class="form-control font-monospace break-anywhere" rows="2" readonly style="resize:none">{{ invite_url }}</textarea>
+        <button class="btn btn-outline-secondary w-100 w-md-auto" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
       </div>
-      <div class="form-text">
-        トークン：<code id="inviteToken">{{ token or '-' }}</code>
+      <div class="mt-2">
+        <div class="form-text">トークン</div>
+        <div class="p-2 border rounded bg-light break-anywhere">
+          <code id="inviteToken" class="d-block break-anywhere">{{ token or '-' }}</code>
+        </div>
         {% if not token %}
-          <span class="text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</span>
+          <div class="form-text text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</div>
         {% endif %}
       </div>
-      <div class="mt-2 d-flex flex-column flex-sm-row gap-2">
-        <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
+      <div class="mt-2 d-flex flex-column flex-md-row gap-2">
+        <button class="btn btn-outline-danger btn-sm w-100 w-md-auto" type="button" id="issueOrRotateTokenBtn">
           {{ token and 'トークン再発行' or 'トークン発行' }}
         </button>
-        <span class="align-self-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
+        <span class="align-self-md-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
       </div>
     </div>
   </div>
 </div>
 {% endif %}
 
-<style>#inviteUrl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;}</style>
+<style>
+.break-anywhere{overflow-wrap:anywhere;word-break:break-word;}
+@media (min-width: 768px){.w-md-auto{width:auto !important;}}
+</style>
 <script>
 (function(){
   // --- 依存値（両テンプレから同じキーで渡される前提） ---
