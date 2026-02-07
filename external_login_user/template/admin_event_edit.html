@@ -404,8 +404,25 @@
 (function(){
   // --- メモ自動リサイズ ---
   const memo = document.getElementById('memo_all');
-  function autosize(t){ t.style.height='auto'; t.style.height = (t.scrollHeight)+'px'; }
-  if(memo){ autosize(memo); memo.addEventListener('input', ()=>autosize(memo)); }
+  function autosize(t){
+    t.style.height = 'auto';
+    t.style.height = t.scrollHeight + 'px';
+  }
+  function autosizeMemo(){
+    if(!memo) return;
+    requestAnimationFrame(()=>autosize(memo));
+  }
+  if(memo){
+    autosizeMemo();
+    ['input','change','paste'].forEach((eventName)=>{
+      memo.addEventListener(eventName, autosizeMemo);
+    });
+  }
+  document.addEventListener('shown.bs.collapse', (ev)=>{
+    if(ev.target?.id === 'collapse-extra'){
+      autosizeMemo();
+    }
+  });
 
   // --- アコーディオン全展開 ---
   const expandAllBtn = document.getElementById('expand-all-accordion');
@@ -419,6 +436,7 @@
           instance?.show();
         }
       });
+      autosizeMemo();
     });
   }
 

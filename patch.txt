@@ -1,374 +1,8 @@
 diff --git a/external_login_user/template/admin_event_edit.html b/external_login_user/template/admin_event_edit.html
-index b97d2ee0b78bd565ff056fab4bfb019c2b7d16b8..421bc2b458375c6e38ceb2e4889a357cb97a394b 100644
+index 421bc2b458375c6e38ceb2e4889a357cb97a394b..7d3b4c4225da79e15a7cf1cb52b65b30587a84ce 100644
 --- a/external_login_user/template/admin_event_edit.html
 +++ b/external_login_user/template/admin_event_edit.html
-@@ -1,92 +1,95 @@
- {% extends "base.html" %}
- 
- {% block title %}イベント編集{% endblock %}
- 
- {% block content %}
- 
- <div class="d-flex justify-content-between align-items-center mb-3">
-     <h1 class="h4 mb-0">イベント編集</h1>
--    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">戻る</a>
-+    <div class="d-flex gap-2">
-+      <button type="button" class="btn btn-sm btn-outline-primary" id="expand-all-accordion">全て展開</button>
-+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">戻る</a>
-+    </div>
- </div>
- 
- {% with messages = get_flashed_messages(with_categories=true) %}
-   {% for cat, msg in messages %}
-     <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
-   {% endfor %}
- {% endwith %}
- 
- {% if errors and errors|length %}
-   <div class="alert alert-warning">
-     入力に誤りがあります。確認してください。
-     <ul class="mb-0">
-       {% for k, v in errors.items() %}
-         <li>{{ v }}</li>
-       {% endfor %}
-     </ul>
-   </div>
- {% endif %}
- 
- <form method="post" class="d-grid gap-3" autocomplete="off" novalidate>
-   <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
- 
-   <div class="accordion" id="event-edit-accordion">
-     <!-- 主要 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-main">
-         <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-main" aria-expanded="true" aria-controls="collapse-main">
-           主要
-         </button>
-       </h2>
--      <div id="collapse-main" class="accordion-collapse collapse show" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-main" class="accordion-collapse collapse show">
-         <div class="accordion-body">
-           <div class="row g-3">
-             <div class="col-12">
-               <label class="form-label">タイトル <span class="text-danger">*</span></label>
-               <input type="text" name="title" class="form-control" maxlength="100"
-                      value="{{ (form.title or ev.title or '')|e }}" required>
-               {% if errors.title %}<div class="text-danger small mt-1">{{ errors.title }}</div>{% endif %}
-             </div>
-             <div class="col-12 col-md-6">
-               <label class="form-label">開始日時（任意）</label>
-               <input type="datetime-local" name="starts_at" class="form-control"
-                      value="{{ (form_iso.starts_at or '')|e }}">
-               <div class="hint">端末のカレンダー／時刻ピッカーで入力できます。</div>
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- 参加費の計算 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-fee-calc">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-fee-calc" aria-expanded="false" aria-controls="collapse-fee-calc">
-           参加費の計算
-         </button>
-       </h2>
--      <div id="collapse-fee-calc" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-fee-calc" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
-             <div class="fw-semibold">参加費の計算</div>
-             <div class="form-check form-switch m-0">
-               <input class="form-check-input" type="checkbox" id="fee-auto-mode" name="fee_auto_calc"
-                      {% if form.fee_auto_calc or ev.fee_auto_calc %}checked{% endif %}>
-               <label class="form-check-label small" for="fee-auto-mode">自動計算モード</label>
-             </div>
-           </div>
- 
-           <div class="row g-3">
-             <div class="col-12 col-md-3">
-               <label class="form-label">スタジオ代金（円）</label>
-               <input type="number" min="0" step="1" name="studio_fee_yen" id="studio-fee"
-                      class="form-control" inputmode="numeric"
-                      value="{% if form.studio_fee_yen is not none %}{{ form.studio_fee_yen }}{% elif ev.studio_fee_yen is not none %}{{ ev.studio_fee_yen }}{% endif %}">
-               {% if errors.studio_fee_yen %}<div class="text-danger small mt-1">{{ errors.studio_fee_yen }}</div>{% endif %}
-             </div>
-             <div class="col-12 col-md-3">
-               <label class="form-label">支払人数</label>
-               <input type="number" min="1" step="1" name="require_payment_count" id="fee-payers"
-                      class="form-control" inputmode="numeric"
-                      value="{% if form.require_payment_count is not none and form.require_payment_count != '' %}{{ form.require_payment_count }}{% else %}{{ require_payment_count }}{% endif %}">
-               <div class="form-text">支払いありの人数を入力してください。</div>
-             </div>
-@@ -113,84 +116,84 @@
-               <div class="small text-muted" id="fee-calc-status">入力すると自動計算されます。</div>
-             </div>
-             <div class="mt-2">
-               <div class="h5 mb-1">参加費（丸め後）：<span id="fee-calc-total">-</span> 円</div>
-               <div class="small text-muted" id="fee-calc-breakdown"></div>
-             </div>
-             <div class="mt-3 d-flex flex-wrap gap-2">
-               <button type="button" class="btn btn-outline-primary btn-sm" id="fee-calc-btn">計算する</button>
-               <button type="button" class="btn btn-primary btn-sm" id="fee-apply-btn">参加費に適用</button>
-             </div>
-             <div class="form-text mt-2">
-               計算式：スタジオ代金 ÷ 支払人数 = x ／ x × (1 + 手数料%) = y ／ y + 事務手数料 → 10円単位で切り上げ
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- 支払関係 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-payment">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-payment" aria-expanded="false" aria-controls="collapse-payment">
-           支払関係
-         </button>
-       </h2>
--      <div id="collapse-payment" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-payment" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <div class="row g-3">
-             <div class="col-12 col-md-6">
-               <label class="form-label">参加費（円・任意）</label>
-               <input type="number" name="fee_yen" class="form-control" inputmode="numeric" min="0" step="1"
-                      value="{% if form.fee_yen is not none %}{{ form.fee_yen }}{% elif ev.fee_yen is not none %}{{ ev.fee_yen }}{% endif %}">
-               {% if errors.fee_yen %}<div class="text-danger small mt-1">{{ errors.fee_yen }}</div>{% endif %}
-             </div>
-             <div class="col-12 col-md-6">
-               <label class="form-label">支払開始（任意）</label>
-               <input type="datetime-local" name="pay_from" class="form-control"
-                      value="{{ (form_iso.pay_from or '')|e }}">
-               <div class="hint">未設定なら開始制限なし。</div>
-             </div>
-             <div class="col-12 col-md-6">
-               <label class="form-label">支払終了（任意）</label>
-               <input type="datetime-local" name="pay_until" class="form-control"
-                      value="{{ (form_iso.pay_until or '')|e }}">
-               <div class="hint">未設定なら終了制限なし。</div>
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- 支払い方法 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-payment-method">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-payment-method" aria-expanded="false" aria-controls="collapse-payment-method">
-           支払い方法
-         </button>
-       </h2>
--      <div id="collapse-payment-method" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-payment-method" class="accordion-collapse collapse">
-         <div class="accordion-body d-grid gap-3">
-           <div class="border rounded p-3">
-             <div class="form-check mb-2">
-               <input class="form-check-input" type="checkbox" name="allow_square" id="allow_square"
-                      {% if form.allow_square or ev.allow_square %}checked{% endif %}>
-               <label class="form-check-label fw-semibold" for="allow_square">
-                 Square（クレジットカード）を受け付ける
-               </label>
-             </div>
-             <div class="text-muted small">
-               ※ Square 側の商品/決済設定は別途ご用意ください。
-             </div>
-           </div>
- 
-           <div class="border rounded p-3">
-             <div class="form-check mb-2">
-               <input class="form-check-input" type="checkbox" name="allow_paypay" id="allow_paypay"
-                      {% if form.allow_paypay or ev.allow_paypay %}checked{% endif %}>
-               <label class="form-check-label fw-semibold" for="allow_paypay">
-                 PayPay（友だち送金）を受け付ける
-               </label>
-             </div>
-             <label class="form-label">PayPay 案内テキスト（任意）</label>
-             <input class="form-control" type="text" name="paypay_display" id="paypay_display"
-                    value="{{ (form.paypay_display or ev.paypay_display or '')|e }}"
-@@ -207,225 +210,240 @@
-                      {% if form.allow_bank or ev.allow_bank %}checked{% endif %}>
-               <label class="form-check-label fw-semibold" for="allow_bank">
-                 銀行振込を受け付ける（複数口座に対応）
-               </label>
-             </div>
- 
-             <div class="d-flex flex-column flex-sm-row gap-2">
-               <a class="btn btn-outline-secondary btn-sm"
-                  href="{{ url_for('external_login_user.admin_event_banks', event_id=ev.id) }}">
-                 振込口座を管理する
-               </a>
-               <span class="align-self-center text-muted small">※ 口座の追加・削除・表示順は別画面で行います。</span>
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- 会場関係 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-venue">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-venue" aria-expanded="false" aria-controls="collapse-venue">
-           会場関係
-         </button>
-       </h2>
--      <div id="collapse-venue" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-venue" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <div class="row g-3">
-             <div class="col-12 col-md-6">
-               <label class="form-label">会場名（任意）</label>
-               <input type="text" name="place_name" class="form-control"
-                      value="{{ (form.place_name or ev.place_name or '')|e }}">
-             </div>
- 
-             <div class="col-12">
-               <label class="form-label">住所（任意）</label>
-               <input type="text" name="address" class="form-control"
-                      value="{{ (form.address or ev.address or '')|e }}">
-             </div>
- 
-             <div class="col-12">
-               <label class="form-label">GoogleマップURL（任意）</label>
-               <input type="url" name="maps_url" class="form-control"
-                      value="{{ (form.maps_url or ev.maps_url or '')|e }}">
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- LINEオープンチャット関係 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-line-chat">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-line-chat" aria-expanded="false" aria-controls="collapse-line-chat">
-           LINEオープンチャット関係
-         </button>
-       </h2>
--      <div id="collapse-line-chat" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-line-chat" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <div class="row g-3">
-             <div class="col-12">
-               <label class="form-label">LINEオープンチャットURL（任意）</label>
-               <input type="url" name="line_openchat_url" class="form-control"
-                      value="{{ (form.line_openchat_url or ev.line_openchat_url or '') | e }}"
-                      placeholder="https://line.me/ti/g2/....">
-               <div class="form-text">参加者の連絡用オープンチャットがあれば設定します。</div>
-             </div>
- 
-             <div class="col-12">
-               <label class="form-label">LINEオープンチャット入室パス（8桁・任意）</label>
-               <input type="text" name="line_openchat_pass" maxlength="8" class="form-control"
-                      value="{{ (form.line_openchat_pass or ev.line_openchat_pass or '') | e }}" pattern="\d{8}"
-                      placeholder="例）12345678">
-               {% if errors.line_openchat_pass %}
-                 <div class="text-danger small mt-1">{{ errors.line_openchat_pass }}</div>
-               {% else %}
-                 <div class="form-text">数字8桁。未設定でも可。</div>
-               {% endif %}
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- GoogleフォームURL -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-google-form">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-google-form" aria-expanded="false" aria-controls="collapse-google-form">
-           GoogleフォームURL
-         </button>
-       </h2>
--      <div id="collapse-google-form" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-google-form" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <label class="form-label">アンケート用GoogleフォームURL</label>
-           <input type="url" name="google_form_url" class="form-control"
-                  value="{{ (form.google_form_url or ev.google_form_url or '') | e }}"
-                  placeholder="https://docs.google.com/forms/...">
-           <div class="form-text">イベント後のアンケート用Googleフォームがあれば設定してください。</div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- 参加承認（自動／手動） -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-invite">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-invite" aria-expanded="false" aria-controls="collapse-invite">
-           参加承認（自動／手動）
-         </button>
-       </h2>
--      <div id="collapse-invite" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-invite" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           {% set invite_wrap_card = false %}
-           {% include "_event_invite_block.html" %}
-         </div>
-       </div>
-     </div>
- 
-     <!-- システム関係 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-system">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-system" aria-expanded="false" aria-controls="collapse-system">
-           システム関係
-         </button>
-       </h2>
--      <div id="collapse-system" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-system" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <div class="row g-3">
-             <div class="col-12">
-               <label class="form-label">アルバムUUID（任意／編集可）</label>
-               <input type="text" name="album_id" class="form-control"
-                      value="{{ (form.album_id or ev.album_id or '') | e }}"
-                      placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
-               <div class="form-text">MFUアルバムのID（UUID）を貼り付けて紐付けできます。</div>
-             </div>
- 
-             <div class="col-12">
-               <label class="form-label">決済UUID（表示のみ）</label>
-               <input type="text" name="payment_uuid" class="form-control"
-                      value="{{ (form.payment_uuid or ev.payment_uuid or '') | e }}" readonly>
-               <div class="form-text">
-                 決済エントリURLの識別子です。未設定で保存しても既存値は消えません（未設定時は自動発行されます）。
-               </div>
-             </div>
-           </div>
-         </div>
-       </div>
-     </div>
- 
-     <!-- 追加情報 -->
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="heading-extra">
-         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-extra" aria-expanded="false" aria-controls="collapse-extra">
-           追加情報
-         </button>
-       </h2>
--      <div id="collapse-extra" class="accordion-collapse collapse" data-bs-parent="#event-edit-accordion">
-+      <div id="collapse-extra" class="accordion-collapse collapse">
-         <div class="accordion-body">
-           <div class="row g-3">
-             <div class="col-12">
-               <label class="form-label">SNSハッシュタグ（任意）</label>
-               <input type="text" name="sns_hashtag" class="form-control" maxlength="255"
-                      value="{{ (form.sns_hashtag or ev.sns_hashtag or '')|e }}"
-                      placeholder="#mfu_event">
-               <div class="form-text">X / Instagram 共通で使うハッシュタグを設定できます。</div>
-             </div>
- 
-             <div class="col-12">
-               <label class="form-label">全体メモ（参加者全員に表示）</label>
--              <textarea name="memo_all" id="memo_all" rows="5" class="form-control"
--                        style="overflow:hidden; resize:none;"
-+              <textarea name="memo_all" id="memo_all" rows="8" class="form-control"
-+                        style="overflow:hidden; resize:none; min-height: 220px;"
-                         placeholder="例）当日の集合は10:00に正門前です。雨天決行。">{{ (form.memo_all or ev.memo_all or '') | e }}</textarea>
-               <div class="form-text">参加者ビューのイベント詳細ページに表示されます。</div>
+@@ -382,65 +382,83 @@
              </div>
            </div>
          </div>
@@ -394,24 +28,44 @@ index b97d2ee0b78bd565ff056fab4bfb019c2b7d16b8..421bc2b458375c6e38ceb2e4889a357c
  (function(){
    // --- メモ自動リサイズ ---
    const memo = document.getElementById('memo_all');
-   function autosize(t){ t.style.height='auto'; t.style.height = (t.scrollHeight)+'px'; }
-   if(memo){ autosize(memo); memo.addEventListener('input', ()=>autosize(memo)); }
- 
-+  // --- アコーディオン全展開 ---
-+  const expandAllBtn = document.getElementById('expand-all-accordion');
-+  const accordionEl = document.getElementById('event-edit-accordion');
-+  if(expandAllBtn && accordionEl){
-+    expandAllBtn.addEventListener('click', ()=>{
-+      const collapses = accordionEl.querySelectorAll('.accordion-collapse');
-+      collapses.forEach((el)=>{
-+        if(!el.classList.contains('show')){
-+          const instance = window.bootstrap?.Collapse.getOrCreateInstance(el, { toggle: false });
-+          instance?.show();
-+        }
-+      });
+-  function autosize(t){ t.style.height='auto'; t.style.height = (t.scrollHeight)+'px'; }
+-  if(memo){ autosize(memo); memo.addEventListener('input', ()=>autosize(memo)); }
++  function autosize(t){
++    t.style.height = 'auto';
++    t.style.height = t.scrollHeight + 'px';
++  }
++  function autosizeMemo(){
++    if(!memo) return;
++    requestAnimationFrame(()=>autosize(memo));
++  }
++  if(memo){
++    autosizeMemo();
++    ['input','change','paste'].forEach((eventName)=>{
++      memo.addEventListener(eventName, autosizeMemo);
 +    });
 +  }
-+
++  document.addEventListener('shown.bs.collapse', (ev)=>{
++    if(ev.target?.id === 'collapse-extra'){
++      autosizeMemo();
++    }
++  });
+ 
+   // --- アコーディオン全展開 ---
+   const expandAllBtn = document.getElementById('expand-all-accordion');
+   const accordionEl = document.getElementById('event-edit-accordion');
+   if(expandAllBtn && accordionEl){
+     expandAllBtn.addEventListener('click', ()=>{
+       const collapses = accordionEl.querySelectorAll('.accordion-collapse');
+       collapses.forEach((el)=>{
+         if(!el.classList.contains('show')){
+           const instance = window.bootstrap?.Collapse.getOrCreateInstance(el, { toggle: false });
+           instance?.show();
+         }
+       });
++      autosizeMemo();
+     });
+   }
+ 
    // --- 参加費計算 ---
    const $autoMode = document.getElementById('fee-auto-mode');
    const $studioFee = document.getElementById('studio-fee');
@@ -434,6 +88,3 @@ index b97d2ee0b78bd565ff056fab4bfb019c2b7d16b8..421bc2b458375c6e38ceb2e4889a357c
    }
  
    function roundUp10(value){
-     return Math.ceil(value / 10) * 10;
-   }
- 
