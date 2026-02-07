@@ -1,126 +1,260 @@
-diff --git a/utils/whois_util.py b/utils/whois_util.py
-index 8b00d463517caa5a4b4f43878e0cd533db0eb3d9..2b68a66d953b5b987a7d86452d75fc79f03afe1f 100644
---- a/utils/whois_util.py
-+++ b/utils/whois_util.py
-@@ -1,31 +1,32 @@
- # app/utils/whois_util.py
- import subprocess
- import os
- import hashlib
- import json
- import time
-+import ipaddress
- from typing import Optional
- from pathlib import Path
- from urllib.request import urlopen, Request
- from urllib.error import URLError, HTTPError
+diff --git a/__init__.py b/__init__.py
+index f436a72903e1cf3a19968a5d094aa988b6ca85d0..166b2a6cc134a9ebdfbb2fedafa08a42579bc586 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -59,50 +59,54 @@ from app.utils.whois_util import get_netinfo
+ from app.albums import album_bp
+ from app.receipts import receipts_bp
+ from app.utils.mail import send_mail 
  
- WHOIS_CACHE_DIR = "/mnt/mfu/whois_cache"
- os.makedirs(WHOIS_CACHE_DIR, exist_ok=True)
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
  
- SUCCESS_TTL_SEC = 86400 * 7
- FAIL_TTL_SEC = 3600
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+     template_folder=os.path.join(APP_DIR, "templates"),
+     static_folder=STATIC_DIR,
+     static_url_path="/static",
+ )
+ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
  
- def _cache_path(ip: str) -> Path:
-     key = hashlib.md5(ip.encode()).hexdigest()
-     return Path(WHOIS_CACHE_DIR) / f"{key}.json"
++
++def create_app():
++    return app
++
+ load_dotenv()
+ app.secret_key = os.environ.get("SECRET_KEY")
  
- def _load_cache(ip: str, *, force_refresh: bool) -> Optional[dict]:
-     if force_refresh:
-         return None
-     cache_file = _cache_path(ip)
-     if not cache_file.exists():
-         return None
-     try:
-         data = json.loads(cache_file.read_text())
-     except Exception:
-         return None
-@@ -113,78 +114,87 @@ def _extract_whois_info(text: str) -> dict:
-         lower = line.lower()
-         if lower.startswith("netname:"):
-             info["netname"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("orgname:"):
-             info["org"] = info["org"] or line.split(":", 1)[1].strip()
-         elif lower.startswith("organization:"):
-             info["org"] = info["org"] or line.split(":", 1)[1].strip()
-         elif lower.startswith("owner:") and not info["org"]:
-             info["org"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("descr:") and not info["org"]:
-             info["org"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("country:"):
-             info["country"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("as-name:") or lower.startswith("asname:"):
-             info["asname"] = line.split(":", 1)[1].strip()
-         elif lower.startswith("origin:") or lower.startswith("originas:"):
-             info["asname"] = info["asname"] or line.split(":", 1)[1].strip()
-     return info
+ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
  
- def get_netinfo(ip: str, *, force_refresh: bool = False) -> dict:
-     """IPからnetnameとcountryを取得（キャッシュ付き）"""
-     cached = _load_cache(ip, force_refresh=force_refresh)
-     if cached:
-         return cached
+ app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
+ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
  
+ login_manager = LoginManager()
+ login_manager.init_app(app)
+ login_manager.login_view = "login"
+ login_manager.user_loader(load_user)
+ 
+ # =====================================
+ # 🧠 補助関数群（上段へ集約）
+ # =====================================
+ 
+ from functools import wraps
+ from flask import session
+ 
+ def admin_required(func):
+     @wraps(func)
+     def wrapper(*args, **kwargs):
+         if session.get("user") != "admin":
+             return "管理者のみアクセス可能", 403
+@@ -1736,50 +1740,157 @@ def admin_logs():
+             "exclude_3xx": exclude_3xx,
+             "limit": per_page,
+             "has_filters": bool(
+                 kind
+                 or exclude_local
+                 or nonjp_only
+                 or exclude_suc
+                 or exclude_3xx
+                 or (kind == "SMTP" and smtp_filter != "ALL")
+                 or smtp_tag
+                 or search_keyword
+                 or search_ip
+                 or search_status
+                 or search_method
+                 or search_path
+                 or search_endpoint
+                 or search_user
+                 or search_ua
+                 or search_date_from
+                 or search_date_to
+             ),
+         },
+     )
+ 
+ 
++# =======================================
++# 管理: メール送信ログ（配送結果）
++# =======================================
++@app.route("/admin/mail-delivery")
++@admin_required
++def admin_mail_delivery_logs():
++    from app.utils.mail_delivery import ensure_mail_delivery_schema
++
++    ensure_mail_delivery_schema()
++
++    status = (request.args.get("status") or "all").strip().lower()
++    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
++        status = "all"
++
++    search = (request.args.get("q") or "").strip()
 +    try:
-+        ip_obj = ipaddress.ip_address(ip)
-+        is_ipv6 = ip_obj.version == 6
++        per_page = int(request.args.get("limit", "200"))
 +    except ValueError:
-+        is_ipv6 = False
++        per_page = 200
++    per_page = max(20, min(500, per_page))
++    try:
++        page = max(1, int(request.args.get("page", "1")))
++    except ValueError:
++        page = 1
++    offset = (page - 1) * per_page
 +
-     info = {
-         "netname": "不明",
-         "country": "不明",
-         "org": "",
-         "asname": "",
-         "source": "",
-     }
- 
-     rdap = _fetch_rdap(ip)
-     if rdap:
-         name, org, country = _extract_rdap_name(rdap)
-         if name:
-             info["netname"] = name
-         if org:
-             info["org"] = org
-         if country:
-             info["country"] = country
-         info["source"] = "rdap"
- 
-     whois_text = ""
-     try:
-         whois_text = subprocess.check_output(["whois", ip], timeout=10).decode(errors="ignore")
-     except Exception:
-         whois_text = ""
- 
-     if whois_text:
-         whois_info = _extract_whois_info(whois_text)
-         if info["netname"] == "不明" and whois_info["netname"]:
-             info["netname"] = whois_info["netname"]
-         if not info["org"] and whois_info["org"]:
-             info["org"] = whois_info["org"]
-         if not info["asname"] and whois_info["asname"]:
-             info["asname"] = whois_info["asname"]
-         if info["country"] == "不明" and whois_info["country"]:
-             info["country"] = whois_info["country"]
-         if not info["source"]:
-             info["source"] = "whois"
- 
--    if info["netname"] == "不明":
-+    if info["netname"] == "不明" and not is_ipv6:
-         if info["org"]:
-             info["netname"] = info["org"]
-         elif info["asname"]:
-             info["netname"] = info["asname"]
- 
-+    if is_ipv6:
-+        info["display_name"] = info["netname"]
++    where_sql = "WHERE 1=1"
++    params: list = []
++    if status != "all":
++        where_sql += " AND last_delivery_status = %s"
++        params.append(status)
++    if search:
++        where_sql += (
++            " AND (message_id LIKE %s OR mfu_mail_uuid LIKE %s OR subject LIKE %s OR to_addresses LIKE %s)"
++        )
++        like = f"%{search}%"
++        params.extend([like, like, like, like])
 +
-     is_failure = info["netname"] in ("不明", "")
-     _save_cache(ip, info, FAIL_TTL_SEC if is_failure else SUCCESS_TTL_SEC)
-     return info
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    cur.execute(
++        f"""
++        SELECT id, mfu_mail_uuid, message_id, to_addresses, subject, submit_status, submit_at,
++               last_delivery_status, last_delivery_detail, last_delivery_queue_id,
++               last_delivery_checked_at
++          FROM mfu_mail_delivery_log
++          {where_sql}
++         ORDER BY submit_at DESC, id DESC
++         LIMIT %s OFFSET %s
++        """,
++        (*params, per_page, offset),
++    )
++    rows = cur.fetchall() or []
++    for row in rows:
++        submit_at = row.get("submit_at")
++        row["submit_at_ts"] = int(submit_at.timestamp()) if submit_at else None
++
++    cur.execute(
++        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",
++        params,
++    )
++    total = (cur.fetchone() or {}).get("cnt", 0)
++    db.close()
++
++    total_pages = max(1, (total + per_page - 1) // per_page)
++    return render_template(
++        "admin_mail_delivery_logs.html",
++        rows=rows,
++        filters={
++            "status": status,
++            "q": search,
++            "limit": per_page,
++        },
++        page=page,
++        total_pages=total_pages,
++        total=total,
++    )
++
++
++@app.route("/admin/mail-delivery/refresh", methods=["POST"])
++@admin_required
++def admin_mail_delivery_refresh():
++    from app.utils.mail_delivery import poll_mail_delivery_statuses
++
++    max_rows = request.args.get("max_rows")
++    timeout_sec = request.args.get("timeout_sec")
++    if max_rows is None:
++        payload = request.get_json(silent=True) or {}
++        max_rows = payload.get("max_rows")
++        if timeout_sec is None:
++            timeout_sec = payload.get("timeout_sec")
++    try:
++        max_rows_int = int(max_rows or 200)
++    except (TypeError, ValueError):
++        max_rows_int = 200
++    max_rows_int = max(20, min(500, max_rows_int))
++
++    try:
++        timeout_sec_int = int(timeout_sec) if timeout_sec is not None else None
++    except (TypeError, ValueError):
++        timeout_sec_int = None
++
++    summary = poll_mail_delivery_statuses(max_rows=max_rows_int, timeout_sec=timeout_sec_int)
++    summary["max_rows"] = max_rows_int
++    return jsonify(summary)
++
++
+ # =======================================
+ # 管理: メンテナンスモード
+ # =======================================
+ @app.route("/admin/maintenance", methods=["GET", "POST"])
+ @admin_required
+ def admin_maintenance():
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
  
- if __name__ == "__main__":
-     import sys
-     target = sys.argv[1] if len(sys.argv) > 1 else "153.227.227.27"
-     force = "--refresh" in sys.argv
-     print(json.dumps(get_netinfo(target, force_refresh=force), ensure_ascii=False, indent=2))
+     if request.method == "POST":
+         new_mode = "on" if request.form.get("maintenance_mode") == "on" else "off"
+         until_raw = request.form.get("maintenance_until")
+         square_env_payment = (request.form.get("square_env_payment") or "").upper()
+         square_env_external = (request.form.get("square_env_external") or "").upper()
+ 
+         if until_raw:
+             try:
+                 until_dt = datetime.strptime(until_raw, "%Y-%m-%dT%H:%M")
+                 until_str = until_dt.astimezone(timezone.utc).isoformat()
+             except Exception:
+                 flash("日付形式が正しくありません。", "danger")
+                 db.close()
+                 return redirect(url_for("admin_maintenance"))
+         else:
+             until_str = None
+@@ -2459,39 +2570,42 @@ from app.utils.layer_reply import layer_reply_bp
+ app.register_blueprint(layer_reply_bp)
+ 
+ from app.otp.routes import otp_bp
+ app.register_blueprint(otp_bp)
+ 
+ from app.routes.mfa_routes import mfa_bp
+ app.register_blueprint(mfa_bp)
+ 
+ from app.routes.timer_routes import timer_bp
+ app.register_blueprint(timer_bp)
+ 
+ from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
+ 
+ from app.utils.zip_stream import zip_api
+ app.register_blueprint(zip_api)
+ 
+ from .utils.service_logs import bp_service_logs
+ app.register_blueprint(bp_service_logs)
+ 
+ from app.routes.webauthn_routes import webauthn_bp
+ app.register_blueprint(webauthn_bp)
+ 
+ from app.tickets import tickets_bp
+ app.register_blueprint(tickets_bp)
+ 
++from app.records import records_bp
++app.register_blueprint(records_bp, url_prefix="/records")
++
+ from .payment import bp as payment_bp
+ app.register_blueprint(payment_bp)
+ 
+ app.register_blueprint(receipts_bp)
+ 
+ from app.utils.logs import log_request_raw, write_login_log, log_access
+ 
+ from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
+ init_line_oauth(app)
+ app.register_blueprint(ext_login_bp, url_prefix="/external-login")
+ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
+ 
+ from app.s_u_calendar.routes import s_u_calendar_bp
+ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
