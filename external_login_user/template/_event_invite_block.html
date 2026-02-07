@@ -1,8 +1,11 @@
 {# 共通：イベントの自動承認（トークン）UI + JS #}
 {# 前提: ev = { id, event_uuid_str, auto_approve_by_invite, invite_token } / admin_csrf #}
 
+{% set wrap_card = invite_wrap_card if invite_wrap_card is defined else true %}
+
+{% if wrap_card %}
 <div class="card mb-3" id="invite-card">
-  <div class="card-header d-flex justify-content-between align-items-center">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
     <span>参加承認（自動／手動）</span>
     <div class="form-check form-switch m-0">
       <input class="form-check-input" type="checkbox" id="autoApproveSwitch" {{ 'checked' if ev.auto_approve_by_invite else '' }}>
@@ -23,14 +26,9 @@
 
     <div>
       <label class="form-label fw-bold mb-1">招待リンク</label>
-      <div class="input-group">
+      <div class="input-group flex-column flex-sm-row gap-2">
         <input type="text" class="form-control" id="inviteUrl" value="{{ invite_url }}" readonly>
         <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
-        <a class="btn {{ token and 'btn-outline-primary' or 'btn-outline-secondary disabled' }}"
-           id="openLinkBtn" target="_blank" rel="noopener" href="{{ invite_url }}"
-           {{ '' if token else 'tabindex="-1" aria-disabled="true"' }}>
-          開く
-        </a>
       </div>
       <div class="form-text">
         トークン：<code id="inviteToken">{{ token or '-' }}</code>
@@ -38,7 +36,7 @@
           <span class="text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</span>
         {% endif %}
       </div>
-      <div class="mt-2 d-flex gap-2">
+      <div class="mt-2 d-flex flex-column flex-sm-row gap-2">
         <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
           {{ token and 'トークン再発行' or 'トークン発行' }}
         </button>
@@ -47,6 +45,49 @@
     </div>
   </div>
 </div>
+{% else %}
+<div id="invite-card" class="invite-block">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+    <div class="fw-semibold">参加承認（自動／手動）</div>
+    <div class="form-check form-switch m-0">
+      <input class="form-check-input" type="checkbox" id="autoApproveSwitch" {{ 'checked' if ev.auto_approve_by_invite else '' }}>
+      <label class="form-check-label ms-2" for="autoApproveSwitch">
+        {{ ev.auto_approve_by_invite and '自動承認（招待リンク一致時）' or '手動承認（従来どおり）' }}
+      </label>
+    </div>
+  </div>
+
+  <div class="d-grid gap-3">
+    <div class="text-muted small">
+      自動承認をONにすると、<code>iv=招待トークン</code> が一致した招待リンク経由の参加は<strong>即時承認</strong>されます。通常アクセスは従来どおり <code>pending</code> です。
+    </div>
+
+    {% set baseJoin = url_for('external_login_user.join_event', event_uuid=ev.event_uuid_str, _external=True) %}
+    {% set token = ev.invite_token or '' %}
+    {% set invite_url = token and (baseJoin ~ '?iv=' ~ token) or baseJoin %}
+
+    <div>
+      <label class="form-label fw-bold mb-1">招待リンク</label>
+      <div class="input-group flex-column flex-sm-row gap-2">
+        <input type="text" class="form-control" id="inviteUrl" value="{{ invite_url }}" readonly>
+        <button class="btn btn-outline-secondary" type="button" id="copyInviteBtn" {{ '' if token else 'disabled' }}>コピー</button>
+      </div>
+      <div class="form-text">
+        トークン：<code id="inviteToken">{{ token or '-' }}</code>
+        {% if not token %}
+          <span class="text-muted">（未発行です。「トークン発行」または自動承認をONにすると自動発行されます）</span>
+        {% endif %}
+      </div>
+      <div class="mt-2 d-flex flex-column flex-sm-row gap-2">
+        <button class="btn btn-outline-danger btn-sm" type="button" id="issueOrRotateTokenBtn">
+          {{ token and 'トークン再発行' or 'トークン発行' }}
+        </button>
+        <span class="align-self-center text-muted small">※ 再発行すると旧リンクは即無効になります。</span>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <style>#inviteUrl{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;}</style>
 <script>
@@ -63,7 +104,6 @@
   const inviteUrlInput = document.getElementById('inviteUrl');
   const inviteTokenEl  = document.getElementById('inviteToken');
   const copyBtn  = document.getElementById('copyInviteBtn');
-  const openBtn  = document.getElementById('openLinkBtn');
   const issueBtn = document.getElementById('issueOrRotateTokenBtn');
 
   function uiSetToken(token){
@@ -73,18 +113,8 @@
     inviteUrlInput.value = u;
     copyBtn.disabled = !has;
     if (has) {
-      openBtn.href = u;
-      openBtn.classList.remove('disabled','btn-outline-secondary');
-      openBtn.classList.add('btn-outline-primary');
-      openBtn.removeAttribute('aria-disabled');
-      openBtn.removeAttribute('tabindex');
       issueBtn.textContent = 'トークン再発行';
     } else {
-      openBtn.href = baseJoin;
-      openBtn.classList.add('disabled','btn-outline-secondary');
-      openBtn.classList.remove('btn-outline-primary');
-      openBtn.setAttribute('aria-disabled','true');
-      openBtn.setAttribute('tabindex','-1');
       issueBtn.textContent = 'トークン発行';
     }
   }
