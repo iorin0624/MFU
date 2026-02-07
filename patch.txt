@@ -1,260 +1,41 @@
-diff --git a/__init__.py b/__init__.py
-index f436a72903e1cf3a19968a5d094aa988b6ca85d0..166b2a6cc134a9ebdfbb2fedafa08a42579bc586 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -59,50 +59,54 @@ from app.utils.whois_util import get_netinfo
- from app.albums import album_bp
- from app.receipts import receipts_bp
- from app.utils.mail import send_mail 
- 
- # =====================================
- # 🌏 タイムゾーン・定数
- # =====================================
- JST = timezone(timedelta(hours=9))
- APP_DIR = os.path.abspath(os.path.dirname(__file__))
- BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
- STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
- UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
- tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
- 
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
- )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
- 
+diff --git a/utils/poll_mail_delivery.py b/utils/poll_mail_delivery.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f65150daa71188e76750d9fe34d8245450c560a
+--- /dev/null
++++ b/utils/poll_mail_delivery.py
+@@ -0,0 +1,35 @@
++#!/usr/bin/env python3
++from __future__ import annotations
 +
-+def create_app():
-+    return app
++import json
++import os
++import sys
++from datetime import datetime
 +
- load_dotenv()
- app.secret_key = os.environ.get("SECRET_KEY")
- 
- app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
- 
- app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
- app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
- 
- login_manager = LoginManager()
- login_manager.init_app(app)
- login_manager.login_view = "login"
- login_manager.user_loader(load_user)
- 
- # =====================================
- # 🧠 補助関数群（上段へ集約）
- # =====================================
- 
- from functools import wraps
- from flask import session
- 
- def admin_required(func):
-     @wraps(func)
-     def wrapper(*args, **kwargs):
-         if session.get("user") != "admin":
-             return "管理者のみアクセス可能", 403
-@@ -1736,50 +1740,157 @@ def admin_logs():
-             "exclude_3xx": exclude_3xx,
-             "limit": per_page,
-             "has_filters": bool(
-                 kind
-                 or exclude_local
-                 or nonjp_only
-                 or exclude_suc
-                 or exclude_3xx
-                 or (kind == "SMTP" and smtp_filter != "ALL")
-                 or smtp_tag
-                 or search_keyword
-                 or search_ip
-                 or search_status
-                 or search_method
-                 or search_path
-                 or search_endpoint
-                 or search_user
-                 or search_ua
-                 or search_date_from
-                 or search_date_to
-             ),
-         },
-     )
- 
- 
-+# =======================================
-+# 管理: メール送信ログ（配送結果）
-+# =======================================
-+@app.route("/admin/mail-delivery")
-+@admin_required
-+def admin_mail_delivery_logs():
-+    from app.utils.mail_delivery import ensure_mail_delivery_schema
++from app import create_app
++from app.utils.mail_delivery import poll_mail_delivery_statuses
 +
-+    ensure_mail_delivery_schema()
 +
-+    status = (request.args.get("status") or "all").strip().lower()
-+    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
-+        status = "all"
++def main() -> int:
++    max_rows = int(os.environ.get("MFU_MAIL_STATUS_POLL_MAX_ROWS", "200"))
++    timeout_sec_env = os.environ.get("MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC")
++    timeout_sec = int(timeout_sec_env) if timeout_sec_env else None
 +
-+    search = (request.args.get("q") or "").strip()
++    app = create_app()
++    with app.app_context():
++        summary = poll_mail_delivery_statuses(max_rows=max_rows, timeout_sec=timeout_sec)
++
++    payload = {
++        "ts": datetime.now().isoformat(timespec="seconds"),
++        "summary": summary,
++    }
++    print(json.dumps(payload, ensure_ascii=False))
++    return 0
++
++
++if __name__ == "__main__":
 +    try:
-+        per_page = int(request.args.get("limit", "200"))
-+    except ValueError:
-+        per_page = 200
-+    per_page = max(20, min(500, per_page))
-+    try:
-+        page = max(1, int(request.args.get("page", "1")))
-+    except ValueError:
-+        page = 1
-+    offset = (page - 1) * per_page
-+
-+    where_sql = "WHERE 1=1"
-+    params: list = []
-+    if status != "all":
-+        where_sql += " AND last_delivery_status = %s"
-+        params.append(status)
-+    if search:
-+        where_sql += (
-+            " AND (message_id LIKE %s OR mfu_mail_uuid LIKE %s OR subject LIKE %s OR to_addresses LIKE %s)"
-+        )
-+        like = f"%{search}%"
-+        params.extend([like, like, like, like])
-+
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    cur.execute(
-+        f"""
-+        SELECT id, mfu_mail_uuid, message_id, to_addresses, subject, submit_status, submit_at,
-+               last_delivery_status, last_delivery_detail, last_delivery_queue_id,
-+               last_delivery_checked_at
-+          FROM mfu_mail_delivery_log
-+          {where_sql}
-+         ORDER BY submit_at DESC, id DESC
-+         LIMIT %s OFFSET %s
-+        """,
-+        (*params, per_page, offset),
-+    )
-+    rows = cur.fetchall() or []
-+    for row in rows:
-+        submit_at = row.get("submit_at")
-+        row["submit_at_ts"] = int(submit_at.timestamp()) if submit_at else None
-+
-+    cur.execute(
-+        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",
-+        params,
-+    )
-+    total = (cur.fetchone() or {}).get("cnt", 0)
-+    db.close()
-+
-+    total_pages = max(1, (total + per_page - 1) // per_page)
-+    return render_template(
-+        "admin_mail_delivery_logs.html",
-+        rows=rows,
-+        filters={
-+            "status": status,
-+            "q": search,
-+            "limit": per_page,
-+        },
-+        page=page,
-+        total_pages=total_pages,
-+        total=total,
-+    )
-+
-+
-+@app.route("/admin/mail-delivery/refresh", methods=["POST"])
-+@admin_required
-+def admin_mail_delivery_refresh():
-+    from app.utils.mail_delivery import poll_mail_delivery_statuses
-+
-+    max_rows = request.args.get("max_rows")
-+    timeout_sec = request.args.get("timeout_sec")
-+    if max_rows is None:
-+        payload = request.get_json(silent=True) or {}
-+        max_rows = payload.get("max_rows")
-+        if timeout_sec is None:
-+            timeout_sec = payload.get("timeout_sec")
-+    try:
-+        max_rows_int = int(max_rows or 200)
-+    except (TypeError, ValueError):
-+        max_rows_int = 200
-+    max_rows_int = max(20, min(500, max_rows_int))
-+
-+    try:
-+        timeout_sec_int = int(timeout_sec) if timeout_sec is not None else None
-+    except (TypeError, ValueError):
-+        timeout_sec_int = None
-+
-+    summary = poll_mail_delivery_statuses(max_rows=max_rows_int, timeout_sec=timeout_sec_int)
-+    summary["max_rows"] = max_rows_int
-+    return jsonify(summary)
-+
-+
- # =======================================
- # 管理: メンテナンスモード
- # =======================================
- @app.route("/admin/maintenance", methods=["GET", "POST"])
- @admin_required
- def admin_maintenance():
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
- 
-     if request.method == "POST":
-         new_mode = "on" if request.form.get("maintenance_mode") == "on" else "off"
-         until_raw = request.form.get("maintenance_until")
-         square_env_payment = (request.form.get("square_env_payment") or "").upper()
-         square_env_external = (request.form.get("square_env_external") or "").upper()
- 
-         if until_raw:
-             try:
-                 until_dt = datetime.strptime(until_raw, "%Y-%m-%dT%H:%M")
-                 until_str = until_dt.astimezone(timezone.utc).isoformat()
-             except Exception:
-                 flash("日付形式が正しくありません。", "danger")
-                 db.close()
-                 return redirect(url_for("admin_maintenance"))
-         else:
-             until_str = None
-@@ -2459,39 +2570,42 @@ from app.utils.layer_reply import layer_reply_bp
- app.register_blueprint(layer_reply_bp)
- 
- from app.otp.routes import otp_bp
- app.register_blueprint(otp_bp)
- 
- from app.routes.mfa_routes import mfa_bp
- app.register_blueprint(mfa_bp)
- 
- from app.routes.timer_routes import timer_bp
- app.register_blueprint(timer_bp)
- 
- from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
- 
- from app.utils.zip_stream import zip_api
- app.register_blueprint(zip_api)
- 
- from .utils.service_logs import bp_service_logs
- app.register_blueprint(bp_service_logs)
- 
- from app.routes.webauthn_routes import webauthn_bp
- app.register_blueprint(webauthn_bp)
- 
- from app.tickets import tickets_bp
- app.register_blueprint(tickets_bp)
- 
-+from app.records import records_bp
-+app.register_blueprint(records_bp, url_prefix="/records")
-+
- from .payment import bp as payment_bp
- app.register_blueprint(payment_bp)
- 
- app.register_blueprint(receipts_bp)
- 
- from app.utils.logs import log_request_raw, write_login_log, log_access
- 
- from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
- init_line_oauth(app)
- app.register_blueprint(ext_login_bp, url_prefix="/external-login")
- app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
- 
- from app.s_u_calendar.routes import s_u_calendar_bp
- app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
++        raise SystemExit(main())
++    except Exception as e:
++        print(f"[poll_mail_delivery] ERROR: {e.__class__.__name__}: {e}", file=sys.stderr)
++        raise

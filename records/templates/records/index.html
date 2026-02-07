@@ -1,0 +1,35 @@
+{% extends "records/base_records.html" %}
+
+{% block records_title %}記録管理{% endblock %}
+
+{% block records_content %}
+<div class="row g-3">
+  <div class="col-md-4">
+    <div class="card h-100 shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">🚕 Uber 売上</h5>
+        <p class="card-text text-muted small">日次の売上記録と月次集計を管理します。</p>
+        <a class="btn btn-primary btn-sm" href="{{ url_for('records.uber_list') }}">一覧へ</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100 shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">🛠 整備記録</h5>
+        <p class="card-text text-muted small">整備履歴と交換目安の確認ができます。</p>
+        <a class="btn btn-primary btn-sm" href="{{ url_for('records.maintenance_list') }}">一覧へ</a>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100 shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">⛽ 給油記録</h5>
+        <p class="card-text text-muted small">燃費や給油履歴の管理を行います。</p>
+        <a class="btn btn-primary btn-sm" href="{{ url_for('records.fuel_list') }}">一覧へ</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

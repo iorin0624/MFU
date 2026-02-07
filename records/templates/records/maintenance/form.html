@@ -1,0 +1,15 @@
+{% extends "records/base_records.html" %}
+
+{% if item %}
+  {% set title = '整備記録編集' %}
+{% else %}
+  {% set title = '整備記録追加' %}
+{% endif %}
+
+{% block records_title %}{{ title }}{% endblock %}
+
+{% block records_content %}
+{% set action_url = url_for('records.maintenance_update', record_id=item.id) if item else url_for('records.maintenance_create') %}
+{% set show_back = true %}
+{% include "records/maintenance/_form.html" %}
+{% endblock %}

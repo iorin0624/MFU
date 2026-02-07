@@ -1,0 +1,26 @@
+<div class="row g-3">
+  <div class="col-md-3">
+    <label class="form-label">日付</label>
+    <input type="date" name="work_date" class="form-control" value="{{ item.work_date if item else default_work_date }}">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label">件数</label>
+    <input type="number" name="deliveries" class="form-control" value="{{ item.deliveries if item else '' }}" min="0">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label">正味の料金</label>
+    <input type="number" name="net_yen" class="form-control" value="{{ item.net_yen if item else '' }}" min="0">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label">プロモ</label>
+    <input type="number" name="promo_yen" class="form-control" value="{{ item.promo_yen if item else 0 }}" min="0">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label">その他</label>
+    <input type="number" name="other_yen" class="form-control" value="{{ item.other_yen if item else 0 }}" min="0">
+  </div>
+  <div class="col-md-2">
+    <label class="form-label">チップ</label>
+    <input type="number" name="tip_yen" class="form-control" value="{{ item.tip_yen if item else 0 }}" min="0">
+  </div>
+</div>
