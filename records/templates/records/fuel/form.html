@@ -11,6 +11,9 @@
 {% block records_content %}
 <form method="post">
   {% set default_fill_date = item.fill_date if item else '' %}
+  {% if odometer_readonly is not defined %}
+    {% set odometer_readonly = false %}
+  {% endif %}
   {% include "records/fuel/_form_fields.html" with context %}
   <div class="d-flex gap-2">
     <button type="submit" class="btn btn-primary">保存</button>

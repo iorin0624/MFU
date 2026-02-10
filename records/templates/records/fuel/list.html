@@ -9,9 +9,34 @@
 {% block records_content %}
 <div class="card mb-4">
   <div class="card-body">
+    <h5 class="card-title">現在オドメーター（総走行距離）</h5>
+    <p class="fs-5 mb-3">{{ current_odometer_km }} km</p>
+    <form method="post" action="{{ url_for('records.fuel_update_odometer') }}" class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <label class="form-label">現在オドメーター(km)</label>
+        <input
+          type="number"
+          step="0.1"
+          min="0"
+          name="current_odometer_km"
+          class="form-control"
+          value="{{ current_odometer_km }}"
+          required
+        >
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-outline-primary w-100">更新</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
     <h5 class="card-title">給油記録 新規追加</h5>
     <form method="post" action="{{ url_for('records.fuel_create') }}">
       {% set item = none %}
+      {% set odometer_readonly = true %}
       {% include "records/fuel/_form_fields.html" with context %}
       <div class="d-flex gap-2">
         <button type="submit" class="btn btn-primary">保存</button>

@@ -12,9 +12,11 @@ from app.utils.db import get_db
 
 from .models import (
     ensure_records_schema,
+    get_current_odometer_km,
     insert_maintenance_item,
     list_maintenance_items,
     now_ts,
+    set_current_odometer_km,
     update_maintenance_item,
 )
 
@@ -494,13 +496,9 @@ def maintenance_list():
     latest_rows = cur.fetchall()
     db.close()
 
-    current_odometer_raw = request.args.get("current_odometer", "").strip()
-    current_odometer = _parse_int(
-        current_odometer_raw, "現在メーター", allow_empty=True
-    )
-    current_odometer_value = (
-        current_odometer_raw if current_odometer is not None or not current_odometer_raw else ""
-    )
+    current_odometer = get_current_odometer_km()
+    current_odometer_value = f"{current_odometer:.1f}"
+    current_odometer_default = str(int(current_odometer))
     summary_rows = []
     for row in latest_rows:
         has_log = row.get("log_id") is not None
@@ -521,11 +519,10 @@ def maintenance_list():
 
         since_display = None
         remaining_display = None
-        if current_odometer is not None:
-            since_km = current_odometer - int(row["odometer_km"])
-            since_display = since_km
-            if target_km is not None:
-                remaining_display = target_km - since_km
+        since_km = current_odometer - Decimal(row["odometer_km"])
+        since_display = since_km
+        if target_km is not None:
+            remaining_display = Decimal(target_km) - since_km
 
         summary_rows.append(
             {
@@ -548,6 +545,8 @@ def maintenance_list():
         summary_rows=summary_rows,
         default_event_date=today,
         current_odometer=current_odometer_value,
+        current_odometer_km=current_odometer_value,
+        current_odometer_default=current_odometer_default,
         is_admin=_is_admin_user(),
     )
 
@@ -635,6 +634,7 @@ def maintenance_edit(record_id: int):
         item=item,
         maintenance_items=maintenance_items,
         default_event_date=today,
+        odometer_readonly=False,
     )
 
 
@@ -799,6 +799,7 @@ def fuel_list():
     )
     rows = cur.fetchall()
     db.close()
+    current_odometer_km = get_current_odometer_km()
 
     computed = []
     for row in rows:
@@ -830,6 +831,7 @@ def fuel_list():
         "records/fuel/list.html",
         rows=computed,
         default_fill_date=today,
+        current_odometer_km=f"{current_odometer_km:.1f}",
     )
 
 
@@ -849,19 +851,11 @@ def fuel_create_legacy():
 @login_required
 def fuel_create():
     fill_date = _parse_date(request.form.get("fill_date", ""), "日付")
-    odometer_km = _round_decimal(
-        _parse_decimal(
-            request.form.get("odometer_km", ""),
-            "メーター",
-            allow_empty=True,
-        ),
-        1,
-    )
     trip_km = _round_decimal(
         _parse_decimal(
             request.form.get("trip_km", ""),
             "トリップ",
-            allow_empty=True,
+            allow_empty=False,
         ),
         1,
     )
@@ -873,14 +867,17 @@ def fuel_create():
     )
     note = request.form.get("note", "").strip() or None
     is_full = 1 if request.form.get("is_full") == "on" else 0
-    if fill_date is None or liters is None:
+    if fill_date is None or liters is None or trip_km is None:
         return redirect(url_for("records.fuel_list"))
     if liters <= 0:
         flash("給油量は0より大きい値を入力してください。", "warning")
         return redirect(url_for("records.fuel_list"))
-    if odometer_km is None and trip_km is None:
-        flash("メーターかトリップを入力してください。", "warning")
+    if trip_km <= 0:
+        flash("トリップは0より大きい値を入力してください。", "warning")
         return redirect(url_for("records.fuel_list"))
+
+    current_odometer_km = get_current_odometer_km()
+    new_odometer_km = _round_decimal(current_odometer_km + trip_km, 1)
 
     now = now_ts()
     db = get_db()
@@ -901,7 +898,7 @@ def fuel_create():
         """,
         (
             fill_date,
-            odometer_km,
+            new_odometer_km,
             trip_km,
             liters,
             yen_per_liter,
@@ -911,6 +908,7 @@ def fuel_create():
             now,
         ),
     )
+    set_current_odometer_km(new_odometer_km, db=db)
     db.commit()
     db.close()
     flash("給油記録を追加しました。", "success")
@@ -928,7 +926,33 @@ def fuel_edit(record_id: int):
     if not item:
         flash("対象の記録が見つかりません。", "warning")
         return redirect(url_for("records.fuel_list"))
-    return render_template("records/fuel/form.html", item=item)
+    return render_template(
+        "records/fuel/form.html",
+        item=item,
+        odometer_readonly=False,
+    )
+
+
+@records_bp.post("/fuel/odometer")
+@login_required
+def fuel_update_odometer():
+    odometer_raw = request.form.get("current_odometer_km", "")
+    odometer = _round_decimal(
+        _parse_decimal(
+            odometer_raw,
+            "現在オドメーター",
+            allow_empty=False,
+        ),
+        1,
+    )
+    if odometer is None:
+        return redirect(url_for("records.fuel_list"))
+    if odometer < 0:
+        flash("現在オドメーターは0以上で入力してください。", "warning")
+        return redirect(url_for("records.fuel_list"))
+    set_current_odometer_km(odometer)
+    flash("現在オドメーターを更新しました。", "success")
+    return redirect(url_for("records.fuel_list"))
 
 
 @records_bp.post("/fuel/<int:record_id>/edit")
@@ -947,7 +971,7 @@ def fuel_update(record_id: int):
         _parse_decimal(
             request.form.get("trip_km", ""),
             "トリップ",
-            allow_empty=True,
+            allow_empty=False,
         ),
         1,
     )
@@ -959,13 +983,13 @@ def fuel_update(record_id: int):
     )
     note = request.form.get("note", "").strip() or None
     is_full = 1 if request.form.get("is_full") == "on" else 0
-    if fill_date is None or liters is None:
+    if fill_date is None or liters is None or trip_km is None:
         return redirect(url_for("records.fuel_edit", record_id=record_id))
     if liters <= 0:
         flash("給油量は0より大きい値を入力してください。", "warning")
         return redirect(url_for("records.fuel_edit", record_id=record_id))
-    if odometer_km is None and trip_km is None:
-        flash("メーターかトリップを入力してください。", "warning")
+    if trip_km <= 0:
+        flash("トリップは0より大きい値を入力してください。", "warning")
         return redirect(url_for("records.fuel_edit", record_id=record_id))
 
     now = now_ts()

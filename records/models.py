@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.utils.db import get_db
 
@@ -197,6 +198,93 @@ def ensure_fuel_schema(db=None) -> None:
         db.close()
 
 
+def ensure_records_kv_schema(db=None) -> None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS records_kv (
+            `key` VARCHAR(191) NOT NULL PRIMARY KEY,
+            value_decimal DECIMAL(10, 1) NULL,
+            updated_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    db.commit()
+    if close_db:
+        db.close()
+
+
+def _quantize_decimal(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+
+
+def _ensure_current_odometer_row(cur) -> Decimal:
+    cur.execute(
+        "SELECT value_decimal FROM records_kv WHERE `key` = %s",
+        ("current_odometer_km",),
+    )
+    row = cur.fetchone()
+    if row and row[0] is not None:
+        return _quantize_decimal(Decimal(row[0]))
+    cur.execute(
+        "SELECT MAX(odometer_km) FROM bike_fuel_log WHERE odometer_km IS NOT NULL"
+    )
+    max_row = cur.fetchone()
+    if max_row and max_row[0] is not None:
+        initial_value = _quantize_decimal(Decimal(max_row[0]))
+    else:
+        initial_value = Decimal("0.0")
+    now = now_ts()
+    cur.execute(
+        """
+        REPLACE INTO records_kv (`key`, value_decimal, updated_at)
+        VALUES (%s, %s, %s)
+        """,
+        ("current_odometer_km", initial_value, now),
+    )
+    return initial_value
+
+
+def get_current_odometer_km(*, db=None) -> Decimal:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    ensure_records_kv_schema(db)
+    cur = db.cursor()
+    current_value = _ensure_current_odometer_row(cur)
+    db.commit()
+    if close_db:
+        db.close()
+    return current_value
+
+
+def set_current_odometer_km(value: Decimal, *, db=None) -> Decimal:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    ensure_records_kv_schema(db)
+    cur = db.cursor()
+    normalized = _quantize_decimal(Decimal(value))
+    now = now_ts()
+    cur.execute(
+        """
+        REPLACE INTO records_kv (`key`, value_decimal, updated_at)
+        VALUES (%s, %s, %s)
+        """,
+        ("current_odometer_km", normalized, now),
+    )
+    db.commit()
+    if close_db:
+        db.close()
+    return normalized
+
+
 def ensure_records_schema() -> None:
     db = get_db()
     try:
@@ -204,6 +292,7 @@ def ensure_records_schema() -> None:
         ensure_maintenance_items_schema(db)
         ensure_maintenance_schema(db)
         ensure_fuel_schema(db)
+        ensure_records_kv_schema(db)
     finally:
         db.close()
 

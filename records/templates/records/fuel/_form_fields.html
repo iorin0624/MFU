@@ -17,6 +17,8 @@
       name="odometer_km"
       class="form-control"
       value="{{ item.odometer_km if item and item.odometer_km is not none else '' }}"
+      placeholder="{% if odometer_readonly %}自動計算{% endif %}"
+      {% if odometer_readonly %}readonly{% endif %}
     >
   </div>
   <div class="col-md-4">
@@ -27,6 +29,7 @@
       name="trip_km"
       class="form-control"
       value="{{ item.trip_km if item and item.trip_km is not none else '' }}"
+      required
     >
   </div>
 </div>
