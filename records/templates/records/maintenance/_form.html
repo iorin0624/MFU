@@ -6,7 +6,14 @@
     </div>
     <div class="col-md-4">
       <label class="form-label">メーター(km)</label>
-      <input type="number" name="odometer_km" class="form-control" value="{{ item.odometer_km if item else '' }}" required>
+      <input
+        type="number"
+        name="odometer_km"
+        class="form-control"
+        value="{{ item.odometer_km if item else default_odometer_km }}"
+        {% if odometer_readonly %}readonly{% endif %}
+        required
+      >
     </div>
     <div class="col-md-4">
       <label class="form-label">項目</label>

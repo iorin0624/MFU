@@ -9,6 +9,12 @@
 {% block records_title %}{{ title }}{% endblock %}
 
 {% block records_content %}
+{% if odometer_readonly is not defined %}
+  {% set odometer_readonly = false %}
+{% endif %}
+{% if default_odometer_km is not defined %}
+  {% set default_odometer_km = item.odometer_km if item else '' %}
+{% endif %}
 {% set action_url = url_for('records.maintenance_update', record_id=item.id) if item else url_for('records.maintenance_create') %}
 {% set show_back = true %}
 {% include "records/maintenance/_form.html" %}

@@ -24,6 +24,8 @@
     {% set item = None %}
     {% set action_url = url_for('records.maintenance_create') %}
     {% set show_back = true %}
+    {% set odometer_readonly = true %}
+    {% set default_odometer_km = current_odometer_default %}
     {% include "records/maintenance/_form.html" %}
   </div>
 </div>
@@ -32,11 +34,7 @@
   <div class="card-body">
     <div class="d-flex flex-wrap justify-content-between gap-2 align-items-center">
       <h5 class="card-title mb-0">直近交換サマリ</h5>
-      <form method="get" class="d-flex align-items-center gap-2">
-        <label class="form-label mb-0">現在メーター</label>
-        <input type="number" name="current_odometer" class="form-control form-control-sm" value="{{ current_odometer }}">
-        <button type="submit" class="btn btn-sm btn-outline-primary">更新</button>
-      </form>
+      <div class="text-muted">現在メーター: {{ current_odometer_km }} km</div>
     </div>
     <table class="table table-sm">
       <thead>

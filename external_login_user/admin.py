@@ -11,6 +11,8 @@ from flask import current_app
 from .utils import (
     _event_admin_can_view,
     _event_admin_can_manage,
+    _ensure_event_invite_token,
+    _event_invite_url,
     extract_lat_lng_from_maps_url,  # 追加
 )
 
@@ -485,8 +487,12 @@ def admin_event_view(event_id: int):
     cur.close(); db.close()
     ev["event_uuid_str"] = _uuid_bytes_to_str(ev.get("event_uuid"))
 
-    # 付帯リンク生成（既存のまま）
-    join_url  = url_for("external_login_user.join_event", event_uuid=ev["event_uuid_str"], _external=True)
+    # 付帯リンク生成（自動承認時は iv 付き招待リンクを優先）
+    if int(ev.get("auto_approve_by_invite") or 0):
+        ev["invite_token"] = _ensure_event_invite_token(event_id)
+        join_url = _event_invite_url(ev)
+    else:
+        join_url = url_for("external_login_user.join_event", event_uuid=ev["event_uuid_str"], _external=True)
     maps_link = ev.get("maps_url") or (f"https://www.google.com/maps/search/?api=1&query={quote_plus(ev['address'])}"
                                        if ev.get("address") else None)
     album_url = url_for("album.album_access", album_id=ev["album_id"], _external=True) if ev.get("album_id") else None
