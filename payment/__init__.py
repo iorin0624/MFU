@@ -237,13 +237,17 @@ def _normalize_handle(v: str | None) -> str:
 # ───────────────────────────────────────────────────────────
 # Square 顧客ヘルパ
 # ───────────────────────────────────────────────────────────
-def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
-    import hashlib
+def _ensure_customer_id_for_user(
+    access_token: str,
+    *,
+    user_id: int,
+    nickname: str,
+    buyer_email: str,
+) -> str:
     base = _square_api_base()
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
 
-    h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
-    ref = f"ev:{event_uuid[:8]}:{h}"
+    ref = f"mfu_user:{int(user_id)}"
 
     # 検索
     try:
@@ -252,15 +256,59 @@ def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: 
         if sresp.status_code < 400:
             customers = (sresp.json() or {}).get("customers") or []
             if customers:
-                return customers[0]["id"]
+                customer = customers[0] or {}
+                customer_id = customer.get("id")
+                if not customer_id:
+                    raise RuntimeError("customer id missing")
+                if buyer_email and not (customer.get("email_address") or "").strip():
+                    uresp = requests.put(
+                        f"{base}/v2/customers/{customer_id}",
+                        headers=headers,
+                        json={"email_address": buyer_email},
+                        timeout=15,
+                    )
+                    uresp.raise_for_status()
+                return customer_id
     except Exception:
         logging.exception("search_customers failed")
 
     # 作成
     cresp = requests.post(f"{base}/v2/customers", headers=headers,
-                          json={"given_name": nickname, "reference_id": ref}, timeout=15)
+                          json={"given_name": nickname, "reference_id": ref, "email_address": buyer_email}, timeout=15)
     cresp.raise_for_status()
     return (cresp.json() or {}).get("customer", {}).get("id")
+
+
+def _resolve_buyer_identity(conn, event_uuid: str, payment_token: str | None) -> tuple[int | None, str | None]:
+    if not payment_token:
+        return None, None
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT pr.user_id,
+                   pr.buyer_email,
+                   u.email AS ext_user_email
+              FROM mfu_payment_request pr
+              JOIN mfu_event me
+                ON me.id = pr.event_id
+              LEFT JOIN external_login_user u
+                ON u.id = pr.user_id
+             WHERE pr.token=%s
+               AND me.payment_uuid=%s
+             ORDER BY pr.id DESC
+             LIMIT 1
+        """, (payment_token, event_uuid))
+        row = _fetchone_dict(cur)
+        if not row:
+            return None, None
+        user_id = row.get("user_id")
+        buyer_email = (row.get("buyer_email") or "").strip() or (row.get("ext_user_email") or "").strip() or None
+        return int(user_id) if user_id is not None else None, buyer_email
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 # ───────────────────────────────────────────────────────────
 # Discord通知（必要時）
@@ -1079,6 +1127,11 @@ def api_charge(event_uuid: str):
         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
         if payment_token and token_amount is None:
             return jsonify({"message": "支払いトークンが無効です"}), 400
+        buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, payment_token)
+        if not buyer_user_id:
+            return jsonify({"message": "支払いユーザー情報が取得できません。イベントページから開き直してください。"}), 400
+        if not buyer_email:
+            return jsonify({"message": "メールアドレスが未登録のため決済を開始できません。"}), 400
         # ★ 常に最新金額を取得（トークンがあれば優先）
         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
         if not ev or amount <= 0:
@@ -1102,13 +1155,18 @@ def api_charge(event_uuid: str):
               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
                idempotency_key, square_status, wallet_type, payment_token)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
-        """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type, payment_token))
+        """, (ev["id"], nickname, x_id, instagram_id, buyer_email, int(amount), None, idemp, wallet_type, payment_token))
         pay_row_id = cur.lastrowid
         conn.commit()
 
         # 顧客ID
         try:
-            customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
+            customer_id = _ensure_customer_id_for_user(
+                access_token,
+                user_id=buyer_user_id,
+                nickname=nickname,
+                buyer_email=buyer_email,
+            )
         except Exception:
             return jsonify({"message": "顧客の作成に失敗しました"}), 500
 
@@ -1120,6 +1178,7 @@ def api_charge(event_uuid: str):
             "location_id": location_id,
             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
             "customer_id": customer_id,
+            "buyer_email_address": buyer_email,
         }
 
         resp = requests.post(
