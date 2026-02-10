@@ -1,71 +1,239 @@
-diff --git a/records/templates/records/maintenance/list.html b/records/templates/records/maintenance/list.html
-index ea1c5ddf90c7b246ec8867f7cc9522a848b29713..d3a9df9a49fd51511e8d9e2263a7033bf1e90f0f 100644
---- a/records/templates/records/maintenance/list.html
-+++ b/records/templates/records/maintenance/list.html
-@@ -2,63 +2,61 @@
+diff --git a/payment/__init__.py b/payment/__init__.py
+index 645efc73cfbb3b7743c282941ccd07a4503ecebf..ae7be3d16c3c4c55f1382c8e62b0010b6aa3d690 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -215,75 +215,123 @@ def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
+     except Exception:
+         logging.exception("build_receipt_pdf_url failed")
+         return None
  
- {% block records_title %}整備記録{% endblock %}
+ def _sanitize_handle(s: str | None) -> str | None:
+     if not s:
+         return None
+     s = s.strip()
+     if s.startswith("@"):
+         s = s[1:]
+     s = s.strip()
+     return s.lower() or None
  
- {% block records_actions %}
-   <div class="d-flex flex-wrap gap-2">
-     {% include "records/_back_to_index.html" %}
-     <a href="{{ url_for('records.maintenance_list', _anchor='new') }}" class="btn btn-primary">新規追加</a>
-   </div>
- {% endblock %}
+ def _normalize_handle(v: str | None) -> str:
+     if not v:
+         return ""
+     v = v.strip()
+     if v.startswith("@"):
+         v = v[1:]
+     # Python なので lower()
+     return v.strip().lower()
  
- {% block records_content %}
- {% macro dash(value) -%}
-   {%- if value is none or value == '' -%}
-     -
-   {%- else -%}
-     {{ value }}
-   {%- endif -%}
- {%- endmacro %}
+ # ───────────────────────────────────────────────────────────
+ # Square 顧客ヘルパ
+ # ───────────────────────────────────────────────────────────
+-def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
+-    import hashlib
++def _ensure_customer_id_for_user(
++    access_token: str,
++    *,
++    user_id: int,
++    nickname: str,
++    buyer_email: str,
++) -> str:
+     base = _square_api_base()
+     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
  
- <div class="card mb-4" id="new">
-   <div class="card-body">
-     <h5 class="card-title">新規追加</h5>
-     {% set item = None %}
-     {% set action_url = url_for('records.maintenance_create') %}
-     {% set show_back = true %}
-+    {% set odometer_readonly = true %}
-+    {% set default_odometer_km = current_odometer_default %}
-     {% include "records/maintenance/_form.html" %}
-   </div>
- </div>
+-    h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
+-    ref = f"ev:{event_uuid[:8]}:{h}"
++    ref = f"mfu_user:{int(user_id)}"
  
- <div class="card mb-4">
-   <div class="card-body">
-     <div class="d-flex flex-wrap justify-content-between gap-2 align-items-center">
-       <h5 class="card-title mb-0">直近交換サマリ</h5>
--      <form method="get" class="d-flex align-items-center gap-2">
--        <label class="form-label mb-0">現在メーター</label>
--        <input type="number" name="current_odometer" class="form-control form-control-sm" value="{{ current_odometer }}">
--        <button type="submit" class="btn btn-sm btn-outline-primary">更新</button>
--      </form>
-+      <div class="text-muted">現在メーター: {{ current_odometer_km }} km</div>
-     </div>
-     <table class="table table-sm">
-       <thead>
-         <tr>
-           <th>項目</th>
-           <th>日付</th>
-           <th class="text-end">メーター</th>
-           <th>備考</th>
-           <th class="text-end">交換してから</th>
-           <th class="text-end">交換目安</th>
-           <th class="text-end">後どれぐらい？</th>
-         </tr>
-       </thead>
-       <tbody>
-         {% for row in summary_rows %}
-         <tr>
-           <td>{{ row.item_name }}</td>
-           <td>{{ dash(row.event_date) }}</td>
-           <td class="text-end">{{ dash(row.odometer_km) }}</td>
-           <td>{{ dash(row.note) }}</td>
-           <td class="text-end">{{ dash(row.since_km) }}</td>
-           <td class="text-end">{{ dash(row.target_km) }}</td>
-           <td class="text-end">{{ dash(row.remaining_km) }}</td>
-         </tr>
-         {% else %}
+     # 検索
+     try:
+         sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
+                               json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
+         if sresp.status_code < 400:
+             customers = (sresp.json() or {}).get("customers") or []
+             if customers:
+-                return customers[0]["id"]
++                customer = customers[0] or {}
++                customer_id = customer.get("id")
++                if not customer_id:
++                    raise RuntimeError("customer id missing")
++                if buyer_email and not (customer.get("email_address") or "").strip():
++                    uresp = requests.put(
++                        f"{base}/v2/customers/{customer_id}",
++                        headers=headers,
++                        json={"email_address": buyer_email},
++                        timeout=15,
++                    )
++                    uresp.raise_for_status()
++                return customer_id
+     except Exception:
+         logging.exception("search_customers failed")
+ 
+     # 作成
+     cresp = requests.post(f"{base}/v2/customers", headers=headers,
+-                          json={"given_name": nickname, "reference_id": ref}, timeout=15)
++                          json={"given_name": nickname, "reference_id": ref, "email_address": buyer_email}, timeout=15)
+     cresp.raise_for_status()
+     return (cresp.json() or {}).get("customer", {}).get("id")
+ 
++
++def _resolve_buyer_identity(conn, event_uuid: str, payment_token: str | None) -> tuple[int | None, str | None]:
++    if not payment_token:
++        return None, None
++    cur = conn.cursor()
++    try:
++        cur.execute("""
++            SELECT pr.user_id,
++                   pr.buyer_email,
++                   u.email AS ext_user_email
++              FROM mfu_payment_request pr
++              JOIN mfu_event me
++                ON me.id = pr.event_id
++              LEFT JOIN external_login_user u
++                ON u.id = pr.user_id
++             WHERE pr.token=%s
++               AND me.payment_uuid=%s
++             ORDER BY pr.id DESC
++             LIMIT 1
++        """, (payment_token, event_uuid))
++        row = _fetchone_dict(cur)
++        if not row:
++            return None, None
++        user_id = row.get("user_id")
++        buyer_email = (row.get("buyer_email") or "").strip() or (row.get("ext_user_email") or "").strip() or None
++        return int(user_id) if user_id is not None else None, buyer_email
++    finally:
++        try:
++            cur.close()
++        except Exception:
++            pass
++
+ # ───────────────────────────────────────────────────────────
+ # Discord通知（必要時）
+ # ───────────────────────────────────────────────────────────
+ def _get_discord_webhook_url(conn, username: str = "admin") -> str | None:
+     try:
+         cur = conn.cursor()
+         cur.execute("""
+             SELECT webhook_url
+               FROM users
+              WHERE username = %s
+                AND webhook_url IS NOT NULL
+                AND webhook_url <> ''
+              LIMIT 1
+         """, (username,))
+         row = cur.fetchone()
+         if not row:
+             return None
+         return row[0] if not isinstance(row, dict) else row.get("webhook_url")
+     except Exception:
+         logging.exception("failed to load discord webhook url by username")
+         return None
+ 
+ def _discord_notify(webhook_url, *, title, description, fields=(), color=0x2ECC71):
+     try:
+         embeds = [{
+@@ -1057,91 +1105,102 @@ def api_charge(event_uuid: str):
+ 
+     nickname      = (data.get("nickname") or "").strip()
+     x_id          = _sanitize_handle(data.get("x_id"))
+     instagram_id  = _sanitize_handle(data.get("instagram_id"))
+     source_id     = data.get("sourceId")
+     payment_token = (data.get("payment_token") or request.args.get("payment_token") or "").strip() or None
+ 
+     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
+     _wt_in = data.get("walletType", data.get("wallet_type"))
+     if isinstance(_wt_in, str):
+         _wt_in = _wt_in.strip().upper()
+     else:
+         _wt_in = ""
+     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
+ 
+     if not nickname or not source_id or (not x_id and not instagram_id):
+         return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
+ 
+     conn = _get_db()
+     try:
+         if not payment_token:
+             return jsonify({"message": "支払いトークンが見つかりません。イベントページから開き直してください。"}), 400
+         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
+         if payment_token and token_amount is None:
+             return jsonify({"message": "支払いトークンが無効です"}), 400
++        buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, payment_token)
++        if not buyer_user_id:
++            return jsonify({"message": "支払いユーザー情報が取得できません。イベントページから開き直してください。"}), 400
++        if not buyer_email:
++            return jsonify({"message": "メールアドレスが未登録のため決済を開始できません。"}), 400
+         # ★ 常に最新金額を取得（トークンがあれば優先）
+         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
+         if not ev or amount <= 0:
+             return jsonify({"message": "イベントが見つからない/無効です"}), 404
+         if token_amount is not None and token_amount > 0:
+             amount = token_amount
+ 
+         # 二重決済ブロック（event_payments に対して）—削除
+         cur = conn.cursor()
+ 
+         access_token = _square_access_token()
+         location_id  = _square_location_id()
+         if not access_token or not location_id:
+             return jsonify({"message": "Square設定が未完了です"}), 500
+ 
+         idemp = str(uuid.uuid4())
+ 
+         # ★ 先にPENDINGで1行作成（wallet_type を保存）
+         cur.execute("""
+             INSERT INTO event_payments
+               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
+                idempotency_key, square_status, wallet_type, payment_token)
+             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
+-        """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type, payment_token))
++        """, (ev["id"], nickname, x_id, instagram_id, buyer_email, int(amount), None, idemp, wallet_type, payment_token))
+         pay_row_id = cur.lastrowid
+         conn.commit()
+ 
+         # 顧客ID
+         try:
+-            customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
++            customer_id = _ensure_customer_id_for_user(
++                access_token,
++                user_id=buyer_user_id,
++                nickname=nickname,
++                buyer_email=buyer_email,
++            )
+         except Exception:
+             return jsonify({"message": "顧客の作成に失敗しました"}), 500
+ 
+         # CreatePayment
+         body = {
+             "idempotency_key": idemp,
+             "source_id": source_id,
+             "amount_money": {"amount": int(amount), "currency": "JPY"},
+             "location_id": location_id,
+             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
+             "customer_id": customer_id,
++            "buyer_email_address": buyer_email,
+         }
+ 
+         resp = requests.post(
+             f"{_square_api_base()}/v2/payments",
+             headers={"Authorization": f"Bearer {access_token}",
+                      "Content-Type":"application/json", "Accept":"application/json"},
+             json=body, timeout=25
+         )
+         ok = resp.status_code < 400
+         try:
+             payload = resp.json()
+         except Exception:
+             payload = {}
+ 
+         if ok:
+             p = payload.get("payment", {}) or {}
+             status  = p.get("status") or "AUTHORIZED"
+             details = p.get("card_details") or {}
+             card    = details.get("card") or {}
+             cur.execute("""
+                 UPDATE event_payments
+                    SET square_payment_id=%s, square_status=%s,
+                        card_brand=%s, card_last4=%s, card_exp_mm=%s, card_exp_yyyy=%s,
+                        square_receipt_url=%s,
+                        error_code=NULL, error_detail=NULL
