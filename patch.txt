@@ -1,138 +1,100 @@
-diff --git a/records/bp.py b/records/bp.py
-index d23acabe41f16941239e9505b46e8b401f3c7c78..29ce3987c14c6d21f6386f96483051192b30b0ee 100644
---- a/records/bp.py
-+++ b/records/bp.py
-@@ -17,51 +17,51 @@ from flask import Blueprint, abort, flash, jsonify, redirect, render_template, r
- 
- from app.utils.db import get_db
- 
- from .models import (
-     ensure_records_schema,
-     get_current_odometer_km,
-     insert_maintenance_item,
-     list_maintenance_items,
-     now_ts,
-     set_current_odometer_km,
-     update_maintenance_item,
- )
- 
- records_bp = Blueprint(
-     "records",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
- )
- 
- 
- _schema_init_lock = Lock()
- _schema_initialized = False
- _uber_ocr_preview_lock = Lock()
- _uber_ocr_preview_store: dict[str, dict[str, str | float]] = {}
--_UBER_OCR_TMP_DIR = "/mnt/mfu/tmp/uber_ocr"
-+_UBER_OCR_TMP_DIR = os.getenv("UBER_OCR_TMP_DIR", os.path.join("/tmp", "mfu", "uber_ocr"))
- _UBER_OCR_PREVIEW_TTL_SEC = 60 * 60 * 24
- 
- 
- @records_bp.app_template_filter("fmt_yen")
- def fmt_yen(value, digits=0):
-     if value is None or value == "":
-         return "-"
-     try:
-         number = float(value)
-     except Exception:
-         return str(value)
-     precision = int(digits)
-     if precision > 0:
-         return f"{round(number, precision):,.{precision}f}"
-     return f"{round(number):,}"
- 
- 
- @records_bp.before_app_request
- def _init_records_schema() -> None:
-     global _schema_initialized
-     if _schema_initialized:
-         return
-     with _schema_init_lock:
-         if _schema_initialized:
-             return
-@@ -547,70 +547,75 @@ def uber_delete(record_id: int):
-     db = get_db()
-     cur = db.cursor()
-     cur.execute("DELETE FROM uber_daily WHERE id = %s", (record_id,))
-     db.commit()
-     db.close()
-     flash("Uber記録を削除しました。", "success")
-     return redirect(url_for("records.uber_list"))
- 
- 
- @records_bp.post("/uber/ocr")
- @login_required
- def uber_ocr_analyze():
-     _cleanup_old_uber_ocr_files()
- 
-     uploaded = request.files.get("image")
-     if not uploaded or not uploaded.filename:
-         return jsonify({"ok": False, "message": "画像ファイルを選択してください。", "warnings": []}), 400
- 
-     ext = os.path.splitext(uploaded.filename)[1].lower()
-     if not ext:
-         guessed_ext = mimetypes.guess_extension(uploaded.mimetype or "")
-         ext = guessed_ext or ".png"
-     if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic"}:
-         ext = ".png"
- 
--    os.makedirs(_UBER_OCR_TMP_DIR, exist_ok=True)
-     token = uuid.uuid4().hex
-     filename = f"{int(time.time())}_{token}{ext}"
-     image_path = os.path.join(_UBER_OCR_TMP_DIR, filename)
--    uploaded.save(image_path)
- 
-     warnings: list[str] = []
-     try:
-+        os.makedirs(_UBER_OCR_TMP_DIR, exist_ok=True)
-+        uploaded.save(image_path)
-         result = _analyze_uber_screenshot_with_openai(
-             image_path=image_path,
-             mime_type=uploaded.mimetype or "image/png",
-         )
-     except Exception as exc:
-+        if os.path.exists(image_path):
-+            try:
-+                os.remove(image_path)
-+            except OSError:
-+                pass
-         return jsonify(
-             {
-                 "ok": False,
--                "message": f"画像解析に失敗しました: {exc}",
--                "warnings": ["手入力で保存は可能です。"],
-+                "message": "画像解析に失敗しました。OpenAI設定またはサーバー設定を確認してください。",
-+                "warnings": [f"詳細: {exc}", "手入力で保存は可能です。"],
-             }
--        ), 500
-+        )
- 
-     notes = result.get("notes") if isinstance(result, dict) else None
-     if isinstance(notes, list):
-         warnings.extend([str(note) for note in notes if str(note).strip()])
- 
-     fields = {
-         "work_date": datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat(),
-         "deliveries": _normalize_ocr_int(result.get("deliveries") if isinstance(result, dict) else None, "ポイント", warnings),
-         "net_yen": _normalize_ocr_int(result.get("net_yen") if isinstance(result, dict) else None, "正味の料金", warnings),
-         "promo_yen": _normalize_ocr_int(result.get("promo_yen") if isinstance(result, dict) else None, "プロモーション", warnings),
-         "other_yen": _normalize_ocr_int(result.get("other_yen") if isinstance(result, dict) else None, "その他の売り上げ", warnings),
-         "tip_yen": _normalize_ocr_int(result.get("tip_yen") if isinstance(result, dict) else None, "チップ", warnings),
-     }
- 
-     with _uber_ocr_preview_lock:
-         _uber_ocr_preview_store[token] = {"path": image_path, "created_at": time.time()}
- 
-     return jsonify(
-         {
-             "ok": True,
-             "fields": fields,
-             "warnings": warnings,
-             "preview_url": url_for("records.uber_ocr_preview", token=token),
-         }
-     )
+diff --git a/records/templates/records/uber/ocr_queue.html b/records/templates/records/uber/ocr_queue.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..bf92af4f06d7fd37b9100490eb81706ce4e9a7f3
+--- /dev/null
++++ b/records/templates/records/uber/ocr_queue.html
+@@ -0,0 +1,94 @@
++{% extends "records/base_records.html" %}
++
++{% block records_title %}Uber OCRキュー{% endblock %}
++
++{% block records_actions %}
++  <a class="btn btn-outline-primary" href="{{ url_for('records.uber_list') }}">Uber一覧へ戻る</a>
++{% endblock %}
++
++{% block records_content %}
++<div class="card shadow-sm">
++  <div class="card-body">
++    <h2 class="h5 mb-3">確認待ちキュー</h2>
++    <div class="table-responsive">
++      <table class="table table-bordered table-sm align-middle">
++        <thead class="table-light">
++          <tr>
++            <th>プレビュー</th>
++            <th>抽出値</th>
++            <th>warnings</th>
++            <th>操作</th>
++          </tr>
++        </thead>
++        <tbody>
++          {% for row in rows %}
++          <tr>
++            <td style="min-width:220px;">
++              <a href="{{ url_for('records.uber_ocr_queue_image', queue_id=row.id) }}" target="_blank" rel="noopener">
++                <img
++                  src="{{ url_for('records.uber_ocr_queue_image', queue_id=row.id) }}"
++                  alt="queue image {{ row.id }}"
++                  class="img-fluid rounded border"
++                  style="max-width: 200px; max-height: 200px; object-fit: contain;"
++                >
++              </a>
++            </td>
++            <td>
++              <form method="post" action="{{ url_for('records.uber_ocr_queue_commit', queue_id=row.id) }}" class="row g-2">
++                <div class="col-12">
++                  <label class="form-label small mb-0">日付</label>
++                  <input type="date" class="form-control form-control-sm" name="work_date" value="{{ row.work_date }}" required>
++                </div>
++                <div class="col-6">
++                  <label class="form-label small mb-0">件数</label>
++                  <input type="number" class="form-control form-control-sm" name="deliveries" value="{{ row.deliveries }}" required>
++                </div>
++                <div class="col-6">
++                  <label class="form-label small mb-0">正味</label>
++                  <input type="number" class="form-control form-control-sm" name="net_yen" value="{{ row.net_yen }}" required>
++                </div>
++                <div class="col-6">
++                  <label class="form-label small mb-0">プロモ</label>
++                  <input type="number" class="form-control form-control-sm" name="promo_yen" value="{{ row.promo_yen }}" required>
++                </div>
++                <div class="col-6">
++                  <label class="form-label small mb-0">その他</label>
++                  <input type="number" class="form-control form-control-sm" name="other_yen" value="{{ row.other_yen }}" required>
++                </div>
++                <div class="col-6">
++                  <label class="form-label small mb-0">チップ</label>
++                  <input type="number" class="form-control form-control-sm" name="tip_yen" value="{{ row.tip_yen }}" required>
++                </div>
++                <div class="col-12 d-grid">
++                  <button type="submit" class="btn btn-sm btn-success">保存（commit）</button>
++                </div>
++              </form>
++            </td>
++            <td style="min-width: 200px;">
++              {% if row.warnings %}
++                <ul class="mb-0 ps-3 small">
++                {% for warning in row.warnings %}
++                  <li>{{ warning }}</li>
++                {% endfor %}
++                </ul>
++              {% else %}
++                <span class="text-muted small">-</span>
++              {% endif %}
++            </td>
++            <td style="min-width:140px;">
++              <form method="post" action="{{ url_for('records.uber_ocr_queue_discard', queue_id=row.id) }}" onsubmit="return confirm('このキューを破棄しますか？');">
++                <button type="submit" class="btn btn-sm btn-outline-danger w-100">破棄（discard）</button>
++              </form>
++            </td>
++          </tr>
++          {% else %}
++          <tr>
++            <td colspan="4" class="text-center text-muted">確認待ちキューはありません。</td>
++          </tr>
++          {% endfor %}
++        </tbody>
++      </table>
++    </div>
++  </div>
++</div>
++{% endblock %}

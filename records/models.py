@@ -31,6 +31,40 @@ def ensure_uber_schema(db=None) -> None:
         db.close()
 
 
+def ensure_uber_ocr_queue_schema(db=None) -> None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS uber_ocr_queue (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            status VARCHAR(32) NOT NULL,
+            work_date DATE NOT NULL,
+            deliveries INT NOT NULL DEFAULT 0,
+            net_yen INT NOT NULL DEFAULT 0,
+            promo_yen INT NOT NULL DEFAULT 0,
+            other_yen INT NOT NULL DEFAULT 0,
+            tip_yen INT NOT NULL DEFAULT 0,
+            warnings_json TEXT NULL,
+            image_path VARCHAR(512) NOT NULL,
+            mime_type VARCHAR(128) NULL,
+            original_filename VARCHAR(255) NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            INDEX(status),
+            INDEX(created_at),
+            INDEX(work_date)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    db.commit()
+    if close_db:
+        db.close()
+
+
 def ensure_maintenance_items_schema(db=None) -> None:
     close_db = False
     if db is None:
@@ -289,6 +323,7 @@ def ensure_records_schema() -> None:
     db = get_db()
     try:
         ensure_uber_schema(db)
+        ensure_uber_ocr_queue_schema(db)
         ensure_maintenance_items_schema(db)
         ensure_maintenance_schema(db)
         ensure_fuel_schema(db)

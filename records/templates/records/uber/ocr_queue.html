@@ -1,0 +1,94 @@
+{% extends "records/base_records.html" %}
+
+{% block records_title %}Uber OCRキュー{% endblock %}
+
+{% block records_actions %}
+  <a class="btn btn-outline-primary" href="{{ url_for('records.uber_list') }}">Uber一覧へ戻る</a>
+{% endblock %}
+
+{% block records_content %}
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h5 mb-3">確認待ちキュー</h2>
+    <div class="table-responsive">
+      <table class="table table-bordered table-sm align-middle">
+        <thead class="table-light">
+          <tr>
+            <th>プレビュー</th>
+            <th>抽出値</th>
+            <th>warnings</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td style="min-width:220px;">
+              <a href="{{ url_for('records.uber_ocr_queue_image', queue_id=row.id) }}" target="_blank" rel="noopener">
+                <img
+                  src="{{ url_for('records.uber_ocr_queue_image', queue_id=row.id) }}"
+                  alt="queue image {{ row.id }}"
+                  class="img-fluid rounded border"
+                  style="max-width: 200px; max-height: 200px; object-fit: contain;"
+                >
+              </a>
+            </td>
+            <td>
+              <form method="post" action="{{ url_for('records.uber_ocr_queue_commit', queue_id=row.id) }}" class="row g-2">
+                <div class="col-12">
+                  <label class="form-label small mb-0">日付</label>
+                  <input type="date" class="form-control form-control-sm" name="work_date" value="{{ row.work_date }}" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label small mb-0">件数</label>
+                  <input type="number" class="form-control form-control-sm" name="deliveries" value="{{ row.deliveries }}" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label small mb-0">正味</label>
+                  <input type="number" class="form-control form-control-sm" name="net_yen" value="{{ row.net_yen }}" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label small mb-0">プロモ</label>
+                  <input type="number" class="form-control form-control-sm" name="promo_yen" value="{{ row.promo_yen }}" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label small mb-0">その他</label>
+                  <input type="number" class="form-control form-control-sm" name="other_yen" value="{{ row.other_yen }}" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label small mb-0">チップ</label>
+                  <input type="number" class="form-control form-control-sm" name="tip_yen" value="{{ row.tip_yen }}" required>
+                </div>
+                <div class="col-12 d-grid">
+                  <button type="submit" class="btn btn-sm btn-success">保存（commit）</button>
+                </div>
+              </form>
+            </td>
+            <td style="min-width: 200px;">
+              {% if row.warnings %}
+                <ul class="mb-0 ps-3 small">
+                {% for warning in row.warnings %}
+                  <li>{{ warning }}</li>
+                {% endfor %}
+                </ul>
+              {% else %}
+                <span class="text-muted small">-</span>
+              {% endif %}
+            </td>
+            <td style="min-width:140px;">
+              <form method="post" action="{{ url_for('records.uber_ocr_queue_discard', queue_id=row.id) }}" onsubmit="return confirm('このキューを破棄しますか？');">
+                <button type="submit" class="btn btn-sm btn-outline-danger w-100">破棄（discard）</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="4" class="text-center text-muted">確認待ちキューはありません。</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -3084,8 +3084,9 @@ app.register_blueprint(payment_bp)
 
 app.register_blueprint(receipts_bp)
 
-from app.records import records_bp
+from app.records import records_api_bp, records_bp
 app.register_blueprint(records_bp, url_prefix="/records")
+app.register_blueprint(records_api_bp)
 
 from app.utils.logs import log_request_raw, write_login_log, log_access
 
