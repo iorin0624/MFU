@@ -1,239 +1,123 @@
-diff --git a/payment/__init__.py b/payment/__init__.py
-index 645efc73cfbb3b7743c282941ccd07a4503ecebf..ae7be3d16c3c4c55f1382c8e62b0010b6aa3d690 100644
---- a/payment/__init__.py
-+++ b/payment/__init__.py
-@@ -215,75 +215,123 @@ def _build_receipt_pdf_url(conn, *, event_id: int, user_id: int) -> str | None:
-     except Exception:
-         logging.exception("build_receipt_pdf_url failed")
-         return None
+diff --git a/external_login_user/admin.py b/external_login_user/admin.py
+index 27950f8ebcb90551a26a8d24c7241f25e7d241eb..73b8c96f1a24cc77b7967134760f24064e93bc23 100644
+--- a/external_login_user/admin.py
++++ b/external_login_user/admin.py
+@@ -531,115 +531,117 @@ def admin_event_view(event_id: int):
+       JOIN external_login_user u ON u.id = m.user_id
+       WHERE m.event_id=%s
+       ORDER BY role_rank ASC, u.nickname ASC, m.joined_at ASC
+     """, (event_id,))
+     rows = cur.fetchall()
+     cur.close(); db.close()
  
- def _sanitize_handle(s: str | None) -> str | None:
-     if not s:
-         return None
-     s = s.strip()
-     if s.startswith("@"):
-         s = s[1:]
-     s = s.strip()
-     return s.lower() or None
+     def _badge(label: str, color: str) -> str:
+         return f'<span class="badge bg-{color}">{label}</span>'
  
- def _normalize_handle(v: str | None) -> str:
-     if not v:
-         return ""
-     v = v.strip()
-     if v.startswith("@"):
-         v = v[1:]
-     # Python なので lower()
-     return v.strip().lower()
+     # pending系を「確認（オレンジ）」に寄せるマップ（既存）
+     PENDING_STATUSES = {
+         "pending", "confirm", "confirming", "checking",
+         "verifying", "awaiting", "processing", "authorized"
+     }
  
- # ───────────────────────────────────────────────────────────
- # Square 顧客ヘルパ
- # ───────────────────────────────────────────────────────────
--def _ensure_customer_id_for_event(access_token: str, event_uuid: str, nickname: str) -> str:
--    import hashlib
-+def _ensure_customer_id_for_user(
-+    access_token: str,
-+    *,
-+    user_id: int,
-+    nickname: str,
-+    buyer_email: str,
-+) -> str:
-     base = _square_api_base()
-     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
+     members = []
+     require_payment_count = 0
+     paid_count = 0
+     for r in rows:
+         if isinstance(r, tuple):
+             (user_id, nickname, x_id, instagram_id, email,
+              avatar_file, avatar_url, updated_at,
+              status, payment_status, paid_at, receipt_url, joined_at,
+              require_payment, process, is_host, is_subhost, participant_role, costume_label,
+-             paid_amount_yen, contact_memo, admin_note, _role_rank) = r
++             paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
+         else:
+             user_id          = r["user_id"]
+             nickname         = r["nickname"]
+             x_id             = r["x_id"]
+             instagram_id     = r["instagram_id"]
+             email            = r["email"]
+             avatar_file      = r["avatar_file"]
+             avatar_url       = r["avatar_url"]
+             updated_at       = r["updated_at"]
+             status           = r["status"]
+             payment_status   = r["payment_status"]
+             paid_at          = r["paid_at"]
+             receipt_url      = r["receipt_url"]
+             joined_at        = r["joined_at"]
+             require_payment  = r["require_payment"]
+             process          = r["process"]
+             is_host          = r["is_host"]
+             is_subhost       = r["is_subhost"]
+             participant_role = r["participant_role"]
+             costume_label    = r["costume_label"]
+             paid_amount_yen  = r.get("paid_amount_yen")
+             contact_memo     = r.get("contact_memo")
+             admin_note       = r.get("admin_note")
++            receipt_note     = r.get("receipt_note")
  
--    h = hashlib.sha1(f"{event_uuid}:{nickname}".encode("utf-8")).hexdigest()[:24]
--    ref = f"ev:{event_uuid[:8]}:{h}"
-+    ref = f"mfu_user:{int(user_id)}"
+         # --- 支払状況バッジ（既存ロジック） ---
+         status_s = (payment_status or "").strip().lower()
+         if paid_at:  # 支払日時が入っていれば最優先で「済」
+             pay_status_html = _badge("済", "success")
+         elif status_s == "paid":
+             pay_status_html = _badge("済", "success")
+         elif status_s in PENDING_STATUSES:
+             pay_status_html = _badge("確認", "warning")
+         else:
+             pay_status_html = _badge("未", "danger")
  
-     # 検索
-     try:
-         sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
-                               json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
-         if sresp.status_code < 400:
-             customers = (sresp.json() or {}).get("customers") or []
-             if customers:
--                return customers[0]["id"]
-+                customer = customers[0] or {}
-+                customer_id = customer.get("id")
-+                if not customer_id:
-+                    raise RuntimeError("customer id missing")
-+                if buyer_email and not (customer.get("email_address") or "").strip():
-+                    uresp = requests.put(
-+                        f"{base}/v2/customers/{customer_id}",
-+                        headers=headers,
-+                        json={"email_address": buyer_email},
-+                        timeout=15,
-+                    )
-+                    uresp.raise_for_status()
-+                return customer_id
-     except Exception:
-         logging.exception("search_customers failed")
+         require_payment_flag = 1 if (require_payment is None) else int(require_payment)
+         if require_payment_flag == 1:
+             require_payment_count += 1
+             if paid_at or status_s == "paid":
+                 paid_count += 1
  
-     # 作成
-     cresp = requests.post(f"{base}/v2/customers", headers=headers,
--                          json={"given_name": nickname, "reference_id": ref}, timeout=15)
-+                          json={"given_name": nickname, "reference_id": ref, "email_address": buyer_email}, timeout=15)
-     cresp.raise_for_status()
-     return (cresp.json() or {}).get("customer", {}).get("id")
+         members.append({
+             "user_id": user_id,
+             "nickname": nickname,
+             "x_id": x_id,
+             "instagram_id": instagram_id,
+             "email": email,
+             "avatar_file": avatar_file,
+             "avatar_url": avatar_url,
+             "updated_at": updated_at,
+             "status": status,
+             "payment_status": payment_status,
+             "paid_at": paid_at,
+             "receipt_url": receipt_url,
+             "joined_at": joined_at,
+             "require_payment": require_payment_flag,
+             "process": 1 if process else 0,
+             "is_host": 1 if is_host else 0,
+             "is_subhost": 1 if is_subhost else 0,
+             "participant_role": (participant_role or "none"),
+             "costume_label": costume_label,
+             "paid_amount_yen": paid_amount_yen,
+             "contact_memo": contact_memo,
+             "admin_note": admin_note,
++            "receipt_note": receipt_note,
+             "pay_status_html": pay_status_html,
+         })
  
-+
-+def _resolve_buyer_identity(conn, event_uuid: str, payment_token: str | None) -> tuple[int | None, str | None]:
-+    if not payment_token:
-+        return None, None
-+    cur = conn.cursor()
-+    try:
-+        cur.execute("""
-+            SELECT pr.user_id,
-+                   pr.buyer_email,
-+                   u.email AS ext_user_email
-+              FROM mfu_payment_request pr
-+              JOIN mfu_event me
-+                ON me.id = pr.event_id
-+              LEFT JOIN external_login_user u
-+                ON u.id = pr.user_id
-+             WHERE pr.token=%s
-+               AND me.payment_uuid=%s
-+             ORDER BY pr.id DESC
-+             LIMIT 1
-+        """, (payment_token, event_uuid))
-+        row = _fetchone_dict(cur)
-+        if not row:
-+            return None, None
-+        user_id = row.get("user_id")
-+        buyer_email = (row.get("buyer_email") or "").strip() or (row.get("ext_user_email") or "").strip() or None
-+        return int(user_id) if user_id is not None else None, buyer_email
-+    finally:
-+        try:
-+            cur.close()
-+        except Exception:
-+            pass
-+
- # ───────────────────────────────────────────────────────────
- # Discord通知（必要時）
- # ───────────────────────────────────────────────────────────
- def _get_discord_webhook_url(conn, username: str = "admin") -> str | None:
-     try:
-         cur = conn.cursor()
-         cur.execute("""
-             SELECT webhook_url
-               FROM users
-              WHERE username = %s
-                AND webhook_url IS NOT NULL
-                AND webhook_url <> ''
-              LIMIT 1
-         """, (username,))
-         row = cur.fetchone()
-         if not row:
-             return None
-         return row[0] if not isinstance(row, dict) else row.get("webhook_url")
-     except Exception:
-         logging.exception("failed to load discord webhook url by username")
-         return None
+     admin_csrf = _admin_csrf_token()
+     return render_template(
+         "admin_event_view.html",
+         ev=ev, members=members,
+         join_url=join_url, maps_link=maps_link,
+         album_url=album_url, pay_admin_url=pay_admin_url,
+         line_openchat_url=ev.get("line_openchat_url"),
+         line_openchat_pass=ev.get("line_openchat_pass"),
+         google_form_url=ev.get("google_form_url"),
+         require_payment_count=require_payment_count,
+         paid_count=paid_count,
+         admin_csrf=admin_csrf
+     )
  
- def _discord_notify(webhook_url, *, title, description, fields=(), color=0x2ECC71):
-     try:
-         embeds = [{
-@@ -1057,91 +1105,102 @@ def api_charge(event_uuid: str):
  
-     nickname      = (data.get("nickname") or "").strip()
-     x_id          = _sanitize_handle(data.get("x_id"))
-     instagram_id  = _sanitize_handle(data.get("instagram_id"))
-     source_id     = data.get("sourceId")
-     payment_token = (data.get("payment_token") or request.args.get("payment_token") or "").strip() or None
+ @bp.route("/admin/events/<int:event_id>/edit", methods=["GET", "POST"], endpoint="admin_event_edit")
+ def admin_event_edit(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_manage(event_id):
+         abort(403, "このイベントを管理する権限がありません。")
  
-     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
-     _wt_in = data.get("walletType", data.get("wallet_type"))
-     if isinstance(_wt_in, str):
-         _wt_in = _wt_in.strip().upper()
-     else:
-         _wt_in = ""
-     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
- 
-     if not nickname or not source_id or (not x_id and not instagram_id):
-         return jsonify({"message": "ニックネームと、X IDまたはInstagram IDのいずれかは必須です。"}), 400
- 
-     conn = _get_db()
-     try:
-         if not payment_token:
-             return jsonify({"message": "支払いトークンが見つかりません。イベントページから開き直してください。"}), 400
-         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
-         if payment_token and token_amount is None:
-             return jsonify({"message": "支払いトークンが無効です"}), 400
-+        buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, payment_token)
-+        if not buyer_user_id:
-+            return jsonify({"message": "支払いユーザー情報が取得できません。イベントページから開き直してください。"}), 400
-+        if not buyer_email:
-+            return jsonify({"message": "メールアドレスが未登録のため決済を開始できません。"}), 400
-         # ★ 常に最新金額を取得（トークンがあれば優先）
-         amount, ev = _get_live_amount_and_sync(conn, event_uuid)
-         if not ev or amount <= 0:
-             return jsonify({"message": "イベントが見つからない/無効です"}), 404
-         if token_amount is not None and token_amount > 0:
-             amount = token_amount
- 
-         # 二重決済ブロック（event_payments に対して）—削除
-         cur = conn.cursor()
- 
-         access_token = _square_access_token()
-         location_id  = _square_location_id()
-         if not access_token or not location_id:
-             return jsonify({"message": "Square設定が未完了です"}), 500
- 
-         idemp = str(uuid.uuid4())
- 
-         # ★ 先にPENDINGで1行作成（wallet_type を保存）
-         cur.execute("""
-             INSERT INTO event_payments
-               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
-                idempotency_key, square_status, wallet_type, payment_token)
-             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
--        """, (ev["id"], nickname, x_id, instagram_id, None, int(amount), None, idemp, wallet_type, payment_token))
-+        """, (ev["id"], nickname, x_id, instagram_id, buyer_email, int(amount), None, idemp, wallet_type, payment_token))
-         pay_row_id = cur.lastrowid
-         conn.commit()
- 
-         # 顧客ID
-         try:
--            customer_id = _ensure_customer_id_for_event(access_token, event_uuid, nickname)
-+            customer_id = _ensure_customer_id_for_user(
-+                access_token,
-+                user_id=buyer_user_id,
-+                nickname=nickname,
-+                buyer_email=buyer_email,
-+            )
-         except Exception:
-             return jsonify({"message": "顧客の作成に失敗しました"}), 500
- 
-         # CreatePayment
-         body = {
-             "idempotency_key": idemp,
-             "source_id": source_id,
-             "amount_money": {"amount": int(amount), "currency": "JPY"},
-             "location_id": location_id,
-             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
-             "customer_id": customer_id,
-+            "buyer_email_address": buyer_email,
-         }
- 
-         resp = requests.post(
-             f"{_square_api_base()}/v2/payments",
-             headers={"Authorization": f"Bearer {access_token}",
-                      "Content-Type":"application/json", "Accept":"application/json"},
-             json=body, timeout=25
-         )
-         ok = resp.status_code < 400
-         try:
-             payload = resp.json()
-         except Exception:
-             payload = {}
- 
-         if ok:
-             p = payload.get("payment", {}) or {}
-             status  = p.get("status") or "AUTHORIZED"
-             details = p.get("card_details") or {}
-             card    = details.get("card") or {}
-             cur.execute("""
-                 UPDATE event_payments
-                    SET square_payment_id=%s, square_status=%s,
-                        card_brand=%s, card_last4=%s, card_exp_mm=%s, card_exp_yyyy=%s,
-                        square_receipt_url=%s,
-                        error_code=NULL, error_detail=NULL

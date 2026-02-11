@@ -303,6 +303,11 @@
         <textarea class="form-control" name="admin_note" rows="2" placeholder="例：明細確認済み／レシート確認 等">{{ m.admin_note or '' }}</textarea>
       </div>
 
+      <div>
+        <label class="form-label small text-muted mb-1">レシートPDFに表示する注釈（任意）</label>
+        <textarea class="form-control" name="receipt_note" rows="2" placeholder="例：差額返金済みのため実支払額を修正">{{ m.receipt_note or '' }}</textarea>
+      </div>
+
       <div class="d-grid d-sm-flex justify-content-end">
         <button class="btn btn-primary">支払いを保存</button>
       </div>

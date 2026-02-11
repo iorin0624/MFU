@@ -40,8 +40,8 @@
     <h1>領収書</h1>
 
     <div class="meta">
-      <div>発行日: {{ receipt.issue_date.strftime("%Y-%m-%d") if receipt.issue_date else "" }}</div>
-      <div>支払日: {{ receipt.pay_date.strftime("%Y-%m-%d") if receipt.pay_date else "" }}</div>
+      <div>発行日: {{ receipt.issue_date_label or "" }}</div>
+      <div>支払日: {{ receipt.pay_date_label or "" }}</div>
     </div>
 
     <div class="recipient">{{ receipt.recipient_name }}</div>
@@ -59,6 +59,12 @@
         <div class="label">支払方法</div>
         <div class="value">{{ receipt.payment_method }}</div>
       </div>
+      {% if receipt.receipt_note %}
+      <div class="row">
+        <div class="label">注釈</div>
+        <div class="value">{{ receipt.receipt_note }}</div>
+      </div>
+      {% endif %}
     </div>
 
     <div class="issuer">
