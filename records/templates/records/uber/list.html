@@ -4,6 +4,7 @@
 
 {% block records_actions %}
   {% include "records/_back_to_index.html" %}
+  <a class="btn btn-outline-secondary" href="{{ url_for('records.uber_ocr_queue_list') }}">OCRキュー</a>
 {% endblock %}
 
 {% block records_content %}

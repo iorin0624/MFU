@@ -7,7 +7,7 @@ import os
 import re
 import time
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from threading import Lock
@@ -34,6 +34,8 @@ records_bp = Blueprint(
     static_folder="static",
 )
 
+records_api_bp = Blueprint("records_api", __name__)
+
 
 _schema_init_lock = Lock()
 _schema_initialized = False
@@ -41,6 +43,8 @@ _uber_ocr_preview_lock = Lock()
 _uber_ocr_preview_store: dict[str, dict[str, str | float]] = {}
 _UBER_OCR_TMP_DIR = os.getenv("UBER_OCR_TMP_DIR", os.path.join("/tmp", "mfu", "uber_ocr"))
 _UBER_OCR_PREVIEW_TTL_SEC = 60 * 60 * 24
+_UBER_OCR_QUEUE_DIR = os.getenv("UBER_OCR_QUEUE_DIR", os.path.join("/tmp", "mfu", "uber_ocr_queue"))
+_UBER_OCR_QUEUE_TTL_SEC = int(os.getenv("UBER_OCR_QUEUE_TTL_SEC", str(60 * 60 * 24)))
 
 
 @records_bp.app_template_filter("fmt_yen")
@@ -75,6 +79,29 @@ def login_required(view):
         if not session.get("user"):
             flash("ログインが必要です。", "warning")
             return redirect(url_for("login"))
+        return view(*args, **kwargs)
+
+    return wrapper
+
+
+def api_token_required(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        configured_token = os.getenv("UBER_OCR_API_TOKEN") or os.getenv("RECORDS_API_TOKEN")
+        if not configured_token:
+            return jsonify({"ok": False, "message": "APIトークンが未設定です。"}), 401
+
+        authorization = request.headers.get("Authorization", "").strip()
+        if not authorization:
+            return jsonify({"ok": False, "message": "Authorizationヘッダーが必要です。"}), 401
+
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            return jsonify({"ok": False, "message": "Bearerトークン形式で指定してください。"}), 401
+
+        if token != configured_token:
+            return jsonify({"ok": False, "message": "トークンが不正です。"}), 403
+
         return view(*args, **kwargs)
 
     return wrapper
@@ -174,6 +201,72 @@ def _normalize_ocr_int(value, label: str, warnings: list[str]) -> int:
     except ValueError:
         warnings.append(f"{label}の数値化に失敗したため0を設定しました。")
         return 0
+
+
+def _parse_ocr_work_date(value: str | None, warnings: list[str]) -> date:
+    if not value:
+        return datetime.now(ZoneInfo("Asia/Tokyo")).date()
+    raw = str(value).strip()
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError:
+        warnings.append("work_dateの形式が不正だったため、当日を設定しました。")
+        return datetime.now(ZoneInfo("Asia/Tokyo")).date()
+
+
+def _save_uber_ocr_upload(uploaded) -> tuple[str, str]:
+    ext = os.path.splitext(uploaded.filename or "")[1].lower()
+    if not ext:
+        guessed_ext = mimetypes.guess_extension(uploaded.mimetype or "")
+        ext = guessed_ext or ".png"
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic"}:
+        ext = ".png"
+
+    filename = f"{int(time.time())}_{uuid.uuid4().hex}{ext}"
+    image_path = os.path.join(_UBER_OCR_QUEUE_DIR, filename)
+    os.makedirs(_UBER_OCR_QUEUE_DIR, exist_ok=True)
+    uploaded.save(image_path)
+    return image_path, ext
+
+
+def _delete_file_safely(path: str | None) -> None:
+    if not path:
+        return
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _cleanup_old_uber_ocr_queue(db) -> None:
+    ttl_sec = _UBER_OCR_QUEUE_TTL_SEC
+    if ttl_sec <= 0:
+        return
+    threshold = datetime.now() - timedelta(seconds=ttl_sec)
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT id, image_path
+        FROM uber_ocr_queue
+        WHERE status = 'pending' AND created_at < %s
+        """,
+        (threshold,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return
+    for row in rows:
+        _delete_file_safely(row.get("image_path"))
+    cur = db.cursor()
+    cur.execute(
+        """
+        DELETE FROM uber_ocr_queue
+        WHERE status = 'pending' AND created_at < %s
+        """,
+        (threshold,),
+    )
+    db.commit()
 
 
 def _analyze_uber_screenshot_with_openai(image_path: str, mime_type: str) -> dict:
@@ -635,6 +728,262 @@ def uber_ocr_preview(token: str):
     if not image_path or not os.path.isfile(image_path):
         abort(404)
     return send_file(image_path)
+
+
+@records_api_bp.post("/api/records/uber/ocr-queue")
+@api_token_required
+def uber_ocr_queue_enqueue_api():
+    uploaded = request.files.get("image")
+    if not uploaded or not uploaded.filename:
+        return jsonify({"ok": False, "message": "imageファイルが必要です。", "warnings": []}), 400
+
+    warnings: list[str] = []
+    work_date = _parse_ocr_work_date(request.form.get("work_date"), warnings)
+    image_path = ""
+    db = None
+    try:
+        db = get_db()
+        _cleanup_old_uber_ocr_queue(db)
+
+        image_path, _ = _save_uber_ocr_upload(uploaded)
+        result = _analyze_uber_screenshot_with_openai(
+            image_path=image_path,
+            mime_type=uploaded.mimetype or "image/png",
+        )
+
+        notes = result.get("notes") if isinstance(result, dict) else None
+        if isinstance(notes, list):
+            warnings.extend([str(note) for note in notes if str(note).strip()])
+
+        fields = {
+            "work_date": work_date.isoformat(),
+            "deliveries": _normalize_ocr_int(result.get("deliveries") if isinstance(result, dict) else None, "ポイント", warnings),
+            "net_yen": _normalize_ocr_int(result.get("net_yen") if isinstance(result, dict) else None, "正味の料金", warnings),
+            "promo_yen": _normalize_ocr_int(result.get("promo_yen") if isinstance(result, dict) else None, "プロモーション", warnings),
+            "other_yen": _normalize_ocr_int(result.get("other_yen") if isinstance(result, dict) else None, "その他の売り上げ", warnings),
+            "tip_yen": _normalize_ocr_int(result.get("tip_yen") if isinstance(result, dict) else None, "チップ", warnings),
+        }
+
+        now = now_ts()
+        cur = db.cursor()
+        cur.execute(
+            """
+            INSERT INTO uber_ocr_queue (
+                status,
+                work_date,
+                deliveries,
+                net_yen,
+                promo_yen,
+                other_yen,
+                tip_yen,
+                warnings_json,
+                image_path,
+                mime_type,
+                original_filename,
+                created_at,
+                updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                "pending",
+                work_date,
+                fields["deliveries"],
+                fields["net_yen"],
+                fields["promo_yen"],
+                fields["other_yen"],
+                fields["tip_yen"],
+                json.dumps(warnings, ensure_ascii=False),
+                image_path,
+                uploaded.mimetype,
+                uploaded.filename,
+                now,
+                now,
+            ),
+        )
+        queue_id = int(cur.lastrowid)
+        db.commit()
+        db.close()
+        return jsonify({"ok": True, "queue_id": queue_id, "fields": fields, "warnings": warnings})
+    except Exception as exc:
+        if db is not None:
+            db.close()
+        _delete_file_safely(image_path)
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "message": "画像解析またはキュー登録に失敗しました。",
+                    "warnings": warnings + [f"詳細: {exc}"],
+                }
+            ),
+            500,
+        )
+
+
+@records_bp.get("/uber/ocr-queue")
+@login_required
+def uber_ocr_queue_list():
+    db = get_db()
+    _cleanup_old_uber_ocr_queue(db)
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT
+            id,
+            status,
+            work_date,
+            deliveries,
+            net_yen,
+            promo_yen,
+            other_yen,
+            tip_yen,
+            warnings_json,
+            created_at
+        FROM uber_ocr_queue
+        WHERE status = 'pending'
+        ORDER BY created_at DESC, id DESC
+        """
+    )
+    rows = cur.fetchall()
+    db.close()
+
+    for row in rows:
+        raw = row.get("warnings_json")
+        parsed: list[str] = []
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    parsed = [str(item) for item in data if str(item).strip()]
+            except Exception:
+                parsed = [str(raw)]
+        row["warnings"] = parsed
+
+    return render_template("records/uber/ocr_queue.html", rows=rows)
+
+
+@records_bp.get("/uber/ocr-queue/<int:queue_id>/image")
+@login_required
+def uber_ocr_queue_image(queue_id: int):
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT image_path FROM uber_ocr_queue WHERE id = %s", (queue_id,))
+    row = cur.fetchone()
+    db.close()
+    if not row:
+        abort(404)
+    image_path = row.get("image_path")
+    if not image_path or not os.path.isfile(image_path):
+        abort(404)
+    return send_file(image_path)
+
+
+@records_bp.post("/uber/ocr-queue/<int:queue_id>/commit")
+@login_required
+def uber_ocr_queue_commit(queue_id: int):
+    work_date = _parse_date(request.form.get("work_date", ""), "日付")
+    deliveries = _parse_int(request.form.get("deliveries", ""), "件数")
+    net_yen = _parse_int(request.form.get("net_yen", ""), "正味")
+    promo_yen = _parse_int(request.form.get("promo_yen", ""), "プロモ")
+    other_yen = _parse_int(request.form.get("other_yen", ""), "その他")
+    tip_yen = _parse_int(request.form.get("tip_yen", ""), "チップ")
+    if None in (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen):
+        return redirect(url_for("records.uber_ocr_queue_list"))
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        "SELECT id, status, image_path FROM uber_ocr_queue WHERE id = %s",
+        (queue_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        db.close()
+        flash("対象キューが見つかりません。", "warning")
+        return redirect(url_for("records.uber_ocr_queue_list"))
+    if row.get("status") != "pending":
+        db.close()
+        flash("このキューは既に処理済みです。", "warning")
+        return redirect(url_for("records.uber_ocr_queue_list"))
+
+    now = now_ts()
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO uber_daily (
+            work_date,
+            deliveries,
+            net_yen,
+            promo_yen,
+            other_yen,
+            tip_yen,
+            created_at,
+            updated_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            deliveries = VALUES(deliveries),
+            net_yen = VALUES(net_yen),
+            promo_yen = VALUES(promo_yen),
+            other_yen = VALUES(other_yen),
+            tip_yen = VALUES(tip_yen),
+            updated_at = VALUES(updated_at)
+        """,
+        (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen, now, now),
+    )
+    cur.execute(
+        """
+        UPDATE uber_ocr_queue
+        SET status = 'saved',
+            work_date = %s,
+            deliveries = %s,
+            net_yen = %s,
+            promo_yen = %s,
+            other_yen = %s,
+            tip_yen = %s,
+            updated_at = %s
+        WHERE id = %s
+        """,
+        (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen, now, queue_id),
+    )
+    db.commit()
+    db.close()
+
+    _delete_file_safely(row.get("image_path"))
+    flash("保存しました", "success")
+    return redirect(url_for("records.uber_ocr_queue_list"))
+
+
+@records_bp.post("/uber/ocr-queue/<int:queue_id>/discard")
+@login_required
+def uber_ocr_queue_discard(queue_id: int):
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        "SELECT status, image_path FROM uber_ocr_queue WHERE id = %s",
+        (queue_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        db.close()
+        flash("対象キューが見つかりません。", "warning")
+        return redirect(url_for("records.uber_ocr_queue_list"))
+    now = now_ts()
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE uber_ocr_queue
+        SET status = 'discarded',
+            updated_at = %s
+        WHERE id = %s
+        """,
+        (now, queue_id),
+    )
+    db.commit()
+    db.close()
+
+    _delete_file_safely(row.get("image_path"))
+    flash("破棄しました", "success")
+    return redirect(url_for("records.uber_ocr_queue_list"))
 
 
 @records_bp.get("/maintenance")
