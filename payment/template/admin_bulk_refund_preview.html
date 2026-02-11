@@ -20,7 +20,12 @@
   </div>
 
   {% if result and result.error %}<div class="alert alert-danger">{{ result.error }}</div>{% endif %}
-  {% if result and result.run_id %}<div class="alert alert-info">run_id={{ result.run_id }} / success={{ result.success }} / failed={{ result.failed }} / skipped={{ result.skipped }}</div>{% endif %}
+  {% if result and result.run_id %}
+  <div class="alert alert-info">
+    run_id={{ result.run_id }} / success={{ result.success }} / failed={{ result.failed }} / skipped={{ result.skipped }}<br>
+    メール送信: 成功={{ result.mail_sent }} / 失敗={{ result.mail_failed }} / 送信不可={{ result.mail_blocked }}
+  </div>
+  {% endif %}
 
   <form method="post" action="/payment/admin/events/{{ event.id }}/bulk-refund/preview" class="mb-3 d-flex gap-2">
     <input type="text" class="form-control" name="refund_reason" value="{{ refund_reason_default }}" placeholder="返金理由">
