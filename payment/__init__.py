@@ -18,7 +18,9 @@ import csv
 import uuid
 import base64
 import logging
+import hmac
 from pathlib import Path
+from datetime import datetime
 from functools import wraps
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
@@ -30,6 +32,13 @@ from flask import (
 from app.utils.mail import send_mail
 from app.external_login_user.payments import _notify_payment_to_admin_and_acl
 from app.external_login_user.utils import _uuid_bytes_to_str
+from .bulk_refund_logic import (
+    build_preview_hash,
+    decide_bulk_refund_status,
+    build_refund_note,
+    append_note_if_missing,
+    recalculate_paid_amount,
+)
 
 # ------------------------------------------------------------
 # .env を読み込む（/mnt/mfu/app/payment/.env）
@@ -91,6 +100,9 @@ def admin_required(f):
 # ───────────────────────────────────────────────────────────
 def _fetchone_dict(cur):
     row = cur.fetchone()
+    # mysql.connector(non-buffered) の場合、fetchone後に残件があると
+    # 同一connection上の次クエリで "Unread result found" が起きるため明示的に破棄。
+    _drain_cursor_results(cur)
     if row is None:
         return None
     if isinstance(row, dict):
@@ -106,6 +118,14 @@ def _fetchall_dict(cur):
         return rows
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def _drain_cursor_results(cur) -> None:
+    """mysql.connector の Unread result found 回避のため、残り結果を破棄する。"""
+    try:
+        cur.fetchall()
+    except Exception:
+        pass
 
 # ───────────────────────────────────────────────────────────
 # Utils
@@ -304,6 +324,35 @@ def _resolve_buyer_identity(conn, event_uuid: str, payment_token: str | None) ->
         user_id = row.get("user_id")
         buyer_email = (row.get("buyer_email") or "").strip() or (row.get("ext_user_email") or "").strip() or None
         return int(user_id) if user_id is not None else None, buyer_email
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+def _resolve_member_id_by_token(conn, event_uuid: str, payment_token: str | None) -> int | None:
+    if not payment_token:
+        return None
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT m.id AS member_id
+              FROM mfu_payment_request pr
+              JOIN mfu_event me
+                ON me.id = pr.event_id
+              JOIN mfu_event_member m
+                ON m.event_id = pr.event_id
+               AND m.user_id = pr.user_id
+             WHERE pr.token=%s
+               AND me.payment_uuid=%s
+             ORDER BY pr.id DESC
+             LIMIT 1
+        """, (payment_token, event_uuid))
+        row = _fetchone_dict(cur)
+        if not row:
+            return None
+        member_id = row.get("member_id")
+        return int(member_id) if member_id is not None else None
     finally:
         try:
             cur.close()
@@ -544,6 +593,8 @@ CREATE TABLE IF NOT EXISTS event_payments (
   amount_yen           INT UNSIGNED NOT NULL,
   memo                 VARCHAR(255) NULL,
   payment_token        CHAR(36) NULL,
+  event_member_id      BIGINT UNSIGNED NULL,
+  external_login_user_id BIGINT UNSIGNED NULL,
 
   idempotency_key      CHAR(36) NOT NULL,
   square_payment_id    VARCHAR(64) NULL UNIQUE,
@@ -565,7 +616,10 @@ CREATE TABLE IF NOT EXISTS event_payments (
 
   KEY ix_event_created (event_id, created_at),
   KEY ix_status (square_status),
-  KEY ix_payment_token (payment_token)
+  KEY ix_payment_token (payment_token),
+  KEY ix_event_member_id (event_member_id),
+  KEY ix_external_login_user_id (external_login_user_id),
+  KEY ix_event_identity (event_id, event_member_id, external_login_user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -577,6 +631,8 @@ CREATE TABLE IF NOT EXISTS event_refunds (
   amount_yen        INT UNSIGNED NOT NULL,
   status            ENUM('PENDING','APPROVED','REJECTED','FAILED','CANCELED') NOT NULL DEFAULT 'PENDING',
   reason            VARCHAR(255) NULL,
+  bulk_refund_run_id CHAR(36) NULL,
+  created_by_admin  VARCHAR(64) NULL,
   error_code        VARCHAR(64) NULL,
   error_detail      TEXT NULL,
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -584,7 +640,8 @@ CREATE TABLE IF NOT EXISTS event_refunds (
   CONSTRAINT fk_event_refunds_payment
     FOREIGN KEY (payment_row_id) REFERENCES event_payments(id)
     ON DELETE CASCADE,
-  KEY ix_payment_status (payment_row_id, status)
+  KEY ix_payment_status (payment_row_id, status),
+  KEY ix_bulk_refund_run (bulk_refund_run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
@@ -607,14 +664,81 @@ def _ensure_schema():
         except Exception:
             conn.rollback()
         try:
+            cur.execute("ALTER TABLE event_payments ADD COLUMN event_member_id BIGINT UNSIGNED NULL")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        try:
+            cur.execute("ALTER TABLE event_payments ADD COLUMN external_login_user_id BIGINT UNSIGNED NULL")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        try:
             cur.execute("ALTER TABLE event_payments MODIFY square_status ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING'")
             conn.commit()
         except Exception:
             conn.rollback()
+        for idx_sql in (
+            "CREATE INDEX ix_event_member_id ON event_payments(event_member_id)",
+            "CREATE INDEX ix_external_login_user_id ON event_payments(external_login_user_id)",
+            "CREATE INDEX ix_event_identity ON event_payments(event_id, event_member_id, external_login_user_id)",
+            "CREATE INDEX ix_payment_token ON event_payments(payment_token)",
+            "CREATE INDEX ix_bulk_refund_run ON event_refunds(bulk_refund_run_id)",
+        ):
+            try:
+                cur.execute(idx_sql)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        for alter_sql in (
+            "ALTER TABLE event_refunds ADD COLUMN bulk_refund_run_id CHAR(36) NULL",
+            "ALTER TABLE event_refunds ADD COLUMN created_by_admin VARCHAR(64) NULL",
+            "ALTER TABLE mfu_event_member ADD COLUMN receipt_note TEXT NULL",
+        ):
+            try:
+                cur.execute(alter_sql)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+        _backfill_payment_identity(conn)
         conn.commit()
     finally:
         try: conn.close()
         except Exception: pass
+
+def _backfill_payment_identity(conn) -> None:
+    """曖昧一致なしで埋められる識別子のみ backfill する。"""
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE event_payments p
+            JOIN mfu_event_member m
+              ON m.payment_row_id = p.id
+             SET p.event_member_id = m.id,
+                 p.external_login_user_id = COALESCE(p.external_login_user_id, m.user_id)
+           WHERE p.event_member_id IS NULL
+        """)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        cur.execute("""
+            UPDATE event_payments p
+            JOIN mfu_payment_request pr
+              ON pr.token = p.payment_token
+             SET p.external_login_user_id = pr.user_id
+           WHERE p.external_login_user_id IS NULL
+             AND p.payment_token IS NOT NULL
+        """)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 # ───────────────────────────────────────────────────────────
 # MFUイベント連携
@@ -1130,6 +1254,7 @@ def api_charge(event_uuid: str):
         buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, payment_token)
         if not buyer_user_id:
             return jsonify({"message": "支払いユーザー情報が取得できません。イベントページから開き直してください。"}), 400
+        event_member_id = _resolve_member_id_by_token(conn, event_uuid, payment_token)
         if not buyer_email:
             return jsonify({"message": "メールアドレスが未登録のため決済を開始できません。"}), 400
         # ★ 常に最新金額を取得（トークンがあれば優先）
@@ -1153,9 +1278,9 @@ def api_charge(event_uuid: str):
         cur.execute("""
             INSERT INTO event_payments
               (event_id, nickname, x_id, instagram_id, receipt_email, amount_yen, memo,
-               idempotency_key, square_status, wallet_type, payment_token)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s)
-        """, (ev["id"], nickname, x_id, instagram_id, buyer_email, int(amount), None, idemp, wallet_type, payment_token))
+               idempotency_key, square_status, wallet_type, payment_token, event_member_id, external_login_user_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s)
+        """, (ev["id"], nickname, x_id, instagram_id, buyer_email, int(amount), None, idemp, wallet_type, payment_token, event_member_id, buyer_user_id))
         pay_row_id = cur.lastrowid
         conn.commit()
 
@@ -1340,6 +1465,288 @@ def webhooks():
 def _new_uuid() -> str:
     return base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=\n")[:22]
 
+def _preview_secret_key() -> str:
+    return os.environ.get("BULK_REFUND_PREVIEW_SECRET") or os.environ.get("SECRET_KEY") or "mfu-bulk-refund-preview"
+
+
+def _normalize_preview_rows(rows: list[dict]) -> list[dict]:
+    stable = []
+    for row in rows:
+        stable.append({
+            "payment_row_id": int(row.get("payment_row_id") or 0),
+            "paid": int(row.get("paid") or 0),
+            "current_fee": int(row.get("current_fee") or 0),
+            "refunded_sum": int(row.get("refunded_sum") or 0),
+            "remaining_refundable": int(row.get("remaining_refundable") or 0),
+            "diff": int(row.get("diff") or 0),
+            "status": row.get("status") or "",
+            "reason_code": row.get("reason_code") or "",
+        })
+    stable.sort(key=lambda x: x["payment_row_id"])
+    return stable
+
+
+def _build_preview_hash(*, payment_event_id: int, payment_event_uuid: str, external_event_id: int | None, rows: list[dict]) -> str:
+    return build_preview_hash(
+        secret=_preview_secret_key(),
+        payment_event_id=payment_event_id,
+        payment_event_uuid=payment_event_uuid,
+        external_event_id=external_event_id,
+        rows=rows,
+    )
+
+
+def _reason_message(code: str) -> str:
+    table = {
+        "eligible": "返金実行可能です。",
+        "member_fee_override_present": "会員個別料金が設定されているため手動返金してください。",
+        "missing_identity": "会員識別子が不足しているため対象外です。先に手動紐付けしてください。",
+        "non_success_status": "決済ステータスが返金対象外です。",
+        "diff_non_positive": "差額が0以下のため返金不要です。",
+        "diff_exceeds_remaining": "差額が返金可能残額を超えるため対象外です。",
+    }
+    return table.get(code, "対象外です。")
+
+
+def _fetch_payment_event_context(conn, payment_event_id: int) -> dict | None:
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id, uuid, title FROM events WHERE id=%s LIMIT 1", (payment_event_id,))
+        ev = _fetchone_dict(cur)
+        if not ev:
+            return None
+        cur.execute("SELECT id, fee_yen, title FROM mfu_event WHERE payment_uuid=%s LIMIT 1", (ev["uuid"],))
+        mfu_ev = _fetchone_dict(cur)
+        return {
+            "payment_event": ev,
+            "mfu_event": mfu_ev,
+            "current_fee": int((mfu_ev or {}).get("fee_yen") or 0),
+        }
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _member_override_value(member_row: dict) -> int:
+    if "fee_yen" in member_row:
+        try:
+            return int(member_row.get("fee_yen") or 0)
+        except Exception:
+            return 0
+    try:
+        return int(member_row.get("custom_fee_yen") or 0)
+    except Exception:
+        return 0
+
+
+def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None, list[dict]]:
+    context = _fetch_payment_event_context(conn, payment_event_id)
+    if not context:
+        return None, []
+
+    payment_event = context["payment_event"]
+    mfu_event = context["mfu_event"] or {}
+    current_fee = int(context["current_fee"] or 0)
+
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+          SELECT p.id AS payment_row_id,
+                 p.nickname,
+                 p.amount_yen,
+                 p.square_status,
+                 p.event_member_id,
+                 p.external_login_user_id,
+                 p.receipt_email,
+                 p.x_id,
+                 p.instagram_id,
+                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','APPROVED') THEN r.amount_yen ELSE 0 END),0) AS refunded_sum
+            FROM event_payments p
+            LEFT JOIN event_refunds r
+              ON r.payment_row_id = p.id
+           WHERE p.event_id=%s
+           GROUP BY p.id
+           ORDER BY p.created_at DESC
+        """, (payment_event_id,))
+        payments = _fetchall_dict(cur)
+
+        has_member_fee_yen = False
+        try:
+            cur.execute("SHOW COLUMNS FROM mfu_event_member LIKE 'fee_yen'")
+            has_member_fee_yen = bool(cur.fetchone())
+            _drain_cursor_results(cur)
+        except Exception:
+            has_member_fee_yen = False
+
+        rows = []
+        for pay in payments:
+            paid = int(pay.get("amount_yen") or 0)
+            refunded_sum = int(pay.get("refunded_sum") or 0)
+            remaining = max(paid - refunded_sum, 0)
+            diff = paid - current_fee
+
+            member = None
+            event_member_id = pay.get("event_member_id")
+            if event_member_id:
+                if has_member_fee_yen:
+                    cur.execute("""
+                        SELECT m.id, m.user_id, m.event_id, m.fee_yen, m.custom_fee_yen, u.nickname AS member_nickname
+                          FROM mfu_event_member m
+                          LEFT JOIN external_login_user u ON u.id = m.user_id
+                         WHERE m.id=%s
+                         LIMIT 1
+                    """, (event_member_id,))
+                else:
+                    cur.execute("""
+                        SELECT m.id, m.user_id, m.event_id, NULL AS fee_yen, m.custom_fee_yen, u.nickname AS member_nickname
+                          FROM mfu_event_member m
+                          LEFT JOIN external_login_user u ON u.id = m.user_id
+                         WHERE m.id=%s
+                         LIMIT 1
+                    """, (event_member_id,))
+                member = _fetchone_dict(cur)
+
+            square_status = (pay.get("square_status") or "").upper()
+            override_fee = _member_override_value(member or {})
+            status, reason_code = decide_bulk_refund_status(
+                has_member=bool(member),
+                member_event_match=(bool(member) and (not mfu_event or int(member.get("event_id") or 0) == int(mfu_event.get("id") or 0))),
+                square_status=square_status,
+                override_fee=override_fee,
+                diff=diff,
+                remaining=remaining,
+            )
+
+            participant = (member or {}).get("member_nickname") or pay.get("nickname") or "-"
+            rows.append({
+                "payment_row_id": int(pay["payment_row_id"]),
+                "participant_name": participant,
+                "paid": paid,
+                "current_fee": current_fee,
+                "refunded_sum": refunded_sum,
+                "remaining_refundable": remaining,
+                "diff": diff,
+                "status": status,
+                "reason_code": reason_code,
+                "reason_text": _reason_message(reason_code),
+                "event_member_id": int(member.get("id")) if member and member.get("id") else None,
+                "external_login_user_id": int(member.get("user_id")) if member and member.get("user_id") else pay.get("external_login_user_id"),
+                "square_status": square_status,
+            })
+
+        return context, rows
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _acquire_bulk_event_lock(conn, payment_event_id: int) -> bool:
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT GET_LOCK(%s, 0)", (f"payment_bulk_refund:{payment_event_id}",))
+        row = cur.fetchone()
+        _drain_cursor_results(cur)
+        val = row[0] if isinstance(row, tuple) else (row.get("GET_LOCK(%s, 0)") if isinstance(row, dict) else None)
+        return int(val or 0) == 1
+    except Exception:
+        return False
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _release_bulk_event_lock(conn, payment_event_id: int) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT RELEASE_LOCK(%s)", (f"payment_bulk_refund:{payment_event_id}",))
+        cur.fetchone()
+        _drain_cursor_results(cur)
+    except Exception:
+        pass
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _create_refund_record(cur, *, payment_row_id: int, amount_yen: int, reason: str | None, payload: dict, ok: bool, resp_text: str, run_id: str, admin_name: str | None) -> None:
+    if ok:
+        refund_obj = payload.get("refund") or {}
+        cur.execute("""
+          INSERT INTO event_refunds
+          (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin, error_code, error_detail)
+          VALUES (%s,%s,%s,%s,%s,%s,%s,NULL,NULL)
+        """, (payment_row_id, refund_obj.get("id"), amount_yen, refund_obj.get("status") or "PENDING", reason, run_id, admin_name))
+    else:
+        err = (payload.get("errors") or [{}])[0]
+        cur.execute("""
+          INSERT INTO event_refunds
+          (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin, error_code, error_detail)
+          VALUES (%s,NULL,%s,'FAILED',%s,%s,%s,%s,%s)
+        """, (payment_row_id, amount_yen, reason, run_id, admin_name, err.get("code"), err.get("detail") or resp_text))
+
+
+def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen: int) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT p.amount_yen, p.event_member_id
+              FROM event_payments p
+             WHERE p.id=%s
+             LIMIT 1
+        """, (payment_row_id,))
+        pay = _fetchone_dict(cur)
+        if not pay:
+            return
+        member_id = pay.get("event_member_id")
+        if not member_id:
+            return
+
+        cur.execute("""
+            SELECT COALESCE(SUM(amount_yen),0) AS refunded_total
+              FROM event_refunds
+             WHERE payment_row_id=%s
+        """, (payment_row_id,))
+        rsum = _fetchone_dict(cur) or {}
+        refunded_total = int(rsum.get("refunded_total") or 0)
+        paid_total = int(pay.get("amount_yen") or 0)
+        new_paid = recalculate_paid_amount(original_paid=paid_total, refunded_total=refunded_total)
+
+        cur.execute("""
+            SELECT admin_note, receipt_note
+              FROM mfu_event_member
+             WHERE id=%s
+             LIMIT 1
+        """, (member_id,))
+        member = _fetchone_dict(cur)
+        if not member:
+            return
+
+        note = build_refund_note(dt=datetime.now(), refund_yen=int(refund_yen))
+        admin_note = append_note_if_missing(member.get("admin_note"), note)
+        receipt_note = append_note_if_missing(member.get("receipt_note"), note)
+
+        cur.execute("""
+            UPDATE mfu_event_member
+               SET paid_amount_yen=%s,
+                   admin_note=%s,
+                   receipt_note=%s
+             WHERE id=%s
+        """, (new_paid, admin_note or None, receipt_note or None, member_id))
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
 @bp.get("/admin/events")
 @admin_required
 def admin_events():
@@ -1433,7 +1840,308 @@ def admin_event_detail(event_id: int):
         except Exception: pass
 
     pay_url = f"{_app_base_url()}/payment/e/{event['uuid']}"
-    return render_template("admin_event_detail.html", event=event, payments=payments, pay_url=pay_url)
+    bulk_refund_url = f"/payment/admin/events/{event_id}/bulk-refund"
+    return render_template("admin_event_detail.html", event=event, payments=payments, pay_url=pay_url, bulk_refund_url=bulk_refund_url)
+
+@bp.get("/admin/events/<int:event_id>/bulk-refund")
+@admin_required
+def admin_bulk_refund_preview_page(event_id: int):
+    _ensure_schema()
+    conn = _get_db()
+    try:
+        context, rows = _bulk_refund_preview_rows(conn, event_id)
+        if not context:
+            return "イベントが見つかりません", 404
+        payment_event = context["payment_event"]
+        mfu_event = context.get("mfu_event")
+        preview_hash = _build_preview_hash(
+            payment_event_id=payment_event["id"],
+            payment_event_uuid=payment_event.get("uuid") or "",
+            external_event_id=(mfu_event or {}).get("id"),
+            rows=rows,
+        )
+        return render_template(
+            "admin_bulk_refund_preview.html",
+            event=payment_event,
+            mfu_event=mfu_event,
+            rows=rows,
+            preview_hash=preview_hash,
+            refund_reason_default="イベント参加費差額の一括返金",
+            result=None,
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@bp.post("/admin/events/<int:event_id>/bulk-refund/preview")
+@admin_required
+def admin_bulk_refund_preview_recalc(event_id: int):
+    _ensure_schema()
+    conn = _get_db()
+    try:
+        context, rows = _bulk_refund_preview_rows(conn, event_id)
+        if not context:
+            return "イベントが見つかりません", 404
+        payment_event = context["payment_event"]
+        mfu_event = context.get("mfu_event")
+        preview_hash = _build_preview_hash(
+            payment_event_id=payment_event["id"],
+            payment_event_uuid=payment_event.get("uuid") or "",
+            external_event_id=(mfu_event or {}).get("id"),
+            rows=rows,
+        )
+        return render_template(
+            "admin_bulk_refund_preview.html",
+            event=payment_event,
+            mfu_event=mfu_event,
+            rows=rows,
+            preview_hash=preview_hash,
+            refund_reason_default=(request.form.get("refund_reason") or "イベント参加費差額の一括返金"),
+            result=None,
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@bp.post("/admin/events/<int:event_id>/bulk-refund/execute")
+@admin_required
+def admin_bulk_refund_execute(event_id: int):
+    _ensure_schema()
+    submitted_hash = (request.form.get("preview_hash") or "").strip()
+    selected_ids = [x for x in (request.form.get("selected_csv") or "").split(",") if x.strip()]
+    refund_reason = (request.form.get("refund_reason") or "").strip() or "イベント参加費差額の一括返金"
+
+    conn = _get_db()
+    try:
+        context, rows = _bulk_refund_preview_rows(conn, event_id)
+        if not context:
+            return "イベントが見つかりません", 404
+
+        payment_event = context["payment_event"]
+        mfu_event = context.get("mfu_event")
+        computed_hash = _build_preview_hash(
+            payment_event_id=payment_event["id"],
+            payment_event_uuid=payment_event.get("uuid") or "",
+            external_event_id=(mfu_event or {}).get("id"),
+            rows=rows,
+        )
+
+        if not submitted_hash or not hmac.compare_digest(submitted_hash, computed_hash):
+            preview_hash = computed_hash
+            return render_template(
+                "admin_bulk_refund_preview.html",
+                event=payment_event,
+                mfu_event=mfu_event,
+                rows=rows,
+                preview_hash=preview_hash,
+                refund_reason_default=refund_reason,
+                result={"error": "内容が変更されたため、再プレビューが必要です。"},
+            ), 409
+
+        selected_set = set()
+        for sid in selected_ids:
+            try:
+                selected_set.add(int(sid))
+            except Exception:
+                continue
+
+        if not _acquire_bulk_event_lock(conn, event_id):
+            preview_hash = computed_hash
+            return render_template(
+                "admin_bulk_refund_preview.html",
+                event=payment_event,
+                mfu_event=mfu_event,
+                rows=rows,
+                preview_hash=preview_hash,
+                refund_reason_default=refund_reason,
+                result={"error": "別の一括返金処理が実行中です。時間をおいて再試行してください。"},
+            ), 409
+
+        run_id = str(uuid.uuid4())
+        admin_name = session.get("user") if isinstance(session.get("user"), str) else "admin"
+        access_token = _square_access_token()
+        if not access_token:
+            return "Square設定が未完了です", 500
+
+        cur = conn.cursor()
+        results = []
+        try:
+            for row in rows:
+                payment_row_id = int(row["payment_row_id"])
+                eligible = row.get("status") == "eligible"
+                if payment_row_id not in selected_set:
+                    results.append({"payment_row_id": payment_row_id, "result": "skipped", "reason": "not_selected"})
+                    continue
+                if not eligible:
+                    results.append({"payment_row_id": payment_row_id, "result": "skipped", "reason": row.get("reason_code")})
+                    continue
+
+                amount = int(row.get("diff") or 0)
+                cur.execute("SELECT square_payment_id FROM event_payments WHERE id=%s LIMIT 1", (payment_row_id,))
+                pay_row = cur.fetchone()
+                _drain_cursor_results(cur)
+                square_payment_id = pay_row[0] if isinstance(pay_row, tuple) else (pay_row.get("square_payment_id") if pay_row else None)
+                if not square_payment_id:
+                    results.append({"payment_row_id": payment_row_id, "result": "failed", "reason": "missing_square_payment_id"})
+                    continue
+
+                body = {
+                    "idempotency_key": f"bulk:{run_id}:{payment_row_id}",
+                    "payment_id": square_payment_id,
+                    "amount_money": {"amount": amount, "currency": "JPY"},
+                    "reason": refund_reason,
+                }
+
+                resp = requests.post(
+                    f"{_square_api_base()}/v2/refunds",
+                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"},
+                    json=body,
+                    timeout=25,
+                )
+                ok = resp.status_code < 400
+                try:
+                    payload = resp.json()
+                except Exception:
+                    payload = {}
+
+                _create_refund_record(
+                    cur,
+                    payment_row_id=payment_row_id,
+                    amount_yen=amount,
+                    reason=refund_reason,
+                    payload=payload,
+                    ok=ok,
+                    resp_text=resp.text,
+                    run_id=run_id,
+                    admin_name=admin_name,
+                )
+                if ok:
+                    _update_member_after_refund_success(conn, payment_row_id=payment_row_id, refund_yen=amount)
+                conn.commit()
+                results.append({"payment_row_id": payment_row_id, "result": "success" if ok else "failed", "reason": None if ok else ((payload.get("errors") or [{}])[0].get("code"))})
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+            _release_bulk_event_lock(conn, event_id)
+
+        # mysql.connector の unread result を完全回避するため、
+        # 実行後の再プレビュー計算は別connectionで行う。
+        conn2 = _get_db()
+        try:
+            context2, rows2 = _bulk_refund_preview_rows(conn2, event_id)
+        finally:
+            try:
+                conn2.close()
+            except Exception:
+                pass
+
+        preview_hash2 = _build_preview_hash(
+            payment_event_id=payment_event["id"],
+            payment_event_uuid=payment_event.get("uuid") or "",
+            external_event_id=(mfu_event or {}).get("id"),
+            rows=rows2,
+        )
+        return render_template(
+            "admin_bulk_refund_preview.html",
+            event=payment_event,
+            mfu_event=mfu_event,
+            rows=rows2,
+            preview_hash=preview_hash2,
+            refund_reason_default=refund_reason,
+            result={
+                "run_id": run_id,
+                "rows": results,
+                "success": sum(1 for r in results if r.get("result") == "success"),
+                "failed": sum(1 for r in results if r.get("result") == "failed"),
+                "skipped": sum(1 for r in results if r.get("result") == "skipped"),
+            },
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@bp.post("/admin/event-payments/<int:payment_row_id>/bind-member")
+@admin_required
+def admin_bind_payment_member(payment_row_id: int):
+    _ensure_schema()
+    member_id_raw = (request.form.get("event_member_id") or "").strip()
+    user_id_raw = (request.form.get("external_login_user_id") or "").strip()
+
+    try:
+        member_id = int(member_id_raw)
+    except Exception:
+        return "event_member_id は整数必須です", 400
+
+    user_id = None
+    if user_id_raw:
+        try:
+            user_id = int(user_id_raw)
+        except Exception:
+            return "external_login_user_id は整数で指定してください", 400
+
+    conn = _get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, event_id FROM event_payments WHERE id=%s LIMIT 1", (payment_row_id,))
+        pay = _fetchone_dict(cur)
+        if not pay:
+            return "対象の決済が見つかりません", 404
+
+        payment_event_id = int(pay["event_id"])
+        context = _fetch_payment_event_context(conn, payment_event_id)
+        mfu_event = (context or {}).get("mfu_event") or {}
+        mfu_event_id = mfu_event.get("id")
+        if not mfu_event_id:
+            return "連携先イベントが見つかりません", 400
+
+        cur.execute("SELECT id, user_id, event_id FROM mfu_event_member WHERE id=%s LIMIT 1", (member_id,))
+        member = _fetchone_dict(cur)
+        if not member:
+            return "member が存在しません", 400
+        if int(member.get("event_id") or 0) != int(mfu_event_id):
+            return "member が連携先イベントに属していません", 400
+
+        cur.execute("SELECT id FROM event_payments WHERE event_member_id=%s AND id<>%s LIMIT 1", (member_id, payment_row_id))
+        duplicated = _fetchone_dict(cur)
+        if duplicated:
+            return "指定memberは他の決済に紐付いています（上書き不可）", 409
+
+        resolved_user_id = user_id if user_id is not None else int(member.get("user_id") or 0)
+        admin_name = session.get("user") if isinstance(session.get("user"), str) else "admin"
+        memo = f"bind-member by {admin_name}: member_id={member_id}"
+
+        cur.execute(
+            """
+            UPDATE event_payments
+               SET event_member_id=%s,
+                   external_login_user_id=%s,
+                   memo=CASE
+                         WHEN memo IS NULL OR memo='' THEN %s
+                         ELSE CONCAT(memo, '\n', %s)
+                       END
+             WHERE id=%s
+            """,
+            (member_id, resolved_user_id, memo, memo, payment_row_id),
+        )
+        conn.commit()
+        return redirect(f"/payment/admin/events/{payment_event_id}/bulk-refund")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 @bp.get("/admin/events/<int:event_id>/export.csv")
 @admin_required

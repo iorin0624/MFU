@@ -518,6 +518,7 @@ def admin_event_view(event_id: int):
         m.paid_amount_yen,
         m.contact_memo,
         m.admin_note,
+        m.receipt_note,
         CASE
           WHEN COALESCE(m.is_host, 0)=1 THEN 0
           WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
@@ -552,7 +553,7 @@ def admin_event_view(event_id: int):
              avatar_file, avatar_url, updated_at,
              status, payment_status, paid_at, receipt_url, joined_at,
              require_payment, process, is_host, is_subhost, participant_role, costume_label,
-             paid_amount_yen, contact_memo, admin_note, _role_rank) = r
+             paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
         else:
             user_id          = r["user_id"]
             nickname         = r["nickname"]
@@ -576,6 +577,7 @@ def admin_event_view(event_id: int):
             paid_amount_yen  = r.get("paid_amount_yen")
             contact_memo     = r.get("contact_memo")
             admin_note       = r.get("admin_note")
+            receipt_note     = r.get("receipt_note")
 
         # --- 支払状況バッジ（既存ロジック） ---
         status_s = (payment_status or "").strip().lower()
@@ -617,6 +619,7 @@ def admin_event_view(event_id: int):
             "paid_amount_yen": paid_amount_yen,
             "contact_memo": contact_memo,
             "admin_note": admin_note,
+            "receipt_note": receipt_note,
             "pay_status_html": pay_status_html,
         })
 
@@ -1613,6 +1616,7 @@ def admin_member_edit(event_id: int, user_id: int):
         m.custom_fee_yen,
         m.contact_memo,
         m.admin_note,
+        m.receipt_note,
         m.bank_transfer, m.bank_dest_name, m.bank_remitter_name, m.bank_deposit_date,
         m.paypay_transfer, m.paypay_sender_name, m.paypay_sent_date
       FROM mfu_event_member m
@@ -2163,6 +2167,8 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
 
     admin_note_present = "admin_note" in request.form
     admin_note = _none_if_blank(request.form.get("admin_note"))
+    receipt_note_present = "receipt_note" in request.form
+    receipt_note = _none_if_blank(request.form.get("receipt_note"))
 
     # 現在の支払状態 & 通知用
     db = get_db(); cur = db.cursor()
@@ -2226,6 +2232,9 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
     if admin_note_present:
         sets.append("admin_note=%s")
         params.append(admin_note)
+    if receipt_note_present:
+        sets.append("receipt_note=%s")
+        params.append(receipt_note)
 
     # payment_status の更新と paid_at の自動付与/解除
     will_change = False

@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS mfu_event_member (
   receipt_url        VARCHAR(512) NULL,
   paid_amount_yen    INT UNSIGNED NULL,
   custom_fee_yen     INT UNSIGNED NULL,
+  receipt_note       TEXT NULL,
   joined_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uniq_member (event_id, user_id),
@@ -166,6 +167,7 @@ def _on_bp_registered(state) -> None:
             # 既存のゆるいALTER群
             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
+            _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
 
             # ★ 追加：支払期間 列（後方互換で追加）

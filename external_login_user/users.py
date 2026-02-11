@@ -2046,6 +2046,7 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
               m.receipt_url,
               COALESCE(m.bank_transfer, 0) AS bank_transfer,
               COALESCE(m.paypay_transfer, 0) AS paypay_transfer,
+              m.receipt_note,
               u.nickname
             FROM mfu_event_member m
             JOIN external_login_user u ON u.id = m.user_id
@@ -2100,7 +2101,9 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
         receipt_data = {
             "recipient_name": f"{row.get('nickname') or ''} 様",
             "issue_date": issue_date,
+            "issue_date_label": f"{issue_date.year}年{issue_date.month}月{issue_date.day}日" if issue_date else "",
             "pay_date": pay_date,
+            "pay_date_label": f"{pay_date.year}年{pay_date.month}月{pay_date.day}日" if pay_date else "",
             "amount": _format_yen(int(paid_amount)),
             "description": description,
             "payment_method": payment_method,
@@ -2108,6 +2111,7 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
             "payer_address": payer.get("payer_address"),
             "payer_phone": payer.get("payer_phone"),
             "payer_email": payer.get("payer_email"),
+            "receipt_note": (row.get("receipt_note") or "").strip(),
         }
 
         html = render_template("receipt_pdf.html", receipt=receipt_data, event=ev)
