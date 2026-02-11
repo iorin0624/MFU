@@ -633,6 +633,9 @@ CREATE TABLE IF NOT EXISTS event_refunds (
   reason            VARCHAR(255) NULL,
   bulk_refund_run_id CHAR(36) NULL,
   created_by_admin  VARCHAR(64) NULL,
+  notified_at       DATETIME NULL,
+  notify_to_email   VARCHAR(255) NULL,
+  notify_error      TEXT NULL,
   error_code        VARCHAR(64) NULL,
   error_detail      TEXT NULL,
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -693,6 +696,9 @@ def _ensure_schema():
         for alter_sql in (
             "ALTER TABLE event_refunds ADD COLUMN bulk_refund_run_id CHAR(36) NULL",
             "ALTER TABLE event_refunds ADD COLUMN created_by_admin VARCHAR(64) NULL",
+            "ALTER TABLE event_refunds ADD COLUMN notified_at DATETIME NULL",
+            "ALTER TABLE event_refunds ADD COLUMN notify_to_email VARCHAR(255) NULL",
+            "ALTER TABLE event_refunds ADD COLUMN notify_error TEXT NULL",
             "ALTER TABLE mfu_event_member ADD COLUMN receipt_note TEXT NULL",
         ):
             try:
@@ -1676,7 +1682,7 @@ def _release_bulk_event_lock(conn, payment_event_id: int) -> None:
             pass
 
 
-def _create_refund_record(cur, *, payment_row_id: int, amount_yen: int, reason: str | None, payload: dict, ok: bool, resp_text: str, run_id: str, admin_name: str | None) -> None:
+def _create_refund_record(cur, *, payment_row_id: int, amount_yen: int, reason: str | None, payload: dict, ok: bool, resp_text: str, run_id: str, admin_name: str | None) -> int:
     if ok:
         refund_obj = payload.get("refund") or {}
         cur.execute("""
@@ -1691,6 +1697,130 @@ def _create_refund_record(cur, *, payment_row_id: int, amount_yen: int, reason: 
           (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin, error_code, error_detail)
           VALUES (%s,NULL,%s,'FAILED',%s,%s,%s,%s,%s)
         """, (payment_row_id, amount_yen, reason, run_id, admin_name, err.get("code"), err.get("detail") or resp_text))
+    return cur.lastrowid
+
+
+def _summarize_mail_error(err: Exception) -> str:
+    msg = f"{type(err).__name__}: {err}".strip()
+    return msg[:250] if msg else type(err).__name__
+
+
+def _format_yyyymd(dt: datetime) -> str:
+    return f"{dt.year}年{dt.month}月{dt.day}日"
+
+
+def _mark_refund_notify_error(conn, *, refund_id: int, reason: str) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE event_refunds SET notify_error=%s WHERE id=%s",
+            ((reason or "notify failed")[:500], refund_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _send_bulk_refund_mail(conn, *, refund_id: int, event_title: str) -> dict:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT r.id, r.payment_row_id, r.amount_yen, r.notified_at,
+                   p.event_member_id
+              FROM event_refunds r
+              JOIN event_payments p ON p.id = r.payment_row_id
+             WHERE r.id=%s
+             LIMIT 1
+            """,
+            (refund_id,),
+        )
+        refund = _fetchone_dict(cur)
+        if not refund:
+            return {"status": "send_blocked", "reason": "refund_not_found"}
+        if refund.get("notified_at"):
+            return {"status": "already_notified", "reason": "already_notified"}
+
+        member_id = refund.get("event_member_id")
+        if not member_id:
+            reason = "event_member_id_missing"
+            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=reason)
+            return {"status": "send_blocked", "reason": reason}
+
+        cur.execute(
+            "SELECT user_id FROM mfu_event_member WHERE id=%s LIMIT 1",
+            (member_id,),
+        )
+        member = _fetchone_dict(cur)
+        user_id = int(member.get("user_id")) if member and member.get("user_id") else None
+        if not user_id:
+            reason = "member_user_id_missing"
+            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=reason)
+            return {"status": "send_blocked", "reason": reason}
+
+        cur.execute(
+            "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
+            (user_id,),
+        )
+        user = _fetchone_dict(cur)
+        to_email = (user.get("email") or "").strip() if user else ""
+        if not to_email:
+            reason = "user_email_missing"
+            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=reason)
+            return {"status": "send_blocked", "reason": reason}
+
+        refund_yen = int(refund.get("amount_yen") or 0)
+        exec_date = _format_yyyymd(datetime.now())
+        safe_title = (event_title or "イベント").strip() or "イベント"
+        subject = f"【{safe_title}】差額返金が完了しました。"
+        body = (
+            "差額返金の手続きが完了しました。\n\n"
+            f"イベント名: {safe_title}\n"
+            f"返金額: {refund_yen:,}円\n"
+            f"返金実行日: {exec_date}\n\n"
+            "カード明細への反映、返金はカード会社により数日～２か月ほどかかる場合があります。\n"
+            "\n"
+        )
+        try:
+            send_mail(
+                to=to_email,
+                subject=subject,
+                body=body,
+                event_name=safe_title,
+                external_login_user_id=user_id,
+                mail_kind="bulk_refund_completed",
+            )
+        except Exception as e:
+            _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=_summarize_mail_error(e))
+            return {"status": "send_failed", "reason": "send_mail_error"}
+
+        cur.execute(
+            """
+            UPDATE event_refunds
+               SET notified_at=NOW(),
+                   notify_to_email=%s,
+                   notify_error=NULL
+             WHERE id=%s
+               AND notified_at IS NULL
+            """,
+            (to_email, refund_id),
+        )
+        conn.commit()
+        return {"status": "sent", "reason": "sent"}
+    except Exception as e:
+        logging.exception("send_bulk_refund_mail failed: refund_id=%s", refund_id)
+        _mark_refund_notify_error(conn, refund_id=int(refund_id), reason=_summarize_mail_error(e))
+        return {"status": "send_failed", "reason": "internal_error"}
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
 
 
 def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen: int) -> None:
@@ -2010,7 +2140,7 @@ def admin_bulk_refund_execute(event_id: int):
                 except Exception:
                     payload = {}
 
-                _create_refund_record(
+                refund_id = _create_refund_record(
                     cur,
                     payment_row_id=payment_row_id,
                     amount_yen=amount,
@@ -2024,7 +2154,20 @@ def admin_bulk_refund_execute(event_id: int):
                 if ok:
                     _update_member_after_refund_success(conn, payment_row_id=payment_row_id, refund_yen=amount)
                 conn.commit()
-                results.append({"payment_row_id": payment_row_id, "result": "success" if ok else "failed", "reason": None if ok else ((payload.get("errors") or [{}])[0].get("code"))})
+
+                mail_status = None
+                if ok:
+                    mail_status = _send_bulk_refund_mail(
+                        conn,
+                        refund_id=int(refund_id),
+                        event_title=payment_event.get("title") or "イベント",
+                    )
+                results.append({
+                    "payment_row_id": payment_row_id,
+                    "result": "success" if ok else "failed",
+                    "reason": None if ok else ((payload.get("errors") or [{}])[0].get("code")),
+                    "mail_status": mail_status,
+                })
         finally:
             try:
                 cur.close()
@@ -2062,6 +2205,9 @@ def admin_bulk_refund_execute(event_id: int):
                 "success": sum(1 for r in results if r.get("result") == "success"),
                 "failed": sum(1 for r in results if r.get("result") == "failed"),
                 "skipped": sum(1 for r in results if r.get("result") == "skipped"),
+                "mail_sent": sum(1 for r in results if (r.get("mail_status") or {}).get("status") == "sent"),
+                "mail_failed": sum(1 for r in results if (r.get("mail_status") or {}).get("status") == "send_failed"),
+                "mail_blocked": sum(1 for r in results if (r.get("mail_status") or {}).get("status") == "send_blocked"),
             },
         )
     finally:
