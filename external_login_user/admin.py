@@ -14,6 +14,7 @@ from .utils import (
     _ensure_event_invite_token,
     _event_invite_url,
     extract_lat_lng_from_maps_url,  # 追加
+    QR_TRADEMARK_NOTICE,
 )
 
 from app.utils.mail import send_mail
@@ -634,7 +635,8 @@ def admin_event_view(event_id: int):
         google_form_url=ev.get("google_form_url"),
         require_payment_count=require_payment_count,
         paid_count=paid_count,
-        admin_csrf=admin_csrf
+        admin_csrf=admin_csrf,
+        qr_trademark_notice=QR_TRADEMARK_NOTICE
     )
 
 
@@ -688,7 +690,10 @@ def admin_event_edit(event_id: int):
               COALESCE(allow_bank,   0) AS allow_bank,
               paypay_display,
               COALESCE(auto_approve_by_invite, 0) AS auto_approve_by_invite,
-              invite_token
+              invite_token,
+              COALESCE(checkin_qr_enabled, 0) AS checkin_qr_enabled,
+              checkin_qr_token,
+              checkin_qr_expires_at
             FROM mfu_event
             WHERE id=%s
             LIMIT 1
@@ -848,7 +853,8 @@ def admin_event_edit(event_id: int):
             flash("入力に誤りがあります。確認してください。", "warning")
             return render_template("admin_event_edit.html",
                 ev=ev, form=form, form_iso=form_iso, errors=errors,
-                require_payment_count=require_payment_count, admin_csrf=admin_csrf)
+                require_payment_count=require_payment_count, admin_csrf=admin_csrf,
+        qr_trademark_notice=QR_TRADEMARK_NOTICE)
 
         # === 保存処理 ===
         dbu = get_db(); curu = dbu.cursor()
@@ -945,7 +951,8 @@ def admin_event_edit(event_id: int):
 
     return render_template("admin_event_edit.html",
         ev=ev, form=form, form_iso=form_iso, errors=errors,
-        require_payment_count=require_payment_count, admin_csrf=admin_csrf)
+        require_payment_count=require_payment_count, admin_csrf=admin_csrf,
+        qr_trademark_notice=QR_TRADEMARK_NOTICE)
 
 # 以降（CSV出力・役割/支払金額の更新・他）は既存そのまま
 @bp.route("/admin/events/<int:event_id>/export.csv")
@@ -1736,7 +1743,10 @@ def admin_event_acl(event_id: int):
             SELECT
               id, title, event_uuid,
               COALESCE(auto_approve_by_invite, 0) AS auto_approve_by_invite,
-              invite_token
+              invite_token,
+              COALESCE(checkin_qr_enabled, 0) AS checkin_qr_enabled,
+              checkin_qr_token,
+              checkin_qr_expires_at
             FROM mfu_event
             WHERE id=%s
             LIMIT 1
@@ -2295,6 +2305,13 @@ def _assert_admin_csrf():
     if not token or token != session.get("admin_csrf"):
         abort(400, "CSRF token mismatch")
 
+
+def _build_checkin_qr_url(token: str | None) -> str:
+    tok = (token or "").strip()
+    if not tok:
+        return ""
+    return url_for("external_login_user.event_qr_checkin", token=tok, _external=True)
+
 # 自動承認 ON/OFF（ON時は未発行なら即トークン生成→JSONで返す）
 @bp.post("/external-login/admin/event/<int:event_id>/auto-approve")
 def admin_toggle_auto_approve(event_id: int):
@@ -2354,6 +2371,106 @@ def admin_rotate_invite_token(event_id: int):
         except Exception: pass
 
     return jsonify({"ok": True, "invite_token": new_tok})
+
+
+@bp.post("/external-login/admin/event/<int:event_id>/checkin-qr")
+def admin_toggle_checkin_qr(event_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard: return guard
+    if not _event_admin_can_manage(event_id):
+        abort(403, "このイベントを管理する権限がありません。")
+    _assert_admin_csrf()
+
+    enable = 1 if (request.form.get("enable") == "1") else 0
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT checkin_qr_token
+              FROM mfu_event
+             WHERE id=%s
+             LIMIT 1
+        """, (event_id,))
+        row = cur.fetchone() or {}
+        token = (row.get("checkin_qr_token") or "").strip()
+        if enable == 1 and (not token or len(token) != 64):
+            token = os.urandom(32).hex()
+            cur.execute("""
+                UPDATE mfu_event
+                   SET checkin_qr_enabled=%s,
+                       checkin_qr_token=%s
+                 WHERE id=%s
+            """, (enable, token, event_id))
+        else:
+            cur.execute("UPDATE mfu_event SET checkin_qr_enabled=%s WHERE id=%s", (enable, event_id))
+        db.commit()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+    return jsonify({
+        "ok": True,
+        "checkin_qr_enabled": enable,
+        "checkin_qr_token": (token if token else None),
+        "checkin_qr_url": _build_checkin_qr_url(token),
+        "qr_trademark_notice": QR_TRADEMARK_NOTICE,
+    })
+
+
+@bp.post("/external-login/admin/event/<int:event_id>/checkin-qr/rotate")
+def admin_rotate_checkin_qr_token(event_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard: return guard
+    if not _event_admin_can_manage(event_id):
+        abort(403, "このイベントを管理する権限がありません。")
+    _assert_admin_csrf()
+
+    new_tok = os.urandom(32).hex()
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("UPDATE mfu_event SET checkin_qr_token=%s WHERE id=%s", (new_tok, event_id))
+        db.commit()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+    return jsonify({
+        "ok": True,
+        "checkin_qr_token": new_tok,
+        "checkin_qr_url": _build_checkin_qr_url(new_tok),
+        "qr_trademark_notice": QR_TRADEMARK_NOTICE,
+    })
+
+
+@bp.post("/external-login/admin/event/<int:event_id>/checkin-qr/expires")
+def admin_update_checkin_qr_expires(event_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard: return guard
+    if not _event_admin_can_manage(event_id):
+        abort(403, "このイベントを管理する権限がありません。")
+    _assert_admin_csrf()
+
+    raw = (request.form.get("expires_at") or "").strip()
+    expires_at = None
+    if raw:
+        from datetime import datetime as _dt
+        try:
+            expires_at = _dt.strptime(raw, "%Y-%m-%dT%H:%M")
+        except Exception:
+            return jsonify({"ok": False, "error": "期限の形式が不正です。"}), 400
+
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("UPDATE mfu_event SET checkin_qr_expires_at=%s WHERE id=%s", (expires_at, event_id))
+        db.commit()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+    return jsonify({
+        "ok": True,
+        "checkin_qr_expires_at": (expires_at.strftime("%Y-%m-%d %H:%M:%S") if expires_at else None),
+    })
 
 @bp.route("/admin/events/<int:event_id>/members/<int:member_id>/status", methods=["POST"], endpoint="admin_member_update_status")
 def admin_member_update_status(event_id: int, member_id: int):

@@ -1,100 +1,274 @@
-diff --git a/records/templates/records/uber/ocr_queue.html b/records/templates/records/uber/ocr_queue.html
-new file mode 100644
-index 0000000000000000000000000000000000000000..bf92af4f06d7fd37b9100490eb81706ce4e9a7f3
---- /dev/null
-+++ b/records/templates/records/uber/ocr_queue.html
-@@ -0,0 +1,94 @@
-+{% extends "records/base_records.html" %}
-+
-+{% block records_title %}Uber OCRキュー{% endblock %}
-+
-+{% block records_actions %}
-+  <a class="btn btn-outline-primary" href="{{ url_for('records.uber_list') }}">Uber一覧へ戻る</a>
-+{% endblock %}
-+
-+{% block records_content %}
-+<div class="card shadow-sm">
-+  <div class="card-body">
-+    <h2 class="h5 mb-3">確認待ちキュー</h2>
-+    <div class="table-responsive">
-+      <table class="table table-bordered table-sm align-middle">
-+        <thead class="table-light">
-+          <tr>
-+            <th>プレビュー</th>
-+            <th>抽出値</th>
-+            <th>warnings</th>
-+            <th>操作</th>
-+          </tr>
-+        </thead>
-+        <tbody>
-+          {% for row in rows %}
-+          <tr>
-+            <td style="min-width:220px;">
-+              <a href="{{ url_for('records.uber_ocr_queue_image', queue_id=row.id) }}" target="_blank" rel="noopener">
-+                <img
-+                  src="{{ url_for('records.uber_ocr_queue_image', queue_id=row.id) }}"
-+                  alt="queue image {{ row.id }}"
-+                  class="img-fluid rounded border"
-+                  style="max-width: 200px; max-height: 200px; object-fit: contain;"
-+                >
-+              </a>
-+            </td>
-+            <td>
-+              <form method="post" action="{{ url_for('records.uber_ocr_queue_commit', queue_id=row.id) }}" class="row g-2">
-+                <div class="col-12">
-+                  <label class="form-label small mb-0">日付</label>
-+                  <input type="date" class="form-control form-control-sm" name="work_date" value="{{ row.work_date }}" required>
-+                </div>
-+                <div class="col-6">
-+                  <label class="form-label small mb-0">件数</label>
-+                  <input type="number" class="form-control form-control-sm" name="deliveries" value="{{ row.deliveries }}" required>
-+                </div>
-+                <div class="col-6">
-+                  <label class="form-label small mb-0">正味</label>
-+                  <input type="number" class="form-control form-control-sm" name="net_yen" value="{{ row.net_yen }}" required>
-+                </div>
-+                <div class="col-6">
-+                  <label class="form-label small mb-0">プロモ</label>
-+                  <input type="number" class="form-control form-control-sm" name="promo_yen" value="{{ row.promo_yen }}" required>
-+                </div>
-+                <div class="col-6">
-+                  <label class="form-label small mb-0">その他</label>
-+                  <input type="number" class="form-control form-control-sm" name="other_yen" value="{{ row.other_yen }}" required>
-+                </div>
-+                <div class="col-6">
-+                  <label class="form-label small mb-0">チップ</label>
-+                  <input type="number" class="form-control form-control-sm" name="tip_yen" value="{{ row.tip_yen }}" required>
-+                </div>
-+                <div class="col-12 d-grid">
-+                  <button type="submit" class="btn btn-sm btn-success">保存（commit）</button>
-+                </div>
-+              </form>
-+            </td>
-+            <td style="min-width: 200px;">
-+              {% if row.warnings %}
-+                <ul class="mb-0 ps-3 small">
-+                {% for warning in row.warnings %}
-+                  <li>{{ warning }}</li>
-+                {% endfor %}
-+                </ul>
-+              {% else %}
-+                <span class="text-muted small">-</span>
-+              {% endif %}
-+            </td>
-+            <td style="min-width:140px;">
-+              <form method="post" action="{{ url_for('records.uber_ocr_queue_discard', queue_id=row.id) }}" onsubmit="return confirm('このキューを破棄しますか？');">
-+                <button type="submit" class="btn btn-sm btn-outline-danger w-100">破棄（discard）</button>
-+              </form>
-+            </td>
-+          </tr>
-+          {% else %}
-+          <tr>
-+            <td colspan="4" class="text-center text-muted">確認待ちキューはありません。</td>
-+          </tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+    </div>
-+  </div>
-+</div>
-+{% endblock %}
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 6fcadcc786facbbe9447cb5998bbe653636c5a87..44b95ff700e7cfd49ae039b28e7ea5e48545cf86 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -169,56 +169,61 @@ def _get_admin_webhook_url() -> str | None:
+         if not row:
+             return None
+         return row[0] if isinstance(row, tuple) else row.get("webhook_url")
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+ 
+ def _notify_discord(content: str) -> None:
+     """Discordへシンプル通知（失敗してもアプリ動作は阻害しない）"""
+     url = _get_admin_webhook_url()
+     if not url:
+         return
+     try:
+         requests.post(url, json={"content": content}, timeout=5)
+     except Exception:
+         current_app.logger.exception("discord notify failed")
+ 
+ 
+ 
+ 
+ def _format_checkin_notice_time(dt_obj: datetime) -> str:
+     return f"{dt_obj.year}年{dt_obj.month}月{dt_obj.day}日　{dt_obj.strftime('%H:%M:%S')}"
+ 
+ 
+-def _build_checkin_notice_body(*, nickname: str, checked_at: datetime, method_label: str, admin_url: str) -> str:
++def _build_checkin_notice_body(*, nickname: str, checked_at: datetime, event_title: str, participant_role: str | None, costume_label: str | None, method_label: str, admin_url: str) -> str:
++    role_val = (participant_role or "-").strip() or "-"
++    costume_val = (costume_label or "-").strip() or "-"
+     lines = [
+         "以下の方がチェックイン完了しました",
+         "",
+-        f"【名前】{nickname}",
++        f"【名　　前】{nickname}",
+         f"【受付時間】{_format_checkin_notice_time(checked_at)}",
++        f"【イベント】{event_title}",
++        f"【役　　割】{role_val}",
++        f"【衣　　装】{costume_val}",
+         f"【受付方法】{method_label}",
+         "",
+         "管理ページ",
+         admin_url,
+     ]
+     if "QR" in method_label:
+         lines.extend(["", f"※{QR_TRADEMARK_NOTICE}"])
+     return "\n".join(lines)
+ 
+ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: str):
+     """
+     mfu_event_member.status を new_status に更新。
+     変化があれば対象者へイベントメール（send_mail）で通知。
+     戻り: (ok: bool, msg: str, applied_status: str)
+     """
+     if new_status not in ("approved", "rejected", "pending"):
+         return False, "invalid status", new_status
+ 
+     db = get_db(); cur = db.cursor()
+ 
+     # イベント基本情報（件名/From生成）
+     cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+     ev_row = cur.fetchone()
+     if not ev_row:
+         cur.close(); db.close()
+@@ -3038,51 +3043,53 @@ def event_pass_checkin(event_uuid: str):
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         return jsonify(ok=False, error="イベントが見つかりませんでした。"), 404
+ 
+     event_id = ev["id"]
+     ev_title = ev.get("title") or "イベント"
+     if bool(ev.get("checkin_qr_enabled")):
+         return jsonify(ok=False, error="このイベントは会場QRコード受付のみ有効です。"), 400
+     ev_uuid_str = ev.get("event_uuid_str") or ""
+     if not ev_uuid_str and ev.get("event_uuid") is not None:
+         # 念のため bytes から変換する fallback
+         try:
+             ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"]) or ""
+         except Exception:
+             ev_uuid_str = ""
+ 
+     # 参加メンバー（自分）を特定（最新1件）
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT
+                 m.id,
+                 m.checkin_at,
+                 m.checkin_lat,
+-                m.checkin_lng
++                m.checkin_lng,
++                COALESCE(m.participant_role,'') AS participant_role,
++                COALESCE(m.costume_label,'') AS costume_label
+             FROM mfu_event_member AS m
+             WHERE m.event_id = %s
+               AND m.user_id = %s
+               AND m.status = 'approved'
+             ORDER BY m.id DESC
+             LIMIT 1
+             """,
+             (event_id, me["id"]),
+         )
+         member = cur.fetchone()
+     finally:
+         try:
+             cur.close()
+         except Exception:
+             pass
+ 
+     if not member:
+         return jsonify(ok=False, error="このイベントの参加情報が見つかりませんでした。"), 404
+ 
+     # すでに受付済みなら何もしない（通知も出さない）
+     if member.get("checkin_at"):
+         return jsonify(
+             ok=True,
+             already=True,
+             message="すでに受付済みです。",
+@@ -3143,50 +3150,53 @@ def event_pass_checkin(event_uuid: str):
+     # --- 会場付近 → チェックイン登録 ------------------------------
+     now = datetime.now()
+ 
+     updated = _update_checkin_member_row(
+         member_id=member["id"],
+         checked_at=now,
+         lat=user_lat,
+         lng=user_lng,
+         method="gps",
+     )
+ 
+     # UPDATE に失敗（他プロセスが先にチェックイン済みにした等）の場合はここで終了
+     if not updated:
+         return jsonify(
+             ok=True,
+             already=True,
+             message="すでに受付処理が完了しています。",
+         )
+ 
+     # --- 通知処理（初回チェックインのみ） -------------------------
+     nickname = me.get("nickname") or "参加者"
+     admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+     notice_body = _build_checkin_notice_body(
+         nickname=nickname,
+         checked_at=now,
++        event_title=ev_title,
++        participant_role=member.get("participant_role"),
++        costume_label=member.get("costume_label"),
+         method_label="GPS",
+         admin_url=admin_url,
+     )
+ 
+     # 1) Discord（adminユーザー向け）
+     try:
+         _notify_discord(notice_body)
+     except Exception:
+         current_app.logger.exception("Discord 受付通知でエラーが発生しました")
+ 
+     # 2) ACL メンバーにメール通知
+     try:
+         acl_emails = _get_acl_admin_emails(event_id)
+         if acl_emails:
+             subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん"
+             for addr in acl_emails:
+                 send_mail(
+                     to=addr,
+                     subject=subject,
+                     body=notice_body,
+                     event_uuid=ev_uuid_str or None,
+                 )
+     except Exception:
+         current_app.logger.exception("ACL向け受付メール通知でエラーが発生しました")
+ 
+@@ -3231,90 +3241,95 @@ def event_qr_checkin(token: str):
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+     if not ev:
+         return make_response("チェックイン用トークンが無効です。", 404)
+     if int(ev.get("checkin_qr_enabled") or 0) != 1:
+         return make_response("このチェックインは現在無効です。", 400)
+ 
+     expires_at = ev.get("checkin_qr_expires_at")
+     if isinstance(expires_at, str):
+         try:
+             expires_at = datetime.fromisoformat(expires_at.replace(" ", "T"))
+         except Exception:
+             expires_at = None
+     if expires_at and expires_at < datetime.now():
+         return make_response("このチェックイン用トークンは期限切れです。", 400)
+ 
+     event_id = ev["id"]
+     ev_title = ev.get("title") or "イベント"
+     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid")) or ""
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+-            SELECT id, checkin_at
++            SELECT id, checkin_at,
++                   COALESCE(participant_role,'') AS participant_role,
++                   COALESCE(costume_label,'') AS costume_label
+               FROM mfu_event_member
+              WHERE event_id=%s
+                AND user_id=%s
+                AND status='approved'
+              ORDER BY id DESC
+              LIMIT 1
+         """, (event_id, me["id"]))
+         member = cur.fetchone()
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+     if not member:
+         return make_response("このイベントの参加情報が見つかりませんでした。", 404)
+ 
+     if member.get("checkin_at"):
+         return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 
+     now = datetime.now()
+     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+ 
+     updated = _update_checkin_member_row(
+         member_id=member["id"],
+         checked_at=now,
+         lat=None,
+         lng=None,
+         method="qr",
+     )
+ 
+     if not updated:
+         return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 
+     nickname = me.get("nickname") or "参加者"
+     admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+     notice_body = _build_checkin_notice_body(
+         nickname=nickname,
+         checked_at=now,
++        event_title=ev_title,
++        participant_role=member.get("participant_role"),
++        costume_label=member.get("costume_label"),
+         method_label="QR",
+         admin_url=admin_url,
+     )
+ 
+     try:
+         _notify_discord(notice_body)
+     except Exception:
+         current_app.logger.exception("Discord QR受付通知でエラーが発生しました")
+ 
+     try:
+         acl_emails = _get_acl_admin_emails(event_id)
+         if acl_emails:
+             subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん (QR)"
+             for addr in acl_emails:
+                 send_mail(
+                     to=addr,
+                     subject=subject,
+                     body=notice_body,
+                     event_uuid=ev_uuid_str or None,
+                 )
+     except Exception:
+         current_app.logger.exception("ACL向けQR受付メール通知でエラーが発生しました")
+ 
+     return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 

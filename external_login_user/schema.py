@@ -173,6 +173,14 @@ def _on_bp_registered(state) -> None:
             # ★ 追加：支払期間 列（後方互換で追加）
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+            _ensure_col("mfu_event", "checkin_qr_enabled",
+                        "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
+            _ensure_col("mfu_event", "checkin_qr_token",
+                        "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
+            _ensure_col("mfu_event", "checkin_qr_expires_at",
+                        "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
+            _ensure_col("mfu_event_member", "checkin_method",
+                        "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
 
             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
@@ -210,6 +218,34 @@ def _on_bp_registered(state) -> None:
                     app.logger.exception("failed to alter mfu_payment_request.status enum")
 
             _ensure_payment_request_status_enum()
+
+            def _ensure_checkin_method_enum() -> None:
+                try:
+                    cur.execute("""
+                        SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+                         WHERE TABLE_SCHEMA=DATABASE()
+                           AND TABLE_NAME='mfu_event_member'
+                           AND COLUMN_NAME='checkin_method'
+                    """)
+                    row = cur.fetchone()
+                    column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
+                except Exception:
+                    app.logger.exception("failed to inspect mfu_event_member.checkin_method")
+                    return
+
+                lowered = str(column_type or "").lower()
+                if ("'gps'" in lowered) and ("'qr'" in lowered):
+                    return
+
+                try:
+                    cur.execute("""
+                        ALTER TABLE mfu_event_member
+                          MODIFY COLUMN checkin_method ENUM('gps','qr') NULL
+                    """)
+                except Exception:
+                    app.logger.exception("failed to alter mfu_event_member.checkin_method enum")
+
+            _ensure_checkin_method_enum()
 
             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
             _ensure_col("mfu_event", "line_openchat_url",

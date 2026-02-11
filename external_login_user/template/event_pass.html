@@ -113,31 +113,57 @@ MFU PASS
           </div>
         </div>
 
-        {# --- 受付ボタン（状態表示一体型） --- #}
-        <div>
-          <div class="lbl">受付（GPSチェックイン）</div>
 
-          {% if gps_checkin_enabled|default(true) %}
-            <button
-              id="btn-checkin"
-              class="btn w-100 btn-lg {% if checked_in|default(false) %}btn-primary{% else %}btn-danger{% endif %}"
-              {% if checked_in|default(false) %}disabled{% endif %}
-            >
-              {% if checked_in|default(false) %}
-                ✅ チェックイン完了
-              {% else %}
-                📍 この場所でチェックインする
-              {% endif %}
-            </button>
-            <div class="nowtime" id="nowtime" aria-live="polite"></div>
-            <div id="checkin-message" class="mt-2 small text-muted"></div>
+
+        <div>
+          <div class="lbl">受付ステータス</div>
+          {% if checked_in|default(false) %}
+            <div class="meta fw-bold text-success">受付済</div>
+            <div class="small text-muted">受付時刻: {{ checkin_at_str or '-' }}</div>
+            <div class="small text-muted">受付方法: {{ (checkin_method == 'qr') and 'QRコード' or 'GPS' }}</div>
+            {% if checkin_method == 'qr' %}
+              <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
+            {% endif %}
           {% else %}
-            <div class="mt-2 small text-muted">
-              このイベントではGPSチェックインは利用できません。
-            </div>
-            <div class="nowtime" id="nowtime" aria-live="polite"></div>
+            <div class="meta text-danger">未受付</div>
           {% endif %}
         </div>
+
+        {# --- 受付ボタン（状態表示一体型） --- #}
+        {% if checkin_qr_enabled|default(false) %}
+          <div>
+            <div class="lbl">受付（会場掲示QRコード）</div>
+            <div class="small text-muted mb-2">会場掲示QRコードから受付してください。</div>
+            {% if not (checked_in|default(false) and checkin_method == 'qr') %}
+              <div class="small text-muted mb-2">※ {{ qr_trademark_notice }}</div>
+            {% endif %}
+            <div class="nowtime" id="nowtime" aria-live="polite"></div>
+          </div>
+        {% else %}
+          <div>
+            <div class="lbl">受付（GPSチェックイン）</div>
+            {% if gps_checkin_enabled|default(true) %}
+              <button
+                id="btn-checkin"
+                class="btn w-100 btn-lg {% if checked_in|default(false) %}btn-primary{% else %}btn-danger{% endif %}"
+                {% if checked_in|default(false) %}disabled{% endif %}
+              >
+                {% if checked_in|default(false) %}
+                  ✅ チェックイン完了
+                {% else %}
+                  📍 この場所でチェックインする
+                {% endif %}
+              </button>
+              <div class="nowtime" id="nowtime" aria-live="polite"></div>
+              <div id="checkin-message" class="mt-2 small text-muted"></div>
+            {% else %}
+              <div class="mt-2 small text-muted">
+                このイベントではGPSチェックインは利用できません。
+              </div>
+              <div class="nowtime" id="nowtime" aria-live="polite"></div>
+            {% endif %}
+          </div>
+        {% endif %}
 
         <div class="footer-hint">
           画面は常時動作する背景を含みます。提示中は明るさを上げてご提示ください。

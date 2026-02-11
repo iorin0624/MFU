@@ -8,6 +8,8 @@ from flask import current_app, request, session, redirect, url_for, abort, flash
 from . import bp, oauth  # oauth は None の可能性あり
 from app.utils.db import get_db
 
+QR_TRADEMARK_NOTICE = "QRコードは株式会社デンソーウェーブの登録商標です。"
+
 # ---- 環境値 → 関数 ----
 def LINE_CLIENT_ID() -> str:
     return os.getenv("LINE_CHANNEL_ID") or ""
@@ -451,4 +453,3 @@ def extract_lat_lng_from_maps_url(maps_url: str):
 
     # どれにもマッチしなければ諦める
     return (None, None)
-
