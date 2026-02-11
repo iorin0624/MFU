@@ -1,0 +1,155 @@
+{# 前提: ev(id, checkin_qr_enabled, checkin_qr_token, checkin_qr_expires_at), admin_csrf, qr_trademark_notice #}
+{% set wrap_card = checkin_qr_wrap_card if checkin_qr_wrap_card is defined else true %}
+{% set token = ev.checkin_qr_token or '' %}
+{% set qr_url = token and url_for('external_login_user.event_qr_checkin', token=token, _external=True) or '' %}
+
+{% if wrap_card %}
+<div class="card mb-3" id="checkin-qr-card">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span>チェックインQRコード</span>
+    <div class="form-check form-switch m-0">
+      <input class="form-check-input" type="checkbox" id="checkinQrSwitch" {{ 'checked' if ev.checkin_qr_enabled else '' }}>
+      <label class="form-check-label ms-2" for="checkinQrSwitch">
+        {{ ev.checkin_qr_enabled and '有効（会場掲示QRコードで受付）' or '無効（QRコード受付停止中）' }}
+      </label>
+    </div>
+  </div>
+  <div class="card-body d-grid gap-3">
+{% else %}
+<div id="checkin-qr-card" class="d-grid gap-3">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+    <div class="fw-semibold">チェックインQRコード</div>
+    <div class="form-check form-switch m-0">
+      <input class="form-check-input" type="checkbox" id="checkinQrSwitch" {{ 'checked' if ev.checkin_qr_enabled else '' }}>
+      <label class="form-check-label ms-2" for="checkinQrSwitch">
+        {{ ev.checkin_qr_enabled and '有効（会場掲示QRコードで受付）' or '無効（QRコード受付停止中）' }}
+      </label>
+    </div>
+  </div>
+{% endif %}
+
+    <div class="text-muted small">
+      会場掲示用の共通QRコードURLです。未ログイン参加者はログイン後に元URLへ戻り、自動で受付処理されます。
+    </div>
+
+    <div>
+      <label class="form-label fw-bold mb-1">チェックインURL（QRコード埋め込み先）</label>
+      <div class="d-flex flex-column flex-md-row gap-2">
+        <textarea id="checkinQrUrl" class="form-control font-monospace break-anywhere" rows="2" readonly style="resize:none">{{ qr_url }}</textarea>
+        <button class="btn btn-outline-secondary w-100 w-md-auto" type="button" id="copyCheckinQrBtn" {{ '' if token else 'disabled' }}>コピー</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="form-text">チェックイントークン</div>
+      <div class="p-2 border rounded bg-light break-anywhere">
+        <code id="checkinQrToken" class="d-block break-anywhere">{{ token or '-' }}</code>
+      </div>
+      {% if not token %}
+        <div class="form-text text-muted">（未発行です。ONにするか「トークン再発行」で発行できます）</div>
+      {% endif %}
+    </div>
+
+    <div class="row g-2 align-items-end">
+      <div class="col-md-6">
+        <label class="form-label mb-1" for="checkinQrExpiresAt">有効期限（任意）</label>
+        <input
+          type="datetime-local"
+          id="checkinQrExpiresAt"
+          class="form-control"
+          value="{% if ev.checkin_qr_expires_at %}{{ ev.checkin_qr_expires_at.strftime('%Y-%m-%dT%H:%M') if ev.checkin_qr_expires_at.__class__.__name__ == 'datetime' else ev.checkin_qr_expires_at|string|replace(' ', 'T')|truncate(16, True, '') }}{% endif %}"
+        >
+      </div>
+      <div class="col-md-6 d-flex gap-2 flex-wrap">
+        <button class="btn btn-outline-primary btn-sm" type="button" id="saveCheckinQrExpiresBtn">期限を保存</button>
+        <button class="btn btn-outline-danger btn-sm" type="button" id="rotateCheckinQrBtn">トークン再発行</button>
+      </div>
+    </div>
+
+    <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
+
+{% if wrap_card %}
+  </div>
+</div>
+{% else %}
+</div>
+{% endif %}
+
+<style>
+.break-anywhere{overflow-wrap:anywhere;word-break:break-word;}
+@media (min-width: 768px){.w-md-auto{width:auto !important;}}
+</style>
+<script>
+(function(){
+  const csrf = {{ admin_csrf|tojson }};
+  const toggleUrl = {{ url_for('external_login_user.admin_toggle_checkin_qr', event_id=ev.id)|tojson }};
+  const rotateUrl = {{ url_for('external_login_user.admin_rotate_checkin_qr_token', event_id=ev.id)|tojson }};
+  const expiresUrl = {{ url_for('external_login_user.admin_update_checkin_qr_expires', event_id=ev.id)|tojson }};
+
+  const switchEl = document.getElementById('checkinQrSwitch');
+  const labelEl = document.querySelector('label[for="checkinQrSwitch"]');
+  const urlEl = document.getElementById('checkinQrUrl');
+  const tokenEl = document.getElementById('checkinQrToken');
+  const copyBtn = document.getElementById('copyCheckinQrBtn');
+  const rotateBtn = document.getElementById('rotateCheckinQrBtn');
+  const expiresEl = document.getElementById('checkinQrExpiresAt');
+  const saveExpiresBtn = document.getElementById('saveCheckinQrExpiresBtn');
+
+  function applyToken(token, url){
+    const has = !!token;
+    tokenEl.textContent = has ? token : '-';
+    urlEl.value = url || '';
+    copyBtn.disabled = !has;
+  }
+
+  async function post(url, body){
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {'X-CSRF-Token': csrf},
+      body: body instanceof URLSearchParams ? body : new URLSearchParams(body || {})
+    });
+    let js; try { js = await res.json(); } catch (e) { js = {ok:false, error:'invalid json'}; }
+    return js;
+  }
+
+  switchEl?.addEventListener('change', async (e)=>{
+    const enable = e.target.checked ? '1' : '0';
+    const js = await post(toggleUrl, {enable});
+    if(!js.ok){
+      alert('チェックインQRコードの切替に失敗しました。');
+      e.target.checked = !e.target.checked;
+      return;
+    }
+    labelEl.textContent = (enable === '1') ? '有効（会場掲示QRコードで受付）' : '無効（QRコード受付停止中）';
+    if (js.checkin_qr_token) applyToken(js.checkin_qr_token, js.checkin_qr_url);
+  });
+
+  copyBtn?.addEventListener('click', async ()=>{
+    try{
+      await navigator.clipboard.writeText(urlEl.value || '');
+      copyBtn.textContent = 'コピー済み';
+      setTimeout(()=>copyBtn.textContent='コピー', 1200);
+    }catch(_){ alert('コピーに失敗しました。手動でコピーしてください。'); }
+  });
+
+  rotateBtn?.addEventListener('click', async ()=>{
+    const js = await post(rotateUrl);
+    if(!js.ok || !js.checkin_qr_token){
+      alert('トークン再発行に失敗しました。');
+      return;
+    }
+    applyToken(js.checkin_qr_token, js.checkin_qr_url);
+  });
+
+  saveExpiresBtn?.addEventListener('click', async ()=>{
+    const js = await post(expiresUrl, {expires_at: expiresEl?.value || ''});
+    if(!js.ok){
+      alert(js.error || '期限保存に失敗しました。');
+      return;
+    }
+    alert('有効期限を保存しました。');
+  });
+
+  applyToken({{ (ev.checkin_qr_token or '')|tojson }}, {{ (qr_url or '')|tojson }});
+})();
+</script>

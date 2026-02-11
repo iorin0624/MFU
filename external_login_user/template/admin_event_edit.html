@@ -324,6 +324,22 @@
       </div>
     </div>
 
+
+    <!-- 受付（会場QRコード） -->
+    <div class="accordion-item">
+      <h2 class="accordion-header" id="heading-checkin-qr">
+        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-checkin-qr" aria-expanded="false" aria-controls="collapse-checkin-qr">
+          受付（会場QRコード）
+        </button>
+      </h2>
+      <div id="collapse-checkin-qr" class="accordion-collapse collapse">
+        <div class="accordion-body">
+          {% set checkin_qr_wrap_card = false %}
+          {% include "_event_checkin_qr_block.html" %}
+        </div>
+      </div>
+    </div>
+
     <!-- システム関係 -->
     <div class="accordion-item">
       <h2 class="accordion-header" id="heading-system">

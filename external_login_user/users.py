@@ -51,6 +51,7 @@ from .utils import (
     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
     _event_by_uuid_str, _membership_status,
     avatar_url_for,  # ← 追加
+    QR_TRADEMARK_NOTICE,
 )
 from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
@@ -183,6 +184,32 @@ def _notify_discord(content: str) -> None:
     except Exception:
         current_app.logger.exception("discord notify failed")
 
+
+
+
+def _format_checkin_notice_time(dt_obj: datetime) -> str:
+    return f"{dt_obj.year}年{dt_obj.month}月{dt_obj.day}日　{dt_obj.strftime('%H:%M:%S')}"
+
+
+def _build_checkin_notice_body(*, nickname: str, checked_at: datetime, event_title: str, participant_role: str | None, costume_label: str | None, method_label: str, admin_url: str) -> str:
+    role_val = (participant_role or "-").strip() or "-"
+    costume_val = (costume_label or "-").strip() or "-"
+    lines = [
+        "以下の方がチェックイン完了しました",
+        "",
+        f"【名　　前】{nickname}",
+        f"【受付時間】{_format_checkin_notice_time(checked_at)}",
+        f"【イベント】{event_title}",
+        f"【役　　割】{role_val}",
+        f"【衣　　装】{costume_val}",
+        f"【受付方法】{method_label}",
+        "",
+        "管理ページ",
+        admin_url,
+    ]
+    if "QR" in method_label:
+        lines.extend(["", f"※{QR_TRADEMARK_NOTICE}"])
+    return "\n".join(lines)
 
 def _update_member_status_and_notify(event_id: int, user_id: int, new_status: str):
     """
@@ -2820,7 +2847,8 @@ def event_pass(event_uuid: str):
               em.paid_amount_yen,
               em.paid_at,
               em.receipt_url,
-              em.checkin_at
+              em.checkin_at,
+              em.checkin_method
             FROM mfu_event_member em
             WHERE em.event_id=%s AND em.user_id=%s
             ORDER BY em.id DESC
@@ -2850,6 +2878,7 @@ def event_pass(event_uuid: str):
         checkin_at_str = str(raw_checkin_at) if raw_checkin_at else None
 
     checked_in = bool(raw_checkin_at)
+    checkin_method = (row.get("checkin_method") if row else None)
 
     # 支払表示キーワード（テンプレ側ではもう使ってなくても互換のため残す）
     fee = int(ev.get("fee_yen") or 0)
@@ -2913,7 +2942,8 @@ def event_pass(event_uuid: str):
     ev_lat  = ev.get("event_lat")
     ev_lng  = ev.get("event_lng")
     maps_url = (ev.get("maps_url") or "").strip()
-    gps_checkin_enabled = (ev_lat is not None and ev_lng is not None) or bool(maps_url)
+    checkin_qr_enabled = bool(ev.get("checkin_qr_enabled"))
+    gps_checkin_enabled = ((ev_lat is not None and ev_lng is not None) or bool(maps_url)) and (not checkin_qr_enabled)
 
     resp = make_response(render_template(
         "event_pass.html",
@@ -2931,11 +2961,62 @@ def event_pass(event_uuid: str):
         # ★ ここから GPS 受付用
         checked_in=checked_in,
         checkin_at_str=checkin_at_str,
+        checkin_method=checkin_method,
         gps_checkin_enabled=gps_checkin_enabled,
+        checkin_qr_enabled=checkin_qr_enabled,
+        qr_trademark_notice=QR_TRADEMARK_NOTICE,
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+def _update_checkin_member_row(*, member_id: int, checked_at, lat, lng, method: str) -> int:
+    """checkin_method列のENUM差異に備え、失敗時はmethod更新なしへフォールバック。"""
+    db = get_db(); cur = db.cursor()
+    try:
+        try:
+            cur.execute(
+                """
+                UPDATE mfu_event_member
+                   SET checkin_at = %s,
+                       checkin_lat = %s,
+                       checkin_lng = %s,
+                       checkin_method = %s
+                 WHERE id = %s
+                   AND checkin_at IS NULL
+                """,
+                (checked_at, lat, lng, method, member_id),
+            )
+            db.commit()
+            return cur.rowcount
+        except Exception as e:
+            msg = str(e)
+            if ("checkin_method" not in msg) and ("1265" not in msg):
+                raise
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            current_app.logger.warning("checkin_method update skipped due to schema mismatch: %s", msg)
+            cur.execute(
+                """
+                UPDATE mfu_event_member
+                   SET checkin_at = %s,
+                       checkin_lat = %s,
+                       checkin_lng = %s
+                 WHERE id = %s
+                   AND checkin_at IS NULL
+                """,
+                (checked_at, lat, lng, member_id),
+            )
+            db.commit()
+            return cur.rowcount
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
 
 @bp.route("/events/pass/<event_uuid>/checkin", methods=["POST"])
 def event_pass_checkin(event_uuid: str):
@@ -2965,6 +3046,8 @@ def event_pass_checkin(event_uuid: str):
 
     event_id = ev["id"]
     ev_title = ev.get("title") or "イベント"
+    if bool(ev.get("checkin_qr_enabled")):
+        return jsonify(ok=False, error="このイベントは会場QRコード受付のみ有効です。"), 400
     ev_uuid_str = ev.get("event_uuid_str") or ""
     if not ev_uuid_str and ev.get("event_uuid") is not None:
         # 念のため bytes から変換する fallback
@@ -2982,7 +3065,9 @@ def event_pass_checkin(event_uuid: str):
                 m.id,
                 m.checkin_at,
                 m.checkin_lat,
-                m.checkin_lng
+                m.checkin_lng,
+                COALESCE(m.participant_role,'') AS participant_role,
+                COALESCE(m.costume_label,'') AS costume_label
             FROM mfu_event_member AS m
             WHERE m.event_id = %s
               AND m.user_id = %s
@@ -3064,29 +3149,14 @@ def event_pass_checkin(event_uuid: str):
 
     # --- 会場付近 → チェックイン登録 ------------------------------
     now = datetime.now()
-    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-    db = get_db(); cur = db.cursor()
-    try:
-        cur.execute(
-            """
-            UPDATE mfu_event_member
-               SET checkin_at = %s,
-                   checkin_lat = %s,
-                   checkin_lng = %s
-             WHERE id = %s
-               AND checkin_at IS NULL
-            """,
-            (now, user_lat, user_lng, member["id"]),
-        )
-        db.commit()
-        updated = cur.rowcount
-    finally:
-        try:
-            cur.close()
-            db.close()
-        except Exception:
-            pass
+    updated = _update_checkin_member_row(
+        member_id=member["id"],
+        checked_at=now,
+        lat=user_lat,
+        lng=user_lng,
+        method="gps",
+    )
 
     # UPDATE に失敗（他プロセスが先にチェックイン済みにした等）の場合はここで終了
     if not updated:
@@ -3098,18 +3168,20 @@ def event_pass_checkin(event_uuid: str):
 
     # --- 通知処理（初回チェックインのみ） -------------------------
     nickname = me.get("nickname") or "参加者"
-    pass_url = url_for("external_login_user.event_pass", event_uuid=event_uuid, _external=True)
+    admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+    notice_body = _build_checkin_notice_body(
+        nickname=nickname,
+        checked_at=now,
+        event_title=ev_title,
+        participant_role=member.get("participant_role"),
+        costume_label=member.get("costume_label"),
+        method_label="GPS",
+        admin_url=admin_url,
+    )
 
     # 1) Discord（adminユーザー向け）
     try:
-        msg = (
-            f"【受付完了】{ev_title}\n"
-            f"{nickname} さんが会場付近から受付しました。\n"
-            f"受付時刻: {now_str}\n"
-            f"距離: 約 {distance_m:.0f} m / 許容 {radius_m} m\n"
-            f"参加証: {pass_url}"
-        )
-        _notify_discord(msg)
+        _notify_discord(notice_body)
     except Exception:
         current_app.logger.exception("Discord 受付通知でエラーが発生しました")
 
@@ -3118,18 +3190,11 @@ def event_pass_checkin(event_uuid: str):
         acl_emails = _get_acl_admin_emails(event_id)
         if acl_emails:
             subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん"
-            body = (
-                f"{nickname} 様がイベント「{ev_title}」の受付をGPSで完了しました。\n\n"
-                f"受付時刻: {now_str}\n"
-                f"位置: lat={user_lat:.6f}, lng={user_lng:.6f}\n"
-                f"距離: 約 {distance_m:.0f} m（許容 {radius_m} m）\n\n"
-                f"参加証URL:\n{pass_url}\n"
-            )
             for addr in acl_emails:
                 send_mail(
                     to=addr,
                     subject=subject,
-                    body=body,
+                    body=notice_body,
                     event_uuid=ev_uuid_str or None,
                 )
     except Exception:
@@ -3142,6 +3207,131 @@ def event_pass_checkin(event_uuid: str):
         radius_m=radius_m,
         checkin_at=now_str,
     )
+
+
+@bp.route("/checkin/<token>")
+def event_qr_checkin(token: str):
+    """会場掲示トークン経由のQR受付（ログイン後に自動チェックイン）。"""
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    if not me:
+        abort(401)
+
+    token = (token or "").strip().lower()
+    if len(token) != 64:
+        return make_response("チェックイン用トークンが不正です。", 400)
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id, title, event_uuid,
+                   COALESCE(checkin_qr_enabled, 0) AS checkin_qr_enabled,
+                   checkin_qr_token,
+                   checkin_qr_expires_at
+              FROM mfu_event
+             WHERE checkin_qr_token=%s
+             LIMIT 1
+        """, (token,))
+        ev = cur.fetchone()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    if not ev:
+        return make_response("チェックイン用トークンが無効です。", 404)
+    if int(ev.get("checkin_qr_enabled") or 0) != 1:
+        return make_response("このチェックインは現在無効です。", 400)
+
+    expires_at = ev.get("checkin_qr_expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at.replace(" ", "T"))
+        except Exception:
+            expires_at = None
+    if expires_at and expires_at < datetime.now():
+        return make_response("このチェックイン用トークンは期限切れです。", 400)
+
+    event_id = ev["id"]
+    ev_title = ev.get("title") or "イベント"
+    ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid")) or ""
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id, checkin_at,
+                   COALESCE(participant_role,'') AS participant_role,
+                   COALESCE(costume_label,'') AS costume_label
+              FROM mfu_event_member
+             WHERE event_id=%s
+               AND user_id=%s
+               AND status='approved'
+             ORDER BY id DESC
+             LIMIT 1
+        """, (event_id, me["id"]))
+        member = cur.fetchone()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    if not member:
+        return make_response("このイベントの参加情報が見つかりませんでした。", 404)
+
+    if member.get("checkin_at"):
+        return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+
+    now = datetime.now()
+    now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    updated = _update_checkin_member_row(
+        member_id=member["id"],
+        checked_at=now,
+        lat=None,
+        lng=None,
+        method="qr",
+    )
+
+    if not updated:
+        return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+
+    nickname = me.get("nickname") or "参加者"
+    admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+    notice_body = _build_checkin_notice_body(
+        nickname=nickname,
+        checked_at=now,
+        event_title=ev_title,
+        participant_role=member.get("participant_role"),
+        costume_label=member.get("costume_label"),
+        method_label="QR",
+        admin_url=admin_url,
+    )
+
+    try:
+        _notify_discord(notice_body)
+    except Exception:
+        current_app.logger.exception("Discord QR受付通知でエラーが発生しました")
+
+    try:
+        acl_emails = _get_acl_admin_emails(event_id)
+        if acl_emails:
+            subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん (QR)"
+            for addr in acl_emails:
+                send_mail(
+                    to=addr,
+                    subject=subject,
+                    body=notice_body,
+                    event_uuid=ev_uuid_str or None,
+                )
+    except Exception:
+        current_app.logger.exception("ACL向けQR受付メール通知でエラーが発生しました")
+
+    return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
 
 
 # =========================
