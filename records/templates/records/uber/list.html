@@ -9,6 +9,30 @@
 {% block records_content %}
 <div class="card shadow-sm mb-4">
   <div class="card-body">
+    <h2 class="h5 mb-3">スクショ解析（OpenAI API）</h2>
+    <div class="row g-3 align-items-end">
+      <div class="col-md-6">
+        <label class="form-label" for="uberOcrImage">スクリーンショット画像</label>
+        <input type="file" id="uberOcrImage" class="form-control" accept="image/*">
+      </div>
+      <div class="col-md-3">
+        <button type="button" id="uberOcrAnalyzeBtn" class="btn btn-outline-primary w-100">解析</button>
+      </div>
+    </div>
+    <div id="uberOcrError" class="alert alert-danger mt-3 d-none" role="alert"></div>
+    <div id="uberOcrWarningsWrap" class="mt-3 d-none">
+      <div class="fw-semibold">確認メモ</div>
+      <ul id="uberOcrWarnings" class="mb-0"></ul>
+    </div>
+    <div class="mt-3 d-none" id="uberOcrPreviewWrap">
+      <div class="fw-semibold mb-2">画像プレビュー</div>
+      <img id="uberOcrPreview" class="img-fluid rounded border" alt="Uber OCR preview">
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
     <form method="post" action="{{ url_for('records.uber_create_or_update') }}">
       {% include "records/uber/_form_fields.html" %}
       <div class="mt-3">
@@ -124,4 +148,97 @@
     </tbody>
   </table>
 </div>
+{% endblock %}
+
+{% block body_extra %}
+  {{ super() }}
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const fileInput = document.getElementById('uberOcrImage');
+      const analyzeBtn = document.getElementById('uberOcrAnalyzeBtn');
+      const warningWrap = document.getElementById('uberOcrWarningsWrap');
+      const warningList = document.getElementById('uberOcrWarnings');
+      const errorBox = document.getElementById('uberOcrError');
+      const previewWrap = document.getElementById('uberOcrPreviewWrap');
+      const previewImage = document.getElementById('uberOcrPreview');
+
+      const setError = function (message) {
+        if (!message) {
+          errorBox.classList.add('d-none');
+          errorBox.textContent = '';
+          return;
+        }
+        errorBox.textContent = message;
+        errorBox.classList.remove('d-none');
+      };
+
+      const setWarnings = function (warnings) {
+        warningList.innerHTML = '';
+        if (!Array.isArray(warnings) || warnings.length === 0) {
+          warningWrap.classList.add('d-none');
+          return;
+        }
+        warnings.forEach(function (warning) {
+          const li = document.createElement('li');
+          li.textContent = warning;
+          warningList.appendChild(li);
+        });
+        warningWrap.classList.remove('d-none');
+      };
+
+      const setFields = function (fields) {
+        if (!fields || typeof fields !== 'object') {
+          return;
+        }
+        ['work_date', 'deliveries', 'net_yen', 'promo_yen', 'other_yen', 'tip_yen'].forEach(function (name) {
+          const input = document.querySelector('input[name="' + name + '"]');
+          if (input && fields[name] !== undefined && fields[name] !== null) {
+            input.value = fields[name];
+          }
+        });
+      };
+
+      analyzeBtn.addEventListener('click', async function () {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) {
+          setError('画像ファイルを選択してください。');
+          return;
+        }
+
+        setError('');
+        setWarnings([]);
+        analyzeBtn.disabled = true;
+        const originalLabel = analyzeBtn.textContent;
+        analyzeBtn.textContent = '解析中…';
+
+        try {
+          const formData = new FormData();
+          formData.append('image', file);
+          const response = await fetch('{{ url_for("records.uber_ocr_analyze") }}', {
+            method: 'POST',
+            body: formData,
+          });
+          const data = await response.json();
+
+          if (!response.ok || !data.ok) {
+            setError(data.message || '解析に失敗しました。手入力してください。');
+            setWarnings(data.warnings || []);
+            return;
+          }
+
+          setFields(data.fields);
+          setWarnings(data.warnings || []);
+          if (data.preview_url) {
+            previewImage.src = data.preview_url;
+            previewWrap.classList.remove('d-none');
+          }
+        } catch (error) {
+          setError('通信エラーが発生しました。手入力で続けてください。');
+        } finally {
+          analyzeBtn.disabled = false;
+          analyzeBtn.textContent = originalLabel;
+        }
+      });
+    });
+  </script>
 {% endblock %}

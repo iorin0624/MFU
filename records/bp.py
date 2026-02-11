@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
+import json
+import mimetypes
+import os
+import re
+import time
+import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from threading import Lock
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.utils.db import get_db
 
@@ -30,6 +37,10 @@ records_bp = Blueprint(
 
 _schema_init_lock = Lock()
 _schema_initialized = False
+_uber_ocr_preview_lock = Lock()
+_uber_ocr_preview_store: dict[str, dict[str, str | float]] = {}
+_UBER_OCR_TMP_DIR = os.getenv("UBER_OCR_TMP_DIR", os.path.join("/tmp", "mfu", "uber_ocr"))
+_UBER_OCR_PREVIEW_TTL_SEC = 60 * 60 * 24
 
 
 @records_bp.app_template_filter("fmt_yen")
@@ -120,6 +131,102 @@ def _round_decimal(value: Decimal | None, places: int) -> Decimal | None:
 
 def _is_admin_user() -> bool:
     return session.get("user") == "admin"
+
+
+def _cleanup_old_uber_ocr_files() -> None:
+    now_ts_value = time.time()
+    expired_tokens: list[str] = []
+    with _uber_ocr_preview_lock:
+        for token, item in _uber_ocr_preview_store.items():
+            created_at = float(item.get("created_at", 0))
+            path = str(item.get("path", ""))
+            if now_ts_value - created_at > _UBER_OCR_PREVIEW_TTL_SEC or not os.path.exists(path):
+                expired_tokens.append(token)
+        for token in expired_tokens:
+            path = str(_uber_ocr_preview_store[token].get("path", ""))
+            _uber_ocr_preview_store.pop(token, None)
+            if path and os.path.exists(path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+
+def _normalize_ocr_int(value, label: str, warnings: list[str]) -> int:
+    if value is None:
+        warnings.append(f"{label}を読み取れなかったため0を設定しました。")
+        return 0
+    if isinstance(value, bool):
+        warnings.append(f"{label}が不正な形式のため0を設定しました。")
+        return 0
+    if isinstance(value, int):
+        return value
+    raw = str(value).strip()
+    if not raw:
+        warnings.append(f"{label}が空欄だったため0を設定しました。")
+        return 0
+    normalized = re.sub(r"[^0-9\-]", "", raw)
+    if normalized in ("", "-"):
+        warnings.append(f"{label}の値が不明なため0を設定しました。")
+        return 0
+    try:
+        return int(normalized)
+    except ValueError:
+        warnings.append(f"{label}の数値化に失敗したため0を設定しました。")
+        return 0
+
+
+def _analyze_uber_screenshot_with_openai(image_path: str, mime_type: str) -> dict:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY が未設定です。")
+
+    model = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini")
+
+    from openai import OpenAI
+
+    with open(image_path, "rb") as f:
+        encoded_image = base64.b64encode(f.read()).decode("utf-8")
+
+    system_prompt = (
+        "あなたはUberの売上スクリーンショットを解析するOCRアシスタントです。"
+        "出力は必ずJSONオブジェクト1つのみとし、説明文は出力しないでください。"
+    )
+    user_prompt = (
+        "日本語UIから以下を抽出してください: ポイント、正味の料金、プロモーション、"
+        "その他の売り上げ、チップ。\n"
+        "必ずこのJSON形式のみ返してください:\n"
+        "{\n"
+        '  "deliveries": <int or null>,\n'
+        '  "net_yen": <int or null>,\n'
+        '  "promo_yen": <int or null>,\n'
+        '  "other_yen": <int or null>,\n'
+        '  "tip_yen": <int or null>,\n'
+        '  "notes": [<string>...]\n'
+        "}\n"
+        "通貨記号・カンマ・空白は除去して整数として解釈し、不明ならnull。"
+    )
+
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{encoded_image}"},
+                    },
+                ],
+            },
+        ],
+    )
+    content = (response.choices[0].message.content or "{}").strip()
+    return json.loads(content)
 
 
 def _require_admin_for_records():
@@ -444,6 +551,90 @@ def uber_delete(record_id: int):
     db.close()
     flash("Uber記録を削除しました。", "success")
     return redirect(url_for("records.uber_list"))
+
+
+@records_bp.post("/uber/ocr")
+@login_required
+def uber_ocr_analyze():
+    _cleanup_old_uber_ocr_files()
+
+    uploaded = request.files.get("image")
+    if not uploaded or not uploaded.filename:
+        return jsonify({"ok": False, "message": "画像ファイルを選択してください。", "warnings": []}), 400
+
+    ext = os.path.splitext(uploaded.filename)[1].lower()
+    if not ext:
+        guessed_ext = mimetypes.guess_extension(uploaded.mimetype or "")
+        ext = guessed_ext or ".png"
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic"}:
+        ext = ".png"
+
+    token = uuid.uuid4().hex
+    filename = f"{int(time.time())}_{token}{ext}"
+    image_path = os.path.join(_UBER_OCR_TMP_DIR, filename)
+
+    warnings: list[str] = []
+    try:
+        os.makedirs(_UBER_OCR_TMP_DIR, exist_ok=True)
+        uploaded.save(image_path)
+        result = _analyze_uber_screenshot_with_openai(
+            image_path=image_path,
+            mime_type=uploaded.mimetype or "image/png",
+        )
+    except Exception as exc:
+        if os.path.exists(image_path):
+            try:
+                os.remove(image_path)
+            except OSError:
+                pass
+        return jsonify(
+            {
+                "ok": False,
+                "message": "画像解析に失敗しました。OpenAI設定またはサーバー設定を確認してください。",
+                "warnings": [f"詳細: {exc}", "手入力で保存は可能です。"],
+            }
+        )
+
+    notes = result.get("notes") if isinstance(result, dict) else None
+    if isinstance(notes, list):
+        warnings.extend([str(note) for note in notes if str(note).strip()])
+
+    fields = {
+        "work_date": datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat(),
+        "deliveries": _normalize_ocr_int(result.get("deliveries") if isinstance(result, dict) else None, "ポイント", warnings),
+        "net_yen": _normalize_ocr_int(result.get("net_yen") if isinstance(result, dict) else None, "正味の料金", warnings),
+        "promo_yen": _normalize_ocr_int(result.get("promo_yen") if isinstance(result, dict) else None, "プロモーション", warnings),
+        "other_yen": _normalize_ocr_int(result.get("other_yen") if isinstance(result, dict) else None, "その他の売り上げ", warnings),
+        "tip_yen": _normalize_ocr_int(result.get("tip_yen") if isinstance(result, dict) else None, "チップ", warnings),
+    }
+
+    with _uber_ocr_preview_lock:
+        _uber_ocr_preview_store[token] = {"path": image_path, "created_at": time.time()}
+
+    return jsonify(
+        {
+            "ok": True,
+            "fields": fields,
+            "warnings": warnings,
+            "preview_url": url_for("records.uber_ocr_preview", token=token),
+        }
+    )
+
+
+@records_bp.get("/uber/ocr-preview/<token>")
+@login_required
+def uber_ocr_preview(token: str):
+    _cleanup_old_uber_ocr_files()
+
+    with _uber_ocr_preview_lock:
+        item = _uber_ocr_preview_store.get(token)
+    if not item:
+        abort(404)
+
+    image_path = str(item.get("path", ""))
+    if not image_path or not os.path.isfile(image_path):
+        abort(404)
+    return send_file(image_path)
 
 
 @records_bp.get("/maintenance")
