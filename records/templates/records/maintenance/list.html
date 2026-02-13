@@ -24,7 +24,7 @@
     {% set item = None %}
     {% set action_url = url_for('records.maintenance_create') %}
     {% set show_back = true %}
-    {% set odometer_readonly = true %}
+    {% set odometer_readonly = false %}
     {% set default_odometer_km = current_odometer_default %}
     {% include "records/maintenance/_form.html" %}
   </div>

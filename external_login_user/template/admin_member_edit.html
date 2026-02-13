@@ -306,6 +306,9 @@
       <div>
         <label class="form-label small text-muted mb-1">レシートPDFに表示する注釈（任意）</label>
         <textarea class="form-control" name="receipt_note" rows="2" placeholder="例：差額返金済みのため実支払額を修正">{{ m.receipt_note or '' }}</textarea>
+        <div class="form-text mt-1">
+          bulk-refund照合用ID：member_id=<code>{{ _member_id }}</code> / user_id=<code>{{ m.user_id }}</code>
+        </div>
       </div>
 
       <div class="d-grid d-sm-flex justify-content-end">
