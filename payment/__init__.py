@@ -1486,8 +1486,10 @@ def _normalize_preview_rows(rows: list[dict]) -> list[dict]:
             "paid": int(row.get("paid") or 0),
             "current_fee": int(row.get("current_fee") or 0),
             "refunded_sum": int(row.get("refunded_sum") or 0),
+            "refunded_diff_total": int(row.get("refunded_diff_total") or 0),
             "remaining_refundable": int(row.get("remaining_refundable") or 0),
             "diff": int(row.get("diff") or 0),
+            "remaining_diff": int(row.get("remaining_diff") or 0),
             "status": row.get("status") or "",
             "reason_code": row.get("reason_code") or "",
         })
@@ -1512,7 +1514,7 @@ def _reason_message(code: str) -> str:
         "missing_identity": "会員識別子が不足しているため対象外です。先に手動紐付けしてください。",
         "non_success_status": "決済ステータスが返金対象外です。",
         "diff_non_positive": "差額が0以下のため返金不要です。",
-        "diff_exceeds_remaining": "差額が返金可能残額を超えるため対象外です。",
+        "already_refunded": "すでに差額返金が完了しています。",
     }
     return table.get(code, "対象外です。")
 
@@ -1571,14 +1573,15 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
                  p.receipt_email,
                  p.x_id,
                  p.instagram_id,
-                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','APPROVED') THEN r.amount_yen ELSE 0 END),0) AS refunded_sum
+                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','APPROVED') THEN r.amount_yen ELSE 0 END),0) AS refunded_sum,
+                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','APPROVED') AND r.reason=%s THEN r.amount_yen ELSE 0 END),0) AS refunded_diff_total
             FROM event_payments p
             LEFT JOIN event_refunds r
               ON r.payment_row_id = p.id
            WHERE p.event_id=%s
            GROUP BY p.id
            ORDER BY p.created_at DESC
-        """, (payment_event_id,))
+        """, (_BULK_REFUND_REASON_FIXED, payment_event_id))
         payments = _fetchall_dict(cur)
 
         has_member_fee_yen = False
@@ -1597,8 +1600,10 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
 
             paid = int(pay.get("amount_yen") or 0)
             refunded_sum = int(pay.get("refunded_sum") or 0)
+            refunded_diff_total = int(pay.get("refunded_diff_total") or 0)
             remaining = max(paid - refunded_sum, 0)
-            diff = paid - current_fee
+            diff = max(0, paid - current_fee)
+            remaining_diff = max(0, diff - refunded_diff_total)
 
             member = None
             event_member_id = pay.get("event_member_id")
@@ -1628,7 +1633,7 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
                 square_status=square_status,
                 override_fee=override_fee,
                 diff=diff,
-                remaining=remaining,
+                remaining=remaining_diff,
             )
 
             participant = (member or {}).get("member_nickname") or pay.get("nickname") or "-"
@@ -1638,8 +1643,10 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
                 "paid": paid,
                 "current_fee": current_fee,
                 "refunded_sum": refunded_sum,
-                "remaining_refundable": remaining,
+                "refunded_diff_total": refunded_diff_total,
+                "remaining_refundable": remaining_diff,
                 "diff": diff,
+                "remaining_diff": remaining_diff,
                 "status": status,
                 "reason_code": reason_code,
                 "reason_text": _reason_message(reason_code),
@@ -1983,7 +1990,7 @@ def _bulk_refund_summary(rows: list[dict]) -> dict:
     return {
         "payment_count": len(rows),
         "eligible_count": sum(1 for r in rows if r.get("status") == "eligible"),
-        "total_refund_yen": sum(int(r.get("diff") or 0) for r in rows if r.get("status") == "eligible"),
+        "total_refund_yen": sum(int(r.get("remaining_diff") or 0) for r in rows if r.get("status") == "eligible"),
     }
 
 
@@ -2130,7 +2137,10 @@ def admin_bulk_refund_execute(event_id: int):
                     results.append({"payment_row_id": payment_row_id, "result": "skipped", "reason": row.get("reason_code")})
                     continue
 
-                amount = int(row.get("diff") or 0)
+                amount = int(row.get("remaining_diff") or 0)
+                if amount <= 0:
+                    results.append({"payment_row_id": payment_row_id, "result": "skipped", "reason": row.get("reason_code") or "already_refunded"})
+                    continue
                 cur.execute("SELECT square_payment_id FROM event_payments WHERE id=%s LIMIT 1", (payment_row_id,))
                 pay_row = cur.fetchone()
                 _drain_cursor_results(cur)
