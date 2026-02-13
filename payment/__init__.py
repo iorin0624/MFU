@@ -40,6 +40,9 @@ from .bulk_refund_logic import (
     recalculate_paid_amount,
 )
 
+
+_BULK_REFUND_REASON_FIXED = "イベント参加費差額返金"
+
 # ------------------------------------------------------------
 # .env を読み込む（/mnt/mfu/app/payment/.env）
 # ------------------------------------------------------------
@@ -1588,6 +1591,10 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
 
         rows = []
         for pay in payments:
+            square_status = (pay.get("square_status") or "").upper()
+            if square_status == "FAILED":
+                continue
+
             paid = int(pay.get("amount_yen") or 0)
             refunded_sum = int(pay.get("refunded_sum") or 0)
             remaining = max(paid - refunded_sum, 0)
@@ -1614,7 +1621,6 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
                     """, (event_member_id,))
                 member = _fetchone_dict(cur)
 
-            square_status = (pay.get("square_status") or "").upper()
             override_fee = _member_override_value(member or {})
             status, reason_code = decide_bulk_refund_status(
                 has_member=bool(member),
@@ -1973,6 +1979,14 @@ def admin_event_detail(event_id: int):
     bulk_refund_url = f"/payment/admin/events/{event_id}/bulk-refund"
     return render_template("admin_event_detail.html", event=event, payments=payments, pay_url=pay_url, bulk_refund_url=bulk_refund_url)
 
+def _bulk_refund_summary(rows: list[dict]) -> dict:
+    return {
+        "payment_count": len(rows),
+        "eligible_count": sum(1 for r in rows if r.get("status") == "eligible"),
+        "total_refund_yen": sum(int(r.get("diff") or 0) for r in rows if r.get("status") == "eligible"),
+    }
+
+
 @bp.get("/admin/events/<int:event_id>/bulk-refund")
 @admin_required
 def admin_bulk_refund_preview_page(event_id: int):
@@ -1995,8 +2009,9 @@ def admin_bulk_refund_preview_page(event_id: int):
             event=payment_event,
             mfu_event=mfu_event,
             rows=rows,
+            summary=_bulk_refund_summary(rows),
             preview_hash=preview_hash,
-            refund_reason_default="イベント参加費差額の一括返金",
+            refund_reason_default=_BULK_REFUND_REASON_FIXED,
             result=None,
         )
     finally:
@@ -2028,8 +2043,9 @@ def admin_bulk_refund_preview_recalc(event_id: int):
             event=payment_event,
             mfu_event=mfu_event,
             rows=rows,
+            summary=_bulk_refund_summary(rows),
             preview_hash=preview_hash,
-            refund_reason_default=(request.form.get("refund_reason") or "イベント参加費差額の一括返金"),
+            refund_reason_default=(request.form.get("refund_reason") or _BULK_REFUND_REASON_FIXED),
             result=None,
         )
     finally:
@@ -2045,7 +2061,7 @@ def admin_bulk_refund_execute(event_id: int):
     _ensure_schema()
     submitted_hash = (request.form.get("preview_hash") or "").strip()
     selected_ids = [x for x in (request.form.get("selected_csv") or "").split(",") if x.strip()]
-    refund_reason = (request.form.get("refund_reason") or "").strip() or "イベント参加費差額の一括返金"
+    refund_reason = (request.form.get("refund_reason") or "").strip() or _BULK_REFUND_REASON_FIXED
 
     conn = _get_db()
     try:
@@ -2069,6 +2085,7 @@ def admin_bulk_refund_execute(event_id: int):
                 event=payment_event,
                 mfu_event=mfu_event,
                 rows=rows,
+                summary=_bulk_refund_summary(rows),
                 preview_hash=preview_hash,
                 refund_reason_default=refund_reason,
                 result={"error": "内容が変更されたため、再プレビューが必要です。"},
@@ -2088,6 +2105,7 @@ def admin_bulk_refund_execute(event_id: int):
                 event=payment_event,
                 mfu_event=mfu_event,
                 rows=rows,
+                summary=_bulk_refund_summary(rows),
                 preview_hash=preview_hash,
                 refund_reason_default=refund_reason,
                 result={"error": "別の一括返金処理が実行中です。時間をおいて再試行してください。"},
@@ -2197,6 +2215,7 @@ def admin_bulk_refund_execute(event_id: int):
             event=payment_event,
             mfu_event=mfu_event,
             rows=rows2,
+            summary=_bulk_refund_summary(rows2),
             preview_hash=preview_hash2,
             refund_reason_default=refund_reason,
             result={

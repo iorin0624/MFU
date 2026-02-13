@@ -1,58 +1,57 @@
-diff --git a/external_login_user/template/admin_member_edit.html b/external_login_user/template/admin_member_edit.html
-index 08bbc2aaf37b90a1c6ffe8d424d405dfd731cf43..403676836d3e036d825bf9155d277463eebc5578 100644
---- a/external_login_user/template/admin_member_edit.html
-+++ b/external_login_user/template/admin_member_edit.html
-@@ -284,50 +284,53 @@
-                 <input class="form-check-input" type="checkbox" id="paypay_transfer" name="paypay_transfer" value="1" {% if (m.paypay_transfer or 0) == 1 %}checked{% endif %}>
-                 <label class="form-check-label small" for="paypay_transfer">申告あり</label>
-               </div>
-             </div>
-             <div class="mt-2">
-               <label class="form-label small text-muted mb-1">送金名</label>
-               <input type="text" class="form-control form-control-sm" name="paypay_sender_name" value="{{ m.paypay_sender_name or '' }}" placeholder="参加者の送金名">
-             </div>
-             <div class="mt-2">
-               <label class="form-label small text-muted mb-1">送金日</label>
-               <input type="date" class="form-control form-control-sm" name="paypay_sent_date" value="{{ m.paypay_sent_date or '' }}">
-               <div class="form-text">※ 参加者申告では自動で本日が入ります（管理で修正可）</div>
-             </div>
-           </div>
-         </div>
-       </div>
+diff --git a/payment/template/admin_bulk_refund_preview.html b/payment/template/admin_bulk_refund_preview.html
+index 21763545f9115672ab14181a6241463a0b56b00f..1f29ed47c527f64aaa20d8867f65f79a21551d99 100644
+--- a/payment/template/admin_bulk_refund_preview.html
++++ b/payment/template/admin_bulk_refund_preview.html
+@@ -25,51 +25,51 @@
  
-       <div>
-         <label class="form-label small text-muted mb-1">管理メモ（任意）</label>
-         <textarea class="form-control" name="admin_note" rows="2" placeholder="例：明細確認済み／レシート確認 等">{{ m.admin_note or '' }}</textarea>
-       </div>
- 
-       <div>
-         <label class="form-label small text-muted mb-1">レシートPDFに表示する注釈（任意）</label>
-         <textarea class="form-control" name="receipt_note" rows="2" placeholder="例：差額返金済みのため実支払額を修正">{{ m.receipt_note or '' }}</textarea>
-+        <div class="form-text mt-1">
-+          bulk-refund照合用ID：member_id=<code>{{ _member_id }}</code> / user_id=<code>{{ m.user_id }}</code>
-+        </div>
-       </div>
- 
-       <div class="d-grid d-sm-flex justify-content-end">
-         <button class="btn btn-primary">支払いを保存</button>
-       </div>
-     </form>
+   {% if result and result.error %}<div class="alert alert-danger">{{ result.error }}</div>{% endif %}
+   {% if result and result.run_id %}
+   <div class="alert alert-info">
+     run_id={{ result.run_id }} / success={{ result.success }} / failed={{ result.failed }} / skipped={{ result.skipped }}<br>
+     メール送信: 成功={{ result.mail_sent }} / 失敗={{ result.mail_failed }} / 送信不可={{ result.mail_blocked }}
    </div>
- </div>
- <!-- ================= /支払い ================= -->
+   {% endif %}
  
- <!-- 画面狭小時も操作しやすいよう最低パディング -->
- <style>
-   .card-body{ padding: 1rem; }
-   @media (min-width: 576px){ .card-body{ padding: 1.25rem; } }
- </style>
+   <form method="post" action="/payment/admin/events/{{ event.id }}/bulk-refund/preview" class="mb-3 d-flex gap-2">
+     <input type="text" class="form-control" name="refund_reason" value="{{ refund_reason_default }}" placeholder="返金理由">
+     <button class="btn btn-outline-primary" type="submit">対象を再計算</button>
+   </form>
  
- <script>
-   // === 役割に応じてメモ欄（costume_label）を有効/無効化 ===
-   (function(){
-     function isMemoEnabled(root){
-       var checked = root.querySelector('input[name="participant_role"]:checked');
-       if(!checked) return false;
-       return (checked.value === 'cosplayer' || checked.value === 'other');
-     }
-     function setMemoState(root){
+   <div class="table-responsive">
+     <table class="table table-sm table-striped align-middle">
+       <thead>
+         <tr>
+           <th><input type="checkbox" id="check-all"></th><th>参加者</th><th>決済ID</th><th>決済額</th><th>現在の参加費</th><th>返金済合計</th><th>返金可能残額</th><th>差額</th><th>判定</th><th>理由</th><th>手動紐付け</th>
+         </tr>
+       </thead>
+       <tbody>
+       {% for row in rows %}
+         <tr>
+           <td>{% if row.status == 'eligible' %}<input type="checkbox" value="{{ row.payment_row_id }}" class="js-eligible" checked>{% else %}<input type="checkbox" disabled>{% endif %}</td>
+-          <td>{{ row.participant_name }}</td><td>{{ row.payment_row_id }}</td><td>{{ row.paid }}</td><td>{{ row.current_fee }}</td><td>{{ row.refunded_sum }}</td><td>{{ row.remaining_refundable }}</td><td>{{ row.diff }}</td><td>{{ row.status }}</td>
++          <td>{{ row.participant_name }}</td><td>{{ row.payment_row_id }}</td><td>{{ row.paid }}</td><td>{{ row.current_fee }}</td><td>{{ row.refunded_sum }}</td><td>{{ row.remaining_refundable }}</td><td>{{ row.diff }}</td><td>{% if row.status == "eligible" %}返金対象{% elif row.status == "excluded" %}対象外{% elif row.status == "manual" %}手動対応{% else %}{{ row.status }}{% endif %}</td>
+           <td><code>{{ row.reason_code }}</code><br><small class="text-muted">{{ row.reason_text }}</small></td>
+           <td>
+             {% if row.reason_code == 'missing_identity' %}
+             <form method="post" action="/payment/admin/event-payments/{{ row.payment_row_id }}/bind-member" class="d-flex gap-1">
+               <input type="number" name="event_member_id" class="form-control form-control-sm" placeholder="member_id" min="1" required>
+               <input type="number" name="external_login_user_id" class="form-control form-control-sm" placeholder="user_id(任意)" min="1">
+               <button class="btn btn-sm btn-outline-secondary" type="submit">紐付け</button>
+             </form>
+             {% else %}-{% endif %}
+           </td>
+         </tr>
+       {% endfor %}
+       </tbody>
+     </table>
+   </div>
+ 
+   <form method="post" action="/payment/admin/events/{{ event.id }}/bulk-refund/execute" id="execute-form" class="mt-3">
+     <input type="hidden" name="preview_hash" value="{{ preview_hash }}">
+     <input type="hidden" name="selected_csv" id="selected_csv" value="">
+     <div class="mb-2"><input name="refund_reason" type="text" class="form-control" value="{{ refund_reason_default }}" required></div>
+     <button class="btn btn-danger" type="submit">この内容で実行</button>
+   </form>
+ 
+   <script>
+     document.getElementById('check-all')?.addEventListener('change', function(){
