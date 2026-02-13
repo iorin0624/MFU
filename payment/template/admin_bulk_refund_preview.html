@@ -13,10 +13,14 @@
   </div>
 
   <div class="mb-3 small">
-    <div><strong>payment event:</strong> {{ event.id }} / {{ event.title }}</div>
-    <div><strong>payment uuid:</strong> {{ event.uuid }}</div>
-    <div><strong>external event:</strong> {{ (mfu_event.id if mfu_event else '-') }} / {{ (mfu_event.title if mfu_event else '-') }}</div>
-    <div><strong>current_fee:</strong> {{ (mfu_event.fee_yen if mfu_event else '-') }}</div>
+    <div><strong>決済イベント:</strong> {{ event.id }} / {{ event.title }}</div>
+    <div><strong>決済イベントUUID:</strong> {{ event.uuid }}</div>
+    <div><strong>連携先イベント:</strong> {{ (mfu_event.id if mfu_event else '-') }} / {{ (mfu_event.title if mfu_event else '-') }}</div>
+    <div><strong>現在の参加費:</strong> {{ (mfu_event.fee_yen if mfu_event else '-') }}</div>
+    <div class="mt-2"><strong>返金内容:</strong> {{ refund_reason_default }}</div>
+    <div><strong>決済人数:</strong> {{ summary.payment_count }}</div>
+    <div><strong>返金対象の人数:</strong> {{ summary.eligible_count }}</div>
+    <div><strong>合計返金金額:</strong> {{ summary.total_refund_yen }}円</div>
   </div>
 
   {% if result and result.error %}<div class="alert alert-danger">{{ result.error }}</div>{% endif %}
@@ -36,14 +40,14 @@
     <table class="table table-sm table-striped align-middle">
       <thead>
         <tr>
-          <th><input type="checkbox" id="check-all"></th><th>participant</th><th>payment_row_id</th><th>paid</th><th>current_fee</th><th>refunded_sum</th><th>remaining</th><th>diff</th><th>判定</th><th>reason</th><th>手動紐付け</th>
+          <th><input type="checkbox" id="check-all"></th><th>参加者</th><th>決済ID</th><th>決済額</th><th>現在の参加費</th><th>返金済合計</th><th>返金可能残額</th><th>差額</th><th>判定</th><th>理由</th><th>手動紐付け</th>
         </tr>
       </thead>
       <tbody>
       {% for row in rows %}
         <tr>
           <td>{% if row.status == 'eligible' %}<input type="checkbox" value="{{ row.payment_row_id }}" class="js-eligible" checked>{% else %}<input type="checkbox" disabled>{% endif %}</td>
-          <td>{{ row.participant_name }}</td><td>{{ row.payment_row_id }}</td><td>{{ row.paid }}</td><td>{{ row.current_fee }}</td><td>{{ row.refunded_sum }}</td><td>{{ row.remaining_refundable }}</td><td>{{ row.diff }}</td><td>{{ row.status }}</td>
+          <td>{{ row.participant_name }}</td><td>{{ row.payment_row_id }}</td><td>{{ row.paid }}</td><td>{{ row.current_fee }}</td><td>{{ row.refunded_sum }}</td><td>{{ row.remaining_refundable }}</td><td>{{ row.diff }}</td><td>{% if row.status == "eligible" %}返金対象{% elif row.status == "excluded" %}対象外{% elif row.status == "manual" %}手動対応{% else %}{{ row.status }}{% endif %}</td>
           <td><code>{{ row.reason_code }}</code><br><small class="text-muted">{{ row.reason_text }}</small></td>
           <td>
             {% if row.reason_code == 'missing_identity' %}
