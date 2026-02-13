@@ -28,11 +28,11 @@ class BulkRefundLogicTest(unittest.TestCase):
         )
         self.assertEqual((status, reason), ("manual", "member_fee_override_present"))
 
-    def test_remaining_shortage(self):
+    def test_already_refunded(self):
         status, reason = decide_bulk_refund_status(
-            has_member=True, member_event_match=True, square_status="AUTHORIZED", override_fee=0, diff=300, remaining=200
+            has_member=True, member_event_match=True, square_status="AUTHORIZED", override_fee=0, diff=300, remaining=0
         )
-        self.assertEqual((status, reason), ("excluded", "diff_exceeds_remaining"))
+        self.assertEqual((status, reason), ("excluded", "already_refunded"))
 
     def test_eligible(self):
         status, reason = decide_bulk_refund_status(
@@ -42,17 +42,17 @@ class BulkRefundLogicTest(unittest.TestCase):
 
     def test_preview_hash_stable(self):
         rows = [
-            {"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "remaining_refundable": 4490, "diff": 290, "status": "eligible", "reason_code": "eligible"},
-            {"payment_row_id": 1, "paid": 4200, "current_fee": 4200, "refunded_sum": 0, "remaining_refundable": 4200, "diff": 0, "status": "excluded", "reason_code": "diff_non_positive"},
+            {"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "refunded_diff_total": 0, "remaining_refundable": 290, "diff": 290, "remaining_diff": 290, "status": "eligible", "reason_code": "eligible"},
+            {"payment_row_id": 1, "paid": 4200, "current_fee": 4200, "refunded_sum": 0, "refunded_diff_total": 0, "remaining_refundable": 0, "diff": 0, "remaining_diff": 0, "status": "excluded", "reason_code": "diff_non_positive"},
         ]
         h1 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=rows)
         h2 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=list(reversed(rows)))
         self.assertEqual(h1, h2)
 
     def test_preview_hash_changes(self):
-        rows = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "remaining_refundable": 4490, "diff": 290, "status": "eligible", "reason_code": "eligible"}]
+        rows = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "refunded_diff_total": 0, "remaining_refundable": 290, "diff": 290, "remaining_diff": 290, "status": "eligible", "reason_code": "eligible"}]
         h1 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=rows)
-        rows2 = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 100, "remaining_refundable": 4390, "diff": 290, "status": "eligible", "reason_code": "eligible"}]
+        rows2 = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 100, "refunded_diff_total": 100, "remaining_refundable": 190, "diff": 290, "remaining_diff": 190, "status": "eligible", "reason_code": "eligible"}]
         h2 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=rows2)
         self.assertNotEqual(h1, h2)
 

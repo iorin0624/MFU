@@ -14,8 +14,10 @@ def normalize_preview_rows(rows: list[dict]) -> list[dict]:
             "paid": int(row.get("paid") or 0),
             "current_fee": int(row.get("current_fee") or 0),
             "refunded_sum": int(row.get("refunded_sum") or 0),
+            "refunded_diff_total": int(row.get("refunded_diff_total") or 0),
             "remaining_refundable": int(row.get("remaining_refundable") or 0),
             "diff": int(row.get("diff") or 0),
+            "remaining_diff": int(row.get("remaining_diff") or 0),
             "status": row.get("status") or "",
             "reason_code": row.get("reason_code") or "",
         })
@@ -43,8 +45,8 @@ def decide_bulk_refund_status(*, has_member: bool, member_event_match: bool, squ
         return "manual", "member_fee_override_present"
     if int(diff or 0) <= 0:
         return "excluded", "diff_non_positive"
-    if int(diff or 0) > int(remaining or 0):
-        return "excluded", "diff_exceeds_remaining"
+    if int(remaining or 0) <= 0:
+        return "excluded", "already_refunded"
     return "eligible", "eligible"
 
 
