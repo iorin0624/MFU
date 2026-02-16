@@ -2875,11 +2875,21 @@ def admin_nodes():
 
     results = []
     for t in targets:
-        info = {"name": t["name"], "url": t["url"], "ok": False, "data": None, "error": None}
+        info = {
+            "name": t["name"],
+            "url": t["url"],
+            "ok": False,
+            "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
+            "error": None,
+        }
         try:
             r = requests.get(t["url"], headers=headers, timeout=2)
             r.raise_for_status()
-            info["data"] = r.json()
+            data = r.json() or {}
+            data["host"] = data.get("host") or "unknown"
+            data["os"] = data.get("os") or "unknown"
+            data["os_version"] = data.get("os_version") or "unknown"
+            info["data"] = data
             info["ok"] = True
         except Exception as e:
             info["error"] = str(e)
@@ -2905,11 +2915,21 @@ def admin_nodes_data():
 
     results = []
     for t in targets:
-        info = {"name": t["name"], "url": t["url"], "ok": False, "data": None, "error": None}
+        info = {
+            "name": t["name"],
+            "url": t["url"],
+            "ok": False,
+            "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
+            "error": None,
+        }
         try:
             r = requests.get(t["url"], headers=headers, timeout=2)
             r.raise_for_status()
-            info["data"] = r.json()
+            data = r.json() or {}
+            data["host"] = data.get("host") or "unknown"
+            data["os"] = data.get("os") or "unknown"
+            data["os_version"] = data.get("os_version") or "unknown"
+            info["data"] = data
             info["ok"] = True
         except Exception as e:
             info["error"] = str(e)
