@@ -72,7 +72,7 @@ from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
 from app.utils.mail import send_mail
-from app.utils.fw_ban import ban_ipv4_cidr_via_ssh, normalize_ipv4_target
+from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
 
 # =====================================
 # 🌏 タイムゾーン・定数
@@ -2033,7 +2033,8 @@ def admin_logs():
         r["provider"] = (
             ni.get("org") or ni.get("asname") or ni.get("netname") or ""
         )
-        r["ip_valid_v4"] = bool(ip and is_valid_ipv4(ip))
+        r["ip_valid"] = bool(ip and is_valid_ip(ip))
+        r["ip_version"] = ip_address(ip).version if r["ip_valid"] else None
         return r
 
     # ---- ② SQLで事前にできるだけ絞る（kind / exclude_local / date / exclude_suc） ----
@@ -2975,13 +2976,13 @@ def admin_fw_ban():
     ip_raw = (data.get("ip") or "").strip()
 
     try:
-        target = normalize_ipv4_target(cidr=cidr_raw, ip=ip_raw)
+        target = normalize_ip_target(cidr=cidr_raw, ip=ip_raw)
     except ValueError as e:
         abort(400, str(e))
     except Exception:
         abort(400, "CIDR/IPの形式が不正です")
 
-    result = ban_ipv4_cidr_via_ssh(target)
+    result = ban_ip_cidr_via_ssh(target)
 
     if result.get("ok"):
         return jsonify(**result), 200
