@@ -9,7 +9,7 @@ from collections import deque
 from typing import Optional, Dict, Tuple, List, Union
 from flask import g, request as _req, current_app
 from app.utils.db import get_db
-from app.utils.fw_ban import ban_ipv4_cidr_via_ssh, normalize_ipv4_target
+from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
 from app.utils.whois_util import get_netinfo
 
 # 外部: Discord 通知用（無ければ黙ってスキップ）
@@ -647,11 +647,9 @@ def _is_auto_ban_target_path(path: str) -> bool:
     return not any(path.startswith(prefix) for prefix in _FW_404_SKIP_PREFIXES)
 
 
-def _is_public_ipv4(ip: str) -> bool:
+def _is_public_ip(ip: str) -> bool:
     try:
         ip_obj = ipaddress.ip_address(ip)
-        if ip_obj.version != 4:
-            return False
         return not (
             ip_obj.is_private
             or ip_obj.is_loopback
@@ -681,7 +679,7 @@ def _write_fw_ban_log(ip: str, log_text: str) -> None:
 
 
 def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
-    if not _is_public_ipv4(ip):
+    if not _is_public_ip(ip):
         return
     if not _is_auto_ban_target_path(path):
         return
@@ -689,7 +687,7 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
     now = time.time()
     should_ban = False
     count = 0
-    target_cidr = ""
+    target = None
 
     with _rate_404_lock:
         q = _rate_404_hits.setdefault(ip, deque())
@@ -700,10 +698,11 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
 
         count = len(q)
         if count >= _FW_404_RATE_THRESHOLD:
-            target_cidr = normalize_ipv4_target(ip=ip)
-            last_ban_ts = _rate_404_last_ban.get(target_cidr, 0)
+            target = normalize_ip_target(ip=ip)
+            target_key = f"{target['version']}:{target['target']}"
+            last_ban_ts = _rate_404_last_ban.get(target_key, 0)
             if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
-                _rate_404_last_ban[target_cidr] = now
+                _rate_404_last_ban[target_key] = now
                 should_ban = True
 
         if len(_rate_404_hits) > 5000:
@@ -721,21 +720,22 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
     if not should_ban:
         return
 
-    result = ban_ipv4_cidr_via_ssh(target_cidr)
+    result = ban_ip_cidr_via_ssh(target)
+    target_repr = (target or {}).get("target", "")
     if result.get("ok"):
         _write_fw_ban_log(
             ip,
-            f"[FW_BAN][404RATE] ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}",
+            f"[FW_BAN][404RATE] ip={ip} target={target_repr} path={path} count={count} status={result.get('status')}",
         )
         _dbg(
-            f"fw-ban success ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}"
+            f"fw-ban success ip={ip} target={target_repr} path={path} count={count} status={result.get('status')}"
         )
         return
 
     current_app.logger.warning(
-        "[FW_BAN][404RATE] failed ip=%s cidr=%s path=%s count=%s status=%s stderr=%s",
+        "[FW_BAN][404RATE] failed ip=%s target=%s path=%s count=%s status=%s stderr=%s",
         ip,
-        target_cidr,
+        target_repr,
         path,
         count,
         result.get("status"),

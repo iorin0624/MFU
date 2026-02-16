@@ -479,16 +479,17 @@
               <div class="log-pretty d-none"></div>
             </td>
             <td class="text-center align-middle">
-              {% if log.ip_valid_v4 %}
+              {% if log.ip_valid %}
                 <div class="d-flex flex-column align-items-center gap-1">
                   <button
                     type="button"
                     class="btn btn-sm btn-outline-danger"
                     data-ip="{{ log.ip }}"
+                    data-ip-version="{{ log.ip_version or '' }}"
                     data-target="banStatus-{{ log.id }}"
                     onclick="banFromBtn(this)"
-                    title="このIPを/24に丸めてBANします">
-                    BAN /24
+                    title="このIP/CIDRをBANします（IPv4は/24丸め、IPv6は/128維持）">
+                    BAN
                   </button>
                   <small id="banStatus-{{ log.id }}" class="text-muted"></small>
                 </div>
@@ -796,19 +797,9 @@ code { white-space: pre-wrap; word-break: break-word; }
 })();
 </script>
 
-<!-- 行の「BAN /24」ボタン用：/admin/fw/ban にPOSTして結果を行内表示 -->
+<!-- 行の「BAN」ボタン用：/admin/fw/ban にPOSTして結果を行内表示 -->
 <script>
 (function(){
-  function isIPv4(s){
-    if (typeof s !== 'string') return false;
-    const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-    if (!m) return false;
-    return m.slice(1).every(o => Number(o) >= 0 && Number(o) <= 255);
-  }
-  function toCidr24(ip){
-    const [a,b,c] = ip.split('.');
-    return `${a}.${b}.${c}.0/24`;
-  }
   function setStatus(el, kind, text){
     el.classList.remove('text-muted','text-success','text-danger','text-warning','text-secondary');
     const map = { ok:'text-success', added:'text-success', already:'text-secondary', error:'text-danger', timeout:'text-warning' };
@@ -818,15 +809,20 @@ code { white-space: pre-wrap; word-break: break-word; }
 
   window.banFromBtn = async function(btn){
     const ip = btn.dataset.ip || '';
+    const ipVersion = btn.dataset.ipVersion || '';
     const targetId = btn.dataset.target || '';
     const statusEl = targetId ? document.getElementById(targetId) : null;
 
-    if (!isIPv4(ip)) {
-      if (statusEl) setStatus(statusEl, 'error', 'IPv4以外/不正なIP');
+    if (!ip) {
+      if (statusEl) setStatus(statusEl, 'error', 'IPが空です');
       return;
     }
-    const cidr = toCidr24(ip);
-    if (!confirm(`このネットワークをBANしますか？\n${cidr}\n（103.15へ反映）`)) return;
+    const policy = (ipVersion === '4')
+      ? 'IPv4は/24に丸めてBAN'
+      : (ipVersion === '6')
+        ? 'IPv6は/128のままBAN（CIDR指定時は入力prefix維持）'
+        : 'IP種別を自動判定してBAN';
+    if (!confirm(`このIPをBANしますか？\n${ip}\n（${policy} / 103.15へ反映）`)) return;
 
     const origHTML = btn.innerHTML;
     btn.disabled = true;
@@ -836,14 +832,16 @@ code { white-space: pre-wrap; word-break: break-word; }
       const res = await fetch('/admin/fw/ban', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ ip })   // サーバ側で /24 へ丸める
+        body: JSON.stringify({ ip })   // サーバ側でIPv4/IPv6を判定して正規化
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data && data.ok) {
         const st = (data.status || 'ok');
-        const msg = (st === 'added') ? `追加: ${data.target || cidr}`
-                  : (st === 'already') ? `済: ${data.target || cidr}`
-                  : `OK: ${data.target || cidr}`;
+        const normalized = data.target || ip;
+        const executor = data.executor ? ` / 実行: ${data.executor}` : '';
+        const msg = (st === 'added') ? `追加: ${normalized}${executor}`
+                  : (st === 'already') ? `既に追加済: ${normalized}${executor}`
+                  : `OK: ${normalized}${executor}`;
         if (statusEl) setStatus(statusEl, st, msg);
       } else {
         const st = (data && data.status) || 'error';
