@@ -1,282 +1,248 @@
-diff --git a/utils/logs.py b/utils/logs.py
-index 6faaed7fee723df9cddd7e38f296c5a54c065988..cccf531111214e2a4b6878fc4bde781a44403c9b 100644
---- a/utils/logs.py
-+++ b/utils/logs.py
-@@ -1,43 +1,47 @@
- # app/utils/logs.py
+diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
+index c55912b8feaaa166db4a3a21f9e3aa51a30b6c6b..9a213dd1df1b90a0a06cb53800a406e0e2e7653f 100644
+--- a/external_login_user/admin_users.py
++++ b/external_login_user/admin_users.py
+@@ -1,70 +1,112 @@
+ # -*- coding: utf-8 -*-
  from __future__ import annotations
  
- import time
- import ipaddress
-+import threading
-+import os
-+from collections import deque
- from typing import Optional, Dict, Tuple, List, Union
- from flask import g, request as _req, current_app
+ import re
++from datetime import datetime, timezone, timedelta
++from email.utils import parsedate_to_datetime
+ from flask import request, render_template, jsonify, abort, url_for, redirect
+ from . import bp
  from app.utils.db import get_db
-+from app.utils.fw_ban import ban_ipv4_cidr_via_ssh, normalize_ipv4_target
- from app.utils.whois_util import get_netinfo
+ from .utils import _require_mfu_login_redirect, _admin_csrf_token
+ from app.utils.mail import send_mail  # /mnt/mfu/app/utils/mail.py
  
- # 外部: Discord 通知用（無ければ黙ってスキップ）
+ # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
  try:
-     import requests
+     from .users import _issue_email_verify_token  # type: ignore
  except Exception:
-     requests = None
+     _issue_email_verify_token = None  # type: ignore
  
- # --- debug helpers (runtime switchable) ------------------------------
--import os, sys, json
-+import sys, json
- from urllib import request as _urlreq
- from urllib.error import URLError, HTTPError
  
- # truthy 文字列判定（1/true/on/yes → True）
- def _truthy(v) -> bool:
-     if v is None:
-         return False
-     if isinstance(v, bool):
-         return v
-     s = str(v).strip().lower()
-     return s in ("1", "true", "on", "yes", "y", "t")
- 
- # ランタイムで有効/無効を判定する
- # 優先度: Flask config → フラグファイル → 環境変数 → 既定OFF
- _DEBUG_FLAG_FILES = [
-     "/mnt/mfu/logs.debug",          # 空ファイルでも“有効”とみなす
-     "/mnt/mfu/app/logs.debug",
-     "/etc/mfu/logs.debug",
- ]
- 
- def _is_debug_enabled() -> bool:
-     # 1) Flask設定（最優先）
+ # ============= 内部ヘルパ =============
+ def _column_exists(table: str, column: str) -> bool:
+     """information_schema で列の有無を確認（email_verified_at 非存在でも動かす）"""
+     db = get_db()
+     cur = db.cursor()
      try:
-         from flask import current_app
-         if current_app:
-@@ -598,50 +602,168 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
-         status=int(getattr(flask_response, "status_code", 0) or 0),
-         ua=flask_request.headers.get("User-Agent", "-"),
-         referer=flask_request.headers.get("Referer", ""),
-         endpoint=endpoint or "",
-         username=username,
-         latency_ms=_latency_ms(),
+         cur.execute("SELECT DATABASE()")
+         dbname = (cur.fetchone() or [None])[0]
+         if not dbname:
+             return False
+         cur.execute(
+             """
+             SELECT 1
+               FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+              LIMIT 1
+             """,
+             (dbname, table, column),
+         )
+         return cur.fetchone() is not None
+     finally:
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
+ 
++
++
++def _format_datetime_jst(value) -> str | None:
++    """日時を JST の yyyy年mm月dd日 hh:mm:ss に整形する。"""
++    if not value:
++        return None
++
++    dt = None
++    if isinstance(value, datetime):
++        dt = value
++    elif isinstance(value, str):
++        raw = value.strip()
++        if not raw:
++            return None
++        try:
++            dt = parsedate_to_datetime(raw)
++        except Exception:
++            dt = None
++        if dt is None:
++            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
++                try:
++                    dt = datetime.strptime(raw, fmt)
++                    break
++                except Exception:
++                    continue
++
++    if dt is None:
++        return str(value)
++
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=timezone.utc)
++
++    jst = timezone(timedelta(hours=9))
++    return dt.astimezone(jst).strftime("%Y年%m月%d日 %H:%M:%S")
++
++
++def _format_email_verified_at_rows(rows: list[dict]) -> None:
++    for r in rows:
++        r["email_verified_at"] = _format_datetime_jst(r.get("email_verified_at"))
++
+ def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, str]:
+     """一覧API向けのソートキーを正規化する。"""
+     key = (sort_key or "id").strip().lower()
+     if key not in ("id", "nickname"):
+         key = "id"
+ 
+     order = (sort_order or "asc").strip().lower()
+     if order not in ("asc", "desc"):
+         order = "asc"
+     return key, order
+ 
+ 
+ # ============= 画面（一覧） =============
+ @bp.route("/admin/ext-users")
+ def admin_ext_users_index():
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     q = (request.args.get("q") or "").strip()
+     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
+ 
+     params: list = []
+     where = []
+     if q:
+@@ -81,61 +123,62 @@ def admin_ext_users_index():
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = """
+             id,
+             nickname,
+             x_id,
+             instagram_id,
+             email,
+             social_id,
+             avatar_file,
+             avatar_url,
+             created_at,
+             updated_at,
+             admin_note,
+             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+             COALESCE(notify_album_process, 1) AS notify_album_process,
+             (
+               SELECT COUNT(*)
+                 FROM external_login_user_card_data c
+                WHERE c.user_id = external_login_user.id
+                  AND c.deleted_at IS NULL
+             ) AS card_count
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+ 
+-        order_by = "id" if sort_key == "id" else "nickname, id"
++        order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+-             ORDER BY {order_by} {sort_order}
++             ORDER BY {order_by}
+         """, params)
+         initial_items = cur.fetchall() or []
+         if not has_verified:
+             for r in initial_items:
+                 r["email_verified_at"] = None
++        _format_email_verified_at_rows(initial_items)
+ 
+         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
+         total = int((cur.fetchone() or {}).get("c", 0))
+     finally:
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
+     return render_template(
+         "admin_ext_users.html",
+         admin_csrf=_admin_csrf_token(),
+         initial_items=initial_items,
+         initial_total=total,
+         initial_per_page=total,
+         initial_page=1,
+         initial_q=q,
+         initial_sort=sort_key,
+         initial_order=sort_order,
      )
  
  
- def _is_private_or_reserved_ip(ip: str) -> bool:
-     try:
-         ipobj = ipaddress.ip_address(ip)
-         return (ipobj.is_private or ipobj.is_loopback or ipobj.is_link_local or
-                 ipobj.is_reserved or ipobj.is_multicast)
-     except Exception:
-         # 解析不能なら安全側（whoisしない）
-         return True
+ # ============= API（一括） =============
+ @bp.get("/admin/ext-users/data")
+@@ -166,62 +209,63 @@ def admin_ext_users_data():
+     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
  
- # ----------------------------------------------------------
- # アクセスログ抑制（3xxリダイレクトのバーストを汎用的に間引く）
- # ----------------------------------------------------------
- 
- # key: (ip, path, status, ua) -> (last_ts, count)
- _recent_access_hits: Dict[Tuple[str, str, int, str], Tuple[float, int]] = {}
- 
-+_FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "3")))
-+_FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1")))
-+_FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
-+_FW_404_SKIP_PREFIXES = (
-+    "/static",
-+    "/favicon",
-+    "/api",
-+    "/suc",
-+    "/external-login/",
-+    "/e/",
-+)
-+
-+_rate_404_hits: Dict[str, deque[float]] = {}
-+_rate_404_last_ban: Dict[str, float] = {}
-+_rate_404_lock = threading.Lock()
-+
-+
-+def _is_auto_ban_target_path(path: str) -> bool:
-+    if not path:
-+        return False
-+    return not any(path.startswith(prefix) for prefix in _FW_404_SKIP_PREFIXES)
-+
-+
-+def _is_public_ipv4(ip: str) -> bool:
-+    try:
-+        ip_obj = ipaddress.ip_address(ip)
-+        if ip_obj.version != 4:
-+            return False
-+        return not (
-+            ip_obj.is_private
-+            or ip_obj.is_loopback
-+            or ip_obj.is_link_local
-+            or ip_obj.is_multicast
-+            or ip_obj.is_reserved
-+            or ip_obj.is_unspecified
-+        )
-+    except Exception:
-+        return False
-+
-+
-+def _write_fw_ban_log(ip: str, log_text: str) -> None:
-+    db = get_db()
-+    try:
-+        cur = db.cursor()
-+        cur.execute(
-+            "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
-+            (ip or "-", _clamp(log_text, 1024)),
-+        )
-+        db.commit()
-+    finally:
-+        try:
-+            db.close()
-+        except Exception:
-+            pass
-+
-+
-+def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
-+    if not _is_public_ipv4(ip):
-+        return
-+    if not _is_auto_ban_target_path(path):
-+        return
-+
-+    now = time.time()
-+    should_ban = False
-+    count = 0
-+    target_cidr = ""
-+
-+    with _rate_404_lock:
-+        q = _rate_404_hits.setdefault(ip, deque())
-+        q.append(now)
-+
-+        while q and now - q[0] > _FW_404_RATE_WINDOW_SEC:
-+            q.popleft()
-+
-+        count = len(q)
-+        if count >= _FW_404_RATE_THRESHOLD:
-+            target_cidr = normalize_ipv4_target(ip=ip)
-+            last_ban_ts = _rate_404_last_ban.get(target_cidr, 0)
-+            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
-+                _rate_404_last_ban[target_cidr] = now
-+                should_ban = True
-+
-+        if len(_rate_404_hits) > 5000:
-+            stale_before = now - max(_FW_404_RATE_WINDOW_SEC, 5.0)
-+            for key in list(_rate_404_hits.keys())[:1000]:
-+                if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
-+                    _rate_404_hits.pop(key, None)
-+
-+        if len(_rate_404_last_ban) > 5000:
-+            stale_cooldown = now - (_FW_BAN_COOLDOWN_SEC * 2)
-+            for key in list(_rate_404_last_ban.keys())[:1000]:
-+                if _rate_404_last_ban.get(key, 0) < stale_cooldown:
-+                    _rate_404_last_ban.pop(key, None)
-+
-+    if not should_ban:
-+        return
-+
-+    result = ban_ipv4_cidr_via_ssh(target_cidr)
-+    if result.get("ok"):
-+        _write_fw_ban_log(
-+            ip,
-+            f"[FW_BAN][404RATE] ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}",
-+        )
-+        _dbg(
-+            f"fw-ban success ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}"
-+        )
-+        return
-+
-+    current_app.logger.warning(
-+        "[FW_BAN][404RATE] failed ip=%s cidr=%s path=%s count=%s status=%s stderr=%s",
-+        ip,
-+        target_cidr,
-+        path,
-+        count,
-+        result.get("status"),
-+        result.get("stderr", ""),
-+    )
-+
- 
- def _should_suppress_access_log(fields: dict) -> bool:
+     has_verified = _column_exists("external_login_user", "email_verified_at")
+     cols = """
+         id, nickname, x_id, instagram_id, email, social_id,
+         avatar_file, avatar_url, created_at, updated_at,
+         admin_note,
+         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+         COALESCE(notify_album_process, 1) AS notify_album_process,
+         (
+           SELECT COUNT(*)
+             FROM external_login_user_card_data c
+            WHERE c.user_id = external_login_user.id
+              AND c.deleted_at IS NULL
+         ) AS card_count
      """
-     3xxリダイレクトが同一IP/Path/UA/statusで瞬間的に連打された場合、
-     DBへのINSERTを間引く。
+     if has_verified:
+         cols += ", email_verified_at"
  
-     - 対象 status は 301/302/303/307/308
-     - 直前の記録から1秒以内の同一キーは「抑制」扱い
-       （最初の1件だけ残して、同じキーの連打分は捨てる）
-     """
+     db = get_db(); cur = db.cursor(dictionary=True)
      try:
-         status = int(fields.get("status") or 0)
+         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
+         total = int(cur.fetchone()["c"])
+         offset = (page - 1) * per_page
  
-         # リダイレクト以外は触らない
-         if status not in (301, 302, 303, 307, 308):
-             return False
+-        order_by = "id" if sort_key == "id" else "nickname, id"
++        order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+-             ORDER BY {order_by} {sort_order}
++             ORDER BY {order_by}
+              LIMIT %s OFFSET %s
+         """, params + [per_page, offset])
+         rows = cur.fetchall() or []
+         if not has_verified:
+             for r in rows:
+                 r["email_verified_at"] = None
++        _format_email_verified_at_rows(rows)
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
  
-         ip = fields.get("ip") or "-"
-         path = fields.get("path") or "-"
-         ua = fields.get("ua") or "-"
-         key = (ip, path, status, ua)
+     return jsonify({
+         "ok": True,
+         "items": rows,
+         "total": total,
+         "page": page,
+         "per_page": per_page,
+         "sort": sort_key,
+         "order": sort_order,
+         "q": q,
+     })
  
-         now = time.time()
-         last_ts, cnt = _recent_access_hits.get(key, (0.0, 0))
+ # ============= API（単票：旧モーダル用） =============
+ @bp.get("/admin/ext-users/<int:user_id>/detail")
+ def admin_ext_users_detail(user_id: int):
+     """（旧モーダル用）単票取得。"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
  
-@@ -683,54 +805,58 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
-     path = flask_request.path or ""
-     if should_skip_access_log(path, endpoint):
-         return
- 
-     fields = build_access_log_fields(flask_request, flask_response, flask_session, endpoint)
- 
-     # 302リダイレクト系の連打アクセスは、特定endpointのみログを間引く
-     # （_should_suppress_access_log は logs.py 内のヘルパー）
-     if _should_suppress_access_log(fields):
-         return
- 
-     # Location ヘッダ（リダイレクト先など）を取得
+     db = get_db(); cur = db.cursor(dictionary=True)
      try:
-         location = flask_response.headers.get("Location")
-     except Exception:
-         location = None
- 
-     try:
-         # まずDBへ記録
-         log_request_raw(location=location, **fields)
-     except Exception as e:
-         _dbg(f"log_access: INSERT failed err={e!r} fields={fields}")
-         current_app.logger.warning(f"log_access: log_request_raw failed: {e}")
-         return  # 記録失敗時は以降スキップ
- 
--    # 404バースト検知（メモリ）→ 非JPのみ通知
-+    # 404バースト検知（メモリ）
-     try:
-         if fields.get("status") == 404 and fields.get("ip"):
-             ip = fields["ip"]
-+
-+            # 追加: 1秒あたりの404レート検知で自動BAN（例外は握りつぶす）
-+            _maybe_auto_ban_by_404_rate(ip, path)
-+
-             # 既存: IP+Path 単位
-             notify_path, cnt_path, cooldown_until_path = _note_404_hit_and_should_notify(ip, path)
-             # 追加: IP 単位
-             notify_ip, cnt_ip, cooldown_until_ip = _note_404_hit_ip_only(ip)
- 
-             # 国コードは CF/GeoIP2 と whois 両方を参照し、どちらかがJPなら通知抑止
-             cc_hdr = (_country_code_from_request_ip(ip) or "").strip()
-             netinfo = {}
-             cc_whois = ""
-             if not _is_private_or_reserved_ip(ip):
-                 netinfo = get_netinfo(ip) or {}
-                 cc_whois = (netinfo.get("country_code")
-                             or netinfo.get("cc")
-                             or netinfo.get("country")
-                             or netinfo.get("country_name")
-                             or "")
-             cc = _norm_cc_from_sources(cc_hdr, cc_whois)
- 
-             _dbg(
-                 f"404-eval ip={ip} path={path} "
-                 f"by_path(cnt={cnt_path}, notify={notify_path}) "
-                 f"by_ip(cnt={cnt_ip}, notify={notify_ip}) "
-                 f"cc_hdr={cc_hdr!r} cc_whois={cc_whois!r} cc_norm={cc!r}"
-             )
- 

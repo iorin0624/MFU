@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
 from flask import request, render_template, jsonify, abort, url_for, redirect
 from . import bp
 from app.utils.db import get_db
@@ -43,12 +45,77 @@ def _column_exists(table: str, column: str) -> bool:
             pass
 
 
+
+
+def _format_datetime_jst(value) -> str | None:
+    """日時を JST の yyyy年mm月dd日 hh:mm:ss に整形する。"""
+    if not value:
+        return None
+
+    dt = None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            dt = parsedate_to_datetime(raw)
+        except Exception:
+            dt = None
+        if dt is None:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                    break
+                except Exception:
+                    continue
+
+    if dt is None:
+        return str(value)
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    jst = timezone(timedelta(hours=9))
+    return dt.astimezone(jst).strftime("%Y年%m月%d日 %H:%M:%S")
+
+
+def _format_email_verified_at_rows(rows: list[dict]) -> None:
+    for r in rows:
+        r["email_verified_at"] = _format_datetime_jst(r.get("email_verified_at"))
+
+def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, str]:
+    """一覧API向けのソートキーを正規化する。"""
+    key = (sort_key or "id").strip().lower()
+    if key not in ("id", "nickname"):
+        key = "id"
+
+    order = (sort_order or "asc").strip().lower()
+    if order not in ("asc", "desc"):
+        order = "asc"
+    return key, order
+
+
 # ============= 画面（一覧） =============
 @bp.route("/admin/ext-users")
 def admin_ext_users_index():
     guard = _require_mfu_login_redirect()
     if guard:
         return guard
+
+    q = (request.args.get("q") or "").strip()
+    sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
+
+    params: list = []
+    where = []
+    if q:
+        like = f"%{q}%"
+        where.append(
+            "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+        )
+        params += [like, like, like, like, like, like]
+    sql_where = ("WHERE " + " AND ".join(where)) if where else ""
 
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -78,25 +145,20 @@ def admin_ext_users_index():
         if has_verified:
             cols += ", email_verified_at"
 
-        # ★ 並び順: 先頭が英数 → かな → その他（漢字など） → その中で nickname 昇順
+        order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
         cur.execute(f"""
             SELECT {cols}
               FROM external_login_user
-             ORDER BY
-               CASE
-                 WHEN nickname REGEXP '^[0-9A-Za-z]' THEN 0
-                 WHEN nickname REGEXP '^[ぁ-ゟァ-ヿー]' THEN 1
-                 ELSE 2
-               END,
-               nickname
-             LIMIT 50
-        """)
+              {sql_where}
+             ORDER BY {order_by}
+        """, params)
         initial_items = cur.fetchall() or []
         if not has_verified:
             for r in initial_items:
                 r["email_verified_at"] = None
+        _format_email_verified_at_rows(initial_items)
 
-        cur.execute("SELECT COUNT(*) AS c FROM external_login_user")
+        cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
         total = int((cur.fetchone() or {}).get("c", 0))
     finally:
         try:
@@ -110,8 +172,11 @@ def admin_ext_users_index():
         admin_csrf=_admin_csrf_token(),
         initial_items=initial_items,
         initial_total=total,
-        initial_per_page=50,
+        initial_per_page=total,
         initial_page=1,
+        initial_q=q,
+        initial_sort=sort_key,
+        initial_order=sort_order,
     )
 
 
@@ -123,30 +188,39 @@ def admin_ext_users_data():
         return guard
 
     q = (request.args.get("q") or "").strip()
+    sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
     try:
         page = max(int(request.args.get("page") or 1), 1)
     except Exception:
         page = 1
     try:
-        per_page = min(max(int(request.args.get("per_page") or 50), 1), 200)
+        per_page = min(max(int(request.args.get("per_page") or 1000), 1), 10000)
     except Exception:
-        per_page = 50
+        per_page = 1000
 
     params: list = []
     where = []
     if q:
         like = f"%{q}%"
         where.append(
-            "(nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+            "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
         )
-        params += [like, like, like, like, like]
+        params += [like, like, like, like, like, like]
     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
 
     has_verified = _column_exists("external_login_user", "email_verified_at")
     cols = """
         id, nickname, x_id, instagram_id, email, social_id,
         avatar_file, avatar_url, created_at, updated_at,
-        admin_note
+        admin_note,
+        COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+        COALESCE(notify_album_process, 1) AS notify_album_process,
+        (
+          SELECT COUNT(*)
+            FROM external_login_user_card_data c
+           WHERE c.user_id = external_login_user.id
+             AND c.deleted_at IS NULL
+        ) AS card_count
     """
     if has_verified:
         cols += ", email_verified_at"
@@ -157,29 +231,33 @@ def admin_ext_users_data():
         total = int(cur.fetchone()["c"])
         offset = (page - 1) * per_page
 
-        # ★ 一覧と同じ並び順に統一
+        order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
         cur.execute(f"""
             SELECT {cols}
               FROM external_login_user
               {sql_where}
-             ORDER BY
-               CASE
-                 WHEN nickname REGEXP '^[0-9A-Za-z]' THEN 0
-                 WHEN nickname REGEXP '^[ぁ-ゟァ-ヿー]' THEN 1
-                 ELSE 2
-               END,
-               nickname
+             ORDER BY {order_by}
              LIMIT %s OFFSET %s
         """, params + [per_page, offset])
         rows = cur.fetchall() or []
         if not has_verified:
             for r in rows:
                 r["email_verified_at"] = None
+        _format_email_verified_at_rows(rows)
     finally:
         try: cur.close(); db.close()
         except Exception: pass
 
-    return jsonify({"ok": True, "items": rows, "total": total, "page": page, "per_page": per_page})
+    return jsonify({
+        "ok": True,
+        "items": rows,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "sort": sort_key,
+        "order": sort_order,
+        "q": q,
+    })
 
 # ============= API（単票：旧モーダル用） =============
 @bp.get("/admin/ext-users/<int:user_id>/detail")

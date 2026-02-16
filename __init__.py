@@ -55,7 +55,13 @@ from app.utils.feature_access import (
     has_feature,
     require_feature,
 )
-from app.utils.file_ops import sanitize_filename, generate_thumbnail, create_zip
+from app.utils.file_ops import generate_thumbnail, create_zip
+from app.utils.upload_security import (
+    DEFAULT_ALLOWED_EXTENSIONS,
+    detect_mime_from_bytes,
+    sanitize_filename,
+    validate_upload_file,
+)
 from app.utils.image import save_as_jpeg
 from app.utils.logs import log_request_raw
 from app.utils.message import generate_message
@@ -99,6 +105,11 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
+
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "50")) * 1024 * 1024
+
+# 既定ホワイトリスト（必要なら config で上書き）
+app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
 
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -580,22 +591,30 @@ def submit_upload():
     # ファイル名の重複回避セット
     used_names = set()
 
-    def sanitize_filename(name: str, used: set[str]) -> str:
-        # Windows禁止文字やパス要素を除去
-        name = re.sub(r"[\\/:*?\"<>|]", "_", name)
-        name = os.path.basename(name).strip() or "unnamed"
-        root, ext = os.path.splitext(name)
-        ext = ext.lower()
-        candidate = f"{root}{ext}"
-        i = 2
-        while candidate in used:
-            candidate = f"{root}_{i}{ext}"
-            i += 1
-        used.add(candidate)
-        return candidate
+    # =====================================
+    # ② 保存前検証（拡張子・二重拡張子・MIME）
+    # =====================================
+    allowed_extensions = current_app.config.get("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
+    validated_files = []
+    for fs in uploaded_files:
+        original_name = sanitize_filename(fs.filename, used_names)
+        head = fs.stream.read(8192)
+        fs.stream.seek(0)
+
+        detected_mime = detect_mime_from_bytes(head)
+        ok, reason = validate_upload_file(
+            filename=original_name,
+            header_mime=fs.mimetype,
+            detected_mime=detected_mime,
+            allowed_extensions=allowed_extensions,
+        )
+        if not ok:
+            return f"不正なファイルが含まれています ({original_name}): {reason}", 400
+
+        validated_files.append((fs, original_name))
 
     # =====================================
-    # ② 保存処理
+    # ③ 保存処理
     # =====================================
     filenames, failed = [], []
     saved_count = 0
@@ -604,15 +623,20 @@ def submit_upload():
         try:
             with open(save_path, "wb") as f:
                 shutil.copyfileobj(file_storage.stream, f, length=1 * 1024 * 1024)
+            os.chmod(save_path, 0o640)
             return True
         except Exception as e:
             print(f"[ERROR] Failed to save {file_storage.filename}: {e}")
             return False
 
+    # ディレクトリ権限: rwx(rw-)---
+    os.chmod(base_dir, 0o750)
+    os.chmod(original_dir, 0o750)
+    os.chmod(thumb_dir, 0o750)
+
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = []
-        for fs in uploaded_files:
-            original_name = sanitize_filename(fs.filename, used_names)
+        for fs, original_name in validated_files:
             save_path = os.path.join(original_dir, original_name)
             futures.append((original_name, executor.submit(save_file_chunked, fs, save_path)))
         for original_name, fut in futures:
@@ -623,7 +647,7 @@ def submit_upload():
                 failed.append(original_name)
 
     # =====================================
-    # ③ DB登録（uploads / files）
+    # ④ DB登録（uploads / files）
     #   ※ files には created_at 列が無い前提で INSERT を修正
     # =====================================
     db = get_db()
@@ -645,7 +669,7 @@ def submit_upload():
     db.close()
 
     # =====================================
-    # ④ テンプレートメッセージ生成＆保存（messages）
+    # ⑤ テンプレートメッセージ生成＆保存（messages）
     # =====================================
     public_base = current_app.config.get("PUBLIC_BASE_URL")
     if not public_base:
@@ -680,7 +704,7 @@ def submit_upload():
     db.commit(); db.close()
 
     # =====================================
-    # ⑤ バックグラウンド：サムネ生成 → 通知
+    # ⑥ バックグラウンド：サムネ生成 → 通知
     # =====================================
     app_obj = current_app._get_current_object()
 
@@ -705,7 +729,7 @@ def submit_upload():
     threading.Thread(target=_runner, daemon=True).start()
 
     # =====================================
-    # ⑥ 完了画面
+    # ⑦ 完了画面
     # =====================================
     return render_template(
         "done.html",
