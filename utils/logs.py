@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import time
 import ipaddress
+import threading
+import os
+from collections import deque
 from typing import Optional, Dict, Tuple, List, Union
 from flask import g, request as _req, current_app
 from app.utils.db import get_db
+from app.utils.fw_ban import ban_ipv4_cidr_via_ssh, normalize_ipv4_target
 from app.utils.whois_util import get_netinfo
 
 # 外部: Discord 通知用（無ければ黙ってスキップ）
@@ -15,7 +19,7 @@ except Exception:
     requests = None
 
 # --- debug helpers (runtime switchable) ------------------------------
-import os, sys, json
+import sys, json
 from urllib import request as _urlreq
 from urllib.error import URLError, HTTPError
 
@@ -620,6 +624,124 @@ def _is_private_or_reserved_ip(ip: str) -> bool:
 # key: (ip, path, status, ua) -> (last_ts, count)
 _recent_access_hits: Dict[Tuple[str, str, int, str], Tuple[float, int]] = {}
 
+_FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "3")))
+_FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1")))
+_FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
+_FW_404_SKIP_PREFIXES = (
+    "/static",
+    "/favicon",
+    "/api",
+    "/suc",
+    "/external-login/",
+    "/e/",
+)
+
+_rate_404_hits: Dict[str, deque[float]] = {}
+_rate_404_last_ban: Dict[str, float] = {}
+_rate_404_lock = threading.Lock()
+
+
+def _is_auto_ban_target_path(path: str) -> bool:
+    if not path:
+        return False
+    return not any(path.startswith(prefix) for prefix in _FW_404_SKIP_PREFIXES)
+
+
+def _is_public_ipv4(ip: str) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        if ip_obj.version != 4:
+            return False
+        return not (
+            ip_obj.is_private
+            or ip_obj.is_loopback
+            or ip_obj.is_link_local
+            or ip_obj.is_multicast
+            or ip_obj.is_reserved
+            or ip_obj.is_unspecified
+        )
+    except Exception:
+        return False
+
+
+def _write_fw_ban_log(ip: str, log_text: str) -> None:
+    db = get_db()
+    try:
+        cur = db.cursor()
+        cur.execute(
+            "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+            (ip or "-", _clamp(log_text, 1024)),
+        )
+        db.commit()
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
+    if not _is_public_ipv4(ip):
+        return
+    if not _is_auto_ban_target_path(path):
+        return
+
+    now = time.time()
+    should_ban = False
+    count = 0
+    target_cidr = ""
+
+    with _rate_404_lock:
+        q = _rate_404_hits.setdefault(ip, deque())
+        q.append(now)
+
+        while q and now - q[0] > _FW_404_RATE_WINDOW_SEC:
+            q.popleft()
+
+        count = len(q)
+        if count >= _FW_404_RATE_THRESHOLD:
+            target_cidr = normalize_ipv4_target(ip=ip)
+            last_ban_ts = _rate_404_last_ban.get(target_cidr, 0)
+            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
+                _rate_404_last_ban[target_cidr] = now
+                should_ban = True
+
+        if len(_rate_404_hits) > 5000:
+            stale_before = now - max(_FW_404_RATE_WINDOW_SEC, 5.0)
+            for key in list(_rate_404_hits.keys())[:1000]:
+                if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
+                    _rate_404_hits.pop(key, None)
+
+        if len(_rate_404_last_ban) > 5000:
+            stale_cooldown = now - (_FW_BAN_COOLDOWN_SEC * 2)
+            for key in list(_rate_404_last_ban.keys())[:1000]:
+                if _rate_404_last_ban.get(key, 0) < stale_cooldown:
+                    _rate_404_last_ban.pop(key, None)
+
+    if not should_ban:
+        return
+
+    result = ban_ipv4_cidr_via_ssh(target_cidr)
+    if result.get("ok"):
+        _write_fw_ban_log(
+            ip,
+            f"[FW_BAN][404RATE] ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}",
+        )
+        _dbg(
+            f"fw-ban success ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}"
+        )
+        return
+
+    current_app.logger.warning(
+        "[FW_BAN][404RATE] failed ip=%s cidr=%s path=%s count=%s status=%s stderr=%s",
+        ip,
+        target_cidr,
+        path,
+        count,
+        result.get("status"),
+        result.get("stderr", ""),
+    )
+
 
 def _should_suppress_access_log(fields: dict) -> bool:
     """
@@ -705,10 +827,14 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
         current_app.logger.warning(f"log_access: log_request_raw failed: {e}")
         return  # 記録失敗時は以降スキップ
 
-    # 404バースト検知（メモリ）→ 非JPのみ通知
+    # 404バースト検知（メモリ）
     try:
         if fields.get("status") == 404 and fields.get("ip"):
             ip = fields["ip"]
+
+            # 追加: 1秒あたりの404レート検知で自動BAN（例外は握りつぶす）
+            _maybe_auto_ban_by_404_rate(ip, path)
+
             # 既存: IP+Path 単位
             notify_path, cnt_path, cooldown_until_path = _note_404_hit_and_should_notify(ip, path)
             # 追加: IP 単位
