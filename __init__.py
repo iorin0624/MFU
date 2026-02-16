@@ -65,7 +65,8 @@ from app.utils.totp_util import get_totp_status
 from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
-from app.utils.mail import send_mail 
+from app.utils.mail import send_mail
+from app.utils.fw_ban import ban_ipv4_cidr_via_ssh, normalize_ipv4_target
 
 # =====================================
 # 🌏 タイムゾーン・定数
@@ -2947,69 +2948,31 @@ def admin_nodes_data():
 def admin_fw_ban():
     data = request.get_json(silent=True) or request.form
     cidr_raw = (data.get("cidr") or "").strip()
-    ip_raw   = (data.get("ip") or "").strip()
+    ip_raw = (data.get("ip") or "").strip()
 
-    # 1) 入力をIPv4 CIDRに正規化（IPだけ来たら /24 へ丸める＝運用方針）
     try:
-        if cidr_raw:
-            net = ip_network(cidr_raw, strict=False)
-            if net.version != 4:
-                abort(400, "IPv4のみ対応")
-            target = net.with_prefixlen
-        elif ip_raw:
-            ipobj = ip_address(ip_raw)
-            if ipobj.version != 4:
-                abort(400, "IPv4のみ対応")
-            target = ip_network(f"{ipobj}/24", strict=False).with_prefixlen
-        else:
-            abort(400, "cidr または ip が必要です")
+        target = normalize_ipv4_target(cidr=cidr_raw, ip=ip_raw)
+    except ValueError as e:
+        abort(400, str(e))
     except Exception:
         abort(400, "CIDR/IPの形式が不正です")
 
-    # 2) 103.15 へSSHで ipset add → netfilter-persistent save
-    host = "192.168.103.15"
-    user = "root"  # sudo運用なら非rootでもOK（下のコマンドにsudo付与＆NOPASSWD設定）
+    result = ban_ipv4_cidr_via_ssh(target)
 
-    remote_cmd = (
-        "PATH=/usr/sbin:/sbin:/usr/bin:/bin; "
-        f"if ipset -q test badhosts {target}; then "
-        "  echo ALREADY; "
-        "else "
-        f"  ipset add badhosts {target} -exist && echo ADDED; "
-        "fi; "
-        "netfilter-persistent save >/dev/null 2>&1 || true"
+    if result.get("ok"):
+        return jsonify(**result), 200
+
+    if result.get("status") == "timeout":
+        return jsonify(**result), 504
+
+    current_app.logger.error(
+        "FW ban failed: status=%s, target=%s, stdout=%s, stderr=%s",
+        result.get("status"),
+        result.get("target"),
+        result.get("stdout", ""),
+        result.get("stderr", ""),
     )
-
-    ssh_cmd = [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=5",
-        "-o", "StrictHostKeyChecking=accept-new",
-        f"{user}@{host}",
-        remote_cmd,
-    ]
-
-    try:
-        proc = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=12)
-    except subprocess.TimeoutExpired as e:
-        return jsonify(ok=False, status="timeout", target=target, message=str(e)), 504
-
-    stdout = (proc.stdout or "").strip()
-    stderr = (proc.stderr or "").strip()
-
-    if proc.returncode == 0:
-        if "ADDED" in stdout:
-            status = "added"
-        elif "ALREADY" in stdout:
-            status = "already"
-        else:
-            status = "ok"
-        return jsonify(ok=True, status=status, target=target, stdout=stdout, stderr=stderr), 200
-    else:
-        current_app.logger.error("FW ban failed: rc=%s, target=%s, stdout=%s, stderr=%s",
-                                 proc.returncode, target, stdout, stderr)
-        return jsonify(ok=False, status="error", rc=proc.returncode, target=target,
-                       stdout=stdout, stderr=stderr), 500
+    return jsonify(**result), 500
 
 # =======================================
 # 管理: 直近2000件の生アクセスログをCSVダウンロード

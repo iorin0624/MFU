@@ -1,175 +1,282 @@
-diff --git a/templates/admin_nodes.html b/templates/admin_nodes.html
-index 5c6dcd50e7ec644dc04c6008d72d898c3a9cda73..c4b8bb7efd154968a132b3b63bfd403e025cb9c7 100644
---- a/templates/admin_nodes.html
-+++ b/templates/admin_nodes.html
-@@ -8,54 +8,60 @@
-       <small class="text-muted">（更新: <span id="js-now">{{ now }}</span> / 自動更新: 1秒）</small>
-     </h3>
-     <div class="d-flex align-items-center gap-2">
-       <button id="btnRefresh" class="btn btn-sm btn-outline-secondary">今すぐ更新</button>
-     </div>
-   </div>
+diff --git a/utils/logs.py b/utils/logs.py
+index 6faaed7fee723df9cddd7e38f296c5a54c065988..cccf531111214e2a4b6878fc4bde781a44403c9b 100644
+--- a/utils/logs.py
++++ b/utils/logs.py
+@@ -1,43 +1,47 @@
+ # app/utils/logs.py
+ from __future__ import annotations
  
-   <div id="nodesGrid" class="row g-3">
-     {# 初期表示（サーバレンダリング）。以後はJSが差し替え #}
-     {% for n in nodes %}
-       <div class="col-12 col-lg-6">
-         <div class="card shadow-sm">
-           <div class="card-header d-flex justify-content-between align-items-center">
-             <div>
-               <strong>{{ n.name }}</strong>
-               {% if n.ok %}
-                 <span class="badge text-bg-success ms-2">正常</span>
-               {% else %}
-                 <span class="badge text-bg-danger ms-2">異常</span>
-               {% endif %}
-             </div>
-             <small class="text-muted">{{ n.url }}</small>
-           </div>
-           <div class="card-body">
-             {% if not n.ok %}
-+              {% set d = n.data or {} %}
-+              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
-               <div class="alert alert-danger mb-0">取得失敗: {{ n.error }}</div>
-             {% else %}
-               {% set d = n.data %}
--              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host }}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
+ import time
+ import ipaddress
++import threading
++import os
++from collections import deque
+ from typing import Optional, Dict, Tuple, List, Union
+ from flask import g, request as _req, current_app
+ from app.utils.db import get_db
++from app.utils.fw_ban import ban_ipv4_cidr_via_ssh, normalize_ipv4_target
+ from app.utils.whois_util import get_netinfo
  
-               <h6 class="mt-2">CPU</h6>
-               <ul class="list-unstyled mb-2">
-                 <li>温度:
-                   {% if d.cpu.temp_c is not none %} {{ d.cpu.temp_c }}℃
-                   {% else %}<span class="text-muted">不明</span>{% endif %}
-                 </li>
-                 <li>周波数:
-                   {% if d.cpu.freq_mhz %} {{ d.cpu.freq_mhz }} MHz
-                   {% else %}<span class="text-muted">不明</span>{% endif %}
-                 </li>
-               </ul>
+ # 外部: Discord 通知用（無ければ黙ってスキップ）
+ try:
+     import requests
+ except Exception:
+     requests = None
  
-               {# ★ ラズパイ専用情報（あれば表示） #}
-               {% if d.rpi and d.rpi.is_rpi %}
-                 {% set r = d.rpi %}
-                 <h6 class="mt-3">Raspberry Pi（電圧 / スロットル / ARMクロック）</h6>
-                 <ul class="list-unstyled mb-2 small">
-                   <li>電圧:
-                     Core {{ r.volts.core_v is not none and (r.volts.core_v ~ "V") or "-" }},
-                     SDRAM C {{ r.volts.sdram_c_v is not none and (r.volts.sdram_c_v ~ "V") or "-" }},
-                     I {{ r.volts.sdram_i_v is not none and (r.volts.sdram_i_v ~ "V") or "-" }},
-                     P {{ r.volts.sdram_p_v is not none and (r.volts.sdram_p_v ~ "V") or "-" }}
-                   </li>
-                   <li>ARMクロック:
-@@ -253,50 +259,53 @@
-             ${badge(!!f.under_voltage_now,       '電圧（現在）',   'danger')}
-             ${badge(!!f.freq_capped_now,         '周波数（現在）', 'warning')}
-             ${badge(!!f.throttled_now,           'スロットル（現在）', 'danger')}
-             ${badge(!!f.soft_temp_limit_now,     '温度（現在）',   'warning')}
-             ${badge(!!f.under_voltage_occurred,  '電圧（履歴）',   'danger')}
-             ${badge(!!f.freq_capped_occurred,    '周波数（履歴）', 'warning')}
-             ${badge(!!f.throttled_occurred,      'スロットル（履歴）', 'danger')}
-             ${badge(!!f.soft_temp_limit_occurred,'温度（履歴）',   'warning')}
-           </div>
-         </li>
-       </ul>`;
-   }
+ # --- debug helpers (runtime switchable) ------------------------------
+-import os, sys, json
++import sys, json
+ from urllib import request as _urlreq
+ from urllib.error import URLError, HTTPError
  
-   function render(nodes){
-     let html = '';
-     for (const n of nodes){
-       if (!n.ok){
-         html += `
-           <div class="col-12 col-lg-6">
-             <div class="card shadow-sm">
-               <div class="card-header d-flex justify-content-between align-items-center">
-                 <div><strong>${esc(n.name)}</strong> <span class="badge text-bg-danger ms-2">異常</span></div>
-                 <small class="text-muted">${esc(n.url)}</small>
-               </div>
-               <div class="card-body">
-+                <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc((n.data && n.data.host) || 'unknown')}</div></div>
-+                <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc((n.data && n.data.os) || 'unknown')}</div></div>
-+                <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc((n.data && n.data.os_version) || 'unknown')}</div></div>
-                 <div class="alert alert-danger mb-0">取得失敗: ${esc(n.error)}</div>
-               </div>
-             </div>
-           </div>`;
-         continue;
-       }
+ # truthy 文字列判定（1/true/on/yes → True）
+ def _truthy(v) -> bool:
+     if v is None:
+         return False
+     if isinstance(v, bool):
+         return v
+     s = str(v).strip().lower()
+     return s in ("1", "true", "on", "yes", "y", "t")
  
-       const d = n.data || {};
-       const cpu = d.cpu || {};
-       const ram = d.ram || {};
-       const disks = Array.isArray(d.disks) ? d.disks : [];
-       const sm = Array.isArray(d.smart) ? d.smart : [];
+ # ランタイムで有効/無効を判定する
+ # 優先度: Flask config → フラグファイル → 環境変数 → 既定OFF
+ _DEBUG_FLAG_FILES = [
+     "/mnt/mfu/logs.debug",          # 空ファイルでも“有効”とみなす
+     "/mnt/mfu/app/logs.debug",
+     "/etc/mfu/logs.debug",
+ ]
  
-       // ディスク行
-       let diskRows = '';
-       for (const p of disks){
-         const pct = clamp(p.percent, 0, 100);
-         diskRows += `
-           <tr>
-             <td><code>${esc(p.mountpoint)}</code></td>
-             <td>${esc(p.fstype)}</td>
-             <td>
-               <div class="d-flex justify-content-between small">
-                 <span class="text-muted">${fmtGiB(p.used, p.total)}</span>
-                 <span>${pct}%</span>
-@@ -321,51 +330,53 @@
-             <td>${esc(s.model || '-')}</td>
-             <td><small>${esc(s.serial || '-')}</small></td>
-             <td>${(s.temp_c==null)?'-':esc(String(s.temp_c))+'℃'}</td>
-             <td>
-               <span class="badge text-bg-${cls}">${label}</span>
-               ${s.error ? `<small class="text-danger ms-2">${esc(s.error)}</small>` : ''}
-             </td>
-           </tr>`;
-       }
-       const smartTable = sm.length ? `
-         <div class="table-responsive">
-           <table class="table table-sm align-middle">
-             <thead><tr><th>デバイス</th><th>モデル</th><th>シリアル</th><th>温度</th><th>健全性</th></tr></thead>
-             <tbody>${smartRows}</tbody>
-           </table>
-         </div>` : `<div class="text-muted">SMART情報なし</div>`;
+ def _is_debug_enabled() -> bool:
+     # 1) Flask設定（最優先）
+     try:
+         from flask import current_app
+         if current_app:
+@@ -598,50 +602,168 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
+         status=int(getattr(flask_response, "status_code", 0) or 0),
+         ua=flask_request.headers.get("User-Agent", "-"),
+         referer=flask_request.headers.get("Referer", ""),
+         endpoint=endpoint or "",
+         username=username,
+         latency_ms=_latency_ms(),
+     )
  
-       html += `
-         <div class="col-12 col-lg-6">
-           <div class="card shadow-sm">
-             <div class="card-header d-flex justify-content-between align-items-center">
-               <div><strong>${esc(n.name)}</strong> <span class="badge text-bg-success ms-2">正常</span></div>
-               <small class="text-muted">${esc(n.url)}</small>
-             </div>
-             <div class="card-body">
--              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host)}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host || 'unknown')}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc(d.os || 'unknown')}</div></div>
-+              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc(d.os_version || 'unknown')}</div></div>
  
-               <h6 class="mt-2">CPU</h6>
-               <ul class="list-unstyled mb-2">
-                 <li>温度: ${(cpu.temp_c==null)?'<span class="text-muted">不明</span>':`${cpu.temp_c}℃`}</li>
-                 <li>周波数: ${(cpu.freq_mhz==null||cpu.freq_mhz===0)?'<span class="text-muted">不明</span>':`${cpu.freq_mhz} MHz`}</li>
-               </ul>
+ def _is_private_or_reserved_ip(ip: str) -> bool:
+     try:
+         ipobj = ipaddress.ip_address(ip)
+         return (ipobj.is_private or ipobj.is_loopback or ipobj.is_link_local or
+                 ipobj.is_reserved or ipobj.is_multicast)
+     except Exception:
+         # 解析不能なら安全側（whoisしない）
+         return True
  
-               ${renderRpi(d.rpi)}
+ # ----------------------------------------------------------
+ # アクセスログ抑制（3xxリダイレクトのバーストを汎用的に間引く）
+ # ----------------------------------------------------------
  
-               <div class="mb-3">
-                 ${renderPerCore(cpu.usage_percpu)}
-               </div>
+ # key: (ip, path, status, ua) -> (last_ts, count)
+ _recent_access_hits: Dict[Tuple[str, str, int, str], Tuple[float, int]] = {}
  
-               <h6>メモリ</h6>
-               <div class="mb-1 d-flex justify-content-between small">
-                 <span class="text-muted">RAM使用率</span>
-                 <span>${(ram.percent==null?'-':ram.percent+'%')}（${fmtGiB(ram.used, ram.total)}）</span>
-               </div>
-               <div class="progress mb-3" style="height: 10px;">
-                 <div class="progress-bar ${barClassRam(Number(ram.percent||0))}" role="progressbar"
-                      style="width: ${Number(ram.percent||0)}%;" aria-valuenow="${Number(ram.percent||0)}" aria-valuemin="0" aria-valuemax="100"></div>
-               </div>
++_FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "3")))
++_FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1")))
++_FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
++_FW_404_SKIP_PREFIXES = (
++    "/static",
++    "/favicon",
++    "/api",
++    "/suc",
++    "/external-login/",
++    "/e/",
++)
++
++_rate_404_hits: Dict[str, deque[float]] = {}
++_rate_404_last_ban: Dict[str, float] = {}
++_rate_404_lock = threading.Lock()
++
++
++def _is_auto_ban_target_path(path: str) -> bool:
++    if not path:
++        return False
++    return not any(path.startswith(prefix) for prefix in _FW_404_SKIP_PREFIXES)
++
++
++def _is_public_ipv4(ip: str) -> bool:
++    try:
++        ip_obj = ipaddress.ip_address(ip)
++        if ip_obj.version != 4:
++            return False
++        return not (
++            ip_obj.is_private
++            or ip_obj.is_loopback
++            or ip_obj.is_link_local
++            or ip_obj.is_multicast
++            or ip_obj.is_reserved
++            or ip_obj.is_unspecified
++        )
++    except Exception:
++        return False
++
++
++def _write_fw_ban_log(ip: str, log_text: str) -> None:
++    db = get_db()
++    try:
++        cur = db.cursor()
++        cur.execute(
++            "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
++            (ip or "-", _clamp(log_text, 1024)),
++        )
++        db.commit()
++    finally:
++        try:
++            db.close()
++        except Exception:
++            pass
++
++
++def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
++    if not _is_public_ipv4(ip):
++        return
++    if not _is_auto_ban_target_path(path):
++        return
++
++    now = time.time()
++    should_ban = False
++    count = 0
++    target_cidr = ""
++
++    with _rate_404_lock:
++        q = _rate_404_hits.setdefault(ip, deque())
++        q.append(now)
++
++        while q and now - q[0] > _FW_404_RATE_WINDOW_SEC:
++            q.popleft()
++
++        count = len(q)
++        if count >= _FW_404_RATE_THRESHOLD:
++            target_cidr = normalize_ipv4_target(ip=ip)
++            last_ban_ts = _rate_404_last_ban.get(target_cidr, 0)
++            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
++                _rate_404_last_ban[target_cidr] = now
++                should_ban = True
++
++        if len(_rate_404_hits) > 5000:
++            stale_before = now - max(_FW_404_RATE_WINDOW_SEC, 5.0)
++            for key in list(_rate_404_hits.keys())[:1000]:
++                if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
++                    _rate_404_hits.pop(key, None)
++
++        if len(_rate_404_last_ban) > 5000:
++            stale_cooldown = now - (_FW_BAN_COOLDOWN_SEC * 2)
++            for key in list(_rate_404_last_ban.keys())[:1000]:
++                if _rate_404_last_ban.get(key, 0) < stale_cooldown:
++                    _rate_404_last_ban.pop(key, None)
++
++    if not should_ban:
++        return
++
++    result = ban_ipv4_cidr_via_ssh(target_cidr)
++    if result.get("ok"):
++        _write_fw_ban_log(
++            ip,
++            f"[FW_BAN][404RATE] ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}",
++        )
++        _dbg(
++            f"fw-ban success ip={ip} cidr={target_cidr} path={path} count={count} status={result.get('status')}"
++        )
++        return
++
++    current_app.logger.warning(
++        "[FW_BAN][404RATE] failed ip=%s cidr=%s path=%s count=%s status=%s stderr=%s",
++        ip,
++        target_cidr,
++        path,
++        count,
++        result.get("status"),
++        result.get("stderr", ""),
++    )
++
  
-               <h6>ストレージ使用率</h6>
-               <div class="table-responsive">
+ def _should_suppress_access_log(fields: dict) -> bool:
+     """
+     3xxリダイレクトが同一IP/Path/UA/statusで瞬間的に連打された場合、
+     DBへのINSERTを間引く。
+ 
+     - 対象 status は 301/302/303/307/308
+     - 直前の記録から1秒以内の同一キーは「抑制」扱い
+       （最初の1件だけ残して、同じキーの連打分は捨てる）
+     """
+     try:
+         status = int(fields.get("status") or 0)
+ 
+         # リダイレクト以外は触らない
+         if status not in (301, 302, 303, 307, 308):
+             return False
+ 
+         ip = fields.get("ip") or "-"
+         path = fields.get("path") or "-"
+         ua = fields.get("ua") or "-"
+         key = (ip, path, status, ua)
+ 
+         now = time.time()
+         last_ts, cnt = _recent_access_hits.get(key, (0.0, 0))
+ 
+@@ -683,54 +805,58 @@ def log_access(flask_request, flask_response, flask_session, *, endpoint: Option
+     path = flask_request.path or ""
+     if should_skip_access_log(path, endpoint):
+         return
+ 
+     fields = build_access_log_fields(flask_request, flask_response, flask_session, endpoint)
+ 
+     # 302リダイレクト系の連打アクセスは、特定endpointのみログを間引く
+     # （_should_suppress_access_log は logs.py 内のヘルパー）
+     if _should_suppress_access_log(fields):
+         return
+ 
+     # Location ヘッダ（リダイレクト先など）を取得
+     try:
+         location = flask_response.headers.get("Location")
+     except Exception:
+         location = None
+ 
+     try:
+         # まずDBへ記録
+         log_request_raw(location=location, **fields)
+     except Exception as e:
+         _dbg(f"log_access: INSERT failed err={e!r} fields={fields}")
+         current_app.logger.warning(f"log_access: log_request_raw failed: {e}")
+         return  # 記録失敗時は以降スキップ
+ 
+-    # 404バースト検知（メモリ）→ 非JPのみ通知
++    # 404バースト検知（メモリ）
+     try:
+         if fields.get("status") == 404 and fields.get("ip"):
+             ip = fields["ip"]
++
++            # 追加: 1秒あたりの404レート検知で自動BAN（例外は握りつぶす）
++            _maybe_auto_ban_by_404_rate(ip, path)
++
+             # 既存: IP+Path 単位
+             notify_path, cnt_path, cooldown_until_path = _note_404_hit_and_should_notify(ip, path)
+             # 追加: IP 単位
+             notify_ip, cnt_ip, cooldown_until_ip = _note_404_hit_ip_only(ip)
+ 
+             # 国コードは CF/GeoIP2 と whois 両方を参照し、どちらかがJPなら通知抑止
+             cc_hdr = (_country_code_from_request_ip(ip) or "").strip()
+             netinfo = {}
+             cc_whois = ""
+             if not _is_private_or_reserved_ip(ip):
+                 netinfo = get_netinfo(ip) or {}
+                 cc_whois = (netinfo.get("country_code")
+                             or netinfo.get("cc")
+                             or netinfo.get("country")
+                             or netinfo.get("country_name")
+                             or "")
+             cc = _norm_cc_from_sources(cc_hdr, cc_whois)
+ 
+             _dbg(
+                 f"404-eval ip={ip} path={path} "
+                 f"by_path(cnt={cnt_path}, notify={notify_path}) "
+                 f"by_ip(cnt={cnt_ip}, notify={notify_ip}) "
+                 f"cc_hdr={cc_hdr!r} cc_whois={cc_whois!r} cc_norm={cc!r}"
+             )
+ 
