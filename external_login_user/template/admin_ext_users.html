@@ -15,7 +15,7 @@
   <div class="card-body">
     <div class="row g-2 align-items-center">
       <div class="col-sm-6 col-md-5">
-        <input id="searchInput" type="search" class="form-control" placeholder="ニックネーム / X / Instagram / メール / social_id を検索">
+        <input id="searchInput" type="search" class="form-control" placeholder="ID / ニックネーム / X / Instagram / メール / social_id を検索" value="{{ initial_q or '' }}">
       </div>
       <div class="col-auto">
         <button id="searchBtn" class="btn btn-outline-primary">検索</button>
@@ -128,70 +128,162 @@
   </table>
 </div>
 
-<div class="d-flex justify-content-between align-items-center mt-3">
-  <div class="small text-muted">
-    <span id="pageInfo">1</span> / <span id="pageTotal">{{ (initial_total // initial_per_page) + (1 if (initial_total % initial_per_page) else 0) or 1 }}</span> ページ
-  </div>
-  <div class="btn-group">
-    <button id="prevBtn" class="btn btn-outline-secondary btn-sm" disabled>前へ</button>
-    <button id="nextBtn" class="btn btn-outline-secondary btn-sm"
-      {% if initial_total <= initial_per_page %}disabled{% endif %}>次へ</button>
-  </div>
-</div>
+<div class="small text-muted mt-3">1ページに全件表示しています。</div>
 
 {# 初期化用データ（JSが無効でも初期表示はサーバー側でOK） #}
 <script>
   window.__EXT_USERS__ = {
     total: {{ initial_total|int }},
-    perPage: {{ initial_per_page|int }},
+    perPage: {{ (initial_total if initial_total > 0 else 1000)|int }},
     page: {{ initial_page|int }},
+    q: {{ (initial_q or '')|tojson }},
+    sort: {{ (initial_sort or 'id')|tojson }},
+    order: {{ (initial_order or 'asc')|tojson }},
     dataUrl: "{{ url_for('external_login_user.admin_ext_users_data') }}"
   };
 </script>
 
-{# フロント側並び替え用スクリプト #}
+{# 検索/並び替え（サーバー側処理） #}
 <script>
   (function () {
+    const config = window.__EXT_USERS__ || {};
     const tbody = document.getElementById('userTbody');
-    if (!tbody) return;
-
-    function sortRows(compareFn) {
-      const rows = Array.from(tbody.querySelectorAll('tr[data-id]'));
-      if (!rows.length) return;
-      rows.sort(compareFn);
-      rows.forEach(row => tbody.appendChild(row));
-    }
-
-    // ID昇順
+    const searchInput = document.getElementById('searchInput');
+    const searchBtn = document.getElementById('searchBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const totalCount = document.getElementById('totalCount');
     const sortIdBtn = document.getElementById('sortIdBtn');
-    if (sortIdBtn) {
-      sortIdBtn.addEventListener('click', function () {
-        sortRows((a, b) => {
-          const ida = Number(a.dataset.id || '0');
-          const idb = Number(b.dataset.id || '0');
-          return ida - idb;
-        });
-      });
+    const sortNickBtn = document.getElementById('sortNickBtn');
+    if (!tbody || !searchInput || !searchBtn || !clearBtn || !sortIdBtn || !sortNickBtn) return;
+
+    let state = {
+      q: config.q || '',
+      sort: config.sort || 'id',
+      order: config.order || 'asc',
+      perPage: Math.max(Number(config.perPage || 1000), 1),
+    };
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text == null ? '' : String(text);
+      return div.innerHTML;
     }
 
-    // ニックネーム昇順（日本語対応）
-    const sortNickBtn = document.getElementById('sortNickBtn');
-    if (sortNickBtn) {
-      sortNickBtn.addEventListener('click', function () {
-        function getName(tr) {
-          const el = tr.querySelector('.fw-semibold');
-          return (el ? el.textContent : '').trim();
-        }
-        sortRows((a, b) => {
-          const na = getName(a);
-          const nb = getName(b);
-          return na.localeCompare(nb, 'ja');
-        });
-      });
+    function makeAvatar(item) {
+      const avatar = item.avatar_file
+        ? `/external-login/avatars/${encodeURIComponent(item.avatar_file)}`
+        : (item.avatar_url || 'https://via.placeholder.com/48?text=—');
+      return `<img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">`;
     }
+
+    function renderRows(items) {
+      if (!items || !items.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
+        return;
+      }
+      tbody.innerHTML = items.map((it) => {
+        const isEnabled = (value) => {
+          if (value === true) return true;
+          if (value === false || value == null) return false;
+          const n = Number(value);
+          return Number.isFinite(n) ? n === 1 : String(value).toLowerCase() === 'true';
+        };
+        const nick = escapeHtml(it.nickname || '');
+        const socialId = escapeHtml(it.social_id || '-');
+        const emailBlock = it.email
+          ? `<div>${escapeHtml(it.email)}</div>
+             <div class="small mt-1">${it.email_verified_at ? '<span class="badge bg-success">確認済</span><span class="text-muted ms-1">' + escapeHtml(it.email_verified_at) + '</span>' : '<span class="badge bg-secondary">未確認</span>'}</div>`
+          : '<span class="text-muted">-</span>';
+        let sns = '<span class="text-muted">-</span>';
+        if (it.x_id || it.instagram_id) {
+          sns = `${it.x_id ? `<a href="https://x.com/${encodeURIComponent(it.x_id)}" target="_blank" rel="noopener">X: @${escapeHtml(it.x_id)}</a>` : ''}${(it.x_id && it.instagram_id) ? '<br>' : ''}${it.instagram_id ? `<a href="https://www.instagram.com/${encodeURIComponent(it.instagram_id)}/" target="_blank" rel="noopener">IG: @${escapeHtml(it.instagram_id)}</a>` : ''}`;
+        }
+        const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
+        const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
+        const cardText = (it.card_count && Number(it.card_count) > 0) ? '登録あり' : '未登録';
+        return `<tr data-id="${Number(it.id || 0)}">
+          <td class="text-muted">#${Number(it.id || 0)}</td>
+          <td>${makeAvatar(it)}</td>
+          <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
+          <td>${emailBlock}</td>
+          <td>${sns}</td>
+          <td><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
+          <td>${cardText}</td>
+          <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${Number(it.id || 0)}/edit">編集</a></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function updateSortButtonStyles() {
+      const isId = state.sort === 'id';
+      sortIdBtn.classList.toggle('btn-primary', isId);
+      sortIdBtn.classList.toggle('btn-outline-secondary', !isId);
+      sortNickBtn.classList.toggle('btn-primary', !isId);
+      sortNickBtn.classList.toggle('btn-outline-secondary', isId);
+      sortIdBtn.textContent = `ID順${isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
+      sortNickBtn.textContent = `ニックネーム順${!isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
+    }
+
+    async function fetchAndRender() {
+      const url = new URL(config.dataUrl, window.location.origin);
+      url.searchParams.set('q', state.q);
+      url.searchParams.set('sort', state.sort);
+      url.searchParams.set('order', state.order);
+      url.searchParams.set('page', '1');
+      url.searchParams.set('per_page', String(state.perPage));
+
+      const res = await fetch(url.toString(), { credentials: 'same-origin' });
+      const data = await res.json();
+      renderRows(data.items || []);
+      if (totalCount) totalCount.textContent = String(data.total || 0);
+      const historyUrl = new URL(window.location.href);
+      historyUrl.searchParams.set('q', state.q);
+      historyUrl.searchParams.set('sort', state.sort);
+      historyUrl.searchParams.set('order', state.order);
+      window.history.replaceState({}, '', historyUrl.toString());
+      updateSortButtonStyles();
+    }
+
+    searchBtn.addEventListener('click', function () {
+      state.q = searchInput.value.trim();
+      fetchAndRender();
+    });
+
+    searchInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        state.q = searchInput.value.trim();
+        fetchAndRender();
+      }
+    });
+
+    clearBtn.addEventListener('click', function () {
+      searchInput.value = '';
+      state.q = '';
+      fetchAndRender();
+    });
+
+    sortIdBtn.addEventListener('click', function () {
+      if (state.sort === 'id') {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sort = 'id';
+        state.order = 'asc';
+      }
+      fetchAndRender();
+    });
+
+    sortNickBtn.addEventListener('click', function () {
+      if (state.sort === 'nickname') {
+        state.order = state.order === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.sort = 'nickname';
+        state.order = 'asc';
+      }
+      fetchAndRender();
+    });
+
+    updateSortButtonStyles();
   })();
 </script>
-
-{# 一覧の検索/ページング用スクリプト（存在すれば読み込む） #}
-<script src="{{ url_for('static', filename='external_login_user/admin_ext_users.js') }}"></script>
 {% endblock %}
