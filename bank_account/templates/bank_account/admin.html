@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}振込先管理{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+  <h2 class="mb-4">振込先管理</h2>
+
+  <div class="card mb-4">
+    <div class="card-header">1. 銀行口座の名義（共通）</div>
+    <div class="card-body">
+      <form method="post" class="row g-3">
+        <input type="hidden" name="action" value="update_holder_name">
+        <div class="col-md-8">
+          <label class="form-label">口座名義（すべての銀行口座で共通表示）</label>
+          <input type="text" name="account_holder_name" class="form-control" value="{{ settings.account_holder_name or '' }}" placeholder="例: ヤマダ タロウ">
+        </div>
+        <div class="col-md-4 d-flex align-items-end">
+          <button type="submit" class="btn btn-primary">名義を保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header">2. PayPay編集</div>
+    <div class="card-body">
+      <form method="post" class="row g-3">
+        <input type="hidden" name="action" value="update_paypay">
+        <div class="col-md-6">
+          <label class="form-label">送金ID</label>
+          <input type="text" name="paypay_send_id" class="form-control" value="{{ paypay.paypay_send_id or '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">PayPayリンクURL</label>
+          <input type="url" name="paypay_link" class="form-control" value="{{ paypay.paypay_link or '' }}" placeholder="https://...">
+        </div>
+        <div class="col-12">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" value="1" id="paypayActive" name="is_active" {% if paypay.is_active %}checked{% endif %}>
+            <label class="form-check-label" for="paypayActive">公開する</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-primary">PayPay設定を保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header">3. 銀行口座管理</div>
+    <div class="card-body">
+      <h5>新規追加</h5>
+      <form method="post" class="row g-2 mb-4">
+        <input type="hidden" name="action" value="add_account">
+        <div class="col-md-2"><input type="text" name="label" class="form-control" placeholder="ラベル"></div>
+        <div class="col-md-2"><input type="text" name="bank_name" class="form-control" placeholder="銀行名" required></div>
+        <div class="col-md-2"><input type="text" name="branch_name" class="form-control" placeholder="支店名"></div>
+        <div class="col-md-2"><input type="text" name="account_number" class="form-control" placeholder="口座番号" required></div>
+        <div class="col-md-2"><input type="number" name="sort_order" class="form-control" placeholder="順序" value="0"></div>
+        <div class="col-md-1 form-check mt-2">
+          <input class="form-check-input" type="checkbox" name="is_active" value="1" checked id="add_active">
+          <label class="form-check-label" for="add_active">有効</label>
+        </div>
+        <div class="col-md-1"><button type="submit" class="btn btn-success w-100">追加</button></div>
+      </form>
+
+      <h5>既存口座</h5>
+      {% if accounts %}
+        {% for a in accounts %}
+          <form method="post" class="border rounded p-3 mb-2">
+            <input type="hidden" name="account_id" value="{{ a.id }}">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-2"><label class="form-label">ラベル</label><input type="text" name="label" class="form-control" value="{{ a.label or '' }}"></div>
+              <div class="col-md-2"><label class="form-label">銀行名</label><input type="text" name="bank_name" class="form-control" value="{{ a.bank_name }}" required></div>
+              <div class="col-md-2"><label class="form-label">支店名</label><input type="text" name="branch_name" class="form-control" value="{{ a.branch_name or '' }}"></div>
+              <div class="col-md-2"><label class="form-label">口座番号</label><input type="text" name="account_number" class="form-control" value="{{ a.account_number }}" required></div>
+              <div class="col-md-1"><label class="form-label">順序</label><input type="number" name="sort_order" class="form-control" value="{{ a.sort_order }}"></div>
+              <div class="col-md-1 form-check mt-4">
+                <input class="form-check-input" type="checkbox" name="is_active" value="1" id="active_{{ a.id }}" {% if a.is_active %}checked{% endif %}>
+                <label class="form-check-label" for="active_{{ a.id }}">有効</label>
+              </div>
+              <div class="col-md-2 d-flex gap-2">
+                <button type="submit" class="btn btn-primary btn-sm" name="action" value="update_account">更新</button>
+                <button type="submit" class="btn btn-outline-danger btn-sm" name="action" value="deactivate_account" onclick="return confirm('この口座を無効化しますか？');">無効化</button>
+              </div>
+            </div>
+          </form>
+        {% endfor %}
+      {% else %}
+        <p class="text-muted">口座はまだありません。</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">4. パスワード変更</div>
+    <div class="card-body">
+      <p class="text-muted">現在の平文パスワードは表示できません。保存時にハッシュ化されます。</p>
+      <p class="mb-2">現在のバージョン: {{ settings.payout_password_version }}</p>
+      <form method="post" class="row g-3">
+        <input type="hidden" name="action" value="change_password">
+        <div class="col-md-6">
+          <label class="form-label">新しいパスワード</label>
+          <input type="password" name="new_password" class="form-control" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">確認用パスワード</label>
+          <input type="password" name="confirm_password" class="form-control" required>
+        </div>
+        <div class="col-12">
+          <button type="submit" class="btn btn-warning">パスワードを変更する</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
