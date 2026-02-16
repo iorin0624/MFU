@@ -30,10 +30,16 @@
           </div>
           <div class="card-body">
             {% if not n.ok %}
+              {% set d = n.data or {} %}
+              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
+              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
+              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
               <div class="alert alert-danger mb-0">取得失敗: {{ n.error }}</div>
             {% else %}
               {% set d = n.data %}
-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host }}</div></div>
+              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
+              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
+              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
 
               <h6 class="mt-2">CPU</h6>
               <ul class="list-unstyled mb-2">
@@ -275,6 +281,9 @@
                 <small class="text-muted">${esc(n.url)}</small>
               </div>
               <div class="card-body">
+                <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc((n.data && n.data.host) || 'unknown')}</div></div>
+                <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc((n.data && n.data.os) || 'unknown')}</div></div>
+                <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc((n.data && n.data.os_version) || 'unknown')}</div></div>
                 <div class="alert alert-danger mb-0">取得失敗: ${esc(n.error)}</div>
               </div>
             </div>
@@ -343,7 +352,9 @@
               <small class="text-muted">${esc(n.url)}</small>
             </div>
             <div class="card-body">
-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host)}</div></div>
+              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host || 'unknown')}</div></div>
+              <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc(d.os || 'unknown')}</div></div>
+              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc(d.os_version || 'unknown')}</div></div>
 
               <h6 class="mt-2">CPU</h6>
               <ul class="list-unstyled mb-2">

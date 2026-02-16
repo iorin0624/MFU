@@ -1,87 +1,175 @@
-diff --git a/tests/test_bulk_refund_logic.py b/tests/test_bulk_refund_logic.py
-index 15ab37554fc1e9ce5975d07b4fc72ad6892026a2..41ef7c93bd7a2fbcd37a4d86e39919da9c1520ad 100644
---- a/tests/test_bulk_refund_logic.py
-+++ b/tests/test_bulk_refund_logic.py
-@@ -6,75 +6,75 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "payment" / "bulk_refund_log
- spec = importlib.util.spec_from_file_location("bulk_refund_logic", MODULE_PATH)
- bulk_refund_logic = importlib.util.module_from_spec(spec)
- assert spec and spec.loader
- spec.loader.exec_module(bulk_refund_logic)
+diff --git a/templates/admin_nodes.html b/templates/admin_nodes.html
+index 5c6dcd50e7ec644dc04c6008d72d898c3a9cda73..c4b8bb7efd154968a132b3b63bfd403e025cb9c7 100644
+--- a/templates/admin_nodes.html
++++ b/templates/admin_nodes.html
+@@ -8,54 +8,60 @@
+       <small class="text-muted">（更新: <span id="js-now">{{ now }}</span> / 自動更新: 1秒）</small>
+     </h3>
+     <div class="d-flex align-items-center gap-2">
+       <button id="btnRefresh" class="btn btn-sm btn-outline-secondary">今すぐ更新</button>
+     </div>
+   </div>
  
- decide_bulk_refund_status = bulk_refund_logic.decide_bulk_refund_status
- build_preview_hash = bulk_refund_logic.build_preview_hash
- build_refund_note = bulk_refund_logic.build_refund_note
- append_note_if_missing = bulk_refund_logic.append_note_if_missing
- recalculate_paid_amount = bulk_refund_logic.recalculate_paid_amount
+   <div id="nodesGrid" class="row g-3">
+     {# 初期表示（サーバレンダリング）。以後はJSが差し替え #}
+     {% for n in nodes %}
+       <div class="col-12 col-lg-6">
+         <div class="card shadow-sm">
+           <div class="card-header d-flex justify-content-between align-items-center">
+             <div>
+               <strong>{{ n.name }}</strong>
+               {% if n.ok %}
+                 <span class="badge text-bg-success ms-2">正常</span>
+               {% else %}
+                 <span class="badge text-bg-danger ms-2">異常</span>
+               {% endif %}
+             </div>
+             <small class="text-muted">{{ n.url }}</small>
+           </div>
+           <div class="card-body">
+             {% if not n.ok %}
++              {% set d = n.data or {} %}
++              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
++              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
++              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
+               <div class="alert alert-danger mb-0">取得失敗: {{ n.error }}</div>
+             {% else %}
+               {% set d = n.data %}
+-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host }}</div></div>
++              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
++              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
++              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
  
+               <h6 class="mt-2">CPU</h6>
+               <ul class="list-unstyled mb-2">
+                 <li>温度:
+                   {% if d.cpu.temp_c is not none %} {{ d.cpu.temp_c }}℃
+                   {% else %}<span class="text-muted">不明</span>{% endif %}
+                 </li>
+                 <li>周波数:
+                   {% if d.cpu.freq_mhz %} {{ d.cpu.freq_mhz }} MHz
+                   {% else %}<span class="text-muted">不明</span>{% endif %}
+                 </li>
+               </ul>
  
- class BulkRefundLogicTest(unittest.TestCase):
-     def test_diff_non_positive(self):
-         status, reason = decide_bulk_refund_status(
-             has_member=True, member_event_match=True, square_status="COMPLETED", override_fee=0, diff=0, remaining=100
-         )
-         self.assertEqual((status, reason), ("excluded", "diff_non_positive"))
+               {# ★ ラズパイ専用情報（あれば表示） #}
+               {% if d.rpi and d.rpi.is_rpi %}
+                 {% set r = d.rpi %}
+                 <h6 class="mt-3">Raspberry Pi（電圧 / スロットル / ARMクロック）</h6>
+                 <ul class="list-unstyled mb-2 small">
+                   <li>電圧:
+                     Core {{ r.volts.core_v is not none and (r.volts.core_v ~ "V") or "-" }},
+                     SDRAM C {{ r.volts.sdram_c_v is not none and (r.volts.sdram_c_v ~ "V") or "-" }},
+                     I {{ r.volts.sdram_i_v is not none and (r.volts.sdram_i_v ~ "V") or "-" }},
+                     P {{ r.volts.sdram_p_v is not none and (r.volts.sdram_p_v ~ "V") or "-" }}
+                   </li>
+                   <li>ARMクロック:
+@@ -253,50 +259,53 @@
+             ${badge(!!f.under_voltage_now,       '電圧（現在）',   'danger')}
+             ${badge(!!f.freq_capped_now,         '周波数（現在）', 'warning')}
+             ${badge(!!f.throttled_now,           'スロットル（現在）', 'danger')}
+             ${badge(!!f.soft_temp_limit_now,     '温度（現在）',   'warning')}
+             ${badge(!!f.under_voltage_occurred,  '電圧（履歴）',   'danger')}
+             ${badge(!!f.freq_capped_occurred,    '周波数（履歴）', 'warning')}
+             ${badge(!!f.throttled_occurred,      'スロットル（履歴）', 'danger')}
+             ${badge(!!f.soft_temp_limit_occurred,'温度（履歴）',   'warning')}
+           </div>
+         </li>
+       </ul>`;
+   }
  
-     def test_fee_override_manual(self):
-         status, reason = decide_bulk_refund_status(
-             has_member=True, member_event_match=True, square_status="COMPLETED", override_fee=100, diff=200, remaining=200
-         )
-         self.assertEqual((status, reason), ("manual", "member_fee_override_present"))
+   function render(nodes){
+     let html = '';
+     for (const n of nodes){
+       if (!n.ok){
+         html += `
+           <div class="col-12 col-lg-6">
+             <div class="card shadow-sm">
+               <div class="card-header d-flex justify-content-between align-items-center">
+                 <div><strong>${esc(n.name)}</strong> <span class="badge text-bg-danger ms-2">異常</span></div>
+                 <small class="text-muted">${esc(n.url)}</small>
+               </div>
+               <div class="card-body">
++                <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc((n.data && n.data.host) || 'unknown')}</div></div>
++                <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc((n.data && n.data.os) || 'unknown')}</div></div>
++                <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc((n.data && n.data.os_version) || 'unknown')}</div></div>
+                 <div class="alert alert-danger mb-0">取得失敗: ${esc(n.error)}</div>
+               </div>
+             </div>
+           </div>`;
+         continue;
+       }
  
--    def test_remaining_shortage(self):
-+    def test_already_refunded(self):
-         status, reason = decide_bulk_refund_status(
--            has_member=True, member_event_match=True, square_status="AUTHORIZED", override_fee=0, diff=300, remaining=200
-+            has_member=True, member_event_match=True, square_status="AUTHORIZED", override_fee=0, diff=300, remaining=0
-         )
--        self.assertEqual((status, reason), ("excluded", "diff_exceeds_remaining"))
-+        self.assertEqual((status, reason), ("excluded", "already_refunded"))
+       const d = n.data || {};
+       const cpu = d.cpu || {};
+       const ram = d.ram || {};
+       const disks = Array.isArray(d.disks) ? d.disks : [];
+       const sm = Array.isArray(d.smart) ? d.smart : [];
  
-     def test_eligible(self):
-         status, reason = decide_bulk_refund_status(
-             has_member=True, member_event_match=True, square_status="APPROVED", override_fee=0, diff=200, remaining=500
-         )
-         self.assertEqual((status, reason), ("eligible", "eligible"))
+       // ディスク行
+       let diskRows = '';
+       for (const p of disks){
+         const pct = clamp(p.percent, 0, 100);
+         diskRows += `
+           <tr>
+             <td><code>${esc(p.mountpoint)}</code></td>
+             <td>${esc(p.fstype)}</td>
+             <td>
+               <div class="d-flex justify-content-between small">
+                 <span class="text-muted">${fmtGiB(p.used, p.total)}</span>
+                 <span>${pct}%</span>
+@@ -321,51 +330,53 @@
+             <td>${esc(s.model || '-')}</td>
+             <td><small>${esc(s.serial || '-')}</small></td>
+             <td>${(s.temp_c==null)?'-':esc(String(s.temp_c))+'℃'}</td>
+             <td>
+               <span class="badge text-bg-${cls}">${label}</span>
+               ${s.error ? `<small class="text-danger ms-2">${esc(s.error)}</small>` : ''}
+             </td>
+           </tr>`;
+       }
+       const smartTable = sm.length ? `
+         <div class="table-responsive">
+           <table class="table table-sm align-middle">
+             <thead><tr><th>デバイス</th><th>モデル</th><th>シリアル</th><th>温度</th><th>健全性</th></tr></thead>
+             <tbody>${smartRows}</tbody>
+           </table>
+         </div>` : `<div class="text-muted">SMART情報なし</div>`;
  
-     def test_preview_hash_stable(self):
-         rows = [
--            {"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "remaining_refundable": 4490, "diff": 290, "status": "eligible", "reason_code": "eligible"},
--            {"payment_row_id": 1, "paid": 4200, "current_fee": 4200, "refunded_sum": 0, "remaining_refundable": 4200, "diff": 0, "status": "excluded", "reason_code": "diff_non_positive"},
-+            {"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "refunded_diff_total": 0, "remaining_refundable": 290, "diff": 290, "remaining_diff": 290, "status": "eligible", "reason_code": "eligible"},
-+            {"payment_row_id": 1, "paid": 4200, "current_fee": 4200, "refunded_sum": 0, "refunded_diff_total": 0, "remaining_refundable": 0, "diff": 0, "remaining_diff": 0, "status": "excluded", "reason_code": "diff_non_positive"},
-         ]
-         h1 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=rows)
-         h2 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=list(reversed(rows)))
-         self.assertEqual(h1, h2)
+       html += `
+         <div class="col-12 col-lg-6">
+           <div class="card shadow-sm">
+             <div class="card-header d-flex justify-content-between align-items-center">
+               <div><strong>${esc(n.name)}</strong> <span class="badge text-bg-success ms-2">正常</span></div>
+               <small class="text-muted">${esc(n.url)}</small>
+             </div>
+             <div class="card-body">
+-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host)}</div></div>
++              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host || 'unknown')}</div></div>
++              <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc(d.os || 'unknown')}</div></div>
++              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc(d.os_version || 'unknown')}</div></div>
  
-     def test_preview_hash_changes(self):
--        rows = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "remaining_refundable": 4490, "diff": 290, "status": "eligible", "reason_code": "eligible"}]
-+        rows = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 0, "refunded_diff_total": 0, "remaining_refundable": 290, "diff": 290, "remaining_diff": 290, "status": "eligible", "reason_code": "eligible"}]
-         h1 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=rows)
--        rows2 = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 100, "remaining_refundable": 4390, "diff": 290, "status": "eligible", "reason_code": "eligible"}]
-+        rows2 = [{"payment_row_id": 2, "paid": 4490, "current_fee": 4200, "refunded_sum": 100, "refunded_diff_total": 100, "remaining_refundable": 190, "diff": 290, "remaining_diff": 190, "status": "eligible", "reason_code": "eligible"}]
-         h2 = build_preview_hash(secret="test", payment_event_id=5, payment_event_uuid="abc", external_event_id=4, rows=rows2)
-         self.assertNotEqual(h1, h2)
+               <h6 class="mt-2">CPU</h6>
+               <ul class="list-unstyled mb-2">
+                 <li>温度: ${(cpu.temp_c==null)?'<span class="text-muted">不明</span>':`${cpu.temp_c}℃`}</li>
+                 <li>周波数: ${(cpu.freq_mhz==null||cpu.freq_mhz===0)?'<span class="text-muted">不明</span>':`${cpu.freq_mhz} MHz`}</li>
+               </ul>
  
-     def test_recalculate_paid_amount(self):
-         self.assertEqual(recalculate_paid_amount(original_paid=4490, refunded_total=290), 4200)
+               ${renderRpi(d.rpi)}
  
-     def test_refund_note_and_dedup(self):
-         note = build_refund_note(dt=__import__('datetime').datetime(2026, 2, 11), refund_yen=290)
-         self.assertEqual(note, "2026年2月11日に290円差額返金済")
-         once = append_note_if_missing("既存メモ", note)
-         self.assertIn(note, once)
-         twice = append_note_if_missing(once, note)
-         self.assertEqual(twice, once)
+               <div class="mb-3">
+                 ${renderPerCore(cpu.usage_percpu)}
+               </div>
  
+               <h6>メモリ</h6>
+               <div class="mb-1 d-flex justify-content-between small">
+                 <span class="text-muted">RAM使用率</span>
+                 <span>${(ram.percent==null?'-':ram.percent+'%')}（${fmtGiB(ram.used, ram.total)}）</span>
+               </div>
+               <div class="progress mb-3" style="height: 10px;">
+                 <div class="progress-bar ${barClassRam(Number(ram.percent||0))}" role="progressbar"
+                      style="width: ${Number(ram.percent||0)}%;" aria-valuenow="${Number(ram.percent||0)}" aria-valuemin="0" aria-valuemax="100"></div>
+               </div>
  
- class ReceiptTemplateGuardTest(unittest.TestCase):
-     def test_receipt_template_uses_receipt_note_not_admin_note(self):
-         tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "receipt_pdf.html").read_text()
-         self.assertIn("receipt.receipt_note", tpl)
-         self.assertNotIn("admin_note", tpl)
- 
- 
-     def test_admin_member_edit_has_receipt_note_input(self):
-         tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "admin_member_edit.html").read_text()
-         self.assertIn('name="receipt_note"', tpl)
+               <h6>ストレージ使用率</h6>
+               <div class="table-responsive">
