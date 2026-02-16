@@ -3104,3 +3104,6 @@ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_
 
 from app.s_u_calendar.routes import s_u_calendar_bp
 app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+
+from app.bank_account import register_bank_account
+register_bank_account(app)
