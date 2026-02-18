@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import mimetypes
 import os
@@ -13,7 +15,7 @@ from functools import wraps
 from threading import Lock
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.utils.db import get_db
 
@@ -339,24 +341,9 @@ def index():
 @records_bp.get("/uber")
 @login_required
 def uber_list():
+    rows = _fetch_uber_daily_rows(order_desc=True)
     db = get_db()
     cur = db.cursor(dictionary=True)
-    cur.execute(
-        """
-        SELECT
-            id,
-            work_date,
-            deliveries,
-            net_yen,
-            promo_yen,
-            other_yen,
-            tip_yen,
-            (net_yen + promo_yen + other_yen + tip_yen) AS total_yen
-        FROM uber_daily
-        ORDER BY work_date DESC
-        """
-    )
-    rows = cur.fetchall()
 
     today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
     month_start = date(today.year, today.month, 1)
@@ -500,6 +487,156 @@ def uber_list():
             "month_start": month_start,
         },
     )
+
+
+def _fetch_uber_daily_rows(
+    *,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    dates: list[date] | None = None,
+    order_desc: bool = True,
+) -> list[dict]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    where_clauses: list[str] = []
+    params: list[date] = []
+    if from_date is not None:
+        where_clauses.append("work_date >= %s")
+        params.append(from_date)
+    if to_date is not None:
+        where_clauses.append("work_date <= %s")
+        params.append(to_date)
+    if dates:
+        placeholders = ", ".join(["%s"] * len(dates))
+        where_clauses.append(f"work_date IN ({placeholders})")
+        params.extend(dates)
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    order_sql = "DESC" if order_desc else "ASC"
+    cur.execute(
+        f"""
+        SELECT
+            id,
+            work_date,
+            deliveries,
+            net_yen,
+            promo_yen,
+            other_yen,
+            tip_yen,
+            (net_yen + promo_yen + other_yen + tip_yen) AS total_yen
+        FROM uber_daily
+        {where_sql}
+        ORDER BY work_date {order_sql}
+        """,
+        tuple(params),
+    )
+    rows = cur.fetchall()
+    db.close()
+    return rows
+
+
+def _build_uber_freee_csv_response(rows: list[dict]) -> Response:
+    export_rows = [row for row in rows if int(row.get("total_yen") or 0) > 0]
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(
+        [
+            "収支区分",
+            "管理番号",
+            "発生日",
+            "決済期日",
+            "取引先",
+            "勘定科目",
+            "税区分",
+            "金額",
+            "税計算区分",
+            "税額",
+            "備考",
+            "品目",
+            "部門",
+            "メモタグ",
+            "セグメント1",
+            "セグメント2",
+            "セグメント3",
+            "決済日",
+            "決済口座",
+            "決済金額",
+        ]
+    )
+
+    for row in export_rows:
+        work_date = row["work_date"]
+        deliveries = int(row.get("deliveries") or 0)
+        net_yen = int(row.get("net_yen") or 0)
+        promo_yen = int(row.get("promo_yen") or 0)
+        other_yen = int(row.get("other_yen") or 0)
+        tip_yen = int(row.get("tip_yen") or 0)
+        total_yen = int(row.get("total_yen") or 0)
+        writer.writerow(
+            [
+                "収入",
+                f"uber-{work_date.strftime('%Y%m%d')}",
+                work_date.strftime("%Y/%m/%d"),
+                "",
+                "Uber",
+                "売上高",
+                "課税売上10%",
+                str(total_yen),
+                "内税",
+                "",
+                f"Uber日次売上（{deliveries}件 / net:{net_yen} promo:{promo_yen} other:{other_yen} tip:{tip_yen}）",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                work_date.strftime("%Y/%m/%d"),
+                "現金",
+                str(total_yen),
+            ]
+        )
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    output.close()
+    if export_rows:
+        from_label = export_rows[0]["work_date"].strftime("%Y%m%d")
+        to_label = export_rows[-1]["work_date"].strftime("%Y%m%d")
+    else:
+        label_date = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d")
+        from_label = label_date
+        to_label = label_date
+    filename = f"freee_uber_{from_label}-{to_label}.csv"
+    return Response(
+        csv_bytes,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@records_bp.post("/uber/freee.csv")
+@login_required
+def uber_freee_csv():
+    payload = request.get_json(silent=True) or {}
+    raw_dates = payload.get("dates")
+    if not isinstance(raw_dates, list):
+        return jsonify({"ok": False, "message": "dates は配列で指定してください。"}), 400
+    parsed_dates: list[date] = []
+    seen_dates: set[date] = set()
+    for value in raw_dates:
+        if not isinstance(value, str):
+            return jsonify({"ok": False, "message": "dates は YYYY-MM-DD 形式の配列で指定してください。"}), 400
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"ok": False, "message": "dates は YYYY-MM-DD 形式で指定してください。"}), 400
+        if parsed not in seen_dates:
+            seen_dates.add(parsed)
+            parsed_dates.append(parsed)
+    if not parsed_dates:
+        return jsonify({"ok": False, "message": "少なくとも1日以上選択してください。"}), 400
+
+    rows = _fetch_uber_daily_rows(dates=parsed_dates, order_desc=False)
+    return _build_uber_freee_csv_response(rows)
 
 
 @records_bp.get("/uber/new")
