@@ -626,6 +626,8 @@ _recent_access_hits: Dict[Tuple[str, str, int, str], Tuple[float, int]] = {}
 
 _FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "3")))
 _FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1")))
+_FW_404_IP_THRESHOLD = max(1, int(os.getenv("FW_404_IP_THRESHOLD", "20")))
+_FW_404_IP_WINDOW_SEC = max(1.0, float(os.getenv("FW_404_IP_WINDOW_SEC", "60")))
 _FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
 _FW_404_SKIP_PREFIXES = (
     "/static",
@@ -637,6 +639,7 @@ _FW_404_SKIP_PREFIXES = (
 )
 
 _rate_404_hits: Dict[str, deque[float]] = {}
+_rate_404_ip_hits: Dict[str, deque[float]] = {}
 _rate_404_last_ban: Dict[str, float] = {}
 _rate_404_lock = threading.Lock()
 
@@ -687,6 +690,7 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
     now = time.time()
     should_ban = False
     count = 0
+    reason = ""
     target = None
 
     with _rate_404_lock:
@@ -696,20 +700,44 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
         while q and now - q[0] > _FW_404_RATE_WINDOW_SEC:
             q.popleft()
 
-        count = len(q)
-        if count >= _FW_404_RATE_THRESHOLD:
+        count_short = len(q)
+
+        ip_q = _rate_404_ip_hits.setdefault(ip, deque())
+        ip_q.append(now)
+        while ip_q and now - ip_q[0] > _FW_404_IP_WINDOW_SEC:
+            ip_q.popleft()
+        count_ip = len(ip_q)
+
+        if count_short >= _FW_404_RATE_THRESHOLD:
             target = normalize_ip_target(ip=ip)
             target_key = f"{target['version']}:{target['target']}"
             last_ban_ts = _rate_404_last_ban.get(target_key, 0)
             if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
                 _rate_404_last_ban[target_key] = now
                 should_ban = True
+                count = count_short
+                reason = "short"
+        elif count_ip >= _FW_404_IP_THRESHOLD:
+            target = normalize_ip_target(ip=ip)
+            target_key = f"{target['version']}:{target['target']}"
+            last_ban_ts = _rate_404_last_ban.get(target_key, 0)
+            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
+                _rate_404_last_ban[target_key] = now
+                should_ban = True
+                count = count_ip
+                reason = "ip"
 
         if len(_rate_404_hits) > 5000:
             stale_before = now - max(_FW_404_RATE_WINDOW_SEC, 5.0)
             for key in list(_rate_404_hits.keys())[:1000]:
                 if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
                     _rate_404_hits.pop(key, None)
+
+        if len(_rate_404_ip_hits) > 5000:
+            stale_ip_before = now - max(_FW_404_IP_WINDOW_SEC, 5.0)
+            for key in list(_rate_404_ip_hits.keys())[:1000]:
+                if _rate_404_ip_hits.get(key) and _rate_404_ip_hits[key][-1] < stale_ip_before:
+                    _rate_404_ip_hits.pop(key, None)
 
         if len(_rate_404_last_ban) > 5000:
             stale_cooldown = now - (_FW_BAN_COOLDOWN_SEC * 2)
@@ -725,19 +753,20 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
     if result.get("ok"):
         _write_fw_ban_log(
             ip,
-            f"[FW_BAN][404RATE] ip={ip} target={target_repr} path={path} count={count} status={result.get('status')}",
+            f"[FW_BAN][404RATE] ip={ip} target={target_repr} path={path} count={count} reason={reason} status={result.get('status')}",
         )
         _dbg(
-            f"fw-ban success ip={ip} target={target_repr} path={path} count={count} status={result.get('status')}"
+            f"fw-ban success ip={ip} target={target_repr} path={path} count={count} reason={reason} status={result.get('status')}"
         )
         return
 
     current_app.logger.warning(
-        "[FW_BAN][404RATE] failed ip=%s target=%s path=%s count=%s status=%s stderr=%s",
+        "[FW_BAN][404RATE] failed ip=%s target=%s path=%s count=%s reason=%s status=%s stderr=%s",
         ip,
         target_repr,
         path,
         count,
+        reason,
         result.get("status"),
         result.get("stderr", ""),
     )

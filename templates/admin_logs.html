@@ -714,6 +714,36 @@ code { white-space: pre-wrap; word-break: break-word; }
       return line;
     }
 
+    if (/\[FW_BAN\]/.test(t)) {
+      const mode = (t.match(/\[FW_BAN\]\[([^\]]+)\]/)?.[1]) || '';
+      const ip = (t.match(/\bip=([^\s]+)/)?.[1]) || '';
+      const target = (t.match(/\btarget=([^\s]+)/)?.[1]) || '';
+      const path = (t.match(/\bpath=([^\s]+)/)?.[1]) || '';
+      const count = (t.match(/\bcount=(\d+)/)?.[1]) || '';
+      const reason = (t.match(/\breason=([^\s]+)/)?.[1]) || '';
+      const status = (t.match(/\bstatus=([^\s]+)/)?.[1]) || '';
+
+      let line = badge('FW_BAN', 'bg-danger');
+      if (mode) line += ' ' + badge(mode, 'bg-warning text-dark');
+
+      if (status) {
+        const s = status.toLowerCase();
+        const stCls = s === 'added' ? 'bg-success' : (s === 'already' ? 'bg-secondary' : 'bg-danger');
+        line += ' ' + badge('status=' + status, stCls);
+      }
+      if (reason) {
+        const jaReason = reason === 'short' ? '短時間バースト' : (reason === 'ip' ? 'IP累積' : reason);
+        line += ' ' + badge('判定=' + jaReason, 'bg-info text-dark');
+      }
+
+      if (ip) line += ' <span class="mono">ip=' + esc(ip) + '</span>';
+      if (target) line += ' <span class="mono ms-2">target=' + esc(target) + '</span>';
+      if (path) line += ' <span class="mono ms-2">path=' + esc(path) + '</span>';
+      if (count) line += ' <span class="badge bg-light text-dark border ms-2">count=' + esc(count) + '</span>';
+
+      return line;
+    }
+
     // ---- 通常Webログ ----
     const mmp  = t.match(/\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b\s+([^\s"]+)/);
     const path = (mmp ? mmp[2] : (t.match(/path[=:]"?([^\s"]+)"?/i)?.[1] || ''));
