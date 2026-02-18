@@ -4,6 +4,9 @@
 
 {% block records_actions %}
   {% include "records/_back_to_index.html" %}
+  <button type="button" id="selectAllFreeeDays" class="btn btn-outline-primary">全選択</button>
+  <button type="button" id="clearAllFreeeDays" class="btn btn-outline-secondary">全解除</button>
+  <button type="button" id="downloadSelectedFreeeCsv" class="btn btn-success">選択分をfreee CSVでDL</button>
   <a class="btn btn-outline-secondary" href="{{ url_for('records.uber_ocr_queue_list') }}">OCRキュー</a>
 {% endblock %}
 
@@ -112,6 +115,7 @@
   <table class="table table-striped align-middle">
     <thead class="table-light">
       <tr>
+        <th class="text-center">選択</th>
         <th>日付</th>
         <th class="text-end">件数</th>
         <th class="text-end">正味</th>
@@ -126,6 +130,9 @@
     <tbody>
       {% for row in rows %}
       <tr>
+        <td class="text-center">
+          <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" checked>
+        </td>
         <td>{{ row.work_date }}</td>
         <td class="text-end">{{ row.deliveries|fmt_yen }}</td>
         <td class="text-end">¥{{ row.net_yen|fmt_yen }}</td>
@@ -143,7 +150,7 @@
       </tr>
       {% else %}
       <tr>
-        <td colspan="9" class="text-center text-muted">データがありません。</td>
+        <td colspan="10" class="text-center text-muted">データがありません。</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -198,6 +205,100 @@
           }
         });
       };
+
+
+
+      const freeeDayCheckboxes = function () {
+        return Array.from(document.querySelectorAll('.js-freee-day'));
+      };
+
+      const setAllFreeeDayChecks = function (checked) {
+        freeeDayCheckboxes().forEach(function (checkbox) {
+          checkbox.checked = checked;
+        });
+      };
+
+      const selectAllBtn = document.getElementById('selectAllFreeeDays');
+      const clearAllBtn = document.getElementById('clearAllFreeeDays');
+      const downloadBtn = document.getElementById('downloadSelectedFreeeCsv');
+
+      if (selectAllBtn) {
+        selectAllBtn.addEventListener('click', function () {
+          setAllFreeeDayChecks(true);
+        });
+      }
+
+      if (clearAllBtn) {
+        clearAllBtn.addEventListener('click', function () {
+          setAllFreeeDayChecks(false);
+        });
+      }
+
+      if (downloadBtn) {
+        downloadBtn.addEventListener('click', async function () {
+          const selected = freeeDayCheckboxes()
+            .filter(function (checkbox) { return checkbox.checked; })
+            .map(function (checkbox) { return checkbox.dataset.date; });
+
+          if (selected.length === 0) {
+            alert('freee CSVに含める日次を1件以上選択してください。');
+            return;
+          }
+
+          downloadBtn.disabled = true;
+          const originalText = downloadBtn.textContent;
+          downloadBtn.textContent = 'ダウンロード中…';
+
+          try {
+            const response = await fetch('{{ url_for("records.uber_freee_csv") }}', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ dates: selected }),
+            });
+
+            if (!response.ok) {
+              let message = 'CSVのダウンロードに失敗しました。';
+              try {
+                const errorData = await response.json();
+                if (errorData && errorData.message) {
+                  message = errorData.message;
+                }
+              } catch (e) {
+              }
+              alert(message);
+              return;
+            }
+
+            const blob = await response.blob();
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const match = disposition.match(/filename="?([^";]+)"?/i);
+            const fileName = match && match[1] ? match[1] : 'freee_uber.csv';
+
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            window.URL.revokeObjectURL(url);
+
+            const selectedSet = new Set(selected);
+            freeeDayCheckboxes().forEach(function (checkbox) {
+              if (selectedSet.has(checkbox.dataset.date)) {
+                checkbox.checked = false;
+              }
+            });
+          } catch (error) {
+            alert('通信エラーが発生しました。時間をおいて再実行してください。');
+          } finally {
+            downloadBtn.disabled = false;
+            downloadBtn.textContent = originalText;
+          }
+        });
+      }
 
       analyzeBtn.addEventListener('click', async function () {
         const file = fileInput.files && fileInput.files[0];

@@ -1997,6 +1997,14 @@ def admin_logs():
 
     _req_seen = {}
 
+    def _netinfo_record(ni: dict) -> dict:
+        return {
+            "netname": ni.get("netname", ""),
+            "country": ni.get("country", ""),
+            "org": ni.get("org", ""),
+            "asname": ni.get("asname", ""),
+        }
+
     def get_netinfo_fast(ip: str) -> dict:
         if not ip:
             return {"netname": "", "country": "", "org": "", "asname": ""}
@@ -2010,15 +2018,53 @@ def admin_logs():
             ni = get_netinfo(ip) or {}
         except Exception:
             ni = {}
-        rec = {
-            "netname": ni.get("netname", ""),
-            "country": ni.get("country", ""),
-            "org": ni.get("org", ""),
-            "asname": ni.get("asname", ""),
-        }
+        rec = _netinfo_record(ni)
         _cache_put(ip, rec)
         _req_seen[ip] = rec
         return rec
+
+    def get_netinfo_bulk(ips: list[str]) -> dict[str, dict]:
+        """
+        一意IPをまとめて解決。
+        - まずリクエスト内/プロセス内キャッシュを参照
+        - キャッシュミスのみ並列で get_netinfo() を叩く
+        """
+        resolved: dict[str, dict] = {}
+        misses = []
+
+        for ip in ips:
+            if not ip:
+                continue
+            if ip in _req_seen:
+                resolved[ip] = _req_seen[ip]
+                continue
+            hit = _cache_get(ip)
+            if hit is not None:
+                _req_seen[ip] = hit
+                resolved[ip] = hit
+                continue
+            misses.append(ip)
+
+        if not misses:
+            return resolved
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        workers = min(16, max(4, len(misses)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            fut_map = {ex.submit(get_netinfo, ip): ip for ip in misses}
+            for fut in as_completed(fut_map):
+                ip = fut_map[fut]
+                try:
+                    ni = fut.result() or {}
+                except Exception:
+                    ni = {}
+                rec = _netinfo_record(ni)
+                _cache_put(ip, rec)
+                _req_seen[ip] = rec
+                resolved[ip] = rec
+
+        return resolved
 
     def enrich_row(r):
         ip = (r.get("ip") or "").strip()
@@ -2162,6 +2208,23 @@ def admin_logs():
         if not rows:
             break
 
+        bulk_netinfo = {}
+        if nonjp_only:
+            nonjp_ips = []
+            seen_ips = set()
+            for r in rows:
+                ip = (r.get("ip") or "").strip()
+                if (
+                    not ip
+                    or ip in seen_ips
+                    or ip in ("-", "—")
+                    or not is_valid_ip(ip)
+                ):
+                    continue
+                seen_ips.add(ip)
+                nonjp_ips.append(ip)
+            bulk_netinfo = get_netinfo_bulk(nonjp_ips)
+
         for r in rows:
             ip = (r.get("ip") or "").strip()
             text = r.get("log_text") or ""
@@ -2183,7 +2246,15 @@ def admin_logs():
             if nonjp_only:
                 if not ip or ip.strip() in ("-", "—") or not is_valid_ip(ip.strip()):
                     continue
-                tmp = enrich_row(dict(r))
+                tmp = dict(r)
+                ni = bulk_netinfo.get(ip) or get_netinfo_fast(ip)
+                tmp["netname"] = ni.get("netname", "")
+                tmp["country"] = ni.get("country", "")
+                tmp["provider"] = (
+                    ni.get("org") or ni.get("asname") or ni.get("netname") or ""
+                )
+                tmp["ip_valid"] = True
+                tmp["ip_version"] = ip_address(ip).version
                 cc = (tmp.get("country") or "").upper()
                 if kind == "SMTP":
                     if not cc or cc in ("JP", "ZZ", "不明", "UNKNOWN"):
