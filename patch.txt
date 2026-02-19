@@ -1,85 +1,252 @@
-diff --git a/templates/admin_logs.html b/templates/admin_logs.html
-index 1fc974a2b2650850e1765e1811c1449f6bd4cca6..7d0c3ceadadf4d2b9f2072cbf7d4818bc36e7355 100644
---- a/templates/admin_logs.html
-+++ b/templates/admin_logs.html
-@@ -692,50 +692,80 @@ code { white-space: pre-wrap; word-break: break-word; }
-       const detail = (t.match(/detail=(.+)$/)?.[1] || '').trim();
+diff --git a/records/bp.py b/records/bp.py
+index 5590d0631b61419f16a23e80169d337b857f603e..9a1be83d21b04dad4ca0231877ce037f9780e8a6 100644
+--- a/records/bp.py
++++ b/records/bp.py
+@@ -500,50 +500,51 @@ def _fetch_uber_daily_rows(
+     cur = db.cursor(dictionary=True)
+     where_clauses: list[str] = []
+     params: list[date] = []
+     if from_date is not None:
+         where_clauses.append("work_date >= %s")
+         params.append(from_date)
+     if to_date is not None:
+         where_clauses.append("work_date <= %s")
+         params.append(to_date)
+     if dates:
+         placeholders = ", ".join(["%s"] * len(dates))
+         where_clauses.append(f"work_date IN ({placeholders})")
+         params.extend(dates)
+     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+     order_sql = "DESC" if order_desc else "ASC"
+     cur.execute(
+         f"""
+         SELECT
+             id,
+             work_date,
+             deliveries,
+             net_yen,
+             promo_yen,
+             other_yen,
+             tip_yen,
++            freee_exported_at,
+             (net_yen + promo_yen + other_yen + tip_yen) AS total_yen
+         FROM uber_daily
+         {where_sql}
+         ORDER BY work_date {order_sql}
+         """,
+         tuple(params),
+     )
+     rows = cur.fetchall()
+     db.close()
+     return rows
  
-       let line = badge('SMTP', 'bg-warning text-dark');
-       line += ' ' + badge(
-         isOk ? '送信OK' : (isNg ? '送信NG' : '送信'),
-         isOk ? 'bg-success' : (isNg ? 'bg-danger' : 'bg-secondary')
-       );
  
-       if (to) {
-         line += ' <span class="mono">to=' + esc(to) + '</span>';
-       } else {
-         line += ' <span class="mono">to=（不明）</span>';
-       }
+ def _build_uber_freee_csv_response(rows: list[dict]) -> Response:
+     export_rows = [row for row in rows if int(row.get("total_yen") or 0) > 0]
+     output = io.StringIO(newline="")
+     writer = csv.writer(output, lineterminator="\r\n")
+     writer.writerow(
+         [
+             "収支区分",
+             "管理番号",
+             "発生日",
+             "決済期日",
+             "取引先",
+             "勘定科目",
+             "税区分",
+@@ -614,51 +615,69 @@ def _build_uber_freee_csv_response(rows: list[dict]) -> Response:
  
-       if (subj) {
-         line += ' <span class="ms-2">subj=</span><span class="text-muted">' + esc(subj) + '</span>';
-       }
  
-       if (detail) {
-         line += ' <span class="text-muted ms-2 small">detail: ' + esc(detail) + '</span>';
-       }
+ @records_bp.post("/uber/freee.csv")
+ @login_required
+ def uber_freee_csv():
+     payload = request.get_json(silent=True) or {}
+     raw_dates = payload.get("dates")
+     if not isinstance(raw_dates, list):
+         return jsonify({"ok": False, "message": "dates は配列で指定してください。"}), 400
+     parsed_dates: list[date] = []
+     seen_dates: set[date] = set()
+     for value in raw_dates:
+         if not isinstance(value, str):
+             return jsonify({"ok": False, "message": "dates は YYYY-MM-DD 形式の配列で指定してください。"}), 400
+         try:
+             parsed = datetime.strptime(value, "%Y-%m-%d").date()
+         except ValueError:
+             return jsonify({"ok": False, "message": "dates は YYYY-MM-DD 形式で指定してください。"}), 400
+         if parsed not in seen_dates:
+             seen_dates.add(parsed)
+             parsed_dates.append(parsed)
+     if not parsed_dates:
+         return jsonify({"ok": False, "message": "少なくとも1日以上選択してください。"}), 400
  
-       return line;
-     }
- 
-+    if (/\[FW_BAN\]/.test(t)) {
-+      const mode = (t.match(/\[FW_BAN\]\[([^\]]+)\]/)?.[1]) || '';
-+      const ip = (t.match(/\bip=([^\s]+)/)?.[1]) || '';
-+      const target = (t.match(/\btarget=([^\s]+)/)?.[1]) || '';
-+      const path = (t.match(/\bpath=([^\s]+)/)?.[1]) || '';
-+      const count = (t.match(/\bcount=(\d+)/)?.[1]) || '';
-+      const reason = (t.match(/\breason=([^\s]+)/)?.[1]) || '';
-+      const status = (t.match(/\bstatus=([^\s]+)/)?.[1]) || '';
+     rows = _fetch_uber_daily_rows(dates=parsed_dates, order_desc=False)
+-    return _build_uber_freee_csv_response(rows)
++    response = _build_uber_freee_csv_response(rows)
 +
-+      let line = badge('FW_BAN', 'bg-danger');
-+      if (mode) line += ' ' + badge(mode, 'bg-warning text-dark');
++    db = get_db()
++    cur = db.cursor()
++    now = now_ts()
++    placeholders = ", ".join(["%s"] * len(parsed_dates))
++    cur.execute(
++        f"""
++        UPDATE uber_daily
++        SET freee_exported_at = %s,
++            updated_at = %s
++        WHERE work_date IN ({placeholders})
++        """,
++        (now, now, *parsed_dates),
++    )
++    db.commit()
++    db.close()
 +
-+      if (status) {
-+        const s = status.toLowerCase();
-+        const stCls = s === 'added' ? 'bg-success' : (s === 'already' ? 'bg-secondary' : 'bg-danger');
-+        line += ' ' + badge('status=' + status, stCls);
-+      }
-+      if (reason) {
-+        const jaReason = reason === 'short' ? '短時間バースト' : (reason === 'ip' ? 'IP累積' : reason);
-+        line += ' ' + badge('判定=' + jaReason, 'bg-info text-dark');
-+      }
-+
-+      if (ip) line += ' <span class="mono">ip=' + esc(ip) + '</span>';
-+      if (target) line += ' <span class="mono ms-2">target=' + esc(target) + '</span>';
-+      if (path) line += ' <span class="mono ms-2">path=' + esc(path) + '</span>';
-+      if (count) line += ' <span class="badge bg-light text-dark border ms-2">count=' + esc(count) + '</span>';
-+
-+      return line;
-+    }
-+
-     // ---- 通常Webログ ----
-     const mmp  = t.match(/\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b\s+([^\s"]+)/);
-     const path = (mmp ? mmp[2] : (t.match(/path[=:]"?([^\s"]+)"?/i)?.[1] || ''));
-     let status = (t.match(/\bstatus[=:]\s*(\d{3})\b/i)?.[1]) ||
-                  (t.match(/(?:^|\s)(\d{3})\s+(?:OK|Found|Moved|Not|Bad|Unauthorized|Forbidden|Error)/i)?.[1]) ||
-                  (t.match(/(?:^|\s)(\d{3})(?:\s|$)/)?.[1]) || '';
-     const endpoint = (t.match(/\bendpoint[=:]"?([^\s"]+)"?/i)?.[1]) ||
-                      (t.match(/\bep[=:]"?([^\s"]+)"?/i)?.[1]) || '';
++    return response
  
-     // ★ user="LINE_28_いおりん" みたいな日本語付きも丸ごと拾う
-     let user = '';
-     {
-       // まず user="......" の中身をそのまま全部拾う（日本語OK）
-       const mQuoted = t.match(/\buser(?:name)?[=:]\s*"([^"]*)"/i);
-       if (mQuoted) {
-         user = mQuoted[1].trim();
-       } else {
-         // 保険: 昔の形式やクォート無しのとき用（英数のみ）
-         const mAscii = t.match(/\buser(?:name)?[=:]"?([\w.@:-]+)"?/i);
-         if (mAscii) {
-           user = mAscii[1].trim();
-         }
-       }
-     }
  
+ @records_bp.get("/uber/new")
+ @login_required
+ def uber_new():
+     return redirect(url_for("records.uber_list"))
+ 
+ 
+ def _handle_uber_upsert(redirect_endpoint: str):
+     work_date = _parse_date(request.form.get("work_date", ""), "日付")
+     deliveries = _parse_int(request.form.get("deliveries", ""), "件数")
+     net_yen = _parse_int(request.form.get("net_yen", ""), "正味の料金")
+     promo_yen = _parse_int(request.form.get("promo_yen", "0"), "プロモーション")
+     other_yen = _parse_int(request.form.get("other_yen", "0"), "その他")
+     tip_yen = _parse_int(request.form.get("tip_yen", "0"), "チップ")
+     if None in (work_date, deliveries, net_yen, promo_yen, other_yen, tip_yen):
+         return redirect(url_for(redirect_endpoint))
+     if deliveries == 0 and net_yen == 0 and promo_yen == 0 and other_yen == 0 and tip_yen == 0:
+         flash("件数が0で金額もすべて0のデータは登録できません。", "warning")
+         return redirect(url_for(redirect_endpoint))
+ 
+     now = now_ts()
+     db = get_db()
+     cur = db.cursor()
+     cur.execute(
+diff --git a/records/models.py b/records/models.py
+index b97d7866de379d59c2f6dd641c878a68078e1e87..9e6edafcaf086005882c1d65eda41b5d206d7eb4 100644
+--- a/records/models.py
++++ b/records/models.py
+@@ -4,50 +4,63 @@ from decimal import Decimal, ROUND_HALF_UP
+ from app.utils.db import get_db
+ 
+ 
+ def ensure_uber_schema(db=None) -> None:
+     close_db = False
+     if db is None:
+         db = get_db()
+         close_db = True
+     cur = db.cursor()
+     cur.execute(
+         """
+         CREATE TABLE IF NOT EXISTS uber_daily (
+             id INT AUTO_INCREMENT PRIMARY KEY,
+             work_date DATE NOT NULL UNIQUE,
+             deliveries INT NOT NULL DEFAULT 0,
+             net_yen INT NOT NULL DEFAULT 0,
+             promo_yen INT NOT NULL DEFAULT 0,
+             other_yen INT NOT NULL DEFAULT 0,
+             tip_yen INT NOT NULL DEFAULT 0,
+             created_at DATETIME NOT NULL,
+             updated_at DATETIME NOT NULL,
+             INDEX(work_date)
+         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+         """
+     )
++    cur.execute(
++        """
++        SELECT column_name
++        FROM information_schema.columns
++        WHERE table_schema = DATABASE()
++          AND table_name = 'uber_daily'
++        """
++    )
++    columns = {row[0] for row in cur.fetchall()}
++    if "freee_exported_at" not in columns:
++        cur.execute(
++            "ALTER TABLE uber_daily ADD COLUMN freee_exported_at DATETIME NULL AFTER updated_at"
++        )
+     db.commit()
+     if close_db:
+         db.close()
+ 
+ 
+ def ensure_uber_ocr_queue_schema(db=None) -> None:
+     close_db = False
+     if db is None:
+         db = get_db()
+         close_db = True
+     cur = db.cursor()
+     cur.execute(
+         """
+         CREATE TABLE IF NOT EXISTS uber_ocr_queue (
+             id INT AUTO_INCREMENT PRIMARY KEY,
+             status VARCHAR(32) NOT NULL,
+             work_date DATE NOT NULL,
+             deliveries INT NOT NULL DEFAULT 0,
+             net_yen INT NOT NULL DEFAULT 0,
+             promo_yen INT NOT NULL DEFAULT 0,
+             other_yen INT NOT NULL DEFAULT 0,
+             tip_yen INT NOT NULL DEFAULT 0,
+             warnings_json TEXT NULL,
+             image_path VARCHAR(512) NOT NULL,
+             mime_type VARCHAR(128) NULL,
+diff --git a/records/templates/records/uber/list.html b/records/templates/records/uber/list.html
+index 9ad526e002a6403901146b36623ae151508683d3..7e615065a2dd447f59e7308aadbd0f339546cb88 100644
+--- a/records/templates/records/uber/list.html
++++ b/records/templates/records/uber/list.html
+@@ -109,51 +109,51 @@
+       {% endfor %}
+     </tbody>
+   </table>
+ </div>
+ 
+ <div class="table-responsive">
+   <table class="table table-striped align-middle">
+     <thead class="table-light">
+       <tr>
+         <th class="text-center">選択</th>
+         <th>日付</th>
+         <th class="text-end">件数</th>
+         <th class="text-end">正味</th>
+         <th class="text-end">プロモ</th>
+         <th class="text-end">その他</th>
+         <th class="text-end">チップ</th>
+         <th class="text-end">合計</th>
+         <th class="text-end">平均</th>
+         <th class="text-end">操作</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for row in rows %}
+       <tr>
+         <td class="text-center">
+-          <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" checked>
++          <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" {% if not row.freee_exported_at %}checked{% endif %}>
+         </td>
+         <td>{{ row.work_date }}</td>
+         <td class="text-end">{{ row.deliveries|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.net_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.promo_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.other_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.tip_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.total_yen|fmt_yen }}</td>
+         <td class="text-end">{{ row.avg_yen|fmt_yen }}</td>
+         <td class="text-end">
+           <a class="btn btn-sm btn-outline-primary" href="{{ url_for('records.uber_edit', record_id=row.id) }}">編集</a>
+           <form method="post" action="{{ url_for('records.uber_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
+             <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+           </form>
+         </td>
+       </tr>
+       {% else %}
+       <tr>
+         <td colspan="10" class="text-center text-muted">データがありません。</td>
+       </tr>
+       {% endfor %}
+     </tbody>
+   </table>
+ </div>
+ {% endblock %}

@@ -522,6 +522,7 @@ def _fetch_uber_daily_rows(
             promo_yen,
             other_yen,
             tip_yen,
+            freee_exported_at,
             (net_yen + promo_yen + other_yen + tip_yen) AS total_yen
         FROM uber_daily
         {where_sql}
@@ -636,7 +637,25 @@ def uber_freee_csv():
         return jsonify({"ok": False, "message": "少なくとも1日以上選択してください。"}), 400
 
     rows = _fetch_uber_daily_rows(dates=parsed_dates, order_desc=False)
-    return _build_uber_freee_csv_response(rows)
+    response = _build_uber_freee_csv_response(rows)
+
+    db = get_db()
+    cur = db.cursor()
+    now = now_ts()
+    placeholders = ", ".join(["%s"] * len(parsed_dates))
+    cur.execute(
+        f"""
+        UPDATE uber_daily
+        SET freee_exported_at = %s,
+            updated_at = %s
+        WHERE work_date IN ({placeholders})
+        """,
+        (now, now, *parsed_dates),
+    )
+    db.commit()
+    db.close()
+
+    return response
 
 
 @records_bp.get("/uber/new")
