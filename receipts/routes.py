@@ -429,6 +429,68 @@ def _upsert_recipient(
     )
 
 
+def _sync_recipients_from_ext_users(
+    cur,
+    *,
+    issuer_user_id: str,
+    actor_id: str | None,
+    ip: str | None,
+    user_agent: str | None,
+) -> int:
+    """external_login_user から nickname/email を取得して相手先へ取り込む。"""
+    cur.execute(
+        """
+        SELECT nickname, email
+        FROM external_login_user
+        WHERE email IS NOT NULL
+          AND email <> ''
+          AND nickname IS NOT NULL
+          AND nickname <> ''
+        ORDER BY id DESC
+        """
+    )
+    rows = _fetchall_dict(cur)
+
+    imported = 0
+    for row in rows:
+        before_id = None
+        email = (row.get("email") or "").strip()
+        nickname = (row.get("nickname") or "").strip()
+        if not email or not nickname:
+            continue
+
+        cur.execute(
+            """
+            SELECT id
+            FROM receipt_recipients
+            WHERE issuer_user_id = %s
+              AND email = %s
+              AND is_deleted = 0
+            LIMIT 1
+            """,
+            (issuer_user_id, email),
+        )
+        hit = _fetchone_dict(cur)
+        if hit:
+            before_id = hit.get("id")
+
+        _upsert_recipient(
+            cur,
+            issuer_user_id=issuer_user_id,
+            display_name=nickname,
+            email=email,
+            update_name=False,
+            mark_used=False,
+            actor_id=actor_id,
+            ip=ip,
+            user_agent=user_agent,
+        )
+        if before_id is None:
+            imported += 1
+
+    return imported
+
+
 def _send_pdf_notice(to_email: str, subject: str, body: str, pdf_path: str) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
@@ -526,11 +588,29 @@ def receipts_list():
 
 @receipts_bp.route("/recipients")
 def recipients_list():
+    sync = request.args.get("sync") == "1"
     db = get_db()
     cur = db.cursor()
     q = request.args.get("q", "").strip()
-    recipients = _get_recipient_list(cur, session.get("user"), q or None)
-    db.close()
+    try:
+        if sync:
+            imported = _sync_recipients_from_ext_users(
+                cur,
+                issuer_user_id=session.get("user"),
+                actor_id=session.get("user"),
+                ip=request.remote_addr,
+                user_agent=request.headers.get("User-Agent"),
+            )
+            db.commit()
+            flash(f"ext-users から {imported} 件を取り込みました。", "success")
+
+        recipients = _get_recipient_list(cur, session.get("user"), q or None)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
     return render_template(
         "recipients.html",
         recipients=recipients,

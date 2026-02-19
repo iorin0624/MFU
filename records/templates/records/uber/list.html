@@ -131,7 +131,7 @@
       {% for row in rows %}
       <tr>
         <td class="text-center">
-          <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" checked>
+          <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" {% if not row.freee_exported_at %}checked{% endif %}>
         </td>
         <td>{{ row.work_date }}</td>
         <td class="text-end">{{ row.deliveries|fmt_yen }}</td>

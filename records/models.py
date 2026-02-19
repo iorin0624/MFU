@@ -26,6 +26,19 @@ def ensure_uber_schema(db=None) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'uber_daily'
+        """
+    )
+    columns = {row[0] for row in cur.fetchall()}
+    if "freee_exported_at" not in columns:
+        cur.execute(
+            "ALTER TABLE uber_daily ADD COLUMN freee_exported_at DATETIME NULL AFTER updated_at"
+        )
     db.commit()
     if close_db:
         db.close()
