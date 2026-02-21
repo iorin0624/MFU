@@ -3,11 +3,18 @@
 {% block records_title %}Uber 日次売上{% endblock %}
 
 {% block records_actions %}
-  {% include "records/_back_to_index.html" %}
-  <button type="button" id="selectAllFreeeDays" class="btn btn-outline-primary">全選択</button>
-  <button type="button" id="clearAllFreeeDays" class="btn btn-outline-secondary">全解除</button>
-  <button type="button" id="downloadSelectedFreeeCsv" class="btn btn-success">選択分をfreee CSVでDL</button>
-  <a class="btn btn-outline-secondary" href="{{ url_for('records.uber_ocr_queue_list') }}">OCRキュー</a>
+  <div class="uber-actions-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('records.index') }}">← 戻る</a>
+    <button type="button" id="selectAllFreeeDays" class="btn btn-outline-primary">全選択</button>
+    <button type="button" id="clearAllFreeeDays" class="btn btn-outline-secondary">全解除</button>
+    <button type="button" id="downloadSelectedFreeeCsv" class="btn btn-success">選択分をfreee CSVでDL</button>
+    <a
+      class="btn {{ 'btn-danger' if ocr_queue_pending_count > 0 else 'btn-outline-secondary' }}"
+      href="{{ url_for('records.uber_ocr_queue_list') }}"
+    >
+      OCRキュー{% if ocr_queue_pending_count > 0 %}（{{ ocr_queue_pending_count }}）{% endif %}
+    </a>
+  </div>
 {% endblock %}
 
 {% block records_content %}

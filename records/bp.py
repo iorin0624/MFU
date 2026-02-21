@@ -345,6 +345,10 @@ def uber_list():
     db = get_db()
     cur = db.cursor(dictionary=True)
 
+    cur.execute("SELECT COUNT(*) AS pending_count FROM uber_ocr_queue WHERE status = 'pending'")
+    queue_row = cur.fetchone() or {}
+    ocr_queue_pending_count = int(queue_row.get("pending_count") or 0)
+
     today = datetime.now(ZoneInfo("Asia/Tokyo")).date()
     month_start = date(today.year, today.month, 1)
     if today.month == 12:
@@ -478,6 +482,7 @@ def uber_list():
         "records/uber/list.html",
         rows=rows,
         monthly_rows=monthly_rows,
+        ocr_queue_pending_count=ocr_queue_pending_count,
         default_work_date=today,
         summary={
             "deliveries_sum": deliveries_sum,

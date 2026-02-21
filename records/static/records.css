@@ -6,3 +6,31 @@
 .records-wrap table td {
   vertical-align: middle;
 }
+
+.uber-actions-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0;
+}
+
+.uber-actions-wrap .btn {
+  border-radius: 0;
+  min-width: 130px;
+}
+
+.uber-actions-wrap .btn:first-child {
+  border-top-left-radius: 0.5rem;
+  border-bottom-left-radius: 0.5rem;
+}
+
+.uber-actions-wrap .btn:last-child {
+  border-top-right-radius: 0.5rem;
+  border-bottom-right-radius: 0.5rem;
+}
+
+@media (max-width: 992px) {
+  .uber-actions-wrap {
+    margin-top: 0.75rem;
+  }
+}
