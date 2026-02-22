@@ -1,59 +1,541 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 44b95ff700e7cfd49ae039b28e7ea5e48545cf86..ded1492fa41ea8495183f42f0530db25aef59144 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -1552,50 +1552,54 @@ def profile():
-                        notify_album_process=%s,
-                        updated_at=NOW()
-                  WHERE id=%s
-                  LIMIT 1
-                 """,
-                 (nickname, x_id, ig_id, email_in, payment_mode, notify_upload, notify_process, me["id"]),
-             )
-         db.commit()
+diff --git a/__init__.py b/__init__.py
+index 94b3cb850d83d27752ffc080a451eb0cf17a8907..0019e710b7f4ac7af3377dd74900285afb80d270 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -41,51 +41,51 @@ from flask import (
+ )
+ from flask_login import LoginManager
+ from werkzeug.middleware.proxy_fix import ProxyFix
+ from werkzeug.utils import secure_filename, safe_join
  
-         if saved_avatar_file:
-             cur.execute(
-                 "UPDATE external_login_user SET avatar_file=%s, updated_at=NOW() WHERE id=%s LIMIT 1",
-                 (saved_avatar_file, me["id"]),
-             )
-             db.commit()
-     except Exception:
-         try:
-             db.rollback()
-         except Exception:
-             pass
-         cur.close()
-         db.close()
-         flash("保存に失敗しました。時間をおいて再度お試しください。", "danger")
-         return redirect(url_for("external_login_user.profile"))
+ # =====================================
+ # 🛠️ アプリ内ユーティリティ（上段に集約）
+ # =====================================
+ from app.utils.auth import load_user
+ from app.utils.db import get_db
+ from app.utils.feature_access import (
+     ensure_feature_access_schema,
+     get_allowed_features,
+     get_nav_items_for_user,
+     has_feature,
+     require_feature,
+ )
+ from app.utils.file_ops import generate_thumbnail, create_zip
+ from app.utils.upload_security import (
+     DEFAULT_ALLOWED_EXTENSIONS,
+     detect_mime_from_bytes,
+     sanitize_filename,
+     validate_upload_file,
+ )
+ from app.utils.image import save_as_jpeg
+-from app.utils.logs import log_request_raw
++from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
+ from app.utils.message import generate_message
+ from app.utils.storage_info import get_storage_info
+ from app.utils.thumbs import enqueue_thumb_job
+ from app.utils.totp_util import get_totp_status
+ from app.utils.whois_util import get_netinfo
+ from app.albums import album_bp
+ from app.receipts import receipts_bp
+ from app.utils.mail import send_mail
+ from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
  
-+    # access log 用の表示名をセッションへ同期（DB更新成功時のみ）
-+    session["ext_user_nickname"] = nickname
-+    session.modified = True
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+ 
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+@@ -2369,50 +2369,73 @@ def admin_logs_status():
+ @admin_required
+ def admin_logs_result():
+     job_id = (request.args.get("job") or "").strip()
+     if not job_id:
+         return redirect(url_for("admin_logs_async"), code=302)
+ 
+     status_data = _progress_read(job_id)
+     if not status_data:
+         return redirect(url_for("admin_logs_async"), code=302)
+ 
+     st = status_data.get("status")
+     if st == "done":
+         result_path = status_data.get("result_path") or _admin_logs_html_result_path(job_id)
+         if result_path and os.path.exists(result_path):
+             return send_file(result_path, mimetype="text/html; charset=utf-8")
+         return Response("<h2>結果ファイルが見つかりません。</h2>", status=404, content_type="text/html; charset=utf-8")
+ 
+     if st == "error":
+         msg = status_data.get("error_message") or "ログの生成に失敗しました。"
+         retry_url = url_for("admin_logs_async", **(status_data.get("args") or {}))
+         return Response(f"<h2>ログの生成に失敗しました</h2><p>{msg}</p><p><a href='{retry_url}'>再試行</a></p>", content_type="text/html; charset=utf-8", status=500)
+ 
+     return redirect(url_for("admin_logs_async", job=job_id, **(status_data.get("args") or {})), code=302)
+ 
+ 
++@app.route("/admin/logs/404-ban", methods=["GET", "POST"])
++@admin_required
++def admin_logs_404_ban_settings():
++    if request.method == "POST":
++        try:
++            payload = {
++                "short_window_sec": request.form.get("short_window_sec", ""),
++                "short_threshold": request.form.get("short_threshold", ""),
++                "ip_window_sec": request.form.get("ip_window_sec", ""),
++                "ip_threshold": request.form.get("ip_threshold", ""),
++                "cooldown_sec": request.form.get("cooldown_sec", ""),
++                "ipv4_prefix": request.form.get("ipv4_prefix", "24"),
++            }
++            save_fw_404_settings(payload)
++            flash("404アクセスBAN判定の設定を更新しました。", "success")
++        except Exception as e:
++            flash(f"設定の更新に失敗しました: {e}", "danger")
++        return redirect(url_for("admin_logs_404_ban_settings"))
 +
-     # 初回フラグを落とす
-     if onboarding:
-         session["ext_user_onboarding"] = False
++    settings = get_fw_404_settings()
++    return render_template("admin_404_ban_settings.html", settings=settings)
++
++
+ # =======================================
+ # 管理: メール送信ログ（配送結果）
+ # =======================================
+ @app.route("/admin/mail-delivery")
+ @admin_required
+ def admin_mail_delivery_logs():
+     from app.utils.mail_delivery import ensure_mail_delivery_schema
  
-     # ===== リダイレクト（join 等へ）=====
-     next_url = (
-         session.get("ext_after_login_next")
-         or (request.args.get("next") or "").strip()
-         or (request.form.get("next") or "").strip()
+     ensure_mail_delivery_schema()
+ 
+     status = (request.args.get("status") or "all").strip().lower()
+     if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
+         status = "all"
+ 
+     search = (request.args.get("q") or "").strip()
+     try:
+         per_page = int(request.args.get("limit", "200"))
+     except ValueError:
+         per_page = 200
+     per_page = max(20, min(500, per_page))
+     try:
+         page = max(1, int(request.args.get("page", "1")))
+     except ValueError:
+         page = 1
+     offset = (page - 1) * per_page
+@@ -3188,37 +3211,37 @@ from app.routes.timer_routes import timer_bp
+ app.register_blueprint(timer_bp)
+ 
+ from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
+ 
+ from app.utils.zip_stream import zip_api
+ app.register_blueprint(zip_api)
+ 
+ from .utils.service_logs import bp_service_logs
+ app.register_blueprint(bp_service_logs)
+ 
+ from app.routes.webauthn_routes import webauthn_bp
+ app.register_blueprint(webauthn_bp)
+ 
+ from app.tickets import tickets_bp
+ app.register_blueprint(tickets_bp)
+ 
+ from .payment import bp as payment_bp
+ app.register_blueprint(payment_bp)
+ 
+ app.register_blueprint(receipts_bp)
+ 
+ from app.records import records_api_bp, records_bp
+ app.register_blueprint(records_bp, url_prefix="/records")
+ app.register_blueprint(records_api_bp)
+ 
+-from app.utils.logs import log_request_raw, write_login_log, log_access
++from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
+ 
+ from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
+ init_line_oauth(app)
+ app.register_blueprint(ext_login_bp, url_prefix="/external-login")
+ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
+ 
+ from app.s_u_calendar.routes import s_u_calendar_bp
+ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+ 
+ from app.bank_account import register_bank_account
+ register_bank_account(app)
+diff --git a/templates/admin_404_ban_settings.html b/templates/admin_404_ban_settings.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..e079ecd31783b15dac43267e6aab454e4ed1b7e9
+--- /dev/null
++++ b/templates/admin_404_ban_settings.html
+@@ -0,0 +1,54 @@
++{% extends "base.html" %}
++{% block title %}404アクセスBAN設定{% endblock %}
++
++{% block content %}
++<div class="container mt-4" style="max-width: 760px;">
++  <h2 class="mb-3">404アクセスでの自動BAN判定</h2>
++  <p class="text-muted">この画面で、404アクセス時の短時間判定・累積判定・IPv4のBAN単位を変更できます。</p>
++
++  <form method="post" class="card card-body">
++    <h5 class="mb-3">短時間判定</h5>
++    <div class="row g-3 align-items-end mb-3">
++      <div class="col-md-4">
++        <label class="form-label">何秒以内</label>
++        <input type="number" class="form-control" name="short_window_sec" min="0.1" step="0.1" value="{{ settings.short_window_sec }}" required>
++      </div>
++      <div class="col-md-4">
++        <label class="form-label">何回でBAN</label>
++        <input type="number" class="form-control" name="short_threshold" min="1" step="1" value="{{ settings.short_threshold }}" required>
++      </div>
++    </div>
++
++    <h5 class="mb-3">累積判定（IP単位）</h5>
++    <div class="row g-3 align-items-end mb-3">
++      <div class="col-md-4">
++        <label class="form-label">何秒以内</label>
++        <input type="number" class="form-control" name="ip_window_sec" min="1" step="1" value="{{ settings.ip_window_sec }}" required>
++      </div>
++      <div class="col-md-4">
++        <label class="form-label">何回でBAN</label>
++        <input type="number" class="form-control" name="ip_threshold" min="1" step="1" value="{{ settings.ip_threshold }}" required>
++      </div>
++    </div>
++
++    <div class="row g-3 align-items-end mb-4">
++      <div class="col-md-4">
++        <label class="form-label">BANクールダウン（秒）</label>
++        <input type="number" class="form-control" name="cooldown_sec" min="1" step="1" value="{{ settings.cooldown_sec }}" required>
++      </div>
++      <div class="col-md-4">
++        <label class="form-label">IPv4のBAN単位</label>
++        <select class="form-select" name="ipv4_prefix">
++          <option value="24" {% if settings.ipv4_prefix == 24 %}selected{% endif %}>/24</option>
++          <option value="32" {% if settings.ipv4_prefix == 32 %}selected{% endif %}>/32</option>
++        </select>
++      </div>
++    </div>
++
++    <div class="d-flex gap-2">
++      <button type="submit" class="btn btn-danger">保存</button>
++      <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-secondary">ログ画面に戻る</a>
++    </div>
++  </form>
++</div>
++{% endblock %}
+diff --git a/templates/admin_logs.html b/templates/admin_logs.html
+index 7d0c3ceadadf4d2b9f2072cbf7d4818bc36e7355..4944ab0ae05131fafa6118c17000afa758580f5b 100644
+--- a/templates/admin_logs.html
++++ b/templates/admin_logs.html
+@@ -1,31 +1,36 @@
+ {% extends "base.html" %}
+ {% block title %}ログ確認{% endblock %}
+ 
+ {% block content %}
+ <div class="container mt-4">
+   <h2 class="mb-2">📜 ログ記録（サーバー側フィルタ／上限 {{ filters.limit or 1000 }} 件）</h2>
++  <div class="mb-3">
++    <a class="btn btn-sm btn-outline-danger" href="{{ url_for('admin_logs_404_ban_settings') }}">
++      404アクセスBAN判定を編集
++    </a>
++  </div>
+ 
+   {# 今日・昨日のクイックリンク #}
+   {% set today = (now().strftime('%Y-%m-%d')) %}
+   {% set yesterday = ((now() - timedelta(days=1)).strftime('%Y-%m-%d')) %}
+   {% set smtp_filter_param = filters.smtp_filter if filters.kind == 'SMTP' and filters.smtp_filter != 'ALL' else None %}
+   {% set smtp_filter_value = filters.smtp_filter if filters.kind == 'SMTP' else 'ALL' %}
+   {% set smtp_tag_param = 1 if filters.smtp_tag else None %}
+   {% set search_keyword_param = filters.search_keyword or None %}
+   {% set search_mode_param = filters.search_mode if filters.search_keyword else None %}
+   {% set search_ip_param = filters.search_ip or None %}
+   {% set search_status_param = filters.search_status or None %}
+   {% set search_method_param = filters.search_method or None %}
+   {% set search_path_param = filters.search_path or None %}
+   {% set search_endpoint_param = filters.search_endpoint or None %}
+   {% set search_user_param = filters.search_user or None %}
+   {% set search_ua_param = filters.search_ua or None %}
+   {% set search_date_from_param = filters.search_date_from or None %}
+   {% set search_date_to_param = filters.search_date_to or None %}
+ 
+   <!-- サーバー側フィルタ操作 -->
+   <div class="mb-2 d-flex flex-wrap gap-2 align-items-center">
+     <div class="btn-group">
+       <a href="{{ url_for('admin_logs',
+                           date=today,
+                           kind=filters.kind or None,
+diff --git a/utils/logs.py b/utils/logs.py
+index 87189f891619b1ba2a12e30b79ab7e312d76e02d..9e052d86a9e5f162c64f94378b04e4428179d547 100644
+--- a/utils/logs.py
++++ b/utils/logs.py
+@@ -1,32 +1,33 @@
+ # app/utils/logs.py
+ from __future__ import annotations
+ 
+ import time
+ import ipaddress
+ import threading
+ import os
++import json
+ from collections import deque
+ from typing import Optional, Dict, Tuple, List, Union
+ from flask import g, request as _req, current_app
+ from app.utils.db import get_db
+ from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
+ from app.utils.whois_util import get_netinfo
+ 
+ # 外部: Discord 通知用（無ければ黙ってスキップ）
+ try:
+     import requests
+ except Exception:
+     requests = None
+ 
+ # --- debug helpers (runtime switchable) ------------------------------
+ import sys, json
+ from urllib import request as _urlreq
+ from urllib.error import URLError, HTTPError
+ 
+ # truthy 文字列判定（1/true/on/yes → True）
+ def _truthy(v) -> bool:
+     if v is None:
+         return False
+     if isinstance(v, bool):
+         return v
+     s = str(v).strip().lower()
+@@ -607,162 +608,220 @@ def build_access_log_fields(flask_request, flask_response, flask_session, endpoi
+         latency_ms=_latency_ms(),
      )
  
-     # ===== メール確認メール送信 =====
-     needs_verify = False
-     try:
-         if email_in and (email_changed or (email_in and not was_verified)):
-             # next_url を DB に保存するために渡す
-             t_raw = _issue_email_verify_token(me["id"], email_in, redirect_url=next_url)  # 24h
-             _send_verify_mail(email_in, t_raw)
-             flash("確認メールを送信しました。受信ボックスをご確認ください。", "info")
-             needs_verify = True
-     except Exception:
-         current_app.logger.exception("send verify mail failed")
  
-     # メール確認が必要な場合、確認完了後に戻る先をセッションに保存しておく
-     if needs_verify and next_url:
+ def _is_private_or_reserved_ip(ip: str) -> bool:
+     try:
+         ipobj = ipaddress.ip_address(ip)
+         return (ipobj.is_private or ipobj.is_loopback or ipobj.is_link_local or
+                 ipobj.is_reserved or ipobj.is_multicast)
+     except Exception:
+         # 解析不能なら安全側（whoisしない）
+         return True
+ 
+ # ----------------------------------------------------------
+ # アクセスログ抑制（3xxリダイレクトのバーストを汎用的に間引く）
+ # ----------------------------------------------------------
+ 
+ # key: (ip, path, status, ua) -> (last_ts, count)
+ _recent_access_hits: Dict[Tuple[str, str, int, str], Tuple[float, int]] = {}
+ 
+ _FW_404_RATE_THRESHOLD = max(1, int(os.getenv("FW_404_RATE_THRESHOLD", "3")))
+ _FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1")))
+ _FW_404_IP_THRESHOLD = max(1, int(os.getenv("FW_404_IP_THRESHOLD", "20")))
+ _FW_404_IP_WINDOW_SEC = max(1.0, float(os.getenv("FW_404_IP_WINDOW_SEC", "60")))
+ _FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
++_FW_404_IPV4_PREFIX = 24
+ _FW_404_SKIP_PREFIXES = (
+     "/static",
+     "/favicon",
+     "/api",
+     "/suc",
+     "/external-login/",
+     "/e/",
+ )
+ 
+ _rate_404_hits: Dict[str, deque[float]] = {}
+ _rate_404_ip_hits: Dict[str, deque[float]] = {}
+ _rate_404_last_ban: Dict[str, float] = {}
+ _rate_404_lock = threading.Lock()
+ 
++_FW_404_SETTINGS_PATH = os.getenv("FW_404_SETTINGS_PATH", "/mnt/mfu/app/fw_404_settings.json")
++_fw_404_settings_lock = threading.Lock()
++
++
++def _normalize_fw_404_settings(src: dict | None) -> dict:
++    src = src or {}
++    return {
++        "short_window_sec": max(0.1, float(src.get("short_window_sec", _FW_404_RATE_WINDOW_SEC))),
++        "short_threshold": max(1, int(src.get("short_threshold", _FW_404_RATE_THRESHOLD))),
++        "ip_window_sec": max(1.0, float(src.get("ip_window_sec", _FW_404_IP_WINDOW_SEC))),
++        "ip_threshold": max(1, int(src.get("ip_threshold", _FW_404_IP_THRESHOLD))),
++        "cooldown_sec": max(1, int(src.get("cooldown_sec", _FW_BAN_COOLDOWN_SEC))),
++        "ipv4_prefix": 24 if str(src.get("ipv4_prefix", _FW_404_IPV4_PREFIX)) != "32" else 32,
++    }
++
++
++def _load_fw_404_settings_from_file() -> dict:
++    try:
++        with open(_FW_404_SETTINGS_PATH, "r", encoding="utf-8") as f:
++            data = json.load(f)
++        if isinstance(data, dict):
++            return _normalize_fw_404_settings(data)
++    except Exception:
++        pass
++    return _normalize_fw_404_settings({})
++
++
++_fw_404_settings = _load_fw_404_settings_from_file()
++
++
++def get_fw_404_settings() -> dict:
++    with _fw_404_settings_lock:
++        return dict(_fw_404_settings)
++
++
++def save_fw_404_settings(settings: dict) -> dict:
++    normalized = _normalize_fw_404_settings(settings)
++    os.makedirs(os.path.dirname(_FW_404_SETTINGS_PATH), exist_ok=True)
++    with _fw_404_settings_lock:
++        with open(_FW_404_SETTINGS_PATH, "w", encoding="utf-8") as f:
++            json.dump(normalized, f, ensure_ascii=False, indent=2)
++        _fw_404_settings.clear()
++        _fw_404_settings.update(normalized)
++    return dict(normalized)
++
+ 
+ def _is_auto_ban_target_path(path: str) -> bool:
+     if not path:
+         return False
+     return not any(path.startswith(prefix) for prefix in _FW_404_SKIP_PREFIXES)
+ 
+ 
+ def _is_public_ip(ip: str) -> bool:
+     try:
+         ip_obj = ipaddress.ip_address(ip)
+         return not (
+             ip_obj.is_private
+             or ip_obj.is_loopback
+             or ip_obj.is_link_local
+             or ip_obj.is_multicast
+             or ip_obj.is_reserved
+             or ip_obj.is_unspecified
+         )
+     except Exception:
+         return False
+ 
+ 
+ def _write_fw_ban_log(ip: str, log_text: str) -> None:
+     db = get_db()
+     try:
+         cur = db.cursor()
+         cur.execute(
+             "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+             (ip or "-", _clamp(log_text, 1024)),
+         )
+         db.commit()
+     finally:
+         try:
+             db.close()
+         except Exception:
+             pass
+ 
+ 
+ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
+     if not _is_public_ip(ip):
+         return
+     if not _is_auto_ban_target_path(path):
+         return
+ 
+     now = time.time()
++    settings = get_fw_404_settings()
+     should_ban = False
+     count = 0
+     reason = ""
+     target = None
+ 
+     with _rate_404_lock:
+         q = _rate_404_hits.setdefault(ip, deque())
+         q.append(now)
+ 
+-        while q and now - q[0] > _FW_404_RATE_WINDOW_SEC:
++        while q and now - q[0] > settings["short_window_sec"]:
+             q.popleft()
+ 
+         count_short = len(q)
+ 
+         ip_q = _rate_404_ip_hits.setdefault(ip, deque())
+         ip_q.append(now)
+-        while ip_q and now - ip_q[0] > _FW_404_IP_WINDOW_SEC:
++        while ip_q and now - ip_q[0] > settings["ip_window_sec"]:
+             ip_q.popleft()
+         count_ip = len(ip_q)
+ 
+-        if count_short >= _FW_404_RATE_THRESHOLD:
+-            target = normalize_ip_target(ip=ip)
++        try:
++            ip_obj = ipaddress.ip_address(ip)
++        except Exception:
++            ip_obj = None
++
++        if count_short >= settings["short_threshold"]:
++            if ip_obj and ip_obj.version == 4:
++                target = {"version": 4, "target": str(ipaddress.ip_network(f"{ip}/{settings['ipv4_prefix']}", strict=False))}
++            else:
++                target = normalize_ip_target(ip=ip)
+             target_key = f"{target['version']}:{target['target']}"
+             last_ban_ts = _rate_404_last_ban.get(target_key, 0)
+-            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
++            if now - last_ban_ts >= settings["cooldown_sec"]:
+                 _rate_404_last_ban[target_key] = now
+                 should_ban = True
+                 count = count_short
+                 reason = "short"
+-        elif count_ip >= _FW_404_IP_THRESHOLD:
+-            target = normalize_ip_target(ip=ip)
++        elif count_ip >= settings["ip_threshold"]:
++            if ip_obj and ip_obj.version == 4:
++                target = {"version": 4, "target": str(ipaddress.ip_network(f"{ip}/{settings['ipv4_prefix']}", strict=False))}
++            else:
++                target = normalize_ip_target(ip=ip)
+             target_key = f"{target['version']}:{target['target']}"
+             last_ban_ts = _rate_404_last_ban.get(target_key, 0)
+-            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
++            if now - last_ban_ts >= settings["cooldown_sec"]:
+                 _rate_404_last_ban[target_key] = now
+                 should_ban = True
+                 count = count_ip
+                 reason = "ip"
+ 
+         if len(_rate_404_hits) > 5000:
+-            stale_before = now - max(_FW_404_RATE_WINDOW_SEC, 5.0)
++            stale_before = now - max(settings["short_window_sec"], 5.0)
+             for key in list(_rate_404_hits.keys())[:1000]:
+                 if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
+                     _rate_404_hits.pop(key, None)
+ 
+         if len(_rate_404_ip_hits) > 5000:
+-            stale_ip_before = now - max(_FW_404_IP_WINDOW_SEC, 5.0)
++            stale_ip_before = now - max(settings["ip_window_sec"], 5.0)
+             for key in list(_rate_404_ip_hits.keys())[:1000]:
+                 if _rate_404_ip_hits.get(key) and _rate_404_ip_hits[key][-1] < stale_ip_before:
+                     _rate_404_ip_hits.pop(key, None)
+ 
+         if len(_rate_404_last_ban) > 5000:
+-            stale_cooldown = now - (_FW_BAN_COOLDOWN_SEC * 2)
++            stale_cooldown = now - (settings["cooldown_sec"] * 2)
+             for key in list(_rate_404_last_ban.keys())[:1000]:
+                 if _rate_404_last_ban.get(key, 0) < stale_cooldown:
+                     _rate_404_last_ban.pop(key, None)
+ 
+     if not should_ban:
+         return
+ 
+     result = ban_ip_cidr_via_ssh(target)
+     target_repr = (target or {}).get("target", "")
+     if result.get("ok"):
+         _write_fw_ban_log(
+             ip,
+             f"[FW_BAN][404RATE] ip={ip} target={target_repr} path={path} count={count} reason={reason} status={result.get('status')}",
+         )
+         _dbg(
+             f"fw-ban success ip={ip} target={target_repr} path={path} count={count} reason={reason} status={result.get('status')}"
+         )
+         return
+ 
+     current_app.logger.warning(
+         "[FW_BAN][404RATE] failed ip=%s target=%s path=%s count=%s reason=%s status=%s stderr=%s",
+         ip,
+         target_repr,
+         path,
+         count,

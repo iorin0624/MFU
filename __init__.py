@@ -63,7 +63,7 @@ from app.utils.upload_security import (
     validate_upload_file,
 )
 from app.utils.image import save_as_jpeg
-from app.utils.logs import log_request_raw
+from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
 from app.utils.message import generate_message
 from app.utils.storage_info import get_storage_info
 from app.utils.thumbs import enqueue_thumb_job
@@ -2391,6 +2391,29 @@ def admin_logs_result():
     return redirect(url_for("admin_logs_async", job=job_id, **(status_data.get("args") or {})), code=302)
 
 
+@app.route("/admin/logs/404-ban", methods=["GET", "POST"])
+@admin_required
+def admin_logs_404_ban_settings():
+    if request.method == "POST":
+        try:
+            payload = {
+                "short_window_sec": request.form.get("short_window_sec", ""),
+                "short_threshold": request.form.get("short_threshold", ""),
+                "ip_window_sec": request.form.get("ip_window_sec", ""),
+                "ip_threshold": request.form.get("ip_threshold", ""),
+                "cooldown_sec": request.form.get("cooldown_sec", ""),
+                "ipv4_prefix": request.form.get("ipv4_prefix", "24"),
+            }
+            save_fw_404_settings(payload)
+            flash("404アクセスBAN判定の設定を更新しました。", "success")
+        except Exception as e:
+            flash(f"設定の更新に失敗しました: {e}", "danger")
+        return redirect(url_for("admin_logs_404_ban_settings"))
+
+    settings = get_fw_404_settings()
+    return render_template("admin_404_ban_settings.html", settings=settings)
+
+
 # =======================================
 # 管理: メール送信ログ（配送結果）
 # =======================================
@@ -3210,7 +3233,7 @@ from app.records import records_api_bp, records_bp
 app.register_blueprint(records_bp, url_prefix="/records")
 app.register_blueprint(records_api_bp)
 
-from app.utils.logs import log_request_raw, write_login_log, log_access
+from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
 
 from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
 init_line_oauth(app)

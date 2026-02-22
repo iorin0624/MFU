@@ -5,6 +5,7 @@ import time
 import ipaddress
 import threading
 import os
+import json
 from collections import deque
 from typing import Optional, Dict, Tuple, List, Union
 from flask import g, request as _req, current_app
@@ -629,6 +630,7 @@ _FW_404_RATE_WINDOW_SEC = max(0.1, float(os.getenv("FW_404_RATE_WINDOW_SEC", "1"
 _FW_404_IP_THRESHOLD = max(1, int(os.getenv("FW_404_IP_THRESHOLD", "20")))
 _FW_404_IP_WINDOW_SEC = max(1.0, float(os.getenv("FW_404_IP_WINDOW_SEC", "60")))
 _FW_BAN_COOLDOWN_SEC = max(1, int(os.getenv("FW_BAN_COOLDOWN_SEC", "60")))
+_FW_404_IPV4_PREFIX = 24
 _FW_404_SKIP_PREFIXES = (
     "/static",
     "/favicon",
@@ -642,6 +644,51 @@ _rate_404_hits: Dict[str, deque[float]] = {}
 _rate_404_ip_hits: Dict[str, deque[float]] = {}
 _rate_404_last_ban: Dict[str, float] = {}
 _rate_404_lock = threading.Lock()
+
+_FW_404_SETTINGS_PATH = os.getenv("FW_404_SETTINGS_PATH", "/mnt/mfu/app/fw_404_settings.json")
+_fw_404_settings_lock = threading.Lock()
+
+
+def _normalize_fw_404_settings(src: dict | None) -> dict:
+    src = src or {}
+    return {
+        "short_window_sec": max(0.1, float(src.get("short_window_sec", _FW_404_RATE_WINDOW_SEC))),
+        "short_threshold": max(1, int(src.get("short_threshold", _FW_404_RATE_THRESHOLD))),
+        "ip_window_sec": max(1.0, float(src.get("ip_window_sec", _FW_404_IP_WINDOW_SEC))),
+        "ip_threshold": max(1, int(src.get("ip_threshold", _FW_404_IP_THRESHOLD))),
+        "cooldown_sec": max(1, int(src.get("cooldown_sec", _FW_BAN_COOLDOWN_SEC))),
+        "ipv4_prefix": 24 if str(src.get("ipv4_prefix", _FW_404_IPV4_PREFIX)) != "32" else 32,
+    }
+
+
+def _load_fw_404_settings_from_file() -> dict:
+    try:
+        with open(_FW_404_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return _normalize_fw_404_settings(data)
+    except Exception:
+        pass
+    return _normalize_fw_404_settings({})
+
+
+_fw_404_settings = _load_fw_404_settings_from_file()
+
+
+def get_fw_404_settings() -> dict:
+    with _fw_404_settings_lock:
+        return dict(_fw_404_settings)
+
+
+def save_fw_404_settings(settings: dict) -> dict:
+    normalized = _normalize_fw_404_settings(settings)
+    os.makedirs(os.path.dirname(_FW_404_SETTINGS_PATH), exist_ok=True)
+    with _fw_404_settings_lock:
+        with open(_FW_404_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, ensure_ascii=False, indent=2)
+        _fw_404_settings.clear()
+        _fw_404_settings.update(normalized)
+    return dict(normalized)
 
 
 def _is_auto_ban_target_path(path: str) -> bool:
@@ -688,6 +735,7 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
         return
 
     now = time.time()
+    settings = get_fw_404_settings()
     should_ban = False
     count = 0
     reason = ""
@@ -697,50 +745,61 @@ def _maybe_auto_ban_by_404_rate(ip: str, path: str) -> None:
         q = _rate_404_hits.setdefault(ip, deque())
         q.append(now)
 
-        while q and now - q[0] > _FW_404_RATE_WINDOW_SEC:
+        while q and now - q[0] > settings["short_window_sec"]:
             q.popleft()
 
         count_short = len(q)
 
         ip_q = _rate_404_ip_hits.setdefault(ip, deque())
         ip_q.append(now)
-        while ip_q and now - ip_q[0] > _FW_404_IP_WINDOW_SEC:
+        while ip_q and now - ip_q[0] > settings["ip_window_sec"]:
             ip_q.popleft()
         count_ip = len(ip_q)
 
-        if count_short >= _FW_404_RATE_THRESHOLD:
-            target = normalize_ip_target(ip=ip)
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except Exception:
+            ip_obj = None
+
+        if count_short >= settings["short_threshold"]:
+            if ip_obj and ip_obj.version == 4:
+                target = {"version": 4, "target": str(ipaddress.ip_network(f"{ip}/{settings['ipv4_prefix']}", strict=False))}
+            else:
+                target = normalize_ip_target(ip=ip)
             target_key = f"{target['version']}:{target['target']}"
             last_ban_ts = _rate_404_last_ban.get(target_key, 0)
-            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
+            if now - last_ban_ts >= settings["cooldown_sec"]:
                 _rate_404_last_ban[target_key] = now
                 should_ban = True
                 count = count_short
                 reason = "short"
-        elif count_ip >= _FW_404_IP_THRESHOLD:
-            target = normalize_ip_target(ip=ip)
+        elif count_ip >= settings["ip_threshold"]:
+            if ip_obj and ip_obj.version == 4:
+                target = {"version": 4, "target": str(ipaddress.ip_network(f"{ip}/{settings['ipv4_prefix']}", strict=False))}
+            else:
+                target = normalize_ip_target(ip=ip)
             target_key = f"{target['version']}:{target['target']}"
             last_ban_ts = _rate_404_last_ban.get(target_key, 0)
-            if now - last_ban_ts >= _FW_BAN_COOLDOWN_SEC:
+            if now - last_ban_ts >= settings["cooldown_sec"]:
                 _rate_404_last_ban[target_key] = now
                 should_ban = True
                 count = count_ip
                 reason = "ip"
 
         if len(_rate_404_hits) > 5000:
-            stale_before = now - max(_FW_404_RATE_WINDOW_SEC, 5.0)
+            stale_before = now - max(settings["short_window_sec"], 5.0)
             for key in list(_rate_404_hits.keys())[:1000]:
                 if _rate_404_hits.get(key) and _rate_404_hits[key][-1] < stale_before:
                     _rate_404_hits.pop(key, None)
 
         if len(_rate_404_ip_hits) > 5000:
-            stale_ip_before = now - max(_FW_404_IP_WINDOW_SEC, 5.0)
+            stale_ip_before = now - max(settings["ip_window_sec"], 5.0)
             for key in list(_rate_404_ip_hits.keys())[:1000]:
                 if _rate_404_ip_hits.get(key) and _rate_404_ip_hits[key][-1] < stale_ip_before:
                     _rate_404_ip_hits.pop(key, None)
 
         if len(_rate_404_last_ban) > 5000:
-            stale_cooldown = now - (_FW_BAN_COOLDOWN_SEC * 2)
+            stale_cooldown = now - (settings["cooldown_sec"] * 2)
             for key in list(_rate_404_last_ban.keys())[:1000]:
                 if _rate_404_last_ban.get(key, 0) < stale_cooldown:
                     _rate_404_last_ban.pop(key, None)

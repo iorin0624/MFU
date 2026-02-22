@@ -4,6 +4,11 @@
 {% block content %}
 <div class="container mt-4">
   <h2 class="mb-2">📜 ログ記録（サーバー側フィルタ／上限 {{ filters.limit or 1000 }} 件）</h2>
+  <div class="mb-3">
+    <a class="btn btn-sm btn-outline-danger" href="{{ url_for('admin_logs_404_ban_settings') }}">
+      404アクセスBAN判定を編集
+    </a>
+  </div>
 
   {# 今日・昨日のクイックリンク #}
   {% set today = (now().strftime('%Y-%m-%d')) %}

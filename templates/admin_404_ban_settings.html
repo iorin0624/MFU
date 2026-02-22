@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}404アクセスBAN設定{% endblock %}
+
+{% block content %}
+<div class="container mt-4" style="max-width: 760px;">
+  <h2 class="mb-3">404アクセスでの自動BAN判定</h2>
+  <p class="text-muted">この画面で、404アクセス時の短時間判定・累積判定・IPv4のBAN単位を変更できます。</p>
+
+  <form method="post" class="card card-body">
+    <h5 class="mb-3">短時間判定</h5>
+    <div class="row g-3 align-items-end mb-3">
+      <div class="col-md-4">
+        <label class="form-label">何秒以内</label>
+        <input type="number" class="form-control" name="short_window_sec" min="0.1" step="0.1" value="{{ settings.short_window_sec }}" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">何回でBAN</label>
+        <input type="number" class="form-control" name="short_threshold" min="1" step="1" value="{{ settings.short_threshold }}" required>
+      </div>
+    </div>
+
+    <h5 class="mb-3">累積判定（IP単位）</h5>
+    <div class="row g-3 align-items-end mb-3">
+      <div class="col-md-4">
+        <label class="form-label">何秒以内</label>
+        <input type="number" class="form-control" name="ip_window_sec" min="1" step="1" value="{{ settings.ip_window_sec }}" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">何回でBAN</label>
+        <input type="number" class="form-control" name="ip_threshold" min="1" step="1" value="{{ settings.ip_threshold }}" required>
+      </div>
+    </div>
+
+    <div class="row g-3 align-items-end mb-4">
+      <div class="col-md-4">
+        <label class="form-label">BANクールダウン（秒）</label>
+        <input type="number" class="form-control" name="cooldown_sec" min="1" step="1" value="{{ settings.cooldown_sec }}" required>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">IPv4のBAN単位</label>
+        <select class="form-select" name="ipv4_prefix">
+          <option value="24" {% if settings.ipv4_prefix == 24 %}selected{% endif %}>/24</option>
+          <option value="32" {% if settings.ipv4_prefix == 32 %}selected{% endif %}>/32</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-danger">保存</button>
+      <a href="{{ url_for('admin_logs') }}" class="btn btn-outline-secondary">ログ画面に戻る</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
