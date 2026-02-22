@@ -1,130 +1,59 @@
-diff --git a/__init__.py b/__init__.py
-index 62ed234803aa884b728b64ab0165359085d8af9d..94b3cb850d83d27752ffc080a451eb0cf17a8907 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -2240,111 +2240,122 @@ def _build_admin_logs_html(args_dict: dict) -> str:
-         filters={
-             "kind": kind,
-             "exclude_local": exclude_local,
-             "nonjp_only": nonjp_only,
-             "exclude_suc": exclude_suc,
-             "smtp_filter": smtp_filter,
-             "smtp_tag": smtp_tag,
-             "search_keyword": search_keyword,
-             "search_mode": search_mode,
-             "search_ip": search_ip,
-             "search_status": search_status,
-             "search_method": search_method,
-             "search_path": search_path,
-             "search_endpoint": search_endpoint,
-             "search_user": search_user,
-             "search_ua": search_ua,
-             "search_date_from": search_date_from,
-             "search_date_to": search_date_to,
-             "exclude_3xx": exclude_3xx,
-             "limit": per_page,
-             "has_filters": bool(kind or exclude_local or nonjp_only or exclude_suc or exclude_3xx or (kind == "SMTP" and smtp_filter != "ALL") or smtp_tag or search_keyword or search_ip or search_status or search_method or search_path or search_endpoint or search_user or search_ua or search_date_from or search_date_to),
-         },
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 44b95ff700e7cfd49ae039b28e7ea5e48545cf86..ded1492fa41ea8495183f42f0530db25aef59144 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1552,50 +1552,54 @@ def profile():
+                        notify_album_process=%s,
+                        updated_at=NOW()
+                  WHERE id=%s
+                  LIMIT 1
+                 """,
+                 (nickname, x_id, ig_id, email_in, payment_mode, notify_upload, notify_process, me["id"]),
+             )
+         db.commit()
+ 
+         if saved_avatar_file:
+             cur.execute(
+                 "UPDATE external_login_user SET avatar_file=%s, updated_at=NOW() WHERE id=%s LIMIT 1",
+                 (saved_avatar_file, me["id"]),
+             )
+             db.commit()
+     except Exception:
+         try:
+             db.rollback()
+         except Exception:
+             pass
+         cur.close()
+         db.close()
+         flash("保存に失敗しました。時間をおいて再度お試しください。", "danger")
+         return redirect(url_for("external_login_user.profile"))
+ 
++    # access log 用の表示名をセッションへ同期（DB更新成功時のみ）
++    session["ext_user_nickname"] = nickname
++    session.modified = True
++
+     # 初回フラグを落とす
+     if onboarding:
+         session["ext_user_onboarding"] = False
+ 
+     # ===== リダイレクト（join 等へ）=====
+     next_url = (
+         session.get("ext_after_login_next")
+         or (request.args.get("next") or "").strip()
+         or (request.form.get("next") or "").strip()
      )
  
- 
--def _run_admin_logs_job(job_id: str, args_dict: dict):
--    _progress_write(job_id, {"status": "running", "started_at": datetime.utcnow().isoformat(), "args": args_dict})
-+def _run_admin_logs_job(job_id: str, args_dict: dict, user_id: str | None):
-+    _progress_write(job_id, {
-+        "status": "running",
-+        "started_at": datetime.utcnow().isoformat(),
-+        "args": args_dict,
-+        "requested_by": user_id,
-+    })
+     # ===== メール確認メール送信 =====
+     needs_verify = False
      try:
-         with app.app_context():
-             with app.test_request_context("/admin/logs/sync", query_string=args_dict):
-+                if user_id:
-+                    session["user"] = user_id
-                 html = _build_admin_logs_html(args_dict)
-         result_path = _admin_logs_html_result_path(job_id)
-         with open(result_path, "w", encoding="utf-8") as f:
-             f.write(html)
-         _progress_write(job_id, {
-             "status": "done",
-             "finished_at": datetime.utcnow().isoformat(),
-             "result_path": result_path,
-             "args": args_dict,
-+            "requested_by": user_id,
-         })
-     except Exception as e:
-         _progress_write(job_id, {
-             "status": "error",
-             "error_message": str(e),
-             "finished_at": datetime.utcnow().isoformat(),
-             "args": args_dict,
-+            "requested_by": user_id,
-         })
-         app.logger.exception("admin logs async job failed: %s", job_id)
+         if email_in and (email_changed or (email_in and not was_verified)):
+             # next_url を DB に保存するために渡す
+             t_raw = _issue_email_verify_token(me["id"], email_in, redirect_url=next_url)  # 24h
+             _send_verify_mail(email_in, t_raw)
+             flash("確認メールを送信しました。受信ボックスをご確認ください。", "info")
+             needs_verify = True
+     except Exception:
+         current_app.logger.exception("send verify mail failed")
  
- 
- @app.route("/admin/logs")
- @admin_required
- def admin_logs():
-     return redirect(url_for("admin_logs_async", **request.args), code=302)
- 
- 
- @app.route("/admin/logs/sync")
- @admin_required
- def admin_logs_sync():
-     html = _build_admin_logs_html(request.args.to_dict(flat=True))
-     return Response(html, content_type="text/html; charset=utf-8")
- 
- 
- @app.route("/admin/logs/async")
- @admin_required
- def admin_logs_async():
-     _gc_adminlogs_jobs(ttl_seconds=1800)
-     args_dict = request.args.to_dict(flat=True)
-+    user_id = session.get("user")
-     existing_job = (request.args.get("job") or "").strip()
-     if existing_job and existing_job.startswith("adminlogs_"):
-         st = _progress_read(existing_job)
-         if st and st.get("status") in ("queued", "running", "error"):
-             job_id = existing_job
-         else:
-             job_id = f"adminlogs_{secrets.token_hex(16)}"
-     else:
-         job_id = f"adminlogs_{secrets.token_hex(16)}"
- 
-     status = _progress_read(job_id)
-     if not status:
-         _progress_write(job_id, {
-             "status": "queued",
-             "created_at": datetime.utcnow().isoformat(),
-             "args": args_dict,
-+            "requested_by": user_id,
-         })
--        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict)
-+        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict, user_id)
- 
-     retry_args = dict(args_dict)
-     retry_args.pop("job", None)
-     return render_template(
-         "admin/logs_loading.html",
-         job_id=job_id,
-         status_url=url_for("admin_logs_status", job=job_id),
-         result_url=url_for("admin_logs_result", job=job_id),
-         retry_url=url_for("admin_logs_async", **retry_args),
-     )
- 
- 
- @app.route("/admin/logs/status")
- @admin_required
- def admin_logs_status():
-     job_id = (request.args.get("job") or "").strip()
-     if not job_id:
-         return jsonify({"status": "not_found"}), 404
- 
-     status_data = _progress_read(job_id)
-     if not status_data:
-         return jsonify({"status": "not_found"}), 404
- 
-     return jsonify({
-         "status": status_data.get("status", "unknown"),
+     # メール確認が必要な場合、確認完了後に戻る先をセッションに保存しておく
+     if needs_verify and next_url:

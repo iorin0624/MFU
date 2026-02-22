@@ -1574,6 +1574,10 @@ def profile():
         flash("保存に失敗しました。時間をおいて再度お試しください。", "danger")
         return redirect(url_for("external_login_user.profile"))
 
+    # access log 用の表示名をセッションへ同期（DB更新成功時のみ）
+    session["ext_user_nickname"] = nickname
+    session.modified = True
+
     # 初回フラグを落とす
     if onboarding:
         session["ext_user_onboarding"] = False
