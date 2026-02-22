@@ -1633,9 +1633,44 @@ def handle_forbidden(_error):
 # 管理: ログ閲覧（高速化版：SQL事前絞り + TTLキャッシュ + has_nextページング）
 # /suc/ アクセス除外表示（SQL＆Python両層で共通管理）
 # =======================================
-@app.route("/admin/logs")
-@admin_required
-def admin_logs():
+_ADMIN_LOGS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def _admin_logs_html_result_path(job_id: str) -> str:
+    return os.path.join(_progress_dir(), f"{job_id}.html")
+
+
+def _gc_adminlogs_jobs(ttl_seconds: int = 1800):
+    now = time.time()
+    root = _progress_dir()
+    cutoff = now - ttl_seconds
+    try:
+        names = os.listdir(root)
+    except Exception:
+        return
+
+    candidates = []
+    for name in names:
+        if not name.startswith("adminlogs_"):
+            continue
+        if not (name.endswith('.json') or name.endswith('.lock') or name.endswith('.html')):
+            continue
+        path = os.path.join(root, name)
+        try:
+            mtime = os.path.getmtime(path)
+        except Exception:
+            continue
+        if mtime < cutoff:
+            candidates.append((mtime, path))
+
+    for _, path in sorted(candidates, key=lambda x: x[0]):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
+def _build_admin_logs_html(args_dict: dict) -> str:
     """
     クエリ:
       kind=LOGIN|LINE_LOGIN|SMTP
@@ -1652,7 +1687,9 @@ def admin_logs():
       search_date_to=YYYY-MM-DD
     """
     from ipaddress import ip_address, ip_network, IPv4Network, IPv6Network
-    import time
+
+    def _arg(name: str, default: str = "") -> str:
+        return (args_dict.get(name, default) or "").strip()
 
     # --------- ローカル扱いネットを1か所で管理 ----------
     LOCAL_NETS = [
@@ -1699,40 +1736,39 @@ def admin_logs():
         EXCLUDE_PATH_SQL_LIKES.append(f"% {p}%")
 
     # --------- クエリ取得 ----------
-    selected_date = (request.args.get("date") or "").strip()
-    kind = (request.args.get("kind") or "").strip().upper()  # LOGIN / LINE_LOGIN / SMTP / ""
-    smtp_filter = (request.args.get("smtp_filter") or "").strip().upper()
+    selected_date = _arg("date")
+    kind = _arg("kind").upper()  # LOGIN / LINE_LOGIN / SMTP / ""
+    smtp_filter = _arg("smtp_filter").upper()
     if smtp_filter not in ("ALL", "AUTHFAIL", "REJECT", "DISCONNECT", "SENT"):
         smtp_filter = "ALL"
     if kind != "SMTP":
         smtp_filter = "ALL"
-    smtp_tag = (request.args.get("smtp_tag") or "").lower() in ("1", "true", "on", "yes")
+    smtp_tag = _arg("smtp_tag").lower() in ("1", "true", "on", "yes")
 
     # 検索（サーバー側）
-    search_keyword = (request.args.get("search_keyword") or "").strip()
-    search_mode = (request.args.get("search_mode") or "and").strip().lower()
+    search_keyword = _arg("search_keyword")
+    search_mode = _arg("search_mode", "and").lower()
     if search_mode not in ("and", "or"):
         search_mode = "and"
-    search_ip = (request.args.get("search_ip") or "").strip()
-    search_status = (request.args.get("search_status") or "").strip()
-    search_method = (request.args.get("search_method") or "").strip()
-    search_path = (request.args.get("search_path") or "").strip()
-    search_endpoint = (request.args.get("search_endpoint") or "").strip()
-    search_user = (request.args.get("search_user") or "").strip()
-    search_ua = (request.args.get("search_ua") or "").strip()
-    search_date_from = (request.args.get("search_date_from") or "").strip()
-    search_date_to = (request.args.get("search_date_to") or "").strip()
+    search_ip = _arg("search_ip")
+    search_status = _arg("search_status")
+    search_method = _arg("search_method")
+    search_path = _arg("search_path")
+    search_endpoint = _arg("search_endpoint")
+    search_user = _arg("search_user")
+    search_ua = _arg("search_ua")
+    search_date_from = _arg("search_date_from")
+    search_date_to = _arg("search_date_to")
 
     # 生のクエリ値
-    raw_exclude_local = request.args.get("exclude_local")
-    raw_nonjp_only    = request.args.get("nonjp_only")
-    raw_exclude_suc   = request.args.get("exclude_suc")
-    raw_exclude_3xx   = request.args.get("exclude_3xx")  # UI用に残すだけ
+    raw_exclude_local = args_dict.get("exclude_local")
+    raw_nonjp_only = args_dict.get("nonjp_only")
+    raw_exclude_suc = args_dict.get("exclude_suc")
 
     # まずは「値がある場合」の通常パース
     exclude_local = (raw_exclude_local or "").lower() in ("1", "true", "on", "yes")
-    nonjp_only    = (raw_nonjp_only or "").lower() in ("1", "true", "on", "yes")
-    exclude_suc   = (raw_exclude_suc or "").lower() in ("1", "true", "on", "yes")
+    nonjp_only = (raw_nonjp_only or "").lower() in ("1", "true", "on", "yes")
+    exclude_suc = (raw_exclude_suc or "").lower() in ("1", "true", "on", "yes")
 
     # ★ 3xx は常に非表示にする（クエリ指定は無視）
     exclude_3xx = True
@@ -1740,19 +1776,18 @@ def admin_logs():
     # ★初期設定★
     # クエリパラメータが一切無い最初のアクセスだけ、
     # ローカル除外 / /suc 除外 はデフォルトONにする。
-    if not request.args:
+    if not args_dict:
         exclude_local = True
         exclude_suc = True
-        # exclude_3xx は上で常に True にしているのでここでは触らない
 
     try:
-        per_page = int(request.args.get("limit", "1000"))
+        per_page = int(args_dict.get("limit", "1000") or "1000")
     except ValueError:
         per_page = 1000
     per_page = max(1, min(1000, per_page))
 
     try:
-        page = max(1, int(request.args.get("page", "1")))
+        page = max(1, int(args_dict.get("page", "1") or "1"))
     except ValueError:
         page = 1
     start_index = (page - 1) * per_page
@@ -1776,12 +1811,6 @@ def admin_logs():
         try:
             ip_address(ip_str)
             return True
-        except Exception:
-            return False
-
-    def is_valid_ipv4(ip_str: str) -> bool:
-        try:
-            return ip_address(ip_str).version == 4
         except Exception:
             return False
 
@@ -1842,16 +1871,8 @@ def admin_logs():
         return m.group(1) if m else ""
 
     def _parse_status_code(text: str):
-        """
-        ログ本文からステータスコード(3桁)をざっくり抽出。
-        例:
-          'GET /foo 302 UA=...' → 302
-          '302 album.view_child /album/...' → 302
-        うまく取れなければ None。
-        """
         if not text:
             return None
-
         m = re.search(r"(^|\s)(\d{3})(\s|$)", text)
         if not m:
             return None
@@ -1861,34 +1882,16 @@ def admin_logs():
             return None
 
     SMTP_FILTER_LIKES = {
-        "AUTHFAIL": [
-            "%SASL%",
-            "%auth fail%",
-            "%authentication failed%",
-            "%AUTH FAILED%",
-            "%AUTH=fail%",
-        ],
-        "REJECT": [
-            "%NOQUEUE: reject%",
-            "% reject:%",
-            "% reject %",
-        ],
-        "DISCONNECT": [
-            "%lost connection%",
-            "%disconnect%",
-            "%timeout%",
-        ],
-        "SENT": [
-            "%status=sent%",
-            "%送信OK%",
-            "%sent=%",
-        ],
+        "AUTHFAIL": ["%SASL%", "%auth fail%", "%authentication failed%", "%AUTH FAILED%", "%AUTH=fail%"],
+        "REJECT": ["%NOQUEUE: reject%", "% reject:%", "% reject %"],
+        "DISCONNECT": ["%lost connection%", "%disconnect%", "%timeout%"],
+        "SENT": ["%status=sent%", "%送信OK%", "%sent=%"],
     }
     SMTP_FILTER_REGEX = {
         "AUTHFAIL": re.compile(r"(SASL|auth(?:entication)? failed|auth[=\s:]+fail|AUTH FAILED)", re.I),
         "REJECT": re.compile(r"(NOQUEUE:\s*reject|reject:\s|reject\s)", re.I),
         "DISCONNECT": re.compile(r"(lost connection|disconnect|timed out|timeout)", re.I),
-        "SENT": re.compile(r"(status=sent|送信OK|\\bsent\\b)", re.I),
+        "SENT": re.compile(r"(status=sent|送信OK|\bsent\b)", re.I),
     }
 
     def _smtp_match(text: str, filt: str) -> bool:
@@ -1900,18 +1903,7 @@ def admin_logs():
         return bool(rx.search(text or ""))
 
     def _search_match(text: str, ip_str: str) -> bool:
-        if not any(
-            [
-                search_keyword,
-                search_ip,
-                search_status,
-                search_method,
-                search_path,
-                search_endpoint,
-                search_user,
-                search_ua,
-            ]
-        ):
+        if not any([search_keyword, search_ip, search_status, search_method, search_path, search_endpoint, search_user, search_ua]):
             return True
         haystack = f"{ip_str} {text}".lower()
         terms = _split_keywords(search_keyword)
@@ -1950,15 +1942,14 @@ def admin_logs():
                 return False
         return True
 
-    # ---- ① netinfo の TTL付きLRUキャッシュ（プロセス内） + リクエスト内重複排除 ----
     global _NETINFO_CACHE, _NETINFO_ORDER
     try:
         _NETINFO_CACHE
     except NameError:
-        _NETINFO_CACHE = {}   # ip -> (netname,country,org,asname, expiry_ts)
-        _NETINFO_ORDER = []   # LRU順
-    TTL_SEC = 86400 * 7       # 7日
-    LRU_MAX = 10000           # 最大1万IPまで
+        _NETINFO_CACHE = {}
+        _NETINFO_ORDER = []
+    TTL_SEC = 86400 * 7
+    LRU_MAX = 10000
 
     def _cache_get(ip: str):
         now = time.time()
@@ -1980,15 +1971,8 @@ def admin_logs():
         return {"netname": ent[0], "country": ent[1], "org": ent[2], "asname": ent[3]}
 
     def _cache_put(ip: str, ni: dict):
-        now = time.time()
-        exp = now + TTL_SEC
-        tup = (
-            ni.get("netname", ""),
-            ni.get("country", ""),
-            ni.get("org", ""),
-            ni.get("asname", ""),
-            exp,
-        )
+        exp = time.time() + TTL_SEC
+        tup = (ni.get("netname", ""), ni.get("country", ""), ni.get("org", ""), ni.get("asname", ""), exp)
         _NETINFO_CACHE[ip] = tup
         _NETINFO_ORDER.append(ip)
         if len(_NETINFO_ORDER) > LRU_MAX:
@@ -1998,12 +1982,7 @@ def admin_logs():
     _req_seen = {}
 
     def _netinfo_record(ni: dict) -> dict:
-        return {
-            "netname": ni.get("netname", ""),
-            "country": ni.get("country", ""),
-            "org": ni.get("org", ""),
-            "asname": ni.get("asname", ""),
-        }
+        return {"netname": ni.get("netname", ""), "country": ni.get("country", ""), "org": ni.get("org", ""), "asname": ni.get("asname", "")}
 
     def get_netinfo_fast(ip: str) -> dict:
         if not ip:
@@ -2024,14 +2003,8 @@ def admin_logs():
         return rec
 
     def get_netinfo_bulk(ips: list[str]) -> dict[str, dict]:
-        """
-        一意IPをまとめて解決。
-        - まずリクエスト内/プロセス内キャッシュを参照
-        - キャッシュミスのみ並列で get_netinfo() を叩く
-        """
         resolved: dict[str, dict] = {}
         misses = []
-
         for ip in ips:
             if not ip:
                 continue
@@ -2048,7 +2021,7 @@ def admin_logs():
         if not misses:
             return resolved
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import as_completed
 
         workers = min(16, max(4, len(misses)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -2068,36 +2041,24 @@ def admin_logs():
 
     def enrich_row(r):
         ip = (r.get("ip") or "").strip()
-        ni = get_netinfo_fast(ip) if ip else {
-            "netname": "",
-            "country": "",
-            "org": "",
-            "asname": "",
-        }
+        ni = get_netinfo_fast(ip) if ip else {"netname": "", "country": "", "org": "", "asname": ""}
         r["netname"] = ni.get("netname", "")
         r["country"] = ni.get("country", "")
-        r["provider"] = (
-            ni.get("org") or ni.get("asname") or ni.get("netname") or ""
-        )
+        r["provider"] = ni.get("org") or ni.get("asname") or ni.get("netname") or ""
         r["ip_valid"] = bool(ip and is_valid_ip(ip))
         r["ip_version"] = ip_address(ip).version if r["ip_valid"] else None
         return r
 
-    # ---- ② SQLで事前にできるだけ絞る（kind / exclude_local / date / exclude_suc） ----
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
     where = []
     params = []
 
-    # 日付
     if selected_date and _valid_date(selected_date):
-        where.append(
-            "log_date >= %s AND log_date < DATE_ADD(%s, INTERVAL 1 DAY)"
-        )
+        where.append("log_date >= %s AND log_date < DATE_ADD(%s, INTERVAL 1 DAY)")
         params += [selected_date, selected_date]
 
-    # 日付範囲（検索用）
     if search_date_from and not _valid_date(search_date_from):
         search_date_from = ""
     if search_date_to and not _valid_date(search_date_to):
@@ -2105,9 +2066,7 @@ def admin_logs():
     if search_date_from and search_date_to and search_date_from > search_date_to:
         search_date_from, search_date_to = search_date_to, search_date_from
     if search_date_from and search_date_to:
-        where.append(
-            "log_date >= %s AND log_date < DATE_ADD(%s, INTERVAL 1 DAY)"
-        )
+        where.append("log_date >= %s AND log_date < DATE_ADD(%s, INTERVAL 1 DAY)")
         params += [search_date_from, search_date_to]
     elif search_date_from:
         where.append("log_date >= %s")
@@ -2116,7 +2075,6 @@ def admin_logs():
         where.append("log_date < DATE_ADD(%s, INTERVAL 1 DAY)")
         params.append(search_date_to)
 
-    # kind（テキスト検索だが、まずはDBで粗く絞る）
     if kind == "LOGIN":
         where.append("INSTR(log_text,'[LOGIN]') > 0")
     elif kind == "LINE_LOGIN":
@@ -2133,23 +2091,16 @@ def admin_logs():
             where.append(f"({placeholders})")
             params.extend(likes)
 
-    # ローカル除外（IPは文字列格納想定）
     if exclude_local and LOCAL_SQL_LIKE_PREFIXES:
-        placeholders = " OR ".join(
-            ["ip LIKE %s"] * len(LOCAL_SQL_LIKE_PREFIXES)
-        )
+        placeholders = " OR ".join(["ip LIKE %s"] * len(LOCAL_SQL_LIKE_PREFIXES))
         where.append(f"NOT ({placeholders})")
         params.extend([p + "%" for p in LOCAL_SQL_LIKE_PREFIXES])
 
-    # /suc/ 等パス除外
     if exclude_suc and EXCLUDE_PATH_SQL_LIKES:
-        placeholders = " OR ".join(
-            ["log_text LIKE %s"] * len(EXCLUDE_PATH_SQL_LIKES)
-        )
+        placeholders = " OR ".join(["log_text LIKE %s"] * len(EXCLUDE_PATH_SQL_LIKES))
         where.append(f"NOT ({placeholders})")
         params.extend(EXCLUDE_PATH_SQL_LIKES)
 
-    # 検索（SQLで粗く絞る）
     search_terms = _split_keywords(search_keyword)
     if search_terms:
         if search_mode == "or":
@@ -2190,20 +2141,15 @@ def admin_logs():
         base_sql += " WHERE " + " AND ".join(where)
     base_sql += " ORDER BY id DESC"
 
-    # ---- ③ ページング: has_next 方式で軽く。nonjp_only / 3xx除外 はPython側で間引き ----
     target_needed = per_page + 1
-    scan_chunk = (
-        max(per_page * 3, 1000) if nonjp_only else max(per_page, 500)
-    )
+    scan_chunk = max(per_page * 3, 1000) if nonjp_only else max(per_page, 500)
     db_offset = 0
     accepted = 0
     page_rows = []
     has_next = False
 
     while True:
-        cursor.execute(
-            f"{base_sql} LIMIT %s OFFSET %s", params + [scan_chunk, db_offset]
-        )
+        cursor.execute(f"{base_sql} LIMIT %s OFFSET %s", params + [scan_chunk, db_offset])
         rows = cursor.fetchall()
         if not rows:
             break
@@ -2214,12 +2160,7 @@ def admin_logs():
             seen_ips = set()
             for r in rows:
                 ip = (r.get("ip") or "").strip()
-                if (
-                    not ip
-                    or ip in seen_ips
-                    or ip in ("-", "—")
-                    or not is_valid_ip(ip)
-                ):
+                if not ip or ip in seen_ips or ip in ("-", "—") or not is_valid_ip(ip):
                     continue
                 seen_ips.add(ip)
                 nonjp_ips.append(ip)
@@ -2229,20 +2170,17 @@ def admin_logs():
             ip = (r.get("ip") or "").strip()
             text = r.get("log_text") or ""
 
-            # 3xx除外（ログ本文からステータスをざっくり抽出）
             if exclude_3xx:
                 st = _parse_status_code(text)
                 if st is not None and 300 <= st < 400:
                     continue
 
-            if kind == "SMTP" and smtp_filter != "ALL":
-                if not _smtp_match(text, smtp_filter):
-                    continue
+            if kind == "SMTP" and smtp_filter != "ALL" and not _smtp_match(text, smtp_filter):
+                continue
 
             if not _search_match(text, ip):
                 continue
 
-            # nonjp_only の場合はここで国判定
             if nonjp_only:
                 if not ip or ip.strip() in ("-", "—") or not is_valid_ip(ip.strip()):
                     continue
@@ -2250,9 +2188,7 @@ def admin_logs():
                 ni = bulk_netinfo.get(ip) or get_netinfo_fast(ip)
                 tmp["netname"] = ni.get("netname", "")
                 tmp["country"] = ni.get("country", "")
-                tmp["provider"] = (
-                    ni.get("org") or ni.get("asname") or ni.get("netname") or ""
-                )
+                tmp["provider"] = ni.get("org") or ni.get("asname") or ni.get("netname") or ""
                 tmp["ip_valid"] = True
                 tmp["ip_version"] = ip_address(ip).version
                 cc = (tmp.get("country") or "").upper()
@@ -2262,20 +2198,17 @@ def admin_logs():
                 else:
                     if not cc or cc == "JP":
                         continue
-                r = tmp  # enrich 済み
+                r = tmp
 
-            # SQL で取り切れなかったものの最終防衛
             if exclude_local and is_local_ip(ip):
                 continue
             if exclude_suc and _text_contains_excluded_path(text):
                 continue
 
-            # start_index まではスキップ
             if accepted < start_index:
                 accepted += 1
                 continue
 
-            # 収集（非 nonjp のときはここで enrich）
             if len(page_rows) < target_needed:
                 if not nonjp_only:
                     r = enrich_row(r)
@@ -2322,30 +2255,140 @@ def admin_logs():
             "search_ua": search_ua,
             "search_date_from": search_date_from,
             "search_date_to": search_date_to,
-            # ここは「常にTrue」の状態をそのままUIへ渡しておく
             "exclude_3xx": exclude_3xx,
             "limit": per_page,
-            "has_filters": bool(
-                kind
-                or exclude_local
-                or nonjp_only
-                or exclude_suc
-                or exclude_3xx
-                or (kind == "SMTP" and smtp_filter != "ALL")
-                or smtp_tag
-                or search_keyword
-                or search_ip
-                or search_status
-                or search_method
-                or search_path
-                or search_endpoint
-                or search_user
-                or search_ua
-                or search_date_from
-                or search_date_to
-            ),
+            "has_filters": bool(kind or exclude_local or nonjp_only or exclude_suc or exclude_3xx or (kind == "SMTP" and smtp_filter != "ALL") or smtp_tag or search_keyword or search_ip or search_status or search_method or search_path or search_endpoint or search_user or search_ua or search_date_from or search_date_to),
         },
     )
+
+
+def _run_admin_logs_job(job_id: str, args_dict: dict, user_id: str | None):
+    _progress_write(job_id, {
+        "status": "running",
+        "started_at": datetime.utcnow().isoformat(),
+        "args": args_dict,
+        "requested_by": user_id,
+    })
+    try:
+        with app.app_context():
+            with app.test_request_context("/admin/logs/sync", query_string=args_dict):
+                if user_id:
+                    session["user"] = user_id
+                html = _build_admin_logs_html(args_dict)
+        result_path = _admin_logs_html_result_path(job_id)
+        with open(result_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        _progress_write(job_id, {
+            "status": "done",
+            "finished_at": datetime.utcnow().isoformat(),
+            "result_path": result_path,
+            "args": args_dict,
+            "requested_by": user_id,
+        })
+    except Exception as e:
+        _progress_write(job_id, {
+            "status": "error",
+            "error_message": str(e),
+            "finished_at": datetime.utcnow().isoformat(),
+            "args": args_dict,
+            "requested_by": user_id,
+        })
+        app.logger.exception("admin logs async job failed: %s", job_id)
+
+
+@app.route("/admin/logs")
+@admin_required
+def admin_logs():
+    return redirect(url_for("admin_logs_async", **request.args), code=302)
+
+
+@app.route("/admin/logs/sync")
+@admin_required
+def admin_logs_sync():
+    html = _build_admin_logs_html(request.args.to_dict(flat=True))
+    return Response(html, content_type="text/html; charset=utf-8")
+
+
+@app.route("/admin/logs/async")
+@admin_required
+def admin_logs_async():
+    _gc_adminlogs_jobs(ttl_seconds=1800)
+    args_dict = request.args.to_dict(flat=True)
+    user_id = session.get("user")
+    existing_job = (request.args.get("job") or "").strip()
+    if existing_job and existing_job.startswith("adminlogs_"):
+        st = _progress_read(existing_job)
+        if st and st.get("status") in ("queued", "running", "error"):
+            job_id = existing_job
+        else:
+            job_id = f"adminlogs_{secrets.token_hex(16)}"
+    else:
+        job_id = f"adminlogs_{secrets.token_hex(16)}"
+
+    status = _progress_read(job_id)
+    if not status:
+        _progress_write(job_id, {
+            "status": "queued",
+            "created_at": datetime.utcnow().isoformat(),
+            "args": args_dict,
+            "requested_by": user_id,
+        })
+        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict, user_id)
+
+    retry_args = dict(args_dict)
+    retry_args.pop("job", None)
+    return render_template(
+        "admin/logs_loading.html",
+        job_id=job_id,
+        status_url=url_for("admin_logs_status", job=job_id),
+        result_url=url_for("admin_logs_result", job=job_id),
+        retry_url=url_for("admin_logs_async", **retry_args),
+    )
+
+
+@app.route("/admin/logs/status")
+@admin_required
+def admin_logs_status():
+    job_id = (request.args.get("job") or "").strip()
+    if not job_id:
+        return jsonify({"status": "not_found"}), 404
+
+    status_data = _progress_read(job_id)
+    if not status_data:
+        return jsonify({"status": "not_found"}), 404
+
+    return jsonify({
+        "status": status_data.get("status", "unknown"),
+        "message": status_data.get("message", ""),
+        "finished_at": status_data.get("finished_at"),
+        "error_message": status_data.get("error_message", ""),
+    })
+
+
+@app.route("/admin/logs/result")
+@admin_required
+def admin_logs_result():
+    job_id = (request.args.get("job") or "").strip()
+    if not job_id:
+        return redirect(url_for("admin_logs_async"), code=302)
+
+    status_data = _progress_read(job_id)
+    if not status_data:
+        return redirect(url_for("admin_logs_async"), code=302)
+
+    st = status_data.get("status")
+    if st == "done":
+        result_path = status_data.get("result_path") or _admin_logs_html_result_path(job_id)
+        if result_path and os.path.exists(result_path):
+            return send_file(result_path, mimetype="text/html; charset=utf-8")
+        return Response("<h2>結果ファイルが見つかりません。</h2>", status=404, content_type="text/html; charset=utf-8")
+
+    if st == "error":
+        msg = status_data.get("error_message") or "ログの生成に失敗しました。"
+        retry_url = url_for("admin_logs_async", **(status_data.get("args") or {}))
+        return Response(f"<h2>ログの生成に失敗しました</h2><p>{msg}</p><p><a href='{retry_url}'>再試行</a></p>", content_type="text/html; charset=utf-8", status=500)
+
+    return redirect(url_for("admin_logs_async", job=job_id, **(status_data.get("args") or {})), code=302)
 
 
 # =======================================
