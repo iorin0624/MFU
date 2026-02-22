@@ -1,45 +1,130 @@
-diff --git a/records/static/records.css b/records/static/records.css
-index 14caf4764767f0da5c48fd470e95e0c9aac22715..d2e9584e0fcb782bbee9c1900312a54f574585cd 100644
---- a/records/static/records.css
-+++ b/records/static/records.css
-@@ -1,39 +1,36 @@
- .records-wrap .card {
-   border-radius: 0.75rem;
- }
+diff --git a/__init__.py b/__init__.py
+index 62ed234803aa884b728b64ab0165359085d8af9d..94b3cb850d83d27752ffc080a451eb0cf17a8907 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -2240,111 +2240,122 @@ def _build_admin_logs_html(args_dict: dict) -> str:
+         filters={
+             "kind": kind,
+             "exclude_local": exclude_local,
+             "nonjp_only": nonjp_only,
+             "exclude_suc": exclude_suc,
+             "smtp_filter": smtp_filter,
+             "smtp_tag": smtp_tag,
+             "search_keyword": search_keyword,
+             "search_mode": search_mode,
+             "search_ip": search_ip,
+             "search_status": search_status,
+             "search_method": search_method,
+             "search_path": search_path,
+             "search_endpoint": search_endpoint,
+             "search_user": search_user,
+             "search_ua": search_ua,
+             "search_date_from": search_date_from,
+             "search_date_to": search_date_to,
+             "exclude_3xx": exclude_3xx,
+             "limit": per_page,
+             "has_filters": bool(kind or exclude_local or nonjp_only or exclude_suc or exclude_3xx or (kind == "SMTP" and smtp_filter != "ALL") or smtp_tag or search_keyword or search_ip or search_status or search_method or search_path or search_endpoint or search_user or search_ua or search_date_from or search_date_to),
+         },
+     )
  
- .records-wrap table th,
- .records-wrap table td {
-   vertical-align: middle;
- }
  
- .uber-actions-wrap {
-   display: flex;
-   flex-wrap: wrap;
--  justify-content: flex-start;
-+  justify-content: flex-end;
-   gap: 0;
--  width: 100%;
--  margin-left: 1rem;
- }
+-def _run_admin_logs_job(job_id: str, args_dict: dict):
+-    _progress_write(job_id, {"status": "running", "started_at": datetime.utcnow().isoformat(), "args": args_dict})
++def _run_admin_logs_job(job_id: str, args_dict: dict, user_id: str | None):
++    _progress_write(job_id, {
++        "status": "running",
++        "started_at": datetime.utcnow().isoformat(),
++        "args": args_dict,
++        "requested_by": user_id,
++    })
+     try:
+         with app.app_context():
+             with app.test_request_context("/admin/logs/sync", query_string=args_dict):
++                if user_id:
++                    session["user"] = user_id
+                 html = _build_admin_logs_html(args_dict)
+         result_path = _admin_logs_html_result_path(job_id)
+         with open(result_path, "w", encoding="utf-8") as f:
+             f.write(html)
+         _progress_write(job_id, {
+             "status": "done",
+             "finished_at": datetime.utcnow().isoformat(),
+             "result_path": result_path,
+             "args": args_dict,
++            "requested_by": user_id,
+         })
+     except Exception as e:
+         _progress_write(job_id, {
+             "status": "error",
+             "error_message": str(e),
+             "finished_at": datetime.utcnow().isoformat(),
+             "args": args_dict,
++            "requested_by": user_id,
+         })
+         app.logger.exception("admin logs async job failed: %s", job_id)
  
- .uber-actions-wrap .btn {
-   border-radius: 0;
-   min-width: 130px;
- }
  
- .uber-actions-wrap .btn:first-child {
-   border-top-left-radius: 0.5rem;
-   border-bottom-left-radius: 0.5rem;
- }
+ @app.route("/admin/logs")
+ @admin_required
+ def admin_logs():
+     return redirect(url_for("admin_logs_async", **request.args), code=302)
  
- .uber-actions-wrap .btn:last-child {
-   border-top-right-radius: 0.5rem;
-   border-bottom-right-radius: 0.5rem;
- }
  
- @media (max-width: 992px) {
-   .uber-actions-wrap {
--    margin-left: 0;
-     margin-top: 0.75rem;
-   }
- }
+ @app.route("/admin/logs/sync")
+ @admin_required
+ def admin_logs_sync():
+     html = _build_admin_logs_html(request.args.to_dict(flat=True))
+     return Response(html, content_type="text/html; charset=utf-8")
+ 
+ 
+ @app.route("/admin/logs/async")
+ @admin_required
+ def admin_logs_async():
+     _gc_adminlogs_jobs(ttl_seconds=1800)
+     args_dict = request.args.to_dict(flat=True)
++    user_id = session.get("user")
+     existing_job = (request.args.get("job") or "").strip()
+     if existing_job and existing_job.startswith("adminlogs_"):
+         st = _progress_read(existing_job)
+         if st and st.get("status") in ("queued", "running", "error"):
+             job_id = existing_job
+         else:
+             job_id = f"adminlogs_{secrets.token_hex(16)}"
+     else:
+         job_id = f"adminlogs_{secrets.token_hex(16)}"
+ 
+     status = _progress_read(job_id)
+     if not status:
+         _progress_write(job_id, {
+             "status": "queued",
+             "created_at": datetime.utcnow().isoformat(),
+             "args": args_dict,
++            "requested_by": user_id,
+         })
+-        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict)
++        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict, user_id)
+ 
+     retry_args = dict(args_dict)
+     retry_args.pop("job", None)
+     return render_template(
+         "admin/logs_loading.html",
+         job_id=job_id,
+         status_url=url_for("admin_logs_status", job=job_id),
+         result_url=url_for("admin_logs_result", job=job_id),
+         retry_url=url_for("admin_logs_async", **retry_args),
+     )
+ 
+ 
+ @app.route("/admin/logs/status")
+ @admin_required
+ def admin_logs_status():
+     job_id = (request.args.get("job") or "").strip()
+     if not job_id:
+         return jsonify({"status": "not_found"}), 404
+ 
+     status_data = _progress_read(job_id)
+     if not status_data:
+         return jsonify({"status": "not_found"}), 404
+ 
+     return jsonify({
+         "status": status_data.get("status", "unknown"),
