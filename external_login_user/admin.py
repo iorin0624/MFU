@@ -510,6 +510,7 @@ def admin_event_view(event_id: int):
         u.nickname, u.x_id, u.instagram_id, u.email,
         u.avatar_file, u.avatar_url, u.updated_at,
         m.status, m.payment_status, m.paid_at, m.receipt_url, m.joined_at,
+        m.checkin_at,
         COALESCE(m.require_payment, 1)        AS require_payment,
         COALESCE(m.process, 0)                AS process,
         COALESCE(m.is_host, 0)                AS is_host,
@@ -552,7 +553,7 @@ def admin_event_view(event_id: int):
         if isinstance(r, tuple):
             (user_id, nickname, x_id, instagram_id, email,
              avatar_file, avatar_url, updated_at,
-             status, payment_status, paid_at, receipt_url, joined_at,
+             status, payment_status, paid_at, receipt_url, joined_at, checkin_at,
              require_payment, process, is_host, is_subhost, participant_role, costume_label,
              paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
         else:
@@ -569,6 +570,7 @@ def admin_event_view(event_id: int):
             paid_at          = r["paid_at"]
             receipt_url      = r["receipt_url"]
             joined_at        = r["joined_at"]
+            checkin_at       = r.get("checkin_at")
             require_payment  = r["require_payment"]
             process          = r["process"]
             is_host          = r["is_host"]
@@ -611,6 +613,8 @@ def admin_event_view(event_id: int):
             "paid_at": paid_at,
             "receipt_url": receipt_url,
             "joined_at": joined_at,
+            "checkin_at": checkin_at,
+            "checked_in": bool(checkin_at),
             "require_payment": require_payment_flag,
             "process": 1 if process else 0,
             "is_host": 1 if is_host else 0,

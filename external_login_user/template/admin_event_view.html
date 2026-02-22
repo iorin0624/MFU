@@ -294,7 +294,7 @@
           alt="" style="width:60px;height:60px;border-radius:50%;object-fit:cover;box-shadow:0 1px 4px rgba(0,0,0,.1);">
     <div>
       <div class="fw-bold">
-        {% if m.is_host %}👑👑{% elif m.is_subhost %}👑{% endif %}
+        {% if m.checked_in %}✅{% endif %}{% if m.is_host %}👑👑{% elif m.is_subhost %}👑{% endif %}
         <a href="https://mfu.iori0624.jp/external-login/admin/ext-users/{{ m.user_id }}/edit"
            target="_blank" rel="noopener"
            class="link-underline link-underline-opacity-0 link-dark">
