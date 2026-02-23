@@ -1354,9 +1354,14 @@ def upload_child(album_id, child_id):
                         ext_user_id = int(r.get("ext_user_id"))
                     except (TypeError, ValueError):
                         continue
-                    status = status_map.get(ext_user_id, {})
-                    if int(status.get("complete_flag", 0)) != 1:
-                        filtered.append(r)
+                    status = status_map.get(ext_user_id)
+                    if not status:
+                        continue
+                    if int(status.get("request_flag", 0)) != 1:
+                        continue
+                    if int(status.get("complete_flag", 0)) == 1:
+                        continue
+                    filtered.append(r)
                 rows = filtered
 
             # ★ 各自の通知設定でフィルタ
