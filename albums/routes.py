@@ -1339,8 +1339,8 @@ def upload_child(album_id, child_id):
             except Exception:
                 # フォールバック：高レベル
                 try:
-                    from app.utils.db import db_get_all
-                    rows = db_get_all(sql, (event_id,))
+                    from app.utils.db import db_get_all as _db_get_all
+                    rows = _db_get_all(sql, (event_id,))
                 except Exception as e2:
                     current_app.logger.warning("notify(db) failed: %s", e2)
                     return

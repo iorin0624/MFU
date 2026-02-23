@@ -1,217 +1,57 @@
-diff --git a/albums/templates/album_home.html b/albums/templates/album_home.html
-index d91beb199163ee1f0fa9e0490ef86b4f4bd9e488..5d901b9221f2022695b1b10b2e2b716dc9a72250 100644
---- a/albums/templates/album_home.html
-+++ b/albums/templates/album_home.html
-@@ -72,65 +72,52 @@
-           <label class="btn btn-outline-secondary" for="tplNone">指定なし</label>
+diff --git a/__init__.py b/__init__.py
+index 0019e710b7f4ac7af3377dd74900285afb80d270..810974454b1fecc4e79d25156303c9cca4532111 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -84,51 +84,51 @@ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
  
-           <input type="radio" class="btn-check" name="child_name_template" id="tplKouzu" value="kouzu">
-           <label class="btn btn-outline-secondary" for="tplKouzu">【構図】</label>
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+     template_folder=os.path.join(APP_DIR, "templates"),
+     static_folder=STATIC_DIR,
+     static_url_path="/static",
+ )
+ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
  
-           <input type="radio" class="btn-check" name="child_name_template" id="tplOffshot" value="offshot">
-           <label class="btn btn-outline-secondary" for="tplOffshot">【オフショ】</label>
+ def create_app():
+     return app
  
-           <input type="radio" class="btn-check" name="child_name_template" id="tplDouga" value="douga">
-           <label class="btn btn-outline-secondary" for="tplDouga">【動画】</label>
+ load_dotenv()
+ app.secret_key = os.environ.get("SECRET_KEY")
  
-           <input type="radio" class="btn-check" name="child_name_template" id="tplKakou" value="kakou">
-           <label class="btn btn-outline-secondary" for="tplKakou">【加工回し】</label>
-         </div>
-         <div class="form-text mt-1">
-           上のテンプレートと下の名前を組み合わせて保存します（例：<code>【構図】七五三_原版</code>）。
-         </div>
-       </div>
+ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
  
-       <!-- タイトル -->
-       <div class="mb-3">
-         <label for="childName" class="form-label">ご自身のお名前or新しい子アルバム名</label>
-         <input id="childName" type="text" name="child_name" class="form-control" placeholder="例：いおりん" value="{{ ext_user_nickname or '' }}" required>
-       </div>
+ app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
+ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
  
--      <!-- モード選択 -->
--      <div class="mb-2">
--        <label class="form-label">モード</label>
--        <div class="btn-group w-100" role="group" aria-label="child mode">
--          <input type="radio" class="btn-check" name="child_mode" id="modePhoto" value="normal" checked>
--          <label class="btn btn-outline-success" for="modePhoto">📸 写真</label>
--
--          <input type="radio" class="btn-check" name="child_mode" id="modeMovie" value="movie">
--          <label class="btn btn-outline-primary" for="modeMovie">🎬 動画</label>
--
--          <input type="radio" class="btn-check" name="child_mode" id="modeProcess" value="process">
--          <label class="btn btn-outline-warning" for="modeProcess">🛠️ 加工回し</label>
--        </div>
--        <div id="modeHelp" class="form-text mt-1"></div>
--      </div>
-+      {# モード互換維持用（UIは非表示） #}
-+      <input type="hidden" name="child_mode" id="childModeHidden" value="normal">
+-app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "50")) * 1024 * 1024
++app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
  
-       <!-- 作成ボタン -->
-       <div class="mt-3">
-         <button id="createChildBtn" class="btn btn-success w-100" type="submit">＋ 子アルバムを作成</button>
-       </div>
-     </form>
-   </div>
-   {% endif %}
+ # 既定ホワイトリスト（必要なら config で上書き）
+ app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
  
-   <!-- 凡例 -->
-   <div class="mb-2">
-     <span class="badge badge-mode badge-normal">📸 写真</span>
-     <span class="badge badge-mode badge-movie">🎬 動画</span>
-     <span class="badge badge-mode badge-process">🛠️ 加工回し</span>
-   </div>
+ login_manager = LoginManager()
+ login_manager.init_app(app)
+ login_manager.login_view = "login"
+ login_manager.user_loader(load_user)
  
-   {# 加工ロック中の child_id 一覧を生成（processing_list はビューから渡ってくる前提） #}
-   {% set locked_ns = namespace(ids=[]) %}
-   {% if processing_list %}
-     {% for p in processing_list %}
-       {% set locked_ns.ids = locked_ns.ids + [p.child_id] %}
-     {% endfor %}
-   {% endif %}
+ # =====================================
+ # 🧠 補助関数群（上段へ集約）
+ # =====================================
  
-   {# 子アルバム描画用マクロ #}
-@@ -303,136 +290,115 @@
-             {% else %}
-               <div class="text-muted small p-3">該当する子アルバムはありません。</div>
-             {% endif %}
-           </div>
-         </div>
-       </div>
+ from functools import wraps
+ from flask import session
  
-     </div>
+ def admin_required(func):
+     @wraps(func)
+     def wrapper(*args, **kwargs):
+         if session.get("user") != "admin":
+             return "管理者のみアクセス可能", 403
+         return func(*args, **kwargs)
+     return wrapper
  
-     {# 一括展開／一括閉じるボタン（一覧の一番下） #}
-     <div class="d-flex justify-content-end gap-2 mt-3">
-       <button type="button" id="expandAllChildren" class="btn btn-sm btn-outline-secondary">
-         一括展開
-       </button>
-       <button type="button" id="collapseAllChildren" class="btn btn-sm btn-outline-secondary">
-         一括閉じる
-       </button>
-     </div>
  
-   {% endif %}
- 
-   <!-- Bootstrap JS（Collapseに必要） -->
-   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
- 
-   <script>
--    // 「加工回し」選択時だけ注意文を表示
--    (function(){
--      const help = document.getElementById('modeHelp');
--      const radios = document.querySelectorAll('input[name="child_mode"]');
--      const update = () => {
--        const v = document.querySelector('input[name="child_mode"]:checked')?.value;
--        if (v === 'process') {
--          help.innerHTML = '※加工回しする用のモードです。このモードはアップロードが<strong>１枚制限</strong>となります。';
--        } else {
--          help.textContent = '';
--        }
--      };
--      radios.forEach(r => r.addEventListener('change', update));
--      update();
--    })();
--
-     // ===== 作成ボタン以外では送信させない（Enter対策 + IME確定Enter無視）＋確認ダイアログ =====
-     (function(){
-       const form = document.getElementById('createChildForm');
-       if (!form) return; // 権限なし/読み取り専用でフォーム自体が無い場合
- 
-       const input = document.getElementById('childName');
-       const createBtn = document.getElementById('createChildBtn');
- 
-       // 名前テンプレを反映したフルタイトルを組み立て
-       const buildTitle = () => {
-         const raw = (input?.value || '').trim();
-         const tpl = form.querySelector('input[name="child_name_template"]:checked')?.value || '';
-         let prefix = '';
-         if (tpl === 'kouzu') {
-           prefix = '【構図】';
-         } else if (tpl === 'offshot') {
-           prefix = '【オフショ】';
-         } else if (tpl === 'douga') {
-           prefix = '【動画】';
-         } else if (tpl === 'kakou') {
-           prefix = '【加工回し】';
-         }
-         if (!raw) {
-           return prefix || '(無題)';
-         }
-         return prefix + raw;
-       };
- 
--      // テンプレ選択に応じてモードを自動切り替え
-+      // テンプレ選択に応じて互換用モード値を自動設定（UIには表示しない）
-       const syncModeWithTemplate = () => {
-         const tpl = form.querySelector('input[name="child_name_template"]:checked')?.value || '';
--        const modePhoto  = document.getElementById('modePhoto');
--        const modeMovie  = document.getElementById('modeMovie');
--        const modeProcess = document.getElementById('modeProcess');
-+        const hiddenMode = document.getElementById('childModeHidden');
- 
--        if (!modePhoto || !modeMovie || !modeProcess) return;
-+        if (!hiddenMode) return;
- 
-         if (tpl === 'douga') {
--          // 【動画】 → 動画モード
--          modeMovie.checked = true;
-+          hiddenMode.value = 'movie';
-         } else if (tpl === 'kakou') {
--          // 【加工回し】 → 加工回しモード
--          modeProcess.checked = true;
--        } else if (tpl === 'kouzu' || tpl === 'offshot' || tpl === '') {
--          // 【構図】【オフショ】or 指定なし → 写真モード
--          modePhoto.checked = true;
-+          hiddenMode.value = 'process';
-+        } else {
-+          hiddenMode.value = 'normal';
-         }
-       };
- 
-       // テンプレラジオに変更イベントを仕込む
-       const tplRadios = form.querySelectorAll('input[name="child_name_template"]');
-       tplRadios.forEach(r => {
-         r.addEventListener('change', syncModeWithTemplate);
-       });
-       // 初期状態も反映
-       syncModeWithTemplate();
- 
-       let createRequested = false;
-       createBtn?.addEventListener('click', () => { createRequested = true; });
- 
-       form.addEventListener('submit', (e) => {
-         // 作成ボタン以外からの submit は弾く
-         if (!createRequested) {
-           e.preventDefault();
-           return;
-         }
- 
-         // タイトルとモードを拾って確認ダイアログを表示
-         const title = buildTitle();
--        const modeVal = form.querySelector('input[name="child_mode"]:checked')?.value;
-+        const modeVal = form.querySelector('input[name="child_mode"]')?.value;
-         let modeLabel = '写真';
-         if (modeVal === 'movie') {
-           modeLabel = '動画';
-         } else if (modeVal === 'process') {
-           modeLabel = '加工回し';
-         }
- 
-         const msg = `タイトル：${title}\nモード：${modeLabel}\n\nにて作成しますか？`;
-         if (!window.confirm(msg)) {
-           e.preventDefault();
-           createRequested = false;
-           return;
-         }
- 
-         // 実際に送る値として、テンプレ込みのタイトルを反映
-         if (input) {
-           input.value = title;
-         }
- 
-         // 確認OKならフラグをリセットしてそのまま送信
-         createRequested = false;
-       });
- 
-       form.addEventListener('keydown', (e) => {
-         if (e.key === 'Enter' && !e.isComposing) e.preventDefault();
