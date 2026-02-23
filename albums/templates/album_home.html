@@ -94,21 +94,8 @@
         <input id="childName" type="text" name="child_name" class="form-control" placeholder="例：いおりん" value="{{ ext_user_nickname or '' }}" required>
       </div>
 
-      <!-- モード選択 -->
-      <div class="mb-2">
-        <label class="form-label">モード</label>
-        <div class="btn-group w-100" role="group" aria-label="child mode">
-          <input type="radio" class="btn-check" name="child_mode" id="modePhoto" value="normal" checked>
-          <label class="btn btn-outline-success" for="modePhoto">📸 写真</label>
-
-          <input type="radio" class="btn-check" name="child_mode" id="modeMovie" value="movie">
-          <label class="btn btn-outline-primary" for="modeMovie">🎬 動画</label>
-
-          <input type="radio" class="btn-check" name="child_mode" id="modeProcess" value="process">
-          <label class="btn btn-outline-warning" for="modeProcess">🛠️ 加工回し</label>
-        </div>
-        <div id="modeHelp" class="form-text mt-1"></div>
-      </div>
+      {# モード互換維持用（UIは非表示） #}
+      <input type="hidden" name="child_mode" id="childModeHidden" value="normal">
 
       <!-- 作成ボタン -->
       <div class="mt-3">
@@ -325,22 +312,6 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
   <script>
-    // 「加工回し」選択時だけ注意文を表示
-    (function(){
-      const help = document.getElementById('modeHelp');
-      const radios = document.querySelectorAll('input[name="child_mode"]');
-      const update = () => {
-        const v = document.querySelector('input[name="child_mode"]:checked')?.value;
-        if (v === 'process') {
-          help.innerHTML = '※加工回しする用のモードです。このモードはアップロードが<strong>１枚制限</strong>となります。';
-        } else {
-          help.textContent = '';
-        }
-      };
-      radios.forEach(r => r.addEventListener('change', update));
-      update();
-    })();
-
     // ===== 作成ボタン以外では送信させない（Enter対策 + IME確定Enter無視）＋確認ダイアログ =====
     (function(){
       const form = document.getElementById('createChildForm');
@@ -369,24 +340,19 @@
         return prefix + raw;
       };
 
-      // テンプレ選択に応じてモードを自動切り替え
+      // テンプレ選択に応じて互換用モード値を自動設定（UIには表示しない）
       const syncModeWithTemplate = () => {
         const tpl = form.querySelector('input[name="child_name_template"]:checked')?.value || '';
-        const modePhoto  = document.getElementById('modePhoto');
-        const modeMovie  = document.getElementById('modeMovie');
-        const modeProcess = document.getElementById('modeProcess');
+        const hiddenMode = document.getElementById('childModeHidden');
 
-        if (!modePhoto || !modeMovie || !modeProcess) return;
+        if (!hiddenMode) return;
 
         if (tpl === 'douga') {
-          // 【動画】 → 動画モード
-          modeMovie.checked = true;
+          hiddenMode.value = 'movie';
         } else if (tpl === 'kakou') {
-          // 【加工回し】 → 加工回しモード
-          modeProcess.checked = true;
-        } else if (tpl === 'kouzu' || tpl === 'offshot' || tpl === '') {
-          // 【構図】【オフショ】or 指定なし → 写真モード
-          modePhoto.checked = true;
+          hiddenMode.value = 'process';
+        } else {
+          hiddenMode.value = 'normal';
         }
       };
 
@@ -410,7 +376,7 @@
 
         // タイトルとモードを拾って確認ダイアログを表示
         const title = buildTitle();
-        const modeVal = form.querySelector('input[name="child_mode"]:checked')?.value;
+        const modeVal = form.querySelector('input[name="child_mode"]')?.value;
         let modeLabel = '写真';
         if (modeVal === 'movie') {
           modeLabel = '動画';
