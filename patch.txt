@@ -1,57 +1,66 @@
-diff --git a/__init__.py b/__init__.py
-index 0019e710b7f4ac7af3377dd74900285afb80d270..810974454b1fecc4e79d25156303c9cca4532111 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -84,51 +84,51 @@ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
- UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
- tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+diff --git a/albums/routes.py b/albums/routes.py
+index 008ef5c7e7b67de3203068e8c715debe5c10ed2a..35daf478559a63e6d9c790f6f28e59cbc6c6bfdb 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -1332,53 +1332,58 @@ def upload_child(album_id, child_id):
+                     cur.close()
+                 except Exception:
+                     pass
+                 try:
+                     conn.close()
+                 except Exception:
+                     pass
+             except Exception:
+                 # フォールバック：高レベル
+                 try:
+                     from app.utils.db import db_get_all as _db_get_all
+                     rows = _db_get_all(sql, (event_id,))
+                 except Exception as e2:
+                     current_app.logger.warning("notify(db) failed: %s", e2)
+                     return
  
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
- )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+             # ★ process モードの通知は「未完了のみ」へ絞り込み
+             if mode == "process" and kind in ("upload", "process_done"):
+                 status_map = _fetch_album_process_status_map(album_id, child_id)
+                 filtered = []
+                 for r in rows:
+                     try:
+                         ext_user_id = int(r.get("ext_user_id"))
+                     except (TypeError, ValueError):
+                         continue
+-                    status = status_map.get(ext_user_id, {})
+-                    if int(status.get("complete_flag", 0)) != 1:
+-                        filtered.append(r)
++                    status = status_map.get(ext_user_id)
++                    if not status:
++                        continue
++                    if int(status.get("request_flag", 0)) != 1:
++                        continue
++                    if int(status.get("complete_flag", 0)) == 1:
++                        continue
++                    filtered.append(r)
+                 rows = filtered
  
- def create_app():
-     return app
+             # ★ 各自の通知設定でフィルタ
+             if kind == "upload":
+                 emails = [r.get("email") for r in rows
+                           if r.get("email") and int(r.get("notify_album_upload", 1)) == 1]
+             elif kind == "process_done":
+                 emails = [r.get("email") for r in rows
+                           if r.get("email") and int(r.get("notify_album_process", 1)) == 1]
+             else:
+                 emails = [r.get("email") for r in rows if r.get("email")]
  
- load_dotenv()
- app.secret_key = os.environ.get("SECRET_KEY")
- 
- app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
- 
- app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
- app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
- 
--app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "50")) * 1024 * 1024
-+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
- 
- # 既定ホワイトリスト（必要なら config で上書き）
- app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
- 
- login_manager = LoginManager()
- login_manager.init_app(app)
- login_manager.login_view = "login"
- login_manager.user_loader(load_user)
- 
- # =====================================
- # 🧠 補助関数群（上段へ集約）
- # =====================================
- 
- from functools import wraps
- from flask import session
- 
- def admin_required(func):
-     @wraps(func)
-     def wrapper(*args, **kwargs):
-         if session.get("user") != "admin":
-             return "管理者のみアクセス可能", 403
-         return func(*args, **kwargs)
-     return wrapper
- 
- 
+             # ★ 依頼者にも加工完了通知を送る（未完了フィルタの外）
+             if kind == "process_done":
+                 requester_rows = db_get_all(
+                     """
+                     SELECT DISTINCT ap.request_by AS requester_id, u.email
+                       FROM album_process ap
+                       JOIN external_login_user u ON u.id = ap.request_by
+                      WHERE ap.album_id=%s AND ap.child_id=%s
+                        AND ap.request_flag=1
+                        AND ap.request_by IS NOT NULL
+                        AND u.email IS NOT NULL AND u.email<>''
+                     """,
+                     (album_id, child_id),
