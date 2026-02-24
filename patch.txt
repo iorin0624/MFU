@@ -1,59 +1,110 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index b580e82d1b31cfa885be98c26cc4c6700c7b8cae..fd9eb27a07af5926682d32e7809ebddedb91ea39 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -1440,52 +1440,52 @@ def upload_child(album_id, child_id):
-                     return
+diff --git a/templates/admin_logs.html b/templates/admin_logs.html
+index 4944ab0ae05131fafa6118c17000afa758580f5b..b0ae505776b8844de891378e7391cee98e3bd7b3 100644
+--- a/templates/admin_logs.html
++++ b/templates/admin_logs.html
+@@ -275,51 +275,51 @@
+         {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+     {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+     {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
+         <label class="small text-muted">SMTP詳細</label>
+         <select class="form-select form-select-sm" name="smtp_filter" onchange="this.form.submit()">
+           <option value="ALL" {{ 'selected' if smtp_filter_value=='ALL' else '' }}>ALL</option>
+           <option value="AUTHFAIL" {{ 'selected' if smtp_filter_value=='AUTHFAIL' else '' }}>AUTHFAIL</option>
+           <option value="REJECT" {{ 'selected' if smtp_filter_value=='REJECT' else '' }}>REJECT</option>
+           <option value="DISCONNECT" {{ 'selected' if smtp_filter_value=='DISCONNECT' else '' }}>DISCONNECT</option>
+           <option value="SENT" {{ 'selected' if smtp_filter_value=='SENT' else '' }}>SENT</option>
+         </select>
+       </form>
+     {% endif %}
  
-             # ★ 利用者ビュー直リンク（/external-login/events/<UUID>/album）
-             def _to_uuid_str(v):
-                 import uuid
-                 if isinstance(v, str):
-                     s = v.strip()
-                     try:
-                         uuid.UUID(s); return s
-                     except Exception:
-                         return None
-                 if isinstance(v, (bytes, bytearray)):
-                     try:
-                         return str(uuid.UUID(bytes=bytes(v)))
-                     except Exception:
-                         try:
-                             return str(uuid.UUID(hex=v.hex()))
-                         except Exception:
-                             return None
-                 return None
+     <!-- 表示切替スイッチ -->
+     <div class="ms-2 d-flex align-items-center gap-2">
+       <div class="form-check form-switch">
+         <input class="form-check-input" type="checkbox" id="togglePretty" checked>
+         <label class="form-check-label small" for="togglePretty">見やすい表示</label>
+       </div>
+       <span class="small text-muted">(切替：見やすい表示 / 原文)</span>
+     </div>
+   </div>
  
-             ev_uuid_str = None
-             try:
-                 # db_get_one があれば利用、なければ get_db で代替
-                 try:
--                    from app.utils.db import db_get_one
--                    ev_row = db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-+                    from app.utils.db import db_get_one as util_db_get_one
-+                    ev_row = util_db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-                     ev_b = ev_row.get("event_uuid") if isinstance(ev_row, dict) else None
-                 except Exception:
-                     from app.utils.db import get_db
-                     conn = get_db()
-                     try:
-                         cur = conn.cursor()
-                         cur.execute("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-                         r = cur.fetchone()
-                         ev_b = r[0] if r else None
-                     finally:
-                         try: cur.close()
-                         except Exception: pass
-                         try: conn.close()
-                         except Exception: pass
-                 ev_uuid_str = _to_uuid_str(ev_b)
-             except Exception as e:
-                 current_app.logger.warning("notify(event_uuid) failed: %s", e)
-                 ev_uuid_str = None
+   <!-- 日付絞り込み（サーバー側） -->
+-  <form method="get" class="mb-3">
++  <form method="get" action="{{ url_for('admin_logs') }}" class="mb-3">
+     {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+     {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+     {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+     {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+     {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+     {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+     {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
+     {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
+     {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
+     {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
+     {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
+     {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
+     {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
+     {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
+     {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
+     {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
+     {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
+     <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+     <div class="input-group">
+       <input type="date" name="date" class="form-control" value="{{ selected_date }}">
+       <button class="btn btn-outline-primary" type="submit">日付で絞り込み</button>
+       {% if selected_date %}
+         <a class="btn btn-outline-secondary" href="{{ url_for('admin_logs',
+                                                               kind=filters.kind or None,
+                                                               exclude_local=1 if filters.exclude_local else None,
+@@ -357,51 +357,51 @@
+     {% if filters.search_keyword %}
+       <span class="badge bg-secondary">検索: {{ filters.search_keyword }}</span>
+       <span class="badge bg-light text-dark border">条件: {{ 'AND' if filters.search_mode == 'and' else 'OR' }}</span>
+     {% endif %}
+     {% if filters.search_ip %}<span class="badge bg-light text-dark border">IP: {{ filters.search_ip }}</span>{% endif %}
+     {% if filters.search_status %}<span class="badge bg-light text-dark border">Status: {{ filters.search_status }}</span>{% endif %}
+     {% if filters.search_method %}<span class="badge bg-light text-dark border">Method: {{ filters.search_method }}</span>{% endif %}
+     {% if filters.search_path %}<span class="badge bg-light text-dark border">Path: {{ filters.search_path }}</span>{% endif %}
+     {% if filters.search_endpoint %}<span class="badge bg-light text-dark border">EP: {{ filters.search_endpoint }}</span>{% endif %}
+     {% if filters.search_user %}<span class="badge bg-light text-dark border">User: {{ filters.search_user }}</span>{% endif %}
+     {% if filters.search_ua %}<span class="badge bg-light text-dark border">UA: {{ filters.search_ua }}</span>{% endif %}
+     {% if filters.search_date_from or filters.search_date_to %}
+       <span class="badge bg-light text-dark border">期間: {{ filters.search_date_from or '未指定' }} 〜 {{ filters.search_date_to or '未指定' }}</span>
+     {% endif %}
+     {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
+     <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
+   </div>
  
-             if ev_uuid_str:
-                 try:
-                     # 新設の直リンクルート（未定義でも落ちないようフォールバック）
-                     link = url_for('external_login_user.event_album_direct', event_uuid=ev_uuid_str, _external=True)
-                 except Exception:
-                     link = url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)
+   <!-- 検索（サーバー側・全ページ対象） -->
+   <div class="card mb-3">
+     <div class="card-body">
+       <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+         <h5 class="card-title mb-0">検索（全ページ対象）</h5>
+         <span class="small text-muted">※サーバー側で絞り込み</span>
+       </div>
+-      <form method="get">
++      <form method="get" action="{{ url_for('admin_logs') }}">
+         {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
+         {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
+         {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
+         {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
+         {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
+         {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
+         {% if selected_date %}<input type="hidden" name="date" value="{{ selected_date }}">{% endif %}
+         <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
+         <div class="row g-2 align-items-end">
+           <div class="col-12 col-lg-4">
+             <label class="form-label small">フリーワード</label>
+             <input type="text" class="form-control form-control-sm" name="search_keyword" value="{{ filters.search_keyword }}" placeholder="例: album access 200">
+             <div class="form-text small">半角/全角スペース区切り。IP/ログ全文を対象。</div>
+           </div>
+           <div class="col-6 col-lg-2">
+             <label class="form-label small">開始日</label>
+             <input type="date" class="form-control form-control-sm" name="search_date_from" value="{{ filters.search_date_from }}">
+           </div>
+           <div class="col-6 col-lg-2">
+             <label class="form-label small">終了日</label>
+             <input type="date" class="form-control form-control-sm" name="search_date_to" value="{{ filters.search_date_to }}">
+           </div>
+           <div class="col-6 col-lg-2">
+             <label class="form-label small">キーワード条件</label>
+             <select class="form-select form-select-sm" name="search_mode">

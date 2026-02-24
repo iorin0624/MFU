@@ -297,7 +297,7 @@
   </div>
 
   <!-- 日付絞り込み（サーバー側） -->
-  <form method="get" class="mb-3">
+  <form method="get" action="{{ url_for('admin_logs') }}" class="mb-3">
     {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
     {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
     {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
@@ -379,7 +379,7 @@
         <h5 class="card-title mb-0">検索（全ページ対象）</h5>
         <span class="small text-muted">※サーバー側で絞り込み</span>
       </div>
-      <form method="get">
+      <form method="get" action="{{ url_for('admin_logs') }}">
         {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
         {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
         {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
