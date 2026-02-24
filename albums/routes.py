@@ -342,6 +342,46 @@ def _open_path_anyroot(album_id: str, child_id: str, filename: str, mode: str = 
     s = os.path.join(secondary, album_id, child_id, filename)
     return s if os.path.isfile(s) else None
 
+def _count_child_media_items(album_id: str, child_id: str, mode: str) -> int:
+    """子アルバム内の表示対象メディア件数を返す（親一覧向け）。"""
+    normalized_mode = (mode or "normal").lower()
+
+    if normalized_mode == "movie":
+        orig_dir = os.path.join(storage_child_dir(album_id, child_id, mode='movie'), 'original')
+        if not os.path.isdir(orig_dir):
+            return 0
+        return sum(
+            1
+            for fname in os.listdir(orig_dir)
+            if os.path.isfile(os.path.join(orig_dir, fname))
+            and allowed_movie(fname)
+            and not fname.endswith('.web.mp4')
+        )
+
+    roots = _get_roots_for_album(album_id)
+    seen = set()
+    count = 0
+    for root in roots:
+        child_path = os.path.join(root, album_id, child_id)
+        if not os.path.isdir(child_path):
+            continue
+        for fname in os.listdir(child_path):
+            full = os.path.join(child_path, fname)
+            if not os.path.isfile(full) or not allowed_file(fname):
+                continue
+
+            if normalized_mode == "process":
+                if not fname.startswith("latest."):
+                    continue
+            elif fname.startswith("latest."):
+                continue
+
+            if fname in seen:
+                continue
+            seen.add(fname)
+            count += 1
+    return count
+
 def resolve_thumb_url(album_id: str, child_id: str, original_filename: str) -> str:
     base, _ = os.path.splitext(original_filename)
     roots = _get_roots_for_album(album_id)  # ← 追加：毎回DB行かない
@@ -1213,6 +1253,11 @@ def album_home(album_id):
                 for ext_user_id in requested_ids
             ):
                 completed_process_children.add(child.get("folder"))
+
+    for child in meta.get("children", []):
+        mode = child.get("mode") or "normal"
+        child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
+        child["media_unit"] = "本" if mode == "movie" else "枚"
 
     return render_template(
         'album_home.html',
