@@ -107,16 +107,6 @@
         <!-- 見出し -->
         <div class="d-flex align-items-center justify-content-between mb-3">
           <h2 class="h5 mb-0">参加イベント一覧</h2>
-          <!-- 終了イベントの折りたたみトグル -->
-          <button class="btn btn-outline-secondary btn-sm"
-                  id="pastToggleBtn"
-                  type="button"
-                  data-bs-toggle="collapse"
-                  data-bs-target="#pastCollapse"
-                  aria-expanded="false"
-                  aria-controls="pastCollapse">
-            終了イベントを表示
-          </button>
         </div>
 
         <!-- ========= 開催予定（開催日が近い順＝昇順） ========= -->
@@ -180,8 +170,8 @@
           </div>
         {% endif %}
 
-        <!-- ========= 終了イベント（折りたたみ） ========= -->
-        <div class="collapse mt-4" id="pastCollapse">
+        <!-- ========= 終了イベント ========= -->
+        <div class="mt-4">
           <h3 class="h6 text-muted mb-2">終了イベント</h3>
           {% set past = events_past or [] %}
 
@@ -462,22 +452,6 @@
     } catch(e){}
   </script>
   {% endif %}
-
-  <!-- 終了イベントトグルのボタン文言切り替え -->
-  <script>
-    document.addEventListener('DOMContentLoaded', function () {
-      var collapseEl = document.getElementById('pastCollapse');
-      var btn = document.getElementById('pastToggleBtn');
-      if (!collapseEl || !btn) return;
-
-      collapseEl.addEventListener('show.bs.collapse', function () {
-        btn.textContent = '終了イベントを非表示';
-      });
-      collapseEl.addEventListener('hide.bs.collapse', function () {
-        btn.textContent = '終了イベントを表示';
-      });
-    });
-  </script>
 
   <!-- ▼ アップデート情報：自動チェック＋再確認リンク（既読状態をチェックに反映） -->
   <script>
