@@ -185,7 +185,7 @@ def _notify_requester_process_completion(
         return
     if not event_meta or not event_meta.get("event_id"):
         return
-    pending_row = db_get_one(
+    pending_sql = (
         """
         SELECT COUNT(*) AS cnt
           FROM album_process
@@ -193,7 +193,10 @@ def _notify_requester_process_completion(
            AND request_by=%s
            AND request_flag=1
            AND complete_flag=0
-        """,
+        """
+    )
+    pending_row = db_get_one(
+        pending_sql,
         (album_id, child_id, request_by_id),
     )
     pending_cnt = int(pending_row.get("cnt", 0)) if pending_row else 0
@@ -206,6 +209,15 @@ def _notify_requester_process_completion(
     requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
     if not requester_email:
         return
+    current_app.logger.info(
+        "notify: pre_send kind=process_all_done album_id=%s child_id=%s request_by=%s recipients=%s recipients_count=%s pending_sql=%s",
+        album_id,
+        child_id,
+        requester_email,
+        [requester_email],
+        1,
+        "request_flag=1 AND complete_flag=0",
+    )
     album_name = meta.get("album_name", "アルバム")
     child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
     link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
@@ -1288,6 +1300,11 @@ def upload_child(album_id, child_id):
     #   クールタイム: kind=='upload' は 5分間抑止（process_doneは除外）
     # ─────────────────────────────────────────────────────────────
     def _notify_event_members(kind: str, saved_names: list[str] | None = None) -> None:
+        def _preview_recipients(items: list[str], head: int = 5, tail: int = 2) -> list[str]:
+            if len(items) <= (head + tail):
+                return items
+            return items[:head] + [f"...({len(items) - (head + tail)} omitted)..."] + items[-tail:]
+
         try:
             # イベント連携の判定
             meta_ev = _fetch_album_meta(album_id)
@@ -1363,6 +1380,14 @@ def upload_child(album_id, child_id):
                         continue
                     filtered.append(r)
                 rows = filtered
+                current_app.logger.info(
+                    "notify: filter kind=%s album_id=%s child_id=%s sql_condition=%s candidates=%s",
+                    kind,
+                    album_id,
+                    child_id,
+                    "request_flag=1 AND complete_flag=0",
+                    len(rows),
+                )
 
             # ★ 各自の通知設定でフィルタ
             if kind == "upload":
@@ -1374,27 +1399,23 @@ def upload_child(album_id, child_id):
             else:
                 emails = [r.get("email") for r in rows if r.get("email")]
 
-            # ★ 依頼者にも加工完了通知を送る（未完了フィルタの外）
-            if kind == "process_done":
-                requester_rows = db_get_all(
-                    """
-                    SELECT DISTINCT ap.request_by AS requester_id, u.email
-                      FROM album_process ap
-                      JOIN external_login_user u ON u.id = ap.request_by
-                     WHERE ap.album_id=%s AND ap.child_id=%s
-                       AND ap.request_flag=1
-                       AND ap.request_by IS NOT NULL
-                       AND u.email IS NOT NULL AND u.email<>''
-                    """,
-                    (album_id, child_id),
-                )
-                requester_emails = [r.get("email") for r in requester_rows or [] if r.get("email")]
-                if requester_emails:
-                    email_set = {e for e in emails if e}
-                    email_set.update(requester_emails)
-                    emails = list(email_set)
-
             current_app.logger.info("notify: recipients(after filter)=%d album_id=%s child_id=%s", len(emails), album_id, child_id)
+            request_by_email = None
+            if _is_ext_logged_in():
+                ext_user_id = session.get("ext_user_id")
+                if ext_user_id:
+                    me = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (int(ext_user_id),))
+                    request_by_email = (me or {}).get("email")
+            current_app.logger.info(
+                "notify: pre_send kind=%s album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
+                kind,
+                album_id,
+                child_id,
+                request_by_email,
+                len(emails),
+                _preview_recipients(emails),
+                "request_flag=1 AND complete_flag=0" if (mode == "process" and kind in ("upload", "process_done")) else "n/a",
+            )
             if not emails:
                 return
 
@@ -1722,8 +1743,7 @@ def upload_child(album_id, child_id):
 
             # ★加工完了の通知（クールタイム対象外）
             try:
-                if had_latest:
-                    _notify_event_members('process_done', ['latest.jpg'])
+                _notify_event_members('process_done', ['latest.jpg'])
             except Exception as e:
                 current_app.logger.warning("notify(process) failed: %s", e)
 
@@ -2253,6 +2273,23 @@ def request_process(album_id, child_id):
                 send_mail = None
 
         if send_mail:
+            recipients = [
+                c.get("email") for c in contacts
+                if c.get("email") and int(c.get("notify_album_process", 1)) == 1
+            ]
+            request_by_email = None
+            if requester_id:
+                requester = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (requester_id,))
+                request_by_email = (requester or {}).get("email")
+            current_app.logger.info(
+                "notify: pre_send kind=process_request album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
+                album_id,
+                child_id,
+                request_by_email,
+                len(recipients),
+                recipients,
+                "request_flag=1 AND complete_flag=0",
+            )
             for c in contacts:
                 if not c.get("email"):
                     continue
