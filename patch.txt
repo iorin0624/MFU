@@ -1,464 +1,59 @@
 diff --git a/albums/routes.py b/albums/routes.py
-index 35daf478559a63e6d9c790f6f28e59cbc6c6bfdb..b580e82d1b31cfa885be98c26cc4c6700c7b8cae 100644
+index b580e82d1b31cfa885be98c26cc4c6700c7b8cae..fd9eb27a07af5926682d32e7809ebddedb91ea39 100644
 --- a/albums/routes.py
 +++ b/albums/routes.py
-@@ -163,71 +163,83 @@ def _build_event_album_link(event_id: int, album_id: str, child_id: str) -> str:
-                     pass
-         ev_uuid_str = _to_uuid_str(ev_b)
-     except Exception as e:
-         current_app.logger.warning("notify(event_uuid) failed: %s", e)
-         ev_uuid_str = None
- 
-     if ev_uuid_str:
-         try:
-             return url_for('external_login_user.event_album_direct', event_uuid=ev_uuid_str, _external=True)
-         except Exception:
-             return url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)
-     return url_for('album.view_child', album_id=album_id, child_id=child_id, _external=True)
- 
- 
- def _notify_requester_process_completion(
-     album_id: str,
-     child_id: str,
-     request_by_id: int | None,
-     meta: dict,
-     event_meta: dict | None,
- ) -> None:
-     if not request_by_id:
-         return
-     if not event_meta or not event_meta.get("event_id"):
-         return
--    pending_row = db_get_one(
-+    pending_sql = (
-         """
-         SELECT COUNT(*) AS cnt
-           FROM album_process
-          WHERE album_id=%s AND child_id=%s
-            AND request_by=%s
-            AND request_flag=1
-            AND complete_flag=0
--        """,
-+        """
-+    )
-+    pending_row = db_get_one(
-+        pending_sql,
-         (album_id, child_id, request_by_id),
-     )
-     pending_cnt = int(pending_row.get("cnt", 0)) if pending_row else 0
-     if pending_cnt != 0:
-         return
-     requester_row = db_get_one(
-         "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
-         (request_by_id,),
-     )
-     requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
-     if not requester_email:
-         return
-+    current_app.logger.info(
-+        "notify: pre_send kind=process_all_done album_id=%s child_id=%s request_by=%s recipients=%s recipients_count=%s pending_sql=%s",
-+        album_id,
-+        child_id,
-+        requester_email,
-+        [requester_email],
-+        1,
-+        "request_flag=1 AND complete_flag=0",
-+    )
-     album_name = meta.get("album_name", "アルバム")
-     child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
-     link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
-     subject = f"【加工完了】{album_name}"
-     body = (
-         f"{album_name} の「{child_name}」について、依頼した加工回しが完了しました。\n\n"
-         f"アクセスはこちら:\n{link}\n\n"
-         "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
-     )
-     try:
-         from app.utils.mail import send_mail
-     except Exception:
-         try:
-             from app.mail import send_mail
-         except Exception:
-             send_mail = None
-     if send_mail:
-         send_mail(requester_email, subject, body)
- 
- def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
-     if not user_ids:
-         return []
-     placeholders = ",".join(["%s"] * len(user_ids))
-     sql = (
-         "SELECT m.user_id, u.nickname, u.email, "
-@@ -1266,50 +1278,55 @@ def upload_child(album_id, child_id):
-         flash('このアルバムはHDD保管中（アーカイブ）のため写真・動画を追加できません。', 'warning')
-         return redirect(url_for('album.view_child', album_id=album_id, child_id=child_id))
- 
-     child_meta = next((c for c in meta["children"] if c["folder"] == child_id), None)
-     mode = child_meta.get("mode", "normal") if child_meta else "normal"
-     child_path = storage_child_dir(album_id, child_id, mode)
-     lock_path = os.path.join(child_path, 'lock.json')
- 
-     lock = None
-     if os.path.exists(lock_path):
-         try:
-             with open(lock_path, 'r') as f:
-                 lock = json.load(f)
-         except Exception:
-             lock = None
- 
-     # ─────────────────────────────────────────────────────────────
-     # ★通知ヘルパ（このルート内だけで完結）
-     #   条件: albums.event_id があり access_mode='event'
-     #   宛先: mfu_event_member.approved の external_login_user.email
-     #   フィルタ: 各ユーザーの notify_album_upload / notify_album_process を反映
-     #   リンク: /external-login/events/<UUID>/album 直リンク
-     #   クールタイム: kind=='upload' は 5分間抑止（process_doneは除外）
-     # ─────────────────────────────────────────────────────────────
-     def _notify_event_members(kind: str, saved_names: list[str] | None = None) -> None:
-+        def _preview_recipients(items: list[str], head: int = 5, tail: int = 2) -> list[str]:
-+            if len(items) <= (head + tail):
-+                return items
-+            return items[:head] + [f"...({len(items) - (head + tail)} omitted)..."] + items[-tail:]
-+
-         try:
-             # イベント連携の判定
-             meta_ev = _fetch_album_meta(album_id)
-             if not meta_ev or meta_ev.get('access_mode') != 'event' or not meta_ev.get('event_id'):
-                 current_app.logger.info("notify: skip (album not event) album_id=%s", album_id)
-                 return
- 
-             album_name = meta.get("album_name", "アルバム")
-             child_name = (child_meta or {}).get("name") or child_id
-             event_id = int(meta_ev["event_id"])
-             current_app.logger.info("notify: event album detected album_id=%s event_id=%s", album_id, event_id)
- 
-             # 承認済み参加者 + 通知設定カラムも取得
-             sql = (
-                 "SELECT m.user_id AS ext_user_id,"
-                 "       u.email,"
-                 "       COALESCE(u.notify_album_upload, 1)  AS notify_album_upload,"
-                 "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
-                 "  FROM mfu_event_member m "
-                 "  JOIN external_login_user u ON u.id = m.user_id "
-                 " WHERE m.event_id=%s AND m.status='approved' "
-                 "   AND u.email IS NOT NULL AND u.email<>''"
-             )
- 
-             rows = []
-@@ -1341,82 +1358,86 @@ def upload_child(album_id, child_id):
-                 try:
-                     from app.utils.db import db_get_all as _db_get_all
-                     rows = _db_get_all(sql, (event_id,))
-                 except Exception as e2:
-                     current_app.logger.warning("notify(db) failed: %s", e2)
-                     return
- 
-             # ★ process モードの通知は「未完了のみ」へ絞り込み
-             if mode == "process" and kind in ("upload", "process_done"):
-                 status_map = _fetch_album_process_status_map(album_id, child_id)
-                 filtered = []
-                 for r in rows:
-                     try:
-                         ext_user_id = int(r.get("ext_user_id"))
-                     except (TypeError, ValueError):
-                         continue
-                     status = status_map.get(ext_user_id)
-                     if not status:
-                         continue
-                     if int(status.get("request_flag", 0)) != 1:
-                         continue
-                     if int(status.get("complete_flag", 0)) == 1:
-                         continue
-                     filtered.append(r)
-                 rows = filtered
-+                current_app.logger.info(
-+                    "notify: filter kind=%s album_id=%s child_id=%s sql_condition=%s candidates=%s",
-+                    kind,
-+                    album_id,
-+                    child_id,
-+                    "request_flag=1 AND complete_flag=0",
-+                    len(rows),
-+                )
- 
-             # ★ 各自の通知設定でフィルタ
-             if kind == "upload":
-                 emails = [r.get("email") for r in rows
-                           if r.get("email") and int(r.get("notify_album_upload", 1)) == 1]
-             elif kind == "process_done":
-                 emails = [r.get("email") for r in rows
-                           if r.get("email") and int(r.get("notify_album_process", 1)) == 1]
-             else:
-                 emails = [r.get("email") for r in rows if r.get("email")]
- 
--            # ★ 依頼者にも加工完了通知を送る（未完了フィルタの外）
--            if kind == "process_done":
--                requester_rows = db_get_all(
--                    """
--                    SELECT DISTINCT ap.request_by AS requester_id, u.email
--                      FROM album_process ap
--                      JOIN external_login_user u ON u.id = ap.request_by
--                     WHERE ap.album_id=%s AND ap.child_id=%s
--                       AND ap.request_flag=1
--                       AND ap.request_by IS NOT NULL
--                       AND u.email IS NOT NULL AND u.email<>''
--                    """,
--                    (album_id, child_id),
--                )
--                requester_emails = [r.get("email") for r in requester_rows or [] if r.get("email")]
--                if requester_emails:
--                    email_set = {e for e in emails if e}
--                    email_set.update(requester_emails)
--                    emails = list(email_set)
--
-             current_app.logger.info("notify: recipients(after filter)=%d album_id=%s child_id=%s", len(emails), album_id, child_id)
-+            request_by_email = None
-+            if _is_ext_logged_in():
-+                ext_user_id = session.get("ext_user_id")
-+                if ext_user_id:
-+                    me = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (int(ext_user_id),))
-+                    request_by_email = (me or {}).get("email")
-+            current_app.logger.info(
-+                "notify: pre_send kind=%s album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
-+                kind,
-+                album_id,
-+                child_id,
-+                request_by_email,
-+                len(emails),
-+                _preview_recipients(emails),
-+                "request_flag=1 AND complete_flag=0" if (mode == "process" and kind in ("upload", "process_done")) else "n/a",
-+            )
-             if not emails:
-                 return
- 
-             # ★ クールタイム（uploadのみ対象／process_doneは対象外）
-             if kind == "upload":
-                 COOLDOWN_SEC = 300  # 5分
-                 state_path = os.path.join(child_path, ".notify_state.json")
-                 now_ts = int(time.time())
-                 last_upload_ts = None
-                 try:
-                     if os.path.exists(state_path):
-                         with open(state_path, "r", encoding="utf-8") as sf:
-                             st = json.load(sf) or {}
-                             if st.get("last_upload_ts") is not None:
-                                 last_upload_ts = int(st.get("last_upload_ts"))
-                 except Exception:
-                     last_upload_ts = None
-                 if last_upload_ts is not None and (now_ts - last_upload_ts) < COOLDOWN_SEC:
-                     remain = COOLDOWN_SEC - (now_ts - last_upload_ts)
-                     current_app.logger.info("notify: cooldown skip kind=%s remain=%ss album_id=%s child_id=%s",
-                                             kind, remain, album_id, child_id)
+@@ -1440,52 +1440,52 @@ def upload_child(album_id, child_id):
                      return
  
              # ★ 利用者ビュー直リンク（/external-login/events/<UUID>/album）
              def _to_uuid_str(v):
-@@ -1700,52 +1721,51 @@ def upload_child(album_id, child_id):
-                                 try:
-                                     request_by_id = int(prev_row.get("request_by"))
-                                 except (TypeError, ValueError):
-                                     request_by_id = None
+                 import uuid
+                 if isinstance(v, str):
+                     s = v.strip()
+                     try:
+                         uuid.UUID(s); return s
+                     except Exception:
+                         return None
+                 if isinstance(v, (bytes, bytearray)):
+                     try:
+                         return str(uuid.UUID(bytes=bytes(v)))
+                     except Exception:
+                         try:
+                             return str(uuid.UUID(hex=v.hex()))
                          except Exception:
-                             prev_complete_flag = None
-                             request_by_id = None
-                         db_exec(
-                             """
-                             INSERT INTO album_process (ext_user_id, album_id, child_id, request_flag, complete_flag)
-                             VALUES (%s, %s, %s, 0, 1)
-                             ON DUPLICATE KEY UPDATE
-                               request_flag=request_flag,
-                               complete_flag=1
-                             """,
-                             (int(ext_user_id), album_id, child_id),
-                         )
-                         if prev_complete_flag != 1:
-                             _notify_requester_process_completion(album_id, child_id, request_by_id, meta, event_meta)
+                             return None
+                 return None
  
-             except Exception as e:
-                 current_app.logger.warning("notify(process upload) failed: %s", e)
- 
-             # ★加工完了の通知（クールタイム対象外）
+             ev_uuid_str = None
              try:
--                if had_latest:
--                    _notify_event_members('process_done', ['latest.jpg'])
-+                _notify_event_members('process_done', ['latest.jpg'])
-             except Exception as e:
-                 current_app.logger.warning("notify(process) failed: %s", e)
- 
-         # === normal：連番保存（従来） ===
-         else:
-             os.makedirs(child_path, exist_ok=True)
-             existing = [f for f in os.listdir(child_path) if allowed_file(f) and f.startswith(child_id)]
-             numbers = [int(f.split("_")[-1].split(".")[0]) for f in existing if "_" in f and f.split("_")[-1].split(".")[0].isdigit()]
-             next_num = max(numbers, default=0) + 1
- 
-             saved_names = []
- 
-             for i, file in enumerate(files):
-                 if not allowed_file(file.filename):
-                     continue
-                 ext = secure_filename(file.filename).rsplit('.', 1)[-1].lower()
-                 dt = get_datetime_from_image(file)
-                 file.stream.seek(0)
-                 filename = f"{child_id}_{dt}_{next_num + i:04d}.{ext}"
-                 file.save(os.path.join(child_path, filename))
-                 saved_names.append(filename)
- 
-             try:
-                 enqueue_thumb_job("album", album_id, child_id)
-             except Exception:
-@@ -2231,50 +2251,67 @@ def request_process(album_id, child_id):
-             request_targets.append(ext_user_id)
- 
-     sent_count = 0
-     if request_targets:
-         contacts = _fetch_event_notification_contacts(event_id, request_targets)
-         album_name = meta.get("album_name", "アルバム")
-         child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
-         link = _build_event_album_link(event_id, album_id, child_id)
-         subject = f"【加工依頼】{album_name}"
-         body = (
-             f"{album_name} の「{child_name}」について加工のご協力をお願いします。\n\n"
-             f"アクセスはこちら:\n{link}\n\n"
-             "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
-         )
- 
-         try:
-             from app.utils.mail import send_mail
-         except Exception:
-             try:
-                 from app.mail import send_mail
-             except Exception:
-                 current_app.logger.warning("notify: send_mail import failed")
-                 send_mail = None
- 
-         if send_mail:
-+            recipients = [
-+                c.get("email") for c in contacts
-+                if c.get("email") and int(c.get("notify_album_process", 1)) == 1
-+            ]
-+            request_by_email = None
-+            if requester_id:
-+                requester = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (requester_id,))
-+                request_by_email = (requester or {}).get("email")
-+            current_app.logger.info(
-+                "notify: pre_send kind=process_request album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
-+                album_id,
-+                child_id,
-+                request_by_email,
-+                len(recipients),
-+                recipients,
-+                "request_flag=1 AND complete_flag=0",
-+            )
-             for c in contacts:
-                 if not c.get("email"):
-                     continue
-                 if int(c.get("notify_album_process", 1)) != 1:
-                     continue
+                 # db_get_one があれば利用、なければ get_db で代替
                  try:
-                     send_mail(c["email"], subject, body)
-                     sent_count += 1
-                 except Exception as e:
-                     current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
+-                    from app.utils.db import db_get_one
+-                    ev_row = db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
++                    from app.utils.db import db_get_one as util_db_get_one
++                    ev_row = util_db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+                     ev_b = ev_row.get("event_uuid") if isinstance(ev_row, dict) else None
+                 except Exception:
+                     from app.utils.db import get_db
+                     conn = get_db()
+                     try:
+                         cur = conn.cursor()
+                         cur.execute("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+                         r = cur.fetchone()
+                         ev_b = r[0] if r else None
+                     finally:
+                         try: cur.close()
+                         except Exception: pass
+                         try: conn.close()
+                         except Exception: pass
+                 ev_uuid_str = _to_uuid_str(ev_b)
+             except Exception as e:
+                 current_app.logger.warning("notify(event_uuid) failed: %s", e)
+                 ev_uuid_str = None
  
-     return jsonify({"ok": True, "sent": sent_count})
- 
- @album_bp.route('/<album_id>/image/<child_id>/<filename>')
- def image(album_id, child_id, filename):
-     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     abs_path = _open_path_anyroot(album_id, child_id, filename, mode='normal')
-     if not abs_path:
-         abort(404)
-     return send_file(abs_path, conditional=True)
- 
- # 置き換え：動画本体
- @album_bp.route('/<album_id>/movie/raw/<child_id>/<path:filename>')
- def movie_raw(album_id, child_id, filename):
-diff --git a/docs/process_notification_investigation.sql b/docs/process_notification_investigation.sql
-new file mode 100644
-index 0000000000000000000000000000000000000000..37dbfd3beeea9864e995e292911adc159ac7df6c
---- /dev/null
-+++ b/docs/process_notification_investigation.sql
-@@ -0,0 +1,83 @@
-+-- 加工回し通知 調査用SQL
-+-- 前提: album_process(ext_user_id, album_id, child_id, request_by, request_flag, complete_flag)
-+
-+-- 1) album_id + request_by 単位の集計
-+--    request_flag=1 の総数 / complete_flag=0 の残数 / complete_flag=1 の完了数
-+SELECT
-+  ap.album_id,
-+  ap.child_id,
-+  ap.request_by,
-+  SUM(CASE WHEN ap.request_flag = 1 THEN 1 ELSE 0 END) AS requested_total,
-+  SUM(CASE WHEN ap.request_flag = 1 AND ap.complete_flag = 0 THEN 1 ELSE 0 END) AS remaining_incomplete,
-+  SUM(CASE WHEN ap.request_flag = 1 AND ap.complete_flag = 1 THEN 1 ELSE 0 END) AS completed_total
-+FROM album_process ap
-+WHERE ap.album_id = :album_id
-+GROUP BY ap.album_id, ap.child_id, ap.request_by
-+ORDER BY ap.child_id, ap.request_by;
-+
-+-- 2) 実際に process_done 通知対象として抽出される「未完了者一覧」
-+--    実装の抽出条件: request_flag=1 AND complete_flag=0
-+SELECT
-+  ap.album_id,
-+  ap.child_id,
-+  ap.ext_user_id,
-+  ap.request_by,
-+  ap.request_flag,
-+  ap.complete_flag,
-+  u.email
-+FROM album_process ap
-+LEFT JOIN external_login_user u ON u.id = ap.ext_user_id
-+WHERE ap.album_id = :album_id
-+  AND ap.child_id = :child_id
-+  AND ap.request_flag = 1
-+  AND ap.complete_flag = 0
-+ORDER BY ap.ext_user_id;
-+
-+-- 3) UI表示とDBズレ疑いを確認（完了扱いなのに未完了で残る/二重状態確認）
-+-- 3-a) 同一 child 内で request_flag=1 なのに complete_flag が 0 のまま長く残っている行
-+--      （updated_at がある場合は経過時間で疑い判定。無い場合はそのまま確認）
-+SELECT
-+  ap.album_id,
-+  ap.child_id,
-+  ap.ext_user_id,
-+  ap.request_by,
-+  ap.request_flag,
-+  ap.complete_flag,
-+  ap.updated_at,
-+  u.email
-+FROM album_process ap
-+LEFT JOIN external_login_user u ON u.id = ap.ext_user_id
-+WHERE ap.album_id = :album_id
-+  AND ap.child_id = :child_id
-+  AND ap.request_flag = 1
-+  AND ap.complete_flag = 0
-+ORDER BY ap.updated_at ASC, ap.ext_user_id ASC;
-+
-+-- 3-b) request_flag=0 なのに complete_flag=1 の行（更新ロジックの不整合を疑う）
-+SELECT
-+  ap.album_id,
-+  ap.child_id,
-+  ap.ext_user_id,
-+  ap.request_by,
-+  ap.request_flag,
-+  ap.complete_flag,
-+  u.email
-+FROM album_process ap
-+LEFT JOIN external_login_user u ON u.id = ap.ext_user_id
-+WHERE ap.album_id = :album_id
-+  AND ap.child_id = :child_id
-+  AND ap.request_flag = 0
-+  AND ap.complete_flag = 1
-+ORDER BY ap.ext_user_id;
-+
-+-- 4) ログに出る child_id と突合するための詳細
-+SELECT
-+  ap.*,
-+  u.email AS ext_user_email,
-+  req.email AS request_by_email
-+FROM album_process ap
-+LEFT JOIN external_login_user u ON u.id = ap.ext_user_id
-+LEFT JOIN external_login_user req ON req.id = ap.request_by
-+WHERE ap.album_id = :album_id
-+  AND ap.child_id = :child_id
-+ORDER BY ap.ext_user_id;
+             if ev_uuid_str:
+                 try:
+                     # 新設の直リンクルート（未定義でも落ちないようフォールバック）
+                     link = url_for('external_login_user.event_album_direct', event_uuid=ev_uuid_str, _external=True)
+                 except Exception:
+                     link = url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)

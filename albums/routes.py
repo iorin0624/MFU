@@ -1462,8 +1462,8 @@ def upload_child(album_id, child_id):
             try:
                 # db_get_one があれば利用、なければ get_db で代替
                 try:
-                    from app.utils.db import db_get_one
-                    ev_row = db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+                    from app.utils.db import db_get_one as util_db_get_one
+                    ev_row = util_db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
                     ev_b = ev_row.get("event_uuid") if isinstance(ev_row, dict) else None
                 except Exception:
                     from app.utils.db import get_db
