@@ -1,110 +1,208 @@
-diff --git a/templates/admin_logs.html b/templates/admin_logs.html
-index 4944ab0ae05131fafa6118c17000afa758580f5b..b0ae505776b8844de891378e7391cee98e3bd7b3 100644
---- a/templates/admin_logs.html
-+++ b/templates/admin_logs.html
-@@ -275,51 +275,51 @@
-         {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
-     {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
-     {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
-         <label class="small text-muted">SMTP詳細</label>
-         <select class="form-select form-select-sm" name="smtp_filter" onchange="this.form.submit()">
-           <option value="ALL" {{ 'selected' if smtp_filter_value=='ALL' else '' }}>ALL</option>
-           <option value="AUTHFAIL" {{ 'selected' if smtp_filter_value=='AUTHFAIL' else '' }}>AUTHFAIL</option>
-           <option value="REJECT" {{ 'selected' if smtp_filter_value=='REJECT' else '' }}>REJECT</option>
-           <option value="DISCONNECT" {{ 'selected' if smtp_filter_value=='DISCONNECT' else '' }}>DISCONNECT</option>
-           <option value="SENT" {{ 'selected' if smtp_filter_value=='SENT' else '' }}>SENT</option>
-         </select>
-       </form>
+diff --git a/albums/routes.py b/albums/routes.py
+index fd9eb27a07af5926682d32e7809ebddedb91ea39..7ea4d9560fd3faa6e48b32563c199e4bbdb3ee0c 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -320,50 +320,90 @@ def _get_roots_for_album(album_id: str):
+ def _prefer_existing_child_dir(album_id: str, child_id: str, mode: str):
+     """主ルートに子が無ければ副ルートを返す（view 用ディレクトリ決定）"""
+     if (mode or "").lower() == "movie":
+         return os.path.join(MOVIE_ROOT, album_id, child_id)
+     primary, secondary = _get_roots_for_album(album_id)
+     p = os.path.join(primary, album_id, child_id)
+     if os.path.isdir(p):
+         return p
+     s = os.path.join(secondary, album_id, child_id)
+     if os.path.isdir(s):
+         return s
+     return p  # どちらも無ければ主ルート側を返す（後で作成される）
+ 
+ def _open_path_anyroot(album_id: str, child_id: str, filename: str, mode: str = "normal") -> str | None:
+     """SSD/HDD どちらかで見つかった絶対パスを返す（send_file 用）"""
+     if (mode or "").lower() == "movie":
+         path = os.path.join(MOVIE_ROOT, album_id, child_id, filename)
+         return path if os.path.isfile(path) else None
+     primary, secondary = _get_roots_for_album(album_id)
+     p = os.path.join(primary, album_id, child_id, filename)
+     if os.path.isfile(p):
+         return p
+     s = os.path.join(secondary, album_id, child_id, filename)
+     return s if os.path.isfile(s) else None
+ 
++def _count_child_media_items(album_id: str, child_id: str, mode: str) -> int:
++    """子アルバム内の表示対象メディア件数を返す（親一覧向け）。"""
++    normalized_mode = (mode or "normal").lower()
++
++    if normalized_mode == "movie":
++        orig_dir = os.path.join(storage_child_dir(album_id, child_id, mode='movie'), 'original')
++        if not os.path.isdir(orig_dir):
++            return 0
++        return sum(
++            1
++            for fname in os.listdir(orig_dir)
++            if os.path.isfile(os.path.join(orig_dir, fname))
++            and allowed_movie(fname)
++            and not fname.endswith('.web.mp4')
++        )
++
++    roots = _get_roots_for_album(album_id)
++    seen = set()
++    count = 0
++    for root in roots:
++        child_path = os.path.join(root, album_id, child_id)
++        if not os.path.isdir(child_path):
++            continue
++        for fname in os.listdir(child_path):
++            full = os.path.join(child_path, fname)
++            if not os.path.isfile(full) or not allowed_file(fname):
++                continue
++
++            if normalized_mode == "process":
++                if not fname.startswith("latest."):
++                    continue
++            elif fname.startswith("latest."):
++                continue
++
++            if fname in seen:
++                continue
++            seen.add(fname)
++            count += 1
++    return count
++
+ def resolve_thumb_url(album_id: str, child_id: str, original_filename: str) -> str:
+     base, _ = os.path.splitext(original_filename)
+     roots = _get_roots_for_album(album_id)  # ← 追加：毎回DB行かない
+     for cand in (f"{base}.webp", f"{base}.jpg", f"{base}.jpeg"):
+         for root in roots:
+             p = os.path.join(root, album_id, child_id, 'thumbs', cand)
+             if os.path.isfile(p):
+                 return url_for('album.album_thumb', album_id=album_id, child_id=child_id, filename=cand)
+     return url_for('album.image', album_id=album_id, child_id=child_id, filename=original_filename)
+ 
+ # 追加：encoded/original 内の実ファイルを解決（パストラバーサル防止）
+ def _movie_find_abs(album_id: str, child_id: str, name: str) -> str | None:
+     base = storage_child_dir(album_id, child_id, mode='movie')  # .../<album>/<child>
+     # サブパスも受けるが basename も使って安全に探索
+     raw = name
+     fname = os.path.basename(name)
+ 
+     # 1) encoded 優先（ベース名で）
+     cand = os.path.join(base, 'encoded', fname)
+     if os.path.isfile(cand):
+         return cand
+     # 2) original
+     cand = os.path.join(base, 'original', fname)
+     if os.path.isfile(cand):
+         return cand
+@@ -1192,50 +1232,55 @@ def album_home(album_id):
+     except Exception as e:
+         processing_list = []
+ 
+     # ★HDD保管中フラグ
+     storage, _ = _get_album_storage(album_id)
+     is_readonly = (storage == 'hdd')
+ 
+     completed_process_children = set()
+     event_meta = _fetch_album_meta(album_id)
+     if event_meta and event_meta.get("event_id"):
+         for child in meta.get("children", []):
+             if child.get("mode") != "process":
+                 continue
+             status_map = _fetch_album_process_status_map(album_id, child.get("folder"))
+             requested_ids = [
+                 ext_user_id
+                 for ext_user_id, status in status_map.items()
+                 if int(status.get("request_flag", 0)) == 1
+             ]
+             if requested_ids and all(
+                 int(status_map.get(ext_user_id, {}).get("complete_flag", 0)) == 1
+                 for ext_user_id in requested_ids
+             ):
+                 completed_process_children.add(child.get("folder"))
+ 
++    for child in meta.get("children", []):
++        mode = child.get("mode") or "normal"
++        child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
++        child["media_unit"] = "本" if mode == "movie" else "枚"
++
+     return render_template(
+         'album_home.html',
+         album_id=album_id, meta=meta,
+         is_admin=is_admin, is_owner=is_owner,
+         is_readonly=is_readonly,
+         processing_list=processing_list,   # ★追加
+         ext_user_nickname=ext_user_nickname,
+         completed_process_children=completed_process_children,
+     )
+ 
+ @album_bp.route('/<album_id>/create_child', methods=['POST'])
+ def create_child(album_id):
+     meta = load_meta(album_id)
+     if not meta:
+         return redirect(url_for('album.album_access', album_id=album_id))
+ 
+     # ★HDD保管中は子作成を禁止（アーカイブ扱い）
+     if is_album_readonly(album_id):
+         flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
+         return redirect(url_for('album.album_home', album_id=album_id))
+ 
+     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+         return redirect(url_for('album.album_access', album_id=album_id))
+ 
+     folder_name = (request.form.get('child_name') or '').strip()
+diff --git a/albums/templates/album_home.html b/albums/templates/album_home.html
+index 5d901b9221f2022695b1b10b2e2b716dc9a72250..0370a492a741434a0f2b8d28af4d42c1edf3bbfb 100644
+--- a/albums/templates/album_home.html
++++ b/albums/templates/album_home.html
+@@ -118,51 +118,51 @@
+     {% for p in processing_list %}
+       {% set locked_ns.ids = locked_ns.ids + [p.child_id] %}
+     {% endfor %}
+   {% endif %}
+ 
+   {# 子アルバム描画用マクロ #}
+   {% macro render_child_item(child) %}
+     {% set badge_class = 'badge-normal' if child.mode == 'normal' else ('badge-process' if child.mode == 'process' else 'badge-movie') %}
+     {% set display_name = child.name %}
+     {% if child.mode == 'process' and child.folder in completed_process_children and display_name.startswith('【加工回し】') %}
+       {% set display_name = '【加工終了】' + display_name[6:] %}
      {% endif %}
  
-     <!-- 表示切替スイッチ -->
-     <div class="ms-2 d-flex align-items-center gap-2">
-       <div class="form-check form-switch">
-         <input class="form-check-input" type="checkbox" id="togglePretty" checked>
-         <label class="form-check-label small" for="togglePretty">見やすい表示</label>
-       </div>
-       <span class="small text-muted">(切替：見やすい表示 / 原文)</span>
-     </div>
-   </div>
+     {# この子アルバムが加工ロック中かどうか #}
+     {% set is_locked = child.folder in locked_ns.ids %}
  
-   <!-- 日付絞り込み（サーバー側） -->
--  <form method="get" class="mb-3">
-+  <form method="get" action="{{ url_for('admin_logs') }}" class="mb-3">
-     {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
-     {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
-     {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
-     {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
-     {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
-     {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
-     {% if search_keyword_param %}<input type="hidden" name="search_keyword" value="{{ search_keyword_param }}">{% endif %}
-     {% if search_mode_param %}<input type="hidden" name="search_mode" value="{{ search_mode_param }}">{% endif %}
-     {% if search_ip_param %}<input type="hidden" name="search_ip" value="{{ search_ip_param }}">{% endif %}
-     {% if search_status_param %}<input type="hidden" name="search_status" value="{{ search_status_param }}">{% endif %}
-     {% if search_method_param %}<input type="hidden" name="search_method" value="{{ search_method_param }}">{% endif %}
-     {% if search_path_param %}<input type="hidden" name="search_path" value="{{ search_path_param }}">{% endif %}
-     {% if search_endpoint_param %}<input type="hidden" name="search_endpoint" value="{{ search_endpoint_param }}">{% endif %}
-     {% if search_user_param %}<input type="hidden" name="search_user" value="{{ search_user_param }}">{% endif %}
-     {% if search_ua_param %}<input type="hidden" name="search_ua" value="{{ search_ua_param }}">{% endif %}
-     {% if search_date_from_param %}<input type="hidden" name="search_date_from" value="{{ search_date_from_param }}">{% endif %}
-     {% if search_date_to_param %}<input type="hidden" name="search_date_to" value="{{ search_date_to_param }}">{% endif %}
-     <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
-     <div class="input-group">
-       <input type="date" name="date" class="form-control" value="{{ selected_date }}">
-       <button class="btn btn-outline-primary" type="submit">日付で絞り込み</button>
-       {% if selected_date %}
-         <a class="btn btn-outline-secondary" href="{{ url_for('admin_logs',
-                                                               kind=filters.kind or None,
-                                                               exclude_local=1 if filters.exclude_local else None,
-@@ -357,51 +357,51 @@
-     {% if filters.search_keyword %}
-       <span class="badge bg-secondary">検索: {{ filters.search_keyword }}</span>
-       <span class="badge bg-light text-dark border">条件: {{ 'AND' if filters.search_mode == 'and' else 'OR' }}</span>
-     {% endif %}
-     {% if filters.search_ip %}<span class="badge bg-light text-dark border">IP: {{ filters.search_ip }}</span>{% endif %}
-     {% if filters.search_status %}<span class="badge bg-light text-dark border">Status: {{ filters.search_status }}</span>{% endif %}
-     {% if filters.search_method %}<span class="badge bg-light text-dark border">Method: {{ filters.search_method }}</span>{% endif %}
-     {% if filters.search_path %}<span class="badge bg-light text-dark border">Path: {{ filters.search_path }}</span>{% endif %}
-     {% if filters.search_endpoint %}<span class="badge bg-light text-dark border">EP: {{ filters.search_endpoint }}</span>{% endif %}
-     {% if filters.search_user %}<span class="badge bg-light text-dark border">User: {{ filters.search_user }}</span>{% endif %}
-     {% if filters.search_ua %}<span class="badge bg-light text-dark border">UA: {{ filters.search_ua }}</span>{% endif %}
-     {% if filters.search_date_from or filters.search_date_to %}
-       <span class="badge bg-light text-dark border">期間: {{ filters.search_date_from or '未指定' }} 〜 {{ filters.search_date_to or '未指定' }}</span>
-     {% endif %}
-     {% if selected_date %}<span class="badge bg-info text-dark">日付: {{ selected_date }}</span>{% endif %}
-     <span class="badge bg-dark">上限: {{ filters.limit or 1000 }}</span>
-   </div>
+     <div class="list-group-item">
+       <div class="d-flex justify-content-between align-items-center flex-wrap">
+         <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child.folder) }}"
+            class="btn btn-outline-primary flex-grow-1 me-3 text-start">
+           {% if is_locked %}
+             🔏
+           {% else %}
+             {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
+           {% endif %}
+-          &nbsp;{{ display_name }}
++          &nbsp;{{ display_name }}（{{ child.media_count or 0 }}{{ child.media_unit or '枚' }}）
+         </a>
  
-   <!-- 検索（サーバー側・全ページ対象） -->
-   <div class="card mb-3">
-     <div class="card-body">
-       <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-         <h5 class="card-title mb-0">検索（全ページ対象）</h5>
-         <span class="small text-muted">※サーバー側で絞り込み</span>
-       </div>
--      <form method="get">
-+      <form method="get" action="{{ url_for('admin_logs') }}">
-         {% if filters.kind %}<input type="hidden" name="kind" value="{{ filters.kind }}">{% endif %}
-         {% if filters.exclude_local %}<input type="hidden" name="exclude_local" value="1">{% endif %}
-         {% if filters.nonjp_only %}<input type="hidden" name="nonjp_only" value="1">{% endif %}
-         {% if filters.exclude_suc %}<input type="hidden" name="exclude_suc" value="1">{% endif %}
-         {% if smtp_filter_param %}<input type="hidden" name="smtp_filter" value="{{ smtp_filter_param }}">{% endif %}
-         {% if smtp_tag_param %}<input type="hidden" name="smtp_tag" value="{{ smtp_tag_param }}">{% endif %}
-         {% if selected_date %}<input type="hidden" name="date" value="{{ selected_date }}">{% endif %}
-         <input type="hidden" name="limit" value="{{ filters.limit or 1000 }}">
-         <div class="row g-2 align-items-end">
-           <div class="col-12 col-lg-4">
-             <label class="form-label small">フリーワード</label>
-             <input type="text" class="form-control form-control-sm" name="search_keyword" value="{{ filters.search_keyword }}" placeholder="例: album access 200">
-             <div class="form-text small">半角/全角スペース区切り。IP/ログ全文を対象。</div>
-           </div>
-           <div class="col-6 col-lg-2">
-             <label class="form-label small">開始日</label>
-             <input type="date" class="form-control form-control-sm" name="search_date_from" value="{{ filters.search_date_from }}">
-           </div>
-           <div class="col-6 col-lg-2">
-             <label class="form-label small">終了日</label>
-             <input type="date" class="form-control form-control-sm" name="search_date_to" value="{{ filters.search_date_to }}">
-           </div>
-           <div class="col-6 col-lg-2">
-             <label class="form-label small">キーワード条件</label>
-             <select class="form-select form-select-sm" name="search_mode">
+         <span class="badge badge-mode {{ badge_class }} me-3">
+           {% if child.mode == 'process' %}加工回し{% elif child.mode == 'movie' %}動画{% else %}写真{% endif %}
+         </span>
+ 
+         {% if is_admin or is_owner %}
+         <div class="d-flex align-items-center child-actions">
+           <!-- ✏️ 名前変更 -->
+           <form id="rename-child-form-{{ child.folder }}"
+                 method="post"
+                 action="{{ url_for('album.rename_child', album_id=album_id, child_id=child.folder) }}"
+                 class="d-none">
+             <input type="hidden" name="child_name" value="{{ child.name }}">
+           </form>
+           <button type="button" class="btn btn-sm btn-outline-primary"
+             onclick="
+               (function(){
+                 var current='{{ child.name|e }}';
+                 var next = prompt('新しい子アルバム名を入力してください', current);
+                 if (next === null) return;
+                 next = next.trim();
+                 if (!next) { alert('子アルバム名は必須です'); return; }
+                 var f = document.getElementById('rename-child-form-{{ child.folder }}');
+                 f.querySelector('input[name=child_name]').value = next;

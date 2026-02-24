@@ -140,7 +140,7 @@
           {% else %}
             {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
           {% endif %}
-          &nbsp;{{ display_name }}
+          &nbsp;{{ display_name }}（{{ child.media_count or 0 }}{{ child.media_unit or '枚' }}）
         </a>
 
         <span class="badge badge-mode {{ badge_class }} me-3">

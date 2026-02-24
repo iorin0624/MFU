@@ -2314,11 +2314,14 @@ def admin_logs_sync():
 def admin_logs_async():
     _gc_adminlogs_jobs(ttl_seconds=1800)
     args_dict = request.args.to_dict(flat=True)
+    args_dict_no_job = dict(args_dict)
+    args_dict_no_job.pop("job", None)
     user_id = session.get("user")
     existing_job = (request.args.get("job") or "").strip()
     if existing_job and existing_job.startswith("adminlogs_"):
         st = _progress_read(existing_job)
-        if st and st.get("status") in ("queued", "running", "error"):
+        same_args = bool(st and (st.get("args") or {}) == args_dict_no_job)
+        if st and st.get("status") in ("queued", "running", "error") and same_args:
             job_id = existing_job
         else:
             job_id = f"adminlogs_{secrets.token_hex(16)}"
@@ -2330,13 +2333,12 @@ def admin_logs_async():
         _progress_write(job_id, {
             "status": "queued",
             "created_at": datetime.utcnow().isoformat(),
-            "args": args_dict,
+            "args": args_dict_no_job,
             "requested_by": user_id,
         })
-        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict, user_id)
+        _ADMIN_LOGS_EXECUTOR.submit(_run_admin_logs_job, job_id, args_dict_no_job, user_id)
 
-    retry_args = dict(args_dict)
-    retry_args.pop("job", None)
+    retry_args = dict(args_dict_no_job)
     return render_template(
         "admin/logs_loading.html",
         job_id=job_id,
