@@ -14,7 +14,7 @@ from . import bp
 from .utils import (
     _require_ext_login, _get_ext_user_by_social, _event_by_uuid_str,
     _membership_status, _member_payment_status, _get_member_require_payment,
-    PAYMENT_ENTRY_BASE,
+    PAYMENT_ENTRY_BASE, _uuid_bytes_to_str,
 )
 from app.utils.db import get_db
 from app.utils.mail import send_mail
@@ -206,6 +206,8 @@ def _create_payment_request(
     instagram_id: str | None,
     buyer_email: str,
     lecture_auto_approve: bool = False,
+    kind: str = "event_fee",
+    tip_event_id: int | None = None,
 ) -> str:
     """支払いリクエストを発行し、トークンを返す。"""
     token = str(uuid.uuid4())
@@ -213,9 +215,10 @@ def _create_payment_request(
     try:
         cur.execute("""
             INSERT INTO mfu_payment_request (
-              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, buyer_email, amount_yen, lecture_auto_approve
+              token, event_id, event_uuid, user_id, nickname, x_id, instagram_id, buyer_email,
+              kind, tip_event_id, amount_yen, lecture_auto_approve
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             token,
             event_id,
@@ -225,6 +228,8 @@ def _create_payment_request(
             x_id,
             instagram_id,
             buyer_email,
+            (kind or "event_fee"),
+            tip_event_id,
             int(amount_yen),
             1 if lecture_auto_approve else 0,
         ))
@@ -233,6 +238,91 @@ def _create_payment_request(
         try: cur.close(); db.close()
         except Exception: pass
     return token
+
+
+@bp.post("/tip/start")
+def tip_start():
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+    if not me:
+        abort(403)
+
+    try:
+        event_id = int(request.form.get("event_id") or 0)
+    except Exception:
+        abort(404)
+
+    try:
+        amount_yen = int(request.form.get("amount_yen") or 0)
+    except Exception:
+        flash("投げ銭金額は整数で入力してください。", "warning")
+        return redirect(url_for("external_login_user.index"))
+
+    if amount_yen < 100 or amount_yen > 100000:
+        flash("投げ銭金額は100〜100000円で入力してください。", "warning")
+        return redirect(url_for("external_login_user.index"))
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id, title, event_uuid, payment_uuid, COALESCE(tip_enabled,0) AS tip_enabled
+              FROM mfu_event
+             WHERE id=%s
+             LIMIT 1
+        """, (event_id,))
+        ev = cur.fetchone()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+    if not ev:
+        abort(404)
+    if int(ev.get("tip_enabled") or 0) != 1:
+        abort(403)
+
+    buyer_email = (me.get("email") or "").strip()
+    if not buyer_email:
+        flash("メールアドレスが未登録のため投げ銭を開始できません。プロフィールからメールを登録してください。", "warning")
+        return redirect(url_for("external_login_user.profile"))
+
+    event_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid"))
+    pay_ev_uuid = ev.get("payment_uuid") or _ensure_payment_uuid_for_event(event_id)
+    payment_token = _create_payment_request(
+        event_id,
+        me["id"],
+        int(amount_yen),
+        event_uuid=event_uuid_str,
+        nickname=me.get("nickname"),
+        x_id=me.get("x_id"),
+        instagram_id=me.get("instagram_id"),
+        buyer_email=buyer_email,
+        kind="tip",
+        tip_event_id=event_id,
+    )
+
+    return_url = url_for("external_login_user.index", tip="done", event_id=event_id, _external=True)
+    session["pay_ctx"] = {
+        "mfu_event_id": event_id,
+        "mfu_event_uuid": event_uuid_str,
+        "ext_user_id": me["id"],
+        "nickname": me.get("nickname"),
+        "x_id": me.get("x_id"),
+        "instagram_id": me.get("instagram_id"),
+        "email": me.get("email"),
+        "expected_amount_yen": int(amount_yen),
+        "return_url": return_url,
+        "payment_token": payment_token,
+    }
+
+    dest = (
+        f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
+        f"?autofill=1&payment_token={payment_token}"
+        f"&return_url={quote(return_url, safe='')}"
+    )
+    return redirect(dest)
 
 def _amount_from_payment_token(event_id: int, user_id: int, token: str | None) -> int | None:
     if not token:

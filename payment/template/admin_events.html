@@ -22,7 +22,7 @@
     {% for e in events %}
       <tr>
         <td>{{ e.id }}</td>
-        <td><a href="/payment/admin/events/{{ e.id }}">{{ e.title }}</a></td>
+        <td><a href="/payment/admin/events/{{ e.id }}?kind=event_fee">{{ e.title }}</a></td>
         <td>{{ e.date or '-' }}</td>
         <td>{{ 'Active' if e.is_active else 'Inactive' }}</td>
         <td>{{ e.cnt }}</td>
@@ -33,6 +33,16 @@
             <button class="btn btn-sm btn-outline-secondary">{{ '無効化' if e.is_active else '有効化' }}</button>
           </form>
         </td>
+      </tr>
+      <tr class="table-warning">
+        <td>{{ e.id }}</td>
+        <td><a href="/payment/admin/events/{{ e.id }}?kind=tip">{{ e.title }}（投げ銭）</a></td>
+        <td>{{ e.date or '-' }}</td>
+        <td>{{ 'Active' if e.is_active else 'Inactive' }}</td>
+        <td>{{ e.tip_cnt or 0 }}</td>
+        <td>{{ e.tip_sum_amount or 0 }}</td>
+        <td><code>{{ e.uuid }}</code></td>
+        <td></td>
       </tr>
     {% else %}
       <tr><td colspan="8" class="text-muted">（まだイベントがありません）</td></tr>

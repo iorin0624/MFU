@@ -110,7 +110,7 @@
     <div class="who">
       {{ (autofill.nickname if autofill and autofill.nickname else '（ニックネーム未設定）') | e }} さんとしてのお支払い
     </div>
-    <div class="title">{{ event.title }} 参加費</div>
+    <div class="title">{{ event.title }} {{ "投げ銭" if is_tip_payment else "参加費" }}</div>
   </div>
 
   <h1 class="page-title">{{ event.title }} お支払い</h1>
@@ -148,7 +148,7 @@
         <img class="brand-strip" src="/payment/template/credit_card_payment.png"
              alt="対応ブランド（Visa / Mastercard / American Express / JCB / Diners / Discover）">
 
-        <div class="row g-2 mb-2" id="methodRadios">
+                <div class="row g-2 mb-2" id="methodRadios">
           <div class="col-12 col-md-4">
             <label class="method-card w-100" id="radio-gpay-label">
               <input type="radio" name="pay-method" id="radio-gpay" value="gpay">
@@ -253,6 +253,7 @@
   const squareJsUrl = "{{ square_js_url }}";
   const paymentToken = {{ (payment_token or '') | tojson }};
   const returnUrl = {{ (return_url or '') | tojson }};
+  const FORCE_SQUARE_CARD = false;
 
   const AUTOFILL = {
     nickname: {{ (autofill.nickname if autofill else '') | tojson }},
@@ -333,21 +334,21 @@
 
   // ラジオUI切替
   function setActive(label){
-    [$labelG,$labelA,$labelC].forEach(el=>el.classList.remove('active'));
-    label.classList.add('active');
+    [$labelG,$labelA,$labelC].forEach(el=>{ if (el) el.classList.remove('active'); });
+    if (label) label.classList.add('active');
   }
   function switchSection(){
-    $secG.classList.toggle('show', $radioG.checked);
-    $secA.classList.toggle('show', $radioA.checked);
-    $secC.classList.toggle('show', $radioC.checked);
-    setActive($radioG.checked ? $labelG : $radioA.checked ? $labelA : $labelC);
+    if ($secG && $radioG) $secG.classList.toggle('show', $radioG.checked);
+    if ($secA && $radioA) $secA.classList.toggle('show', $radioA.checked);
+    if ($secC) $secC.classList.toggle('show', !$radioA || (!$radioA.checked && !$radioG?.checked) || !!($radioC && $radioC.checked));
+    if ($labelC) setActive(($radioG?.checked) ? $labelG : ($radioA?.checked) ? $labelA : $labelC);
     sizeWalletButtons();
     updatePayButtonText();
   }
   ['change','click'].forEach(ev=>{
-    $radioG.addEventListener(ev, switchSection);
-    $radioA.addEventListener(ev, switchSection);
-    $radioC.addEventListener(ev, switchSection);
+    $radioG?.addEventListener(ev, switchSection);
+    $radioA?.addEventListener(ev, switchSection);
+    $radioC?.addEventListener(ev, switchSection);
   });
 
   new bootstrap.Modal(document.getElementById('infoModal')).show();
@@ -399,9 +400,9 @@
     const btn = document.getElementById('pay');
     if (!btn) return;
 
-    if ($radioA.checked) {
+    if ($radioA && $radioA.checked) {
       btn.textContent = amountStr ? `Apple Payで ${amountStr} を支払う` : 'Apple Payで支払う';
-    } else if ($radioG.checked) {
+    } else if ($radioG && $radioG.checked) {
       btn.textContent = amountStr ? `Google Payで ${amountStr} を支払う` : 'Google Payで支払う';
     } else {
       btn.textContent = amountStr ? `${amountStr} を今すぐ支払う` : '支払う';
@@ -442,15 +443,17 @@
                   (navigator.userAgent.includes('Mac') && 'ontouchend' in document);
     const isAndroid = /Android/.test(navigator.userAgent);
 
-    if (isIOS && !$radioA.disabled) {
-      $radioA.checked = true;
-      log('Auto-selected: Apple Pay (iOS detected)');
-    } else if (isAndroid && !$radioG.disabled) {
-      $radioG.checked = true;
-      log('Auto-selected: Google Pay (Android detected)');
-    } else {
-      $radioC.checked = true;
-      log('Auto-selected: Card (fallback)');
+    if ($radioA && $radioG && $radioC) {
+      if (isIOS && !$radioA.disabled) {
+        $radioA.checked = true;
+        log('Auto-selected: Apple Pay (iOS detected)');
+      } else if (isAndroid && !$radioG.disabled) {
+        $radioG.checked = true;
+        log('Auto-selected: Google Pay (Android detected)');
+      } else {
+        $radioC.checked = true;
+        log('Auto-selected: Card (fallback)');
+      }
     }
 
     switchSection();
@@ -606,7 +609,8 @@
   function setupCardFlow(card){
     const payBtn = document.querySelector('#pay');
     payBtn?.addEventListener('click', async () => {
-      if (!document.getElementById('radio-card').checked) return; // 保険
+      const cardRadio = document.getElementById('radio-card');
+      if (cardRadio && !cardRadio.checked) return; // 保険
 
       const { nickname, x_id, instagram_id } = getFixedUserInputs();
       if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }

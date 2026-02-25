@@ -95,7 +95,7 @@
     </div>
     {# 先頭の支払ページへショートカット #}
     <div class="text-end">
-      <a class="btn btn-sm btn-primary" href="{{ _unpaid[0].pay_url }}">支払ページへ</a>
+      <a class="btn btn-sm btn-primary" href="{{ _unpaid[0].pay_url }}">支払</a>
     </div>
   </div>
 {% endif %}
@@ -151,7 +151,7 @@
                     {% elif ps == 'paid' %}
                       <button class="btn btn-sm btn-success" disabled>支払済</button>
                     {% elif needs_pay %}
-                      <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払ページへ</a>
+                      <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
                     {% else %}
                       <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
                     {% endif %}
@@ -213,7 +213,7 @@
                       {% elif ps == 'paid' %}
                         <button class="btn btn-sm btn-success" disabled>支払済</button>
                       {% elif needs_pay %}
-                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払ページへ</a>
+                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
                       {% else %}
                         <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
                       {% endif %}
@@ -225,6 +225,17 @@
                       {% endif %}
 
                       <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+
+                      {% if (e.tip_enabled|default(0)|int) == 1 %}
+                        <button
+                          type="button"
+                          class="btn btn-sm btn-warning js-tip-open"
+                          data-bs-toggle="modal"
+                          data-bs-target="#tipModal"
+                          data-event-id="{{ e.id }}"
+                          data-event-title="{{ e.title|e }}"
+                        >投げ銭</button>
+                      {% endif %}
                     </div>
                   </div>
                 </div>
@@ -417,6 +428,33 @@
   </div>
   <!-- /特商法（折りたたみ） ================================= -->
 
+  <div class="modal fade" id="tipModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('external_login_user.tip_start') }}" id="tipForm">
+          <div class="modal-header">
+            <h5 class="modal-title">投げ銭</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+          </div>
+          <div class="modal-body">
+            <input type="hidden" name="event_id" id="tipEventId" value="">
+            <div class="alert alert-danger py-2">投げ銭は返金不可です</div>
+            <p class="small mb-2" id="tipEventTitle"></p>
+            <label for="tipAmountYen" class="form-label">投げ銭金額（円）</label>
+            <input type="number" class="form-control" id="tipAmountYen" name="amount_yen" min="100" max="100000" step="1" required>
+            <div class="form-text">100〜100000円</div>
+            <div class="small text-muted mt-1">※クレジットカード決済のみとなります。<br>（PayPay残高カード等のプリペイド、デビットカードもご利用できます。）</div>
+            <div class="text-danger small mt-2" id="tipError"></div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">キャンセル</button>
+            <button type="submit" class="btn btn-warning">投げ銭する</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <!-- ▼▼▼ アップデート情報モーダル ▼▼▼ -->
   <div class="modal fade" id="updateInfoModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
@@ -518,6 +556,37 @@
     // ログイン時のみサーバが show:true を返すので、常に呼んでOK
     document.addEventListener('DOMContentLoaded', fetchCheckAndMaybeShow);
   })();
+
+  (() => {
+    const modal = document.getElementById('tipModal');
+    const form = document.getElementById('tipForm');
+    const eventIdInput = document.getElementById('tipEventId');
+    const amountInput = document.getElementById('tipAmountYen');
+    const err = document.getElementById('tipError');
+    const titleEl = document.getElementById('tipEventTitle');
+
+    document.querySelectorAll('.js-tip-open').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        eventIdInput.value = btn.dataset.eventId || '';
+        titleEl.textContent = btn.dataset.eventTitle ? `対象イベント: ${btn.dataset.eventTitle}` : '';
+        amountInput.value = '';
+        err.textContent = '';
+      });
+    });
+
+    form?.addEventListener('submit', (e) => {
+      const v = Number(amountInput?.value || 0);
+      if (!Number.isInteger(v) || v < 100 || v > 100000) {
+        e.preventDefault();
+        err.textContent = '金額は100〜100000円の整数で入力してください。';
+      }
+    });
+
+    modal?.addEventListener('hidden.bs.modal', () => {
+      err.textContent = '';
+    });
+  })();
+
   </script>
 </body>
 </html>

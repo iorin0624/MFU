@@ -471,6 +471,67 @@ def _notify_discord_payment_if_needed(conn, square_payment_id: str):
     except Exception:
         logging.exception("notify_discord_payment_if_needed failed")
 
+def _notify_tip_payment_completion(
+    conn,
+    *,
+    event_id: int,
+    user_id: int,
+    amount_yen: int | None,
+    payment_token: str | None,
+) -> None:
+    cur = conn.cursor()
+    cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+    ev_row = cur.fetchone()
+    if isinstance(ev_row, tuple):
+        event_title = ev_row[0] or "(不明)"
+        event_uuid_str = _uuid_bytes_to_str(ev_row[1]) if len(ev_row) > 1 else None
+    elif isinstance(ev_row, dict):
+        event_title = (ev_row.get("title") or "(不明)")
+        event_uuid_str = _uuid_bytes_to_str(ev_row.get("event_uuid"))
+    else:
+        event_title = "(不明)"
+        event_uuid_str = None
+
+    cur.execute("SELECT id, nickname, email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+    user_row = cur.fetchone()
+    if isinstance(user_row, tuple):
+        disp_id = user_row[0]
+        disp_name = user_row[1]
+        disp_email = user_row[2] if len(user_row) > 2 else None
+    elif isinstance(user_row, dict):
+        disp_id = user_row.get("id")
+        disp_name = user_row.get("nickname")
+        disp_email = user_row.get("email")
+    else:
+        disp_name = "(不明)"
+        disp_id = user_id
+        disp_email = None
+
+    amount_int = int(amount_yen) if isinstance(amount_yen, int) else 0
+
+    webhook = _get_discord_webhook_url(conn)
+    if webhook:
+        amount_text = f"{amount_int:,}"
+        msg = f"[投げ銭] {event_title} / {amount_text}円 / {disp_name or '(不明)'}({disp_id}) / token={payment_token or ''}"
+        try:
+            requests.post(webhook, json={"content": msg}, timeout=10)
+        except Exception:
+            logging.exception("tip discord notify failed")
+
+    if disp_email:
+        try:
+            subject = "ご支援ありがとうございます💕"
+            body = f"{disp_name or '参加者'}さん、投げ銭ありがとうございます！{amount_int}円のご支援、運営の力にさせていただきます。"
+            send_mail(
+                to=disp_email,
+                subject=subject,
+                body=body,
+                event_uuid=event_uuid_str,
+            )
+        except Exception:
+            logging.exception("tip thanks mail failed")
+
+
 def _notify_mfu_payment_completion(
     conn,
     *,
@@ -669,6 +730,18 @@ def _ensure_schema():
             conn.commit()
         except Exception:
             conn.rollback()
+
+        try:
+            cur.execute("""
+                ALTER TABLE event_payments
+                  MODIFY COLUMN payment_token CHAR(36)
+                  CHARACTER SET utf8mb4
+                  COLLATE utf8mb4_unicode_ci
+                  NULL
+            """)
+            conn.commit()
+        except Exception:
+            conn.rollback()
         try:
             cur.execute("ALTER TABLE event_payments ADD COLUMN event_member_id BIGINT UNSIGNED NULL")
             conn.commit()
@@ -735,7 +808,7 @@ def _backfill_payment_identity(conn) -> None:
         cur.execute("""
             UPDATE event_payments p
             JOIN mfu_payment_request pr
-              ON pr.token = p.payment_token
+              ON pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
              SET p.external_login_user_id = pr.user_id
            WHERE p.external_login_user_id IS NULL
              AND p.payment_token IS NOT NULL
@@ -875,14 +948,14 @@ def _fetch_payment_request(conn, event_uuid: str, token: str | None) -> dict | N
     try:
         if event_uuid_str:
             cur.execute("""
-                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
+                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status, kind, tip_event_id
                   FROM mfu_payment_request
                  WHERE token=%s AND event_id=%s AND event_uuid=%s AND status='pending'
                  LIMIT 1
             """, (token, event_id, event_uuid_str))
         else:
             cur.execute("""
-                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status
+                SELECT id, event_id, user_id, nickname, x_id, instagram_id, amount_yen, status, kind, tip_event_id
                   FROM mfu_payment_request
                  WHERE token=%s AND event_id=%s AND status='pending'
                  LIMIT 1
@@ -902,6 +975,17 @@ def _amount_for_payment(conn, event_uuid: str, token: str | None) -> int | None:
             except Exception:
                 return None
     return None
+
+
+
+def _payment_request_context(conn, event_uuid: str, token: str | None) -> dict:
+    pr = _fetch_payment_request(conn, event_uuid, token) or {}
+    kind = (pr.get("kind") or "event_fee").strip().lower() if pr else "event_fee"
+    return {
+        "payment_request": pr,
+        "kind": kind,
+        "is_tip": kind == "tip",
+    }
 
 def _infer_payment_token(
     conn,
@@ -972,7 +1056,7 @@ def _mark_payment_token_used_and_apply_member_status(
              LIMIT 1
         """, (payment_token,))
         cur.execute("""
-            SELECT event_id, user_id
+            SELECT event_id, user_id, COALESCE(kind,'event_fee') AS kind, tip_event_id
               FROM mfu_payment_request
              WHERE token=%s
              ORDER BY id DESC
@@ -981,8 +1065,25 @@ def _mark_payment_token_used_and_apply_member_status(
         pr = cur.fetchone()
         if not pr:
             return
-        event_id = pr[0] if isinstance(pr, tuple) else pr.get("event_id")
-        user_id = pr[1] if isinstance(pr, tuple) else pr.get("user_id")
+        if isinstance(pr, tuple):
+            event_id, user_id, req_kind, tip_event_id = pr[0], pr[1], pr[2], pr[3]
+        else:
+            event_id = pr.get("event_id")
+            user_id = pr.get("user_id")
+            req_kind = pr.get("kind")
+            tip_event_id = pr.get("tip_event_id")
+        req_kind = (req_kind or "event_fee").lower()
+        if req_kind == "tip":
+            if event_id and user_id:
+                _notify_tip_payment_completion(
+                    conn,
+                    event_id=int(tip_event_id or event_id),
+                    user_id=int(user_id),
+                    amount_yen=int(amount_yen) if amount_yen is not None else None,
+                    payment_token=payment_token,
+                )
+            conn.commit()
+            return
         cur.execute("""
             UPDATE mfu_event_member
                SET payment_status='paid',
@@ -1062,10 +1163,14 @@ def pay_form(event_uuid: str):
     _autoprovision_event_from_mfu(event_uuid)
 
     payment_token = _resolve_payment_token(event_uuid)
+    force_square_card = False
+    is_tip_payment = False
     conn = _get_db()
     try:
         amount, evrow = _get_live_amount_and_sync(conn, event_uuid)
         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
+        pr_ctx = _payment_request_context(conn, event_uuid, payment_token)
+        is_tip_payment = bool(pr_ctx.get("is_tip"))
         if token_amount is not None and token_amount > 0:
             amount = token_amount
     finally:
@@ -1139,6 +1244,8 @@ def pay_form(event_uuid: str):
         autofill=autofill,                 # ← テンプレはこの3項目を参照
         return_url=return_url,
         payment_token=payment_token,
+        force_square_card=force_square_card,
+        is_tip_payment=is_tip_payment,
     )
 
 @bp.get("/e/<event_uuid>/thanks")
@@ -1260,6 +1367,7 @@ def api_charge(event_uuid: str):
         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
         if payment_token and token_amount is None:
             return jsonify({"message": "支払いトークンが無効です"}), 400
+        _payment_request_context(conn, event_uuid, payment_token)
         buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, payment_token)
         if not buyer_user_id:
             return jsonify({"message": "支払いユーザー情報が取得できません。イベントページから開き直してください。"}), 400
@@ -1899,9 +2007,46 @@ def admin_events():
         cur = conn.cursor()
         cur.execute("""
           SELECT e.*,
-                 (SELECT COUNT(*) FROM event_payments p WHERE p.event_id=e.id) AS cnt,
+                 (SELECT COUNT(*)
+                    FROM event_payments p
+                   WHERE p.event_id=e.id
+                     AND COALESCE((
+                        SELECT pr.kind
+                          FROM mfu_payment_request pr
+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                         ORDER BY pr.id DESC
+                         LIMIT 1
+                     ),'event_fee')='event_fee') AS cnt,
                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
-                    WHERE p.event_id=e.id AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS sum_amount
+                    WHERE p.event_id=e.id
+                      AND COALESCE((
+                        SELECT pr.kind
+                          FROM mfu_payment_request pr
+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                         ORDER BY pr.id DESC
+                         LIMIT 1
+                      ),'event_fee')='event_fee'
+                      AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS sum_amount,
+                 (SELECT COUNT(*)
+                    FROM event_payments p
+                   WHERE p.event_id=e.id
+                     AND COALESCE((
+                        SELECT pr.kind
+                          FROM mfu_payment_request pr
+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                         ORDER BY pr.id DESC
+                         LIMIT 1
+                     ),'event_fee')='tip') AS tip_cnt,
+                 (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
+                    WHERE p.event_id=e.id
+                      AND COALESCE((
+                        SELECT pr.kind
+                          FROM mfu_payment_request pr
+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                         ORDER BY pr.id DESC
+                         LIMIT 1
+                      ),'event_fee')='tip'
+                      AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS tip_sum_amount
           FROM events e ORDER BY created_at DESC
         """)
         events = _fetchall_dict(cur)
@@ -1943,6 +2088,10 @@ def admin_events_new_post():
 @admin_required
 def admin_event_detail(event_id: int):
     _ensure_schema()
+    kind_filter = (request.args.get("kind") or "event_fee").strip().lower()
+    if kind_filter not in ("event_fee", "tip", "all"):
+        kind_filter = "event_fee"
+
     conn = _get_db()
     try:
         cur = conn.cursor()
@@ -1951,11 +2100,25 @@ def admin_event_detail(event_id: int):
         if not event:
             return "イベントが見つかりません", 404
 
-        cur.execute("""
-          SELECT * FROM event_payments
-          WHERE event_id=%s
-          ORDER BY created_at DESC
-        """, (event_id,))
+        if kind_filter == "all":
+            cur.execute("""
+              SELECT * FROM event_payments
+              WHERE event_id=%s
+              ORDER BY created_at DESC
+            """, (event_id,))
+        else:
+            cur.execute("""
+              SELECT * FROM event_payments
+              WHERE event_id=%s
+                AND COALESCE((
+                  SELECT pr.kind
+                    FROM mfu_payment_request pr
+                   WHERE pr.token COLLATE utf8mb4_unicode_ci = event_payments.payment_token COLLATE utf8mb4_unicode_ci
+                   ORDER BY pr.id DESC
+                   LIMIT 1
+                ),'event_fee')=%s
+              ORDER BY created_at DESC
+            """, (event_id, kind_filter))
         payments = _fetchall_dict(cur)
 
         # 返金集計
@@ -1984,7 +2147,14 @@ def admin_event_detail(event_id: int):
 
     pay_url = f"{_app_base_url()}/payment/e/{event['uuid']}"
     bulk_refund_url = f"/payment/admin/events/{event_id}/bulk-refund"
-    return render_template("admin_event_detail.html", event=event, payments=payments, pay_url=pay_url, bulk_refund_url=bulk_refund_url)
+    return render_template(
+        "admin_event_detail.html",
+        event=event,
+        payments=payments,
+        pay_url=pay_url,
+        bulk_refund_url=bulk_refund_url,
+        kind_filter=kind_filter,
+    )
 
 def _bulk_refund_summary(rows: list[dict]) -> dict:
     return {

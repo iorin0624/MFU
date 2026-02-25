@@ -66,7 +66,17 @@
     </div>
   </div>
 
-  <h2 class="h5 mt-4">決済一覧</h2>
+  <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-2 gap-2">
+    <h2 class="h5 mb-0">
+      決済一覧
+      {% if kind_filter == 'tip' %}（投げ銭）{% elif kind_filter == 'event_fee' %}（参加費）{% else %}（全て）{% endif %}
+    </h2>
+    <div class="btn-group btn-group-sm" role="group" aria-label="payment kind filters">
+      <a class="btn btn-outline-secondary {% if kind_filter == 'event_fee' %}active{% endif %}" href="/payment/admin/events/{{ event.id }}?kind=event_fee">参加費</a>
+      <a class="btn btn-outline-secondary {% if kind_filter == 'tip' %}active{% endif %}" href="/payment/admin/events/{{ event.id }}?kind=tip">投げ銭</a>
+      <a class="btn btn-outline-secondary {% if kind_filter == 'all' %}active{% endif %}" href="/payment/admin/events/{{ event.id }}?kind=all">全て</a>
+    </div>
+  </div>
   <div class="table-responsive">
     <table class="table table-sm table-striped align-middle">
       <thead>

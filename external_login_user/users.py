@@ -771,6 +771,12 @@ def index():
     social_id = session.get("ext_user_social_id")
     me = _get_ext_user_by_social(social_id) if social_id else None
 
+    if request.args.get("tip") == "done":
+        if request.args.get("status") == "ok":
+            flash("投げ銭ありがとうございます！", "success")
+        elif request.args.get("status") == "ng":
+            flash("投げ銭の決済が完了しませんでした。", "warning")
+
     events_upcoming, events_past = [], []
     if me:
         db = get_db(); cur = db.cursor(dictionary=True)
@@ -778,6 +784,7 @@ def index():
           SELECT
             e.id, e.event_uuid, e.title,
             e.starts_at, e.fee_yen, e.album_id,
+            COALESCE(e.tip_enabled,0) AS tip_enabled,
             m.id AS member_id,
             COALESCE(m.status,'pending')                        AS status,
             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
@@ -827,6 +834,7 @@ def index():
                 "album_url": (url_for("album.album_access", album_id=r["album_id"]) if r["album_id"] else None),
                 "pay_url": url_for("external_login_user.pay_start", event_uuid=euuid_str),
                 "require_payment": int(r["require_payment"]),
+                "tip_enabled": int(r.get("tip_enabled") or 0),
                 "my_payment_status": r["payment_status"] or "unpaid",
                 "my_receipt_url": r["receipt_url"],
             }
