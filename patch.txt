@@ -1,277 +1,222 @@
-diff --git a/docs/sql/20260225_tip_collation_fix.sql b/docs/sql/20260225_tip_collation_fix.sql
-new file mode 100644
-index 0000000000000000000000000000000000000000..cf51cc970599d64fde6e1affd13eeb4f565da797
---- /dev/null
-+++ b/docs/sql/20260225_tip_collation_fix.sql
-@@ -0,0 +1,12 @@
-+-- event_payments.payment_token と mfu_payment_request.token の照合順序を統一
-+ALTER TABLE event_payments
-+  MODIFY COLUMN payment_token CHAR(36)
-+  CHARACTER SET utf8mb4
-+  COLLATE utf8mb4_unicode_ci
-+  NULL;
-+
-+ALTER TABLE mfu_payment_request
-+  MODIFY COLUMN token CHAR(36)
-+  CHARACTER SET utf8mb4
-+  COLLATE utf8mb4_unicode_ci
-+  NOT NULL;
-
-diff --git a/payment/__init__.py b/payment/__init__.py
-index 2e9b169a525163c28f076ba19e1ba927056dc656..77b48af821308416cfd6114153f63fef9275cb58 100644
---- a/payment/__init__.py
-+++ b/payment/__init__.py
-@@ -708,50 +708,62 @@ CREATE TABLE IF NOT EXISTS event_refunds (
-     FOREIGN KEY (payment_row_id) REFERENCES event_payments(id)
-     ON DELETE CASCADE,
-   KEY ix_payment_status (payment_row_id, status),
-   KEY ix_bulk_refund_run (bulk_refund_run_id)
- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
- """
+diff --git a/external_login_user/admin.py b/external_login_user/admin.py
+index 74eb954d52e727230a6cd75cd175e17f74ab985f..ee8f77fad842fc100bc024e0f005f58c3839b8ac 100644
+--- a/external_login_user/admin.py
++++ b/external_login_user/admin.py
+@@ -525,85 +525,101 @@ def admin_event_view(event_id: int):
+           WHEN COALESCE(m.is_host, 0)=1 THEN 0
+           WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
+           WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 2
+           WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 3
+           WHEN LOWER(COALESCE(m.participant_role,''))='cosplayer' THEN 4
+           ELSE 5
+         END AS role_rank
+       FROM mfu_event_member m
+       JOIN external_login_user u ON u.id = m.user_id
+       WHERE m.event_id=%s
+       ORDER BY role_rank ASC, u.nickname ASC, m.joined_at ASC
+     """, (event_id,))
+     rows = cur.fetchall()
+     cur.close(); db.close()
  
- def _ensure_schema():
-     conn = _get_db()
-     try:
-         cur = conn.cursor()
-         cur.execute(DDL_EVENTS)
-         cur.execute(DDL_PAYMENTS)
-         cur.execute(DDL_REFUNDS)
-         # 既存環境向けの微調整（存在すれば失敗→ロールバック）
-         try:
-             cur.execute("ALTER TABLE event_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0")
-             conn.commit()
-         except Exception:
-             conn.rollback()
-         try:
-             cur.execute("ALTER TABLE event_payments ADD COLUMN payment_token CHAR(36) NULL")
-             conn.commit()
-         except Exception:
-             conn.rollback()
-+
-+        try:
-+            cur.execute("""
-+                ALTER TABLE event_payments
-+                  MODIFY COLUMN payment_token CHAR(36)
-+                  CHARACTER SET utf8mb4
-+                  COLLATE utf8mb4_unicode_ci
-+                  NULL
-+            """)
-+            conn.commit()
-+        except Exception:
-+            conn.rollback()
-         try:
-             cur.execute("ALTER TABLE event_payments ADD COLUMN event_member_id BIGINT UNSIGNED NULL")
-             conn.commit()
-         except Exception:
-             conn.rollback()
-         try:
-             cur.execute("ALTER TABLE event_payments ADD COLUMN external_login_user_id BIGINT UNSIGNED NULL")
-             conn.commit()
-         except Exception:
-             conn.rollback()
-         try:
-             cur.execute("ALTER TABLE event_payments MODIFY square_status ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING'")
-             conn.commit()
-         except Exception:
-             conn.rollback()
-         for idx_sql in (
-             "CREATE INDEX ix_event_member_id ON event_payments(event_member_id)",
-             "CREATE INDEX ix_external_login_user_id ON event_payments(external_login_user_id)",
-             "CREATE INDEX ix_event_identity ON event_payments(event_id, event_member_id, external_login_user_id)",
-             "CREATE INDEX ix_payment_token ON event_payments(payment_token)",
-             "CREATE INDEX ix_bulk_refund_run ON event_refunds(bulk_refund_run_id)",
-         ):
-             try:
-                 cur.execute(idx_sql)
-                 conn.commit()
-@@ -774,51 +786,51 @@ def _ensure_schema():
-         conn.commit()
-     finally:
-         try: conn.close()
-         except Exception: pass
+     def _badge(label: str, color: str) -> str:
+         return f'<span class="badge bg-{color}">{label}</span>'
  
- def _backfill_payment_identity(conn) -> None:
-     """曖昧一致なしで埋められる識別子のみ backfill する。"""
-     cur = conn.cursor()
-     try:
-         cur.execute("""
-             UPDATE event_payments p
-             JOIN mfu_event_member m
-               ON m.payment_row_id = p.id
-              SET p.event_member_id = m.id,
-                  p.external_login_user_id = COALESCE(p.external_login_user_id, m.user_id)
-            WHERE p.event_member_id IS NULL
-         """)
-         conn.commit()
-     except Exception:
-         conn.rollback()
+     # pending系を「確認（オレンジ）」に寄せるマップ（既存）
+     PENDING_STATUSES = {
+         "pending", "confirm", "confirming", "checking",
+         "verifying", "awaiting", "processing", "authorized"
+     }
  
-     try:
-         cur.execute("""
-             UPDATE event_payments p
-             JOIN mfu_payment_request pr
--              ON pr.token = p.payment_token
-+              ON pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
-              SET p.external_login_user_id = pr.user_id
-            WHERE p.external_login_user_id IS NULL
-              AND p.payment_token IS NOT NULL
-         """)
-         conn.commit()
-     except Exception:
-         conn.rollback()
-     finally:
-         try:
-             cur.close()
-         except Exception:
-             pass
- 
- # ───────────────────────────────────────────────────────────
- # MFUイベント連携
- # ───────────────────────────────────────────────────────────
- def _autoprovision_event_from_mfu(event_uuid: str) -> None:
-     """
-     初アクセス時、payment.events に行が無ければ
-     MFUの mfu_event.payment_uuid に基づいて自動作成。
-     """
-     try:
-         conn = _get_db()
-         cur = conn.cursor()
-         cur.execute("SELECT id FROM events WHERE uuid=%s", (event_uuid,))
-@@ -1979,80 +1991,80 @@ def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen
-                    receipt_note=%s
-              WHERE id=%s
-         """, (new_paid, admin_note or None, receipt_note or None, member_id))
-     finally:
-         try:
-             cur.close()
-         except Exception:
-             pass
- 
- 
- @bp.get("/admin/events")
- @admin_required
- def admin_events():
-     _ensure_schema()
-     conn = _get_db()
-     try:
-         cur = conn.cursor()
-         cur.execute("""
-           SELECT e.*,
-                  (SELECT COUNT(*)
-                     FROM event_payments p
-                    WHERE p.event_id=e.id
-                      AND COALESCE((
-                         SELECT pr.kind
-                           FROM mfu_payment_request pr
--                         WHERE pr.token=p.payment_token
-+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
-                          ORDER BY pr.id DESC
-                          LIMIT 1
-                      ),'event_fee')='event_fee') AS cnt,
-                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
-                     WHERE p.event_id=e.id
-                       AND COALESCE((
-                         SELECT pr.kind
-                           FROM mfu_payment_request pr
--                         WHERE pr.token=p.payment_token
-+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
-                          ORDER BY pr.id DESC
-                          LIMIT 1
-                       ),'event_fee')='event_fee'
-                       AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS sum_amount,
-                  (SELECT COUNT(*)
-                     FROM event_payments p
-                    WHERE p.event_id=e.id
-                      AND COALESCE((
-                         SELECT pr.kind
-                           FROM mfu_payment_request pr
--                         WHERE pr.token=p.payment_token
-+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
-                          ORDER BY pr.id DESC
-                          LIMIT 1
-                      ),'event_fee')='tip') AS tip_cnt,
-                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
-                     WHERE p.event_id=e.id
-                       AND COALESCE((
-                         SELECT pr.kind
-                           FROM mfu_payment_request pr
--                         WHERE pr.token=p.payment_token
-+                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
-                          ORDER BY pr.id DESC
-                          LIMIT 1
-                       ),'event_fee')='tip'
-                       AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS tip_sum_amount
-           FROM events e ORDER BY created_at DESC
-         """)
-         events = _fetchall_dict(cur)
-     finally:
-         try: conn.close()
-         except Exception: pass
-     return render_template("admin_events.html", events=events)
- 
- @bp.get("/admin/events/new")
- @admin_required
- def admin_events_new():
-     return render_template("admin_events_new.html")
- 
- @bp.post("/admin/events/new")
- @admin_required
- def admin_events_new_post():
-     title = (request.form.get("title") or "").strip()
-     date  = (request.form.get("date") or "").strip() or None
-     amount= int(request.form.get("default_amount") or 1000)
-     notes = (request.form.get("notes") or "").strip() or None
-     if not title:
-@@ -2079,51 +2091,51 @@ def admin_event_detail(event_id: int):
-     kind_filter = (request.args.get("kind") or "event_fee").strip().lower()
-     if kind_filter not in ("event_fee", "tip", "all"):
-         kind_filter = "event_fee"
- 
-     conn = _get_db()
-     try:
-         cur = conn.cursor()
-         cur.execute("SELECT * FROM events WHERE id=%s", (event_id,))
-         event = _fetchone_dict(cur)
-         if not event:
-             return "イベントが見つかりません", 404
- 
-         if kind_filter == "all":
-             cur.execute("""
-               SELECT * FROM event_payments
-               WHERE event_id=%s
-               ORDER BY created_at DESC
-             """, (event_id,))
+     members = []
++    total_member_count = 0
++    camera_count = 0
++    assistant_count = 0
++    cosplayer_count = 0
++    other_count = 0
+     require_payment_count = 0
+     paid_count = 0
+     for r in rows:
+         if isinstance(r, tuple):
+             (user_id, nickname, x_id, instagram_id, email,
+              avatar_file, avatar_url, updated_at,
+              status, payment_status, paid_at, receipt_url, joined_at, checkin_at,
+              require_payment, process, is_host, is_subhost, participant_role, costume_label,
+              paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
          else:
-             cur.execute("""
-               SELECT * FROM event_payments
-               WHERE event_id=%s
-                 AND COALESCE((
-                   SELECT pr.kind
-                     FROM mfu_payment_request pr
--                   WHERE pr.token=event_payments.payment_token
-+                   WHERE pr.token COLLATE utf8mb4_unicode_ci = event_payments.payment_token COLLATE utf8mb4_unicode_ci
-                    ORDER BY pr.id DESC
-                    LIMIT 1
-                 ),'event_fee')=%s
-               ORDER BY created_at DESC
-             """, (event_id, kind_filter))
-         payments = _fetchall_dict(cur)
+             user_id          = r["user_id"]
+             nickname         = r["nickname"]
+             x_id             = r["x_id"]
+             instagram_id     = r["instagram_id"]
+             email            = r["email"]
+             avatar_file      = r["avatar_file"]
+             avatar_url       = r["avatar_url"]
+             updated_at       = r["updated_at"]
+             status           = r["status"]
+             payment_status   = r["payment_status"]
+             paid_at          = r["paid_at"]
+             receipt_url      = r["receipt_url"]
+             joined_at        = r["joined_at"]
+             checkin_at       = r.get("checkin_at")
+             require_payment  = r["require_payment"]
+             process          = r["process"]
+             is_host          = r["is_host"]
+             is_subhost       = r["is_subhost"]
+             participant_role = r["participant_role"]
+             costume_label    = r["costume_label"]
+             paid_amount_yen  = r.get("paid_amount_yen")
+             contact_memo     = r.get("contact_memo")
+             admin_note       = r.get("admin_note")
+             receipt_note     = r.get("receipt_note")
  
-         # 返金集計
-         refunds_map = {}
-         if payments:
-             ids = [p["id"] for p in payments]
-             placeholders = ",".join(["%s"] * len(ids))
-             cur.execute(f"""
-               SELECT payment_row_id,
-                      COALESCE(SUM(CASE WHEN status IN ('PENDING','APPROVED')
-                            THEN amount_yen ELSE 0 END),0) AS refunded
-               FROM event_refunds
-               WHERE payment_row_id IN ({placeholders})
-               GROUP BY payment_row_id
-             """, ids)
-             for r in _fetchall_dict(cur):
-                 refunds_map[r["payment_row_id"]] = int(r["refunded"] or 0)
++        total_member_count += 1
++        normalized_role = str(participant_role or "none").strip().lower()
++        if normalized_role == "camera":
++            camera_count += 1
++        elif normalized_role == "assistant":
++            assistant_count += 1
++        elif normalized_role == "cosplayer":
++            cosplayer_count += 1
++        else:
++            other_count += 1
++
+         # --- 支払状況バッジ（既存ロジック） ---
+         status_s = (payment_status or "").strip().lower()
+         if paid_at:  # 支払日時が入っていれば最優先で「済」
+             pay_status_html = _badge("済", "success")
+         elif status_s == "paid":
+             pay_status_html = _badge("済", "success")
+         elif status_s in PENDING_STATUSES:
+             pay_status_html = _badge("確認", "warning")
+         else:
+             pay_status_html = _badge("未", "danger")
  
-         for p in payments:
-             refunded = refunds_map.get(p["id"], 0)
+         require_payment_flag = 1 if (require_payment is None) else int(require_payment)
+         if require_payment_flag == 1:
+             require_payment_count += 1
+             if paid_at or status_s == "paid":
+                 paid_count += 1
+ 
+         members.append({
+             "user_id": user_id,
+             "nickname": nickname,
+             "x_id": x_id,
+             "instagram_id": instagram_id,
+             "email": email,
+             "avatar_file": avatar_file,
+             "avatar_url": avatar_url,
+@@ -615,50 +631,55 @@ def admin_event_view(event_id: int):
+             "joined_at": joined_at,
+             "checkin_at": checkin_at,
+             "checked_in": bool(checkin_at),
+             "require_payment": require_payment_flag,
+             "process": 1 if process else 0,
+             "is_host": 1 if is_host else 0,
+             "is_subhost": 1 if is_subhost else 0,
+             "participant_role": (participant_role or "none"),
+             "costume_label": costume_label,
+             "paid_amount_yen": paid_amount_yen,
+             "contact_memo": contact_memo,
+             "admin_note": admin_note,
+             "receipt_note": receipt_note,
+             "pay_status_html": pay_status_html,
+         })
+ 
+     admin_csrf = _admin_csrf_token()
+     return render_template(
+         "admin_event_view.html",
+         ev=ev, members=members,
+         join_url=join_url, maps_link=maps_link,
+         album_url=album_url, pay_admin_url=pay_admin_url,
+         line_openchat_url=ev.get("line_openchat_url"),
+         line_openchat_pass=ev.get("line_openchat_pass"),
+         google_form_url=ev.get("google_form_url"),
++        total_member_count=total_member_count,
++        camera_count=camera_count,
++        assistant_count=assistant_count,
++        cosplayer_count=cosplayer_count,
++        other_count=other_count,
+         require_payment_count=require_payment_count,
+         paid_count=paid_count,
+         admin_csrf=admin_csrf,
+         qr_trademark_notice=QR_TRADEMARK_NOTICE
+     )
+ 
+ 
+ @bp.route("/admin/events/<int:event_id>/edit", methods=["GET", "POST"], endpoint="admin_event_edit")
+ def admin_event_edit(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_manage(event_id):
+         abort(403, "このイベントを管理する権限がありません。")
+ 
+     admin_csrf = _admin_csrf_token()
+ 
+     from datetime import datetime
+     def _parse_dt_local(s: str | None):
+         if not s: return None
+         try: return datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M")
+         except Exception:
+             try: return datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M:%S")
+             except Exception: return "INVALID"
+ 
+     def _fmt_dt_local(v):
+diff --git a/external_login_user/template/admin_event_view.html b/external_login_user/template/admin_event_view.html
+index 1ef84f7e43011ca037d0af703ad7df0fab15f281..c4495af440aefbfc05b4e79ddb7c339d2055bce9 100644
+--- a/external_login_user/template/admin_event_view.html
++++ b/external_login_user/template/admin_event_view.html
+@@ -217,50 +217,55 @@
+                     </div>
+                   {% endif %}
+                   {% if an %}
+                     <div>
+                       <div class="small text-muted mb-1">管理者備考（非公開）</div>
+                       <div class="p-2 border rounded" style="white-space:pre-line; word-break:break-word;">{{- an -}}</div>
+                     </div>
+                   {% endif %}
+                 </div>
+               </div>
+             </div>
+           {% endif %}
+         {% endfor %}
+       </div>
+     {% endif %}
+   </div>
+ </div>
+ <!-- ===== /メモ一覧 ===== -->
+ 
+ <div class="card mt-3">
+   <div class="card-body">
+     <div class="d-flex justify-content-between align-items-center">
+       <div>
+         <h2 class="h6 mb-2">参加者一覧</h2>
+         <div class="small text-muted">
++          全体人数：{{ total_member_count }}名<br>
++          カメラマン：{{ camera_count }}名<br>
++          アシスタント：{{ assistant_count }}名<br>
++          衣装：{{ cosplayer_count }}名<br>
++          その他：{{ other_count }}名<br>
+           支払有りの人：{{ require_payment_count }}名 / 支払済みの人：{{ paid_count }}名
+         </div>
+       </div>
+       <!-- 凡例 -->
+       <div class="small">
+         凡例：
+         <span class="badge bg-danger">未</span>
+         <span class="badge bg-warning text-dark">確認</span>
+         <span class="badge bg-success">済</span>
+       </div>
+     </div>
+ 
+     {% if members|length == 0 %}
+       <div class="text-muted">参加者はまだいません。</div>
+     {% else %}
+       <div class="table-responsive">
+         <table class="table align-middle">
+           <thead>
+             <tr>
+               <th>ユーザー</th>
+               <th>承認</th>
+               <th>加工</th>
+               <th>役割（衣装）</th>
+               <th>メモ</th>
+               <th class="nowrap">要支払い</th>
