@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS mfu_event (
   owner_user_id   BIGINT UNSIGNED NULL,
   starts_at       DATETIME        NULL,
   fee_yen         INT UNSIGNED    NULL,
+  tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
   pay_from        DATETIME        NULL,
   pay_until       DATETIME        NULL,
   place_name      VARCHAR(200)    NULL,
@@ -109,6 +110,8 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
   x_id           VARCHAR(15)     NULL,
   instagram_id   VARCHAR(30)     NULL,
   buyer_email    VARCHAR(255)    NULL,
+  kind           VARCHAR(32)     NOT NULL DEFAULT 'event_fee',
+  tip_event_id   BIGINT UNSIGNED NULL,
   amount_yen     INT UNSIGNED NOT NULL,
   lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0,
   status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
@@ -280,8 +283,11 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_event", "allow_square", "allow_square TINYINT(1) NOT NULL DEFAULT 1 AFTER fee_yen")
             _ensure_col("mfu_event", "allow_paypay", "allow_paypay TINYINT(1) NOT NULL DEFAULT 0 AFTER allow_square")
             _ensure_col("mfu_event", "allow_bank",   "allow_bank   TINYINT(1) NOT NULL DEFAULT 0 AFTER allow_paypay")
+            _ensure_col("mfu_event", "tip_enabled", "tip_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER fee_yen")
             _ensure_col("mfu_event", "paypay_display",
                         "paypay_display VARCHAR(200) NULL AFTER allow_bank")
+            _ensure_col("mfu_payment_request", "kind", "kind VARCHAR(32) NOT NULL DEFAULT 'event_fee' AFTER buyer_email")
+            _ensure_col("mfu_payment_request", "tip_event_id", "tip_event_id BIGINT UNSIGNED NULL AFTER kind")
 
 # --- イベント別銀行口座テーブル（なければ作成）---
             try:

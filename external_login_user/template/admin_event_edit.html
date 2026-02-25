@@ -188,6 +188,17 @@
 
           <div class="border rounded p-3">
             <div class="form-check mb-2">
+              <input class="form-check-input" type="checkbox" name="tip_enabled" id="tip_enabled"
+                     {% if form.tip_enabled or ev.tip_enabled %}checked{% endif %}>
+              <label class="form-check-label fw-semibold" for="tip_enabled">
+                投げ銭を許可する（終了イベントで表示）
+              </label>
+            </div>
+            <div class="text-muted small">※ 投げ銭は返金不可です。決済手段は Square クレジットカードのみです。</div>
+          </div>
+
+          <div class="border rounded p-3">
+            <div class="form-check mb-2">
               <input class="form-check-input" type="checkbox" name="allow_paypay" id="allow_paypay"
                      {% if form.allow_paypay or ev.allow_paypay %}checked{% endif %}>
               <label class="form-check-label fw-semibold" for="allow_paypay">

@@ -692,6 +692,7 @@ def admin_event_edit(event_id: int):
               COALESCE(allow_square, 1) AS allow_square,
               COALESCE(allow_paypay, 0) AS allow_paypay,
               COALESCE(allow_bank,   0) AS allow_bank,
+              COALESCE(tip_enabled, 0) AS tip_enabled,
               paypay_display,
               COALESCE(auto_approve_by_invite, 0) AS auto_approve_by_invite,
               invite_token,
@@ -756,6 +757,7 @@ def admin_event_edit(event_id: int):
         "allow_square": int(ev.get("allow_square") or 0),
         "allow_paypay": int(ev.get("allow_paypay") or 0),
         "allow_bank":   int(ev.get("allow_bank") or 0),
+        "tip_enabled": int(ev.get("tip_enabled") or 0),
         "paypay_display": ev.get("paypay_display") or "",
     }
     errors: dict[str, str] = {}
@@ -794,6 +796,7 @@ def admin_event_edit(event_id: int):
         allow_paypay   = 1 if request.form.get("allow_paypay") else 0
         allow_bank     = 1 if request.form.get("allow_bank")   else 0
         paypay_display = (request.form.get("paypay_display") or "").strip() or None
+        tip_enabled = 1 if request.form.get("tip_enabled") else 0
 
         if not title:
             errors["title"] = "タイトルは必須です。"
@@ -849,6 +852,7 @@ def admin_event_edit(event_id: int):
             "require_payment_count": require_payment_count_in or "",
             "fee_auto_calc": fee_auto_calc,
             "allow_square": allow_square, "allow_paypay": allow_paypay, "allow_bank": allow_bank,
+            "tip_enabled": tip_enabled,
             "paypay_display": paypay_display or "",
         })
         form_iso.update({"starts_at": starts_at_in, "pay_from": pay_from_in, "pay_until": pay_until_in})
@@ -872,7 +876,7 @@ def admin_event_edit(event_id: int):
                        place_name=%s, address=%s, maps_url=%s, sns_hashtag=%s,
                        line_openchat_url=%s, line_openchat_pass=%s, google_form_url=%s,
                        album_id=%s, memo_all=%s,
-                       allow_square=%s, allow_paypay=%s, allow_bank=%s, paypay_display=%s
+                       allow_square=%s, allow_paypay=%s, allow_bank=%s, tip_enabled=%s, paypay_display=%s
                  WHERE id=%s
                  LIMIT 1
             """, (title, starts_at, fee_yen,
@@ -882,7 +886,7 @@ def admin_event_edit(event_id: int):
                   place_name, address, maps_url, sns_hashtag,
                   line_openchat_url, line_openchat_pass, google_form_url,
                   album_id, memo_all,
-                  allow_square, allow_paypay, allow_bank, paypay_display,
+                  allow_square, allow_paypay, allow_bank, tip_enabled, paypay_display,
                   event_id))
 
             if auto_lat is not None and auto_lng is not None:

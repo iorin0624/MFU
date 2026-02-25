@@ -1,208 +1,277 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index fd9eb27a07af5926682d32e7809ebddedb91ea39..7ea4d9560fd3faa6e48b32563c199e4bbdb3ee0c 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -320,50 +320,90 @@ def _get_roots_for_album(album_id: str):
- def _prefer_existing_child_dir(album_id: str, child_id: str, mode: str):
-     """主ルートに子が無ければ副ルートを返す（view 用ディレクトリ決定）"""
-     if (mode or "").lower() == "movie":
-         return os.path.join(MOVIE_ROOT, album_id, child_id)
-     primary, secondary = _get_roots_for_album(album_id)
-     p = os.path.join(primary, album_id, child_id)
-     if os.path.isdir(p):
-         return p
-     s = os.path.join(secondary, album_id, child_id)
-     if os.path.isdir(s):
-         return s
-     return p  # どちらも無ければ主ルート側を返す（後で作成される）
- 
- def _open_path_anyroot(album_id: str, child_id: str, filename: str, mode: str = "normal") -> str | None:
-     """SSD/HDD どちらかで見つかった絶対パスを返す（send_file 用）"""
-     if (mode or "").lower() == "movie":
-         path = os.path.join(MOVIE_ROOT, album_id, child_id, filename)
-         return path if os.path.isfile(path) else None
-     primary, secondary = _get_roots_for_album(album_id)
-     p = os.path.join(primary, album_id, child_id, filename)
-     if os.path.isfile(p):
-         return p
-     s = os.path.join(secondary, album_id, child_id, filename)
-     return s if os.path.isfile(s) else None
- 
-+def _count_child_media_items(album_id: str, child_id: str, mode: str) -> int:
-+    """子アルバム内の表示対象メディア件数を返す（親一覧向け）。"""
-+    normalized_mode = (mode or "normal").lower()
+diff --git a/docs/sql/20260225_tip_collation_fix.sql b/docs/sql/20260225_tip_collation_fix.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..cf51cc970599d64fde6e1affd13eeb4f565da797
+--- /dev/null
++++ b/docs/sql/20260225_tip_collation_fix.sql
+@@ -0,0 +1,12 @@
++-- event_payments.payment_token と mfu_payment_request.token の照合順序を統一
++ALTER TABLE event_payments
++  MODIFY COLUMN payment_token CHAR(36)
++  CHARACTER SET utf8mb4
++  COLLATE utf8mb4_unicode_ci
++  NULL;
 +
-+    if normalized_mode == "movie":
-+        orig_dir = os.path.join(storage_child_dir(album_id, child_id, mode='movie'), 'original')
-+        if not os.path.isdir(orig_dir):
-+            return 0
-+        return sum(
-+            1
-+            for fname in os.listdir(orig_dir)
-+            if os.path.isfile(os.path.join(orig_dir, fname))
-+            and allowed_movie(fname)
-+            and not fname.endswith('.web.mp4')
-+        )
++ALTER TABLE mfu_payment_request
++  MODIFY COLUMN token CHAR(36)
++  CHARACTER SET utf8mb4
++  COLLATE utf8mb4_unicode_ci
++  NOT NULL;
+
+diff --git a/payment/__init__.py b/payment/__init__.py
+index 2e9b169a525163c28f076ba19e1ba927056dc656..77b48af821308416cfd6114153f63fef9275cb58 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -708,50 +708,62 @@ CREATE TABLE IF NOT EXISTS event_refunds (
+     FOREIGN KEY (payment_row_id) REFERENCES event_payments(id)
+     ON DELETE CASCADE,
+   KEY ix_payment_status (payment_row_id, status),
+   KEY ix_bulk_refund_run (bulk_refund_run_id)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ """
+ 
+ def _ensure_schema():
+     conn = _get_db()
+     try:
+         cur = conn.cursor()
+         cur.execute(DDL_EVENTS)
+         cur.execute(DDL_PAYMENTS)
+         cur.execute(DDL_REFUNDS)
+         # 既存環境向けの微調整（存在すれば失敗→ロールバック）
+         try:
+             cur.execute("ALTER TABLE event_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0")
+             conn.commit()
+         except Exception:
+             conn.rollback()
+         try:
+             cur.execute("ALTER TABLE event_payments ADD COLUMN payment_token CHAR(36) NULL")
+             conn.commit()
+         except Exception:
+             conn.rollback()
 +
-+    roots = _get_roots_for_album(album_id)
-+    seen = set()
-+    count = 0
-+    for root in roots:
-+        child_path = os.path.join(root, album_id, child_id)
-+        if not os.path.isdir(child_path):
-+            continue
-+        for fname in os.listdir(child_path):
-+            full = os.path.join(child_path, fname)
-+            if not os.path.isfile(full) or not allowed_file(fname):
-+                continue
-+
-+            if normalized_mode == "process":
-+                if not fname.startswith("latest."):
-+                    continue
-+            elif fname.startswith("latest."):
-+                continue
-+
-+            if fname in seen:
-+                continue
-+            seen.add(fname)
-+            count += 1
-+    return count
-+
- def resolve_thumb_url(album_id: str, child_id: str, original_filename: str) -> str:
-     base, _ = os.path.splitext(original_filename)
-     roots = _get_roots_for_album(album_id)  # ← 追加：毎回DB行かない
-     for cand in (f"{base}.webp", f"{base}.jpg", f"{base}.jpeg"):
-         for root in roots:
-             p = os.path.join(root, album_id, child_id, 'thumbs', cand)
-             if os.path.isfile(p):
-                 return url_for('album.album_thumb', album_id=album_id, child_id=child_id, filename=cand)
-     return url_for('album.image', album_id=album_id, child_id=child_id, filename=original_filename)
++        try:
++            cur.execute("""
++                ALTER TABLE event_payments
++                  MODIFY COLUMN payment_token CHAR(36)
++                  CHARACTER SET utf8mb4
++                  COLLATE utf8mb4_unicode_ci
++                  NULL
++            """)
++            conn.commit()
++        except Exception:
++            conn.rollback()
+         try:
+             cur.execute("ALTER TABLE event_payments ADD COLUMN event_member_id BIGINT UNSIGNED NULL")
+             conn.commit()
+         except Exception:
+             conn.rollback()
+         try:
+             cur.execute("ALTER TABLE event_payments ADD COLUMN external_login_user_id BIGINT UNSIGNED NULL")
+             conn.commit()
+         except Exception:
+             conn.rollback()
+         try:
+             cur.execute("ALTER TABLE event_payments MODIFY square_status ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING'")
+             conn.commit()
+         except Exception:
+             conn.rollback()
+         for idx_sql in (
+             "CREATE INDEX ix_event_member_id ON event_payments(event_member_id)",
+             "CREATE INDEX ix_external_login_user_id ON event_payments(external_login_user_id)",
+             "CREATE INDEX ix_event_identity ON event_payments(event_id, event_member_id, external_login_user_id)",
+             "CREATE INDEX ix_payment_token ON event_payments(payment_token)",
+             "CREATE INDEX ix_bulk_refund_run ON event_refunds(bulk_refund_run_id)",
+         ):
+             try:
+                 cur.execute(idx_sql)
+                 conn.commit()
+@@ -774,51 +786,51 @@ def _ensure_schema():
+         conn.commit()
+     finally:
+         try: conn.close()
+         except Exception: pass
  
- # 追加：encoded/original 内の実ファイルを解決（パストラバーサル防止）
- def _movie_find_abs(album_id: str, child_id: str, name: str) -> str | None:
-     base = storage_child_dir(album_id, child_id, mode='movie')  # .../<album>/<child>
-     # サブパスも受けるが basename も使って安全に探索
-     raw = name
-     fname = os.path.basename(name)
+ def _backfill_payment_identity(conn) -> None:
+     """曖昧一致なしで埋められる識別子のみ backfill する。"""
+     cur = conn.cursor()
+     try:
+         cur.execute("""
+             UPDATE event_payments p
+             JOIN mfu_event_member m
+               ON m.payment_row_id = p.id
+              SET p.event_member_id = m.id,
+                  p.external_login_user_id = COALESCE(p.external_login_user_id, m.user_id)
+            WHERE p.event_member_id IS NULL
+         """)
+         conn.commit()
+     except Exception:
+         conn.rollback()
  
-     # 1) encoded 優先（ベース名で）
-     cand = os.path.join(base, 'encoded', fname)
-     if os.path.isfile(cand):
-         return cand
-     # 2) original
-     cand = os.path.join(base, 'original', fname)
-     if os.path.isfile(cand):
-         return cand
-@@ -1192,50 +1232,55 @@ def album_home(album_id):
-     except Exception as e:
-         processing_list = []
+     try:
+         cur.execute("""
+             UPDATE event_payments p
+             JOIN mfu_payment_request pr
+-              ON pr.token = p.payment_token
++              ON pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+              SET p.external_login_user_id = pr.user_id
+            WHERE p.external_login_user_id IS NULL
+              AND p.payment_token IS NOT NULL
+         """)
+         conn.commit()
+     except Exception:
+         conn.rollback()
+     finally:
+         try:
+             cur.close()
+         except Exception:
+             pass
  
-     # ★HDD保管中フラグ
-     storage, _ = _get_album_storage(album_id)
-     is_readonly = (storage == 'hdd')
+ # ───────────────────────────────────────────────────────────
+ # MFUイベント連携
+ # ───────────────────────────────────────────────────────────
+ def _autoprovision_event_from_mfu(event_uuid: str) -> None:
+     """
+     初アクセス時、payment.events に行が無ければ
+     MFUの mfu_event.payment_uuid に基づいて自動作成。
+     """
+     try:
+         conn = _get_db()
+         cur = conn.cursor()
+         cur.execute("SELECT id FROM events WHERE uuid=%s", (event_uuid,))
+@@ -1979,80 +1991,80 @@ def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen
+                    receipt_note=%s
+              WHERE id=%s
+         """, (new_paid, admin_note or None, receipt_note or None, member_id))
+     finally:
+         try:
+             cur.close()
+         except Exception:
+             pass
  
-     completed_process_children = set()
-     event_meta = _fetch_album_meta(album_id)
-     if event_meta and event_meta.get("event_id"):
-         for child in meta.get("children", []):
-             if child.get("mode") != "process":
-                 continue
-             status_map = _fetch_album_process_status_map(album_id, child.get("folder"))
-             requested_ids = [
-                 ext_user_id
-                 for ext_user_id, status in status_map.items()
-                 if int(status.get("request_flag", 0)) == 1
-             ]
-             if requested_ids and all(
-                 int(status_map.get(ext_user_id, {}).get("complete_flag", 0)) == 1
-                 for ext_user_id in requested_ids
-             ):
-                 completed_process_children.add(child.get("folder"))
  
-+    for child in meta.get("children", []):
-+        mode = child.get("mode") or "normal"
-+        child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
-+        child["media_unit"] = "本" if mode == "movie" else "枚"
-+
-     return render_template(
-         'album_home.html',
-         album_id=album_id, meta=meta,
-         is_admin=is_admin, is_owner=is_owner,
-         is_readonly=is_readonly,
-         processing_list=processing_list,   # ★追加
-         ext_user_nickname=ext_user_nickname,
-         completed_process_children=completed_process_children,
-     )
+ @bp.get("/admin/events")
+ @admin_required
+ def admin_events():
+     _ensure_schema()
+     conn = _get_db()
+     try:
+         cur = conn.cursor()
+         cur.execute("""
+           SELECT e.*,
+                  (SELECT COUNT(*)
+                     FROM event_payments p
+                    WHERE p.event_id=e.id
+                      AND COALESCE((
+                         SELECT pr.kind
+                           FROM mfu_payment_request pr
+-                         WHERE pr.token=p.payment_token
++                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                          ORDER BY pr.id DESC
+                          LIMIT 1
+                      ),'event_fee')='event_fee') AS cnt,
+                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
+                     WHERE p.event_id=e.id
+                       AND COALESCE((
+                         SELECT pr.kind
+                           FROM mfu_payment_request pr
+-                         WHERE pr.token=p.payment_token
++                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                          ORDER BY pr.id DESC
+                          LIMIT 1
+                       ),'event_fee')='event_fee'
+                       AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS sum_amount,
+                  (SELECT COUNT(*)
+                     FROM event_payments p
+                    WHERE p.event_id=e.id
+                      AND COALESCE((
+                         SELECT pr.kind
+                           FROM mfu_payment_request pr
+-                         WHERE pr.token=p.payment_token
++                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                          ORDER BY pr.id DESC
+                          LIMIT 1
+                      ),'event_fee')='tip') AS tip_cnt,
+                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
+                     WHERE p.event_id=e.id
+                       AND COALESCE((
+                         SELECT pr.kind
+                           FROM mfu_payment_request pr
+-                         WHERE pr.token=p.payment_token
++                         WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
+                          ORDER BY pr.id DESC
+                          LIMIT 1
+                       ),'event_fee')='tip'
+                       AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS tip_sum_amount
+           FROM events e ORDER BY created_at DESC
+         """)
+         events = _fetchall_dict(cur)
+     finally:
+         try: conn.close()
+         except Exception: pass
+     return render_template("admin_events.html", events=events)
  
- @album_bp.route('/<album_id>/create_child', methods=['POST'])
- def create_child(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return redirect(url_for('album.album_access', album_id=album_id))
+ @bp.get("/admin/events/new")
+ @admin_required
+ def admin_events_new():
+     return render_template("admin_events_new.html")
  
-     # ★HDD保管中は子作成を禁止（アーカイブ扱い）
-     if is_album_readonly(album_id):
-         flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
-         return redirect(url_for('album.album_home', album_id=album_id))
+ @bp.post("/admin/events/new")
+ @admin_required
+ def admin_events_new_post():
+     title = (request.form.get("title") or "").strip()
+     date  = (request.form.get("date") or "").strip() or None
+     amount= int(request.form.get("default_amount") or 1000)
+     notes = (request.form.get("notes") or "").strip() or None
+     if not title:
+@@ -2079,51 +2091,51 @@ def admin_event_detail(event_id: int):
+     kind_filter = (request.args.get("kind") or "event_fee").strip().lower()
+     if kind_filter not in ("event_fee", "tip", "all"):
+         kind_filter = "event_fee"
  
-     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
+     conn = _get_db()
+     try:
+         cur = conn.cursor()
+         cur.execute("SELECT * FROM events WHERE id=%s", (event_id,))
+         event = _fetchone_dict(cur)
+         if not event:
+             return "イベントが見つかりません", 404
  
-     folder_name = (request.form.get('child_name') or '').strip()
-diff --git a/albums/templates/album_home.html b/albums/templates/album_home.html
-index 5d901b9221f2022695b1b10b2e2b716dc9a72250..0370a492a741434a0f2b8d28af4d42c1edf3bbfb 100644
---- a/albums/templates/album_home.html
-+++ b/albums/templates/album_home.html
-@@ -118,51 +118,51 @@
-     {% for p in processing_list %}
-       {% set locked_ns.ids = locked_ns.ids + [p.child_id] %}
-     {% endfor %}
-   {% endif %}
+         if kind_filter == "all":
+             cur.execute("""
+               SELECT * FROM event_payments
+               WHERE event_id=%s
+               ORDER BY created_at DESC
+             """, (event_id,))
+         else:
+             cur.execute("""
+               SELECT * FROM event_payments
+               WHERE event_id=%s
+                 AND COALESCE((
+                   SELECT pr.kind
+                     FROM mfu_payment_request pr
+-                   WHERE pr.token=event_payments.payment_token
++                   WHERE pr.token COLLATE utf8mb4_unicode_ci = event_payments.payment_token COLLATE utf8mb4_unicode_ci
+                    ORDER BY pr.id DESC
+                    LIMIT 1
+                 ),'event_fee')=%s
+               ORDER BY created_at DESC
+             """, (event_id, kind_filter))
+         payments = _fetchall_dict(cur)
  
-   {# 子アルバム描画用マクロ #}
-   {% macro render_child_item(child) %}
-     {% set badge_class = 'badge-normal' if child.mode == 'normal' else ('badge-process' if child.mode == 'process' else 'badge-movie') %}
-     {% set display_name = child.name %}
-     {% if child.mode == 'process' and child.folder in completed_process_children and display_name.startswith('【加工回し】') %}
-       {% set display_name = '【加工終了】' + display_name[6:] %}
-     {% endif %}
+         # 返金集計
+         refunds_map = {}
+         if payments:
+             ids = [p["id"] for p in payments]
+             placeholders = ",".join(["%s"] * len(ids))
+             cur.execute(f"""
+               SELECT payment_row_id,
+                      COALESCE(SUM(CASE WHEN status IN ('PENDING','APPROVED')
+                            THEN amount_yen ELSE 0 END),0) AS refunded
+               FROM event_refunds
+               WHERE payment_row_id IN ({placeholders})
+               GROUP BY payment_row_id
+             """, ids)
+             for r in _fetchall_dict(cur):
+                 refunds_map[r["payment_row_id"]] = int(r["refunded"] or 0)
  
-     {# この子アルバムが加工ロック中かどうか #}
-     {% set is_locked = child.folder in locked_ns.ids %}
- 
-     <div class="list-group-item">
-       <div class="d-flex justify-content-between align-items-center flex-wrap">
-         <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child.folder) }}"
-            class="btn btn-outline-primary flex-grow-1 me-3 text-start">
-           {% if is_locked %}
-             🔏
-           {% else %}
-             {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
-           {% endif %}
--          &nbsp;{{ display_name }}
-+          &nbsp;{{ display_name }}（{{ child.media_count or 0 }}{{ child.media_unit or '枚' }}）
-         </a>
- 
-         <span class="badge badge-mode {{ badge_class }} me-3">
-           {% if child.mode == 'process' %}加工回し{% elif child.mode == 'movie' %}動画{% else %}写真{% endif %}
-         </span>
- 
-         {% if is_admin or is_owner %}
-         <div class="d-flex align-items-center child-actions">
-           <!-- ✏️ 名前変更 -->
-           <form id="rename-child-form-{{ child.folder }}"
-                 method="post"
-                 action="{{ url_for('album.rename_child', album_id=album_id, child_id=child.folder) }}"
-                 class="d-none">
-             <input type="hidden" name="child_name" value="{{ child.name }}">
-           </form>
-           <button type="button" class="btn btn-sm btn-outline-primary"
-             onclick="
-               (function(){
-                 var current='{{ child.name|e }}';
-                 var next = prompt('新しい子アルバム名を入力してください', current);
-                 if (next === null) return;
-                 next = next.trim();
-                 if (!next) { alert('子アルバム名は必須です'); return; }
-                 var f = document.getElementById('rename-child-form-{{ child.folder }}');
-                 f.querySelector('input[name=child_name]').value = next;
+         for p in payments:
+             refunded = refunds_map.get(p["id"], 0)
