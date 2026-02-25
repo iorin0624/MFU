@@ -547,6 +547,11 @@ def admin_event_view(event_id: int):
     }
 
     members = []
+    total_member_count = 0
+    camera_count = 0
+    assistant_count = 0
+    cosplayer_count = 0
+    other_count = 0
     require_payment_count = 0
     paid_count = 0
     for r in rows:
@@ -581,6 +586,17 @@ def admin_event_view(event_id: int):
             contact_memo     = r.get("contact_memo")
             admin_note       = r.get("admin_note")
             receipt_note     = r.get("receipt_note")
+
+        total_member_count += 1
+        normalized_role = str(participant_role or "none").strip().lower()
+        if normalized_role == "camera":
+            camera_count += 1
+        elif normalized_role == "assistant":
+            assistant_count += 1
+        elif normalized_role == "cosplayer":
+            cosplayer_count += 1
+        else:
+            other_count += 1
 
         # --- 支払状況バッジ（既存ロジック） ---
         status_s = (payment_status or "").strip().lower()
@@ -637,6 +653,11 @@ def admin_event_view(event_id: int):
         line_openchat_url=ev.get("line_openchat_url"),
         line_openchat_pass=ev.get("line_openchat_pass"),
         google_form_url=ev.get("google_form_url"),
+        total_member_count=total_member_count,
+        camera_count=camera_count,
+        assistant_count=assistant_count,
+        cosplayer_count=cosplayer_count,
+        other_count=other_count,
         require_payment_count=require_payment_count,
         paid_count=paid_count,
         admin_csrf=admin_csrf,
