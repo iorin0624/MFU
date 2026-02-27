@@ -1,222 +1,989 @@
-diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index 74eb954d52e727230a6cd75cd175e17f74ab985f..ee8f77fad842fc100bc024e0f005f58c3839b8ac 100644
---- a/external_login_user/admin.py
-+++ b/external_login_user/admin.py
-@@ -525,85 +525,101 @@ def admin_event_view(event_id: int):
-           WHEN COALESCE(m.is_host, 0)=1 THEN 0
-           WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
-           WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 2
-           WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 3
-           WHEN LOWER(COALESCE(m.participant_role,''))='cosplayer' THEN 4
-           ELSE 5
-         END AS role_rank
-       FROM mfu_event_member m
-       JOIN external_login_user u ON u.id = m.user_id
-       WHERE m.event_id=%s
-       ORDER BY role_rank ASC, u.nickname ASC, m.joined_at ASC
-     """, (event_id,))
-     rows = cur.fetchall()
-     cur.close(); db.close()
+diff --git a/__init__.py b/__init__.py
+index 49f3dcdebf2f7a9c277f29445f9040daafd4856c..6d6a76367a0c4000ec07acb3551a180a80e1bc53 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -51,92 +51,94 @@ from app.utils.db import get_db
+ from app.utils.feature_access import (
+     ensure_feature_access_schema,
+     get_allowed_features,
+     get_nav_items_for_user,
+     has_feature,
+     require_feature,
+ )
+ from app.utils.file_ops import generate_thumbnail, create_zip
+ from app.utils.upload_security import (
+     DEFAULT_ALLOWED_EXTENSIONS,
+     detect_mime_from_bytes,
+     sanitize_filename,
+     validate_upload_file,
+ )
+ from app.utils.image import save_as_jpeg
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
+ from app.utils.message import generate_message
+ from app.utils.storage_info import get_storage_info
+ from app.utils.thumbs import enqueue_thumb_job
+ from app.utils.totp_util import get_totp_status
+ from app.utils.whois_util import get_netinfo
+ from app.albums import album_bp
+ from app.receipts import receipts_bp
+ from app.utils.mail import send_mail
+ from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
++from app.chat.socketio_ext import socketio
  
-     def _badge(label: str, color: str) -> str:
-         return f'<span class="badge bg-{color}">{label}</span>'
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
  
-     # pending系を「確認（オレンジ）」に寄せるマップ（既存）
-     PENDING_STATUSES = {
-         "pending", "confirm", "confirming", "checking",
-         "verifying", "awaiting", "processing", "authorized"
-     }
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+     template_folder=os.path.join(APP_DIR, "templates"),
+     static_folder=STATIC_DIR,
+     static_url_path="/static",
+ )
+ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
  
-     members = []
-+    total_member_count = 0
-+    camera_count = 0
-+    assistant_count = 0
-+    cosplayer_count = 0
-+    other_count = 0
-     require_payment_count = 0
-     paid_count = 0
-     for r in rows:
-         if isinstance(r, tuple):
-             (user_id, nickname, x_id, instagram_id, email,
-              avatar_file, avatar_url, updated_at,
-              status, payment_status, paid_at, receipt_url, joined_at, checkin_at,
-              require_payment, process, is_host, is_subhost, participant_role, costume_label,
-              paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
-         else:
-             user_id          = r["user_id"]
-             nickname         = r["nickname"]
-             x_id             = r["x_id"]
-             instagram_id     = r["instagram_id"]
-             email            = r["email"]
-             avatar_file      = r["avatar_file"]
-             avatar_url       = r["avatar_url"]
-             updated_at       = r["updated_at"]
-             status           = r["status"]
-             payment_status   = r["payment_status"]
-             paid_at          = r["paid_at"]
-             receipt_url      = r["receipt_url"]
-             joined_at        = r["joined_at"]
-             checkin_at       = r.get("checkin_at")
-             require_payment  = r["require_payment"]
-             process          = r["process"]
-             is_host          = r["is_host"]
-             is_subhost       = r["is_subhost"]
-             participant_role = r["participant_role"]
-             costume_label    = r["costume_label"]
-             paid_amount_yen  = r.get("paid_amount_yen")
-             contact_memo     = r.get("contact_memo")
-             admin_note       = r.get("admin_note")
-             receipt_note     = r.get("receipt_note")
+ def create_app():
+     return app
  
-+        total_member_count += 1
-+        normalized_role = str(participant_role or "none").strip().lower()
-+        if normalized_role == "camera":
-+            camera_count += 1
-+        elif normalized_role == "assistant":
-+            assistant_count += 1
-+        elif normalized_role == "cosplayer":
-+            cosplayer_count += 1
-+        else:
-+            other_count += 1
+ load_dotenv()
+ app.secret_key = os.environ.get("SECRET_KEY")
+ 
+ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
+ 
+ app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
+ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
+ 
+ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
+ 
+ # 既定ホワイトリスト（必要なら config で上書き）
+ app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
+ 
+ login_manager = LoginManager()
+ login_manager.init_app(app)
+ login_manager.login_view = "login"
+ login_manager.user_loader(load_user)
++socketio.init_app(app, message_queue=None)
+ 
+ # =====================================
+ # 🧠 補助関数群（上段へ集約）
+ # =====================================
+ 
+ from functools import wraps
+ from flask import session
+ 
+ def admin_required(func):
+     @wraps(func)
+     def wrapper(*args, **kwargs):
+         if session.get("user") != "admin":
+             return "管理者のみアクセス可能", 403
+         return func(*args, **kwargs)
+     return wrapper
+ 
+ 
+ def _save_stream(file_storage, dest_path):
+     """アップロードストリームを保存（最小実装）"""
+     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+     file_storage.save(dest_path)
+     return os.path.basename(dest_path)
+ 
+ def delayed_restart():
+     try:
+@@ -3223,27 +3225,30 @@ app.register_blueprint(bp_service_logs)
+ from app.routes.webauthn_routes import webauthn_bp
+ app.register_blueprint(webauthn_bp)
+ 
+ from app.tickets import tickets_bp
+ app.register_blueprint(tickets_bp)
+ 
+ from .payment import bp as payment_bp
+ app.register_blueprint(payment_bp)
+ 
+ app.register_blueprint(receipts_bp)
+ 
+ from app.records import records_api_bp, records_bp
+ app.register_blueprint(records_bp, url_prefix="/records")
+ app.register_blueprint(records_api_bp)
+ 
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
+ 
+ from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
+ init_line_oauth(app)
+ app.register_blueprint(ext_login_bp, url_prefix="/external-login")
+ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
+ 
+ from app.s_u_calendar.routes import s_u_calendar_bp
+ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+ 
++from app.chat import chat_bp
++app.register_blueprint(chat_bp)
 +
-         # --- 支払状況バッジ（既存ロジック） ---
-         status_s = (payment_status or "").strip().lower()
-         if paid_at:  # 支払日時が入っていれば最優先で「済」
-             pay_status_html = _badge("済", "success")
-         elif status_s == "paid":
-             pay_status_html = _badge("済", "success")
-         elif status_s in PENDING_STATUSES:
-             pay_status_html = _badge("確認", "warning")
-         else:
-             pay_status_html = _badge("未", "danger")
- 
-         require_payment_flag = 1 if (require_payment is None) else int(require_payment)
-         if require_payment_flag == 1:
-             require_payment_count += 1
-             if paid_at or status_s == "paid":
-                 paid_count += 1
- 
-         members.append({
-             "user_id": user_id,
-             "nickname": nickname,
-             "x_id": x_id,
-             "instagram_id": instagram_id,
-             "email": email,
-             "avatar_file": avatar_file,
-             "avatar_url": avatar_url,
-@@ -615,50 +631,55 @@ def admin_event_view(event_id: int):
-             "joined_at": joined_at,
-             "checkin_at": checkin_at,
-             "checked_in": bool(checkin_at),
-             "require_payment": require_payment_flag,
-             "process": 1 if process else 0,
-             "is_host": 1 if is_host else 0,
-             "is_subhost": 1 if is_subhost else 0,
-             "participant_role": (participant_role or "none"),
-             "costume_label": costume_label,
-             "paid_amount_yen": paid_amount_yen,
-             "contact_memo": contact_memo,
-             "admin_note": admin_note,
-             "receipt_note": receipt_note,
-             "pay_status_html": pay_status_html,
-         })
- 
-     admin_csrf = _admin_csrf_token()
-     return render_template(
-         "admin_event_view.html",
-         ev=ev, members=members,
-         join_url=join_url, maps_link=maps_link,
-         album_url=album_url, pay_admin_url=pay_admin_url,
-         line_openchat_url=ev.get("line_openchat_url"),
-         line_openchat_pass=ev.get("line_openchat_pass"),
-         google_form_url=ev.get("google_form_url"),
-+        total_member_count=total_member_count,
-+        camera_count=camera_count,
-+        assistant_count=assistant_count,
-+        cosplayer_count=cosplayer_count,
-+        other_count=other_count,
-         require_payment_count=require_payment_count,
-         paid_count=paid_count,
-         admin_csrf=admin_csrf,
-         qr_trademark_notice=QR_TRADEMARK_NOTICE
-     )
- 
- 
- @bp.route("/admin/events/<int:event_id>/edit", methods=["GET", "POST"], endpoint="admin_event_edit")
- def admin_event_edit(event_id: int):
-     guard = _require_mfu_login_redirect()
-     if guard: return guard
-     if not _event_admin_can_manage(event_id):
-         abort(403, "このイベントを管理する権限がありません。")
- 
-     admin_csrf = _admin_csrf_token()
- 
-     from datetime import datetime
-     def _parse_dt_local(s: str | None):
-         if not s: return None
-         try: return datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M")
-         except Exception:
-             try: return datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M:%S")
-             except Exception: return "INVALID"
- 
-     def _fmt_dt_local(v):
-diff --git a/external_login_user/template/admin_event_view.html b/external_login_user/template/admin_event_view.html
-index 1ef84f7e43011ca037d0af703ad7df0fab15f281..c4495af440aefbfc05b4e79ddb7c339d2055bce9 100644
---- a/external_login_user/template/admin_event_view.html
-+++ b/external_login_user/template/admin_event_view.html
-@@ -217,50 +217,55 @@
-                     </div>
-                   {% endif %}
-                   {% if an %}
-                     <div>
-                       <div class="small text-muted mb-1">管理者備考（非公開）</div>
-                       <div class="p-2 border rounded" style="white-space:pre-line; word-break:break-word;">{{- an -}}</div>
-                     </div>
-                   {% endif %}
-                 </div>
-               </div>
-             </div>
-           {% endif %}
-         {% endfor %}
-       </div>
-     {% endif %}
-   </div>
- </div>
- <!-- ===== /メモ一覧 ===== -->
- 
- <div class="card mt-3">
-   <div class="card-body">
-     <div class="d-flex justify-content-between align-items-center">
-       <div>
-         <h2 class="h6 mb-2">参加者一覧</h2>
-         <div class="small text-muted">
-+          全体人数：{{ total_member_count }}名<br>
-+          カメラマン：{{ camera_count }}名<br>
-+          アシスタント：{{ assistant_count }}名<br>
-+          衣装：{{ cosplayer_count }}名<br>
-+          その他：{{ other_count }}名<br>
-           支払有りの人：{{ require_payment_count }}名 / 支払済みの人：{{ paid_count }}名
-         </div>
-       </div>
-       <!-- 凡例 -->
-       <div class="small">
-         凡例：
-         <span class="badge bg-danger">未</span>
-         <span class="badge bg-warning text-dark">確認</span>
-         <span class="badge bg-success">済</span>
-       </div>
-     </div>
- 
-     {% if members|length == 0 %}
-       <div class="text-muted">参加者はまだいません。</div>
-     {% else %}
-       <div class="table-responsive">
-         <table class="table align-middle">
-           <thead>
-             <tr>
-               <th>ユーザー</th>
-               <th>承認</th>
-               <th>加工</th>
-               <th>役割（衣装）</th>
-               <th>メモ</th>
-               <th class="nowrap">要支払い</th>
+ from app.bank_account import register_bank_account
+ register_bank_account(app)
+diff --git a/chat/__init__.py b/chat/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..29a9153d9edbc1ee99952a1548e795a78e619d09
+--- /dev/null
++++ b/chat/__init__.py
+@@ -0,0 +1,601 @@
++from __future__ import annotations
++
++import html
++import json
++import os
++import re
++import secrets
++from datetime import datetime, timedelta
++from typing import Any
++
++from flask import (
++    Blueprint,
++    abort,
++    current_app,
++    jsonify,
++    render_template,
++    request,
++    session,
++)
++from flask_socketio import disconnect, emit, join_room
++
++from app.chat.socketio_ext import socketio
++from app.utils.db import get_db
++
++chat_bp = Blueprint(
++    "chat",
++    __name__,
++    template_folder="templates",
++    static_folder="static",
++    url_prefix="/chat",
++)
++
++MESSAGE_MAX_LEN = 2000
++RATE_LIMIT_SECONDS = 1
++
++
++def _chat_csrf() -> str:
++    token = session.get("chat_csrf")
++    if not token:
++        token = secrets.token_urlsafe(24)
++        session["chat_csrf"] = token
++    return token
++
++
++def _is_admin() -> bool:
++    return session.get("user") == "admin"
++
++
++def get_chat_actor() -> dict[str, Any] | None:
++    """admin / acl / line を統一形式へ正規化。"""
++    if session.get("user"):
++        username = str(session.get("user"))
++        actor_type = "admin" if username == "admin" else "acl"
++        email = None
++        db = get_db()
++        cur = db.cursor(dictionary=True)
++        try:
++            cur.execute("SELECT username, email FROM users WHERE username=%s LIMIT 1", (username,))
++            row = cur.fetchone()
++            if row:
++                email = row.get("email")
++        except Exception:
++            current_app.logger.warning("chat actor load failed for mfu user=%s", username, exc_info=True)
++        finally:
++            cur.close()
++            db.close()
++        return {
++            "actor_type": actor_type,
++            "actor_id": username,
++            "display_name": username,
++            "email": email,
++        }
++
++    ext_user_id = session.get("ext_user_id")
++    if ext_user_id:
++        db = get_db()
++        cur = db.cursor(dictionary=True)
++        try:
++            cur.execute(
++                "SELECT id, nickname, email FROM external_login_user WHERE id=%s LIMIT 1",
++                (ext_user_id,),
++            )
++            row = cur.fetchone()
++        finally:
++            cur.close()
++            db.close()
++        if not row:
++            current_app.logger.warning("chat actor load failed for ext_user_id=%s", ext_user_id)
++            return None
++        return {
++            "actor_type": "line",
++            "actor_id": str(row["id"]),
++            "display_name": row.get("nickname") or f"LINE-{row['id']}",
++            "email": row.get("email"),
++        }
++
++    return None
++
++
++def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
++    if actor["actor_type"] == "admin":
++        return True
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        if actor["actor_type"] == "line":
++            cur.execute(
++                """
++                SELECT 1
++                  FROM mfu_event_member
++                 WHERE event_id=%s AND user_id=%s
++                 LIMIT 1
++                """,
++                (event_id, actor["actor_id"]),
++            )
++            return bool(cur.fetchone())
++
++        # acl: mfu_event_admin_acl + users(admin系)
++        cur.execute(
++            """
++            SELECT 1
++              FROM mfu_event_admin_acl
++             WHERE event_id=%s AND username=%s
++             LIMIT 1
++            """,
++            (event_id, actor["actor_id"]),
++        )
++        return bool(cur.fetchone())
++    except Exception:
++        current_app.logger.warning("chat access check failed event=%s actor=%s", event_id, actor, exc_info=True)
++        return False
++    finally:
++        cur.close()
++        db.close()
++
++
++def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        if actor["actor_type"] == "admin":
++            cur.execute("SELECT id, title, start_at FROM mfu_event ORDER BY start_at DESC LIMIT 100")
++            return cur.fetchall() or []
++        if actor["actor_type"] == "line":
++            cur.execute(
++                """
++                SELECT e.id, e.title, e.start_at
++                  FROM mfu_event e
++                  JOIN mfu_event_member m ON m.event_id = e.id
++                 WHERE m.user_id = %s
++                 ORDER BY e.start_at DESC
++                 LIMIT 100
++                """,
++                (actor["actor_id"],),
++            )
++            return cur.fetchall() or []
++
++        cur.execute(
++            """
++            SELECT e.id, e.title, e.start_at
++              FROM mfu_event e
++              JOIN mfu_event_admin_acl a ON a.event_id = e.id
++             WHERE a.username = %s
++             ORDER BY e.start_at DESC
++             LIMIT 100
++            """,
++            (actor["actor_id"],),
++        )
++        return cur.fetchall() or []
++    finally:
++        cur.close()
++        db.close()
++
++
++def _get_event(event_id: int) -> dict[str, Any] | None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("SELECT id, title, start_at FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
++        return cur.fetchone()
++    finally:
++        cur.close()
++        db.close()
++
++
++def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
++              FROM chat_messages
++             WHERE event_id=%s
++             ORDER BY created_at DESC
++             LIMIT %s
++            """,
++            (event_id, limit),
++        )
++        rows = cur.fetchall() or []
++        return list(reversed(rows))
++    finally:
++        cur.close()
++        db.close()
++
++
++def _save_message(event_id: int, actor: dict[str, Any], body: str) -> dict[str, Any]:
++    now = datetime.utcnow()
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            INSERT INTO chat_messages (
++                event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
++            ) VALUES (%s, %s, %s, %s, %s, %s)
++            """,
++            (
++                event_id,
++                actor["actor_type"],
++                actor["actor_id"],
++                actor["display_name"],
++                body,
++                now,
++            ),
++        )
++        msg_id = cur.lastrowid
++        db.commit()
++        return {
++            "id": msg_id,
++            "event_id": event_id,
++            "sender_actor_type": actor["actor_type"],
++            "sender_actor_id": actor["actor_id"],
++            "sender_display_name": actor["display_name"],
++            "body": body,
++            "created_at": now.isoformat(),
++        }
++    finally:
++        cur.close()
++        db.close()
++
++
++def _validate_body(raw: str) -> str:
++    body = (raw or "").strip()
++    if not body:
++        raise ValueError("メッセージが空です")
++    if len(body) > MESSAGE_MAX_LEN:
++        raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
++    return html.escape(body)
++
++
++def _check_rate_limit(actor: dict[str, Any]) -> bool:
++    key = f"chat_last_post:{actor['actor_type']}:{actor['actor_id']}"
++    now = datetime.utcnow()
++    prev_iso = session.get(key)
++    if prev_iso:
++        try:
++            prev = datetime.fromisoformat(prev_iso)
++            if now - prev < timedelta(seconds=RATE_LIMIT_SECONDS):
++                return False
++        except Exception:
++            pass
++    session[key] = now.isoformat()
++    return True
++
++
++def _extract_mentions(body: str) -> list[str]:
++    return re.findall(r"@([\w\-ぁ-んァ-ン一-龥ー]+)", body)
++
++
++def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, Any]]:
++    if not names:
++        return []
++    uniq_names = sorted(set(names))
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        placeholders = ",".join(["%s"] * len(uniq_names))
++        cur.execute(
++            f"""
++            SELECT u.id, u.nickname
++              FROM external_login_user u
++              JOIN mfu_event_member m ON m.user_id = u.id
++             WHERE m.event_id = %s
++               AND u.nickname IN ({placeholders})
++            """,
++            tuple([event_id] + uniq_names),
++        )
++        rows = cur.fetchall() or []
++        return [{"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]} for r in rows]
++    finally:
++        cur.close()
++        db.close()
++
++
++def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_count: int = 0) -> None:
++    db = get_db()
++    cur = db.cursor()
++    try:
++        cur.execute(
++            """
++            INSERT INTO chat_notification_log (event_id, kind, payload_json, sent_count, created_at)
++            VALUES (%s, %s, %s, %s, %s)
++            """,
++            (event_id, kind, json.dumps(payload, ensure_ascii=False), sent_count, datetime.utcnow()),
++        )
++        db.commit()
++    except Exception:
++        current_app.logger.warning("chat notification log insert failed", exc_info=True)
++    finally:
++        cur.close()
++        db.close()
++
++
++def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any]) -> int:
++    from pywebpush import webpush, WebPushException
++
++    public = os.getenv("CHAT_VAPID_PUBLIC_KEY")
++    private = os.getenv("CHAT_VAPID_PRIVATE_KEY")
++    subject = os.getenv("CHAT_VAPID_SUBJECT", "mailto:admin@example.com")
++    if not private or not public:
++        return 0
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    sent = 0
++    try:
++        cur.execute(
++            """
++            SELECT id, endpoint, p256dh, auth
++              FROM chat_push_subscriptions
++             WHERE actor_type=%s AND actor_id=%s
++            """,
++            (actor_type, actor_id),
++        )
++        subs = cur.fetchall() or []
++
++        for sub in subs:
++            try:
++                webpush(
++                    subscription_info={
++                        "endpoint": sub["endpoint"],
++                        "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
++                    },
++                    data=json.dumps(payload, ensure_ascii=False),
++                    vapid_private_key=private,
++                    vapid_claims={"sub": subject},
++                )
++                sent += 1
++            except WebPushException as exc:
++                status = getattr(getattr(exc, "response", None), "status_code", None)
++                if status == 410:
++                    cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
++                current_app.logger.warning("chat push failed actor=%s:%s status=%s", actor_type, actor_id, status)
++        db.commit()
++        return sent
++    finally:
++        cur.close()
++        db.close()
++
++
++@chat_bp.before_request
++def _require_any_login():
++    if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
++        return None
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    return None
++
++
++@chat_bp.route("/")
++def index():
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    events = _accessible_events(actor)
++    return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
++
++
++@chat_bp.route("/events/<int:event_id>")
++def room(event_id: int):
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    if not _can_access_event(event_id, actor):
++        abort(403)
++
++    event = _get_event(event_id)
++    if not event:
++        abort(404)
++    messages = _load_messages(event_id)
++    can_broadcast = actor["actor_type"] in {"admin", "acl"}
++    return render_template(
++        "chat/room.html",
++        actor=actor,
++        event=event,
++        messages=messages,
++        vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
++        csrf_token=_chat_csrf(),
++        can_broadcast=can_broadcast,
++    )
++
++
++@chat_bp.post("/api/push/subscribe")
++def push_subscribe():
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
++    if token != session.get("chat_csrf"):
++        abort(400)
++    data = request.get_json(silent=True) or {}
++    endpoint = (data.get("endpoint") or "").strip()
++    keys = data.get("keys") or {}
++    if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
++        abort(400)
++
++    db = get_db()
++    cur = db.cursor()
++    try:
++        cur.execute(
++            """
++            INSERT INTO chat_push_subscriptions (
++              actor_type, actor_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
++            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
++            ON DUPLICATE KEY UPDATE p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
++            """,
++            (
++                actor["actor_type"],
++                actor["actor_id"],
++                endpoint,
++                keys["p256dh"],
++                keys["auth"],
++                request.headers.get("User-Agent"),
++                datetime.utcnow(),
++                datetime.utcnow(),
++            ),
++        )
++        db.commit()
++    finally:
++        cur.close()
++        db.close()
++    return jsonify({"ok": True})
++
++
++@chat_bp.post("/api/push/unsubscribe")
++def push_unsubscribe():
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
++    if token != session.get("chat_csrf"):
++        abort(400)
++    endpoint = ((request.get_json(silent=True) or {}).get("endpoint") or "").strip()
++    if not endpoint:
++        abort(400)
++    db = get_db()
++    cur = db.cursor()
++    try:
++        cur.execute(
++            "DELETE FROM chat_push_subscriptions WHERE actor_type=%s AND actor_id=%s AND endpoint=%s",
++            (actor["actor_type"], actor["actor_id"], endpoint),
++        )
++        db.commit()
++    finally:
++        cur.close()
++        db.close()
++    return jsonify({"ok": True})
++
++
++@chat_bp.post("/api/events/<int:event_id>/broadcast")
++def broadcast_push(event_id: int):
++    actor = get_chat_actor()
++    if not actor or actor["actor_type"] == "line":
++        abort(403)
++    if not _can_access_event(event_id, actor):
++        abort(403)
++    token = (request.form.get("csrf_token") or "").strip()
++    if token != session.get("chat_csrf"):
++        abort(400)
++
++    msg = _validate_body(request.form.get("body") or "")
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    sent_count = 0
++    try:
++        cur.execute("SELECT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
++        for row in cur.fetchall() or []:
++            sent_count += _send_push_to_actor("line", str(row["user_id"]), {"title": "イベント通知", "body": msg})
++    finally:
++        cur.close()
++        db.close()
++    _log_notification(event_id, "broadcast", {"body": msg}, sent_count)
++    return jsonify({"ok": True, "sent_count": sent_count})
++
++
++@chat_bp.get("/manifest.json")
++def manifest():
++    return jsonify(
++        {
++            "name": "MFU Event Chat",
++            "short_name": "MFU Chat",
++            "start_url": "/chat/",
++            "display": "standalone",
++            "background_color": "#ffffff",
++            "theme_color": "#0d6efd",
++            "icons": [],
++        }
++    )
++
++
++@chat_bp.get("/sw.js")
++def sw():
++    return current_app.response_class(
++        render_template("chat/sw.js"),
++        mimetype="application/javascript",
++    )
++
++
++@socketio.on("connect")
++def chat_connect():
++    actor = get_chat_actor()
++    if not actor:
++        current_app.logger.warning("chat socket connect denied: no actor")
++        return False
++    return True
++
++
++@socketio.on("chat_join")
++def on_join(data):
++    actor = get_chat_actor()
++    event_id = int((data or {}).get("event_id") or 0)
++    if not actor or not event_id or not _can_access_event(event_id, actor):
++        current_app.logger.warning("chat join denied event=%s actor=%s", event_id, actor)
++        disconnect()
++        return
++    join_room(f"event:{event_id}")
++    emit("chat_joined", {"event_id": event_id})
++
++
++@socketio.on("chat_send")
++def on_send(data):
++    actor = get_chat_actor()
++    if not actor:
++        disconnect()
++        return
++    event_id = int((data or {}).get("event_id") or 0)
++    if not event_id or not _can_access_event(event_id, actor):
++        disconnect()
++        return
++    if not _check_rate_limit(actor):
++        emit("chat_error", {"error": "送信間隔が短すぎます"})
++        return
++
++    try:
++        body = _validate_body((data or {}).get("body") or "")
++    except ValueError as exc:
++        emit("chat_error", {"error": str(exc)})
++        return
++
++    message = _save_message(event_id, actor, body)
++    emit("chat_message", message, to=f"event:{event_id}")
++
++    mention_names = _extract_mentions(body)
++    mention_targets = _lookup_mention_targets(event_id, mention_names)
++    sent_count = 0
++    for target in mention_targets:
++        sent_count += _send_push_to_actor(
++            target["actor_type"],
++            target["actor_id"],
++            {"title": f"{actor['display_name']}さんからメンション", "body": body, "event_id": event_id},
++        )
++    if mention_targets:
++        _log_notification(event_id, "mention", {"names": mention_names, "message_id": message["id"]}, sent_count)
++
++
++@socketio.on("chat_notify_dm")
++def notify_dm(data):
++    actor = get_chat_actor()
++    if not actor:
++        disconnect()
++        return
++    event_id = int((data or {}).get("event_id") or 0)
++    target_actor_type = (data or {}).get("target_actor_type")
++    target_actor_id = str((data or {}).get("target_actor_id") or "")
++    if not _can_access_event(event_id, actor):
++        disconnect()
++        return
++    sent_count = _send_push_to_actor(
++        target_actor_type,
++        target_actor_id,
++        {
++            "title": "ダイレクト通知",
++            "body": (data or {}).get("body") or "",
++            "event_id": event_id,
++        },
++    )
++    _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
++    emit("chat_dm_notified", {"ok": True, "sent_count": sent_count})
+diff --git a/chat/socketio_ext.py b/chat/socketio_ext.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..156ebe4de62fae09ce0eba117cdfe89295210e8c
+--- /dev/null
++++ b/chat/socketio_ext.py
+@@ -0,0 +1,3 @@
++from flask_socketio import SocketIO
++
++socketio = SocketIO(async_mode="threading", cors_allowed_origins="*")
+diff --git a/chat/static/chat/js/chat.js b/chat/static/chat/js/chat.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..9a653fd7b818a3b55052c08347b9906cdc4ac56d
+--- /dev/null
++++ b/chat/static/chat/js/chat.js
+@@ -0,0 +1,59 @@
++(() => {
++  const root = document.querySelector('[data-event-id]');
++  if (!root) return;
++
++  const eventId = Number(root.dataset.eventId);
++  const csrfToken = root.dataset.csrf;
++  const vapidKey = root.dataset.vapid;
++  const msgBox = document.getElementById('messages');
++  const form = document.getElementById('chat-form');
++  const bodyInput = document.getElementById('chat-body');
++  const pushBtn = document.getElementById('enable-push');
++
++  const socket = io({ transports: ['websocket', 'polling'] });
++  socket.emit('chat_join', { event_id: eventId });
++
++  socket.on('chat_message', (m) => {
++    const div = document.createElement('div');
++    div.className = 'mb-2';
++    div.innerHTML = `<strong>${m.sender_display_name}</strong> <small class="text-muted">${m.created_at}</small><br>${m.body}`;
++    msgBox.appendChild(div);
++    msgBox.scrollTop = msgBox.scrollHeight;
++  });
++  socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
++
++  form?.addEventListener('submit', (e) => {
++    e.preventDefault();
++    socket.emit('chat_send', { event_id: eventId, body: bodyInput.value });
++    bodyInput.value = '';
++  });
++
++  pushBtn?.addEventListener('click', async () => {
++    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
++      alert('この端末はPush通知に非対応です');
++      return;
++    }
++    const reg = await navigator.serviceWorker.ready;
++    const sub = await reg.pushManager.subscribe({
++      userVisibleOnly: true,
++      applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
++    });
++    const res = await fetch('/chat/api/push/subscribe', {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
++    });
++    if (!res.ok) {
++      alert('購読登録に失敗しました');
++      return;
++    }
++    alert('通知を有効化しました');
++  });
++
++  function urlBase64ToUint8Array(base64String) {
++    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
++    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
++    const rawData = window.atob(base64);
++    return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
++  }
++})();
+diff --git a/chat/templates/chat/base_chat.html b/chat/templates/chat/base_chat.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..55a9eb40ee97f6d96a2293ad32d39fa7b635466c
+--- /dev/null
++++ b/chat/templates/chat/base_chat.html
+@@ -0,0 +1,13 @@
++{% extends "base.html" %}
++{% block head %}
++  {{ super() }}
++  <link rel="manifest" href="{{ url_for('chat.manifest') }}">
++  <meta name="theme-color" content="#0d6efd">
++  <meta name="apple-mobile-web-app-capable" content="yes">
++  <meta name="apple-mobile-web-app-status-bar-style" content="default">
++  <script>
++    if ('serviceWorker' in navigator) {
++      navigator.serviceWorker.register('{{ url_for('chat.sw') }}');
++    }
++  </script>
++{% endblock %}
+diff --git a/chat/templates/chat/index.html b/chat/templates/chat/index.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f5c604c47a586b80f533755e69008a464de7987
+--- /dev/null
++++ b/chat/templates/chat/index.html
+@@ -0,0 +1,18 @@
++{% extends "chat/base_chat.html" %}
++{% block content %}
++<div class="container py-4">
++  <h2>イベントチャット</h2>
++  <p class="text-muted">ログインユーザー: {{ actor.display_name }} ({{ actor.actor_type }})</p>
++  <div class="alert alert-info">参加者/運営のみチャット入室できます（adminは例外で入室可能）。</div>
++  <ul class="list-group">
++    {% for ev in events %}
++      <li class="list-group-item d-flex justify-content-between align-items-center">
++        <span>{{ ev.title }} {% if ev.start_at %}<small class="text-muted">{{ ev.start_at }}</small>{% endif %}</span>
++        <a class="btn btn-primary btn-sm" href="{{ url_for('chat.room', event_id=ev.id) }}">入室</a>
++      </li>
++    {% else %}
++      <li class="list-group-item">入室可能なイベントがありません。</li>
++    {% endfor %}
++  </ul>
++</div>
++{% endblock %}
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..20800f7fb42e95c6527adb788b117787fc51f6ef
+--- /dev/null
++++ b/chat/templates/chat/room.html
+@@ -0,0 +1,30 @@
++{% extends "chat/base_chat.html" %}
++{% block content %}
++<div class="container py-3" data-event-id="{{ event.id }}" data-csrf="{{ csrf_token }}" data-vapid="{{ vapid_public_key }}">
++  <h3>{{ event.title }} / Chat</h3>
++  <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
++  <div id="messages" class="border rounded p-3 mb-3" style="height:360px;overflow:auto;">
++    {% for m in messages %}
++      <div class="mb-2"><strong>{{ m.sender_display_name }}</strong> <small class="text-muted">{{ m.created_at }}</small><br>{{ m.body|safe }}</div>
++    {% endfor %}
++  </div>
++
++  <form id="chat-form" class="d-flex gap-2">
++    <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
++    <button class="btn btn-primary" type="submit">送信</button>
++  </form>
++
++  <div class="mt-3 d-flex gap-2">
++    <button class="btn btn-outline-secondary btn-sm" id="enable-push">通知を有効化</button>
++    {% if can_broadcast %}
++    <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
++      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
++      <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
++      <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
++    </form>
++    {% endif %}
++  </div>
++</div>
++<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
++<script src="{{ url_for('chat.static', filename='chat/js/chat.js') }}"></script>
++{% endblock %}
+diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..72c8c07ffa8c5a13ab006ec74fd4f19794292d58
+--- /dev/null
++++ b/chat/templates/chat/sw.js
+@@ -0,0 +1,29 @@
++const CACHE = 'mfu-chat-v1';
++const STATIC_ASSETS = [
++  '/chat/',
++  '/chat/manifest.json',
++  '/chat/sw.js'
++];
++
++self.addEventListener('install', (event) => {
++  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));
++});
++
++self.addEventListener('fetch', (event) => {
++  const url = new URL(event.request.url);
++  if (url.pathname.startsWith('/chat/static/')) {
++    event.respondWith(caches.match(event.request).then((res) => res || fetch(event.request)));
++    return;
++  }
++  if (url.pathname.startsWith('/chat/api/')) {
++    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
++  }
++});
++
++self.addEventListener('push', (event) => {
++  const data = event.data ? event.data.json() : { title: 'MFU Chat', body: '新着通知' };
++  event.waitUntil(self.registration.showNotification(data.title || 'MFU Chat', {
++    body: data.body || '',
++    data,
++  }));
++});
+diff --git a/docs/chat_apache_socketio.conf b/docs/chat_apache_socketio.conf
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3b7206957a7b48fc3850c4c421ed6bd0061e276
+--- /dev/null
++++ b/docs/chat_apache_socketio.conf
+@@ -0,0 +1,18 @@
++# 必要モジュール
++# a2enmod proxy proxy_http proxy_wstunnel rewrite headers
++
++# 既存 VirtualHost(*:443) の ProxyPass 群より前段で Socket.IO を優先ルーティング
++ProxyPreserveHost On
++RequestHeader set X-Forwarded-Proto "https"
++
++# Socket.IO (WebSocket)
++ProxyPass        /socket.io/  ws://127.0.0.1:8000/socket.io/
++ProxyPassReverse /socket.io/  ws://127.0.0.1:8000/socket.io/
++
++# Socket.IO fallback polling
++ProxyPass        /socket.io/  http://127.0.0.1:8000/socket.io/
++ProxyPassReverse /socket.io/  http://127.0.0.1:8000/socket.io/
++
++# Flask 本体
++ProxyPass        /  http://127.0.0.1:8000/
++ProxyPassReverse /  http://127.0.0.1:8000/
+diff --git a/docs/sql/20260227_chat_feature.sql b/docs/sql/20260227_chat_feature.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..146199edad0ebe9a40486815575d2f085fe8096d
+--- /dev/null
++++ b/docs/sql/20260227_chat_feature.sql
+@@ -0,0 +1,34 @@
++CREATE TABLE IF NOT EXISTS chat_messages (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  event_id BIGINT NOT NULL,
++  sender_actor_type VARCHAR(16) NOT NULL,
++  sender_actor_id VARCHAR(64) NOT NULL,
++  sender_display_name VARCHAR(255) NOT NULL,
++  body TEXT NOT NULL,
++  created_at DATETIME NOT NULL,
++  INDEX idx_chat_messages_event_created (event_id, created_at),
++  INDEX idx_chat_messages_sender (event_id, sender_actor_type, sender_actor_id)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
++
++CREATE TABLE IF NOT EXISTS chat_push_subscriptions (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  actor_type VARCHAR(16) NOT NULL,
++  actor_id VARCHAR(64) NOT NULL,
++  endpoint TEXT NOT NULL,
++  p256dh VARCHAR(255) NOT NULL,
++  auth VARCHAR(255) NOT NULL,
++  user_agent VARCHAR(512) NULL,
++  created_at DATETIME NOT NULL,
++  updated_at DATETIME NOT NULL,
++  UNIQUE KEY uq_actor_endpoint (actor_type, actor_id, endpoint(255))
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
++
++CREATE TABLE IF NOT EXISTS chat_notification_log (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  event_id BIGINT NOT NULL,
++  kind VARCHAR(64) NOT NULL,
++  payload_json JSON NULL,
++  sent_count INT NOT NULL DEFAULT 0,
++  created_at DATETIME NOT NULL,
++  INDEX idx_chat_notification_event_created (event_id, created_at)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

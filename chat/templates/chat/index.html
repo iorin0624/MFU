@@ -1,0 +1,18 @@
+{% extends "chat/base_chat.html" %}
+{% block content %}
+<div class="container py-4">
+  <h2>イベントチャット</h2>
+  <p class="text-muted">ログインユーザー: {{ actor.display_name }} ({{ actor.actor_type }})</p>
+  <div class="alert alert-info">参加者/運営のみチャット入室できます（adminは例外で入室可能）。</div>
+  <ul class="list-group">
+    {% for ev in events %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <span>{{ ev.title }} {% if ev.start_at %}<small class="text-muted">{{ ev.start_at }}</small>{% endif %}</span>
+        <a class="btn btn-primary btn-sm" href="{{ url_for('chat.room', event_id=ev.id) }}">入室</a>
+      </li>
+    {% else %}
+      <li class="list-group-item">入室可能なイベントがありません。</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}
