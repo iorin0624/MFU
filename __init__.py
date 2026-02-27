@@ -73,6 +73,7 @@ from app.albums import album_bp
 from app.receipts import receipts_bp
 from app.utils.mail import send_mail
 from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
+from app.chat.socketio_ext import socketio
 
 # =====================================
 # 🌏 タイムゾーン・定数
@@ -115,6 +116,7 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
 login_manager.user_loader(load_user)
+socketio.init_app(app, message_queue=None)
 
 # =====================================
 # 🧠 補助関数群（上段へ集約）
@@ -3244,6 +3246,9 @@ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_
 
 from app.s_u_calendar.routes import s_u_calendar_bp
 app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+
+from app.chat import chat_bp
+app.register_blueprint(chat_bp)
 
 from app.bank_account import register_bank_account
 register_bank_account(app)
