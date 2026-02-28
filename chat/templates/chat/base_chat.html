@@ -1,14 +1,75 @@
 {% extends "base.html" %}
 {% block head %}
   {{ super() }}
-  <link rel="manifest" href="{{ url_for('chat.manifest') }}">
+  <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#0d6efd">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="{{ url_for('chat.static', filename='chat/css/chat.css') }}">
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('{{ url_for('chat.sw') }}');
+      navigator.serviceWorker.register('/sw.js', { scope: '/' });
     }
+
+    (() => {
+      const PENDING_KEY = 'mfu_push_pending_nav';
+      const MAX_AGE_MS = 15000;
+
+      const normalizePath = (rawUrl) => {
+        try {
+          const u = new URL(rawUrl, window.location.origin);
+          if (u.origin !== window.location.origin) return '/';
+          return `${u.pathname}${u.search}${u.hash}`;
+        } catch (_e) {
+          return '/';
+        }
+      };
+
+      const handlePendingNavigation = () => {
+        let pending = null;
+        try {
+          pending = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null');
+        } catch (_e) {
+          localStorage.removeItem(PENDING_KEY);
+          return;
+        }
+
+        if (!pending || !pending.url || !pending.ts) return;
+        if (Date.now() - Number(pending.ts) > MAX_AGE_MS) {
+          localStorage.removeItem(PENDING_KEY);
+          return;
+        }
+
+        const target = normalizePath(pending.url);
+        const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+        if (target !== current) {
+          localStorage.removeItem(PENDING_KEY);
+          window.location.assign(target);
+          return;
+        }
+        localStorage.removeItem(PENDING_KEY);
+      };
+
+      navigator.serviceWorker?.addEventListener('message', (event) => {
+        const data = event?.data || {};
+        if (data.type !== 'MFU_PUSH_NAV' || !data.url) return;
+        try {
+          localStorage.setItem(
+            PENDING_KEY,
+            JSON.stringify({ url: normalizePath(data.url), ts: Number(data.ts) || Date.now() })
+          );
+        } catch (_e) {
+          // noop
+        }
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          handlePendingNavigation();
+        }
+      });
+      window.addEventListener('pageshow', handlePendingNavigation);
+      window.addEventListener('focus', handlePendingNavigation);
+    })();
   </script>
 {% endblock %}

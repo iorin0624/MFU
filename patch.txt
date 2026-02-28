@@ -1,16 +1,21 @@
-diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
-index 1ceff4e1a886931439d3636ec701e5ec14e02b37..214a466f4f7ef01fc096a3895cd0775535a9380b 100644
---- a/chat/templates/chat/sw.js
-+++ b/chat/templates/chat/sw.js
-@@ -1,71 +1,99 @@
-+self.addEventListener('install', () => {
-+  self.skipWaiting();
-+});
-+
-+self.addEventListener('activate', (event) => {
-+  event.waitUntil(clients.claim());
-+});
-+
+diff --git a/static/sw.js b/static/sw.js
+index 555ca9f7421472a8e6a5db22daf5bb97b9729701..e9b797efbbb35f16c0ac13bba4272fd875cb1539 100644
+--- a/static/sw.js
++++ b/static/sw.js
+@@ -15,62 +15,102 @@ function normalizeTargetUrl(rawUrl, eventId) {
+   }
+ 
+   try {
+     const url = new URL(candidate, self.location.origin);
+     if (url.origin !== self.location.origin) {
+       return `${self.location.origin}/`;
+     }
+     return url.toString();
+   } catch (_e) {
+     return `${self.location.origin}/`;
+   }
+ }
+ 
  self.addEventListener('push', (event) => {
    let payload = {};
    try {
@@ -19,86 +24,96 @@ index 1ceff4e1a886931439d3636ec701e5ec14e02b37..214a466f4f7ef01fc096a3895cd07755
      payload = {};
    }
  
-   const title = payload.title || 'MFU Chat';
-   const body = payload.body || '新着メッセージがあります';
-   const url = payload.url || (payload.event_id ? `/chat/events/${payload.event_id}` : '/chat/');
+   const title = payload.title || 'MFU';
+   const body = payload.body || '新着通知があります';
+   const targetUrl = normalizeTargetUrl(payload.url, payload.event_id);
  
-   event.waitUntil(
-     self.registration.showNotification(title, {
-       body,
-       data: { url },
-     })
-   );
+-  event.waitUntil(
+-    self.registration.showNotification(title, {
+-      body,
+-      data: { url: targetUrl },
+-    })
+-  );
++  const showPromise = self.registration.showNotification(title, {
++    body,
++    data: { url: targetUrl },
++  });
++
++  const broadcastPromise = (async () => {
++    try {
++      const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
++      for (const client of windowClients) {
++        try {
++          const origin = new URL(client.url).origin;
++          if (origin !== self.location.origin) continue;
++          client.postMessage({ type: 'MFU_PUSH_NAV', url: targetUrl, ts: Date.now() });
++        } catch (_e) {
++          // noop
++        }
++      }
++    } catch (_e) {
++      // noop
++    }
++  })();
++
++  event.waitUntil(Promise.all([showPromise, broadcastPromise]));
  });
  
  self.addEventListener('notificationclick', (event) => {
    event.notification.close();
-   const rawTargetUrl = event.notification?.data?.url || '/chat/';
-   const targetUrlObj = new URL(rawTargetUrl, self.location.origin);
-   const targetUrl = targetUrlObj.toString();
+-  const targetUrl = normalizeTargetUrl(event.notification?.data?.url);
++  let targetUrl = `${self.location.origin}/`;
++  try {
++    targetUrl = normalizeTargetUrl(event.notification?.data?.url);
++  } catch (_e) {
++    targetUrl = `${self.location.origin}/`;
++  }
  
    event.waitUntil((async () => {
-     const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
- 
-     const exactClient = windowClients.find((client) => {
-       try {
-         const u = new URL(client.url);
-         return u.origin === targetUrlObj.origin
-           && u.pathname === targetUrlObj.pathname
-           && u.search === targetUrlObj.search
-           && u.hash === targetUrlObj.hash;
-       } catch (_e) {
-         return false;
-       }
-     });
- 
-     if (exactClient && 'focus' in exactClient) {
-+      if ('navigate' in exactClient && exactClient.url !== targetUrl) {
-+        await exactClient.navigate(targetUrl);
-+      }
-       await exactClient.focus();
-       return;
-     }
- 
-+    const sameOriginClient = windowClients.find((client) => {
-+      try {
-+        const u = new URL(client.url);
-+        return u.origin === targetUrlObj.origin;
-+      } catch (_e) {
-+        return false;
-+      }
-+    });
-+
-+    if (sameOriginClient && 'navigate' in sameOriginClient) {
-+      await sameOriginClient.navigate(targetUrl);
-+      if ('focus' in sameOriginClient) {
-+        await sameOriginClient.focus();
-+      }
-+      return;
+-    const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
++    let windowClients = [];
++    try {
++      windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
++    } catch (_e) {
++      windowClients = [];
 +    }
 +
-     if (clients.openWindow) {
-       const openedClient = await clients.openWindow(targetUrl);
-       if (openedClient && 'focus' in openedClient) {
-         await openedClient.focus();
-         return;
-       }
-     }
- 
-     const chatClient = windowClients.find((client) => {
+     const sameOriginClient = windowClients.find((client) => {
        try {
-         const u = new URL(client.url);
-         return u.origin === self.location.origin && u.pathname.startsWith('/chat/');
+         return new URL(client.url).origin === self.location.origin;
        } catch (_e) {
          return false;
        }
      });
  
-     if (chatClient && 'navigate' in chatClient) {
-       await chatClient.navigate(targetUrl);
-       if ('focus' in chatClient) {
-         await chatClient.focus();
+     if (sameOriginClient) {
+       if ('navigate' in sameOriginClient) {
+-        await sameOriginClient.navigate(targetUrl);
++        try {
++          await sameOriginClient.navigate(targetUrl);
++        } catch (_e) {
++          // fallback to focus/openWindow below
++        }
        }
+       if ('focus' in sameOriginClient) {
+-        await sameOriginClient.focus();
++        try {
++          await sameOriginClient.focus();
++          return;
++        } catch (_e) {
++          // fallback to openWindow below
++        }
+       }
+-      return;
+     }
+ 
+     if (clients.openWindow) {
+-      await clients.openWindow(targetUrl);
++      try {
++        await clients.openWindow(targetUrl);
++      } catch (_e) {
++        // noop
++      }
      }
    })());
  });

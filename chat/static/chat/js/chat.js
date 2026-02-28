@@ -54,7 +54,11 @@
     const res = await fetch('/chat/api/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
+      body: JSON.stringify({
+        csrf_token: csrfToken,
+        sw_scope: new URL(reg.scope).pathname || '/',
+        ...sub.toJSON(),
+      }),
     });
     if (!res.ok) {
       alert('購読登録に失敗しました');

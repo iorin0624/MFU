@@ -18,6 +18,7 @@ from flask import (
     jsonify,
     render_template,
     request,
+    send_from_directory,
     session,
     url_for,
 )
@@ -168,6 +169,7 @@ def _ensure_chat_push_schema() -> bool:
                   actor_id VARCHAR(64) NOT NULL,
                   endpoint TEXT NOT NULL,
                   endpoint_hash CHAR(64) NOT NULL,
+                  sw_scope VARCHAR(255) NOT NULL DEFAULT '/',
                   p256dh VARCHAR(255) NOT NULL,
                   auth VARCHAR(255) NOT NULL,
                   user_agent VARCHAR(255) NULL,
@@ -178,6 +180,16 @@ def _ensure_chat_push_schema() -> bool:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
+
+            try:
+                cur.execute("SHOW COLUMNS FROM chat_push_subscriptions LIKE 'sw_scope'")
+                has_sw_scope = bool(cur.fetchone())
+                if not has_sw_scope:
+                    cur.execute(
+                        "ALTER TABLE chat_push_subscriptions ADD COLUMN sw_scope VARCHAR(255) NOT NULL DEFAULT '/' AFTER endpoint_hash"
+                    )
+            except Exception:
+                current_app.logger.warning("chat push schema ensure sw_scope failed", exc_info=True)
 
             try:
                 cur.execute("SHOW COLUMNS FROM chat_push_subscriptions LIKE 'endpoint_hash'")
@@ -842,7 +854,7 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
                 sent += 1
             except WebPushException as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status == 410:
+                if status in {404, 410}:
                     cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
                 current_app.logger.warning("chat push failed actor=%s:%s status=%s", actor_type, actor_id, status)
         db.commit()
@@ -908,7 +920,7 @@ def push_bootstrap():
             "ok": True,
             "csrf_token": _chat_csrf(),
             "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-            "sw_url": url_for("chat.sw"),
+            "sw_url": "/sw.js",
         }
     )
 
@@ -924,6 +936,9 @@ def push_subscribe():
     data = request.get_json(silent=True) or {}
     endpoint = (data.get("endpoint") or "").strip()
     endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
+    sw_scope = (data.get("sw_scope") or "/").strip() or "/"
+    if not sw_scope.startswith("/"):
+        sw_scope = "/"
     keys = data.get("keys") or {}
     if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
         abort(400)
@@ -936,15 +951,16 @@ def push_subscribe():
         cur.execute(
             """
             INSERT INTO chat_push_subscriptions (
-              actor_type, actor_id, endpoint, endpoint_hash, p256dh, auth, user_agent, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE endpoint=VALUES(endpoint), p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
+              actor_type, actor_id, endpoint, endpoint_hash, sw_scope, p256dh, auth, user_agent, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE endpoint=VALUES(endpoint), sw_scope=VALUES(sw_scope), p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
             """,
             (
                 actor["actor_type"],
                 actor["actor_id"],
                 endpoint,
                 endpoint_hash,
+                sw_scope,
                 keys["p256dh"],
                 keys["auth"],
                 request.headers.get("User-Agent"),
@@ -952,6 +968,22 @@ def push_subscribe():
                 datetime.utcnow(),
             ),
         )
+        if sw_scope == "/":
+            cur.execute(
+                """
+                DELETE FROM chat_push_subscriptions
+                 WHERE actor_type=%s
+                   AND actor_id=%s
+                   AND sw_scope <> '/'
+                   AND (endpoint_hash=%s OR (user_agent IS NOT NULL AND user_agent=%s))
+                """,
+                (
+                    actor["actor_type"],
+                    actor["actor_id"],
+                    endpoint_hash,
+                    request.headers.get("User-Agent"),
+                ),
+            )
         db.commit()
     finally:
         cur.close()
@@ -1008,7 +1040,16 @@ def broadcast_push(event_id: int):
     try:
         cur.execute("SELECT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
         for row in cur.fetchall() or []:
-            sent_count += _send_push_to_actor("line", str(row["user_id"]), {"title": "イベント通知", "body": msg})
+            sent_count += _send_push_to_actor(
+                "line",
+                str(row["user_id"]),
+                {
+                    "title": "イベント通知",
+                    "body": msg,
+                    "event_id": event_id,
+                    "url": f"/chat/events/{event_id}",
+                },
+            )
     finally:
         cur.close()
         db.close()
@@ -1033,10 +1074,9 @@ def manifest():
 
 @chat_bp.get("/sw.js")
 def sw():
-    return current_app.response_class(
-        render_template("chat/sw.js"),
-        mimetype="application/javascript",
-    )
+    resp = send_from_directory(current_app.static_folder, "sw.js", mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @socketio.on("connect")
@@ -1102,7 +1142,12 @@ def on_send(data):
         sent_count += _send_push_to_actor(
             target["actor_type"],
             target["actor_id"],
-            {"title": f"{actor['display_name']}さんからメンション", "body": body, "event_id": event_id},
+            {
+                "title": f"{actor['display_name']}さんからメンション",
+                "body": body,
+                "event_id": event_id,
+                "url": f"/chat/events/{event_id}",
+            },
         )
     if mention_targets:
         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
@@ -1134,6 +1179,7 @@ def notify_dm(data):
             "title": "ダイレクト通知",
             "body": (data or {}).get("body") or "",
             "event_id": event_id,
+            "url": f"/chat/events/{event_id}",
         },
     )
     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
