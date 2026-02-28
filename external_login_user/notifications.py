@@ -57,8 +57,20 @@ def create_notification_external(
     event_id: int | None = None,
 ) -> bool:
     db = get_db()
-    cur = db.cursor()
+    cur = db.cursor(dictionary=True)
     try:
+        dedup = (dedup_key or "").strip()[:191]
+        cur.execute(
+            """
+            SELECT id, created_at
+              FROM mfu_notifications
+             WHERE user_kind=%s AND user_id=%s AND dedup_key=%s
+             LIMIT 1
+            """,
+            ("external", int(user_id), dedup),
+        )
+        existing = cur.fetchone()
+
         cur.execute(
             """
             INSERT INTO mfu_notifications (
@@ -76,11 +88,20 @@ def create_notification_external(
                 (body or "").strip(),
                 (target_url or "").strip() or "/external-login/",
                 int(event_id) if event_id else None,
-                (dedup_key or "").strip()[:191],
+                dedup,
                 datetime.utcnow(),
             ),
         )
         db.commit()
+        current_app.logger.info(
+            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s",
+            int(user_id),
+            int(event_id) if event_id else None,
+            (kind or "").strip() or "general",
+            dedup,
+            cur.rowcount == 1,
+            existing["id"] if existing else None,
+        )
         return cur.rowcount == 1
     except Exception:
         current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
@@ -119,7 +140,12 @@ def api_notifications_unread_count():
             (uid,),
         )
         row = cur.fetchone() or {}
-        return jsonify({"count": int(row.get("cnt") or 0)})
+        count = int(row.get("cnt") or 0)
+        current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
+        resp = jsonify({"count": count})
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
     finally:
         cur.close()
         db.close()
@@ -179,7 +205,20 @@ def api_notifications_list():
                 }
             )
 
-        return jsonify(
+        latest_id = items[0]["id"] if items else None
+        latest_created_at = items[0]["created_at"] if items else None
+        current_app.logger.info(
+            "notifications list user_id=%s page=%s unread_only=%s returned=%s total=%s latest_id=%s latest_created_at=%s",
+            uid,
+            page,
+            unread_only,
+            len(items),
+            total,
+            latest_id,
+            latest_created_at,
+        )
+
+        resp = jsonify(
             {
                 "items": items,
                 "pagination": {
@@ -190,6 +229,9 @@ def api_notifications_list():
                 },
             }
         )
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
     finally:
         cur.close()
         db.close()

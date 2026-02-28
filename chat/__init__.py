@@ -9,6 +9,7 @@ import re
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,6 +57,10 @@ PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
 PUSH_LOG_SUPPRESSION_SECONDS = 300
 PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
 PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
+PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
+PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
+PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
+PUSH_ASYNC_INFLIGHT = 0
 
 
 def _default_avatar_url() -> str:
@@ -803,8 +808,25 @@ def _send_chat_message_push_async(
     sender_display_name: str,
     message_body: str,
     message_id: int,
+    timing: dict[str, float] | None = None,
 ) -> None:
     with app.app_context():
+        from app.external_login_user.notifications import create_notification_external
+
+        t3 = time.monotonic()
+        trace = dict(timing or {})
+        trace["t3"] = t3
+        actor_push_metrics = {
+            "target_actors": 0,
+            "subscription_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "http_start": None,
+            "http_end": None,
+            "errors": {},
+        }
+        notification_inserted = 0
+        notification_skipped = 0
         try:
             payload = {
                 "type": "chat_message",
@@ -820,16 +842,22 @@ def _send_chat_message_push_async(
 
             sent_count = 0
             for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
-                sent_count += _send_push_to_actor(actor_type, actor_id, payload)
+                actor_push_metrics["target_actors"] += 1
+                sent_count += _send_push_to_actor(actor_type, actor_id, payload, metrics=actor_push_metrics)
                 if actor_type == "line":
-                    _create_external_chat_notification(
-                        recipient_user_id=int(actor_id),
+                    inserted = create_notification_external(
+                        user_id=int(actor_id),
                         kind="chat_message",
                         title=str(payload.get("title") or "イベントチャット"),
                         body=str(payload.get("body") or message_body),
-                        event_id=event_id,
+                        target_url=f"/chat/events/{event_id}",
                         dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
+                        event_id=event_id,
                     )
+                    if inserted:
+                        notification_inserted += 1
+                    else:
+                        notification_skipped += 1
 
             _log_notification(event_id, "chat_message", payload, sent_count)
         except Exception as exc:
@@ -842,6 +870,69 @@ def _send_chat_message_push_async(
             )
             if app.debug:
                 current_app.logger.exception("chat push async worker debug traceback")
+        finally:
+            t_end = time.monotonic()
+            t4 = actor_push_metrics.get("http_start")
+            t5 = actor_push_metrics.get("http_end")
+            current_app.logger.info(
+                "chat_push_timeline event_id=%s actor_id=%s targets=%s subs=%s success=%s failure=%s notif_inserted=%s notif_skipped=%s t1_t0=%.3fs t2_t1=%.3fs t3_t2=%.3fs t4_t3=%.3fs t5_t4=%.3fs total=%.3fs errors=%s",
+                event_id,
+                sender_actor.get("actor_id"),
+                actor_push_metrics.get("target_actors", 0),
+                actor_push_metrics.get("subscription_count", 0),
+                actor_push_metrics.get("success_count", 0),
+                actor_push_metrics.get("failure_count", 0),
+                notification_inserted,
+                notification_skipped,
+                (trace.get("t1", t3) - trace.get("t0", t3)),
+                (trace.get("t2", t3) - trace.get("t1", t3)),
+                (trace.get("t3", t3) - trace.get("t2", t3)),
+                ((t4 or t_end) - trace.get("t3", t3)),
+                ((t5 or t_end) - (t4 or t_end)),
+                (t_end - trace.get("t0", t_end)),
+                actor_push_metrics.get("errors", {}),
+            )
+
+
+def _submit_chat_message_push_async(
+    app: Any,
+    event_id: int,
+    sender_actor: dict[str, Any],
+    sender_display_name: str,
+    message_body: str,
+    message_id: int,
+    timing: dict[str, float],
+) -> None:
+    global PUSH_ASYNC_INFLIGHT
+    with PUSH_ASYNC_INFLIGHT_LOCK:
+        PUSH_ASYNC_INFLIGHT += 1
+        inflight = PUSH_ASYNC_INFLIGHT
+
+    if inflight > PUSH_ASYNC_MAX_WORKERS * 2:
+        current_app.logger.warning(
+            "chat push async queue backlog inflight=%s max_workers=%s event_id=%s",
+            inflight,
+            PUSH_ASYNC_MAX_WORKERS,
+            event_id,
+        )
+
+    future = PUSH_ASYNC_EXECUTOR.submit(
+        _send_chat_message_push_async,
+        app,
+        event_id,
+        sender_actor,
+        sender_display_name,
+        message_body,
+        message_id,
+        timing,
+    )
+
+    def _done(_fut: Any) -> None:
+        global PUSH_ASYNC_INFLIGHT
+        with PUSH_ASYNC_INFLIGHT_LOCK:
+            PUSH_ASYNC_INFLIGHT = max(PUSH_ASYNC_INFLIGHT - 1, 0)
+
+    future.add_done_callback(_done)
 
 
 def _log_push_endpoint_warning(endpoint: str, message: str, *args: Any) -> None:
@@ -896,7 +987,7 @@ def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_co
         db.close()
 
 
-def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any]) -> int:
+def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any], metrics: dict[str, Any] | None = None) -> int:
     if not _ensure_chat_push_schema():
         return 0
 
@@ -924,12 +1015,17 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
             (actor_type, actor_id),
         )
         subs = cur.fetchall() or []
+        if metrics is not None:
+            metrics["subscription_count"] = int(metrics.get("subscription_count", 0)) + len(subs)
 
         for sub in subs:
             endpoint = str(sub.get("endpoint") or "")
             push_success = False
             for attempt in range(len(PUSH_RETRY_BACKOFF_SECONDS) + 1):
                 try:
+                    req_started = time.monotonic()
+                    if metrics is not None and not metrics.get("http_start"):
+                        metrics["http_start"] = req_started
                     webpush(
                         subscription_info={
                             "endpoint": endpoint,
@@ -942,8 +1038,17 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
                     )
                     sent += 1
                     push_success = True
+                    if metrics is not None:
+                        metrics["success_count"] = int(metrics.get("success_count", 0)) + 1
+                        metrics["http_end"] = time.monotonic()
                     break
                 except (RequestsSSLError, RequestsConnectionError, RequestsTimeout) as exc:
+                    if metrics is not None:
+                        metrics["failure_count"] = int(metrics.get("failure_count", 0)) + 1
+                        errors = metrics.setdefault("errors", {})
+                        key = f"network:{type(exc).__name__}"
+                        errors[key] = int(errors.get(key, 0)) + 1
+                        metrics["http_end"] = time.monotonic()
                     if attempt >= len(PUSH_RETRY_BACKOFF_SECONDS):
                         _log_push_endpoint_warning(
                             endpoint,
@@ -956,6 +1061,13 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
                     delay = PUSH_RETRY_BACKOFF_SECONDS[attempt] + random.uniform(0.0, 0.2)
                     time.sleep(delay)
                 except WebPushException as exc:
+                    if metrics is not None:
+                        metrics["failure_count"] = int(metrics.get("failure_count", 0)) + 1
+                        errors = metrics.setdefault("errors", {})
+                        status_key = getattr(getattr(exc, "response", None), "status_code", None)
+                        key = f"webpush:{status_key}"
+                        errors[key] = int(errors.get(key, 0)) + 1
+                        metrics["http_end"] = time.monotonic()
                     status = getattr(getattr(exc, "response", None), "status_code", None)
                     if status in {404, 410}:
                         cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
@@ -998,6 +1110,12 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
                     )
                     break
                 except Exception as exc:
+                    if metrics is not None:
+                        metrics["failure_count"] = int(metrics.get("failure_count", 0)) + 1
+                        errors = metrics.setdefault("errors", {})
+                        key = f"unexpected:{type(exc).__name__}"
+                        errors[key] = int(errors.get(key, 0)) + 1
+                        metrics["http_end"] = time.monotonic()
                     _log_push_endpoint_warning(
                         endpoint,
                         "chat push unexpected failure actor=%s:%s error=%s",
@@ -1279,6 +1397,7 @@ def on_send(data):
     raw_body = (data or {}).get("body") or ""
     raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
 
+    t0 = time.monotonic()
     current_app.logger.warning(
         "chat_send recv event_id=%s actor=%s body_len=%s",
         event_id,
@@ -1304,6 +1423,7 @@ def on_send(data):
         return
 
     message = _enrich_reply_fields(_save_message(event_id, actor, body, reply_to_message_id))
+    t1 = time.monotonic()
     message_payload = _present_message(message, actor, avatar_cache={})
     emit("chat_message", message_payload, to=f"event:{event_id}")
 
@@ -1333,12 +1453,17 @@ def on_send(data):
     if mention_targets:
         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
 
+    t2 = time.monotonic()
     app = current_app._get_current_object()
-    threading.Thread(
-        target=_send_chat_message_push_async,
-        args=(app, event_id, actor, actor["display_name"], body, int(message_payload["id"])),
-        daemon=True,
-    ).start()
+    _submit_chat_message_push_async(
+        app,
+        event_id,
+        actor,
+        actor["display_name"],
+        body,
+        int(message_payload["id"]),
+        {"t0": t0, "t1": t1, "t2": t2},
+    )
 
 
 @socketio.on("chat_notify_dm")
