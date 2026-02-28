@@ -372,6 +372,9 @@
   const socket = io({ transports: ['websocket', 'polling'] });
   socket.emit('chat_join', { event_id: eventId });
 
+  scrollToLatestMessage();
+  window.addEventListener('load', scrollToLatestMessage, { once: true });
+
   socket.on('chat_message', (msg) => {
     renderMessage(msg);
     msgBox.scrollTop = msgBox.scrollHeight;
@@ -694,6 +697,11 @@
     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
     const rawData = window.atob(base64);
     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+  }
+
+  function scrollToLatestMessage() {
+    if (!msgBox) return;
+    msgBox.scrollTop = msgBox.scrollHeight;
   }
 })();
 </script>

@@ -439,11 +439,11 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
         if actor["actor_type"] == "line":
             cur.execute(
                 """
-                SELECT e.id, e.title, e.start_at
+                SELECT e.id, e.title, e.starts_at AS start_at
                   FROM mfu_event e
                   JOIN mfu_event_member m ON m.event_id = e.id
                  WHERE m.user_id = %s
-                 ORDER BY e.start_at DESC
+                 ORDER BY e.starts_at DESC
                  LIMIT 100
                 """,
                 (actor["actor_id"],),
@@ -452,11 +452,11 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
 
         cur.execute(
             """
-            SELECT e.id, e.title, e.start_at
+            SELECT e.id, e.title, e.starts_at AS start_at
               FROM mfu_event e
               JOIN mfu_event_admin_acl a ON a.event_id = e.id
              WHERE a.username = %s
-             ORDER BY e.start_at DESC
+             ORDER BY e.starts_at DESC
              LIMIT 100
             """,
             (actor["actor_id"],),
@@ -895,6 +895,21 @@ def room(event_id: int):
         csrf_token=_chat_csrf(),
         can_broadcast=can_broadcast,
         default_avatar_url=_default_avatar_url(),
+    )
+
+
+@chat_bp.get("/api/push/bootstrap")
+def push_bootstrap():
+    actor = get_chat_actor()
+    if not actor:
+        abort(403)
+    return jsonify(
+        {
+            "ok": True,
+            "csrf_token": _chat_csrf(),
+            "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+            "sw_url": url_for("chat.sw"),
+        }
     )
 
 
