@@ -1,8 +1,23 @@
 diff --git a/__init__.py b/__init__.py
-index 6d6a76367a0c4000ec07acb3551a180a80e1bc53..9332f9c3e03664133c1fba03596a8460b0100243 100644
+index 690ed7e47445a641886eb5269310df1ff8a99874..d66d8fc958439e5ed47fc122b03a7dd3600f5300 100644
 --- a/__init__.py
 +++ b/__init__.py
-@@ -94,51 +94,51 @@ app = Flask(
+@@ -79,55 +79,71 @@ from app.chat.socketio_ext import socketio
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+ 
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+     template_folder=os.path.join(APP_DIR, "templates"),
      static_folder=STATIC_DIR,
      static_url_path="/static",
  )
@@ -13,6 +28,32 @@ index 6d6a76367a0c4000ec07acb3551a180a80e1bc53..9332f9c3e03664133c1fba03596a8460
  
  load_dotenv()
  app.secret_key = os.environ.get("SECRET_KEY")
+-app.config["SOCKETIO_MESSAGE_QUEUE"] = (
+-    os.environ.get("SOCKETIO_MESSAGE_QUEUE")
+-    or os.environ.get("REDIS_URL")
+-    or None
+-)
++
++
++def _resolve_socketio_message_queue():
++    queue_url = (os.environ.get("SOCKETIO_MESSAGE_QUEUE") or "").strip()
++    if not queue_url:
++        return None
++
++    try:
++        import importlib
++        if importlib.util.find_spec("redis") is None:
++            app.logger.warning("SOCKETIO_MESSAGE_QUEUE is set but redis package is not installed; fallback to local mode")
++            return None
++        redis = importlib.import_module("redis")
++        redis.Redis.from_url(queue_url, socket_connect_timeout=1, socket_timeout=1).ping()
++        return queue_url
++    except Exception as exc:
++        app.logger.warning("SOCKETIO_MESSAGE_QUEUE connection failed; fallback to local mode: %s", exc)
++        return None
++
++
++app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
  
  app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
  
@@ -28,30 +69,13 @@ index 6d6a76367a0c4000ec07acb3551a180a80e1bc53..9332f9c3e03664133c1fba03596a8460
  login_manager.init_app(app)
  login_manager.login_view = "login"
  login_manager.user_loader(load_user)
--socketio.init_app(app, message_queue=None)
-+socketio.init_app(app)
+ socketio.init_app(app, message_queue=app.config["SOCKETIO_MESSAGE_QUEUE"])
+ 
+ if app.config["SOCKETIO_MESSAGE_QUEUE"]:
+     app.logger.info("Socket.IO message queue enabled")
+ else:
+     app.logger.warning("Socket.IO message queue is disabled; multi-worker chat delivery may fail")
  
  # =====================================
  # 🧠 補助関数群（上段へ集約）
  # =====================================
- 
- from functools import wraps
- from flask import session
- 
- def admin_required(func):
-     @wraps(func)
-     def wrapper(*args, **kwargs):
-         if session.get("user") != "admin":
-             return "管理者のみアクセス可能", 403
-         return func(*args, **kwargs)
-     return wrapper
- 
- 
- def _save_stream(file_storage, dest_path):
-     """アップロードストリームを保存（最小実装）"""
-     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-     file_storage.save(dest_path)
-     return os.path.basename(dest_path)
- 
- def delayed_restart():
-     try:
