@@ -11,6 +11,8 @@
   <script src="{{ square_js_url }}"></script>
 </head>
 <body class="container py-4" style="max-width:720px;">
+{% include "_extlogin_nav.html" %}
+
 
   {# フラッシュメッセージ #}
   {% with messages = get_flashed_messages(with_categories=true) %}
