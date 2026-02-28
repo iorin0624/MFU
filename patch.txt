@@ -1,12 +1,12 @@
 diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 2588d32510f3bb7d27810161c3d8dbcfea94e827..b6ceeb82a7e5ed3efe141f674831eaa274154ea2 100644
+index 817c1b187e088a069104d81c2b41c8d8656a0b13..605262e8d09d7e79a5a49b6e9e7fdef897c8a0b4 100644
 --- a/external_login_user/notifications.py
 +++ b/external_login_user/notifications.py
-@@ -1,28 +1,29 @@
+@@ -1,38 +1,71 @@
  from __future__ import annotations
  
- from datetime import datetime
-+from time import perf_counter
+ from datetime import datetime, timezone
+ from time import perf_counter
  from typing import Any
  
  from flask import abort, current_app, jsonify, render_template, request, session
@@ -16,6 +16,39 @@ index 2588d32510f3bb7d27810161c3d8dbcfea94e827..b6ceeb82a7e5ed3efe141f674831eaa2
  from app.utils.db import get_db
  
  
++_READ_NOTIFICATIONS_KEEP_LIMIT = 30
++
++
++def _prune_old_read_notifications(cur, user_id: int) -> int:
++    cur.execute(
++        """
++        SELECT COUNT(*) AS cnt
++          FROM mfu_notifications
++         WHERE user_kind=%s
++           AND user_id=%s
++           AND read_at IS NOT NULL
++        """,
++        ("external", int(user_id)),
++    )
++    read_count = int((cur.fetchone() or {}).get("cnt") or 0)
++    overflow = max(0, read_count - _READ_NOTIFICATIONS_KEEP_LIMIT)
++    if overflow <= 0:
++        return 0
++
++    cur.execute(
++        """
++        DELETE FROM mfu_notifications
++         WHERE user_kind=%s
++           AND user_id=%s
++           AND read_at IS NOT NULL
++         ORDER BY created_at ASC, id ASC
++         LIMIT %s
++        """,
++        ("external", int(user_id), overflow),
++    )
++    return int(cur.rowcount or 0)
++
++
  _NOTIFICATION_DDL = """
  CREATE TABLE IF NOT EXISTS mfu_notifications (
    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -32,24 +65,89 @@ index 2588d32510f3bb7d27810161c3d8dbcfea94e827..b6ceeb82a7e5ed3efe141f674831eaa2
    PRIMARY KEY (id),
    UNIQUE KEY uq_mfu_notifications_dedup (user_kind, user_id, dedup_key),
    KEY idx_mfu_notifications_unread (user_kind, user_id, read_at, created_at),
-@@ -215,50 +216,136 @@ def api_notifications_list():
-             len(items),
-             total,
-             latest_id,
-             latest_created_at,
-         )
+   KEY idx_mfu_notifications_created (user_kind, user_id, created_at)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
  
-         resp = jsonify(
-             {
-                 "items": items,
-                 "pagination": {
-                     "page": page,
-                     "per_page": per_page,
-                     "total": total,
-                     "has_next": page * per_page < total,
-                 },
-             }
+ 
+ @bp.record_once
+ def _ensure_notification_table(state) -> None:
+     app = state.app
+     with app.app_context():
+@@ -71,59 +104,61 @@ def create_notification_external(
+             ("external", int(user_id), dedup),
          )
+         existing = cur.fetchone()
+ 
+         cur.execute(
+             """
+             INSERT INTO mfu_notifications (
+               user_kind, user_id, kind, title, body, target_url,
+               event_id, dedup_key, created_at, read_at
+             )
+             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+             ON DUPLICATE KEY UPDATE id=id
+             """,
+             (
+                 "external",
+                 int(user_id),
+                 (kind or "").strip() or "general",
+                 (title or "").strip() or "お知らせ",
+                 (body or "").strip(),
+                 (target_url or "").strip() or "/external-login/",
+                 int(event_id) if event_id else None,
+                 dedup,
+                 datetime.utcnow(),
+             ),
+         )
++        deleted_old_read = _prune_old_read_notifications(cur, int(user_id))
+         db.commit()
+         current_app.logger.info(
+-            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s",
++            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
+             int(user_id),
+             int(event_id) if event_id else None,
+             (kind or "").strip() or "general",
+             dedup,
+             cur.rowcount == 1,
+             existing["id"] if existing else None,
++            deleted_old_read,
+         )
+         return cur.rowcount == 1
+     except Exception:
+         current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
+         return False
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @bp.get("/notifications")
+ def notifications_page():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+     return render_template("notifications.html")
+ 
+ 
+ @bp.get("/api/notifications/unread-count")
+ def api_notifications_unread_count():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     uid = int(session.get("ext_user_id") or 0)
+@@ -137,51 +172,52 @@ def api_notifications_unread_count():
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND read_at IS NULL
+             """,
+             (uid,),
+         )
+         row = cur.fetchone() or {}
+         count = int(row.get("cnt") or 0)
+         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
+         resp = jsonify({"count": count})
          resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
          resp.headers["Pragma"] = "no-cache"
          return resp
@@ -58,122 +156,57 @@ index 2588d32510f3bb7d27810161c3d8dbcfea94e827..b6ceeb82a7e5ed3efe141f674831eaa2
          db.close()
  
  
-+@bp.get("/api/notifications/updates")
-+def api_notifications_updates():
-+    guard = _require_ext_login()
-+    if guard:
-+        return guard
-+
-+    uid = int(session.get("ext_user_id") or 0)
-+    since_id = max(int(request.args.get("since_id") or 0), 0)
-+    limit = min(max(int(request.args.get("limit") or 20), 1), 100)
-+
-+    started = perf_counter()
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        db.start_transaction()
-+
-+        cur.execute(
-+            """
-+            SELECT id, title, body, target_url, created_at, read_at
-+              FROM mfu_notifications
-+             WHERE user_kind='external'
-+               AND user_id=%s
-+               AND id > %s
-+             ORDER BY id ASC
-+             LIMIT %s
-+            """,
-+            (uid, since_id, limit),
-+        )
-+        rows = cur.fetchall() or []
-+
-+        cur.execute(
-+            """
-+            SELECT COUNT(*) AS cnt
-+              FROM mfu_notifications
-+             WHERE user_kind='external'
-+               AND user_id=%s
-+               AND read_at IS NULL
-+            """,
-+            (uid,),
-+        )
-+        unread_count = int((cur.fetchone() or {}).get("cnt") or 0)
-+        db.commit()
-+
-+        items = []
-+        latest_id = since_id
-+        for row in rows:
-+            item_id = int(row["id"])
-+            latest_id = max(latest_id, item_id)
-+            items.append(
-+                {
-+                    "id": item_id,
-+                    "title": row.get("title"),
-+                    "body": row.get("body") or "",
-+                    "target_url": row.get("target_url") or "/external-login/",
-+                    "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-+                    "read_at": row.get("read_at").isoformat() if row.get("read_at") else None,
-+                }
-+            )
-+
-+        elapsed_ms = int((perf_counter() - started) * 1000)
-+        current_app.logger.info(
-+            "notifications updates user_id=%s since_id=%s limit=%s returned=%s latest_id=%s unread_count=%s elapsed_ms=%s",
-+            uid,
-+            since_id,
-+            limit,
-+            len(items),
-+            latest_id,
-+            unread_count,
-+            elapsed_ms,
-+        )
-+
-+        resp = jsonify(
-+            {
-+                "latest_id": latest_id,
-+                "unread_count": unread_count,
-+                "items": items,
-+            }
-+        )
-+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-+        resp.headers["Pragma"] = "no-cache"
-+        return resp
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
- @bp.post("/api/notifications/<int:notification_id>/read")
- def api_notifications_mark_read(notification_id: int):
+ @bp.get("/api/notifications")
+ def api_notifications_list():
      guard = _require_ext_login()
      if guard:
          return guard
  
      uid = int(session.get("ext_user_id") or 0)
+-    unread_only = (request.args.get("unread") or "").strip() in {"1", "true", "yes"}
++    unread_arg = (request.args.get("unread") or "").strip().lower()
++    unread_only = unread_arg not in {"0", "false", "no", "off"}
+     page = max(int(request.args.get("page") or 1), 1)
+     per_page = 20
+     offset = (page - 1) * per_page
+ 
+     where = ["user_kind='external'", "user_id=%s"]
+     params: list[Any] = [uid]
+     if unread_only:
+         where.append("read_at IS NULL")
+ 
+     where_sql = " AND ".join(where)
      db = get_db()
-     cur = db.cursor()
+     cur = db.cursor(dictionary=True)
      try:
          cur.execute(
-             """
-             UPDATE mfu_notifications
-                SET read_at=COALESCE(read_at, %s)
-              WHERE id=%s
-                AND user_kind='external'
-                AND user_id=%s
+             f"""
+             SELECT id, kind, title, body, target_url, event_id, created_at, read_at
+               FROM mfu_notifications
+              WHERE {where_sql}
+              ORDER BY created_at DESC, id DESC
+              LIMIT %s OFFSET %s
              """,
-             (datetime.utcnow(), notification_id, uid),
+             tuple(params + [per_page, offset]),
          )
-         db.commit()
-         if cur.rowcount == 0:
-             abort(404)
-         return jsonify({"ok": True})
-     finally:
+         rows = cur.fetchall() or []
+ 
+
 diff --git a/external_login_user/template/notifications.html b/external_login_user/template/notifications.html
-index 611c8dfec004e962fb9d2444b8f24e63ec041984..524872fd6fc1eff6f8957111800cc6aa4ef8810d 100644
+index 4ecb557bb810ae8ca3d91fc582427ba26d7dc558..4561c9b2bf81bb474fd23fd5f8c5aea698c0d5c1 100644
 --- a/external_login_user/template/notifications.html
 +++ b/external_login_user/template/notifications.html
-@@ -10,139 +10,227 @@
+@@ -1,34 +1,34 @@
+ {% extends "base_extlogin.html" %}
+ {% block title %}通知一覧 | MFU{% endblock %}
+ 
+ {% block content %}
+ <div class="d-flex justify-content-between align-items-center mb-3">
+   <h1 class="h4 mb-0">通知一覧</h1>
+   <div class="d-flex gap-2">
+     <div class="form-check form-switch">
+-      <input class="form-check-input" type="checkbox" id="onlyUnread">
++      <input class="form-check-input" type="checkbox" id="onlyUnread" checked>
        <label class="form-check-label" for="onlyUnread">未読のみ</label>
      </div>
      <button id="refreshBtn" class="btn btn-outline-primary btn-sm">更新</button>
@@ -199,213 +232,3 @@ index 611c8dfec004e962fb9d2444b8f24e63ec041984..524872fd6fc1eff6f8957111800cc6aa
      let page = 1;
      let hasNext = false;
      let loading = false;
-+    let pollingTimer = null;
-+    let lastId = 0;
-+    const knownIds = new Set();
- 
-     const escapeHtml = (value) => {
-       const div = document.createElement('div');
-       div.textContent = value || '';
-       return div.innerHTML;
-     };
- 
-     const formatDate = (iso) => {
-       if (!iso) return '';
-       const d = new Date(iso);
-       if (Number.isNaN(d.getTime())) return '';
-       return d.toLocaleString('ja-JP');
-     };
- 
-     const createItem = (item) => {
-       const a = document.createElement('a');
-       a.href = '#';
-       a.className = `list-group-item list-group-item-action ${item.read_at ? '' : 'list-group-item-warning'}`;
-       a.innerHTML = `
-         <div class="d-flex w-100 justify-content-between align-items-start">
-           <div class="me-3">
-             <h2 class="h6 mb-1">${escapeHtml(item.title || 'お知らせ')}</h2>
-             <p class="mb-1">${escapeHtml(item.body || '')}</p>
-             <small class="text-muted">${formatDate(item.created_at)}</small>
-           </div>
-           <span class="badge ${item.read_at ? 'bg-secondary' : 'bg-danger'}">${item.read_at ? '既読' : '未読'}</span>
-         </div>
-       `;
-       a.addEventListener('click', async (e) => {
-         e.preventDefault();
-         try {
-           await fetch(`/external-login/api/notifications/${item.id}/read`, {
-             method: 'POST',
-             credentials: 'same-origin',
-           });
-         } catch (_e) {
-           // noop
-         }
-         window.location.assign(item.target_url || '/external-login/');
-       });
-       return a;
-     };
- 
-+    const updateNavBadge = (count) => {
-+      const badge = document.getElementById('navNotifBadge');
-+      if (!badge) return;
-+      const safeCount = Number.isFinite(Number(count)) ? Math.max(0, Number(count)) : 0;
-+      if (safeCount > 0) {
-+        badge.textContent = String(Math.min(Math.floor(safeCount), 99));
-+        badge.classList.remove('d-none');
-+        return;
-+      }
-+      badge.textContent = '0';
-+      badge.classList.add('d-none');
-+    };
-+
-+    const prependNewItems = (items) => {
-+      if (!Array.isArray(items) || items.length === 0) return;
-+      for (const item of items) {
-+        if (!item || !item.id || knownIds.has(item.id)) continue;
-+        knownIds.add(item.id);
-+        listEl.insertBefore(createItem(item), listEl.firstChild);
-+      }
-+      emptyEl.classList.toggle('d-none', listEl.children.length > 0);
-+    };
-+
-     const renderItems = (items, append = false) => {
--      if (!append) listEl.innerHTML = '';
--      items.forEach((item) => listEl.appendChild(createItem(item)));
-+      if (!append) {
-+        listEl.innerHTML = '';
-+        knownIds.clear();
-+      }
-+      items.forEach((item) => {
-+        if (!item || !item.id || knownIds.has(item.id)) return;
-+        knownIds.add(item.id);
-+        listEl.appendChild(createItem(item));
-+      });
-       const hasItems = listEl.children.length > 0;
-       emptyEl.classList.toggle('d-none', hasItems);
-       loadMoreBtn.classList.toggle('d-none', !hasNext);
-+
-+      if (!append) {
-+        const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
-+        lastId = Math.max(lastId, latest);
-+      }
-     };
- 
-     const load = async ({ append = false } = {}) => {
-       if (loading) return;
-       loading = true;
-       try {
-         const unread = onlyUnread.checked ? '1' : '0';
-         const res = await fetch(`/external-login/api/notifications?unread=${unread}&page=${page}`, {
-           credentials: 'same-origin',
-           cache: 'no-store',
-         });
-         if (!res.ok) throw new Error('failed to load notifications');
-         const data = await res.json();
-         hasNext = !!data?.pagination?.has_next;
-         renderItems(data.items || [], append);
-+        if (!append) {
-+          const unreadCount = (data.items || []).filter((item) => !item.read_at).length;
-+          updateNavBadge(unreadCount);
-+        }
-       } finally {
-         loading = false;
-       }
-     };
- 
-+    const pollUpdatesOnce = async () => {
-+      if (document.hidden) return;
-+      if (onlyUnread.checked) return;
-+      try {
-+        const res = await fetch(`/external-login/api/notifications/updates?since_id=${lastId}&limit=50`, {
-+          credentials: 'same-origin',
-+          cache: 'no-store',
-+        });
-+        if (!res.ok) return;
-+        const data = await res.json();
-+        prependNewItems(data.items || []);
-+        lastId = Math.max(lastId, Number(data?.latest_id || 0));
-+        updateNavBadge(data?.unread_count ?? 0);
-+      } catch (_e) {
-+        // noop
-+      }
-+    };
-+
-+    const stopPolling = () => {
-+      if (pollingTimer) {
-+        window.clearInterval(pollingTimer);
-+        pollingTimer = null;
-+      }
-+    };
-+
-+    const startPolling = () => {
-+      stopPolling();
-+      if (document.hidden || onlyUnread.checked) return;
-+      pollingTimer = window.setInterval(pollUpdatesOnce, 2000);
-+    };
-+
-     onlyUnread.addEventListener('change', async () => {
-       page = 1;
-       await load({ append: false });
-+      startPolling();
-     });
- 
-     loadMoreBtn.addEventListener('click', async () => {
-       if (!hasNext) return;
-       page += 1;
-       await load({ append: true });
-     });
- 
-     refreshBtn.addEventListener('click', async () => {
-       page = 1;
-       await load({ append: false });
-+      await pollUpdatesOnce();
-     });
- 
-     markAllReadBtn.addEventListener('click', async () => {
-       markAllReadBtn.disabled = true;
-       try {
-         await fetch('/external-login/api/notifications/read-all', {
-           method: 'POST',
-           credentials: 'same-origin',
-         });
-         page = 1;
-         await load({ append: false });
-+        await pollUpdatesOnce();
-       } finally {
-         markAllReadBtn.disabled = false;
-       }
-     });
- 
-     const refreshCurrentHead = async () => {
--      page = 1;
--      await load({ append: false });
-+      await pollUpdatesOnce();
-     };
- 
-     document.addEventListener('visibilitychange', () => {
--      if (!document.hidden) refreshCurrentHead();
-+      if (document.hidden) {
-+        stopPolling();
-+        return;
-+      }
-+      refreshCurrentHead();
-+      startPolling();
-+    });
-+    window.addEventListener('pageshow', async () => {
-+      await refreshCurrentHead();
-+      startPolling();
-+    });
-+    window.addEventListener('message', (event) => {
-+      if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
-     });
--    window.addEventListener('pageshow', refreshCurrentHead);
--    window.setInterval(refreshCurrentHead, 15000);
- 
--    load({ append: false });
-+    load({ append: false }).then(() => {
-+      startPolling();
-+      pollUpdatesOnce();
-+    });
-   })();
- </script>
- {% endblock %}
