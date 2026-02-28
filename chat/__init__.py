@@ -70,6 +70,8 @@ CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_REACTION_SCHEMA_READY: bool | None = None
 CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_IMAGE_SCHEMA_READY: bool | None = None
+CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -393,6 +395,50 @@ def _ensure_chat_image_schema() -> bool:
             db.close()
 
 
+def _ensure_chat_message_images_schema() -> bool:
+    global CHAT_MESSAGE_IMAGES_SCHEMA_READY
+    if CHAT_MESSAGE_IMAGES_SCHEMA_READY is not None:
+        return CHAT_MESSAGE_IMAGES_SCHEMA_READY
+
+    with CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK:
+        if CHAT_MESSAGE_IMAGES_SCHEMA_READY is not None:
+            return CHAT_MESSAGE_IMAGES_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_message_images (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  event_id BIGINT NOT NULL,
+                  message_id BIGINT NOT NULL,
+                  seq INT NOT NULL,
+                  image_file VARCHAR(255) NOT NULL,
+                  image_thumb_file VARCHAR(255) NOT NULL,
+                  image_mime VARCHAR(64) NOT NULL,
+                  image_size BIGINT NOT NULL,
+                  image_width INT NOT NULL,
+                  image_height INT NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_message_images_message_seq (message_id, seq),
+                  KEY idx_chat_message_images_event_message (event_id, message_id),
+                  KEY idx_chat_message_images_message (message_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            db.commit()
+            CHAT_MESSAGE_IMAGES_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat message images schema ensure failed", exc_info=True)
+            CHAT_MESSAGE_IMAGES_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
 def _ensure_chat_read_state_schema() -> bool:
     global CHAT_READ_STATE_SCHEMA_READY
     if CHAT_READ_STATE_SCHEMA_READY is not None:
@@ -599,9 +645,27 @@ def _present_message(
             avatar_cache=avatar_cache,
         )
 
-    image_file = (msg.get("image_file") or "").strip()
-    image_thumb_file = (msg.get("image_thumb_file") or "").strip()
-    has_image = bool(image_file and image_thumb_file)
+    raw_images = msg.get("images") or _fallback_images_from_message(msg)
+    images: list[dict[str, Any]] = []
+    for image in raw_images:
+        image_file = str(image.get("image_file") or "").strip()
+        image_thumb_file = str(image.get("image_thumb_file") or "").strip()
+        if not image_file or not image_thumb_file:
+            continue
+        images.append(
+            {
+                "seq": int(image.get("seq") or (len(images) + 1)),
+                "url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file),
+                "thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file),
+                "mime": image.get("image_mime"),
+                "size": image.get("image_size"),
+                "width": image.get("image_width"),
+                "height": image.get("image_height"),
+            }
+        )
+
+    has_image = bool(images)
+    first_image = images[0] if images else None
 
     return {
         "id": msg["id"],
@@ -622,12 +686,13 @@ def _present_message(
         "reactions_summary": msg.get("reactions_summary") or [],
         "my_reaction": msg.get("my_reaction"),
         "has_image": has_image,
-        "image_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file) if has_image else None,
-        "image_thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file) if has_image else None,
-        "image_mime": msg.get("image_mime"),
-        "image_size": msg.get("image_size"),
-        "image_width": msg.get("image_width"),
-        "image_height": msg.get("image_height"),
+        "images": images,
+        "image_url": first_image.get("url") if first_image else None,
+        "image_thumb_url": first_image.get("thumb_url") if first_image else None,
+        "image_mime": first_image.get("mime") if first_image else None,
+        "image_size": first_image.get("size") if first_image else None,
+        "image_width": first_image.get("width") if first_image else None,
+        "image_height": first_image.get("height") if first_image else None,
         "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
     }
 
@@ -986,6 +1051,65 @@ def _load_reactions_by_message_ids(message_ids: list[int]) -> dict[int, list[dic
     finally:
         cur.close()
         db.close()
+
+
+def _load_message_images_by_message_ids(message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not message_ids:
+        return {}
+    if not _ensure_chat_message_images_schema():
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(message_ids))
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT message_id, seq, image_file, image_thumb_file, image_mime, image_size, image_width, image_height
+              FROM chat_message_images
+             WHERE message_id IN ({placeholders})
+             ORDER BY message_id ASC, seq ASC
+            """,
+            tuple(message_ids),
+        )
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for row in cur.fetchall() or []:
+            message_id = int(row.get("message_id") or 0)
+            if message_id <= 0:
+                continue
+            grouped.setdefault(message_id, []).append(
+                {
+                    "seq": int(row.get("seq") or 0),
+                    "image_file": row.get("image_file"),
+                    "image_thumb_file": row.get("image_thumb_file"),
+                    "image_mime": row.get("image_mime"),
+                    "image_size": row.get("image_size"),
+                    "image_width": row.get("image_width"),
+                    "image_height": row.get("image_height"),
+                }
+            )
+        return grouped
+    finally:
+        cur.close()
+        db.close()
+
+
+def _fallback_images_from_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    image_file = (msg.get("image_file") or "").strip()
+    image_thumb_file = (msg.get("image_thumb_file") or "").strip()
+    if not image_file or not image_thumb_file:
+        return []
+    return [
+        {
+            "seq": 1,
+            "image_file": image_file,
+            "image_thumb_file": image_thumb_file,
+            "image_mime": msg.get("image_mime"),
+            "image_size": msg.get("image_size"),
+            "image_width": msg.get("image_width"),
+            "image_height": msg.get("image_height"),
+        }
+    ]
 
 
 def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, Any]) -> dict[int, str]:
@@ -1663,11 +1787,13 @@ def room(event_id: int):
     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
+    images_by_message = _load_message_images_by_message_ids(message_ids)
     messages = []
     for message in raw_messages:
         message_id = int(message.get("id") or 0)
         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
         message["my_reaction"] = my_reaction_by_message.get(message_id)
+        message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     return render_template(
@@ -1705,27 +1831,80 @@ def upload_image(event_id: int):
         abort(403)
     if not _ensure_chat_image_schema():
         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
+    if not _ensure_chat_message_images_schema():
+        return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
 
     payload = request.get_json(silent=True) or {}
     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
     if token != session.get("chat_csrf"):
         abort(400)
 
-    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES:
+    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
         return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
 
-    upload_file = request.files.get("file")
-    if not upload_file or not upload_file.filename:
+    upload_files = [f for f in (request.files.getlist("file") or []) if f and f.filename]
+    if not upload_files:
         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
+    if len(upload_files) > 6:
+        return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
 
     try:
         body = _validate_caption_optional(request.form.get("body") or "")
-        image_meta = _save_upload_image_files(event_id, upload_file.stream, filename=upload_file.filename or "")
+        image_metas = [
+            _save_upload_image_files(event_id, upload_file.stream, filename=upload_file.filename or "")
+            for upload_file in upload_files
+        ]
     except ValueError as exc:
         status = 413 if "上限" in str(exc) else 400
         return jsonify({"ok": False, "error": str(exc)}), status
 
-    message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_meta))
+    message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_metas[0]))
+    message_id = int(message.get("id") or 0)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        now = datetime.utcnow()
+        for idx, image_meta in enumerate(image_metas, start=1):
+            cur.execute(
+                """
+                INSERT INTO chat_message_images (
+                    event_id, message_id, seq,
+                    image_file, image_thumb_file, image_mime,
+                    image_size, image_width, image_height, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    event_id,
+                    message_id,
+                    idx,
+                    image_meta.get("image_file"),
+                    image_meta.get("image_thumb_file"),
+                    image_meta.get("image_mime"),
+                    image_meta.get("image_size"),
+                    image_meta.get("image_width"),
+                    image_meta.get("image_height"),
+                    now,
+                ),
+            )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    message["images"] = [
+        {
+            "seq": idx,
+            "image_file": image_meta.get("image_file"),
+            "image_thumb_file": image_meta.get("image_thumb_file"),
+            "image_mime": image_meta.get("image_mime"),
+            "image_size": image_meta.get("image_size"),
+            "image_width": image_meta.get("image_width"),
+            "image_height": image_meta.get("image_height"),
+        }
+        for idx, image_meta in enumerate(image_metas, start=1)
+    ]
+
     message_payload = _present_message(message, actor, avatar_cache={})
     socketio.emit("chat_message", message_payload, to=f"event:{event_id}")
 

@@ -350,6 +350,30 @@
   width: 100%;
 }
 
+.chat-image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+  max-width: min(360px, 70vw);
+  margin-bottom: 6px;
+}
+
+.chat-image-cell {
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+}
+
+.chat-image-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
 .chat-image-thumb {
   display: block;
   max-width: min(320px, 70vw);
@@ -394,6 +418,23 @@
   height: 40px;
   border-radius: 999px;
   font-size: 28px;
+  line-height: 1;
+}
+
+.chat-image-viewer-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-image-viewer-nav {
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  font-size: 22px;
   line-height: 1;
 }
 
@@ -486,14 +527,32 @@
 
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">
-                {% if m.has_image %}
-                  <a class="chat-image-link" href="{{ m.image_url }}" data-full-image-url="{{ m.image_url }}">
+                {% set image_items = m.images or [] %}
+                {% if image_items|length == 1 %}
+                  {% set image_item = image_items[0] %}
+                  <a class="chat-image-link"
+                     href="{{ image_item.url }}"
+                     data-full-image-url="{{ image_item.url }}"
+                     data-image-index="0"
+                     data-image-list='{{ image_items|tojson }}'>
                     <img class="chat-image-thumb"
-                         src="{{ m.image_thumb_url }}"
+                         src="{{ image_item.thumb_url }}"
                          alt="画像"
                          loading="lazy"
-                         {% if m.image_width and m.image_height %}style="aspect-ratio: {{ m.image_width }}/{{ m.image_height }};"{% endif %}>
+                         {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
                   </a>
+                {% elif image_items|length >= 2 %}
+                  <div class="chat-image-grid">
+                    {% for image_item in image_items %}
+                      <a class="chat-image-link chat-image-cell"
+                         href="{{ image_item.url }}"
+                         data-full-image-url="{{ image_item.url }}"
+                         data-image-index="{{ loop.index0 }}"
+                         data-image-list='{{ image_items|tojson }}'>
+                        <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
+                      </a>
+                    {% endfor %}
+                  </div>
                 {% endif %}
                 {% if (m.body_html or m.body or '')|trim %}
                   <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
@@ -531,7 +590,7 @@
 
   <form id="chat-form" class="d-flex gap-2 align-items-center">
     <input type="hidden" id="reply-to-id" value="">
-    <input type="file" id="chat-image-file" accept="image/*" class="d-none">
+    <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
     <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
@@ -539,7 +598,11 @@
 
   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
-    <img id="chatImageViewerImg" src="" alt="拡大画像">
+    <div class="chat-image-viewer-content">
+      <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
+      <img id="chatImageViewerImg" src="" alt="拡大画像">
+      <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+    </div>
   </div>
 
   <div class="mt-3 d-flex gap-2 align-items-center">
@@ -567,6 +630,7 @@
   const myDisplayName = root.dataset.displayName || '';
   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+  const maxUploadImages = 6;
 
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
@@ -583,6 +647,8 @@
   const imageViewer = document.getElementById('chatImageViewer');
   const imageViewerImg = document.getElementById('chatImageViewerImg');
   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
+  const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
+  const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
 
   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
     timeZone: 'Asia/Tokyo',
@@ -607,6 +673,8 @@
     selectedBubble: null,
     readStateByActor: new Map(),
     reactionByMessage: new Map(),
+    viewerImages: [],
+    viewerIndex: 0,
   };
 
   const socket = io({ transports: ['websocket', 'polling'] });
@@ -655,7 +723,16 @@
     const imageLink = e.target.closest('.chat-image-link');
     if (imageLink) {
       e.preventDefault();
-      openImageViewer(imageLink.dataset.fullImageUrl || imageLink.href || '');
+      let imageList = [];
+      try {
+        imageList = JSON.parse(imageLink.dataset.imageList || '[]');
+      } catch (_) {
+        imageList = [];
+      }
+      const imageUrls = imageList.map((item) => item?.url).filter(Boolean);
+      const fallbackUrl = imageLink.dataset.fullImageUrl || imageLink.href || '';
+      if (!imageUrls.length && fallbackUrl) imageUrls.push(fallbackUrl);
+      openImageViewer(imageUrls, Number(imageLink.dataset.imageIndex || 0));
       return;
     }
 
@@ -713,22 +790,32 @@
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
+  imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
+  imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
   imageViewer?.addEventListener('click', (e) => {
     if (e.target === imageViewer) closeImageViewer();
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeImageViewer();
+    if (e.key === 'ArrowLeft') moveViewerIndex(-1);
+    if (e.key === 'ArrowRight') moveViewerIndex(1);
   });
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
   imageInput?.addEventListener('change', async () => {
-    const file = imageInput.files?.[0];
-    if (!file) return;
+    const files = Array.from(imageInput.files || []);
+    if (!files.length) return;
+    if (files.length > maxUploadImages) {
+      alert('画像は最大6枚までです');
+      imageInput.value = '';
+      return;
+    }
+
     setSendingState(true);
     try {
       const fd = new FormData();
       fd.append('csrf_token', csrfToken);
-      fd.append('file', file);
+      files.forEach((file) => fd.append('file', file));
       fd.append('body', bodyInput.value || '');
       const res = await fetch(`/chat/api/events/${eventId}/upload-image`, { method: 'POST', body: fd });
       const data = await res.json().catch(() => ({}));
@@ -915,22 +1002,56 @@
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
 
-    if (msg.has_image && msg.image_thumb_url && msg.image_url) {
+    const images = Array.isArray(msg.images) && msg.images.length
+      ? msg.images
+      : (msg.has_image && msg.image_url && msg.image_thumb_url
+        ? [{
+            seq: 1,
+            url: msg.image_url,
+            thumb_url: msg.image_thumb_url,
+            width: msg.image_width,
+            height: msg.image_height,
+          }]
+        : []);
+
+    if (images.length === 1) {
+      const imageItem = images[0];
       const imageLink = document.createElement('a');
       imageLink.className = 'chat-image-link';
-      imageLink.href = msg.image_url;
-      imageLink.dataset.fullImageUrl = msg.image_url;
+      imageLink.href = imageItem.url;
+      imageLink.dataset.fullImageUrl = imageItem.url;
+      imageLink.dataset.imageIndex = '0';
+      imageLink.dataset.imageList = JSON.stringify(images);
 
       const thumb = document.createElement('img');
       thumb.className = 'chat-image-thumb';
-      thumb.src = msg.image_thumb_url;
+      thumb.src = imageItem.thumb_url;
       thumb.alt = '画像';
       thumb.loading = 'lazy';
-      if (msg.image_width && msg.image_height) {
-        thumb.style.aspectRatio = `${msg.image_width}/${msg.image_height}`;
+      if (imageItem.width && imageItem.height) {
+        thumb.style.aspectRatio = `${imageItem.width}/${imageItem.height}`;
       }
       imageLink.appendChild(thumb);
       bubble.appendChild(imageLink);
+    } else if (images.length >= 2) {
+      const grid = document.createElement('div');
+      grid.className = 'chat-image-grid';
+      images.forEach((imageItem, idx) => {
+        const imageLink = document.createElement('a');
+        imageLink.className = 'chat-image-link chat-image-cell';
+        imageLink.href = imageItem.url;
+        imageLink.dataset.fullImageUrl = imageItem.url;
+        imageLink.dataset.imageIndex = String(idx);
+        imageLink.dataset.imageList = JSON.stringify(images);
+
+        const thumb = document.createElement('img');
+        thumb.src = imageItem.thumb_url;
+        thumb.alt = `画像 ${idx + 1}`;
+        thumb.loading = 'lazy';
+        imageLink.appendChild(thumb);
+        grid.appendChild(imageLink);
+      });
+      bubble.appendChild(grid);
     }
 
     const rawBody = (msg.body_html || msg.body || '').trim();
@@ -973,12 +1094,36 @@
     refreshReadIndicatorForRow(row);
   }
 
-  function openImageViewer(src) {
-    if (!imageViewer || !imageViewerImg || !src) return;
-    imageViewerImg.src = src;
+  function openImageViewer(imageUrls, startIndex = 0) {
+    if (!imageViewer || !imageViewerImg) return;
+    const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
+    if (!urls.length) return;
+    state.viewerImages = urls;
+    state.viewerIndex = Math.min(Math.max(0, Number(startIndex) || 0), urls.length - 1);
+    renderImageViewer();
     imageViewer.classList.add('is-open');
     imageViewer.setAttribute('aria-hidden', 'false');
     document.body.style.overflow = 'hidden';
+  }
+
+  function moveViewerIndex(diff) {
+    if (!imageViewer?.classList.contains('is-open')) return;
+    if (!state.viewerImages.length) return;
+    const next = state.viewerIndex + diff;
+    if (next < 0 || next >= state.viewerImages.length) return;
+    state.viewerIndex = next;
+    renderImageViewer();
+  }
+
+  function renderImageViewer() {
+    if (!imageViewerImg) return;
+    const src = state.viewerImages[state.viewerIndex] || '';
+    imageViewerImg.src = src;
+    const hasMulti = state.viewerImages.length > 1;
+    if (imageViewerPrevBtn) imageViewerPrevBtn.style.visibility = hasMulti ? 'visible' : 'hidden';
+    if (imageViewerNextBtn) imageViewerNextBtn.style.visibility = hasMulti ? 'visible' : 'hidden';
+    if (imageViewerPrevBtn) imageViewerPrevBtn.disabled = state.viewerIndex <= 0;
+    if (imageViewerNextBtn) imageViewerNextBtn.disabled = state.viewerIndex >= state.viewerImages.length - 1;
   }
 
   function closeImageViewer() {
@@ -986,6 +1131,8 @@
     imageViewer.classList.remove('is-open');
     imageViewer.setAttribute('aria-hidden', 'true');
     imageViewerImg.src = '';
+    state.viewerImages = [];
+    state.viewerIndex = 0;
     document.body.style.overflow = '';
   }
 
