@@ -1,52 +1,95 @@
 diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index 60abc5ad817c15f65b08a16d6fa2189032ff516f..ca707b60a60cf7c470a1451cdce19e1dae1ba203 100644
+index ca707b60a60cf7c470a1451cdce19e1dae1ba203..89995a16c6704d2bfb6d7d9fbeb3d88ea28b6381 100644
 --- a/external_login_user/template/_extlogin_nav.html
 +++ b/external_login_user/template/_extlogin_nav.html
-@@ -1,25 +1,28 @@
- <nav class="navbar navbar-expand-lg bg-body-tertiary">
-   <div class="container">
--    <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
--    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
-+    <a class="navbar-brand" href="/external-login/">MFU</a>
-+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv" aria-controls="nv" aria-expanded="false" aria-label="Toggle navigation">
-       <span class="navbar-toggler-icon"></span>
-     </button>
-     <div id="nv" class="collapse navbar-collapse">
-       <ul class="navbar-nav me-auto">
--        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
--        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
--        <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
-+        <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
+@@ -1,28 +1,60 @@
+-<nav class="navbar navbar-expand-lg bg-body-tertiary">
+-  <div class="container">
++<nav class="navbar navbar-expand-lg bg-white border-bottom">
++  <div class="container-fluid">
+     <a class="navbar-brand" href="/external-login/">MFU</a>
+-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv" aria-controls="nv" aria-expanded="false" aria-label="Toggle navigation">
+-      <span class="navbar-toggler-icon"></span>
+-    </button>
+-    <div id="nv" class="collapse navbar-collapse">
+-      <ul class="navbar-nav me-auto">
++
++    <div class="d-flex align-items-center gap-2 ms-auto">
++      <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
++        <span class="fs-5">🔔</span>
++        <span id="navNotifBadge"
++              class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
++      </a>
++
++      <button class="navbar-toggler" type="button"
++              data-bs-toggle="collapse" data-bs-target="#extNavCollapse"
++              aria-controls="extNavCollapse" aria-expanded="false" aria-label="メニュー">
++        <span class="navbar-toggler-icon"></span>
++      </button>
++    </div>
++
++    <div class="collapse navbar-collapse" id="extNavCollapse">
++      <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+         <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
        </ul>
--      <ul class="navbar-nav">
-+      <ul class="navbar-nav align-items-lg-center">
-         <li class="nav-item">
--          <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
--            🔔 通知
--            <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-+          <a class="nav-link position-relative" href="/external-login/notifications" id="navNotifBell" aria-label="通知">
-+            🔔
-+            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none" id="navNotifBadge">0</span>
-           </a>
-         </li>
--        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile') }}">プロフィール</a></li>
--        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
-+        <li class="nav-item dropdown">
-+          <button class="nav-link btn btn-link text-decoration-none" id="extNavMenuButton" data-bs-toggle="dropdown" aria-expanded="false" aria-label="メニュー" type="button">⋮</button>
-+          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="extNavMenuButton">
-+            <li><a class="dropdown-item" href="/external-login/profile">プロフィール</a></li>
-+            <li><a class="dropdown-item" href="/external-login/logout">ログアウト</a></li>
-+          </ul>
-+        </li>
-       </ul>
+-      <ul class="navbar-nav align-items-lg-center">
+-        <li class="nav-item">
+-          <a class="nav-link position-relative" href="/external-login/notifications" id="navNotifBell" aria-label="通知">
+-            🔔
+-            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none" id="navNotifBadge">0</span>
+-          </a>
+-        </li>
+-        <li class="nav-item dropdown">
+-          <button class="nav-link btn btn-link text-decoration-none" id="extNavMenuButton" data-bs-toggle="dropdown" aria-expanded="false" aria-label="メニュー" type="button">⋮</button>
+-          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="extNavMenuButton">
+-            <li><a class="dropdown-item" href="/external-login/profile">プロフィール</a></li>
+-            <li><a class="dropdown-item" href="/external-login/logout">ログアウト</a></li>
+-          </ul>
+-        </li>
+-      </ul>
      </div>
    </div>
  </nav>
++
++<script>
++  document.addEventListener('DOMContentLoaded', () => {
++    const badge = document.getElementById('navNotifBadge');
++    if (!badge) return;
++
++    const hideBadge = () => {
++      badge.textContent = '0';
++      badge.classList.add('d-none');
++    };
++
++    const updateBadge = async () => {
++      try {
++        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
++        if (!res.ok) {
++          hideBadge();
++          return;
++        }
++        const data = await res.json();
++        const count = Number(data?.count ?? 0);
++        if (Number.isFinite(count) && count > 0) {
++          badge.textContent = String(Math.min(Math.floor(count), 99));
++          badge.classList.remove('d-none');
++          return;
++        }
++      } catch (_e) {
++        // noop
++      }
++      hideBadge();
++    };
++
++    updateBadge();
++    window.setInterval(updateBadge, 30000);
++  });
++</script>
 diff --git a/external_login_user/template/base_extlogin.html b/external_login_user/template/base_extlogin.html
-index 3efdecb73e645350f6af25d3874cff6f8d825eae..bcab8da4397d67aaca6363b3e856ecff4f4167ff 100644
+index bcab8da4397d67aaca6363b3e856ecff4f4167ff..3125c3623b3142c55aae09ec6c96f10b0361e682 100644
 --- a/external_login_user/template/base_extlogin.html
 +++ b/external_login_user/template/base_extlogin.html
-@@ -95,53 +95,60 @@
+@@ -95,60 +95,29 @@
  
      if (navigator.serviceWorker) {
        navigator.serviceWorker.addEventListener('message', (event) => {
@@ -72,49 +115,38 @@ index 3efdecb73e645350f6af25d3874cff6f8d825eae..bcab8da4397d67aaca6363b3e856ecff
      window.addEventListener('focus', handlePendingNavigation);
    })();
  
--  (() => {
--    const badge = document.getElementById('ext-notification-badge');
-+  document.addEventListener('DOMContentLoaded', () => {
-+    const badge = document.getElementById('navNotifBadge');
-     if (!badge) return;
+-  document.addEventListener('DOMContentLoaded', () => {
+-    const badge = document.getElementById('navNotifBadge');
+-    if (!badge) return;
  
-+    const hideBadge = () => {
-+      badge.textContent = '0';
-+      badge.classList.add('d-none');
-+    };
-+
-     const updateBadge = async () => {
-       try {
--        const res = await fetch('{{ url_for("external_login_user.api_notifications_unread_count") }}', { credentials: 'same-origin' });
--        if (!res.ok) return;
-+        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-+        if (!res.ok) {
-+          hideBadge();
-+          return;
-+        }
-         const data = await res.json();
--        const count = Number(data?.count || 0);
--        if (count > 0) {
--          badge.textContent = String(Math.min(count, 99));
-+        const count = Number(data?.count ?? 0);
-+        if (Number.isFinite(count) && count > 0) {
-+          badge.textContent = String(Math.min(Math.floor(count), 99));
-           badge.classList.remove('d-none');
--        } else {
--          badge.textContent = '0';
--          badge.classList.add('d-none');
-+          return;
-         }
-       } catch (_e) {
-         // noop
-       }
-+      hideBadge();
-     };
- 
-     updateBadge();
-     window.setInterval(updateBadge, 15000);
--  })();
-+  });
+-    const hideBadge = () => {
+-      badge.textContent = '0';
+-      badge.classList.add('d-none');
+-    };
+-
+-    const updateBadge = async () => {
+-      try {
+-        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
+-        if (!res.ok) {
+-          hideBadge();
+-          return;
+-        }
+-        const data = await res.json();
+-        const count = Number(data?.count ?? 0);
+-        if (Number.isFinite(count) && count > 0) {
+-          badge.textContent = String(Math.min(Math.floor(count), 99));
+-          badge.classList.remove('d-none');
+-          return;
+-        }
+-      } catch (_e) {
+-        // noop
+-      }
+-      hideBadge();
+-    };
+-
+-    updateBadge();
+-    window.setInterval(updateBadge, 15000);
+-  });
  </script>
  </body>
  </html>

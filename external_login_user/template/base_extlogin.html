@@ -117,38 +117,7 @@
     window.addEventListener('focus', handlePendingNavigation);
   })();
 
-  document.addEventListener('DOMContentLoaded', () => {
-    const badge = document.getElementById('navNotifBadge');
-    if (!badge) return;
 
-    const hideBadge = () => {
-      badge.textContent = '0';
-      badge.classList.add('d-none');
-    };
-
-    const updateBadge = async () => {
-      try {
-        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-        if (!res.ok) {
-          hideBadge();
-          return;
-        }
-        const data = await res.json();
-        const count = Number(data?.count ?? 0);
-        if (Number.isFinite(count) && count > 0) {
-          badge.textContent = String(Math.min(Math.floor(count), 99));
-          badge.classList.remove('d-none');
-          return;
-        }
-      } catch (_e) {
-        // noop
-      }
-      hideBadge();
-    };
-
-    updateBadge();
-    window.setInterval(updateBadge, 15000);
-  });
 </script>
 </body>
 </html>
