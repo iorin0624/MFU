@@ -522,11 +522,11 @@ def sw():
 @socketio.on("connect")
 def chat_connect():
     actor = get_chat_actor()
+    current_app.logger.warning("chat socket connect actor=%s", actor)  # ★追加
     if not actor:
         current_app.logger.warning("chat socket connect denied: no actor")
         return False
     return True
-
 
 @socketio.on("chat_join")
 def on_join(data):
@@ -543,10 +543,19 @@ def on_join(data):
 @socketio.on("chat_send")
 def on_send(data):
     actor = get_chat_actor()
+    event_id = int((data or {}).get("event_id") or 0)
+    raw_body = (data or {}).get("body") or ""
+
+    current_app.logger.warning(
+        "chat_send recv event_id=%s actor=%s body_len=%s",
+        event_id,
+        actor,
+        len(raw_body),
+    )
+
     if not actor:
         disconnect()
         return
-    event_id = int((data or {}).get("event_id") or 0)
     if not event_id or not _can_access_event(event_id, actor):
         disconnect()
         return
@@ -555,7 +564,7 @@ def on_send(data):
         return
 
     try:
-        body = _validate_body((data or {}).get("body") or "")
+        body = _validate_body(raw_body)
     except ValueError as exc:
         emit("chat_error", {"error": str(exc)})
         return
