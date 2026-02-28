@@ -5,6 +5,7 @@
 .chat-messages {
   height: 420px;
   overflow: auto;
+  overflow-x: hidden;
   background: #e8f3ff;
 }
 
@@ -69,6 +70,7 @@
   gap: 6px;
   min-width: 0;
   flex: 0 1 auto;
+  position: relative;
 }
 
 .chat-row.me .chat-bubble-wrap {
@@ -83,9 +85,10 @@
   line-height: 1.4;
   white-space: normal;
   overflow-wrap: anywhere;
-  word-break: normal;
+  word-break: break-word;
   min-width: 0;
   flex: 0 1 auto;
+  position: relative;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
   transition: box-shadow 0.2s ease, transform 0.2s ease;
@@ -93,6 +96,20 @@
 
 .chat-body {
   min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.chat-body .chat-link {
+  text-decoration: underline;
+  color: #1f57d6;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-body p,
@@ -242,19 +259,49 @@
 }
 
 .chat-reaction-box {
+  position: relative;
   margin-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  width: 100%;
 }
 
-.chat-reaction-toggle {
+.react-open-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
   border: 1px solid #cdd6f8;
   background: #fff;
   color: #4b5b91;
   border-radius: 999px;
-  font-size: 0.72rem;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  line-height: 1;
+  position: absolute;
+  right: 6px;
+  top: -40px;
+  box-shadow: 0 1px 2px rgba(45, 74, 154, 0.18);
+}
+
+.chat-message .react-open-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.chat-message:hover .react-open-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .chat-message .react-open-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .chat-reaction-panel {
@@ -303,6 +350,17 @@
 }
 </style>
 
+{% macro render_reaction_box(message) -%}
+  <div class="chat-reaction-box"
+       data-reaction-box="1"
+       data-my-reaction="{{ message.my_reaction or '' }}"
+       data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+    <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+    <div class="chat-reaction-panel d-none"></div>
+    <div class="chat-reaction-summary"></div>
+  </div>
+{%- endmacro %}
+
 <div class="container py-3"
      data-event-id="{{ event.id }}"
      data-csrf="{{ csrf_token }}"
@@ -322,7 +380,7 @@
         {% set ns.last_date = d %}
       {% endif %}
 
-      <div class="chat-row {{ 'me' if m.is_me else 'other' }}"
+      <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
            id="msg-{{ m.id }}"
            data-message-id="{{ m.id }}"
            data-sender-id="{{ m.sender_id }}"
@@ -332,7 +390,9 @@
            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
-           data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}">
+           data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+           data-my-reaction="{{ m.my_reaction or '' }}"
+           data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
         <div class="chat-line">
           {% if not m.is_me %}
             <img class="chat-avatar"
@@ -363,7 +423,7 @@
 
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">
-                <div class="chat-body">{{ (m.body or '')|trim|safe }}</div>
+                <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
               </div>
               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
             </div>
@@ -371,14 +431,7 @@
               <div class="chat-read-indicator d-none"></div>
               <div class="chat-read-list d-none"></div>
             {% endif %}
-            <div class="chat-reaction-box"
-                 data-reaction-box="1"
-                 data-my-reaction="{{ m.my_reaction or '' }}"
-                 data-reactions-summary="{{ (m.reactions_summary or [])|tojson|forceescape }}">
-              <button type="button" class="chat-reaction-toggle">リアクション</button>
-              <div class="chat-reaction-panel d-none"></div>
-              <div class="chat-reaction-summary"></div>
-            </div>
+            {{ render_reaction_box(m) }}
           </div>
 
           {% if m.is_me %}
@@ -539,6 +592,11 @@
       return;
     }
 
+    const contentLink = e.target.closest('a.chat-link');
+    if (contentLink) {
+      return;
+    }
+
     const bubble = e.target.closest('.chat-bubble');
     if (!bubble) return;
     const row = bubble.closest('.chat-row');
@@ -674,7 +732,7 @@
       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
 
     const row = document.createElement('div');
-    row.className = `chat-row ${isMe ? 'me' : 'other'}`;
+    row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
     row.id = `msg-${msg.id}`;
     row.dataset.messageId = msg.id;
     row.dataset.senderName = msg.sender_display_name || 'Unknown';
@@ -722,7 +780,7 @@
 
     const body = document.createElement('div');
     body.className = 'chat-body';
-    body.innerHTML = (msg.body || '').trim();
+    body.innerHTML = (msg.body_html || msg.body || '').trim();
     bubble.appendChild(body);
 
     const time = document.createElement('div');
@@ -753,18 +811,37 @@
 
     row.appendChild(line);
     msgBox.appendChild(row);
+    hydrateMessageReactionData(row);
     refreshReadIndicatorForRow(row);
   }
 
   function initReactionUis() {
     msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
-      ensureReactionBox(row);
+      const box = ensureReactionBox(row);
+      hydrateMessageReactionData(row, box);
       const messageId = Number(row.dataset.messageId || 0);
       if (!messageId) return;
       const summary = parseReactionSummary(row.dataset.reactionsSummary || '[]');
       const myReaction = row.dataset.myReaction || null;
       setReactionState(messageId, summary, myReaction);
     });
+  }
+
+  function hydrateMessageReactionData(row, existingBox = null) {
+    const box = existingBox || row.querySelector('.chat-reaction-box');
+    if (!box) return;
+
+    const rowSummary = row.dataset.reactionsSummary;
+    const boxSummary = box.dataset.reactionsSummary;
+    const summary = rowSummary || boxSummary || '[]';
+    row.dataset.reactionsSummary = summary;
+    box.dataset.reactionsSummary = summary;
+
+    const rowMyReaction = row.dataset.myReaction;
+    const boxMyReaction = box.dataset.myReaction;
+    const myReaction = rowMyReaction || boxMyReaction || '';
+    row.dataset.myReaction = myReaction;
+    box.dataset.myReaction = myReaction;
   }
 
   function ensureReactionBox(row) {
@@ -798,8 +875,10 @@
 
     const toggle = document.createElement('button');
     toggle.type = 'button';
-    toggle.className = 'chat-reaction-toggle';
-    toggle.textContent = 'リアクション';
+    toggle.className = 'chat-reaction-toggle react-open-btn';
+    toggle.setAttribute('aria-label', 'リアクション');
+    toggle.setAttribute('title', 'リアクション');
+    toggle.textContent = '+';
 
     const panel = document.createElement('div');
     panel.className = 'chat-reaction-panel d-none';
@@ -858,7 +937,11 @@
     row.dataset.reactionsSummary = JSON.stringify(next.reactionsSummary);
     row.dataset.myReaction = next.myReaction || '';
     const box = ensureReactionBox(row);
-    if (box) applyReactionUi(box, next.reactionsSummary, next.myReaction);
+    if (box) {
+      box.dataset.reactionsSummary = row.dataset.reactionsSummary;
+      box.dataset.myReaction = row.dataset.myReaction;
+      applyReactionUi(box, next.reactionsSummary, next.myReaction);
+    }
   }
 
   function applyReactionUi(box, reactionsSummary, myReaction) {
