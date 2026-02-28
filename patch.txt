@@ -1,92 +1,120 @@
 diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index 703c75b8dc364731b4381e48239c3e214082ce72..60abc5ad817c15f65b08a16d6fa2189032ff516f 100644
+index 60abc5ad817c15f65b08a16d6fa2189032ff516f..ca707b60a60cf7c470a1451cdce19e1dae1ba203 100644
 --- a/external_login_user/template/_extlogin_nav.html
 +++ b/external_login_user/template/_extlogin_nav.html
-@@ -1,25 +1,25 @@
+@@ -1,25 +1,28 @@
  <nav class="navbar navbar-expand-lg bg-body-tertiary">
    <div class="container">
-     <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
-     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
+-    <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
+-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
++    <a class="navbar-brand" href="/external-login/">MFU</a>
++    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv" aria-controls="nv" aria-expanded="false" aria-label="Toggle navigation">
        <span class="navbar-toggler-icon"></span>
      </button>
      <div id="nv" class="collapse navbar-collapse">
        <ul class="navbar-nav me-auto">
-         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
-         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
-         <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
+-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
+-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
+-        <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
++        <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
        </ul>
-       <ul class="navbar-nav">
+-      <ul class="navbar-nav">
++      <ul class="navbar-nav align-items-lg-center">
          <li class="nav-item">
-           <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
-             🔔 通知
-             <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
+-          <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
+-            🔔 通知
+-            <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
++          <a class="nav-link position-relative" href="/external-login/notifications" id="navNotifBell" aria-label="通知">
++            🔔
++            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none" id="navNotifBadge">0</span>
            </a>
          </li>
--        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile_setup') }}">プロフィール</a></li>
-+        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile') }}">プロフィール</a></li>
-         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
+-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile') }}">プロフィール</a></li>
+-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
++        <li class="nav-item dropdown">
++          <button class="nav-link btn btn-link text-decoration-none" id="extNavMenuButton" data-bs-toggle="dropdown" aria-expanded="false" aria-label="メニュー" type="button">⋮</button>
++          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="extNavMenuButton">
++            <li><a class="dropdown-item" href="/external-login/profile">プロフィール</a></li>
++            <li><a class="dropdown-item" href="/external-login/logout">ログアウト</a></li>
++          </ul>
++        </li>
        </ul>
      </div>
    </div>
  </nav>
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 01f7b5c580f5b5923949d8bc4af37a1ebbe91dc4..88b056a514f446bbe527a3f81c70e3316b64df85 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -1611,50 +1611,56 @@ def profile():
+diff --git a/external_login_user/template/base_extlogin.html b/external_login_user/template/base_extlogin.html
+index 3efdecb73e645350f6af25d3874cff6f8d825eae..bcab8da4397d67aaca6363b3e856ecff4f4167ff 100644
+--- a/external_login_user/template/base_extlogin.html
++++ b/external_login_user/template/base_extlogin.html
+@@ -95,53 +95,60 @@
  
-     # メール確認が必要な場合、確認完了後に戻る先をセッションに保存しておく
-     if needs_verify and next_url:
-         session["ext_after_verify_next"] = next_url
+     if (navigator.serviceWorker) {
+       navigator.serviceWorker.addEventListener('message', (event) => {
+         const data = event?.data || {};
+         if (data.type !== 'MFU_PUSH_NAV' || !data.url) return;
+         try {
+           localStorage.setItem(
+             PENDING_KEY,
+             JSON.stringify({ url: normalizePath(data.url), ts: Number(data.ts) || Date.now() })
+           );
+         } catch (_e) {
+           // noop
+         }
+       });
+     }
  
-     # イベント参加URL（/join/）が含まれている場合は、完了するまで保持し続けたいので pop しない
-     current_next = session.get("ext_after_login_next") or ""
-     is_join_url = "/events/join/" in current_next
+     document.addEventListener('visibilitychange', () => {
+       if (document.visibilityState === 'visible') {
+         handlePendingNavigation();
+       }
+     });
+     window.addEventListener('pageshow', handlePendingNavigation);
+     window.addEventListener('focus', handlePendingNavigation);
+   })();
  
-     # メール確認が不要、かつイベント参加URLでもない場合のみ pop する
-     if not needs_verify and not is_join_url:
-         session.pop("ext_after_login_next", None)
+-  (() => {
+-    const badge = document.getElementById('ext-notification-badge');
++  document.addEventListener('DOMContentLoaded', () => {
++    const badge = document.getElementById('navNotifBadge');
+     if (!badge) return;
  
-     def _is_safe_local(url: str) -> bool:
-         return bool(url) and url.startswith("/") and not url.startswith("//")
- 
-     if not _is_safe_local(next_url):
-         next_url = url_for("external_login_user.index")
- 
-     cur.close()
-     db.close()
-     flash("プロフィールを保存しました。", "success")
-     return redirect(next_url)
- 
- 
-+@bp.route("/profile/setup", endpoint="profile_setup", methods=["GET"])
-+def profile_setup_alias():
-+    """互換 endpoint: 旧導線 /profile/setup を /profile に寄せる。"""
-+    return redirect(url_for("external_login_user.profile"))
++    const hideBadge = () => {
++      badge.textContent = '0';
++      badge.classList.add('d-none');
++    };
 +
-+
- # =========================
- # 参加（承認制）・閲覧
- # =========================
- @bp.route("/line-login")
- def line_login_shortcut():
-     return redirect(url_for("external_login_user.line_login", **request.args), code=302)
+     const updateBadge = async () => {
+       try {
+-        const res = await fetch('{{ url_for("external_login_user.api_notifications_unread_count") }}', { credentials: 'same-origin' });
+-        if (!res.ok) return;
++        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
++        if (!res.ok) {
++          hideBadge();
++          return;
++        }
+         const data = await res.json();
+-        const count = Number(data?.count || 0);
+-        if (count > 0) {
+-          badge.textContent = String(Math.min(count, 99));
++        const count = Number(data?.count ?? 0);
++        if (Number.isFinite(count) && count > 0) {
++          badge.textContent = String(Math.min(Math.floor(count), 99));
+           badge.classList.remove('d-none');
+-        } else {
+-          badge.textContent = '0';
+-          badge.classList.add('d-none');
++          return;
+         }
+       } catch (_e) {
+         // noop
+       }
++      hideBadge();
+     };
  
- def _is_lecture_event_from_event(ev: dict) -> bool:
-     title = (ev.get("title") or "").strip()
-     return "【講座】" in title
- 
- def _mask_iv_token(token: str) -> str:
-     token = (token or "").strip()
-     if not token:
-         return ""
-     tail = token[-4:] if len(token) > 4 else token
-     return f"***{tail}"
- 
- def _mark_lecture_auto_approve_by_iv(
-     *,
-     event_id: int,
-     event_uuid: str,
-     user_id: int,
-     iv_token: str,
- ) -> bool:
+     updateBadge();
+     window.setInterval(updateBadge, 15000);
+-  })();
++  });
+ </script>
+ </body>
+ </html>
