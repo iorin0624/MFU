@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 from flask import (
     Blueprint,
     abort,
@@ -34,6 +34,17 @@ from requests.exceptions import Timeout as RequestsTimeout
 
 from app.chat.socketio_ext import socketio
 from app.utils.db import get_db
+
+
+HEIC_UNSUPPORTED_MESSAGE = "iPhoneのHEIC画像は未対応です。設定→カメラ→フォーマット→互換性優先(JPEG)にするか、JPEGで送ってください"
+HEIF_OPENER_AVAILABLE = False
+try:
+    from pillow_heif import register_heif_opener
+
+    register_heif_opener()
+    HEIF_OPENER_AVAILABLE = True
+except Exception:
+    HEIF_OPENER_AVAILABLE = False
 
 chat_bp = Blueprint(
     "chat",
@@ -1011,38 +1022,65 @@ def _validate_caption_optional(raw: str) -> str:
     return html.escape(caption)
 
 
-def _image_extension_and_mime(image_format: str) -> tuple[str, str]:
+def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
     fmt = (image_format or "").upper()
-    mapping = {
-        "JPEG": ("jpg", "image/jpeg"),
-        "PNG": ("png", "image/png"),
-        "WEBP": ("webp", "image/webp"),
+    mapping: dict[str, tuple[str, str, bool]] = {
+        "JPEG": ("jpg", "image/jpeg", False),
+        "PNG": ("png", "image/png", False),
+        "WEBP": ("webp", "image/webp", False),
+        "HEIF": ("jpg", "image/jpeg", True),
+        "HEIC": ("jpg", "image/jpeg", True),
     }
     if fmt not in mapping:
-        raise ValueError("JPEG/PNG/WEBP画像のみアップロードできます")
+        raise ValueError("JPEG/PNG/WEBP/HEIC画像のみアップロードできます")
     return mapping[fmt]
 
 
-def _save_upload_image_files(event_id: int, storage: Any) -> dict[str, Any]:
+def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") -> dict[str, Any]:
     os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
     event_dir = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
     os.makedirs(event_dir, exist_ok=True)
 
     raw_bytes = storage.read()
+    if not isinstance(raw_bytes, (bytes, bytearray)):
+        raw_bytes = bytes(raw_bytes or b"")
     image_size = len(raw_bytes)
     if image_size <= 0:
         raise ValueError("画像ファイルが空です")
     if image_size > CHAT_UPLOAD_MAX_BYTES:
         raise ValueError("画像サイズが上限を超えています")
 
+    lower_name = (filename or "").lower()
+    looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif")
+
     try:
         with Image.open(io.BytesIO(raw_bytes)) as im:
-            image_format = im.format or ""
-            ext, image_mime = _image_extension_and_mime(image_format)
-            width, height = im.size
-            original = im.copy()
+            image_format = (im.format or "").upper()
+            ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
+            normalized = ImageOps.exif_transpose(im)
+            width, height = normalized.size
+
+            if convert_original_to_jpeg:
+                rgb = normalized.convert("RGB")
+                original_buffer = io.BytesIO()
+                rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
+                original_bytes = original_buffer.getvalue()
+                image_size = len(original_bytes)
+            else:
+                original_bytes = bytes(raw_bytes)
+
+            thumb_image = normalized.convert("RGBA")
     except UnidentifiedImageError as exc:
+        if looks_like_heif:
+            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
         raise ValueError("画像ファイルとして読み取れません") from exc
+    except OSError as exc:
+        if looks_like_heif and not HEIF_OPENER_AVAILABLE:
+            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
+        raise ValueError("画像ファイルとして読み取れません") from exc
+
+    if image_size > CHAT_UPLOAD_MAX_BYTES:
+        raise ValueError("画像サイズが上限を超えています")
 
     base_name = secrets.token_urlsafe(18)
     image_file = f"{base_name}.{ext}"
@@ -1051,9 +1089,8 @@ def _save_upload_image_files(event_id: int, storage: Any) -> dict[str, Any]:
     thumb_path = os.path.join(event_dir, image_thumb_file)
 
     with open(image_path, "wb") as fp:
-        fp.write(raw_bytes)
+        fp.write(original_bytes)
 
-    thumb_image = original.convert("RGBA")
     thumb_image.thumbnail((480, 480))
     bg = Image.new("RGB", thumb_image.size, (255, 255, 255))
     bg.paste(thumb_image, mask=thumb_image.split()[3] if thumb_image.mode == "RGBA" else None)
@@ -1683,7 +1720,7 @@ def upload_image(event_id: int):
 
     try:
         body = _validate_caption_optional(request.form.get("body") or "")
-        image_meta = _save_upload_image_files(event_id, upload_file.stream)
+        image_meta = _save_upload_image_files(event_id, upload_file.stream, filename=upload_file.filename or "")
     except ValueError as exc:
         status = 413 if "上限" in str(exc) else 400
         return jsonify({"ok": False, "error": str(exc)}), status
