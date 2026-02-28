@@ -241,6 +241,60 @@
   transition: box-shadow 0.25s ease;
 }
 
+.chat-reaction-box {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-reaction-toggle {
+  border: 1px solid #cdd6f8;
+  background: #fff;
+  color: #4b5b91;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+}
+
+.chat-reaction-panel {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.chat-reaction-panel.d-none {
+  display: none;
+}
+
+.chat-reaction-emoji {
+  border: 1px solid #d7def5;
+  background: #fff;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+.chat-reaction-emoji.is-active {
+  background: #e7eeff;
+  border-color: #8fa9ff;
+}
+
+.chat-reaction-summary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chat-reaction-chip {
+  border: 1px solid #d8def8;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  padding: 1px 8px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
 @media (max-width: 576px) {
   .chat-avatar {
     width: 28px;
@@ -317,6 +371,14 @@
               <div class="chat-read-indicator d-none"></div>
               <div class="chat-read-list d-none"></div>
             {% endif %}
+            <div class="chat-reaction-box"
+                 data-reaction-box="1"
+                 data-my-reaction="{{ m.my_reaction or '' }}"
+                 data-reactions-summary="{{ (m.reactions_summary or [])|tojson|forceescape }}">
+              <button type="button" class="chat-reaction-toggle">リアクション</button>
+              <div class="chat-reaction-panel d-none"></div>
+              <div class="chat-reaction-summary"></div>
+            </div>
           </div>
 
           {% if m.is_me %}
@@ -370,6 +432,7 @@
   const meId = root.dataset.me || '';
   const myDisplayName = root.dataset.displayName || '';
   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+  const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
 
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
@@ -395,15 +458,21 @@
     hour12: false,
   });
 
+  const [myActorType, myActorId] = meId.includes(':')
+    ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+    : ['', ''];
+
   const state = {
     replyToId: null,
     selectedBubble: null,
     readStateByActor: new Map(),
+    reactionByMessage: new Map(),
   };
 
   const socket = io({ transports: ['websocket', 'polling'] });
   socket.emit('chat_join', { event_id: eventId });
 
+  initReactionUis();
   scrollToLatestMessage();
   refreshReadIndicators();
   window.addEventListener('load', () => {
@@ -426,6 +495,17 @@
     applyReadUpdate(payload);
     refreshReadIndicators();
   });
+  socket.on('chat_reaction_update', (payload) => {
+    const messageId = Number(payload?.message_id || 0);
+    if (!messageId) return;
+    const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
+    let myReaction = prev.myReaction || null;
+    const changed = payload?.changed || {};
+    if (changed.actor_type === myActorType && String(changed.actor_id || '') === String(myActorId || '')) {
+      myReaction = changed.emoji || null;
+    }
+    setReactionState(messageId, payload?.reactions || [], myReaction);
+  });
 
   msgBox.addEventListener('click', (e) => {
     const readIndicator = e.target.closest('.chat-read-indicator');
@@ -437,6 +517,25 @@
     const quote = e.target.closest('.chat-reply-quote');
     if (quote) {
       jumpToMessage(quote.dataset.jumpToId);
+      return;
+    }
+
+    const reactionToggle = e.target.closest('.chat-reaction-toggle');
+    if (reactionToggle) {
+      const box = reactionToggle.closest('.chat-reaction-box');
+      const panel = box?.querySelector('.chat-reaction-panel');
+      panel?.classList.toggle('d-none');
+      return;
+    }
+
+    const reactionBtn = e.target.closest('.chat-reaction-emoji');
+    if (reactionBtn) {
+      const row = reactionBtn.closest('.chat-row');
+      const messageId = Number(row?.dataset.messageId || 0);
+      const emoji = reactionBtn.dataset.emoji || '';
+      if (messageId && reactionEmojis.includes(emoji)) {
+        socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
+      }
       return;
     }
 
@@ -585,6 +684,8 @@
     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
+    row.dataset.myReaction = msg.my_reaction || '';
+    row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
 
     const line = document.createElement('div');
@@ -642,6 +743,8 @@
       main.appendChild(readList);
     }
 
+    main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+
     line.appendChild(main);
 
     if (isMe) {
@@ -651,6 +754,129 @@
     row.appendChild(line);
     msgBox.appendChild(row);
     refreshReadIndicatorForRow(row);
+  }
+
+  function initReactionUis() {
+    msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
+      ensureReactionBox(row);
+      const messageId = Number(row.dataset.messageId || 0);
+      if (!messageId) return;
+      const summary = parseReactionSummary(row.dataset.reactionsSummary || '[]');
+      const myReaction = row.dataset.myReaction || null;
+      setReactionState(messageId, summary, myReaction);
+    });
+  }
+
+  function ensureReactionBox(row) {
+    const main = row.querySelector('.chat-main');
+    if (!main) return null;
+    let box = main.querySelector('.chat-reaction-box');
+    if (!box) {
+      box = createReactionBox([], null);
+      main.appendChild(box);
+      return box;
+    }
+
+    const panel = box.querySelector('.chat-reaction-panel');
+    if (panel && panel.childElementCount === 0) {
+      for (const emoji of reactionEmojis) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-reaction-emoji';
+        btn.dataset.emoji = emoji;
+        btn.textContent = emoji;
+        panel.appendChild(btn);
+      }
+    }
+    return box;
+  }
+
+  function createReactionBox(reactionsSummary, myReaction) {
+    const box = document.createElement('div');
+    box.className = 'chat-reaction-box';
+    box.dataset.reactionBox = '1';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'chat-reaction-toggle';
+    toggle.textContent = 'リアクション';
+
+    const panel = document.createElement('div');
+    panel.className = 'chat-reaction-panel d-none';
+    for (const emoji of reactionEmojis) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chat-reaction-emoji';
+      btn.dataset.emoji = emoji;
+      btn.textContent = emoji;
+      panel.appendChild(btn);
+    }
+
+    const summary = document.createElement('div');
+    summary.className = 'chat-reaction-summary';
+
+    box.appendChild(toggle);
+    box.appendChild(panel);
+    box.appendChild(summary);
+
+    applyReactionUi(box, reactionsSummary, myReaction);
+    return box;
+  }
+
+  function parseReactionSummary(value) {
+    try {
+      const parsed = JSON.parse(value || '[]');
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function normalizeReactionSummary(summary) {
+    const mapped = [];
+    for (const item of summary || []) {
+      const emoji = item?.emoji || '';
+      const count = Number(item?.count || 0);
+      if (!reactionEmojis.includes(emoji) || count <= 0) continue;
+      mapped.push({ emoji, count });
+    }
+    mapped.sort((a, b) => reactionEmojis.indexOf(a.emoji) - reactionEmojis.indexOf(b.emoji));
+    return mapped;
+  }
+
+  function setReactionState(messageId, reactionsSummary, myReaction) {
+    const key = String(messageId);
+    const normalized = normalizeReactionSummary(reactionsSummary);
+    const next = {
+      reactionsSummary: normalized,
+      myReaction: reactionEmojis.includes(myReaction || '') ? myReaction : null,
+    };
+    state.reactionByMessage.set(key, next);
+
+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+    if (!row) return;
+    row.dataset.reactionsSummary = JSON.stringify(next.reactionsSummary);
+    row.dataset.myReaction = next.myReaction || '';
+    const box = ensureReactionBox(row);
+    if (box) applyReactionUi(box, next.reactionsSummary, next.myReaction);
+  }
+
+  function applyReactionUi(box, reactionsSummary, myReaction) {
+    const summaryEl = box.querySelector('.chat-reaction-summary');
+    if (summaryEl) {
+      summaryEl.innerHTML = '';
+      for (const item of reactionsSummary) {
+        const chip = document.createElement('span');
+        chip.className = 'chat-reaction-chip';
+        chip.textContent = `${item.emoji} ${item.count}`;
+        summaryEl.appendChild(chip);
+      }
+      summaryEl.classList.toggle('d-none', reactionsSummary.length === 0);
+    }
+
+    box.querySelectorAll('.chat-reaction-emoji').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.emoji === myReaction);
+    });
   }
 
   function makeReplyQuote(messageId, senderName, excerpt, avatarUrl) {

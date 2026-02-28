@@ -53,7 +53,10 @@ CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
 CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_READ_STATE_SCHEMA_READY: bool | None = None
+CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_REACTION_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 PUSH_REQUEST_TIMEOUT_SECONDS = 6
 PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
 PUSH_LOG_SUPPRESSION_SECONDS = 300
@@ -288,6 +291,46 @@ def _ensure_chat_notification_log_schema() -> bool:
             db.close()
 
 
+def _ensure_chat_reaction_schema() -> bool:
+    global CHAT_REACTION_SCHEMA_READY
+    if CHAT_REACTION_SCHEMA_READY is not None:
+        return CHAT_REACTION_SCHEMA_READY
+
+    with CHAT_REACTION_SCHEMA_CHECK_LOCK:
+        if CHAT_REACTION_SCHEMA_READY is not None:
+            return CHAT_REACTION_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_message_reactions (
+                  event_id BIGINT NOT NULL,
+                  message_id BIGINT NOT NULL,
+                  actor_type VARCHAR(16) NOT NULL,
+                  actor_id VARCHAR(64) NOT NULL,
+                  emoji VARCHAR(16) NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  updated_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_message_reactions_message_actor (message_id, actor_type, actor_id),
+                  KEY idx_chat_message_reactions_event_message (event_id, message_id),
+                  KEY idx_chat_message_reactions_message (message_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            db.commit()
+            CHAT_REACTION_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat reaction schema ensure failed", exc_info=True)
+            CHAT_REACTION_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
 def _ensure_chat_read_state_schema() -> bool:
     global CHAT_READ_STATE_SCHEMA_READY
     if CHAT_READ_STATE_SCHEMA_READY is not None:
@@ -509,6 +552,8 @@ def _present_message(
         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
         "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
         "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
+        "reactions_summary": msg.get("reactions_summary") or [],
+        "my_reaction": msg.get("my_reaction"),
         "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
     }
 
@@ -788,6 +833,66 @@ def _save_message(event_id: int, actor: dict[str, Any], body: str, reply_to_mess
             "created_at": now,
             "reply_to_message_id": reply_to_message_id,
         }
+    finally:
+        cur.close()
+        db.close()
+
+
+def _load_reactions_by_message_ids(message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not message_ids:
+        return {}
+    if not _ensure_chat_reaction_schema():
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(message_ids))
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT message_id, emoji, COUNT(*) AS cnt
+              FROM chat_message_reactions
+             WHERE message_id IN ({placeholders})
+             GROUP BY message_id, emoji
+            """,
+            tuple(message_ids),
+        )
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for row in cur.fetchall() or []:
+            message_id = int(row.get("message_id") or 0)
+            if message_id <= 0:
+                continue
+            grouped.setdefault(message_id, []).append({"emoji": row.get("emoji") or "", "count": int(row.get("cnt") or 0)})
+        for values in grouped.values():
+            values.sort(key=lambda item: CHAT_ALLOWED_REACTION_EMOJIS.index(item["emoji"]) if item["emoji"] in CHAT_ALLOWED_REACTION_EMOJIS else 999)
+        return grouped
+    finally:
+        cur.close()
+        db.close()
+
+
+def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, Any]) -> dict[int, str]:
+    if not message_ids:
+        return {}
+    if not _ensure_chat_reaction_schema():
+        return {}
+
+    placeholders = ", ".join(["%s"] * len(message_ids))
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        params: tuple[Any, ...] = tuple(message_ids) + (actor["actor_type"], str(actor["actor_id"]))
+        cur.execute(
+            f"""
+            SELECT message_id, emoji
+              FROM chat_message_reactions
+             WHERE message_id IN ({placeholders})
+               AND actor_type=%s
+               AND actor_id=%s
+            """,
+            params,
+        )
+        return {int(row["message_id"]): str(row.get("emoji") or "") for row in (cur.fetchall() or [])}
     finally:
         cur.close()
         db.close()
@@ -1335,7 +1440,16 @@ def room(event_id: int):
     if not event:
         abort(404)
     avatar_cache: dict[str, str] = {}
-    messages = [_present_message(m, actor, avatar_cache=avatar_cache) for m in _load_messages(event_id)]
+    raw_messages = _load_messages(event_id)
+    message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
+    reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
+    my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
+    messages = []
+    for message in raw_messages:
+        message_id = int(message.get("id") or 0)
+        message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
+        message["my_reaction"] = my_reaction_by_message.get(message_id)
+        messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     return render_template(
         "chat/room.html",
@@ -1658,6 +1772,109 @@ def on_send(data):
         body,
         int(message_payload["id"]),
         {"t0": t0, "t1": t1, "t2": t2},
+    )
+
+
+@socketio.on("chat_react")
+def on_react(data):
+    actor = get_chat_actor()
+    if not actor:
+        disconnect()
+        return
+    if not _ensure_chat_reaction_schema():
+        emit("chat_error", {"error": "リアクション機能の初期化に失敗しました"})
+        return
+
+    try:
+        event_id = int((data or {}).get("event_id") or 0)
+        message_id = int((data or {}).get("message_id") or 0)
+    except (TypeError, ValueError):
+        disconnect()
+        return
+
+    emoji = str((data or {}).get("emoji") or "")
+    if event_id <= 0 or message_id <= 0 or not _can_access_event(event_id, actor):
+        disconnect()
+        return
+    if emoji not in CHAT_ALLOWED_REACTION_EMOJIS:
+        emit("chat_error", {"error": "利用できないリアクションです"})
+        return
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    changed_emoji: str | None = emoji
+    try:
+        cur.execute("SELECT 1 FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (message_id, event_id))
+        if not cur.fetchone():
+            emit("chat_error", {"error": "対象メッセージが見つかりません"})
+            return
+
+        cur.execute(
+            """
+            SELECT emoji
+              FROM chat_message_reactions
+             WHERE message_id=%s
+               AND actor_type=%s
+               AND actor_id=%s
+             LIMIT 1
+            """,
+            (message_id, actor["actor_type"], str(actor["actor_id"])),
+        )
+        existing = cur.fetchone()
+        now = datetime.utcnow()
+        if existing and (existing.get("emoji") or "") == emoji:
+            cur.execute(
+                """
+                DELETE FROM chat_message_reactions
+                 WHERE message_id=%s
+                   AND actor_type=%s
+                   AND actor_id=%s
+                """,
+                (message_id, actor["actor_type"], str(actor["actor_id"])),
+            )
+            changed_emoji = None
+        else:
+            cur.execute(
+                """
+                INSERT INTO chat_message_reactions (
+                    event_id, message_id, actor_type, actor_id, emoji, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    emoji=VALUES(emoji),
+                    updated_at=VALUES(updated_at)
+                """,
+                (event_id, message_id, actor["actor_type"], str(actor["actor_id"]), emoji, now, now),
+            )
+
+        cur.execute(
+            """
+            SELECT emoji, COUNT(*) AS cnt
+              FROM chat_message_reactions
+             WHERE message_id=%s
+             GROUP BY emoji
+            """,
+            (message_id,),
+        )
+        reactions = [{"emoji": row.get("emoji") or "", "count": int(row.get("cnt") or 0)} for row in (cur.fetchall() or [])]
+        reactions.sort(key=lambda item: CHAT_ALLOWED_REACTION_EMOJIS.index(item["emoji"]) if item["emoji"] in CHAT_ALLOWED_REACTION_EMOJIS else 999)
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    emit(
+        "chat_reaction_update",
+        {
+            "event_id": event_id,
+            "message_id": message_id,
+            "reactions": reactions,
+            "changed": {
+                "actor_type": actor["actor_type"],
+                "actor_id": str(actor["actor_id"]),
+                "emoji": changed_emoji,
+            },
+        },
+        to=f"event:{event_id}",
     )
 
 
