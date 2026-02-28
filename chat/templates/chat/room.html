@@ -31,6 +31,7 @@
   display: flex;
   gap: 8px;
   align-items: flex-end;
+  min-width: 0;
 }
 
 .chat-row.me .chat-line {
@@ -45,6 +46,7 @@
   display: flex;
   flex-direction: column;
   max-width: min(80%, 560px);
+  min-width: 0;
 }
 
 .chat-row.me .chat-main {
@@ -65,6 +67,8 @@
   display: flex;
   align-items: flex-end;
   gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 .chat-row.me .chat-bubble-wrap {
@@ -72,14 +76,23 @@
 }
 
 .chat-bubble {
+  display: inline-block;
+  max-width: min(100%, 28rem);
   padding: 8px 12px;
   border-radius: 16px;
-  line-height: 1.45;
-  word-break: break-word;
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+  line-height: 1.4;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  flex: 0 1 auto;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
   transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.chat-body {
+  min-width: 0;
 }
 
 .chat-row.me .chat-bubble {

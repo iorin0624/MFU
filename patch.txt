@@ -1,817 +1,197 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index a00784e6f5518ab95e387c1e65f176cb13eabc6a..9d04ecc8945e7bb50a164283edd44559714eaa41 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -1,66 +1,71 @@
- from __future__ import annotations
+diff --git a/chat/static/chat/css/chat.css b/chat/static/chat/css/chat.css
+index 1d734cdddd14d7f879f78ab5d45d1bf724ee6c6f..23e12506f68d7a990c36474bdeaa5cc5a5ec78f6 100644
+--- a/chat/static/chat/css/chat.css
++++ b/chat/static/chat/css/chat.css
+@@ -22,56 +22,68 @@
+ .chat-row {
+   display: flex;
+   flex-direction: column;
+   margin-bottom: 10px;
+ }
  
- import html
-+import hashlib
- import json
- import os
- import re
- import secrets
- import threading
- from datetime import datetime, timedelta
- from typing import Any
- from zoneinfo import ZoneInfo
+ .chat-row.me {
+   align-items: flex-end;
+ }
  
- from flask import (
-     Blueprint,
-     abort,
-     current_app,
-     jsonify,
-     render_template,
-     request,
-     session,
-     url_for,
- )
- from flask_socketio import disconnect, emit, join_room
+ .chat-row.other {
+   align-items: flex-start;
+ }
  
- from app.chat.socketio_ext import socketio
- from app.utils.db import get_db
+ .chat-sender {
+   font-size: 0.76rem;
+   color: #667;
+   margin: 0 8px 4px;
+ }
  
- chat_bp = Blueprint(
-     "chat",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
-     url_prefix="/chat",
- )
+ .chat-bubble-wrap {
+   display: flex;
+   align-items: flex-end;
+   gap: 6px;
+   max-width: min(80%, 560px);
++  min-width: 0;
++  flex: 0 1 auto;
+ }
  
- MESSAGE_MAX_LEN = 2000
- RATE_LIMIT_SECONDS = 1
- JST = ZoneInfo("Asia/Tokyo")
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+ }
  
- CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REPLY_SCHEMA_READY: bool | None = None
-+CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
-+CHAT_PUSH_SCHEMA_READY: bool | None = None
-+CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
-+CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+ .chat-bubble {
++  display: inline-block;
++  max-width: min(100%, 28rem);
+   padding: 8px 12px;
+   border-radius: 16px;
+-  line-height: 1.45;
+-  word-break: break-word;
++  line-height: 1.4;
++  white-space: pre-wrap;
++  overflow-wrap: anywhere;
++  word-break: normal;
++  min-width: 0;
++  flex: 0 1 auto;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+ }
  
- 
- def _default_avatar_url() -> str:
-     return DEFAULT_AVATAR_URL
- 
- 
- def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
-     if not row:
-         return _default_avatar_url()
-     avatar_file = (row.get("avatar_file") or "").strip()
-     if avatar_file:
-         try:
-             return url_for("external_login_user.avatar_file", name=avatar_file)
-         except Exception:
-             current_app.logger.warning("chat avatar url_for failed name=%s", avatar_file, exc_info=True)
-     avatar_url = (row.get("avatar_url") or "").strip()
-     if avatar_url:
-         return avatar_url
-     return _default_avatar_url()
- 
- 
- def _resolve_sender_avatar_url(actor_type: str, actor_id: str, avatar_cache: dict[str, str] | None = None) -> str:
-     key = f"{actor_type}:{actor_id}"
-     if avatar_cache is not None and key in avatar_cache:
-@@ -121,50 +126,161 @@ def _ensure_chat_reply_schema() -> bool:
-             try:
-                 cur.execute(
-                     """
-                     ALTER TABLE chat_messages
-                     ADD CONSTRAINT fk_chat_messages_reply_to
-                     FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages(id)
-                     ON DELETE SET NULL
-                     """
-                 )
-             except Exception:
-                 current_app.logger.warning('chat auto-migration: add fk_chat_messages_reply_to failed', exc_info=True)
- 
-             db.commit()
-             cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'reply_to_message_id'")
-             CHAT_REPLY_SCHEMA_READY = bool(cur.fetchone())
-             return CHAT_REPLY_SCHEMA_READY
-         except Exception:
-             current_app.logger.warning('chat schema check failed', exc_info=True)
-             CHAT_REPLY_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
- 
- 
-+def _ensure_chat_push_schema() -> bool:
-+    global CHAT_PUSH_SCHEMA_READY
-+    if CHAT_PUSH_SCHEMA_READY is not None:
-+        return CHAT_PUSH_SCHEMA_READY
++.chat-body {
++  min-width: 0;
++}
 +
-+    with CHAT_PUSH_SCHEMA_CHECK_LOCK:
-+        if CHAT_PUSH_SCHEMA_READY is not None:
-+            return CHAT_PUSH_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor()
-+        try:
-+            cur.execute(
-+                """
-+                CREATE TABLE IF NOT EXISTS chat_push_subscriptions (
-+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+                  actor_type VARCHAR(16) NOT NULL,
-+                  actor_id VARCHAR(64) NOT NULL,
-+                  endpoint TEXT NOT NULL,
-+                  endpoint_hash CHAR(64) NOT NULL,
-+                  p256dh VARCHAR(255) NOT NULL,
-+                  auth VARCHAR(255) NOT NULL,
-+                  user_agent VARCHAR(255) NULL,
-+                  created_at DATETIME NOT NULL,
-+                  updated_at DATETIME NOT NULL,
-+                  UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash),
-+                  KEY idx_chat_push_actor (actor_type, actor_id)
-+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+                """
-+            )
-+
-+            try:
-+                cur.execute("SHOW COLUMNS FROM chat_push_subscriptions LIKE 'endpoint_hash'")
-+                has_endpoint_hash = bool(cur.fetchone())
-+                if not has_endpoint_hash:
-+                    cur.execute(
-+                        "ALTER TABLE chat_push_subscriptions ADD COLUMN endpoint_hash CHAR(64) NOT NULL AFTER endpoint"
-+                    )
-+                    cur.execute(
-+                        "UPDATE chat_push_subscriptions SET endpoint_hash=SHA2(endpoint, 256) WHERE endpoint_hash='' OR endpoint_hash IS NULL"
-+                    )
-+            except Exception:
-+                current_app.logger.warning("chat push schema ensure endpoint_hash failed", exc_info=True)
-+
-+            try:
-+                cur.execute(
-+                    "ALTER TABLE chat_push_subscriptions ADD UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash)"
-+                )
-+            except Exception:
-+                pass
-+
-+            try:
-+                cur.execute("ALTER TABLE chat_push_subscriptions ADD KEY idx_chat_push_actor (actor_type, actor_id)")
-+            except Exception:
-+                pass
-+
-+            db.commit()
-+            CHAT_PUSH_SCHEMA_READY = True
-+            return True
-+        except Exception:
-+            current_app.logger.warning("chat push schema ensure failed", exc_info=True)
-+            CHAT_PUSH_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
-+def _ensure_chat_notification_log_schema() -> bool:
-+    global CHAT_NOTIFICATION_LOG_SCHEMA_READY
-+    if CHAT_NOTIFICATION_LOG_SCHEMA_READY is not None:
-+        return CHAT_NOTIFICATION_LOG_SCHEMA_READY
-+
-+    with CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK:
-+        if CHAT_NOTIFICATION_LOG_SCHEMA_READY is not None:
-+            return CHAT_NOTIFICATION_LOG_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor()
-+        try:
-+            cur.execute(
-+                """
-+                CREATE TABLE IF NOT EXISTS chat_notification_log (
-+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+                  event_id BIGINT NOT NULL,
-+                  kind VARCHAR(32) NOT NULL,
-+                  payload_json TEXT NOT NULL,
-+                  sent_count INT NOT NULL DEFAULT 0,
-+                  created_at DATETIME NOT NULL,
-+                  KEY idx_chat_notification_event (event_id, created_at)
-+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+                """
-+            )
-+
-+            try:
-+                cur.execute("ALTER TABLE chat_notification_log ADD KEY idx_chat_notification_event (event_id, created_at)")
-+            except Exception:
-+                pass
-+
-+            db.commit()
-+            CHAT_NOTIFICATION_LOG_SCHEMA_READY = True
-+            return True
-+        except Exception:
-+            current_app.logger.warning("chat notification log schema ensure failed", exc_info=True)
-+            CHAT_NOTIFICATION_LOG_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
- def _actor_sender_id(actor_type: str, actor_id: str) -> str:
-     return f"{actor_type}:{actor_id}"
+ .chat-row.me .chat-bubble {
+   background: #4a8dff;
+   color: #fff;
+   border-bottom-right-radius: 6px;
+ }
  
+ .chat-row.other .chat-bubble {
+   background: #f1f3f5;
+   color: #222;
+   border-bottom-left-radius: 6px;
+ }
  
- def _to_utc_datetime(value: Any) -> datetime:
-     if isinstance(value, datetime):
-         dt = value
-     else:
-         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=ZoneInfo("UTC"))
-     return dt.astimezone(ZoneInfo("UTC"))
- 
- 
- def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     dt_utc = _to_utc_datetime(created_at)
-     dt_jst = dt_utc.astimezone(JST)
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-     time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
-     return dt_utc.isoformat(), date_label, time_label
- 
- 
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-@@ -586,71 +702,133 @@ def _extract_mentions(body: str) -> list[str]:
- def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, Any]]:
-     if not names:
-         return []
-     uniq_names = sorted(set(names))
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         placeholders = ",".join(["%s"] * len(uniq_names))
-         cur.execute(
-             f"""
-             SELECT u.id, u.nickname
-               FROM external_login_user u
-               JOIN mfu_event_member m ON m.user_id = u.id
-              WHERE m.event_id = %s
-                AND u.nickname IN ({placeholders})
-             """,
-             tuple([event_id] + uniq_names),
-         )
-         rows = cur.fetchall() or []
-         return [{"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]} for r in rows]
-     finally:
-         cur.close()
-         db.close()
- 
- 
-+def _build_chat_message_push_targets(event_id: int, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
-+    sender_key = _actor_sender_id(sender_actor["actor_type"], str(sender_actor["actor_id"]))
-+    targets: set[tuple[str, str]] = set()
-+
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
-+        for row in cur.fetchall() or []:
-+            targets.add(("line", str(row["user_id"])))
-+
-+        cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
-+        for row in cur.fetchall() or []:
-+            username = str(row["username"])
-+            if username == "admin":
-+                targets.add(("admin", "admin"))
-+            else:
-+                targets.add(("acl", username))
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    targets.add(("admin", "admin"))
-+    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key]
-+
-+
-+def _send_chat_message_push_async(
-+    app: Any,
-+    event_id: int,
-+    sender_actor: dict[str, Any],
-+    sender_display_name: str,
-+    message_body: str,
-+) -> None:
-+    with app.app_context():
-+        payload = {
-+            "type": "chat_message",
-+            "event_id": event_id,
-+            "url": f"/chat/events/{event_id}",
-+            "title": "イベントチャット",
-+            "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
-+        }
-+
-+        event = _get_event(event_id)
-+        if event and event.get("title"):
-+            payload["title"] = str(event.get("title"))
-+
-+        sent_count = 0
-+        for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
-+            sent_count += _send_push_to_actor(actor_type, actor_id, payload)
-+
-+        _log_notification(event_id, "chat_message", payload, sent_count)
-+
-+
- def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_count: int = 0) -> None:
-+    if not _ensure_chat_notification_log_schema():
-+        return
-+
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             INSERT INTO chat_notification_log (event_id, kind, payload_json, sent_count, created_at)
-             VALUES (%s, %s, %s, %s, %s)
-             """,
-             (event_id, kind, json.dumps(payload, ensure_ascii=False), sent_count, datetime.utcnow()),
-         )
-         db.commit()
-     except Exception:
-         current_app.logger.warning("chat notification log insert failed", exc_info=True)
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any]) -> int:
--    from pywebpush import webpush, WebPushException
-+    if not _ensure_chat_push_schema():
-+        return 0
-+
-+    try:
-+        from pywebpush import webpush, WebPushException
-+    except ImportError:
-+        return 0
- 
-     public = os.getenv("CHAT_VAPID_PUBLIC_KEY")
-     private = os.getenv("CHAT_VAPID_PRIVATE_KEY")
-     subject = os.getenv("CHAT_VAPID_SUBJECT", "mailto:admin@example.com")
-     if not private or not public:
-         return 0
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     sent = 0
-     try:
-         cur.execute(
-             """
-             SELECT id, endpoint, p256dh, auth
-               FROM chat_push_subscriptions
-              WHERE actor_type=%s AND actor_id=%s
-             """,
-             (actor_type, actor_id),
-         )
-         subs = cur.fetchall() or []
- 
-         for sub in subs:
-             try:
-                 webpush(
-                     subscription_info={
-@@ -708,99 +886,109 @@ def room(event_id: int):
-     messages = [_present_message(m, actor, avatar_cache=avatar_cache) for m in _load_messages(event_id)]
-     can_broadcast = actor["actor_type"] in {"admin", "acl"}
-     return render_template(
-         "chat/room.html",
-         actor=actor,
-         current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
-         event=event,
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-         csrf_token=_chat_csrf(),
-         can_broadcast=can_broadcast,
-         default_avatar_url=_default_avatar_url(),
-     )
- 
- 
- @chat_bp.post("/api/push/subscribe")
- def push_subscribe():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400)
-     data = request.get_json(silent=True) or {}
-     endpoint = (data.get("endpoint") or "").strip()
-+    endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
-     keys = data.get("keys") or {}
-     if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
-         abort(400)
-+    if not _ensure_chat_push_schema():
-+        abort(500)
- 
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             INSERT INTO chat_push_subscriptions (
--              actor_type, actor_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
--            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
--            ON DUPLICATE KEY UPDATE p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
-+              actor_type, actor_id, endpoint, endpoint_hash, p256dh, auth, user_agent, created_at, updated_at
-+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-+            ON DUPLICATE KEY UPDATE endpoint=VALUES(endpoint), p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
-             """,
-             (
-                 actor["actor_type"],
-                 actor["actor_id"],
-                 endpoint,
-+                endpoint_hash,
-                 keys["p256dh"],
-                 keys["auth"],
-                 request.headers.get("User-Agent"),
-                 datetime.utcnow(),
-                 datetime.utcnow(),
-             ),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
-     return jsonify({"ok": True})
- 
- 
- @chat_bp.post("/api/push/unsubscribe")
- def push_unsubscribe():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400)
-     endpoint = ((request.get_json(silent=True) or {}).get("endpoint") or "").strip()
-+    endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
-     if not endpoint:
-         abort(400)
-+    if not _ensure_chat_push_schema():
-+        abort(500)
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
--            "DELETE FROM chat_push_subscriptions WHERE actor_type=%s AND actor_id=%s AND endpoint=%s",
--            (actor["actor_type"], actor["actor_id"], endpoint),
-+            """
-+            DELETE FROM chat_push_subscriptions
-+             WHERE actor_type=%s AND actor_id=%s AND endpoint_hash=%s
-+            """,
-+            (actor["actor_type"], actor["actor_id"], endpoint_hash),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
-     return jsonify({"ok": True})
- 
- 
- @chat_bp.post("/api/events/<int:event_id>/broadcast")
- def broadcast_push(event_id: int):
-     actor = get_chat_actor()
-     if not actor or actor["actor_type"] == "line":
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-     token = (request.form.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400)
- 
-     msg = _validate_body(request.form.get("body") or "")
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     sent_count = 0
-     try:
-         cur.execute("SELECT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
-@@ -882,49 +1070,56 @@ def on_send(data):
-         return
- 
-     try:
-         body = _validate_body(raw_body)
-         reply_to_message_id = _validate_reply_to_message_id(event_id, raw_reply_to_message_id)
-     except ValueError as exc:
-         emit("chat_error", {"error": str(exc)})
-         return
- 
-     message = _enrich_reply_fields(_save_message(event_id, actor, body, reply_to_message_id))
-     message_payload = _present_message(message, actor, avatar_cache={})
-     emit("chat_message", message_payload, to=f"event:{event_id}")
- 
-     mention_names = _extract_mentions(body)
-     mention_targets = _lookup_mention_targets(event_id, mention_names)
-     sent_count = 0
-     for target in mention_targets:
-         sent_count += _send_push_to_actor(
-             target["actor_type"],
-             target["actor_id"],
-             {"title": f"{actor['display_name']}さんからメンション", "body": body, "event_id": event_id},
-         )
-     if mention_targets:
-         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
- 
-+    app = current_app._get_current_object()
-+    threading.Thread(
-+        target=_send_chat_message_push_async,
-+        args=(app, event_id, actor, actor["display_name"], body),
-+        daemon=True,
-+    ).start()
-+
- 
- @socketio.on("chat_notify_dm")
- def notify_dm(data):
-     actor = get_chat_actor()
-     if not actor:
-         disconnect()
-         return
-     event_id = int((data or {}).get("event_id") or 0)
-     target_actor_type = (data or {}).get("target_actor_type")
-     target_actor_id = str((data or {}).get("target_actor_id") or "")
-     if not _can_access_event(event_id, actor):
-         disconnect()
-         return
-     sent_count = _send_push_to_actor(
-         target_actor_type,
-         target_actor_id,
-         {
-             "title": "ダイレクト通知",
-             "body": (data or {}).get("body") or "",
-             "event_id": event_id,
-         },
-     )
-     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
-     emit("chat_dm_notified", {"ok": True, "sent_count": sent_count})
+ .chat-time {
+   font-size: 0.72rem;
+   color: #7a7a7a;
+   white-space: nowrap;
+ }
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index a73484ef4191dc3e30c7f3f896cebe9749c61135..e00e88f3fd6b67a1f2d005edd196d67a0565c4b9 100644
+index e00e88f3fd6b67a1f2d005edd196d67a0565c4b9..6d1e1d10c19fb9674cd43e6be016f4b438499263 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -274,52 +274,52 @@
-                  src="{{ m.sender_avatar_url or default_avatar_url }}"
-                  alt=""
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
-         </div>
-       </div>
-     {% endfor %}
-   </div>
+@@ -9,101 +9,114 @@
+ }
  
-   <div id="reply-preview" class="reply-preview d-none">
-     <div class="reply-meta">
-       <strong id="reply-sender"></strong>
-       <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
-     </div>
-     <div id="reply-text" class="reply-text"></div>
-   </div>
+ .chat-date-divider {
+   display: flex;
+   justify-content: center;
+   margin: 10px 0;
+ }
  
-   <form id="chat-form" class="d-flex gap-2">
-     <input type="hidden" id="reply-to-id" value="">
-     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
-     <button class="btn btn-primary" type="submit">送信</button>
-   </form>
+ .chat-date-divider span {
+   display: inline-block;
+   font-size: 0.78rem;
+   color: #556;
+   background: rgba(255, 255, 255, 0.95);
+   border-radius: 999px;
+   padding: 3px 12px;
+ }
  
--  <div class="mt-3 d-flex gap-2">
--    <button class="btn btn-outline-secondary btn-sm" id="enable-push">通知を有効化</button>
-+  <div class="mt-3 d-flex gap-2 align-items-center">
-+    <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
-     {% if can_broadcast %}
-     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
-       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
-       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
-     </form>
-     {% endif %}
-   </div>
- </div>
+ .chat-row {
+   margin-bottom: 10px;
+ }
  
- <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
- (() => {
-   const root = document.querySelector('[data-event-id]');
-   if (!root) return;
+ .chat-line {
+   display: flex;
+   gap: 8px;
+   align-items: flex-end;
++  min-width: 0;
+ }
  
-   const eventId = Number(root.dataset.eventId);
-   const csrfToken = root.dataset.csrf;
-   const vapidKey = root.dataset.vapid;
-   const meId = root.dataset.me || '';
-   const myDisplayName = root.dataset.displayName || '';
-   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+ .chat-row.me .chat-line {
+   justify-content: flex-end;
+ }
  
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-@@ -373,71 +373,136 @@
+ .chat-row.other .chat-line {
+   justify-content: flex-start;
+ }
  
-     const messageId = row.dataset.messageId;
-     const senderName = row.dataset.senderName || 'Unknown';
-     const bodyPlain = row.dataset.bodyPlain || '';
+ .chat-main {
+   display: flex;
+   flex-direction: column;
+   max-width: min(80%, 560px);
++  min-width: 0;
+ }
  
-     if (state.replyToId && String(state.replyToId) === String(messageId)) {
-       clearReplyState();
-       return;
-     }
-     setReplyState(messageId, senderName, bodyPlain, bubble);
-   });
+ .chat-row.me .chat-main {
+   align-items: flex-end;
+ }
  
-   replyCancelBtn?.addEventListener('click', clearReplyState);
+ .chat-row.other .chat-main {
+   align-items: flex-start;
+ }
  
-   form?.addEventListener('submit', (e) => {
-     e.preventDefault();
-     socket.emit('chat_send', {
-       event_id: eventId,
-       body: bodyInput.value,
-       reply_to_message_id: state.replyToId,
-     });
-     bodyInput.value = '';
-     clearReplyState();
-   });
+ .chat-sender {
+   font-size: 0.76rem;
+   color: #667;
+   margin: 0 8px 4px;
+ }
  
-+  initPushUi();
+ .chat-bubble-wrap {
+   display: flex;
+   align-items: flex-end;
+   gap: 6px;
++  min-width: 0;
++  flex: 0 1 auto;
+ }
+ 
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+ }
+ 
+ .chat-bubble {
++  display: inline-block;
++  max-width: min(100%, 28rem);
+   padding: 8px 12px;
+   border-radius: 16px;
+-  line-height: 1.45;
+-  word-break: break-word;
+-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
++  line-height: 1.4;
+   white-space: pre-wrap;
++  overflow-wrap: anywhere;
++  word-break: normal;
++  min-width: 0;
++  flex: 0 1 auto;
++  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
+ }
+ 
++.chat-body {
++  min-width: 0;
++}
 +
-   pushBtn?.addEventListener('click', async () => {
--    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-+    const pushState = await getPushState();
-+    if (!pushState.supported) {
-       alert('この端末はPush通知に非対応です');
-       return;
-     }
--    const reg = await navigator.serviceWorker.ready;
--    const sub = await reg.pushManager.subscribe({
-+
-+    if (pushState.subscription) {
-+      await disablePush(pushState.registration, pushState.subscription);
-+      return;
-+    }
-+
-+    await enablePush(pushState.registration);
-+  });
-+
-+  async function initPushUi() {
-+    const pushState = await getPushState();
-+    if (!pushState.supported) {
-+      if (pushBtn) {
-+        pushBtn.disabled = true;
-+        pushBtn.textContent = 'Push通知は非対応です';
-+      }
-+      return;
-+    }
-+    updatePushButton(Boolean(pushState.subscription));
-+  }
-+
-+  function updatePushButton(enabled) {
-+    if (!pushBtn) return;
-+    pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
-+    pushBtn.classList.toggle('btn-outline-danger', enabled);
-+    pushBtn.classList.toggle('btn-outline-secondary', !enabled);
-+  }
-+
-+  async function getPushState() {
-+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-+      return { supported: false, registration: null, subscription: null };
-+    }
-+    const registration = await navigator.serviceWorker.register('/chat/sw.js', { scope: '/chat/' });
-+    const subscription = await registration.pushManager.getSubscription();
-+    return { supported: true, registration, subscription };
-+  }
-+
-+  async function enablePush(registration) {
-+    if (!vapidKey) {
-+      alert('VAPID公開鍵が未設定のため通知を有効化できません');
-+      return;
-+    }
-+    const permission = await Notification.requestPermission();
-+    if (permission !== 'granted') {
-+      alert('通知の許可が必要です');
-+      return;
-+    }
-+
-+    const subscription = await registration.pushManager.subscribe({
-       userVisibleOnly: true,
--      applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
-+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
-     });
-+
-     const res = await fetch('/chat/api/push/subscribe', {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
--      body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
-+      body: JSON.stringify({ csrf_token: csrfToken, ...subscription.toJSON() }),
-     });
-     if (!res.ok) {
-       alert('購読登録に失敗しました');
-       return;
-     }
--    alert('通知を有効化しました');
--  });
-+    updatePushButton(true);
-+  }
-+
-+  async function disablePush(registration, subscription) {
-+    await subscription.unsubscribe();
-+    const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
-+    if (endpoint) {
-+      await fetch('/chat/api/push/unsubscribe', {
-+        method: 'POST',
-+        headers: { 'Content-Type': 'application/json' },
-+        body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
-+      });
-+    }
-+    const nextSubscription = await registration.pushManager.getSubscription();
-+    updatePushButton(Boolean(nextSubscription));
-+  }
+ .chat-row.me .chat-bubble {
+   background: #4a8dff;
+   color: #fff;
+   border-bottom-right-radius: 6px;
+ }
  
-   function renderMessage(msg) {
-     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
-     const dateLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_date_label || '')
-       : formatDateLabel(createdAt);
-     const timeLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_time_hm || '')
-       : formatTimeLabel(createdAt);
+ .chat-row.other .chat-bubble {
+   background: #f1f3f5;
+   color: #222;
+   border-bottom-left-radius: 6px;
+ }
  
-     appendDateDividerIfNeeded(dateLabel);
+ .chat-time {
+   font-size: 0.72rem;
+   color: #7a7a7a;
+   white-space: nowrap;
+ }
  
-     const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
-       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
- 
-     const row = document.createElement('div');
-     row.className = `chat-row ${isMe ? 'me' : 'other'}`;
-     row.id = `msg-${msg.id}`;
-     row.dataset.messageId = msg.id;
-     row.dataset.senderName = msg.sender_display_name || 'Unknown';
-     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
-     row.dataset.replyToId = msg.reply_to_message_id || '';
-     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
-     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
-diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
-index 72c8c07ffa8c5a13ab006ec74fd4f19794292d58..eb7cb8b9ef8df34a1bf4b8ad1129b275d2cac3ec 100644
---- a/chat/templates/chat/sw.js
-+++ b/chat/templates/chat/sw.js
-@@ -1,29 +1,40 @@
--const CACHE = 'mfu-chat-v1';
--const STATIC_ASSETS = [
--  '/chat/',
--  '/chat/manifest.json',
--  '/chat/sw.js'
--];
-+self.addEventListener('push', (event) => {
-+  let payload = {};
-+  try {
-+    payload = event.data ? event.data.json() : {};
-+  } catch (_e) {
-+    payload = {};
-+  }
- 
--self.addEventListener('install', (event) => {
--  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));
--});
-+  const title = payload.title || 'MFU Chat';
-+  const body = payload.body || '新着メッセージがあります';
-+  const url = payload.url || '/chat/';
- 
--self.addEventListener('fetch', (event) => {
--  const url = new URL(event.request.url);
--  if (url.pathname.startsWith('/chat/static/')) {
--    event.respondWith(caches.match(event.request).then((res) => res || fetch(event.request)));
--    return;
--  }
--  if (url.pathname.startsWith('/chat/api/')) {
--    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
--  }
-+  event.waitUntil(
-+    self.registration.showNotification(title, {
-+      body,
-+      data: { url },
-+    })
-+  );
- });
- 
--self.addEventListener('push', (event) => {
--  const data = event.data ? event.data.json() : { title: 'MFU Chat', body: '新着通知' };
--  event.waitUntil(self.registration.showNotification(data.title || 'MFU Chat', {
--    body: data.body || '',
--    data,
--  }));
-+self.addEventListener('notificationclick', (event) => {
-+  event.notification.close();
-+  const targetUrl = event.notification?.data?.url || '/chat/';
-+
-+  event.waitUntil(
-+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-+      for (const client of windowClients) {
-+        if ('focus' in client) {
-+          if (client.url.includes(targetUrl)) {
-+            return client.focus();
-+          }
-+        }
-+      }
-+      if (clients.openWindow) {
-+        return clients.openWindow(targetUrl);
-+      }
-+      return null;
-+    })
-+  );
- });
+ .chat-avatar {
+   width: 32px;
+   height: 32px;
+   border-radius: 50%;
+   object-fit: cover;
+   flex: 0 0 auto;
+   background: #fff;
