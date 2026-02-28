@@ -7,6 +7,7 @@
   const vapidKey = root.dataset.vapid;
   const meId = root.dataset.me || '';
   const myDisplayName = root.dataset.displayName || '';
+  const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
   const bodyInput = document.getElementById('chat-body');
@@ -34,6 +35,18 @@
     msgBox.scrollTop = msgBox.scrollHeight;
   });
   socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
+  socket.on('chat_reaction_update', (payload) => applyReactionUpdate(payload));
+
+
+  msgBox?.addEventListener('click', (e) => {
+    const reactionBtn = e.target.closest('.chat-reaction-emoji');
+    if (!reactionBtn) return;
+    const row = reactionBtn.closest('.chat-row');
+    const messageId = Number(row?.dataset.messageId || 0);
+    const emoji = reactionBtn.dataset.emoji || '';
+    if (!messageId || !reactionEmojis.includes(emoji)) return;
+    socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
+  });
 
   form?.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -83,6 +96,7 @@
 
     const row = document.createElement('div');
     row.className = `chat-row ${isMe ? 'me' : 'other'}`;
+    row.dataset.messageId = String(msg.id || '');
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
     if (msg.created_at_iso) row.dataset.createdAt = msg.created_at_iso;
 
@@ -107,6 +121,27 @@
     wrap.appendChild(bubble);
     wrap.appendChild(time);
     row.appendChild(wrap);
+
+    const reactionBox = document.createElement('div');
+    reactionBox.className = 'chat-reaction-box';
+    reactionBox.dataset.myReaction = msg.my_reaction || '';
+    const panel = document.createElement('div');
+    panel.className = 'chat-reaction-panel';
+    for (const emoji of reactionEmojis) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chat-reaction-emoji';
+      btn.dataset.emoji = emoji;
+      btn.textContent = emoji;
+      panel.appendChild(btn);
+    }
+    const summary = document.createElement('div');
+    summary.className = 'chat-reaction-summary';
+    reactionBox.appendChild(panel);
+    reactionBox.appendChild(summary);
+    row.appendChild(reactionBox);
+    renderReactionSummary(row, msg.reactions_summary || []);
+
     msgBox.appendChild(row);
   }
 
@@ -134,6 +169,39 @@
 
   function formatTimeLabel(date) {
     return fmtTime.format(date);
+  }
+
+
+
+  function applyReactionUpdate(payload) {
+    const messageId = Number(payload?.message_id || 0);
+    if (!messageId) return;
+    const row = msgBox.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+    if (!row) return;
+    const changed = payload?.changed || {};
+    if (meId && changed.actor_type && `${changed.actor_type}:${changed.actor_id}` === meId) {
+      const box = row.querySelector('.chat-reaction-box');
+      if (box) box.dataset.myReaction = changed.emoji || '';
+    }
+    renderReactionSummary(row, payload?.reactions || []);
+  }
+
+  function renderReactionSummary(row, reactions) {
+    const box = row.querySelector('.chat-reaction-box');
+    const summary = box?.querySelector('.chat-reaction-summary');
+    if (!summary) return;
+    summary.innerHTML = '';
+    for (const item of reactions || []) {
+      if (!reactionEmojis.includes(item?.emoji || '') || Number(item?.count || 0) <= 0) continue;
+      const chip = document.createElement('span');
+      chip.className = 'chat-reaction-chip';
+      chip.textContent = `${item.emoji} ${item.count}`;
+      summary.appendChild(chip);
+    }
+    const myReaction = box?.dataset.myReaction || '';
+    box?.querySelectorAll('.chat-reaction-emoji').forEach((btn) => {
+      btn.classList.toggle('is-active', btn.dataset.emoji === myReaction);
+    });
   }
 
   function urlBase64ToUint8Array(base64String) {
