@@ -1,24 +1,27 @@
 <nav class="navbar navbar-expand-lg bg-body-tertiary">
   <div class="container">
-    <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
+    <a class="navbar-brand" href="/external-login/">MFU</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv" aria-controls="nv" aria-expanded="false" aria-label="Toggle navigation">
       <span class="navbar-toggler-icon"></span>
     </button>
     <div id="nv" class="collapse navbar-collapse">
       <ul class="navbar-nav me-auto">
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
-        <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
+        <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
       </ul>
-      <ul class="navbar-nav">
+      <ul class="navbar-nav align-items-lg-center">
         <li class="nav-item">
-          <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
-            🔔 通知
-            <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
+          <a class="nav-link position-relative" href="/external-login/notifications" id="navNotifBell" aria-label="通知">
+            🔔
+            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none" id="navNotifBadge">0</span>
           </a>
         </li>
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile') }}">プロフィール</a></li>
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
+        <li class="nav-item dropdown">
+          <button class="nav-link btn btn-link text-decoration-none" id="extNavMenuButton" data-bs-toggle="dropdown" aria-expanded="false" aria-label="メニュー" type="button">⋮</button>
+          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="extNavMenuButton">
+            <li><a class="dropdown-item" href="/external-login/profile">プロフィール</a></li>
+            <li><a class="dropdown-item" href="/external-login/logout">ログアウト</a></li>
+          </ul>
+        </li>
       </ul>
     </div>
   </div>
