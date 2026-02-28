@@ -9,6 +9,7 @@
       <input class="form-check-input" type="checkbox" id="onlyUnread">
       <label class="form-check-label" for="onlyUnread">未読のみ</label>
     </div>
+    <button id="refreshBtn" class="btn btn-outline-primary btn-sm">更新</button>
     <button id="markAllReadBtn" class="btn btn-outline-secondary btn-sm">すべて既読にする</button>
   </div>
 </div>
@@ -25,6 +26,7 @@
     const emptyEl = document.getElementById('emptyState');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
     const markAllReadBtn = document.getElementById('markAllReadBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
     const onlyUnread = document.getElementById('onlyUnread');
 
     let page = 1;
@@ -88,6 +90,7 @@
         const unread = onlyUnread.checked ? '1' : '0';
         const res = await fetch(`/external-login/api/notifications?unread=${unread}&page=${page}`, {
           credentials: 'same-origin',
+          cache: 'no-store',
         });
         if (!res.ok) throw new Error('failed to load notifications');
         const data = await res.json();
@@ -109,6 +112,11 @@
       await load({ append: true });
     });
 
+    refreshBtn.addEventListener('click', async () => {
+      page = 1;
+      await load({ append: false });
+    });
+
     markAllReadBtn.addEventListener('click', async () => {
       markAllReadBtn.disabled = true;
       try {
@@ -122,6 +130,17 @@
         markAllReadBtn.disabled = false;
       }
     });
+
+    const refreshCurrentHead = async () => {
+      page = 1;
+      await load({ append: false });
+    };
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshCurrentHead();
+    });
+    window.addEventListener('pageshow', refreshCurrentHead);
+    window.setInterval(refreshCurrentHead, 15000);
 
     load({ append: false });
   })();
