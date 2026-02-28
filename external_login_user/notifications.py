@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from time import perf_counter
 from typing import Any
 
 from flask import abort, current_app, jsonify, render_template, request, session
@@ -227,6 +228,92 @@ def api_notifications_list():
                     "total": total,
                     "has_next": page * per_page < total,
                 },
+            }
+        )
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+    finally:
+        cur.close()
+        db.close()
+
+
+@bp.get("/api/notifications/updates")
+def api_notifications_updates():
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    uid = int(session.get("ext_user_id") or 0)
+    since_id = max(int(request.args.get("since_id") or 0), 0)
+    limit = min(max(int(request.args.get("limit") or 20), 1), 100)
+
+    started = perf_counter()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        db.start_transaction()
+
+        cur.execute(
+            """
+            SELECT id, title, body, target_url, created_at, read_at
+              FROM mfu_notifications
+             WHERE user_kind='external'
+               AND user_id=%s
+               AND id > %s
+             ORDER BY id ASC
+             LIMIT %s
+            """,
+            (uid, since_id, limit),
+        )
+        rows = cur.fetchall() or []
+
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+              FROM mfu_notifications
+             WHERE user_kind='external'
+               AND user_id=%s
+               AND read_at IS NULL
+            """,
+            (uid,),
+        )
+        unread_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        db.commit()
+
+        items = []
+        latest_id = since_id
+        for row in rows:
+            item_id = int(row["id"])
+            latest_id = max(latest_id, item_id)
+            items.append(
+                {
+                    "id": item_id,
+                    "title": row.get("title"),
+                    "body": row.get("body") or "",
+                    "target_url": row.get("target_url") or "/external-login/",
+                    "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
+                    "read_at": row.get("read_at").isoformat() if row.get("read_at") else None,
+                }
+            )
+
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        current_app.logger.info(
+            "notifications updates user_id=%s since_id=%s limit=%s returned=%s latest_id=%s unread_count=%s elapsed_ms=%s",
+            uid,
+            since_id,
+            limit,
+            len(items),
+            latest_id,
+            unread_count,
+            elapsed_ms,
+        )
+
+        resp = jsonify(
+            {
+                "latest_id": latest_id,
+                "unread_count": unread_count,
+                "items": items,
             }
         )
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
