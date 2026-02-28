@@ -116,7 +116,7 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
 login_manager.user_loader(load_user)
-socketio.init_app(app, message_queue=None)
+socketio.init_app(app)
 
 # =====================================
 # 🧠 補助関数群（上段へ集約）
