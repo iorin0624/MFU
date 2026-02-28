@@ -1,182 +1,50 @@
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 6d1e1d10c19fb9674cd43e6be016f4b438499263..06bbe9ee158f51e8185e6a04e7d2358befe8a521 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -59,64 +59,70 @@
- 
- .chat-sender {
-   font-size: 0.76rem;
-   color: #667;
-   margin: 0 8px 4px;
- }
- 
- .chat-bubble-wrap {
-   display: flex;
-   align-items: flex-end;
-   gap: 6px;
-   min-width: 0;
-   flex: 0 1 auto;
- }
- 
- .chat-row.me .chat-bubble-wrap {
-   flex-direction: row-reverse;
- }
- 
- .chat-bubble {
-   display: inline-block;
-   max-width: min(100%, 28rem);
-   padding: 8px 12px;
-   border-radius: 16px;
-   line-height: 1.4;
--  white-space: pre-wrap;
-+  white-space: normal;
-   overflow-wrap: anywhere;
-   word-break: normal;
-   min-width: 0;
-   flex: 0 1 auto;
-   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
-   cursor: pointer;
-   transition: box-shadow 0.2s ease, transform 0.2s ease;
- }
- 
- .chat-body {
-   min-width: 0;
- }
- 
-+.chat-body p,
-+.chat-body ul,
-+.chat-body ol {
-+  margin: 0;
-+}
-+
- .chat-row.me .chat-bubble {
-   background: #4a8dff;
-   color: #fff;
-   border-bottom-right-radius: 6px;
- }
- 
- .chat-row.other .chat-bubble {
-   background: #f1f3f5;
-   color: #222;
-   border-bottom-left-radius: 6px;
- }
- 
- .chat-time {
-   font-size: 0.72rem;
-   color: #7a7a7a;
-   white-space: nowrap;
- }
- 
- .chat-avatar {
-   width: 32px;
-   height: 32px;
-   border-radius: 50%;
-   object-fit: cover;
-   flex: 0 0 auto;
-   background: #fff;
-@@ -254,51 +260,51 @@
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
- 
-           <div class="chat-main">
-             {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
- 
-             {% if m.reply_to_message_id %}
-               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
-                 <img class="chat-avatar-sm"
-                      src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-                      alt=""
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-                 <div class="rq-body">
-                   <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
-                   <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
-                 </div>
-               </div>
-             {% endif %}
- 
-             <div class="chat-bubble-wrap">
-               <div class="chat-bubble">
--                <div class="chat-body">{{ m.body|safe }}</div>
-+                <div class="chat-body">{{ (m.body or '')|trim|safe }}</div>
-               </div>
-               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-             </div>
-           </div>
- 
-           {% if m.is_me %}
-             <img class="chat-avatar"
-                  src="{{ m.sender_avatar_url or default_avatar_url }}"
-                  alt=""
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
-         </div>
-       </div>
-     {% endfor %}
-   </div>
- 
-   <div id="reply-preview" class="reply-preview d-none">
-     <div class="reply-meta">
-       <strong id="reply-sender"></strong>
-       <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
-     </div>
-     <div id="reply-text" class="reply-text"></div>
-   </div>
-@@ -534,51 +540,51 @@
- 
-     if (!isMe) {
-       const sender = document.createElement('div');
-       sender.className = 'chat-sender';
-       sender.textContent = msg.sender_display_name || 'Unknown';
-       main.appendChild(sender);
-     }
- 
-     if (msg.reply_to_message_id) {
-       main.appendChild(makeReplyQuote(
-         msg.reply_to_message_id,
-         msg.reply_to_sender_display_name || '元メッセージ',
-         msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
-         msg.reply_to_sender_avatar_url || defaultAvatarUrl,
-       ));
-     }
- 
-     const wrap = document.createElement('div');
-     wrap.className = 'chat-bubble-wrap';
- 
-     const bubble = document.createElement('div');
-     bubble.className = 'chat-bubble';
- 
-     const body = document.createElement('div');
-     body.className = 'chat-body';
--    body.innerHTML = msg.body || '';
-+    body.innerHTML = (msg.body || '').trim();
-     bubble.appendChild(body);
- 
-     const time = document.createElement('div');
-     time.className = 'chat-time';
-     time.textContent = timeLabel;
- 
-     wrap.appendChild(bubble);
-     wrap.appendChild(time);
-     main.appendChild(wrap);
-     line.appendChild(main);
- 
-     if (isMe) {
-       line.appendChild(makeAvatar(msg.sender_avatar_url));
-     }
- 
-     row.appendChild(line);
-     msgBox.appendChild(row);
+diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
+index eb7cb8b9ef8df34a1bf4b8ad1129b275d2cac3ec..021f2472beeaeb82d64a91bd0bcd095bc195e11f 100644
+--- a/chat/templates/chat/sw.js
++++ b/chat/templates/chat/sw.js
+@@ -1,40 +1,39 @@
+ self.addEventListener('push', (event) => {
+   let payload = {};
+   try {
+     payload = event.data ? event.data.json() : {};
+   } catch (_e) {
+     payload = {};
    }
  
-   function makeReplyQuote(messageId, senderName, excerpt, avatarUrl) {
-     const quote = document.createElement('div');
-     quote.className = 'chat-reply-quote';
-     quote.dataset.jumpToId = String(messageId);
+   const title = payload.title || 'MFU Chat';
+   const body = payload.body || '新着メッセージがあります';
+-  const url = payload.url || '/chat/';
++  const url = payload.url || (payload.event_id ? `/chat/events/${payload.event_id}` : '/chat/');
  
-     const icon = makeAvatar(avatarUrl, true);
+   event.waitUntil(
+     self.registration.showNotification(title, {
+       body,
+       data: { url },
+     })
+   );
+ });
+ 
+ self.addEventListener('notificationclick', (event) => {
+   event.notification.close();
+-  const targetUrl = event.notification?.data?.url || '/chat/';
++  const rawTargetUrl = event.notification?.data?.url || '/chat/';
++  const targetUrl = new URL(rawTargetUrl, self.location.origin).toString();
+ 
+   event.waitUntil(
+     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+       for (const client of windowClients) {
+-        if ('focus' in client) {
+-          if (client.url.includes(targetUrl)) {
+-            return client.focus();
+-          }
++        if ('focus' in client && 'navigate' in client) {
++          return client.focus().then(() => client.navigate(targetUrl));
+         }
+       }
+       if (clients.openWindow) {
+         return clients.openWindow(targetUrl);
+       }
+       return null;
+     })
+   );
+ });

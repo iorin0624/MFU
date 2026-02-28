@@ -156,6 +156,8 @@
                       <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
                     {% endif %}
 
+                    <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+
                     {% if album_url %}
                       <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
                     {% else %}
@@ -217,6 +219,8 @@
                       {% else %}
                         <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
                       {% endif %}
+
+                      <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
 
                       {% if album_url %}
                         <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
