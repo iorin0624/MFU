@@ -1,55 +1,110 @@
-diff --git a/external_login_user/template/base_extlogin.html b/external_login_user/template/base_extlogin.html
-index fdcd2bcc25bff2f9cc17dbe4414395cf31f3e4a7..51d04a9053fe0c2504dded72051f41791e4b0198 100644
---- a/external_login_user/template/base_extlogin.html
-+++ b/external_login_user/template/base_extlogin.html
-@@ -1,49 +1,49 @@
- <!doctype html>
- <html lang="ja">
- <head>
-   <meta charset="utf-8">
-   <meta name="viewport" content="width=device-width,initial-scale=1">
-   <link rel="manifest" href="/manifest.webmanifest">
-   <title>{% block title %}MFU{% endblock %}</title>
-   <!-- Bootstrap CDN（既に別のベースがあるなら不要）-->
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .container-narrow { max-width: 960px; }
-   </style>
- </head>
- <body>
- <nav class="navbar navbar-expand-lg bg-body-tertiary">
-   <div class="container">
-     <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
-     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
-       <span class="navbar-toggler-icon"></span>
-     </button>
-     <div id="nv" class="collapse navbar-collapse">
-       <ul class="navbar-nav me-auto">
-         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
--        <li class="nav-item"><a class="nav-link" href="{{ url_for('events.list_events') }}">イベント</a></li>
-+        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
-         <!-- アルバム機能のURLが /albums/ でない場合は修正 -->
-         <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
-       </ul>
-       <ul class="navbar-nav">
-         <li class="nav-item">
-           <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
-             🔔 通知
-             <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-           </a>
-         </li>
-         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile_setup') }}">プロフィール</a></li>
-         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
-       </ul>
-     </div>
-   </div>
- </nav>
+diff --git a/tools/check_template_endpoints.py b/tools/check_template_endpoints.py
+index 8fb9660c108b6440b7f8bc9966bf8045c547397e..80dd10435d7d846adea54f562d6b0020fc2e297f 100644
+--- a/tools/check_template_endpoints.py
++++ b/tools/check_template_endpoints.py
+@@ -1,95 +1,87 @@
+ #!/usr/bin/env python3
+ """テンプレート内の静的 url_for() endpoint と Flask の実在 endpoint を突合する。"""
+ from __future__ import annotations
  
- <main class="container container-narrow my-4">
-   {% with messages = get_flashed_messages(with_categories=true) %}
-     {% if messages %}
-       <div class="mb-3">
-         {% for cat, msg in messages %}
-           <div class="alert alert-{{ 'danger' if cat=='error' else cat }}">{{ msg }}</div>
-         {% endfor %}
-       </div>
+ import argparse
+ import difflib
+ import importlib.util
+ import re
+ import sys
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Iterable
+ 
+ URL_FOR_PATTERN = re.compile(r"url_for\(\s*(['\"])([^'\"]+)\1")
+-DEFAULT_TEMPLATE_DIRS = (
+-    "templates",
+-    "external_login_user/template",
+-    "external_login_user/templates",
+-)
+-
+ 
+ @dataclass(frozen=True)
+ class TemplateReference:
+     template_path: Path
+     line_no: int
+     endpoint: str
+ 
+ 
+ def _load_app_module(repo_root: Path):
+     app_init = repo_root / "__init__.py"
+     if not app_init.exists():
+         raise RuntimeError(f"app factory の読み込みに失敗: {app_init} が見つかりません")
+ 
+     spec = importlib.util.spec_from_file_location(
+         "app",
+         app_init,
+         submodule_search_locations=[str(repo_root)],
+     )
+     if spec is None or spec.loader is None:
+         raise RuntimeError("app モジュール spec の作成に失敗しました")
+ 
+     module = importlib.util.module_from_spec(spec)
+     sys.modules["app"] = module
+     spec.loader.exec_module(module)
+     return module
+ 
+ 
+ def collect_registered_endpoints(repo_root: Path) -> set[str]:
+     module = _load_app_module(repo_root)
+     create_app = getattr(module, "create_app", None)
+     if create_app is None:
+         raise RuntimeError("create_app() が見つかりません")
+ 
+     app = create_app()
+     return {rule.endpoint for rule in app.url_map.iter_rules()}
+ 
+ 
+ def _iter_template_files(repo_root: Path, additional_dirs: Iterable[str]) -> list[Path]:
+-    candidates: set[Path] = set()
+-    search_roots = list(DEFAULT_TEMPLATE_DIRS) + list(additional_dirs)
+-    for rel in search_roots:
+-        base = (repo_root / rel).resolve()
+-        if not base.exists() or not base.is_dir():
+-            continue
+-        candidates.update(base.rglob("*.html"))
+-
+-    if not candidates:
+-        candidates.update(repo_root.rglob("*.html"))
+-
+-    return sorted(candidates)
++    if additional_dirs:
++        candidates: set[Path] = set()
++        for rel in additional_dirs:
++            base = (repo_root / rel).resolve()
++            if not base.exists() or not base.is_dir():
++                continue
++            candidates.update(base.rglob("*.html"))
++        return sorted(candidates)
++
++    return sorted(p for p in repo_root.rglob("*.html") if ".git" not in p.parts)
+ 
+ 
+ def collect_template_refs(repo_root: Path, additional_dirs: Iterable[str]) -> list[TemplateReference]:
+     refs: list[TemplateReference] = []
+     for file_path in _iter_template_files(repo_root, additional_dirs):
+         rel = file_path.relative_to(repo_root)
+         for idx, line in enumerate(file_path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
+             for m in URL_FOR_PATTERN.finditer(line):
+                 endpoint = m.group(2).strip()
+                 if endpoint:
+                     refs.append(TemplateReference(template_path=rel, line_no=idx, endpoint=endpoint))
+     return refs
+ 
+ 
+ def main() -> int:
+     parser = argparse.ArgumentParser(description="template url_for endpoint 整合チェック")
+     parser.add_argument("--repo-root", default=".", help="リポジトリルート")
+     parser.add_argument(
+         "--template-dir",
+         action="append",
+         default=[],
+         help="追加で走査するテンプレートディレクトリ（相対パス）",
+     )
+     args = parser.parse_args()
+ 

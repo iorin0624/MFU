@@ -20,6 +20,8 @@
   </style>
 </head>
 <body class="container py-4" style="max-width:1000px;">
+{% include "_extlogin_nav.html" %}
+
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for cat, msg in messages %}

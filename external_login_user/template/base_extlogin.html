@@ -12,32 +12,9 @@
   </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg bg-body-tertiary">
-  <div class="container">
-    <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
-    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
-      <span class="navbar-toggler-icon"></span>
-    </button>
-    <div id="nv" class="collapse navbar-collapse">
-      <ul class="navbar-nav me-auto">
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
-        <!-- アルバム機能のURLが /albums/ でない場合は修正 -->
-        <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
-      </ul>
-      <ul class="navbar-nav">
-        <li class="nav-item">
-          <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
-            🔔 通知
-            <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-          </a>
-        </li>
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile_setup') }}">プロフィール</a></li>
-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
-      </ul>
-    </div>
-  </div>
-</nav>
+{% include "_extlogin_nav.html" %}
+
+
 
 <main class="container container-narrow my-4">
   {% with messages = get_flashed_messages(with_categories=true) %}
