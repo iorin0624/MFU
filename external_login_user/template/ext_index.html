@@ -47,9 +47,18 @@
 
   {% if login and me %}
     <div class="alert alert-success">ログイン中：<strong>{{ me.nickname }}</strong></div>
-    <div class="d-flex flex-wrap gap-2 mb-3">
+    <div class="d-flex flex-wrap gap-2 mb-2">
       <a class="btn btn-primary" href="{{ url_for('external_login_user.profile') }}">プロフィール編集</a>
       <a class="btn btn-outline-danger" href="{{ url_for('external_login_user.logout') }}">ログアウト</a>
+    </div>
+    <div class="d-flex flex-wrap gap-2 mb-3">
+      <button class="btn btn-outline-primary" type="button" id="enable-chat-push">プッシュ通知の有効</button>
+    </div>
+    <div class="alert alert-info small mb-4" role="alert" id="pwa-guide">
+      iPhoneでPWA（ホーム画面に追加）にしていない場合、Push通知は利用できません。<br>
+      設定手順は
+      <a href="https://support.apple.com/ja-jp/guide/iphone/iphea86e5236/ios" target="_blank" rel="noopener noreferrer">Apple公式ガイド</a>
+      をご確認ください。
     </div>
 
     {# ★ メール登録 促し（プロフィールから登録・変更） ★ #}
@@ -559,6 +568,127 @@
 
     // ログイン時のみサーバが show:true を返すので、常に呼んでOK
     document.addEventListener('DOMContentLoaded', fetchCheckAndMaybeShow);
+  })();
+
+
+  (() => {
+    const pushBtn = document.getElementById('enable-chat-push');
+    const pwaGuide = document.getElementById('pwa-guide');
+    if (!pushBtn) return;
+
+    let csrfToken = '';
+    let vapidKey = '';
+    let registration = null;
+
+    const setBtn = (enabled, disabled = false) => {
+      pushBtn.disabled = disabled;
+      pushBtn.textContent = enabled ? 'プッシュ通知を無効化' : 'プッシュ通知の有効';
+      pushBtn.classList.toggle('btn-outline-danger', enabled);
+      pushBtn.classList.toggle('btn-outline-primary', !enabled);
+    };
+
+
+    const setGuideVisibility = (enabled) => {
+      if (!pwaGuide) return;
+      pwaGuide.classList.toggle('d-none', enabled);
+    };
+
+    const toUint8 = (base64String) => {
+      const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+    };
+
+    const getSubscription = async () => {
+      if (!registration) return null;
+      return registration.pushManager.getSubscription();
+    };
+
+    const initPush = async () => {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        setBtn(false, true);
+        pushBtn.textContent = 'この端末はPush通知に非対応です';
+        return;
+      }
+
+      try {
+        const bootstrapRes = await fetch('/chat/api/push/bootstrap', { credentials: 'same-origin' });
+        if (!bootstrapRes.ok) throw new Error('bootstrap failed');
+        const bootstrap = await bootstrapRes.json();
+        csrfToken = bootstrap.csrf_token || '';
+        vapidKey = bootstrap.vapid_public_key || '';
+
+        registration = await navigator.serviceWorker.register(bootstrap.sw_url || '/chat/sw.js', { scope: '/chat/' });
+        const sub = await getSubscription();
+        const enabled = Boolean(sub);
+        setBtn(enabled);
+        setGuideVisibility(enabled);
+      } catch (e) {
+        console.error(e);
+        setBtn(false, true);
+        pushBtn.textContent = 'プッシュ通知の設定に失敗しました';
+      }
+    };
+
+    pushBtn.addEventListener('click', async () => {
+      try {
+        if (!registration) return;
+
+        const currentSub = await getSubscription();
+        if (currentSub) {
+          await currentSub.unsubscribe();
+          const endpoint = currentSub.endpoint || (currentSub.toJSON()?.endpoint) || '';
+          if (endpoint) {
+            await fetch('/chat/api/push/unsubscribe', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+            });
+          }
+          setBtn(false);
+          setGuideVisibility(false);
+          return;
+        }
+
+        if (!vapidKey) {
+          alert('VAPID公開鍵が未設定のため通知を有効化できません');
+          return;
+        }
+
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+          alert('通知の許可が必要です');
+          return;
+        }
+
+        const sub = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: toUint8(vapidKey),
+        });
+
+        const res = await fetch('/chat/api/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
+        });
+
+        if (!res.ok) {
+          alert('購読登録に失敗しました');
+          return;
+        }
+
+        setBtn(true);
+        setGuideVisibility(true);
+      } catch (e) {
+        console.error(e);
+        alert('プッシュ通知設定でエラーが発生しました');
+      }
+    });
+
+    document.addEventListener('DOMContentLoaded', initPush);
   })();
 
   (() => {
