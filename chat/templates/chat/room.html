@@ -1,11 +1,114 @@
 {% extends "chat/base_chat.html" %}
 {% block content %}
-<div class="container py-3" data-event-id="{{ event.id }}" data-csrf="{{ csrf_token }}" data-vapid="{{ vapid_public_key }}">
+
+<style>
+.chat-messages {
+  height: 360px;
+  overflow: auto;
+  background: #e8f3ff;
+}
+
+.chat-date-divider {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+.chat-date-divider span {
+  display: inline-block;
+  font-size: 0.78rem;
+  color: #556;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
+  padding: 3px 12px;
+}
+
+.chat-row {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+
+.chat-row.me {
+  align-items: flex-end;
+}
+
+.chat-row.other {
+  align-items: flex-start;
+}
+
+.chat-sender {
+  font-size: 0.76rem;
+  color: #667;
+  margin: 0 8px 4px;
+}
+
+.chat-bubble-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: min(80%, 560px);
+}
+
+.chat-row.me .chat-bubble-wrap {
+  flex-direction: row-reverse;
+}
+
+.chat-bubble {
+  padding: 8px 12px;
+  border-radius: 16px;
+  line-height: 1.45;
+  word-break: break-word;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+  white-space: pre-wrap;
+}
+
+.chat-row.me .chat-bubble {
+  background: #4a8dff;
+  color: #fff;
+  border-bottom-right-radius: 6px;
+}
+
+.chat-row.other .chat-bubble {
+  background: #f1f3f5;
+  color: #222;
+  border-bottom-left-radius: 6px;
+}
+
+.chat-time {
+  font-size: 0.72rem;
+  color: #7a7a7a;
+  white-space: nowrap;
+}
+</style>
+
+<div class="container py-3"
+     data-event-id="{{ event.id }}"
+     data-csrf="{{ csrf_token }}"
+     data-vapid="{{ vapid_public_key }}"
+     data-me="{{ current_user_id or me_user_id or '' }}">
   <h3>{{ event.title }} / Chat</h3>
   <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
-  <div id="messages" class="border rounded p-3 mb-3" style="height:360px;overflow:auto;">
+
+  <div id="messages" class="chat-messages border rounded p-3 mb-3">
+    {% set ns = namespace(last_date=None) %}
     {% for m in messages %}
-      <div class="mb-2"><strong>{{ m.sender_display_name }}</strong> <small class="text-muted">{{ m.created_at }}</small><br>{{ m.body|safe }}</div>
+      {% set d = m.created_at_jst_date_label %}
+      {% if loop.first or d != ns.last_date %}
+        <div class="chat-date-divider"><span>{{ d }}</span></div>
+        {% set ns.last_date = d %}
+      {% endif %}
+
+      <div class="chat-row {{ 'me' if m.is_me else 'other' }}">
+        {% if not m.is_me %}
+          <div class="chat-sender">{{ m.sender_display_name }}</div>
+        {% endif %}
+
+        <div class="chat-bubble-wrap">
+          <div class="chat-bubble">{{ m.body|safe }}</div>
+          <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+        </div>
+      </div>
     {% endfor %}
   </div>
 
@@ -25,6 +128,7 @@
     {% endif %}
   </div>
 </div>
+
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script src="{{ url_for('chat.static', filename='chat/js/chat.js') }}"></script>
 {% endblock %}
