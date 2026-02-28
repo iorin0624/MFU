@@ -1,11 +1,12 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb13eabc6a 100644
+index a00784e6f5518ab95e387c1e65f176cb13eabc6a..9d04ecc8945e7bb50a164283edd44559714eaa41 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1,65 +1,112 @@
+@@ -1,66 +1,71 @@
  from __future__ import annotations
  
  import html
++import hashlib
  import json
  import os
  import re
@@ -23,7 +24,7 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
      render_template,
      request,
      session,
-+    url_for,
+     url_for,
  )
  from flask_socketio import disconnect, emit, join_room
  
@@ -44,81 +45,172 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
  
  CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
  CHAT_REPLY_SCHEMA_READY: bool | None = None
-+DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
++CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
++CHAT_PUSH_SCHEMA_READY: bool | None = None
++CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
++CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
+ DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+ 
+ 
+ def _default_avatar_url() -> str:
+     return DEFAULT_AVATAR_URL
+ 
+ 
+ def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
+     if not row:
+         return _default_avatar_url()
+     avatar_file = (row.get("avatar_file") or "").strip()
+     if avatar_file:
+         try:
+             return url_for("external_login_user.avatar_file", name=avatar_file)
+         except Exception:
+             current_app.logger.warning("chat avatar url_for failed name=%s", avatar_file, exc_info=True)
+     avatar_url = (row.get("avatar_url") or "").strip()
+     if avatar_url:
+         return avatar_url
+     return _default_avatar_url()
+ 
+ 
+ def _resolve_sender_avatar_url(actor_type: str, actor_id: str, avatar_cache: dict[str, str] | None = None) -> str:
+     key = f"{actor_type}:{actor_id}"
+     if avatar_cache is not None and key in avatar_cache:
+@@ -121,50 +126,161 @@ def _ensure_chat_reply_schema() -> bool:
+             try:
+                 cur.execute(
+                     """
+                     ALTER TABLE chat_messages
+                     ADD CONSTRAINT fk_chat_messages_reply_to
+                     FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages(id)
+                     ON DELETE SET NULL
+                     """
+                 )
+             except Exception:
+                 current_app.logger.warning('chat auto-migration: add fk_chat_messages_reply_to failed', exc_info=True)
+ 
+             db.commit()
+             cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'reply_to_message_id'")
+             CHAT_REPLY_SCHEMA_READY = bool(cur.fetchone())
+             return CHAT_REPLY_SCHEMA_READY
+         except Exception:
+             current_app.logger.warning('chat schema check failed', exc_info=True)
+             CHAT_REPLY_SCHEMA_READY = False
+             return False
+         finally:
+             cur.close()
+             db.close()
+ 
+ 
++def _ensure_chat_push_schema() -> bool:
++    global CHAT_PUSH_SCHEMA_READY
++    if CHAT_PUSH_SCHEMA_READY is not None:
++        return CHAT_PUSH_SCHEMA_READY
 +
++    with CHAT_PUSH_SCHEMA_CHECK_LOCK:
++        if CHAT_PUSH_SCHEMA_READY is not None:
++            return CHAT_PUSH_SCHEMA_READY
 +
-+def _default_avatar_url() -> str:
-+    return DEFAULT_AVATAR_URL
-+
-+
-+def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
-+    if not row:
-+        return _default_avatar_url()
-+    avatar_file = (row.get("avatar_file") or "").strip()
-+    if avatar_file:
-+        try:
-+            return url_for("external_login_user.avatar_file", name=avatar_file)
-+        except Exception:
-+            current_app.logger.warning("chat avatar url_for failed name=%s", avatar_file, exc_info=True)
-+    avatar_url = (row.get("avatar_url") or "").strip()
-+    if avatar_url:
-+        return avatar_url
-+    return _default_avatar_url()
-+
-+
-+def _resolve_sender_avatar_url(actor_type: str, actor_id: str, avatar_cache: dict[str, str] | None = None) -> str:
-+    key = f"{actor_type}:{actor_id}"
-+    if avatar_cache is not None and key in avatar_cache:
-+        return avatar_cache[key]
-+
-+    avatar_url = _default_avatar_url()
-+    if actor_type == "line":
 +        db = get_db()
-+        cur = db.cursor(dictionary=True)
++        cur = db.cursor()
 +        try:
 +            cur.execute(
-+                "SELECT avatar_file, avatar_url FROM external_login_user WHERE id=%s LIMIT 1",
-+                (actor_id,),
++                """
++                CREATE TABLE IF NOT EXISTS chat_push_subscriptions (
++                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
++                  actor_type VARCHAR(16) NOT NULL,
++                  actor_id VARCHAR(64) NOT NULL,
++                  endpoint TEXT NOT NULL,
++                  endpoint_hash CHAR(64) NOT NULL,
++                  p256dh VARCHAR(255) NOT NULL,
++                  auth VARCHAR(255) NOT NULL,
++                  user_agent VARCHAR(255) NULL,
++                  created_at DATETIME NOT NULL,
++                  updated_at DATETIME NOT NULL,
++                  UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash),
++                  KEY idx_chat_push_actor (actor_type, actor_id)
++                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
++                """
 +            )
-+            avatar_url = _build_ext_avatar_url(cur.fetchone())
++
++            try:
++                cur.execute("SHOW COLUMNS FROM chat_push_subscriptions LIKE 'endpoint_hash'")
++                has_endpoint_hash = bool(cur.fetchone())
++                if not has_endpoint_hash:
++                    cur.execute(
++                        "ALTER TABLE chat_push_subscriptions ADD COLUMN endpoint_hash CHAR(64) NOT NULL AFTER endpoint"
++                    )
++                    cur.execute(
++                        "UPDATE chat_push_subscriptions SET endpoint_hash=SHA2(endpoint, 256) WHERE endpoint_hash='' OR endpoint_hash IS NULL"
++                    )
++            except Exception:
++                current_app.logger.warning("chat push schema ensure endpoint_hash failed", exc_info=True)
++
++            try:
++                cur.execute(
++                    "ALTER TABLE chat_push_subscriptions ADD UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash)"
++                )
++            except Exception:
++                pass
++
++            try:
++                cur.execute("ALTER TABLE chat_push_subscriptions ADD KEY idx_chat_push_actor (actor_type, actor_id)")
++            except Exception:
++                pass
++
++            db.commit()
++            CHAT_PUSH_SCHEMA_READY = True
++            return True
 +        except Exception:
-+            current_app.logger.warning("chat avatar lookup failed actor=%s:%s", actor_type, actor_id, exc_info=True)
++            current_app.logger.warning("chat push schema ensure failed", exc_info=True)
++            CHAT_PUSH_SCHEMA_READY = False
++            return False
 +        finally:
 +            cur.close()
 +            db.close()
 +
-+    if avatar_cache is not None:
-+        avatar_cache[key] = avatar_url
-+    return avatar_url
- 
- 
- def _ensure_chat_reply_schema() -> bool:
-     global CHAT_REPLY_SCHEMA_READY
-     if CHAT_REPLY_SCHEMA_READY is not None:
-         return CHAT_REPLY_SCHEMA_READY
- 
-     with CHAT_REPLY_SCHEMA_CHECK_LOCK:
-         if CHAT_REPLY_SCHEMA_READY is not None:
-             return CHAT_REPLY_SCHEMA_READY
- 
-         db = get_db()
-         cur = db.cursor(dictionary=True)
-         try:
-             cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'reply_to_message_id'")
-             if cur.fetchone():
-                 CHAT_REPLY_SCHEMA_READY = True
-                 return True
- 
-             try:
-                 cur.execute(
-                     "ALTER TABLE chat_messages ADD COLUMN reply_to_message_id BIGINT NULL AFTER body"
-                 )
-             except Exception:
-                 current_app.logger.warning('chat auto-migration: add reply_to_message_id failed', exc_info=True)
-@@ -96,67 +143,86 @@ def _ensure_chat_reply_schema() -> bool:
-             db.close()
- 
- 
++
++def _ensure_chat_notification_log_schema() -> bool:
++    global CHAT_NOTIFICATION_LOG_SCHEMA_READY
++    if CHAT_NOTIFICATION_LOG_SCHEMA_READY is not None:
++        return CHAT_NOTIFICATION_LOG_SCHEMA_READY
++
++    with CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK:
++        if CHAT_NOTIFICATION_LOG_SCHEMA_READY is not None:
++            return CHAT_NOTIFICATION_LOG_SCHEMA_READY
++
++        db = get_db()
++        cur = db.cursor()
++        try:
++            cur.execute(
++                """
++                CREATE TABLE IF NOT EXISTS chat_notification_log (
++                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
++                  event_id BIGINT NOT NULL,
++                  kind VARCHAR(32) NOT NULL,
++                  payload_json TEXT NOT NULL,
++                  sent_count INT NOT NULL DEFAULT 0,
++                  created_at DATETIME NOT NULL,
++                  KEY idx_chat_notification_event (event_id, created_at)
++                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
++                """
++            )
++
++            try:
++                cur.execute("ALTER TABLE chat_notification_log ADD KEY idx_chat_notification_event (event_id, created_at)")
++            except Exception:
++                pass
++
++            db.commit()
++            CHAT_NOTIFICATION_LOG_SCHEMA_READY = True
++            return True
++        except Exception:
++            current_app.logger.warning("chat notification log schema ensure failed", exc_info=True)
++            CHAT_NOTIFICATION_LOG_SCHEMA_READY = False
++            return False
++        finally:
++            cur.close()
++            db.close()
++
++
  def _actor_sender_id(actor_type: str, actor_id: str) -> str:
      return f"{actor_type}:{actor_id}"
  
@@ -141,282 +233,146 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
      return dt_utc.isoformat(), date_label, time_label
  
  
--def _present_message(msg: dict[str, Any], current_actor: dict[str, Any]) -> dict[str, Any]:
--    sender_id = _actor_sender_id(str(msg["sender_actor_type"]), str(msg["sender_actor_id"]))
-+def _present_message(
-+    msg: dict[str, Any],
-+    current_actor: dict[str, Any],
-+    avatar_cache: dict[str, str] | None = None,
-+) -> dict[str, Any]:
-+    sender_actor_type = str(msg["sender_actor_type"])
-+    sender_actor_id = str(msg["sender_actor_id"])
-+    sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
-+
-+    reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-+    reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-+    reply_to_sender_avatar_url = None
-+    if reply_to_sender_actor_type and reply_to_sender_actor_id:
-+        reply_to_sender_avatar_url = _resolve_sender_avatar_url(
-+            str(reply_to_sender_actor_type),
-+            str(reply_to_sender_actor_id),
-+            avatar_cache=avatar_cache,
-+        )
-+
-     return {
-         "id": msg["id"],
-         "event_id": msg["event_id"],
-         "sender_id": sender_id,
-         "sender_display_name": msg["sender_display_name"],
-+        "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
-         "body": msg["body"],
-         "created_at_iso": created_at_iso,
-         "created_at_jst_date_label": date_label,
-         "created_at_jst_time_hm": time_label,
-         "body_plain_excerpt": _build_plain_excerpt(msg.get("body") or ""),
-         "reply_to_message_id": msg.get("reply_to_message_id"),
-         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
-         "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
--        "is_me": sender_id == _actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])),
-+        "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
-+        "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
-     }
- 
- 
- def _build_plain_excerpt(value: str, max_len: int = 80) -> str:
-     text = re.sub(r"<[^>]+>", "", value or "")
-     text = re.sub(r"\s+", " ", text).strip()
-     if len(text) <= max_len:
-         return text
-     return f"{text[:max_len - 1]}…"
- 
- 
- def _chat_csrf() -> str:
-     token = session.get("chat_csrf")
-     if not token:
-         token = secrets.token_urlsafe(24)
-         session["chat_csrf"] = token
-     return token
- 
- 
- def _is_admin() -> bool:
-     return session.get("user") == "admin"
- 
- 
- def get_chat_actor() -> dict[str, Any] | None:
-     """admin / acl / line を統一形式へ正規化。"""
-@@ -290,87 +356,91 @@ def _get_event(event_id: int) -> dict[str, Any] | None:
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-         return cur.fetchone()
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
-     has_reply_schema = _ensure_chat_reply_schema()
+ def _present_message(
+     msg: dict[str, Any],
+     current_actor: dict[str, Any],
+@@ -586,71 +702,133 @@ def _extract_mentions(body: str) -> list[str]:
+ def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, Any]]:
+     if not names:
+         return []
+     uniq_names = sorted(set(names))
      db = get_db()
      cur = db.cursor(dictionary=True)
      try:
-         if has_reply_schema:
-             cur.execute(
-                 """
-                 SELECT m.id,
-                        m.event_id,
-                        m.sender_actor_type,
-                        m.sender_actor_id,
-                        m.sender_display_name,
-                        m.body,
-                        m.created_at,
-                        m.reply_to_message_id,
-+                       p.sender_actor_type AS reply_to_sender_actor_type,
-+                       p.sender_actor_id AS reply_to_sender_actor_id,
-                        p.sender_display_name AS reply_to_sender_display_name,
-                        p.body AS reply_to_body
-                   FROM chat_messages m
-                   LEFT JOIN chat_messages p
-                          ON p.id = m.reply_to_message_id
-                         AND p.event_id = m.event_id
-                  WHERE m.event_id=%s
-                  ORDER BY m.created_at DESC
-                  LIMIT %s
-                 """,
-                 (event_id, limit),
-             )
-             rows = cur.fetchall() or []
-             for row in rows:
-                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
-                     row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
-                 elif row.get("reply_to_message_id"):
-                     row["reply_to_sender_display_name"] = "元メッセージ"
-                     row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
-                 else:
-                     row["reply_to_sender_display_name"] = None
-                     row["reply_to_body_plain_excerpt"] = None
-             return list(reversed(rows))
- 
+         placeholders = ",".join(["%s"] * len(uniq_names))
          cur.execute(
-             """
-             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
-               FROM chat_messages
-              WHERE event_id=%s
-              ORDER BY created_at DESC
-              LIMIT %s
+             f"""
+             SELECT u.id, u.nickname
+               FROM external_login_user u
+               JOIN mfu_event_member m ON m.user_id = u.id
+              WHERE m.event_id = %s
+                AND u.nickname IN ({placeholders})
              """,
-             (event_id, limit),
+             tuple([event_id] + uniq_names),
          )
          rows = cur.fetchall() or []
-         for row in rows:
-             row["reply_to_message_id"] = None
-+            row["reply_to_sender_actor_type"] = None
-+            row["reply_to_sender_actor_id"] = None
-             row["reply_to_sender_display_name"] = None
-             row["reply_to_body_plain_excerpt"] = None
-         return list(reversed(rows))
+         return [{"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]} for r in rows]
      finally:
          cur.close()
          db.close()
  
  
- def _save_message(event_id: int, actor: dict[str, Any], body: str, reply_to_message_id: int | None = None) -> dict[str, Any]:
-     now = datetime.utcnow()
-     has_reply_schema = _ensure_chat_reply_schema()
++def _build_chat_message_push_targets(event_id: int, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
++    sender_key = _actor_sender_id(sender_actor["actor_type"], str(sender_actor["actor_id"]))
++    targets: set[tuple[str, str]] = set()
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
++        for row in cur.fetchall() or []:
++            targets.add(("line", str(row["user_id"])))
++
++        cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
++        for row in cur.fetchall() or []:
++            username = str(row["username"])
++            if username == "admin":
++                targets.add(("admin", "admin"))
++            else:
++                targets.add(("acl", username))
++    finally:
++        cur.close()
++        db.close()
++
++    targets.add(("admin", "admin"))
++    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key]
++
++
++def _send_chat_message_push_async(
++    app: Any,
++    event_id: int,
++    sender_actor: dict[str, Any],
++    sender_display_name: str,
++    message_body: str,
++) -> None:
++    with app.app_context():
++        payload = {
++            "type": "chat_message",
++            "event_id": event_id,
++            "url": f"/chat/events/{event_id}",
++            "title": "イベントチャット",
++            "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
++        }
++
++        event = _get_event(event_id)
++        if event and event.get("title"):
++            payload["title"] = str(event.get("title"))
++
++        sent_count = 0
++        for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
++            sent_count += _send_push_to_actor(actor_type, actor_id, payload)
++
++        _log_notification(event_id, "chat_message", payload, sent_count)
++
++
+ def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_count: int = 0) -> None:
++    if not _ensure_chat_notification_log_schema():
++        return
++
      db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         if has_reply_schema:
-             cur.execute(
-                 """
-                 INSERT INTO chat_messages (
-                     event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at, reply_to_message_id
-                 ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-                 """,
-                 (
-                     event_id,
-                     actor["actor_type"],
-                     actor["actor_id"],
-@@ -428,81 +498,89 @@ def _validate_reply_to_message_id(event_id: int, raw_value: Any) -> int | None:
-         return None
-     if not _ensure_chat_reply_schema():
-         return None
-     try:
-         reply_to_message_id = int(raw_value)
-     except (TypeError, ValueError) as exc:
-         raise ValueError("返信先メッセージの形式が不正です") from exc
-     if reply_to_message_id <= 0:
-         raise ValueError("返信先メッセージの形式が不正です")
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT id FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (reply_to_message_id, event_id))
-         if not cur.fetchone():
-             raise ValueError("返信先メッセージが見つかりません")
-         return reply_to_message_id
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
-     if not _ensure_chat_reply_schema():
-         message["reply_to_message_id"] = None
-+        message["reply_to_sender_actor_type"] = None
-+        message["reply_to_sender_actor_id"] = None
-         message["reply_to_sender_display_name"] = None
-         message["reply_to_body_plain_excerpt"] = None
-         return message
- 
-     reply_to_message_id = message.get("reply_to_message_id")
-     if not reply_to_message_id:
-+        message["reply_to_sender_actor_type"] = None
-+        message["reply_to_sender_actor_id"] = None
-         message["reply_to_sender_display_name"] = None
-         message["reply_to_body_plain_excerpt"] = None
-         return message
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
+     cur = db.cursor()
      try:
          cur.execute(
              """
--            SELECT sender_display_name, body
-+            SELECT sender_actor_type, sender_actor_id, sender_display_name, body
-               FROM chat_messages
-              WHERE id=%s AND event_id=%s
-              LIMIT 1
+             INSERT INTO chat_notification_log (event_id, kind, payload_json, sent_count, created_at)
+             VALUES (%s, %s, %s, %s, %s)
              """,
-             (reply_to_message_id, message["event_id"]),
+             (event_id, kind, json.dumps(payload, ensure_ascii=False), sent_count, datetime.utcnow()),
          )
-         row = cur.fetchone()
+         db.commit()
+     except Exception:
+         current_app.logger.warning("chat notification log insert failed", exc_info=True)
      finally:
          cur.close()
          db.close()
  
-     if row:
-+        message["reply_to_sender_actor_type"] = row["sender_actor_type"]
-+        message["reply_to_sender_actor_id"] = row["sender_actor_id"]
-         message["reply_to_sender_display_name"] = row["sender_display_name"]
-         message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
-     else:
-+        message["reply_to_sender_actor_type"] = None
-+        message["reply_to_sender_actor_id"] = None
-         message["reply_to_sender_display_name"] = "元メッセージ"
-         message["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
-     return message
  
+ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any]) -> int:
+-    from pywebpush import webpush, WebPushException
++    if not _ensure_chat_push_schema():
++        return 0
++
++    try:
++        from pywebpush import webpush, WebPushException
++    except ImportError:
++        return 0
  
- def _check_rate_limit(actor: dict[str, Any]) -> bool:
-     key = f"chat_last_post:{actor['actor_type']}:{actor['actor_id']}"
-     now = datetime.utcnow()
-     prev_iso = session.get(key)
-     if prev_iso:
-         try:
-             prev = datetime.fromisoformat(prev_iso)
-             if now - prev < timedelta(seconds=RATE_LIMIT_SECONDS):
-                 return False
-         except Exception:
-             pass
-     session[key] = now.isoformat()
-     return True
+     public = os.getenv("CHAT_VAPID_PUBLIC_KEY")
+     private = os.getenv("CHAT_VAPID_PRIVATE_KEY")
+     subject = os.getenv("CHAT_VAPID_SUBJECT", "mailto:admin@example.com")
+     if not private or not public:
+         return 0
  
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     sent = 0
+     try:
+         cur.execute(
+             """
+             SELECT id, endpoint, p256dh, auth
+               FROM chat_push_subscriptions
+              WHERE actor_type=%s AND actor_id=%s
+             """,
+             (actor_type, actor_id),
+         )
+         subs = cur.fetchall() or []
  
- def _extract_mentions(body: str) -> list[str]:
-     return re.findall(r"@([\w\-ぁ-んァ-ン一-龥ー]+)", body)
- 
- 
- def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, Any]]:
-@@ -604,61 +682,63 @@ def _require_any_login():
-     if not actor:
-         abort(403)
-     return None
- 
- 
- @chat_bp.route("/")
- def index():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     events = _accessible_events(actor)
-     return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
- 
- 
- @chat_bp.route("/events/<int:event_id>")
- def room(event_id: int):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
- 
-     event = _get_event(event_id)
-     if not event:
-         abort(404)
--    messages = [_present_message(m, actor) for m in _load_messages(event_id)]
-+    avatar_cache: dict[str, str] = {}
-+    messages = [_present_message(m, actor, avatar_cache=avatar_cache) for m in _load_messages(event_id)]
+         for sub in subs:
+             try:
+                 webpush(
+                     subscription_info={
+@@ -708,99 +886,109 @@ def room(event_id: int):
+     messages = [_present_message(m, actor, avatar_cache=avatar_cache) for m in _load_messages(event_id)]
      can_broadcast = actor["actor_type"] in {"admin", "acl"}
      return render_template(
          "chat/room.html",
@@ -427,7 +383,7 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
          vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
          csrf_token=_chat_csrf(),
          can_broadcast=can_broadcast,
-+        default_avatar_url=_default_avatar_url(),
+         default_avatar_url=_default_avatar_url(),
      )
  
  
@@ -441,9 +397,12 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
          abort(400)
      data = request.get_json(silent=True) or {}
      endpoint = (data.get("endpoint") or "").strip()
++    endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
      keys = data.get("keys") or {}
      if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
          abort(400)
++    if not _ensure_chat_push_schema():
++        abort(500)
  
      db = get_db()
      cur = db.cursor()
@@ -451,24 +410,83 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
          cur.execute(
              """
              INSERT INTO chat_push_subscriptions (
-               actor_type, actor_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
-             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-@@ -787,51 +867,51 @@ def on_send(data):
-     current_app.logger.warning(
-         "chat_send recv event_id=%s actor=%s body_len=%s",
-         event_id,
-         actor,
-         len(raw_body),
-     )
+-              actor_type, actor_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
+-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+-            ON DUPLICATE KEY UPDATE p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
++              actor_type, actor_id, endpoint, endpoint_hash, p256dh, auth, user_agent, created_at, updated_at
++            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
++            ON DUPLICATE KEY UPDATE endpoint=VALUES(endpoint), p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
+             """,
+             (
+                 actor["actor_type"],
+                 actor["actor_id"],
+                 endpoint,
++                endpoint_hash,
+                 keys["p256dh"],
+                 keys["auth"],
+                 request.headers.get("User-Agent"),
+                 datetime.utcnow(),
+                 datetime.utcnow(),
+             ),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+     return jsonify({"ok": True})
  
+ 
+ @chat_bp.post("/api/push/unsubscribe")
+ def push_unsubscribe():
+     actor = get_chat_actor()
      if not actor:
-         disconnect()
-         return
-     if not event_id or not _can_access_event(event_id, actor):
-         disconnect()
-         return
-     if not _check_rate_limit(actor):
-         emit("chat_error", {"error": "送信間隔が短すぎます"})
+         abort(403)
+     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+     endpoint = ((request.get_json(silent=True) or {}).get("endpoint") or "").strip()
++    endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
+     if not endpoint:
+         abort(400)
++    if not _ensure_chat_push_schema():
++        abort(500)
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+-            "DELETE FROM chat_push_subscriptions WHERE actor_type=%s AND actor_id=%s AND endpoint=%s",
+-            (actor["actor_type"], actor["actor_id"], endpoint),
++            """
++            DELETE FROM chat_push_subscriptions
++             WHERE actor_type=%s AND actor_id=%s AND endpoint_hash=%s
++            """,
++            (actor["actor_type"], actor["actor_id"], endpoint_hash),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+     return jsonify({"ok": True})
+ 
+ 
+ @chat_bp.post("/api/events/<int:event_id>/broadcast")
+ def broadcast_push(event_id: int):
+     actor = get_chat_actor()
+     if not actor or actor["actor_type"] == "line":
+         abort(403)
+     if not _can_access_event(event_id, actor):
+         abort(403)
+     token = (request.form.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+ 
+     msg = _validate_body(request.form.get("body") or "")
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     sent_count = 0
+     try:
+         cur.execute("SELECT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+@@ -882,49 +1070,56 @@ def on_send(data):
          return
  
      try:
@@ -479,8 +497,7 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
          return
  
      message = _enrich_reply_fields(_save_message(event_id, actor, body, reply_to_message_id))
--    message_payload = _present_message(message, actor)
-+    message_payload = _present_message(message, actor, avatar_cache={})
+     message_payload = _present_message(message, actor, avatar_cache={})
      emit("chat_message", message_payload, to=f"event:{event_id}")
  
      mention_names = _extract_mentions(body)
@@ -495,6 +512,13 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
      if mention_targets:
          _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
  
++    app = current_app._get_current_object()
++    threading.Thread(
++        target=_send_chat_message_push_async,
++        args=(app, event_id, actor, actor["display_name"], body),
++        daemon=True,
++    ).start()
++
  
  @socketio.on("chat_notify_dm")
  def notify_dm(data):
@@ -506,307 +530,30 @@ index 170c2f2b392811672c38731b18bd10f9f72fc0c1..a00784e6f5518ab95e387c1e65f176cb
      target_actor_type = (data or {}).get("target_actor_type")
      target_actor_id = str((data or {}).get("target_actor_id") or "")
      if not _can_access_event(event_id, actor):
-
+         disconnect()
+         return
+     sent_count = _send_push_to_actor(
+         target_actor_type,
+         target_actor_id,
+         {
+             "title": "ダイレクト通知",
+             "body": (data or {}).get("body") or "",
+             "event_id": event_id,
+         },
+     )
+     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
+     emit("chat_dm_notified", {"ok": True, "sent_count": sent_count})
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 5e4f18f31f340802c27c76ad6368e7124f32ff4f..a73484ef4191dc3e30c7f3f896cebe9749c61135 100644
+index a73484ef4191dc3e30c7f3f896cebe9749c61135..e00e88f3fd6b67a1f2d005edd196d67a0565c4b9 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1,325 +1,410 @@
- {% extends "chat/base_chat.html" %}
- {% block content %}
- 
- <style>
- .chat-messages {
--  height: 360px;
-+  height: 420px;
-   overflow: auto;
-   background: #e8f3ff;
- }
- 
- .chat-date-divider {
-   display: flex;
-   justify-content: center;
-   margin: 10px 0;
- }
- 
- .chat-date-divider span {
-   display: inline-block;
-   font-size: 0.78rem;
-   color: #556;
-   background: rgba(255, 255, 255, 0.95);
-   border-radius: 999px;
-   padding: 3px 12px;
- }
- 
- .chat-row {
-+  margin-bottom: 10px;
-+}
-+
-+.chat-line {
-+  display: flex;
-+  gap: 8px;
-+  align-items: flex-end;
-+}
-+
-+.chat-row.me .chat-line {
-+  justify-content: flex-end;
-+}
-+
-+.chat-row.other .chat-line {
-+  justify-content: flex-start;
-+}
-+
-+.chat-main {
-   display: flex;
-   flex-direction: column;
--  margin-bottom: 10px;
-+  max-width: min(80%, 560px);
- }
- 
--.chat-row.me {
-+.chat-row.me .chat-main {
-   align-items: flex-end;
- }
- 
--.chat-row.other {
-+.chat-row.other .chat-main {
-   align-items: flex-start;
- }
- 
- .chat-sender {
-   font-size: 0.76rem;
-   color: #667;
-   margin: 0 8px 4px;
- }
- 
- .chat-bubble-wrap {
-   display: flex;
-   align-items: flex-end;
-   gap: 6px;
--  max-width: min(80%, 560px);
- }
- 
- .chat-row.me .chat-bubble-wrap {
-   flex-direction: row-reverse;
- }
- 
- .chat-bubble {
-   padding: 8px 12px;
-   border-radius: 16px;
-   line-height: 1.45;
-   word-break: break-word;
-   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
-   white-space: pre-wrap;
-   cursor: pointer;
-   transition: box-shadow 0.2s ease, transform 0.2s ease;
- }
- 
- .chat-row.me .chat-bubble {
-   background: #4a8dff;
-   color: #fff;
-   border-bottom-right-radius: 6px;
- }
- 
- .chat-row.other .chat-bubble {
-   background: #f1f3f5;
-   color: #222;
-   border-bottom-left-radius: 6px;
- }
- 
- .chat-time {
-   font-size: 0.72rem;
-   color: #7a7a7a;
-   white-space: nowrap;
- }
- 
-+.chat-avatar {
-+  width: 32px;
-+  height: 32px;
-+  border-radius: 50%;
-+  object-fit: cover;
-+  flex: 0 0 auto;
-+  background: #fff;
-+  border: 1px solid rgba(0, 0, 0, 0.08);
-+}
-+
-+.chat-avatar-sm {
-+  width: 16px;
-+  height: 16px;
-+  border-radius: 50%;
-+  object-fit: cover;
-+  flex: 0 0 auto;
-+  margin-right: 6px;
-+  margin-top: 1px;
-+}
-+
- .chat-bubble.chat-selected-reply-target {
-   box-shadow: 0 0 0 2px #4a8dff, 0 8px 20px rgba(74, 141, 255, 0.2);
-   transform: translateY(-1px);
- }
- 
- .reply-preview {
-   background: #f8f9ff;
-   border: 1px solid #d8def8;
-   border-radius: 10px;
-   padding: 8px 10px;
-   margin-bottom: 8px;
- }
- 
- .reply-preview .reply-meta {
-   display: flex;
-   align-items: center;
-   justify-content: space-between;
-   font-size: 0.82rem;
-   margin-bottom: 4px;
- }
- 
- .reply-preview .reply-meta strong {
-   color: #3f57b3;
- }
- 
- .reply-preview .reply-text {
-   font-size: 0.82rem;
-   color: #445;
-   white-space: nowrap;
-   overflow: hidden;
-   text-overflow: ellipsis;
- }
- 
- .reply-preview .reply-cancel-btn {
-   border: none;
-   background: transparent;
-   color: #667;
-   cursor: pointer;
- }
- 
- .chat-reply-quote {
-   background: rgba(255, 255, 255, 0.68);
-   border-left: 3px solid rgba(68, 102, 220, 0.8);
-   padding: 6px 8px;
-   border-radius: 10px;
-   margin-bottom: 6px;
-   cursor: pointer;
-+  display: flex;
-+  align-items: flex-start;
- }
- 
- .chat-row.other .chat-reply-quote {
-   background: rgba(235, 240, 255, 0.86);
- }
- 
- .chat-reply-quote .rq-name {
-   font-size: 0.72rem;
-   color: #3f57b3;
- }
- 
- .chat-reply-quote .rq-text {
-   font-size: 0.78rem;
-   color: #445;
-   white-space: nowrap;
-   overflow: hidden;
-   text-overflow: ellipsis;
-+  max-width: 280px;
- }
- 
- .chat-jump-highlight {
-   outline: 2px solid rgba(252, 198, 48, 0.95);
-   box-shadow: 0 0 0 5px rgba(252, 198, 48, 0.25);
-   transition: box-shadow 0.25s ease;
- }
-+
-+@media (max-width: 576px) {
-+  .chat-avatar {
-+    width: 28px;
-+    height: 28px;
-+  }
-+}
- </style>
- 
- <div class="container py-3"
-      data-event-id="{{ event.id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
--     data-display-name="{{ actor.display_name }}">
-+     data-display-name="{{ actor.display_name }}"
-+     data-default-avatar="{{ default_avatar_url }}">
-   <h3>{{ event.title }} / Chat</h3>
-   <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
- 
-   <div id="messages" class="chat-messages border rounded p-3 mb-3">
-     {% set ns = namespace(last_date=None) %}
-     {% for m in messages %}
-       {% set d = m.created_at_jst_date_label %}
-       {% if loop.first or d != ns.last_date %}
-         <div class="chat-date-divider" data-date-label="{{ d }}"><span>{{ d }}</span></div>
-         {% set ns.last_date = d %}
-       {% endif %}
- 
--      <div class="chat-row {{ 'me' if m.is_me else 'other' }}" id="msg-{{ m.id }}" data-message-id="{{ m.id }}" data-sender-id="{{ m.sender_id }}" data-sender-name="{{ m.sender_display_name }}" data-body-plain="{{ m.body_plain_excerpt }}" {% if m.reply_to_message_id %}data-reply-to-id="{{ m.reply_to_message_id }}" data-reply-to-sender-name="{{ m.reply_to_sender_display_name }}" data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt }}"{% endif %}>
--        {% if not m.is_me %}
--          <div class="chat-sender">{{ m.sender_display_name }}</div>
--        {% endif %}
-+      <div class="chat-row {{ 'me' if m.is_me else 'other' }}"
-+           id="msg-{{ m.id }}"
-+           data-message-id="{{ m.id }}"
-+           data-sender-id="{{ m.sender_id }}"
-+           data-sender-name="{{ m.sender_display_name }}"
-+           data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
-+           data-body-plain="{{ m.body_plain_excerpt }}"
-+           data-reply-to-id="{{ m.reply_to_message_id or '' }}"
-+           data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
-+           data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
-+           data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}">
-+        <div class="chat-line">
-+          {% if not m.is_me %}
-+            <img class="chat-avatar"
-+                 src="{{ m.sender_avatar_url or default_avatar_url }}"
-+                 alt=""
-+                 loading="lazy"
-+                 referrerpolicy="no-referrer"
-+                 onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-+          {% endif %}
-+
-+          <div class="chat-main">
-+            {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
- 
--        <div class="chat-bubble-wrap">
--          <div class="chat-bubble">
-             {% if m.reply_to_message_id %}
-               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
--                <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
--                <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
-+                <img class="chat-avatar-sm"
-+                     src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-+                     alt=""
-+                     loading="lazy"
-+                     referrerpolicy="no-referrer"
-+                     onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-+                <div class="rq-body">
-+                  <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
-+                  <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
-+                </div>
-               </div>
-             {% endif %}
--            <div class="chat-body">{{ m.body|safe }}</div>
-+
-+            <div class="chat-bubble-wrap">
-+              <div class="chat-bubble">
-+                <div class="chat-body">{{ m.body|safe }}</div>
-+              </div>
-+              <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-+            </div>
-           </div>
--          <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-+
-+          {% if m.is_me %}
-+            <img class="chat-avatar"
-+                 src="{{ m.sender_avatar_url or default_avatar_url }}"
-+                 alt=""
-+                 loading="lazy"
-+                 referrerpolicy="no-referrer"
-+                 onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-+          {% endif %}
+@@ -274,52 +274,52 @@
+                  src="{{ m.sender_avatar_url or default_avatar_url }}"
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+           {% endif %}
          </div>
        </div>
      {% endfor %}
@@ -826,8 +573,10 @@ index 5e4f18f31f340802c27c76ad6368e7124f32ff4f..a73484ef4191dc3e30c7f3f896cebe97
      <button class="btn btn-primary" type="submit">送信</button>
    </form>
  
-   <div class="mt-3 d-flex gap-2">
-     <button class="btn btn-outline-secondary btn-sm" id="enable-push">通知を有効化</button>
+-  <div class="mt-3 d-flex gap-2">
+-    <button class="btn btn-outline-secondary btn-sm" id="enable-push">通知を有効化</button>
++  <div class="mt-3 d-flex gap-2 align-items-center">
++    <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
      {% if can_broadcast %}
      <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -849,59 +598,11 @@ index 5e4f18f31f340802c27c76ad6368e7124f32ff4f..a73484ef4191dc3e30c7f3f896cebe97
    const vapidKey = root.dataset.vapid;
    const meId = root.dataset.me || '';
    const myDisplayName = root.dataset.displayName || '';
-+  const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
  
    const msgBox = document.getElementById('messages');
    const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
-   const pushBtn = document.getElementById('enable-push');
-   const replyPreview = document.getElementById('reply-preview');
-   const replySender = document.getElementById('reply-sender');
-   const replyText = document.getElementById('reply-text');
-   const replyToInput = document.getElementById('reply-to-id');
-   const replyCancelBtn = document.getElementById('reply-cancel');
- 
-   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     year: 'numeric',
-     month: 'numeric',
-     day: 'numeric',
-     weekday: 'short',
-   });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-     hour12: false,
-   });
- 
-   const state = {
-     replyToId: null,
-     selectedBubble: null,
-   };
- 
-   const socket = io({ transports: ['websocket', 'polling'] });
-   socket.emit('chat_join', { event_id: eventId });
- 
-   socket.on('chat_message', (msg) => {
-     renderMessage(msg);
-     msgBox.scrollTop = msgBox.scrollHeight;
-   });
-   socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
- 
-   msgBox.addEventListener('click', (e) => {
-     const quote = e.target.closest('.chat-reply-quote');
-     if (quote) {
--      const jumpId = quote.dataset.jumpToId;
--      jumpToMessage(jumpId);
-+      jumpToMessage(quote.dataset.jumpToId);
-       return;
-     }
- 
-     const bubble = e.target.closest('.chat-bubble');
-     if (!bubble) return;
-     const row = bubble.closest('.chat-row');
-     if (!row) return;
+@@ -373,71 +373,136 @@
  
      const messageId = row.dataset.messageId;
      const senderName = row.dataset.senderName || 'Unknown';
@@ -914,10 +615,7 @@ index 5e4f18f31f340802c27c76ad6368e7124f32ff4f..a73484ef4191dc3e30c7f3f896cebe97
      setReplyState(messageId, senderName, bodyPlain, bubble);
    });
  
--  replyCancelBtn?.addEventListener('click', () => {
--    clearReplyState();
--  });
-+  replyCancelBtn?.addEventListener('click', clearReplyState);
+   replyCancelBtn?.addEventListener('click', clearReplyState);
  
    form?.addEventListener('submit', (e) => {
      e.preventDefault();
@@ -930,25 +628,99 @@ index 5e4f18f31f340802c27c76ad6368e7124f32ff4f..a73484ef4191dc3e30c7f3f896cebe97
      clearReplyState();
    });
  
++  initPushUi();
++
    pushBtn?.addEventListener('click', async () => {
-     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
++    const pushState = await getPushState();
++    if (!pushState.supported) {
        alert('この端末はPush通知に非対応です');
        return;
      }
-     const reg = await navigator.serviceWorker.ready;
-     const sub = await reg.pushManager.subscribe({
+-    const reg = await navigator.serviceWorker.ready;
+-    const sub = await reg.pushManager.subscribe({
++
++    if (pushState.subscription) {
++      await disablePush(pushState.registration, pushState.subscription);
++      return;
++    }
++
++    await enablePush(pushState.registration);
++  });
++
++  async function initPushUi() {
++    const pushState = await getPushState();
++    if (!pushState.supported) {
++      if (pushBtn) {
++        pushBtn.disabled = true;
++        pushBtn.textContent = 'Push通知は非対応です';
++      }
++      return;
++    }
++    updatePushButton(Boolean(pushState.subscription));
++  }
++
++  function updatePushButton(enabled) {
++    if (!pushBtn) return;
++    pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
++    pushBtn.classList.toggle('btn-outline-danger', enabled);
++    pushBtn.classList.toggle('btn-outline-secondary', !enabled);
++  }
++
++  async function getPushState() {
++    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
++      return { supported: false, registration: null, subscription: null };
++    }
++    const registration = await navigator.serviceWorker.register('/chat/sw.js', { scope: '/chat/' });
++    const subscription = await registration.pushManager.getSubscription();
++    return { supported: true, registration, subscription };
++  }
++
++  async function enablePush(registration) {
++    if (!vapidKey) {
++      alert('VAPID公開鍵が未設定のため通知を有効化できません');
++      return;
++    }
++    const permission = await Notification.requestPermission();
++    if (permission !== 'granted') {
++      alert('通知の許可が必要です');
++      return;
++    }
++
++    const subscription = await registration.pushManager.subscribe({
        userVisibleOnly: true,
-       applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
+-      applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
++      applicationServerKey: urlBase64ToUint8Array(vapidKey),
      });
++
      const res = await fetch('/chat/api/push/subscribe', {
        method: 'POST',
        headers: { 'Content-Type': 'application/json' },
-@@ -329,158 +414,202 @@
+-      body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
++      body: JSON.stringify({ csrf_token: csrfToken, ...subscription.toJSON() }),
+     });
+     if (!res.ok) {
        alert('購読登録に失敗しました');
        return;
      }
-     alert('通知を有効化しました');
-   });
+-    alert('通知を有効化しました');
+-  });
++    updatePushButton(true);
++  }
++
++  async function disablePush(registration, subscription) {
++    await subscription.unsubscribe();
++    const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
++    if (endpoint) {
++      await fetch('/chat/api/push/unsubscribe', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
++      });
++    }
++    const nextSubscription = await registration.pushManager.getSubscription();
++    updatePushButton(Boolean(nextSubscription));
++  }
  
    function renderMessage(msg) {
      const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
@@ -969,207 +741,77 @@ index 5e4f18f31f340802c27c76ad6368e7124f32ff4f..a73484ef4191dc3e30c7f3f896cebe97
      row.id = `msg-${msg.id}`;
      row.dataset.messageId = msg.id;
      row.dataset.senderName = msg.sender_display_name || 'Unknown';
-+    row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
      row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
-+    row.dataset.replyToId = msg.reply_to_message_id || '';
-+    row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
-+    row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
-+    row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
-     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
- 
--    if (msg.reply_to_message_id) {
--      row.dataset.replyToId = msg.reply_to_message_id;
--      row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '元メッセージ';
--      row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません';
-+    const line = document.createElement('div');
-+    line.className = 'chat-line';
-+
-+    if (!isMe) {
-+      line.appendChild(makeAvatar(msg.sender_avatar_url));
-     }
- 
-+    const main = document.createElement('div');
-+    main.className = 'chat-main';
-+
-     if (!isMe) {
-       const sender = document.createElement('div');
-       sender.className = 'chat-sender';
-       sender.textContent = msg.sender_display_name || 'Unknown';
--      row.appendChild(sender);
-+      main.appendChild(sender);
-+    }
-+
-+    if (msg.reply_to_message_id) {
-+      main.appendChild(makeReplyQuote(
-+        msg.reply_to_message_id,
-+        msg.reply_to_sender_display_name || '元メッセージ',
-+        msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
-+        msg.reply_to_sender_avatar_url || defaultAvatarUrl,
-+      ));
-     }
- 
-     const wrap = document.createElement('div');
-     wrap.className = 'chat-bubble-wrap';
- 
-     const bubble = document.createElement('div');
-     bubble.className = 'chat-bubble';
- 
--    if (msg.reply_to_message_id) {
--      const quote = document.createElement('div');
--      quote.className = 'chat-reply-quote';
--      quote.dataset.jumpToId = msg.reply_to_message_id;
--
--      const quoteName = document.createElement('div');
--      quoteName.className = 'rq-name';
--      quoteName.textContent = msg.reply_to_sender_display_name || '元メッセージ';
--
--      const quoteText = document.createElement('div');
--      quoteText.className = 'rq-text';
--      quoteText.textContent = msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません';
--
--      quote.appendChild(quoteName);
--      quote.appendChild(quoteText);
--      bubble.appendChild(quote);
--    }
--
-     const body = document.createElement('div');
-     body.className = 'chat-body';
-     body.innerHTML = msg.body || '';
-     bubble.appendChild(body);
- 
-     const time = document.createElement('div');
-     time.className = 'chat-time';
-     time.textContent = timeLabel;
- 
-     wrap.appendChild(bubble);
-     wrap.appendChild(time);
--    row.appendChild(wrap);
-+    main.appendChild(wrap);
-+    line.appendChild(main);
-+
-+    if (isMe) {
-+      line.appendChild(makeAvatar(msg.sender_avatar_url));
-+    }
-+
-+    row.appendChild(line);
-     msgBox.appendChild(row);
-   }
- 
-+  function makeReplyQuote(messageId, senderName, excerpt, avatarUrl) {
-+    const quote = document.createElement('div');
-+    quote.className = 'chat-reply-quote';
-+    quote.dataset.jumpToId = String(messageId);
-+
-+    const icon = makeAvatar(avatarUrl, true);
-+    quote.appendChild(icon);
-+
-+    const body = document.createElement('div');
-+    body.className = 'rq-body';
-+
-+    const name = document.createElement('div');
-+    name.className = 'rq-name';
-+    name.textContent = senderName;
-+
-+    const text = document.createElement('div');
-+    text.className = 'rq-text';
-+    text.textContent = excerpt;
-+
-+    body.appendChild(name);
-+    body.appendChild(text);
-+    quote.appendChild(body);
-+    return quote;
+     row.dataset.replyToId = msg.reply_to_message_id || '';
+     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
+     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
+diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
+index 72c8c07ffa8c5a13ab006ec74fd4f19794292d58..eb7cb8b9ef8df34a1bf4b8ad1129b275d2cac3ec 100644
+--- a/chat/templates/chat/sw.js
++++ b/chat/templates/chat/sw.js
+@@ -1,29 +1,40 @@
+-const CACHE = 'mfu-chat-v1';
+-const STATIC_ASSETS = [
+-  '/chat/',
+-  '/chat/manifest.json',
+-  '/chat/sw.js'
+-];
++self.addEventListener('push', (event) => {
++  let payload = {};
++  try {
++    payload = event.data ? event.data.json() : {};
++  } catch (_e) {
++    payload = {};
 +  }
+ 
+-self.addEventListener('install', (event) => {
+-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(STATIC_ASSETS)));
+-});
++  const title = payload.title || 'MFU Chat';
++  const body = payload.body || '新着メッセージがあります';
++  const url = payload.url || '/chat/';
+ 
+-self.addEventListener('fetch', (event) => {
+-  const url = new URL(event.request.url);
+-  if (url.pathname.startsWith('/chat/static/')) {
+-    event.respondWith(caches.match(event.request).then((res) => res || fetch(event.request)));
+-    return;
+-  }
+-  if (url.pathname.startsWith('/chat/api/')) {
+-    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+-  }
++  event.waitUntil(
++    self.registration.showNotification(title, {
++      body,
++      data: { url },
++    })
++  );
+ });
+ 
+-self.addEventListener('push', (event) => {
+-  const data = event.data ? event.data.json() : { title: 'MFU Chat', body: '新着通知' };
+-  event.waitUntil(self.registration.showNotification(data.title || 'MFU Chat', {
+-    body: data.body || '',
+-    data,
+-  }));
++self.addEventListener('notificationclick', (event) => {
++  event.notification.close();
++  const targetUrl = event.notification?.data?.url || '/chat/';
 +
-+  function makeAvatar(src, small = false) {
-+    const img = document.createElement('img');
-+    img.className = small ? 'chat-avatar-sm' : 'chat-avatar';
-+    img.alt = '';
-+    img.loading = 'lazy';
-+    img.referrerPolicy = 'no-referrer';
-+    img.src = src || defaultAvatarUrl;
-+    img.onerror = () => {
-+      img.onerror = null;
-+      img.src = defaultAvatarUrl;
-+    };
-+    return img;
-+  }
-+
-   function appendDateDividerIfNeeded(dateLabel) {
-     if (!dateLabel) return;
-     const dividers = msgBox.querySelectorAll('.chat-date-divider[data-date-label]');
-     const lastDivider = dividers.length ? dividers[dividers.length - 1] : null;
-     if (lastDivider?.dataset.dateLabel === dateLabel) return;
- 
-     const divider = document.createElement('div');
-     divider.className = 'chat-date-divider';
-     divider.dataset.dateLabel = dateLabel;
- 
-     const label = document.createElement('span');
-     label.textContent = dateLabel;
-     divider.appendChild(label);
-     msgBox.appendChild(divider);
-   }
- 
-   function setReplyState(messageId, senderName, plainText, bubbleEl) {
-     if (state.selectedBubble) {
-       state.selectedBubble.classList.remove('chat-selected-reply-target');
-     }
-     state.replyToId = messageId;
-     replyToInput.value = messageId;
-     replySender.textContent = senderName;
-     replyText.textContent = makeExcerpt(plainText || '');
-     replyPreview.classList.remove('d-none');
-     state.selectedBubble = bubbleEl;
-     state.selectedBubble.classList.add('chat-selected-reply-target');
-   }
- 
-   function clearReplyState() {
-     state.replyToId = null;
-     replyToInput.value = '';
-     replySender.textContent = '';
-     replyText.textContent = '';
-     replyPreview.classList.add('d-none');
-     if (state.selectedBubble) {
-       state.selectedBubble.classList.remove('chat-selected-reply-target');
-       state.selectedBubble = null;
-     }
-   }
- 
-   function jumpToMessage(messageId) {
-     if (!messageId) return;
-     const target = document.getElementById(`msg-${messageId}`);
-     if (!target) {
-       alert('元メッセージが見つかりません');
-       return;
-     }
-     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-     target.classList.add('chat-jump-highlight');
--    window.setTimeout(() => {
--      target.classList.remove('chat-jump-highlight');
--    }, 1200);
-+    window.setTimeout(() => target.classList.remove('chat-jump-highlight'), 1200);
-   }
- 
-   function makeExcerpt(value) {
-     const text = String(value || '').replace(/\s+/g, ' ').trim();
-     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
-   }
- 
-   function formatDateLabel(date) {
-     const parts = fmtDate.formatToParts(date);
-     const get = (type) => parts.find((p) => p.type === type)?.value || '';
-     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
-   }
- 
-   function formatTimeLabel(date) {
-     return fmtTime.format(date);
-   }
- 
-   function urlBase64ToUint8Array(base64String) {
-     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-     const rawData = window.atob(base64);
-     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
-   }
- })();
- </script>
++  event.waitUntil(
++    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
++      for (const client of windowClients) {
++        if ('focus' in client) {
++          if (client.url.includes(targetUrl)) {
++            return client.focus();
++          }
++        }
++      }
++      if (clients.openWindow) {
++        return clients.openWindow(targetUrl);
++      }
++      return null;
++    })
++  );
+ });
