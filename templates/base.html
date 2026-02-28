@@ -9,73 +9,77 @@
 </head>
 <body>
   <!-- 🔰 共通ナビゲーションバー -->
-  <nav class="navbar navbar-expand-lg navbar-light bg-light border-bottom mb-4">
-    <div class="container-fluid">
-      <a class="navbar-brand" href="/">📂 MFU</a>
+  {% if request.path.startswith('/chat/') and nav_mode == 'external' %}
+    {% include "_extlogin_nav.html" %}
+  {% else %}
+    <nav class="navbar navbar-expand-lg navbar-light bg-light border-bottom mb-4">
+      <div class="container-fluid">
+        <a class="navbar-brand" href="/">📂 MFU</a>
 
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
-        <span class="navbar-toggler-icon"></span>
-      </button>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+          <span class="navbar-toggler-icon"></span>
+        </button>
 
-      <div class="collapse navbar-collapse" id="navbarMain">
-        <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        <div class="collapse navbar-collapse" id="navbarMain">
+          <ul class="navbar-nav me-auto mb-2 mb-lg-0">
 
-          {% if session.get('user') %}
-            {% for item in nav_items %}
-              {% set show_item = (not item.feature_key) or has_feature(item.feature_key) or session.user == 'admin' %}
-              {% if show_item %}
-                {% if item.children %}
-                  <li class="nav-item dropdown">
-                    <a class="nav-link dropdown-toggle" href="#" id="navItem{{ item.id }}" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                      {{ item.label }}
-                    </a>
-                    <ul class="dropdown-menu" aria-labelledby="navItem{{ item.id }}">
-                      {% for child in item.children %}
-                        {% set show_child = (not child.feature_key) or has_feature(child.feature_key) or session.user == 'admin' %}
-                        {% if show_child %}
-                          <li>
-                            <a class="dropdown-item" href="{{ child.url }}"
-                               {% if child.is_external or child.open_in_new_tab %}target="_blank" rel="noopener"{% endif %}>
-                              {{ child.label }}
-                            </a>
-                          </li>
-                        {% endif %}
-                      {% endfor %}
-                    </ul>
-                  </li>
-                {% else %}
-                  <li class="nav-item">
-                    <a class="nav-link" href="{{ item.url }}"
-                       {% if item.is_external or item.open_in_new_tab %}target="_blank" rel="noopener"{% endif %}>
-                      {{ item.label }}
-                    </a>
-                  </li>
+            {% if session.get('user') %}
+              {% for item in nav_items %}
+                {% set show_item = (not item.feature_key) or has_feature(item.feature_key) or session.user == 'admin' %}
+                {% if show_item %}
+                  {% if item.children %}
+                    <li class="nav-item dropdown">
+                      <a class="nav-link dropdown-toggle" href="#" id="navItem{{ item.id }}" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        {{ item.label }}
+                      </a>
+                      <ul class="dropdown-menu" aria-labelledby="navItem{{ item.id }}">
+                        {% for child in item.children %}
+                          {% set show_child = (not child.feature_key) or has_feature(child.feature_key) or session.user == 'admin' %}
+                          {% if show_child %}
+                            <li>
+                              <a class="dropdown-item" href="{{ child.url }}"
+                                 {% if child.is_external or child.open_in_new_tab %}target="_blank" rel="noopener"{% endif %}>
+                                {{ child.label }}
+                              </a>
+                            </li>
+                          {% endif %}
+                        {% endfor %}
+                      </ul>
+                    </li>
+                  {% else %}
+                    <li class="nav-item">
+                      <a class="nav-link" href="{{ item.url }}"
+                         {% if item.is_external or item.open_in_new_tab %}target="_blank" rel="noopener"{% endif %}>
+                        {{ item.label }}
+                      </a>
+                    </li>
+                  {% endif %}
                 {% endif %}
-              {% endif %}
-            {% endfor %}
-          {% endif %}
-        </ul>
+              {% endfor %}
+            {% endif %}
+          </ul>
 
-        <!-- 右側：ログイン状態表示 -->
-        <div class="d-flex align-items-center">
-          {% if session.get('user') %}
-            <span class="me-3 text-muted">
-              🧑 <strong>
-                {% if session.nickname %}
-                  {{ session.nickname }}（{{ session.user }}）
-                {% else %}
-                  {{ session.user }}
-                {% endif %}
-              </strong>
-            </span>
-            <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">ログアウト</a>
-          {% else %}
-            <a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">ログイン</a>
-          {% endif %}
+          <!-- 右側：ログイン状態表示 -->
+          <div class="d-flex align-items-center">
+            {% if session.get('user') %}
+              <span class="me-3 text-muted">
+                🧑 <strong>
+                  {% if session.nickname %}
+                    {{ session.nickname }}（{{ session.user }}）
+                  {% else %}
+                    {{ session.user }}
+                  {% endif %}
+                </strong>
+              </span>
+              <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">ログアウト</a>
+            {% else %}
+              <a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">ログイン</a>
+            {% endif %}
+          </div>
         </div>
       </div>
-    </div>
-  </nav>
+    </nav>
+  {% endif %}
 
   <!-- 📄 各ページの内容 -->
   <div class="container">

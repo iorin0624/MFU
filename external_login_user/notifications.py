@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
@@ -9,6 +9,39 @@ from flask import abort, current_app, jsonify, render_template, request, session
 from . import bp
 from .utils import _require_ext_login
 from app.utils.db import get_db
+
+
+_READ_NOTIFICATIONS_KEEP_LIMIT = 30
+
+
+def _prune_old_read_notifications(cur, user_id: int) -> int:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS cnt
+          FROM mfu_notifications
+         WHERE user_kind=%s
+           AND user_id=%s
+           AND read_at IS NOT NULL
+        """,
+        ("external", int(user_id)),
+    )
+    read_count = int((cur.fetchone() or {}).get("cnt") or 0)
+    overflow = max(0, read_count - _READ_NOTIFICATIONS_KEEP_LIMIT)
+    if overflow <= 0:
+        return 0
+
+    cur.execute(
+        """
+        DELETE FROM mfu_notifications
+         WHERE user_kind=%s
+           AND user_id=%s
+           AND read_at IS NOT NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT %s
+        """,
+        ("external", int(user_id), overflow),
+    )
+    return int(cur.rowcount or 0)
 
 
 _NOTIFICATION_DDL = """
@@ -93,15 +126,17 @@ def create_notification_external(
                 datetime.utcnow(),
             ),
         )
+        deleted_old_read = _prune_old_read_notifications(cur, int(user_id))
         db.commit()
         current_app.logger.info(
-            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s",
+            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
             int(user_id),
             int(event_id) if event_id else None,
             (kind or "").strip() or "general",
             dedup,
             cur.rowcount == 1,
             existing["id"] if existing else None,
+            deleted_old_read,
         )
         return cur.rowcount == 1
     except Exception:
@@ -159,7 +194,8 @@ def api_notifications_list():
         return guard
 
     uid = int(session.get("ext_user_id") or 0)
-    unread_only = (request.args.get("unread") or "").strip() in {"1", "true", "yes"}
+    unread_arg = (request.args.get("unread") or "").strip().lower()
+    unread_only = unread_arg not in {"0", "false", "no", "off"}
     page = max(int(request.args.get("page") or 1), 1)
     per_page = 20
     offset = (page - 1) * per_page
@@ -201,8 +237,8 @@ def api_notifications_list():
                     "body": row.get("body") or "",
                     "target_url": row.get("target_url") or "/external-login/",
                     "event_id": row.get("event_id"),
-                    "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-                    "read_at": row.get("read_at").isoformat() if row.get("read_at") else None,
+                    "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
+                    "read_at": row.get("read_at").replace(tzinfo=timezone.utc).isoformat() if row.get("read_at") else None,
                 }
             )
 
@@ -292,8 +328,8 @@ def api_notifications_updates():
                     "title": row.get("title"),
                     "body": row.get("body") or "",
                     "target_url": row.get("target_url") or "/external-login/",
-                    "created_at": row.get("created_at").isoformat() if row.get("created_at") else None,
-                    "read_at": row.get("read_at").isoformat() if row.get("read_at") else None,
+                    "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
+                    "read_at": row.get("read_at").replace(tzinfo=timezone.utc).isoformat() if row.get("read_at") else None,
                 }
             )
 

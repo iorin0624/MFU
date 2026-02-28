@@ -39,7 +39,7 @@ from flask import (
     Flask, request, session, redirect, render_template, url_for, flash,
     send_from_directory, send_file, abort, jsonify, current_app, after_this_request, g, Response,
 )
-from flask_login import LoginManager
+from flask_login import LoginManager, current_user
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename, safe_join
 
@@ -1671,11 +1671,26 @@ def admin_nav_delete(item_id: int):
 
 @app.context_processor
 def inject_feature_context():
+    is_external_login = any(
+        session.get(key)
+        for key in (
+            "ext_user_id",
+            "ext_login_user_id",
+            "ext_user_line_id",
+            "ext_user_social_id",
+        )
+    )
+    is_mfu_login = bool(session.get("user")) or bool(getattr(current_user, "is_authenticated", False))
+    nav_mode = "external" if is_external_login else ("mfu" if is_mfu_login else "mfu")
+
     user_id = session.get("user")
     return {
         "allowed_features": get_allowed_features(user_id),
         "has_feature": has_feature,
         "nav_items": get_nav_items_for_user(user_id),
+        "is_external_login": is_external_login,
+        "is_mfu_login": is_mfu_login,
+        "nav_mode": nav_mode,
     }
 
 
