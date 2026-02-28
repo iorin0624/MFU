@@ -3,7 +3,7 @@
 
 <style>
 .chat-messages {
-  height: 360px;
+  height: 420px;
   overflow: auto;
   background: #e8f3ff;
 }
@@ -24,16 +24,34 @@
 }
 
 .chat-row {
-  display: flex;
-  flex-direction: column;
   margin-bottom: 10px;
 }
 
-.chat-row.me {
+.chat-line {
+  display: flex;
+  gap: 8px;
   align-items: flex-end;
 }
 
-.chat-row.other {
+.chat-row.me .chat-line {
+  justify-content: flex-end;
+}
+
+.chat-row.other .chat-line {
+  justify-content: flex-start;
+}
+
+.chat-main {
+  display: flex;
+  flex-direction: column;
+  max-width: min(80%, 560px);
+}
+
+.chat-row.me .chat-main {
+  align-items: flex-end;
+}
+
+.chat-row.other .chat-main {
   align-items: flex-start;
 }
 
@@ -47,7 +65,6 @@
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  max-width: min(80%, 560px);
 }
 
 .chat-row.me .chat-bubble-wrap {
@@ -61,6 +78,8 @@
   word-break: break-word;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   white-space: pre-wrap;
+  cursor: pointer;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
 .chat-row.me .chat-bubble {
@@ -80,13 +99,117 @@
   color: #7a7a7a;
   white-space: nowrap;
 }
+
+.chat-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.chat-avatar-sm {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+  margin-right: 6px;
+  margin-top: 1px;
+}
+
+.chat-bubble.chat-selected-reply-target {
+  box-shadow: 0 0 0 2px #4a8dff, 0 8px 20px rgba(74, 141, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.reply-preview {
+  background: #f8f9ff;
+  border: 1px solid #d8def8;
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.reply-preview .reply-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+
+.reply-preview .reply-meta strong {
+  color: #3f57b3;
+}
+
+.reply-preview .reply-text {
+  font-size: 0.82rem;
+  color: #445;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reply-preview .reply-cancel-btn {
+  border: none;
+  background: transparent;
+  color: #667;
+  cursor: pointer;
+}
+
+.chat-reply-quote {
+  background: rgba(255, 255, 255, 0.68);
+  border-left: 3px solid rgba(68, 102, 220, 0.8);
+  padding: 6px 8px;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+}
+
+.chat-row.other .chat-reply-quote {
+  background: rgba(235, 240, 255, 0.86);
+}
+
+.chat-reply-quote .rq-name {
+  font-size: 0.72rem;
+  color: #3f57b3;
+}
+
+.chat-reply-quote .rq-text {
+  font-size: 0.78rem;
+  color: #445;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+.chat-jump-highlight {
+  outline: 2px solid rgba(252, 198, 48, 0.95);
+  box-shadow: 0 0 0 5px rgba(252, 198, 48, 0.25);
+  transition: box-shadow 0.25s ease;
+}
+
+@media (max-width: 576px) {
+  .chat-avatar {
+    width: 28px;
+    height: 28px;
+  }
+}
 </style>
 
 <div class="container py-3"
      data-event-id="{{ event.id }}"
      data-csrf="{{ csrf_token }}"
      data-vapid="{{ vapid_public_key }}"
-     data-me="{{ current_user_id or me_user_id or '' }}">
+     data-me="{{ current_user_id or me_user_id or '' }}"
+     data-display-name="{{ actor.display_name }}"
+     data-default-avatar="{{ default_avatar_url }}">
   <h3>{{ event.title }} / Chat</h3>
   <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
 
@@ -95,24 +218,80 @@
     {% for m in messages %}
       {% set d = m.created_at_jst_date_label %}
       {% if loop.first or d != ns.last_date %}
-        <div class="chat-date-divider"><span>{{ d }}</span></div>
+        <div class="chat-date-divider" data-date-label="{{ d }}"><span>{{ d }}</span></div>
         {% set ns.last_date = d %}
       {% endif %}
 
-      <div class="chat-row {{ 'me' if m.is_me else 'other' }}">
-        {% if not m.is_me %}
-          <div class="chat-sender">{{ m.sender_display_name }}</div>
-        {% endif %}
+      <div class="chat-row {{ 'me' if m.is_me else 'other' }}"
+           id="msg-{{ m.id }}"
+           data-message-id="{{ m.id }}"
+           data-sender-id="{{ m.sender_id }}"
+           data-sender-name="{{ m.sender_display_name }}"
+           data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
+           data-body-plain="{{ m.body_plain_excerpt }}"
+           data-reply-to-id="{{ m.reply_to_message_id or '' }}"
+           data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
+           data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
+           data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}">
+        <div class="chat-line">
+          {% if not m.is_me %}
+            <img class="chat-avatar"
+                 src="{{ m.sender_avatar_url or default_avatar_url }}"
+                 alt=""
+                 loading="lazy"
+                 referrerpolicy="no-referrer"
+                 onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+          {% endif %}
 
-        <div class="chat-bubble-wrap">
-          <div class="chat-bubble">{{ m.body|safe }}</div>
-          <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+          <div class="chat-main">
+            {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
+
+            {% if m.reply_to_message_id %}
+              <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
+                <img class="chat-avatar-sm"
+                     src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+                     alt=""
+                     loading="lazy"
+                     referrerpolicy="no-referrer"
+                     onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+                <div class="rq-body">
+                  <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
+                  <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
+                </div>
+              </div>
+            {% endif %}
+
+            <div class="chat-bubble-wrap">
+              <div class="chat-bubble">
+                <div class="chat-body">{{ m.body|safe }}</div>
+              </div>
+              <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+            </div>
+          </div>
+
+          {% if m.is_me %}
+            <img class="chat-avatar"
+                 src="{{ m.sender_avatar_url or default_avatar_url }}"
+                 alt=""
+                 loading="lazy"
+                 referrerpolicy="no-referrer"
+                 onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+          {% endif %}
         </div>
       </div>
     {% endfor %}
   </div>
 
+  <div id="reply-preview" class="reply-preview d-none">
+    <div class="reply-meta">
+      <strong id="reply-sender"></strong>
+      <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
+    </div>
+    <div id="reply-text" class="reply-text"></div>
+  </div>
+
   <form id="chat-form" class="d-flex gap-2">
+    <input type="hidden" id="reply-to-id" value="">
     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
     <button class="btn btn-primary" type="submit">送信</button>
   </form>
@@ -130,5 +309,308 @@
 </div>
 
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script src="{{ url_for('chat.static', filename='chat/js/chat.js') }}"></script>
+<script>
+(() => {
+  const root = document.querySelector('[data-event-id]');
+  if (!root) return;
+
+  const eventId = Number(root.dataset.eventId);
+  const csrfToken = root.dataset.csrf;
+  const vapidKey = root.dataset.vapid;
+  const meId = root.dataset.me || '';
+  const myDisplayName = root.dataset.displayName || '';
+  const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+
+  const msgBox = document.getElementById('messages');
+  const form = document.getElementById('chat-form');
+  const bodyInput = document.getElementById('chat-body');
+  const pushBtn = document.getElementById('enable-push');
+  const replyPreview = document.getElementById('reply-preview');
+  const replySender = document.getElementById('reply-sender');
+  const replyText = document.getElementById('reply-text');
+  const replyToInput = document.getElementById('reply-to-id');
+  const replyCancelBtn = document.getElementById('reply-cancel');
+
+  const fmtDate = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short',
+  });
+  const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  const state = {
+    replyToId: null,
+    selectedBubble: null,
+  };
+
+  const socket = io({ transports: ['websocket', 'polling'] });
+  socket.emit('chat_join', { event_id: eventId });
+
+  socket.on('chat_message', (msg) => {
+    renderMessage(msg);
+    msgBox.scrollTop = msgBox.scrollHeight;
+  });
+  socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
+
+  msgBox.addEventListener('click', (e) => {
+    const quote = e.target.closest('.chat-reply-quote');
+    if (quote) {
+      jumpToMessage(quote.dataset.jumpToId);
+      return;
+    }
+
+    const bubble = e.target.closest('.chat-bubble');
+    if (!bubble) return;
+    const row = bubble.closest('.chat-row');
+    if (!row) return;
+
+    const messageId = row.dataset.messageId;
+    const senderName = row.dataset.senderName || 'Unknown';
+    const bodyPlain = row.dataset.bodyPlain || '';
+
+    if (state.replyToId && String(state.replyToId) === String(messageId)) {
+      clearReplyState();
+      return;
+    }
+    setReplyState(messageId, senderName, bodyPlain, bubble);
+  });
+
+  replyCancelBtn?.addEventListener('click', clearReplyState);
+
+  form?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    socket.emit('chat_send', {
+      event_id: eventId,
+      body: bodyInput.value,
+      reply_to_message_id: state.replyToId,
+    });
+    bodyInput.value = '';
+    clearReplyState();
+  });
+
+  pushBtn?.addEventListener('click', async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      alert('この端末はPush通知に非対応です');
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
+    });
+    const res = await fetch('/chat/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
+    });
+    if (!res.ok) {
+      alert('購読登録に失敗しました');
+      return;
+    }
+    alert('通知を有効化しました');
+  });
+
+  function renderMessage(msg) {
+    const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+    const dateLabel = Number.isNaN(createdAt.getTime())
+      ? (msg.created_at_jst_date_label || '')
+      : formatDateLabel(createdAt);
+    const timeLabel = Number.isNaN(createdAt.getTime())
+      ? (msg.created_at_jst_time_hm || '')
+      : formatTimeLabel(createdAt);
+
+    appendDateDividerIfNeeded(dateLabel);
+
+    const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+      || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+
+    const row = document.createElement('div');
+    row.className = `chat-row ${isMe ? 'me' : 'other'}`;
+    row.id = `msg-${msg.id}`;
+    row.dataset.messageId = msg.id;
+    row.dataset.senderName = msg.sender_display_name || 'Unknown';
+    row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+    row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
+    row.dataset.replyToId = msg.reply_to_message_id || '';
+    row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
+    row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
+    row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
+    if (msg.sender_id) row.dataset.senderId = msg.sender_id;
+
+    const line = document.createElement('div');
+    line.className = 'chat-line';
+
+    if (!isMe) {
+      line.appendChild(makeAvatar(msg.sender_avatar_url));
+    }
+
+    const main = document.createElement('div');
+    main.className = 'chat-main';
+
+    if (!isMe) {
+      const sender = document.createElement('div');
+      sender.className = 'chat-sender';
+      sender.textContent = msg.sender_display_name || 'Unknown';
+      main.appendChild(sender);
+    }
+
+    if (msg.reply_to_message_id) {
+      main.appendChild(makeReplyQuote(
+        msg.reply_to_message_id,
+        msg.reply_to_sender_display_name || '元メッセージ',
+        msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
+        msg.reply_to_sender_avatar_url || defaultAvatarUrl,
+      ));
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-bubble-wrap';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+
+    const body = document.createElement('div');
+    body.className = 'chat-body';
+    body.innerHTML = msg.body || '';
+    bubble.appendChild(body);
+
+    const time = document.createElement('div');
+    time.className = 'chat-time';
+    time.textContent = timeLabel;
+
+    wrap.appendChild(bubble);
+    wrap.appendChild(time);
+    main.appendChild(wrap);
+    line.appendChild(main);
+
+    if (isMe) {
+      line.appendChild(makeAvatar(msg.sender_avatar_url));
+    }
+
+    row.appendChild(line);
+    msgBox.appendChild(row);
+  }
+
+  function makeReplyQuote(messageId, senderName, excerpt, avatarUrl) {
+    const quote = document.createElement('div');
+    quote.className = 'chat-reply-quote';
+    quote.dataset.jumpToId = String(messageId);
+
+    const icon = makeAvatar(avatarUrl, true);
+    quote.appendChild(icon);
+
+    const body = document.createElement('div');
+    body.className = 'rq-body';
+
+    const name = document.createElement('div');
+    name.className = 'rq-name';
+    name.textContent = senderName;
+
+    const text = document.createElement('div');
+    text.className = 'rq-text';
+    text.textContent = excerpt;
+
+    body.appendChild(name);
+    body.appendChild(text);
+    quote.appendChild(body);
+    return quote;
+  }
+
+  function makeAvatar(src, small = false) {
+    const img = document.createElement('img');
+    img.className = small ? 'chat-avatar-sm' : 'chat-avatar';
+    img.alt = '';
+    img.loading = 'lazy';
+    img.referrerPolicy = 'no-referrer';
+    img.src = src || defaultAvatarUrl;
+    img.onerror = () => {
+      img.onerror = null;
+      img.src = defaultAvatarUrl;
+    };
+    return img;
+  }
+
+  function appendDateDividerIfNeeded(dateLabel) {
+    if (!dateLabel) return;
+    const dividers = msgBox.querySelectorAll('.chat-date-divider[data-date-label]');
+    const lastDivider = dividers.length ? dividers[dividers.length - 1] : null;
+    if (lastDivider?.dataset.dateLabel === dateLabel) return;
+
+    const divider = document.createElement('div');
+    divider.className = 'chat-date-divider';
+    divider.dataset.dateLabel = dateLabel;
+
+    const label = document.createElement('span');
+    label.textContent = dateLabel;
+    divider.appendChild(label);
+    msgBox.appendChild(divider);
+  }
+
+  function setReplyState(messageId, senderName, plainText, bubbleEl) {
+    if (state.selectedBubble) {
+      state.selectedBubble.classList.remove('chat-selected-reply-target');
+    }
+    state.replyToId = messageId;
+    replyToInput.value = messageId;
+    replySender.textContent = senderName;
+    replyText.textContent = makeExcerpt(plainText || '');
+    replyPreview.classList.remove('d-none');
+    state.selectedBubble = bubbleEl;
+    state.selectedBubble.classList.add('chat-selected-reply-target');
+  }
+
+  function clearReplyState() {
+    state.replyToId = null;
+    replyToInput.value = '';
+    replySender.textContent = '';
+    replyText.textContent = '';
+    replyPreview.classList.add('d-none');
+    if (state.selectedBubble) {
+      state.selectedBubble.classList.remove('chat-selected-reply-target');
+      state.selectedBubble = null;
+    }
+  }
+
+  function jumpToMessage(messageId) {
+    if (!messageId) return;
+    const target = document.getElementById(`msg-${messageId}`);
+    if (!target) {
+      alert('元メッセージが見つかりません');
+      return;
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target.classList.add('chat-jump-highlight');
+    window.setTimeout(() => target.classList.remove('chat-jump-highlight'), 1200);
+  }
+
+  function makeExcerpt(value) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+  }
+
+  function formatDateLabel(date) {
+    const parts = fmtDate.formatToParts(date);
+    const get = (type) => parts.find((p) => p.type === type)?.value || '';
+    return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
+  }
+
+  function formatTimeLabel(date) {
+    return fmtTime.format(date);
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+  }
+})();
+</script>
 {% endblock %}
