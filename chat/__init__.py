@@ -51,6 +51,8 @@ CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_PUSH_SCHEMA_READY: bool | None = None
 CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
+CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_READ_STATE_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 PUSH_REQUEST_TIMEOUT_SECONDS = 6
 PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
@@ -284,6 +286,170 @@ def _ensure_chat_notification_log_schema() -> bool:
         finally:
             cur.close()
             db.close()
+
+
+def _ensure_chat_read_state_schema() -> bool:
+    global CHAT_READ_STATE_SCHEMA_READY
+    if CHAT_READ_STATE_SCHEMA_READY is not None:
+        return CHAT_READ_STATE_SCHEMA_READY
+
+    with CHAT_READ_STATE_SCHEMA_CHECK_LOCK:
+        if CHAT_READ_STATE_SCHEMA_READY is not None:
+            return CHAT_READ_STATE_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_read_state (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  event_id BIGINT NOT NULL,
+                  actor_type VARCHAR(16) NOT NULL,
+                  actor_id VARCHAR(64) NOT NULL,
+                  last_read_message_id BIGINT NOT NULL DEFAULT 0,
+                  updated_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_read_state_actor (event_id, actor_type, actor_id),
+                  KEY idx_chat_read_state_event_message (event_id, last_read_message_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            db.commit()
+            CHAT_READ_STATE_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat read_state schema ensure failed", exc_info=True)
+            CHAT_READ_STATE_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
+    participants: dict[str, dict[str, str]] = {"admin:admin": {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}}
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT DISTINCT u.id, u.nickname
+              FROM mfu_event_member m
+              JOIN external_login_user u ON u.id = m.user_id
+             WHERE m.event_id=%s
+            """,
+            (event_id,),
+        )
+        for row in cur.fetchall() or []:
+            actor_id = str(row["id"])
+            key = f"line:{actor_id}"
+            participants[key] = {
+                "actor_type": "line",
+                "actor_id": actor_id,
+                "display_name": str(row.get("nickname") or f"LINE-{actor_id}"),
+            }
+
+        cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+        acl_rows = [str(row["username"]) for row in (cur.fetchall() or [])]
+        non_admin_acls = [name for name in acl_rows if name != "admin"]
+        if non_admin_acls:
+            placeholders = ",".join(["%s"] * len(non_admin_acls))
+            cur.execute(
+                f"SELECT username FROM users WHERE username IN ({placeholders})",
+                tuple(non_admin_acls),
+            )
+            for row in cur.fetchall() or []:
+                username = str(row["username"])
+                participants[f"acl:{username}"] = {
+                    "actor_type": "acl",
+                    "actor_id": username,
+                    "display_name": username,
+                }
+
+        if "admin" in acl_rows:
+            participants["admin:admin"] = {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}
+    finally:
+        cur.close()
+        db.close()
+
+    return participants
+
+
+def _load_event_read_state_snapshot(event_id: int) -> list[dict[str, Any]]:
+    if not _ensure_chat_read_state_schema():
+        return []
+
+    participants = _build_chat_participants(event_id)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_type, actor_id, last_read_message_id, updated_at
+              FROM chat_read_state
+             WHERE event_id=%s
+            """,
+            (event_id,),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    snapshot: list[dict[str, Any]] = []
+    for row in rows:
+        actor_type = str(row.get("actor_type") or "")
+        actor_id = str(row.get("actor_id") or "")
+        key = f"{actor_type}:{actor_id}"
+        participant = participants.get(key)
+        if not participant:
+            continue
+        snapshot.append(
+            {
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "display_name": participant["display_name"],
+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+                "updated_at_iso": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+            }
+        )
+    return snapshot
+
+
+def _upsert_chat_read_state(event_id: int, actor: dict[str, Any], last_seen_message_id: int) -> int:
+    if not _ensure_chat_read_state_schema():
+        return 0
+
+    now = datetime.utcnow()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            INSERT INTO chat_read_state (event_id, actor_type, actor_id, last_read_message_id, updated_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              last_read_message_id = GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
+              updated_at = VALUES(updated_at)
+            """,
+            (event_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
+        )
+        cur.execute(
+            """
+            SELECT last_read_message_id
+              FROM chat_read_state
+             WHERE event_id=%s AND actor_type=%s AND actor_id=%s
+             LIMIT 1
+            """,
+            (event_id, actor["actor_type"], actor["actor_id"]),
+        )
+        row = cur.fetchone() or {}
+        db.commit()
+        return int(row.get("last_read_message_id") or 0)
+    finally:
+        cur.close()
+        db.close()
 
 
 def _actor_sender_id(actor_type: str, actor_id: str) -> str:
@@ -1163,6 +1329,8 @@ def room(event_id: int):
     if not _can_access_event(event_id, actor):
         abort(403)
 
+    _ensure_chat_read_state_schema()
+
     event = _get_event(event_id)
     if not event:
         abort(404)
@@ -1388,6 +1556,33 @@ def on_join(data):
         return
     join_room(f"event:{event_id}")
     emit("chat_joined", {"event_id": event_id})
+    emit("chat_read_snapshot", {"event_id": event_id, "read_states": _load_event_read_state_snapshot(event_id)})
+
+
+@socketio.on("chat_seen")
+def on_seen(data):
+    actor = get_chat_actor()
+    if not actor:
+        disconnect()
+        return
+
+    event_id = int((data or {}).get("event_id") or 0)
+    last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
+    if event_id <= 0 or last_seen_message_id <= 0 or not _can_access_event(event_id, actor):
+        disconnect()
+        return
+
+    effective_last_read_id = _upsert_chat_read_state(event_id, actor, last_seen_message_id)
+    emit(
+        "chat_read_update",
+        {
+            "actor_type": actor["actor_type"],
+            "actor_id": actor["actor_id"],
+            "display_name": actor["display_name"],
+            "last_read_message_id": effective_last_read_id,
+        },
+        to=f"event:{event_id}",
+    )
 
 
 @socketio.on("chat_send")
