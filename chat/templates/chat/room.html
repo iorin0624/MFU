@@ -342,6 +342,20 @@
   background: rgba(255, 255, 255, 0.92);
 }
 
+
+.chat-image-link {
+  display: inline-block;
+  margin-bottom: 6px;
+}
+
+.chat-image-thumb {
+  max-width: min(240px, 100%);
+  max-height: 240px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+}
+
 @media (max-width: 576px) {
   .chat-avatar {
     width: 28px;
@@ -423,7 +437,19 @@
 
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">
-                <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
+                {% if m.has_image %}
+                  <a class="chat-image-link" href="{{ m.image_url }}" target="_blank" rel="noopener">
+                    <img class="chat-image-thumb"
+                         src="{{ m.image_thumb_url }}"
+                         alt="画像"
+                         loading="lazy"
+                         width="{{ m.image_width or '' }}"
+                         height="{{ m.image_height or '' }}">
+                  </a>
+                {% endif %}
+                {% if (m.body_html or m.body or '')|trim %}
+                  <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
+                {% endif %}
               </div>
               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
             </div>
@@ -455,10 +481,12 @@
     <div id="reply-text" class="reply-text"></div>
   </div>
 
-  <form id="chat-form" class="d-flex gap-2">
+  <form id="chat-form" class="d-flex gap-2 align-items-center">
     <input type="hidden" id="reply-to-id" value="">
+    <input type="file" id="chat-image-file" accept="image/*" class="d-none">
+    <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
-    <button class="btn btn-primary" type="submit">送信</button>
+    <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
   </form>
 
   <div class="mt-3 d-flex gap-2 align-items-center">
@@ -491,6 +519,9 @@
   const form = document.getElementById('chat-form');
   const bodyInput = document.getElementById('chat-body');
   const pushBtn = document.getElementById('enable-push');
+  const imageInput = document.getElementById('chat-image-file');
+  const imageBtn = document.getElementById('chat-image-btn');
+  const sendBtn = document.getElementById('chat-send-btn');
   const replyPreview = document.getElementById('reply-preview');
   const replySender = document.getElementById('reply-sender');
   const replyText = document.getElementById('reply-text');
@@ -537,8 +568,12 @@
     renderMessage(msg);
     msgBox.scrollTop = msgBox.scrollHeight;
     sendSeenForMessageId(Number(msg?.id || 0));
+    setSendingState(false);
   });
-  socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
+  socket.on('chat_error', (d) => {
+    setSendingState(false);
+    alert(d.error || '送信失敗');
+  });
   socket.on('chat_read_snapshot', (payload) => {
     applyReadSnapshot(payload?.read_states || []);
     refreshReadIndicators();
@@ -615,8 +650,34 @@
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
 
+  imageBtn?.addEventListener('click', () => imageInput?.click());
+  imageInput?.addEventListener('change', async () => {
+    const file = imageInput.files?.[0];
+    if (!file) return;
+    setSendingState(true);
+    try {
+      const fd = new FormData();
+      fd.append('csrf_token', csrfToken);
+      fd.append('file', file);
+      fd.append('body', bodyInput.value || '');
+      const res = await fetch(`/chat/api/events/${eventId}/upload-image`, { method: 'POST', body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || '画像送信に失敗しました');
+      }
+      bodyInput.value = '';
+      clearReplyState();
+    } catch (err) {
+      alert(err?.message || '画像送信に失敗しました');
+    } finally {
+      imageInput.value = '';
+      setSendingState(false);
+    }
+  });
+
   form?.addEventListener('submit', (e) => {
     e.preventDefault();
+    setSendingState(true);
     socket.emit('chat_send', {
       event_id: eventId,
       body: bodyInput.value,
@@ -624,6 +685,7 @@
     });
     bodyInput.value = '';
     clearReplyState();
+    setSendingState(false);
   });
 
   initPushUi();
@@ -717,6 +779,11 @@
     updatePushButton(Boolean(nextSubscription));
   }
 
+  function setSendingState(isSending) {
+    if (sendBtn) sendBtn.disabled = isSending;
+    if (imageBtn) imageBtn.disabled = isSending;
+  }
+
   function renderMessage(msg) {
     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
     const dateLabel = Number.isNaN(createdAt.getTime())
@@ -778,10 +845,29 @@
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
 
-    const body = document.createElement('div');
-    body.className = 'chat-body';
-    body.innerHTML = (msg.body_html || msg.body || '').trim();
-    bubble.appendChild(body);
+    if (msg.has_image && msg.image_thumb_url && msg.image_url) {
+      const imageLink = document.createElement('a');
+      imageLink.className = 'chat-image-link';
+      imageLink.href = msg.image_url;
+      imageLink.target = '_blank';
+      imageLink.rel = 'noopener';
+
+      const thumb = document.createElement('img');
+      thumb.className = 'chat-image-thumb';
+      thumb.src = msg.image_thumb_url;
+      thumb.alt = '画像';
+      thumb.loading = 'lazy';
+      imageLink.appendChild(thumb);
+      bubble.appendChild(imageLink);
+    }
+
+    const rawBody = (msg.body_html || msg.body || '').trim();
+    if (rawBody) {
+      const body = document.createElement('div');
+      body.className = 'chat-body';
+      body.innerHTML = rawBody;
+      bubble.appendChild(body);
+    }
 
     const time = document.createElement('div');
     time.className = 'chat-time';
