@@ -1,38 +1,1197 @@
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index a3e864590788250008e609d151c5e8e46dab7f2c..fa2f11f7e64df4999273b051780df6e0e52c1c4e 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -570,50 +570,55 @@
-     const quote = e.target.closest('.chat-reply-quote');
-     if (quote) {
-       jumpToMessage(quote.dataset.jumpToId);
-       return;
+diff --git a/chat/__init__.py b/chat/__init__.py
+index ab0d87d1a36eaa357d874f8304386cc42d731703..1429136b482e8663e4edb8e1ae3bdefbaaff3ac6 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -1,84 +1,90 @@
+ from __future__ import annotations
+ 
+ import html
++import io
+ import hashlib
+ import json
+ import os
+ import random
+ import re
+ import secrets
+ import threading
+ import time
+ from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, timedelta
+ from typing import Any
+ from zoneinfo import ZoneInfo
+ 
++from PIL import Image, UnidentifiedImageError
+ from flask import (
+     Blueprint,
+     abort,
+     current_app,
+     jsonify,
+     render_template,
+     request,
+     send_from_directory,
+     session,
+     url_for,
+ )
+ from flask_socketio import disconnect, emit, join_room
+ from requests.exceptions import ConnectionError as RequestsConnectionError
+ from requests.exceptions import SSLError as RequestsSSLError
+ from requests.exceptions import Timeout as RequestsTimeout
+ 
+ from app.chat.socketio_ext import socketio
+ from app.utils.db import get_db
+ 
+ chat_bp = Blueprint(
+     "chat",
+     __name__,
+     template_folder="templates",
+     static_folder="static",
+     url_prefix="/chat",
+ )
+ 
+ MESSAGE_MAX_LEN = 2000
+ RATE_LIMIT_SECONDS = 1
+ JST = ZoneInfo("Asia/Tokyo")
+ 
+ CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_REPLY_SCHEMA_READY: bool | None = None
+ CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_PUSH_SCHEMA_READY: bool | None = None
+ CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
+ CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_READ_STATE_SCHEMA_READY: bool | None = None
+ CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_REACTION_SCHEMA_READY: bool | None = None
++CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
++CHAT_IMAGE_SCHEMA_READY: bool | None = None
+ DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+ CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
++CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
++CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", "10485760")), 1)
+ PUSH_REQUEST_TIMEOUT_SECONDS = 6
+ PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
+ PUSH_LOG_SUPPRESSION_SECONDS = 300
+ PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
+ PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
+ PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
+ PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
+ PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
+ PUSH_ASYNC_INFLIGHT = 0
+ _LINKIFY_RE = re.compile(
+     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+ )
+ _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
+ 
+ 
+ def _default_avatar_url() -> str:
+     return DEFAULT_AVATAR_URL
+ 
+ 
+ def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
+     if not row:
+         return _default_avatar_url()
+     avatar_file = (row.get("avatar_file") or "").strip()
+     if avatar_file:
+         try:
+@@ -313,50 +319,91 @@ def _ensure_chat_reaction_schema() -> bool:
+                   event_id BIGINT NOT NULL,
+                   message_id BIGINT NOT NULL,
+                   actor_type VARCHAR(16) NOT NULL,
+                   actor_id VARCHAR(64) NOT NULL,
+                   emoji VARCHAR(16) NOT NULL,
+                   created_at DATETIME NOT NULL,
+                   updated_at DATETIME NOT NULL,
+                   UNIQUE KEY uq_chat_message_reactions_message_actor (message_id, actor_type, actor_id),
+                   KEY idx_chat_message_reactions_event_message (event_id, message_id),
+                   KEY idx_chat_message_reactions_message (message_id)
+                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                 """
+             )
+             db.commit()
+             CHAT_REACTION_SCHEMA_READY = True
+             return True
+         except Exception:
+             current_app.logger.warning("chat reaction schema ensure failed", exc_info=True)
+             CHAT_REACTION_SCHEMA_READY = False
+             return False
+         finally:
+             cur.close()
+             db.close()
+ 
+ 
++def _ensure_chat_image_schema() -> bool:
++    global CHAT_IMAGE_SCHEMA_READY
++    if CHAT_IMAGE_SCHEMA_READY is not None:
++        return CHAT_IMAGE_SCHEMA_READY
++
++    with CHAT_IMAGE_SCHEMA_CHECK_LOCK:
++        if CHAT_IMAGE_SCHEMA_READY is not None:
++            return CHAT_IMAGE_SCHEMA_READY
++
++        db = get_db()
++        cur = db.cursor(dictionary=True)
++        try:
++            columns = {
++                "image_file": "ALTER TABLE chat_messages ADD COLUMN image_file VARCHAR(255) NULL AFTER body",
++                "image_thumb_file": "ALTER TABLE chat_messages ADD COLUMN image_thumb_file VARCHAR(255) NULL AFTER image_file",
++                "image_mime": "ALTER TABLE chat_messages ADD COLUMN image_mime VARCHAR(64) NULL AFTER image_thumb_file",
++                "image_size": "ALTER TABLE chat_messages ADD COLUMN image_size BIGINT NULL AFTER image_mime",
++                "image_width": "ALTER TABLE chat_messages ADD COLUMN image_width INT NULL AFTER image_size",
++                "image_height": "ALTER TABLE chat_messages ADD COLUMN image_height INT NULL AFTER image_width",
++            }
++            for column_name, ddl in columns.items():
++                try:
++                    cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
++                    if not cur.fetchone():
++                        cur.execute(ddl)
++                except Exception:
++                    current_app.logger.warning("chat image schema ensure %s failed", column_name, exc_info=True)
++
++            db.commit()
++            cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'image_file'")
++            CHAT_IMAGE_SCHEMA_READY = bool(cur.fetchone())
++            return CHAT_IMAGE_SCHEMA_READY
++        except Exception:
++            current_app.logger.warning("chat image schema ensure failed", exc_info=True)
++            CHAT_IMAGE_SCHEMA_READY = False
++            return False
++        finally:
++            cur.close()
++            db.close()
++
++
+ def _ensure_chat_read_state_schema() -> bool:
+     global CHAT_READ_STATE_SCHEMA_READY
+     if CHAT_READ_STATE_SCHEMA_READY is not None:
+         return CHAT_READ_STATE_SCHEMA_READY
+ 
+     with CHAT_READ_STATE_SCHEMA_CHECK_LOCK:
+         if CHAT_READ_STATE_SCHEMA_READY is not None:
+             return CHAT_READ_STATE_SCHEMA_READY
+ 
+         db = get_db()
+         cur = db.cursor()
+         try:
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS chat_read_state (
+                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                   event_id BIGINT NOT NULL,
+                   actor_type VARCHAR(16) NOT NULL,
+                   actor_id VARCHAR(64) NOT NULL,
+                   last_read_message_id BIGINT NOT NULL DEFAULT 0,
+                   updated_at DATETIME NOT NULL,
+                   UNIQUE KEY uq_chat_read_state_actor (event_id, actor_type, actor_id),
+                   KEY idx_chat_read_state_event_message (event_id, last_read_message_id)
+                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                 """
+@@ -519,68 +566,79 @@ def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
+     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
+     time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
+     return dt_utc.isoformat(), date_label, time_label
+ 
+ 
+ def _present_message(
+     msg: dict[str, Any],
+     current_actor: dict[str, Any],
+     avatar_cache: dict[str, str] | None = None,
+ ) -> dict[str, Any]:
+     sender_actor_type = str(msg["sender_actor_type"])
+     sender_actor_id = str(msg["sender_actor_id"])
+     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
+     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
+ 
+     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
+     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
+     reply_to_sender_avatar_url = None
+     if reply_to_sender_actor_type and reply_to_sender_actor_id:
+         reply_to_sender_avatar_url = _resolve_sender_avatar_url(
+             str(reply_to_sender_actor_type),
+             str(reply_to_sender_actor_id),
+             avatar_cache=avatar_cache,
+         )
+ 
++    image_file = (msg.get("image_file") or "").strip()
++    image_thumb_file = (msg.get("image_thumb_file") or "").strip()
++    has_image = bool(image_file and image_thumb_file)
++
+     return {
+         "id": msg["id"],
+         "event_id": msg["event_id"],
+         "sender_id": sender_id,
+         "sender_display_name": msg["sender_display_name"],
+         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
+         "body": msg["body"],
+         "body_html": _linkify_escaped_text(msg["body"] or "").replace("\n", "<br>"),
+         "created_at_iso": created_at_iso,
+         "created_at_jst_date_label": date_label,
+         "created_at_jst_time_hm": time_label,
+         "body_plain_excerpt": _build_plain_excerpt(msg.get("body") or ""),
+         "reply_to_message_id": msg.get("reply_to_message_id"),
+         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
+         "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
+         "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
+         "reactions_summary": msg.get("reactions_summary") or [],
+         "my_reaction": msg.get("my_reaction"),
++        "has_image": has_image,
++        "image_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file) if has_image else None,
++        "image_thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file) if has_image else None,
++        "image_mime": msg.get("image_mime"),
++        "image_size": msg.get("image_size"),
++        "image_width": msg.get("image_width"),
++        "image_height": msg.get("image_height"),
+         "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
      }
  
-     const reactionToggle = e.target.closest('.chat-reaction-toggle');
-     if (reactionToggle) {
-       const box = reactionToggle.closest('.chat-reaction-box');
-       const panel = box?.querySelector('.chat-reaction-panel');
-       panel?.classList.toggle('d-none');
-       return;
-     }
  
-     const reactionBtn = e.target.closest('.chat-reaction-emoji');
-     if (reactionBtn) {
-       const row = reactionBtn.closest('.chat-row');
-       const messageId = Number(row?.dataset.messageId || 0);
-       const emoji = reactionBtn.dataset.emoji || '';
-       if (messageId && reactionEmojis.includes(emoji)) {
-         socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
-       }
-       return;
-     }
+ def _linkify_escaped_text(text: str) -> str:
+     value = str(text or "")
  
-+    const contentLink = e.target.closest('a.chat-link');
-+    if (contentLink) {
-+      return;
+     def _replace(match: re.Match[str]) -> str:
+         token = match.group(0)
+         trimmed = token
+         while trimmed and trimmed[-1] in _LINKIFY_TRAILING_CHARS:
+             trimmed = trimmed[:-1]
+         if not trimmed:
+             return token
+ 
+         suffix = token[len(trimmed):]
+         if match.group("email"):
+             href = f"mailto:{trimmed}"
+         elif trimmed.startswith("http://") or trimmed.startswith("https://"):
+             href = trimmed
+         elif trimmed.startswith("www."):
+             href = f"https://{trimmed}"
+         else:
+             return token
+ 
+@@ -729,164 +787,179 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
+              WHERE a.username = %s
+              ORDER BY e.starts_at DESC
+              LIMIT 100
+             """,
+             (actor["actor_id"],),
+         )
+         return cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _get_event(event_id: int) -> dict[str, Any] | None:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+         return cur.fetchone()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
+     has_reply_schema = _ensure_chat_reply_schema()
++    has_image_schema = _ensure_chat_image_schema()
++    image_columns = (
++        "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
++        if has_image_schema
++        else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
++    )
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         if has_reply_schema:
+             cur.execute(
+-                """
++                f"""
+                 SELECT m.id,
+                        m.event_id,
+                        m.sender_actor_type,
+                        m.sender_actor_id,
+                        m.sender_display_name,
+                        m.body,
+                        m.created_at,
++                       {image_columns},
+                        m.reply_to_message_id,
+                        p.sender_actor_type AS reply_to_sender_actor_type,
+                        p.sender_actor_id AS reply_to_sender_actor_id,
+                        p.sender_display_name AS reply_to_sender_display_name,
+                        p.body AS reply_to_body
+                   FROM chat_messages m
+                   LEFT JOIN chat_messages p
+                          ON p.id = m.reply_to_message_id
+                         AND p.event_id = m.event_id
+                  WHERE m.event_id=%s
+                  ORDER BY m.created_at DESC
+                  LIMIT %s
+                 """,
+                 (event_id, limit),
+             )
+             rows = cur.fetchall() or []
+             for row in rows:
+                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
+                     row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
+                 elif row.get("reply_to_message_id"):
+                     row["reply_to_sender_display_name"] = "元メッセージ"
+                     row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+                 else:
+                     row["reply_to_sender_display_name"] = None
+                     row["reply_to_body_plain_excerpt"] = None
+             return list(reversed(rows))
+ 
+         cur.execute(
+-            """
+-            SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
++            f"""
++            SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
++                   {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'}
+               FROM chat_messages
+              WHERE event_id=%s
+              ORDER BY created_at DESC
+              LIMIT %s
+             """,
+             (event_id, limit),
+         )
+         rows = cur.fetchall() or []
+         for row in rows:
+             row["reply_to_message_id"] = None
+             row["reply_to_sender_actor_type"] = None
+             row["reply_to_sender_actor_id"] = None
+             row["reply_to_sender_display_name"] = None
+             row["reply_to_body_plain_excerpt"] = None
+         return list(reversed(rows))
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+-def _save_message(event_id: int, actor: dict[str, Any], body: str, reply_to_message_id: int | None = None) -> dict[str, Any]:
++def _save_message(
++    event_id: int,
++    actor: dict[str, Any],
++    body: str,
++    reply_to_message_id: int | None = None,
++    image_meta: dict[str, Any] | None = None,
++) -> dict[str, Any]:
+     now = datetime.utcnow()
+     has_reply_schema = _ensure_chat_reply_schema()
++    has_image_schema = _ensure_chat_image_schema()
++    image_meta = image_meta or {}
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
++        insert_columns = ["event_id", "sender_actor_type", "sender_actor_id", "sender_display_name", "body", "created_at"]
++        insert_values: list[Any] = [event_id, actor["actor_type"], actor["actor_id"], actor["display_name"], body, now]
++
+         if has_reply_schema:
+-            cur.execute(
+-                """
+-                INSERT INTO chat_messages (
+-                    event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at, reply_to_message_id
+-                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+-                """,
+-                (
+-                    event_id,
+-                    actor["actor_type"],
+-                    actor["actor_id"],
+-                    actor["display_name"],
+-                    body,
+-                    now,
+-                    reply_to_message_id,
+-                ),
+-            )
++            insert_columns.append("reply_to_message_id")
++            insert_values.append(reply_to_message_id)
+         else:
+-            cur.execute(
+-                """
+-                INSERT INTO chat_messages (
+-                    event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
+-                ) VALUES (%s, %s, %s, %s, %s, %s)
+-                """,
+-                (
+-                    event_id,
+-                    actor["actor_type"],
+-                    actor["actor_id"],
+-                    actor["display_name"],
+-                    body,
+-                    now,
+-                ),
+-            )
+             reply_to_message_id = None
++
++        if has_image_schema:
++            insert_columns.extend(["image_file", "image_thumb_file", "image_mime", "image_size", "image_width", "image_height"])
++            insert_values.extend(
++                [
++                    image_meta.get("image_file"),
++                    image_meta.get("image_thumb_file"),
++                    image_meta.get("image_mime"),
++                    image_meta.get("image_size"),
++                    image_meta.get("image_width"),
++                    image_meta.get("image_height"),
++                ]
++            )
++
++        placeholders = ", ".join(["%s"] * len(insert_columns))
++        cur.execute(
++            f"INSERT INTO chat_messages ({', '.join(insert_columns)}) VALUES ({placeholders})",
++            tuple(insert_values),
++        )
+         msg_id = cur.lastrowid
+         db.commit()
+         return {
+             "id": msg_id,
+             "event_id": event_id,
+             "sender_actor_type": actor["actor_type"],
+             "sender_actor_id": actor["actor_id"],
+             "sender_display_name": actor["display_name"],
+             "body": body,
+             "created_at": now,
+             "reply_to_message_id": reply_to_message_id,
++            "image_file": image_meta.get("image_file"),
++            "image_thumb_file": image_meta.get("image_thumb_file"),
++            "image_mime": image_meta.get("image_mime"),
++            "image_size": image_meta.get("image_size"),
++            "image_width": image_meta.get("image_width"),
++            "image_height": image_meta.get("image_height"),
+         }
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _load_reactions_by_message_ids(message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+     if not message_ids:
+         return {}
+     if not _ensure_chat_reaction_schema():
+         return {}
+ 
+     placeholders = ", ".join(["%s"] * len(message_ids))
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             f"""
+             SELECT message_id, emoji, COUNT(*) AS cnt
+               FROM chat_message_reactions
+              WHERE message_id IN ({placeholders})
+              GROUP BY message_id, emoji
+             """,
+             tuple(message_ids),
+         )
+@@ -909,50 +982,115 @@ def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, A
+         return {}
+     if not _ensure_chat_reaction_schema():
+         return {}
+ 
+     placeholders = ", ".join(["%s"] * len(message_ids))
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         params: tuple[Any, ...] = tuple(message_ids) + (actor["actor_type"], str(actor["actor_id"]))
+         cur.execute(
+             f"""
+             SELECT message_id, emoji
+               FROM chat_message_reactions
+              WHERE message_id IN ({placeholders})
+                AND actor_type=%s
+                AND actor_id=%s
+             """,
+             params,
+         )
+         return {int(row["message_id"]): str(row.get("emoji") or "") for row in (cur.fetchall() or [])}
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
++def _validate_caption_optional(raw: str) -> str:
++    caption = (raw or "").strip()
++    if len(caption) > MESSAGE_MAX_LEN:
++        raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
++    return html.escape(caption)
++
++
++def _image_extension_and_mime(image_format: str) -> tuple[str, str]:
++    fmt = (image_format or "").upper()
++    mapping = {
++        "JPEG": ("jpg", "image/jpeg"),
++        "PNG": ("png", "image/png"),
++        "WEBP": ("webp", "image/webp"),
++    }
++    if fmt not in mapping:
++        raise ValueError("JPEG/PNG/WEBP画像のみアップロードできます")
++    return mapping[fmt]
++
++
++def _save_upload_image_files(event_id: int, storage: Any) -> dict[str, Any]:
++    os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
++    event_dir = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
++    os.makedirs(event_dir, exist_ok=True)
++
++    raw_bytes = storage.read()
++    image_size = len(raw_bytes)
++    if image_size <= 0:
++        raise ValueError("画像ファイルが空です")
++    if image_size > CHAT_UPLOAD_MAX_BYTES:
++        raise ValueError("画像サイズが上限を超えています")
++
++    try:
++        with Image.open(io.BytesIO(raw_bytes)) as im:
++            image_format = im.format or ""
++            ext, image_mime = _image_extension_and_mime(image_format)
++            width, height = im.size
++            original = im.copy()
++    except UnidentifiedImageError as exc:
++        raise ValueError("画像ファイルとして読み取れません") from exc
++
++    base_name = secrets.token_urlsafe(18)
++    image_file = f"{base_name}.{ext}"
++    image_thumb_file = f"{base_name}_thumb.jpg"
++    image_path = os.path.join(event_dir, image_file)
++    thumb_path = os.path.join(event_dir, image_thumb_file)
++
++    with open(image_path, "wb") as fp:
++        fp.write(raw_bytes)
++
++    thumb_image = original.convert("RGBA")
++    thumb_image.thumbnail((480, 480))
++    bg = Image.new("RGB", thumb_image.size, (255, 255, 255))
++    bg.paste(thumb_image, mask=thumb_image.split()[3] if thumb_image.mode == "RGBA" else None)
++    bg.save(thumb_path, format="JPEG", quality=85, optimize=True)
++
++    return {
++        "image_file": image_file,
++        "image_thumb_file": image_thumb_file,
++        "image_mime": image_mime,
++        "image_size": image_size,
++        "image_width": width,
++        "image_height": height,
 +    }
 +
++
+ def _validate_body(raw: str) -> str:
+     body = (raw or "").strip()
+     if not body:
+         raise ValueError("メッセージが空です")
+     if len(body) > MESSAGE_MAX_LEN:
+         raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
+     return html.escape(body)
+ 
+ 
+ def _validate_reply_to_message_id(event_id: int, raw_value: Any) -> int | None:
+     if raw_value in (None, "", 0, "0"):
+         return None
+     if not _ensure_chat_reply_schema():
+         return None
+     try:
+         reply_to_message_id = int(raw_value)
+     except (TypeError, ValueError) as exc:
+         raise ValueError("返信先メッセージの形式が不正です") from exc
+     if reply_to_message_id <= 0:
+         raise ValueError("返信先メッセージの形式が不正です")
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT id FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (reply_to_message_id, event_id))
+@@ -1090,76 +1228,85 @@ def _create_external_chat_notification(
+     event_id: int,
+     dedup_key: str,
+ ) -> None:
+     if not dedup_key:
+         return
+     from app.external_login_user.notifications import create_notification_external
+ 
+     create_notification_external(
+         user_id=recipient_user_id,
+         kind=kind,
+         title=title,
+         body=_build_plain_excerpt(body, max_len=300),
+         target_url=f"/chat/events/{event_id}",
+         dedup_key=dedup_key,
+         event_id=event_id,
+     )
+ 
+ 
+ def _send_chat_message_push_async(
+     app: Any,
+     event_id: int,
+     sender_actor: dict[str, Any],
+     sender_display_name: str,
+     message_body: str,
+     message_id: int,
++    has_image: bool = False,
+     timing: dict[str, float] | None = None,
+ ) -> None:
+     with app.app_context():
+         from app.external_login_user.notifications import create_notification_external
+ 
+         t3 = time.monotonic()
+         trace = dict(timing or {})
+         trace["t3"] = t3
+         actor_push_metrics = {
+             "target_actors": 0,
+             "subscription_count": 0,
+             "success_count": 0,
+             "failure_count": 0,
+             "http_start": None,
+             "http_end": None,
+             "errors": {},
+         }
+         notification_inserted = 0
+         notification_skipped = 0
+         try:
++            excerpt = _build_plain_excerpt(message_body, max_len=80)
++            if has_image:
++                payload_body = f"{sender_display_name}: 📷 画像"
++                if excerpt:
++                    payload_body = f"{payload_body} {excerpt}"
++            else:
++                payload_body = f"{sender_display_name}: {excerpt}"
++
+             payload = {
+                 "type": "chat_message",
+                 "event_id": event_id,
+                 "url": f"/chat/events/{event_id}",
+                 "title": "イベントチャット",
+-                "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
++                "body": payload_body,
+             }
+ 
+             event = _get_event(event_id)
+             if event and event.get("title"):
+                 payload["title"] = str(event.get("title"))
+ 
+             sent_count = 0
+             for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
+                 actor_push_metrics["target_actors"] += 1
+                 sent_count += _send_push_to_actor(actor_type, actor_id, payload, metrics=actor_push_metrics)
+                 if actor_type == "line":
+                     inserted = create_notification_external(
+                         user_id=int(actor_id),
+                         kind="chat_message",
+                         title=str(payload.get("title") or "イベントチャット"),
+                         body=str(payload.get("body") or message_body),
+                         target_url=f"/chat/events/{event_id}",
+                         dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
+                         event_id=event_id,
+                     )
+                     if inserted:
+                         notification_inserted += 1
+                     else:
+                         notification_skipped += 1
+ 
+@@ -1184,72 +1331,74 @@ def _send_chat_message_push_async(
+                 sender_actor.get("actor_id"),
+                 actor_push_metrics.get("target_actors", 0),
+                 actor_push_metrics.get("subscription_count", 0),
+                 actor_push_metrics.get("success_count", 0),
+                 actor_push_metrics.get("failure_count", 0),
+                 notification_inserted,
+                 notification_skipped,
+                 (trace.get("t1", t3) - trace.get("t0", t3)),
+                 (trace.get("t2", t3) - trace.get("t1", t3)),
+                 (trace.get("t3", t3) - trace.get("t2", t3)),
+                 ((t4 or t_end) - trace.get("t3", t3)),
+                 ((t5 or t_end) - (t4 or t_end)),
+                 (t_end - trace.get("t0", t_end)),
+                 actor_push_metrics.get("errors", {}),
+             )
+ 
+ 
+ def _submit_chat_message_push_async(
+     app: Any,
+     event_id: int,
+     sender_actor: dict[str, Any],
+     sender_display_name: str,
+     message_body: str,
+     message_id: int,
+     timing: dict[str, float],
++    has_image: bool = False,
+ ) -> None:
+     global PUSH_ASYNC_INFLIGHT
+     with PUSH_ASYNC_INFLIGHT_LOCK:
+         PUSH_ASYNC_INFLIGHT += 1
+         inflight = PUSH_ASYNC_INFLIGHT
+ 
+     if inflight > PUSH_ASYNC_MAX_WORKERS * 2:
+         current_app.logger.warning(
+             "chat push async queue backlog inflight=%s max_workers=%s event_id=%s",
+             inflight,
+             PUSH_ASYNC_MAX_WORKERS,
+             event_id,
+         )
+ 
+     future = PUSH_ASYNC_EXECUTOR.submit(
+         _send_chat_message_push_async,
+         app,
+         event_id,
+         sender_actor,
+         sender_display_name,
+         message_body,
+         message_id,
++        has_image,
+         timing,
+     )
+ 
+     def _done(_fut: Any) -> None:
+         global PUSH_ASYNC_INFLIGHT
+         with PUSH_ASYNC_INFLIGHT_LOCK:
+             PUSH_ASYNC_INFLIGHT = max(PUSH_ASYNC_INFLIGHT - 1, 0)
+ 
+     future.add_done_callback(_done)
+ 
+ 
+ def _log_push_endpoint_warning(endpoint: str, message: str, *args: Any) -> None:
+     endpoint_key = endpoint or "(empty)"
+     endpoint_hash = hashlib.sha256(endpoint_key.encode("utf-8")).hexdigest()[:12]
+     now = time.monotonic()
+     suppressed_count = 0
+     should_log = True
+ 
+     with PUSH_ENDPOINT_ERROR_LOCK:
+         stat = PUSH_ENDPOINT_ERROR_STATS.get(endpoint_key)
+         if not stat:
+             stat = {"last_logged": 0.0, "suppressed": 0}
+             PUSH_ENDPOINT_ERROR_STATS[endpoint_key] = stat
+         last_logged = float(stat.get("last_logged", 0.0) or 0.0)
+         if now - last_logged < PUSH_LOG_SUPPRESSION_SECONDS:
+@@ -1475,50 +1624,112 @@ def room(event_id: int):
+     avatar_cache: dict[str, str] = {}
+     raw_messages = _load_messages(event_id)
+     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
+     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
+     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
+     messages = []
+     for message in raw_messages:
+         message_id = int(message.get("id") or 0)
+         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
+         message["my_reaction"] = my_reaction_by_message.get(message_id)
+         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
+     can_broadcast = actor["actor_type"] in {"admin", "acl"}
+     return render_template(
+         "chat/room.html",
+         actor=actor,
+         current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
+         event=event,
+         messages=messages,
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+         csrf_token=_chat_csrf(),
+         can_broadcast=can_broadcast,
+         default_avatar_url=_default_avatar_url(),
+     )
+ 
+ 
++@chat_bp.get("/events/<int:event_id>/images/<path:name>")
++def chat_image(event_id: int, name: str):
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    if not _can_access_event(event_id, actor):
++        abort(403)
++    if "/" in name or "\\" in name or name.startswith("."):
++        abort(404)
++    directory = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
++    return send_from_directory(directory, name)
++
++
++@chat_bp.post("/api/events/<int:event_id>/upload-image")
++def upload_image(event_id: int):
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    if not _can_access_event(event_id, actor):
++        abort(403)
++    if not _ensure_chat_image_schema():
++        return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
++
++    payload = request.get_json(silent=True) or {}
++    token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
++    if token != session.get("chat_csrf"):
++        abort(400)
++
++    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES:
++        return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
++
++    upload_file = request.files.get("file")
++    if not upload_file or not upload_file.filename:
++        return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
++
++    try:
++        body = _validate_caption_optional(request.form.get("body") or "")
++        image_meta = _save_upload_image_files(event_id, upload_file.stream)
++    except ValueError as exc:
++        status = 413 if "上限" in str(exc) else 400
++        return jsonify({"ok": False, "error": str(exc)}), status
++
++    message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_meta))
++    message_payload = _present_message(message, actor, avatar_cache={})
++    socketio.emit("chat_message", message_payload, to=f"event:{event_id}")
++
++    app = current_app._get_current_object()
++    now = time.monotonic()
++    _submit_chat_message_push_async(
++        app,
++        event_id,
++        actor,
++        actor["display_name"],
++        body,
++        int(message_payload["id"]),
++        {"t0": now, "t1": now, "t2": now},
++        has_image=True,
++    )
++
++    return jsonify({"ok": True, "message": message_payload})
++
++
+ @chat_bp.get("/api/push/bootstrap")
+ def push_bootstrap():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     return jsonify(
+         {
+             "ok": True,
+             "csrf_token": _chat_csrf(),
+             "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+             "sw_url": "/sw.js",
+         }
+     )
+ 
+ 
+ @chat_bp.post("/api/push/subscribe")
+ def push_subscribe():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+     data = request.get_json(silent=True) or {}
+     endpoint = (data.get("endpoint") or "").strip()
+@@ -1783,50 +1994,51 @@ def on_send(data):
+                 "url": f"/chat/events/{event_id}",
+             },
+         )
+         if target.get("actor_type") == "line":
+             _create_external_chat_notification(
+                 recipient_user_id=int(target["actor_id"]),
+                 kind="chat_mention",
+                 title=f"{actor['display_name']}さんからメンション",
+                 body=body,
+                 event_id=event_id,
+                 dedup_key=f"chat:mention:{event_id}:{message_payload['id']}:{target['actor_id']}",
+             )
+     if mention_targets:
+         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
+ 
+     t2 = time.monotonic()
+     app = current_app._get_current_object()
+     _submit_chat_message_push_async(
+         app,
+         event_id,
+         actor,
+         actor["display_name"],
+         body,
+         int(message_payload["id"]),
+         {"t0": t0, "t1": t1, "t2": t2},
++        has_image=bool(message.get("image_file")),
+     )
+ 
+ 
+ @socketio.on("chat_react")
+ def on_react(data):
+     actor = get_chat_actor()
+     if not actor:
+         disconnect()
+         return
+     if not _ensure_chat_reaction_schema():
+         emit("chat_error", {"error": "リアクション機能の初期化に失敗しました"})
+         return
+ 
+     try:
+         event_id = int((data or {}).get("event_id") or 0)
+         message_id = int((data or {}).get("message_id") or 0)
+     except (TypeError, ValueError):
+         disconnect()
+         return
+ 
+     emoji = str((data or {}).get("emoji") or "")
+     if event_id <= 0 or message_id <= 0 or not _can_access_event(event_id, actor):
+         disconnect()
+         return
+     if emoji not in CHAT_ALLOWED_REACTION_EMOJIS:
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index fa2f11f7e64df4999273b051780df6e0e52c1c4e..65a111b33c9c7737912ebf4759ecf581aab1d96e 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -320,50 +320,64 @@
+   border-radius: 999px;
+   font-size: 0.9rem;
+   line-height: 1;
+   padding: 4px 8px;
+ }
+ 
+ .chat-reaction-emoji.is-active {
+   background: #e7eeff;
+   border-color: #8fa9ff;
+ }
+ 
+ .chat-reaction-summary {
+   display: flex;
+   gap: 6px;
+   flex-wrap: wrap;
+ }
+ 
+ .chat-reaction-chip {
+   border: 1px solid #d8def8;
+   border-radius: 999px;
+   font-size: 0.75rem;
+   padding: 1px 8px;
+   background: rgba(255, 255, 255, 0.92);
+ }
+ 
++
++.chat-image-link {
++  display: inline-block;
++  margin-bottom: 6px;
++}
++
++.chat-image-thumb {
++  max-width: min(240px, 100%);
++  max-height: 240px;
++  border-radius: 10px;
++  border: 1px solid rgba(0, 0, 0, 0.12);
++  background: #fff;
++}
++
+ @media (max-width: 576px) {
+   .chat-avatar {
+     width: 28px;
+     height: 28px;
+   }
+ }
+ </style>
+ 
+ {% macro render_reaction_box(message) -%}
+   <div class="chat-reaction-box"
+        data-reaction-box="1"
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
+ 
+ <div class="container py-3"
+      data-event-id="{{ event.id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+@@ -401,166 +415,187 @@
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+           {% endif %}
+ 
+           <div class="chat-main">
+             {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
+ 
+             {% if m.reply_to_message_id %}
+               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
+                 <img class="chat-avatar-sm"
+                      src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+                      alt=""
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                      onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+                 <div class="rq-body">
+                   <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
+                   <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
+                 </div>
+               </div>
+             {% endif %}
+ 
+             <div class="chat-bubble-wrap">
+               <div class="chat-bubble">
+-                <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
++                {% if m.has_image %}
++                  <a class="chat-image-link" href="{{ m.image_url }}" target="_blank" rel="noopener">
++                    <img class="chat-image-thumb"
++                         src="{{ m.image_thumb_url }}"
++                         alt="画像"
++                         loading="lazy"
++                         width="{{ m.image_width or '' }}"
++                         height="{{ m.image_height or '' }}">
++                  </a>
++                {% endif %}
++                {% if (m.body_html or m.body or '')|trim %}
++                  <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
++                {% endif %}
+               </div>
+               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+             </div>
+             {% if m.is_me %}
+               <div class="chat-read-indicator d-none"></div>
+               <div class="chat-read-list d-none"></div>
+             {% endif %}
+             {{ render_reaction_box(m) }}
+           </div>
+ 
+           {% if m.is_me %}
+             <img class="chat-avatar"
+                  src="{{ m.sender_avatar_url or default_avatar_url }}"
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+           {% endif %}
+         </div>
+       </div>
+     {% endfor %}
+   </div>
+ 
+   <div id="reply-preview" class="reply-preview d-none">
+     <div class="reply-meta">
+       <strong id="reply-sender"></strong>
+       <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
+     </div>
+     <div id="reply-text" class="reply-text"></div>
+   </div>
+ 
+-  <form id="chat-form" class="d-flex gap-2">
++  <form id="chat-form" class="d-flex gap-2 align-items-center">
+     <input type="hidden" id="reply-to-id" value="">
++    <input type="file" id="chat-image-file" accept="image/*" class="d-none">
++    <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
+     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
+-    <button class="btn btn-primary" type="submit">送信</button>
++    <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
+   </form>
+ 
+   <div class="mt-3 d-flex gap-2 align-items-center">
+     <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
+     {% if can_broadcast %}
+     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
+       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
+     </form>
+     {% endif %}
+   </div>
+ </div>
+ 
+ <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+ (() => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
+ 
+   const eventId = Number(root.dataset.eventId);
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
+   const meId = root.dataset.me || '';
+   const myDisplayName = root.dataset.displayName || '';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+ 
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const pushBtn = document.getElementById('enable-push');
++  const imageInput = document.getElementById('chat-image-file');
++  const imageBtn = document.getElementById('chat-image-btn');
++  const sendBtn = document.getElementById('chat-send-btn');
+   const replyPreview = document.getElementById('reply-preview');
+   const replySender = document.getElementById('reply-sender');
+   const replyText = document.getElementById('reply-text');
+   const replyToInput = document.getElementById('reply-to-id');
+   const replyCancelBtn = document.getElementById('reply-cancel');
+ 
+   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     year: 'numeric',
+     month: 'numeric',
+     day: 'numeric',
+     weekday: 'short',
+   });
+   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     hour: 'numeric',
+     minute: '2-digit',
+     hour12: false,
+   });
+ 
+   const [myActorType, myActorId] = meId.includes(':')
+     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+     : ['', ''];
+ 
+   const state = {
+     replyToId: null,
+     selectedBubble: null,
+     readStateByActor: new Map(),
+     reactionByMessage: new Map(),
+   };
+ 
+   const socket = io({ transports: ['websocket', 'polling'] });
+   socket.emit('chat_join', { event_id: eventId });
+ 
+   initReactionUis();
+   scrollToLatestMessage();
+   refreshReadIndicators();
+   window.addEventListener('load', () => {
+     scrollToLatestMessage();
+     sendSeenForLatestMessage();
+   }, { once: true });
+ 
+   socket.on('chat_message', (msg) => {
+     renderMessage(msg);
+     msgBox.scrollTop = msgBox.scrollHeight;
+     sendSeenForMessageId(Number(msg?.id || 0));
++    setSendingState(false);
++  });
++  socket.on('chat_error', (d) => {
++    setSendingState(false);
++    alert(d.error || '送信失敗');
+   });
+-  socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
+   socket.on('chat_read_snapshot', (payload) => {
+     applyReadSnapshot(payload?.read_states || []);
+     refreshReadIndicators();
+     sendSeenForLatestMessage();
+   });
+   socket.on('chat_read_update', (payload) => {
+     applyReadUpdate(payload);
+     refreshReadIndicators();
+   });
+   socket.on('chat_reaction_update', (payload) => {
+     const messageId = Number(payload?.message_id || 0);
+     if (!messageId) return;
+     const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
+     let myReaction = prev.myReaction || null;
+     const changed = payload?.changed || {};
+     if (changed.actor_type === myActorType && String(changed.actor_id || '') === String(myActorId || '')) {
+       myReaction = changed.emoji || null;
+     }
+     setReactionState(messageId, payload?.reactions || [], myReaction);
+   });
+ 
+   msgBox.addEventListener('click', (e) => {
+     const readIndicator = e.target.closest('.chat-read-indicator');
+     if (readIndicator) {
+       toggleReadList(readIndicator.closest('.chat-main'));
+@@ -593,59 +628,86 @@
+     }
+ 
+     const contentLink = e.target.closest('a.chat-link');
+     if (contentLink) {
+       return;
+     }
+ 
      const bubble = e.target.closest('.chat-bubble');
      if (!bubble) return;
      const row = bubble.closest('.chat-row');
@@ -51,10 +1210,198 @@ index a3e864590788250008e609d151c5e8e46dab7f2c..fa2f11f7e64df4999273b051780df6e0
  
    replyCancelBtn?.addEventListener('click', clearReplyState);
  
++  imageBtn?.addEventListener('click', () => imageInput?.click());
++  imageInput?.addEventListener('change', async () => {
++    const file = imageInput.files?.[0];
++    if (!file) return;
++    setSendingState(true);
++    try {
++      const fd = new FormData();
++      fd.append('csrf_token', csrfToken);
++      fd.append('file', file);
++      fd.append('body', bodyInput.value || '');
++      const res = await fetch(`/chat/api/events/${eventId}/upload-image`, { method: 'POST', body: fd });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok || !data.ok) {
++        throw new Error(data.error || '画像送信に失敗しました');
++      }
++      bodyInput.value = '';
++      clearReplyState();
++    } catch (err) {
++      alert(err?.message || '画像送信に失敗しました');
++    } finally {
++      imageInput.value = '';
++      setSendingState(false);
++    }
++  });
++
    form?.addEventListener('submit', (e) => {
      e.preventDefault();
++    setSendingState(true);
      socket.emit('chat_send', {
        event_id: eventId,
        body: bodyInput.value,
        reply_to_message_id: state.replyToId,
      });
+     bodyInput.value = '';
+     clearReplyState();
++    setSendingState(false);
+   });
+ 
+   initPushUi();
+ 
+   pushBtn?.addEventListener('click', async () => {
+     const pushState = await getPushState();
+     if (!pushState.supported) {
+       alert('この端末はPush通知に非対応です');
+       return;
+     }
+ 
+     if (pushState.subscription) {
+       await disablePush(pushState.registration, pushState.subscription);
+       return;
+     }
+ 
+     await enablePush(pushState.registration);
+   });
+ 
+   async function initPushUi() {
+     const pushState = await getPushState();
+     if (!pushState.supported) {
+       if (pushBtn) {
+         pushBtn.disabled = true;
+         pushBtn.textContent = 'Push通知は非対応です';
+@@ -695,50 +757,55 @@
+         sw_scope: new URL(registration.scope).pathname || '/',
+         ...subscription.toJSON(),
+       }),
+     });
+     if (!res.ok) {
+       alert('購読登録に失敗しました');
+       return;
+     }
+     updatePushButton(true);
+   }
+ 
+   async function disablePush(registration, subscription) {
+     await subscription.unsubscribe();
+     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+     if (endpoint) {
+       await fetch('/chat/api/push/unsubscribe', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+       });
+     }
+     const nextSubscription = await registration.pushManager.getSubscription();
+     updatePushButton(Boolean(nextSubscription));
+   }
+ 
++  function setSendingState(isSending) {
++    if (sendBtn) sendBtn.disabled = isSending;
++    if (imageBtn) imageBtn.disabled = isSending;
++  }
++
+   function renderMessage(msg) {
+     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+     const dateLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_date_label || '')
+       : formatDateLabel(createdAt);
+     const timeLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_time_hm || '')
+       : formatTimeLabel(createdAt);
+ 
+     appendDateDividerIfNeeded(dateLabel);
+ 
+     const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+ 
+     const row = document.createElement('div');
+     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
+     row.id = `msg-${msg.id}`;
+     row.dataset.messageId = msg.id;
+     row.dataset.senderName = msg.sender_display_name || 'Unknown';
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
+     row.dataset.replyToId = msg.reply_to_message_id || '';
+     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
+     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
+     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
+@@ -756,54 +823,73 @@
+     const main = document.createElement('div');
+     main.className = 'chat-main';
+ 
+     if (!isMe) {
+       const sender = document.createElement('div');
+       sender.className = 'chat-sender';
+       sender.textContent = msg.sender_display_name || 'Unknown';
+       main.appendChild(sender);
+     }
+ 
+     if (msg.reply_to_message_id) {
+       main.appendChild(makeReplyQuote(
+         msg.reply_to_message_id,
+         msg.reply_to_sender_display_name || '元メッセージ',
+         msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
+         msg.reply_to_sender_avatar_url || defaultAvatarUrl,
+       ));
+     }
+ 
+     const wrap = document.createElement('div');
+     wrap.className = 'chat-bubble-wrap';
+ 
+     const bubble = document.createElement('div');
+     bubble.className = 'chat-bubble';
+ 
+-    const body = document.createElement('div');
+-    body.className = 'chat-body';
+-    body.innerHTML = (msg.body_html || msg.body || '').trim();
+-    bubble.appendChild(body);
++    if (msg.has_image && msg.image_thumb_url && msg.image_url) {
++      const imageLink = document.createElement('a');
++      imageLink.className = 'chat-image-link';
++      imageLink.href = msg.image_url;
++      imageLink.target = '_blank';
++      imageLink.rel = 'noopener';
++
++      const thumb = document.createElement('img');
++      thumb.className = 'chat-image-thumb';
++      thumb.src = msg.image_thumb_url;
++      thumb.alt = '画像';
++      thumb.loading = 'lazy';
++      imageLink.appendChild(thumb);
++      bubble.appendChild(imageLink);
++    }
++
++    const rawBody = (msg.body_html || msg.body || '').trim();
++    if (rawBody) {
++      const body = document.createElement('div');
++      body.className = 'chat-body';
++      body.innerHTML = rawBody;
++      bubble.appendChild(body);
++    }
+ 
+     const time = document.createElement('div');
+     time.className = 'chat-time';
+     time.textContent = timeLabel;
+ 
+     wrap.appendChild(bubble);
+     wrap.appendChild(time);
+     main.appendChild(wrap);
+ 
+     if (isMe) {
+       const readIndicator = document.createElement('div');
+       readIndicator.className = 'chat-read-indicator d-none';
+       main.appendChild(readIndicator);
+ 
+       const readList = document.createElement('div');
+       readList.className = 'chat-read-list d-none';
+       main.appendChild(readList);
+     }
+ 
+     main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+ 
+     line.appendChild(main);
+ 
+     if (isMe) {
+       line.appendChild(makeAvatar(msg.sender_avatar_url));
