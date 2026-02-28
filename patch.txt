@@ -1,152 +1,382 @@
-diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index ca707b60a60cf7c470a1451cdce19e1dae1ba203..89995a16c6704d2bfb6d7d9fbeb3d88ea28b6381 100644
---- a/external_login_user/template/_extlogin_nav.html
-+++ b/external_login_user/template/_extlogin_nav.html
-@@ -1,28 +1,60 @@
--<nav class="navbar navbar-expand-lg bg-body-tertiary">
--  <div class="container">
-+<nav class="navbar navbar-expand-lg bg-white border-bottom">
-+  <div class="container-fluid">
-     <a class="navbar-brand" href="/external-login/">MFU</a>
--    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv" aria-controls="nv" aria-expanded="false" aria-label="Toggle navigation">
--      <span class="navbar-toggler-icon"></span>
--    </button>
--    <div id="nv" class="collapse navbar-collapse">
--      <ul class="navbar-nav me-auto">
-+
-+    <div class="d-flex align-items-center gap-2 ms-auto">
-+      <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
-+        <span class="fs-5">🔔</span>
-+        <span id="navNotifBadge"
-+              class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-+      </a>
-+
-+      <button class="navbar-toggler" type="button"
-+              data-bs-toggle="collapse" data-bs-target="#extNavCollapse"
-+              aria-controls="extNavCollapse" aria-expanded="false" aria-label="メニュー">
-+        <span class="navbar-toggler-icon"></span>
-+      </button>
-+    </div>
-+
-+    <div class="collapse navbar-collapse" id="extNavCollapse">
-+      <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-         <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
-       </ul>
--      <ul class="navbar-nav align-items-lg-center">
--        <li class="nav-item">
--          <a class="nav-link position-relative" href="/external-login/notifications" id="navNotifBell" aria-label="通知">
--            🔔
--            <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none" id="navNotifBadge">0</span>
--          </a>
--        </li>
--        <li class="nav-item dropdown">
--          <button class="nav-link btn btn-link text-decoration-none" id="extNavMenuButton" data-bs-toggle="dropdown" aria-expanded="false" aria-label="メニュー" type="button">⋮</button>
--          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="extNavMenuButton">
--            <li><a class="dropdown-item" href="/external-login/profile">プロフィール</a></li>
--            <li><a class="dropdown-item" href="/external-login/logout">ログアウト</a></li>
--          </ul>
--        </li>
--      </ul>
-     </div>
-   </div>
- </nav>
-+
-+<script>
-+  document.addEventListener('DOMContentLoaded', () => {
-+    const badge = document.getElementById('navNotifBadge');
-+    if (!badge) return;
-+
-+    const hideBadge = () => {
-+      badge.textContent = '0';
-+      badge.classList.add('d-none');
-+    };
-+
-+    const updateBadge = async () => {
-+      try {
-+        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-+        if (!res.ok) {
-+          hideBadge();
-+          return;
-+        }
-+        const data = await res.json();
-+        const count = Number(data?.count ?? 0);
-+        if (Number.isFinite(count) && count > 0) {
-+          badge.textContent = String(Math.min(Math.floor(count), 99));
-+          badge.classList.remove('d-none');
-+          return;
-+        }
-+      } catch (_e) {
-+        // noop
-+      }
-+      hideBadge();
-+    };
-+
-+    updateBadge();
-+    window.setInterval(updateBadge, 30000);
-+  });
-+</script>
-diff --git a/external_login_user/template/base_extlogin.html b/external_login_user/template/base_extlogin.html
-index bcab8da4397d67aaca6363b3e856ecff4f4167ff..3125c3623b3142c55aae09ec6c96f10b0361e682 100644
---- a/external_login_user/template/base_extlogin.html
-+++ b/external_login_user/template/base_extlogin.html
-@@ -95,60 +95,29 @@
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 0e17468333b8151e5db0243b0819f03eb6826d45..9eee981a3ecffb38e6dd65eb848e9681b0a07f94 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -1,73 +1,83 @@
+ from __future__ import annotations
  
-     if (navigator.serviceWorker) {
-       navigator.serviceWorker.addEventListener('message', (event) => {
-         const data = event?.data || {};
-         if (data.type !== 'MFU_PUSH_NAV' || !data.url) return;
-         try {
-           localStorage.setItem(
-             PENDING_KEY,
-             JSON.stringify({ url: normalizePath(data.url), ts: Number(data.ts) || Date.now() })
-           );
-         } catch (_e) {
-           // noop
-         }
-       });
-     }
+ import html
+ import hashlib
+ import json
+ import os
++import random
+ import re
+ import secrets
+ import threading
++import time
+ from datetime import datetime, timedelta
+ from typing import Any
+ from zoneinfo import ZoneInfo
  
-     document.addEventListener('visibilitychange', () => {
-       if (document.visibilityState === 'visible') {
-         handlePendingNavigation();
-       }
-     });
-     window.addEventListener('pageshow', handlePendingNavigation);
-     window.addEventListener('focus', handlePendingNavigation);
-   })();
+ from flask import (
+     Blueprint,
+     abort,
+     current_app,
+     jsonify,
+     render_template,
+     request,
+     send_from_directory,
+     session,
+     url_for,
+ )
+ from flask_socketio import disconnect, emit, join_room
++from requests.exceptions import ConnectionError as RequestsConnectionError
++from requests.exceptions import SSLError as RequestsSSLError
++from requests.exceptions import Timeout as RequestsTimeout
  
--  document.addEventListener('DOMContentLoaded', () => {
--    const badge = document.getElementById('navNotifBadge');
--    if (!badge) return;
+ from app.chat.socketio_ext import socketio
+ from app.utils.db import get_db
  
--    const hideBadge = () => {
--      badge.textContent = '0';
--      badge.classList.add('d-none');
--    };
--
--    const updateBadge = async () => {
--      try {
--        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
--        if (!res.ok) {
--          hideBadge();
--          return;
+ chat_bp = Blueprint(
+     "chat",
+     __name__,
+     template_folder="templates",
+     static_folder="static",
+     url_prefix="/chat",
+ )
+ 
+ MESSAGE_MAX_LEN = 2000
+ RATE_LIMIT_SECONDS = 1
+ JST = ZoneInfo("Asia/Tokyo")
+ 
+ CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_REPLY_SCHEMA_READY: bool | None = None
+ CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_PUSH_SCHEMA_READY: bool | None = None
+ CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
+ DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
++PUSH_REQUEST_TIMEOUT_SECONDS = 6
++PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
++PUSH_LOG_SUPPRESSION_SECONDS = 300
++PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
++PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
+ 
+ 
+ def _default_avatar_url() -> str:
+     return DEFAULT_AVATAR_URL
+ 
+ 
+ def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
+     if not row:
+         return _default_avatar_url()
+     avatar_file = (row.get("avatar_file") or "").strip()
+     if avatar_file:
+         try:
+             return url_for("external_login_user.avatar_file", name=avatar_file)
+         except Exception:
+             current_app.logger.warning("chat avatar url_for failed name=%s", avatar_file, exc_info=True)
+     avatar_url = (row.get("avatar_url") or "").strip()
+     if avatar_url:
+         return avatar_url
+     return _default_avatar_url()
+ 
+ 
+ def _resolve_sender_avatar_url(actor_type: str, actor_id: str, avatar_cache: dict[str, str] | None = None) -> str:
+     key = f"{actor_type}:{actor_id}"
+     if avatar_cache is not None and key in avatar_cache:
+         return avatar_cache[key]
+@@ -773,76 +783,117 @@ def _create_external_chat_notification(
+ ) -> None:
+     if not dedup_key:
+         return
+     from app.external_login_user.notifications import create_notification_external
+ 
+     create_notification_external(
+         user_id=recipient_user_id,
+         kind=kind,
+         title=title,
+         body=_build_plain_excerpt(body, max_len=300),
+         target_url=f"/chat/events/{event_id}",
+         dedup_key=dedup_key,
+         event_id=event_id,
+     )
+ 
+ 
+ def _send_chat_message_push_async(
+     app: Any,
+     event_id: int,
+     sender_actor: dict[str, Any],
+     sender_display_name: str,
+     message_body: str,
+     message_id: int,
+ ) -> None:
+     with app.app_context():
+-        payload = {
+-            "type": "chat_message",
+-            "event_id": event_id,
+-            "url": f"/chat/events/{event_id}",
+-            "title": "イベントチャット",
+-            "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
 -        }
--        const data = await res.json();
--        const count = Number(data?.count ?? 0);
--        if (Number.isFinite(count) && count > 0) {
--          badge.textContent = String(Math.min(Math.floor(count), 99));
--          badge.classList.remove('d-none');
--          return;
--        }
--      } catch (_e) {
--        // noop
--      }
--      hideBadge();
--    };
++        try:
++            payload = {
++                "type": "chat_message",
++                "event_id": event_id,
++                "url": f"/chat/events/{event_id}",
++                "title": "イベントチャット",
++                "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
++            }
++
++            event = _get_event(event_id)
++            if event and event.get("title"):
++                payload["title"] = str(event.get("title"))
++
++            sent_count = 0
++            for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
++                sent_count += _send_push_to_actor(actor_type, actor_id, payload)
++                if actor_type == "line":
++                    _create_external_chat_notification(
++                        recipient_user_id=int(actor_id),
++                        kind="chat_message",
++                        title=str(payload.get("title") or "イベントチャット"),
++                        body=str(payload.get("body") or message_body),
++                        event_id=event_id,
++                        dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
++                    )
+ 
+-        event = _get_event(event_id)
+-        if event and event.get("title"):
+-            payload["title"] = str(event.get("title"))
 -
--    updateBadge();
--    window.setInterval(updateBadge, 15000);
--  });
- </script>
- </body>
- </html>
+-        sent_count = 0
+-        for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
+-            sent_count += _send_push_to_actor(actor_type, actor_id, payload)
+-            if actor_type == "line":
+-                _create_external_chat_notification(
+-                    recipient_user_id=int(actor_id),
+-                    kind="chat_message",
+-                    title=str(payload.get("title") or "イベントチャット"),
+-                    body=str(payload.get("body") or message_body),
+-                    event_id=event_id,
+-                    dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
+-                )
++            _log_notification(event_id, "chat_message", payload, sent_count)
++        except Exception as exc:
++            sender = f"{sender_actor.get('actor_type', '?')}:{sender_actor.get('actor_id', '?')}"
++            current_app.logger.warning(
++                "chat push async worker recovered event_id=%s sender=%s error=%s",
++                event_id,
++                sender,
++                type(exc).__name__,
++            )
++            if app.debug:
++                current_app.logger.exception("chat push async worker debug traceback")
++
++
++def _log_push_endpoint_warning(endpoint: str, message: str, *args: Any) -> None:
++    endpoint_key = endpoint or "(empty)"
++    endpoint_hash = hashlib.sha256(endpoint_key.encode("utf-8")).hexdigest()[:12]
++    now = time.monotonic()
++    suppressed_count = 0
++    should_log = True
++
++    with PUSH_ENDPOINT_ERROR_LOCK:
++        stat = PUSH_ENDPOINT_ERROR_STATS.get(endpoint_key)
++        if not stat:
++            stat = {"last_logged": 0.0, "suppressed": 0}
++            PUSH_ENDPOINT_ERROR_STATS[endpoint_key] = stat
++        last_logged = float(stat.get("last_logged", 0.0) or 0.0)
++        if now - last_logged < PUSH_LOG_SUPPRESSION_SECONDS:
++            stat["suppressed"] = int(stat.get("suppressed", 0) or 0) + 1
++            should_log = False
++        else:
++            suppressed_count = int(stat.get("suppressed", 0) or 0)
++            stat["suppressed"] = 0
++            stat["last_logged"] = now
++
++    if not should_log:
++        return
+ 
+-        _log_notification(event_id, "chat_message", payload, sent_count)
++    suffix = f" endpoint_hash={endpoint_hash}"
++    if suppressed_count > 0:
++        suffix += f" suppressed={suppressed_count}"
++    current_app.logger.warning(message + suffix, *args)
+ 
+ 
+ def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_count: int = 0) -> None:
+     if not _ensure_chat_notification_log_schema():
+         return
+ 
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             INSERT INTO chat_notification_log (event_id, kind, payload_json, sent_count, created_at)
+             VALUES (%s, %s, %s, %s, %s)
+             """,
+             (event_id, kind, json.dumps(payload, ensure_ascii=False), sent_count, datetime.utcnow()),
+         )
+         db.commit()
+     except Exception:
+         current_app.logger.warning("chat notification log insert failed", exc_info=True)
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any]) -> int:
+@@ -853,66 +904,135 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
+         from pywebpush import webpush, WebPushException
+     except ImportError:
+         return 0
+ 
+     public = os.getenv("CHAT_VAPID_PUBLIC_KEY")
+     private = os.getenv("CHAT_VAPID_PRIVATE_KEY")
+     subject = os.getenv("CHAT_VAPID_SUBJECT", "mailto:admin@example.com")
+     if not private or not public:
+         return 0
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     sent = 0
+     try:
+         cur.execute(
+             """
+             SELECT id, endpoint, p256dh, auth
+               FROM chat_push_subscriptions
+              WHERE actor_type=%s AND actor_id=%s
+             """,
+             (actor_type, actor_id),
+         )
+         subs = cur.fetchall() or []
+ 
+         for sub in subs:
+-            try:
+-                webpush(
+-                    subscription_info={
+-                        "endpoint": sub["endpoint"],
+-                        "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+-                    },
+-                    data=json.dumps(payload, ensure_ascii=False),
+-                    vapid_private_key=private,
+-                    vapid_claims={"sub": subject},
+-                )
+-                sent += 1
+-            except WebPushException as exc:
+-                status = getattr(getattr(exc, "response", None), "status_code", None)
+-                if status in {404, 410}:
+-                    cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
+-                current_app.logger.warning("chat push failed actor=%s:%s status=%s", actor_type, actor_id, status)
++            endpoint = str(sub.get("endpoint") or "")
++            push_success = False
++            for attempt in range(len(PUSH_RETRY_BACKOFF_SECONDS) + 1):
++                try:
++                    webpush(
++                        subscription_info={
++                            "endpoint": endpoint,
++                            "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
++                        },
++                        data=json.dumps(payload, ensure_ascii=False),
++                        vapid_private_key=private,
++                        vapid_claims={"sub": subject},
++                        timeout=PUSH_REQUEST_TIMEOUT_SECONDS,
++                    )
++                    sent += 1
++                    push_success = True
++                    break
++                except (RequestsSSLError, RequestsConnectionError, RequestsTimeout) as exc:
++                    if attempt >= len(PUSH_RETRY_BACKOFF_SECONDS):
++                        _log_push_endpoint_warning(
++                            endpoint,
++                            "chat push temporary network failure actor=%s:%s error=%s",
++                            actor_type,
++                            actor_id,
++                            type(exc).__name__,
++                        )
++                        break
++                    delay = PUSH_RETRY_BACKOFF_SECONDS[attempt] + random.uniform(0.0, 0.2)
++                    time.sleep(delay)
++                except WebPushException as exc:
++                    status = getattr(getattr(exc, "response", None), "status_code", None)
++                    if status in {404, 410}:
++                        cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
++                        _log_push_endpoint_warning(
++                            endpoint,
++                            "chat push subscription removed actor=%s:%s status=%s",
++                            actor_type,
++                            actor_id,
++                            status,
++                        )
++                        break
++                    if status in {401, 403}:
++                        current_app.logger.error(
++                            "chat push auth/config failure actor=%s:%s status=%s",
++                            actor_type,
++                            actor_id,
++                            status,
++                        )
++                        break
++                    if status == 429 or (isinstance(status, int) and 500 <= status <= 599):
++                        if attempt >= len(PUSH_RETRY_BACKOFF_SECONDS):
++                            _log_push_endpoint_warning(
++                                endpoint,
++                                "chat push temporary http failure actor=%s:%s status=%s",
++                                actor_type,
++                                actor_id,
++                                status,
++                            )
++                            break
++                        delay = PUSH_RETRY_BACKOFF_SECONDS[attempt] + random.uniform(0.0, 0.2)
++                        time.sleep(delay)
++                        continue
++
++                    _log_push_endpoint_warning(
++                        endpoint,
++                        "chat push failed actor=%s:%s status=%s",
++                        actor_type,
++                        actor_id,
++                        status,
++                    )
++                    break
++                except Exception as exc:
++                    _log_push_endpoint_warning(
++                        endpoint,
++                        "chat push unexpected failure actor=%s:%s error=%s",
++                        actor_type,
++                        actor_id,
++                        type(exc).__name__,
++                    )
++                    if current_app.debug:
++                        current_app.logger.exception("chat push unexpected traceback endpoint_hash logging")
++                    break
++
++            if not push_success:
++                continue
+         db.commit()
+         return sent
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @chat_bp.before_request
+ def _require_any_login():
+     if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
+         return None
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     return None
+ 
+ 
+ @chat_bp.route("/")
+ def index():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     events = _accessible_events(actor)
+     return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
+ 

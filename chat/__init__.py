@@ -4,9 +4,11 @@ import html
 import hashlib
 import json
 import os
+import random
 import re
 import secrets
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -23,6 +25,9 @@ from flask import (
     url_for,
 )
 from flask_socketio import disconnect, emit, join_room
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import SSLError as RequestsSSLError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from app.chat.socketio_ext import socketio
 from app.utils.db import get_db
@@ -46,6 +51,11 @@ CHAT_PUSH_SCHEMA_READY: bool | None = None
 CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+PUSH_REQUEST_TIMEOUT_SECONDS = 6
+PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
+PUSH_LOG_SUPPRESSION_SECONDS = 300
+PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
+PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
 
 
 def _default_avatar_url() -> str:
@@ -795,32 +805,73 @@ def _send_chat_message_push_async(
     message_id: int,
 ) -> None:
     with app.app_context():
-        payload = {
-            "type": "chat_message",
-            "event_id": event_id,
-            "url": f"/chat/events/{event_id}",
-            "title": "イベントチャット",
-            "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
-        }
+        try:
+            payload = {
+                "type": "chat_message",
+                "event_id": event_id,
+                "url": f"/chat/events/{event_id}",
+                "title": "イベントチャット",
+                "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
+            }
 
-        event = _get_event(event_id)
-        if event and event.get("title"):
-            payload["title"] = str(event.get("title"))
+            event = _get_event(event_id)
+            if event and event.get("title"):
+                payload["title"] = str(event.get("title"))
 
-        sent_count = 0
-        for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
-            sent_count += _send_push_to_actor(actor_type, actor_id, payload)
-            if actor_type == "line":
-                _create_external_chat_notification(
-                    recipient_user_id=int(actor_id),
-                    kind="chat_message",
-                    title=str(payload.get("title") or "イベントチャット"),
-                    body=str(payload.get("body") or message_body),
-                    event_id=event_id,
-                    dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
-                )
+            sent_count = 0
+            for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
+                sent_count += _send_push_to_actor(actor_type, actor_id, payload)
+                if actor_type == "line":
+                    _create_external_chat_notification(
+                        recipient_user_id=int(actor_id),
+                        kind="chat_message",
+                        title=str(payload.get("title") or "イベントチャット"),
+                        body=str(payload.get("body") or message_body),
+                        event_id=event_id,
+                        dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
+                    )
 
-        _log_notification(event_id, "chat_message", payload, sent_count)
+            _log_notification(event_id, "chat_message", payload, sent_count)
+        except Exception as exc:
+            sender = f"{sender_actor.get('actor_type', '?')}:{sender_actor.get('actor_id', '?')}"
+            current_app.logger.warning(
+                "chat push async worker recovered event_id=%s sender=%s error=%s",
+                event_id,
+                sender,
+                type(exc).__name__,
+            )
+            if app.debug:
+                current_app.logger.exception("chat push async worker debug traceback")
+
+
+def _log_push_endpoint_warning(endpoint: str, message: str, *args: Any) -> None:
+    endpoint_key = endpoint or "(empty)"
+    endpoint_hash = hashlib.sha256(endpoint_key.encode("utf-8")).hexdigest()[:12]
+    now = time.monotonic()
+    suppressed_count = 0
+    should_log = True
+
+    with PUSH_ENDPOINT_ERROR_LOCK:
+        stat = PUSH_ENDPOINT_ERROR_STATS.get(endpoint_key)
+        if not stat:
+            stat = {"last_logged": 0.0, "suppressed": 0}
+            PUSH_ENDPOINT_ERROR_STATS[endpoint_key] = stat
+        last_logged = float(stat.get("last_logged", 0.0) or 0.0)
+        if now - last_logged < PUSH_LOG_SUPPRESSION_SECONDS:
+            stat["suppressed"] = int(stat.get("suppressed", 0) or 0) + 1
+            should_log = False
+        else:
+            suppressed_count = int(stat.get("suppressed", 0) or 0)
+            stat["suppressed"] = 0
+            stat["last_logged"] = now
+
+    if not should_log:
+        return
+
+    suffix = f" endpoint_hash={endpoint_hash}"
+    if suppressed_count > 0:
+        suffix += f" suppressed={suppressed_count}"
+    current_app.logger.warning(message + suffix, *args)
 
 
 def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_count: int = 0) -> None:
@@ -875,22 +926,91 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any])
         subs = cur.fetchall() or []
 
         for sub in subs:
-            try:
-                webpush(
-                    subscription_info={
-                        "endpoint": sub["endpoint"],
-                        "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
-                    },
-                    data=json.dumps(payload, ensure_ascii=False),
-                    vapid_private_key=private,
-                    vapid_claims={"sub": subject},
-                )
-                sent += 1
-            except WebPushException as exc:
-                status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status in {404, 410}:
-                    cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
-                current_app.logger.warning("chat push failed actor=%s:%s status=%s", actor_type, actor_id, status)
+            endpoint = str(sub.get("endpoint") or "")
+            push_success = False
+            for attempt in range(len(PUSH_RETRY_BACKOFF_SECONDS) + 1):
+                try:
+                    webpush(
+                        subscription_info={
+                            "endpoint": endpoint,
+                            "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                        },
+                        data=json.dumps(payload, ensure_ascii=False),
+                        vapid_private_key=private,
+                        vapid_claims={"sub": subject},
+                        timeout=PUSH_REQUEST_TIMEOUT_SECONDS,
+                    )
+                    sent += 1
+                    push_success = True
+                    break
+                except (RequestsSSLError, RequestsConnectionError, RequestsTimeout) as exc:
+                    if attempt >= len(PUSH_RETRY_BACKOFF_SECONDS):
+                        _log_push_endpoint_warning(
+                            endpoint,
+                            "chat push temporary network failure actor=%s:%s error=%s",
+                            actor_type,
+                            actor_id,
+                            type(exc).__name__,
+                        )
+                        break
+                    delay = PUSH_RETRY_BACKOFF_SECONDS[attempt] + random.uniform(0.0, 0.2)
+                    time.sleep(delay)
+                except WebPushException as exc:
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    if status in {404, 410}:
+                        cur.execute("DELETE FROM chat_push_subscriptions WHERE id=%s", (sub["id"],))
+                        _log_push_endpoint_warning(
+                            endpoint,
+                            "chat push subscription removed actor=%s:%s status=%s",
+                            actor_type,
+                            actor_id,
+                            status,
+                        )
+                        break
+                    if status in {401, 403}:
+                        current_app.logger.error(
+                            "chat push auth/config failure actor=%s:%s status=%s",
+                            actor_type,
+                            actor_id,
+                            status,
+                        )
+                        break
+                    if status == 429 or (isinstance(status, int) and 500 <= status <= 599):
+                        if attempt >= len(PUSH_RETRY_BACKOFF_SECONDS):
+                            _log_push_endpoint_warning(
+                                endpoint,
+                                "chat push temporary http failure actor=%s:%s status=%s",
+                                actor_type,
+                                actor_id,
+                                status,
+                            )
+                            break
+                        delay = PUSH_RETRY_BACKOFF_SECONDS[attempt] + random.uniform(0.0, 0.2)
+                        time.sleep(delay)
+                        continue
+
+                    _log_push_endpoint_warning(
+                        endpoint,
+                        "chat push failed actor=%s:%s status=%s",
+                        actor_type,
+                        actor_id,
+                        status,
+                    )
+                    break
+                except Exception as exc:
+                    _log_push_endpoint_warning(
+                        endpoint,
+                        "chat push unexpected failure actor=%s:%s error=%s",
+                        actor_type,
+                        actor_id,
+                        type(exc).__name__,
+                    )
+                    if current_app.debug:
+                        current_app.logger.exception("chat push unexpected traceback endpoint_hash logging")
+                    break
+
+            if not push_success:
+                continue
         db.commit()
         return sent
     finally:
