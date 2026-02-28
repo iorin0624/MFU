@@ -32,6 +32,9 @@
     let page = 1;
     let hasNext = false;
     let loading = false;
+    let pollingTimer = null;
+    let lastId = 0;
+    const knownIds = new Set();
 
     const escapeHtml = (value) => {
       const div = document.createElement('div');
@@ -75,12 +78,47 @@
       return a;
     };
 
+    const updateNavBadge = (count) => {
+      const badge = document.getElementById('navNotifBadge');
+      if (!badge) return;
+      const safeCount = Number.isFinite(Number(count)) ? Math.max(0, Number(count)) : 0;
+      if (safeCount > 0) {
+        badge.textContent = String(Math.min(Math.floor(safeCount), 99));
+        badge.classList.remove('d-none');
+        return;
+      }
+      badge.textContent = '0';
+      badge.classList.add('d-none');
+    };
+
+    const prependNewItems = (items) => {
+      if (!Array.isArray(items) || items.length === 0) return;
+      for (const item of items) {
+        if (!item || !item.id || knownIds.has(item.id)) continue;
+        knownIds.add(item.id);
+        listEl.insertBefore(createItem(item), listEl.firstChild);
+      }
+      emptyEl.classList.toggle('d-none', listEl.children.length > 0);
+    };
+
     const renderItems = (items, append = false) => {
-      if (!append) listEl.innerHTML = '';
-      items.forEach((item) => listEl.appendChild(createItem(item)));
+      if (!append) {
+        listEl.innerHTML = '';
+        knownIds.clear();
+      }
+      items.forEach((item) => {
+        if (!item || !item.id || knownIds.has(item.id)) return;
+        knownIds.add(item.id);
+        listEl.appendChild(createItem(item));
+      });
       const hasItems = listEl.children.length > 0;
       emptyEl.classList.toggle('d-none', hasItems);
       loadMoreBtn.classList.toggle('d-none', !hasNext);
+
+      if (!append) {
+        const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
+        lastId = Math.max(lastId, latest);
+      }
     };
 
     const load = async ({ append = false } = {}) => {
@@ -96,14 +134,50 @@
         const data = await res.json();
         hasNext = !!data?.pagination?.has_next;
         renderItems(data.items || [], append);
+        if (!append) {
+          const unreadCount = (data.items || []).filter((item) => !item.read_at).length;
+          updateNavBadge(unreadCount);
+        }
       } finally {
         loading = false;
       }
     };
 
+    const pollUpdatesOnce = async () => {
+      if (document.hidden) return;
+      if (onlyUnread.checked) return;
+      try {
+        const res = await fetch(`/external-login/api/notifications/updates?since_id=${lastId}&limit=50`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        prependNewItems(data.items || []);
+        lastId = Math.max(lastId, Number(data?.latest_id || 0));
+        updateNavBadge(data?.unread_count ?? 0);
+      } catch (_e) {
+        // noop
+      }
+    };
+
+    const stopPolling = () => {
+      if (pollingTimer) {
+        window.clearInterval(pollingTimer);
+        pollingTimer = null;
+      }
+    };
+
+    const startPolling = () => {
+      stopPolling();
+      if (document.hidden || onlyUnread.checked) return;
+      pollingTimer = window.setInterval(pollUpdatesOnce, 2000);
+    };
+
     onlyUnread.addEventListener('change', async () => {
       page = 1;
       await load({ append: false });
+      startPolling();
     });
 
     loadMoreBtn.addEventListener('click', async () => {
@@ -115,6 +189,7 @@
     refreshBtn.addEventListener('click', async () => {
       page = 1;
       await load({ append: false });
+      await pollUpdatesOnce();
     });
 
     markAllReadBtn.addEventListener('click', async () => {
@@ -126,23 +201,36 @@
         });
         page = 1;
         await load({ append: false });
+        await pollUpdatesOnce();
       } finally {
         markAllReadBtn.disabled = false;
       }
     });
 
     const refreshCurrentHead = async () => {
-      page = 1;
-      await load({ append: false });
+      await pollUpdatesOnce();
     };
 
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) refreshCurrentHead();
+      if (document.hidden) {
+        stopPolling();
+        return;
+      }
+      refreshCurrentHead();
+      startPolling();
     });
-    window.addEventListener('pageshow', refreshCurrentHead);
-    window.setInterval(refreshCurrentHead, 15000);
+    window.addEventListener('pageshow', async () => {
+      await refreshCurrentHead();
+      startPolling();
+    });
+    window.addEventListener('message', (event) => {
+      if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
+    });
 
-    load({ append: false });
+    load({ append: false }).then(() => {
+      startPolling();
+      pollUpdatesOnce();
+    });
   })();
 </script>
 {% endblock %}
