@@ -1633,6 +1633,12 @@ def profile():
     return redirect(next_url)
 
 
+@bp.route("/profile/setup", endpoint="profile_setup", methods=["GET"])
+def profile_setup_alias():
+    """互換 endpoint: 旧導線 /profile/setup を /profile に寄せる。"""
+    return redirect(url_for("external_login_user.profile"))
+
+
 # =========================
 # 参加（承認制）・閲覧
 # =========================

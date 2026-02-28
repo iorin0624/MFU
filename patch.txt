@@ -1,110 +1,92 @@
-diff --git a/tools/check_template_endpoints.py b/tools/check_template_endpoints.py
-index 8fb9660c108b6440b7f8bc9966bf8045c547397e..80dd10435d7d846adea54f562d6b0020fc2e297f 100644
---- a/tools/check_template_endpoints.py
-+++ b/tools/check_template_endpoints.py
-@@ -1,95 +1,87 @@
- #!/usr/bin/env python3
- """テンプレート内の静的 url_for() endpoint と Flask の実在 endpoint を突合する。"""
- from __future__ import annotations
+diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
+index 703c75b8dc364731b4381e48239c3e214082ce72..60abc5ad817c15f65b08a16d6fa2189032ff516f 100644
+--- a/external_login_user/template/_extlogin_nav.html
++++ b/external_login_user/template/_extlogin_nav.html
+@@ -1,25 +1,25 @@
+ <nav class="navbar navbar-expand-lg bg-body-tertiary">
+   <div class="container">
+     <a class="navbar-brand" href="{{ url_for('external_login_user.me') }}">MFU</a>
+     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#nv">
+       <span class="navbar-toggler-icon"></span>
+     </button>
+     <div id="nv" class="collapse navbar-collapse">
+       <ul class="navbar-nav me-auto">
+         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.me') }}">ホーム</a></li>
+         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.index') }}">イベント</a></li>
+         <li class="nav-item"><a class="nav-link" href="/albums/">アルバム</a></li>
+       </ul>
+       <ul class="navbar-nav">
+         <li class="nav-item">
+           <a class="nav-link position-relative" href="{{ url_for('external_login_user.notifications_page') }}" aria-label="通知">
+             🔔 通知
+             <span id="ext-notification-badge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
+           </a>
+         </li>
+-        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile_setup') }}">プロフィール</a></li>
++        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile') }}">プロフィール</a></li>
+         <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
+       </ul>
+     </div>
+   </div>
+ </nav>
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 01f7b5c580f5b5923949d8bc4af37a1ebbe91dc4..88b056a514f446bbe527a3f81c70e3316b64df85 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1611,50 +1611,56 @@ def profile():
  
- import argparse
- import difflib
- import importlib.util
- import re
- import sys
- from dataclasses import dataclass
- from pathlib import Path
- from typing import Iterable
+     # メール確認が必要な場合、確認完了後に戻る先をセッションに保存しておく
+     if needs_verify and next_url:
+         session["ext_after_verify_next"] = next_url
  
- URL_FOR_PATTERN = re.compile(r"url_for\(\s*(['\"])([^'\"]+)\1")
--DEFAULT_TEMPLATE_DIRS = (
--    "templates",
--    "external_login_user/template",
--    "external_login_user/templates",
--)
--
+     # イベント参加URL（/join/）が含まれている場合は、完了するまで保持し続けたいので pop しない
+     current_next = session.get("ext_after_login_next") or ""
+     is_join_url = "/events/join/" in current_next
  
- @dataclass(frozen=True)
- class TemplateReference:
-     template_path: Path
-     line_no: int
-     endpoint: str
+     # メール確認が不要、かつイベント参加URLでもない場合のみ pop する
+     if not needs_verify and not is_join_url:
+         session.pop("ext_after_login_next", None)
  
+     def _is_safe_local(url: str) -> bool:
+         return bool(url) and url.startswith("/") and not url.startswith("//")
  
- def _load_app_module(repo_root: Path):
-     app_init = repo_root / "__init__.py"
-     if not app_init.exists():
-         raise RuntimeError(f"app factory の読み込みに失敗: {app_init} が見つかりません")
+     if not _is_safe_local(next_url):
+         next_url = url_for("external_login_user.index")
  
-     spec = importlib.util.spec_from_file_location(
-         "app",
-         app_init,
-         submodule_search_locations=[str(repo_root)],
-     )
-     if spec is None or spec.loader is None:
-         raise RuntimeError("app モジュール spec の作成に失敗しました")
- 
-     module = importlib.util.module_from_spec(spec)
-     sys.modules["app"] = module
-     spec.loader.exec_module(module)
-     return module
+     cur.close()
+     db.close()
+     flash("プロフィールを保存しました。", "success")
+     return redirect(next_url)
  
  
- def collect_registered_endpoints(repo_root: Path) -> set[str]:
-     module = _load_app_module(repo_root)
-     create_app = getattr(module, "create_app", None)
-     if create_app is None:
-         raise RuntimeError("create_app() が見つかりません")
- 
-     app = create_app()
-     return {rule.endpoint for rule in app.url_map.iter_rules()}
- 
- 
- def _iter_template_files(repo_root: Path, additional_dirs: Iterable[str]) -> list[Path]:
--    candidates: set[Path] = set()
--    search_roots = list(DEFAULT_TEMPLATE_DIRS) + list(additional_dirs)
--    for rel in search_roots:
--        base = (repo_root / rel).resolve()
--        if not base.exists() or not base.is_dir():
--            continue
--        candidates.update(base.rglob("*.html"))
--
--    if not candidates:
--        candidates.update(repo_root.rglob("*.html"))
--
--    return sorted(candidates)
-+    if additional_dirs:
-+        candidates: set[Path] = set()
-+        for rel in additional_dirs:
-+            base = (repo_root / rel).resolve()
-+            if not base.exists() or not base.is_dir():
-+                continue
-+            candidates.update(base.rglob("*.html"))
-+        return sorted(candidates)
++@bp.route("/profile/setup", endpoint="profile_setup", methods=["GET"])
++def profile_setup_alias():
++    """互換 endpoint: 旧導線 /profile/setup を /profile に寄せる。"""
++    return redirect(url_for("external_login_user.profile"))
 +
-+    return sorted(p for p in repo_root.rglob("*.html") if ".git" not in p.parts)
++
+ # =========================
+ # 参加（承認制）・閲覧
+ # =========================
+ @bp.route("/line-login")
+ def line_login_shortcut():
+     return redirect(url_for("external_login_user.line_login", **request.args), code=302)
  
+ def _is_lecture_event_from_event(ev: dict) -> bool:
+     title = (ev.get("title") or "").strip()
+     return "【講座】" in title
  
- def collect_template_refs(repo_root: Path, additional_dirs: Iterable[str]) -> list[TemplateReference]:
-     refs: list[TemplateReference] = []
-     for file_path in _iter_template_files(repo_root, additional_dirs):
-         rel = file_path.relative_to(repo_root)
-         for idx, line in enumerate(file_path.read_text(encoding="utf-8", errors="ignore").splitlines(), start=1):
-             for m in URL_FOR_PATTERN.finditer(line):
-                 endpoint = m.group(2).strip()
-                 if endpoint:
-                     refs.append(TemplateReference(template_path=rel, line_no=idx, endpoint=endpoint))
-     return refs
+ def _mask_iv_token(token: str) -> str:
+     token = (token or "").strip()
+     if not token:
+         return ""
+     tail = token[-4:] if len(token) > 4 else token
+     return f"***{tail}"
  
- 
- def main() -> int:
-     parser = argparse.ArgumentParser(description="template url_for endpoint 整合チェック")
-     parser.add_argument("--repo-root", default=".", help="リポジトリルート")
-     parser.add_argument(
-         "--template-dir",
-         action="append",
-         default=[],
-         help="追加で走査するテンプレートディレクトリ（相対パス）",
-     )
-     args = parser.parse_args()
- 
+ def _mark_lecture_auto_approve_by_iv(
+     *,
+     event_id: int,
+     event_uuid: str,
+     user_id: int,
+     iv_token: str,
+ ) -> bool:
