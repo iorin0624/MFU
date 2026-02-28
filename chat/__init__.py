@@ -1152,12 +1152,27 @@ def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
         "JPEG": ("jpg", "image/jpeg", False),
         "PNG": ("png", "image/png", False),
         "WEBP": ("webp", "image/webp", False),
+        "MPO": ("jpg", "image/jpeg", True),
         "HEIF": ("jpg", "image/jpeg", True),
         "HEIC": ("jpg", "image/jpeg", True),
     }
     if fmt not in mapping:
-        raise ValueError("JPEG/PNG/WEBP/HEIC画像のみアップロードできます")
+        show_fmt = fmt or "unknown"
+        raise ValueError(f"未対応の画像形式({show_fmt})です。JPEG/PNG/WEBP/MPO/HEICのみ対応")
     return mapping[fmt]
+
+
+def _looks_like_heif_bytes(raw_bytes: bytes) -> bool:
+    if len(raw_bytes) < 12:
+        return False
+    if raw_bytes[4:8] != b"ftyp":
+        return False
+    heif_brands = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1"}
+    major_brand = raw_bytes[8:12]
+    if major_brand in heif_brands:
+        return True
+    compatible = raw_bytes[16:64]
+    return any(brand in compatible for brand in heif_brands)
 
 
 def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") -> dict[str, Any]:
@@ -1175,11 +1190,16 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") ->
         raise ValueError("画像サイズが上限を超えています")
 
     lower_name = (filename or "").lower()
-    looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif")
+    looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif") or _looks_like_heif_bytes(raw_bytes)
 
     try:
         with Image.open(io.BytesIO(raw_bytes)) as im:
             image_format = (im.format or "").upper()
+            if image_format == "MPO":
+                try:
+                    im.seek(0)
+                except Exception:
+                    pass
             ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
             normalized = ImageOps.exif_transpose(im)
             width, height = normalized.size
@@ -1201,6 +1221,8 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") ->
     except OSError as exc:
         if looks_like_heif and not HEIF_OPENER_AVAILABLE:
             raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
+        if "MPO" in str(exc).upper():
+            raise ValueError("MPO画像の読み込みに失敗しました。iPhoneのLive/連写画像が原因の可能性があります") from exc
         raise ValueError("画像ファイルとして読み取れません") from exc
 
     if image_size > CHAT_UPLOAD_MAX_BYTES:
@@ -1837,26 +1859,81 @@ def upload_image(event_id: int):
     payload = request.get_json(silent=True) or {}
     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
     if token != session.get("chat_csrf"):
-        abort(400)
+        current_app.logger.warning(
+            "chat upload-image csrf mismatch event_id=%s actor=%s:%s ua=%s",
+            event_id,
+            actor.get("actor_type"),
+            actor.get("actor_id"),
+            request.headers.get("User-Agent", ""),
+        )
+        return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再送してください"}), 400
 
     if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
         return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
 
-    upload_files = [f for f in (request.files.getlist("file") or []) if f and f.filename]
-    if not upload_files:
+    raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
+    if not raw_upload_files:
         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
-    if len(upload_files) > 6:
+    if len(raw_upload_files) > 6:
         return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
+
+    def _fallback_filename(file_idx: int, upload_file: Any) -> str:
+        original_name = (getattr(upload_file, "filename", "") or "").strip()
+        if original_name:
+            return original_name
+        mimetype = str(getattr(upload_file, "mimetype", "") or "").lower()
+        if mimetype in {"image/jpeg", "image/jpg", "image/heic", "image/heif"}:
+            ext = "jpg"
+        elif mimetype == "image/png":
+            ext = "png"
+        elif mimetype == "image/webp":
+            ext = "webp"
+        else:
+            ext = "bin"
+        return f"upload_{file_idx}.{ext}"
+
+    upload_files: list[dict[str, Any]] = []
+    for idx, upload_file in enumerate(raw_upload_files, start=1):
+        normalized_name = _fallback_filename(idx, upload_file)
+        mimetype = str(getattr(upload_file, "mimetype", "") or "")
+        if mimetype and not mimetype.lower().startswith("image/"):
+            return jsonify({"ok": False, "error": f"画像以外が混ざっています: {normalized_name}/{mimetype}"}), 400
+        upload_files.append({"idx": idx, "file": upload_file, "name": normalized_name, "mimetype": mimetype})
 
     try:
         body = _validate_caption_optional(request.form.get("body") or "")
-        image_metas = [
-            _save_upload_image_files(event_id, upload_file.stream, filename=upload_file.filename or "")
-            for upload_file in upload_files
-        ]
     except ValueError as exc:
         status = 413 if "上限" in str(exc) else 400
         return jsonify({"ok": False, "error": str(exc)}), status
+
+    image_metas: list[dict[str, Any]] = []
+    for upload in upload_files:
+        idx = int(upload["idx"])
+        upload_file = upload["file"]
+        filename = str(upload["name"])
+        mimetype = str(upload.get("mimetype") or "")
+        current_app.logger.info(
+            "chat upload-image processing event_id=%s idx=%s filename=%s mimetype=%s size=%s",
+            event_id,
+            idx,
+            filename,
+            mimetype,
+            getattr(upload_file, "content_length", None),
+        )
+        try:
+            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename))
+        except ValueError as exc:
+            current_app.logger.warning(
+                "chat upload-image invalid file event_id=%s idx=%s filename=%s mimetype=%s size=%s error=%s",
+                event_id,
+                idx,
+                filename,
+                mimetype,
+                getattr(upload_file, "content_length", None),
+                str(exc),
+            )
+            status = 413 if "上限" in str(exc) else 400
+            return jsonify({"ok": False, "error": f"{idx}枚目({filename}): {str(exc)}"}), status
 
     message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_metas[0]))
     message_id = int(message.get("id") or 0)
