@@ -5,6 +5,7 @@ import json
 import os
 import re
 import secrets
+import threading
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,6 +18,7 @@ from flask import (
     render_template,
     request,
     session,
+    url_for,
 )
 from flask_socketio import disconnect, emit, join_room
 
@@ -34,6 +36,111 @@ chat_bp = Blueprint(
 MESSAGE_MAX_LEN = 2000
 RATE_LIMIT_SECONDS = 1
 JST = ZoneInfo("Asia/Tokyo")
+
+CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_REPLY_SCHEMA_READY: bool | None = None
+DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+
+
+def _default_avatar_url() -> str:
+    return DEFAULT_AVATAR_URL
+
+
+def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
+    if not row:
+        return _default_avatar_url()
+    avatar_file = (row.get("avatar_file") or "").strip()
+    if avatar_file:
+        try:
+            return url_for("external_login_user.avatar_file", name=avatar_file)
+        except Exception:
+            current_app.logger.warning("chat avatar url_for failed name=%s", avatar_file, exc_info=True)
+    avatar_url = (row.get("avatar_url") or "").strip()
+    if avatar_url:
+        return avatar_url
+    return _default_avatar_url()
+
+
+def _resolve_sender_avatar_url(actor_type: str, actor_id: str, avatar_cache: dict[str, str] | None = None) -> str:
+    key = f"{actor_type}:{actor_id}"
+    if avatar_cache is not None and key in avatar_cache:
+        return avatar_cache[key]
+
+    avatar_url = _default_avatar_url()
+    if actor_type == "line":
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT avatar_file, avatar_url FROM external_login_user WHERE id=%s LIMIT 1",
+                (actor_id,),
+            )
+            avatar_url = _build_ext_avatar_url(cur.fetchone())
+        except Exception:
+            current_app.logger.warning("chat avatar lookup failed actor=%s:%s", actor_type, actor_id, exc_info=True)
+        finally:
+            cur.close()
+            db.close()
+
+    if avatar_cache is not None:
+        avatar_cache[key] = avatar_url
+    return avatar_url
+
+
+def _ensure_chat_reply_schema() -> bool:
+    global CHAT_REPLY_SCHEMA_READY
+    if CHAT_REPLY_SCHEMA_READY is not None:
+        return CHAT_REPLY_SCHEMA_READY
+
+    with CHAT_REPLY_SCHEMA_CHECK_LOCK:
+        if CHAT_REPLY_SCHEMA_READY is not None:
+            return CHAT_REPLY_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'reply_to_message_id'")
+            if cur.fetchone():
+                CHAT_REPLY_SCHEMA_READY = True
+                return True
+
+            try:
+                cur.execute(
+                    "ALTER TABLE chat_messages ADD COLUMN reply_to_message_id BIGINT NULL AFTER body"
+                )
+            except Exception:
+                current_app.logger.warning('chat auto-migration: add reply_to_message_id failed', exc_info=True)
+
+            try:
+                cur.execute(
+                    "ALTER TABLE chat_messages ADD KEY idx_chat_messages_reply_to (reply_to_message_id)"
+                )
+            except Exception:
+                current_app.logger.warning('chat auto-migration: add idx_chat_messages_reply_to failed', exc_info=True)
+
+            try:
+                cur.execute(
+                    """
+                    ALTER TABLE chat_messages
+                    ADD CONSTRAINT fk_chat_messages_reply_to
+                    FOREIGN KEY (reply_to_message_id) REFERENCES chat_messages(id)
+                    ON DELETE SET NULL
+                    """
+                )
+            except Exception:
+                current_app.logger.warning('chat auto-migration: add fk_chat_messages_reply_to failed', exc_info=True)
+
+            db.commit()
+            cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'reply_to_message_id'")
+            CHAT_REPLY_SCHEMA_READY = bool(cur.fetchone())
+            return CHAT_REPLY_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning('chat schema check failed', exc_info=True)
+            CHAT_REPLY_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
 
 
 def _actor_sender_id(actor_type: str, actor_id: str) -> str:
@@ -58,20 +165,51 @@ def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
     return dt_utc.isoformat(), date_label, time_label
 
 
-def _present_message(msg: dict[str, Any], current_actor: dict[str, Any]) -> dict[str, Any]:
-    sender_id = _actor_sender_id(str(msg["sender_actor_type"]), str(msg["sender_actor_id"]))
+def _present_message(
+    msg: dict[str, Any],
+    current_actor: dict[str, Any],
+    avatar_cache: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    sender_actor_type = str(msg["sender_actor_type"])
+    sender_actor_id = str(msg["sender_actor_id"])
+    sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
+
+    reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
+    reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
+    reply_to_sender_avatar_url = None
+    if reply_to_sender_actor_type and reply_to_sender_actor_id:
+        reply_to_sender_avatar_url = _resolve_sender_avatar_url(
+            str(reply_to_sender_actor_type),
+            str(reply_to_sender_actor_id),
+            avatar_cache=avatar_cache,
+        )
+
     return {
         "id": msg["id"],
         "event_id": msg["event_id"],
         "sender_id": sender_id,
         "sender_display_name": msg["sender_display_name"],
+        "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
         "body": msg["body"],
         "created_at_iso": created_at_iso,
         "created_at_jst_date_label": date_label,
         "created_at_jst_time_hm": time_label,
-        "is_me": sender_id == _actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])),
+        "body_plain_excerpt": _build_plain_excerpt(msg.get("body") or ""),
+        "reply_to_message_id": msg.get("reply_to_message_id"),
+        "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
+        "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
+        "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
+        "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
     }
+
+
+def _build_plain_excerpt(value: str, max_len: int = 80) -> str:
+    text = re.sub(r"<[^>]+>", "", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len - 1]}…"
 
 
 def _chat_csrf() -> str:
@@ -225,9 +363,47 @@ def _get_event(event_id: int) -> dict[str, Any] | None:
 
 
 def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    has_reply_schema = _ensure_chat_reply_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        if has_reply_schema:
+            cur.execute(
+                """
+                SELECT m.id,
+                       m.event_id,
+                       m.sender_actor_type,
+                       m.sender_actor_id,
+                       m.sender_display_name,
+                       m.body,
+                       m.created_at,
+                       m.reply_to_message_id,
+                       p.sender_actor_type AS reply_to_sender_actor_type,
+                       p.sender_actor_id AS reply_to_sender_actor_id,
+                       p.sender_display_name AS reply_to_sender_display_name,
+                       p.body AS reply_to_body
+                  FROM chat_messages m
+                  LEFT JOIN chat_messages p
+                         ON p.id = m.reply_to_message_id
+                        AND p.event_id = m.event_id
+                 WHERE m.event_id=%s
+                 ORDER BY m.created_at DESC
+                 LIMIT %s
+                """,
+                (event_id, limit),
+            )
+            rows = cur.fetchall() or []
+            for row in rows:
+                if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
+                    row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
+                elif row.get("reply_to_message_id"):
+                    row["reply_to_sender_display_name"] = "元メッセージ"
+                    row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+                else:
+                    row["reply_to_sender_display_name"] = None
+                    row["reply_to_body_plain_excerpt"] = None
+            return list(reversed(rows))
+
         cur.execute(
             """
             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
@@ -239,32 +415,58 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
             (event_id, limit),
         )
         rows = cur.fetchall() or []
+        for row in rows:
+            row["reply_to_message_id"] = None
+            row["reply_to_sender_actor_type"] = None
+            row["reply_to_sender_actor_id"] = None
+            row["reply_to_sender_display_name"] = None
+            row["reply_to_body_plain_excerpt"] = None
         return list(reversed(rows))
     finally:
         cur.close()
         db.close()
 
 
-def _save_message(event_id: int, actor: dict[str, Any], body: str) -> dict[str, Any]:
+def _save_message(event_id: int, actor: dict[str, Any], body: str, reply_to_message_id: int | None = None) -> dict[str, Any]:
     now = datetime.utcnow()
+    has_reply_schema = _ensure_chat_reply_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute(
-            """
-            INSERT INTO chat_messages (
-                event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
-            ) VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            (
-                event_id,
-                actor["actor_type"],
-                actor["actor_id"],
-                actor["display_name"],
-                body,
-                now,
-            ),
-        )
+        if has_reply_schema:
+            cur.execute(
+                """
+                INSERT INTO chat_messages (
+                    event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at, reply_to_message_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    event_id,
+                    actor["actor_type"],
+                    actor["actor_id"],
+                    actor["display_name"],
+                    body,
+                    now,
+                    reply_to_message_id,
+                ),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO chat_messages (
+                    event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    event_id,
+                    actor["actor_type"],
+                    actor["actor_id"],
+                    actor["display_name"],
+                    body,
+                    now,
+                ),
+            )
+            reply_to_message_id = None
         msg_id = cur.lastrowid
         db.commit()
         return {
@@ -275,6 +477,7 @@ def _save_message(event_id: int, actor: dict[str, Any], body: str) -> dict[str, 
             "sender_display_name": actor["display_name"],
             "body": body,
             "created_at": now,
+            "reply_to_message_id": reply_to_message_id,
         }
     finally:
         cur.close()
@@ -288,6 +491,77 @@ def _validate_body(raw: str) -> str:
     if len(body) > MESSAGE_MAX_LEN:
         raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
     return html.escape(body)
+
+
+def _validate_reply_to_message_id(event_id: int, raw_value: Any) -> int | None:
+    if raw_value in (None, "", 0, "0"):
+        return None
+    if not _ensure_chat_reply_schema():
+        return None
+    try:
+        reply_to_message_id = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("返信先メッセージの形式が不正です") from exc
+    if reply_to_message_id <= 0:
+        raise ValueError("返信先メッセージの形式が不正です")
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (reply_to_message_id, event_id))
+        if not cur.fetchone():
+            raise ValueError("返信先メッセージが見つかりません")
+        return reply_to_message_id
+    finally:
+        cur.close()
+        db.close()
+
+
+def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
+    if not _ensure_chat_reply_schema():
+        message["reply_to_message_id"] = None
+        message["reply_to_sender_actor_type"] = None
+        message["reply_to_sender_actor_id"] = None
+        message["reply_to_sender_display_name"] = None
+        message["reply_to_body_plain_excerpt"] = None
+        return message
+
+    reply_to_message_id = message.get("reply_to_message_id")
+    if not reply_to_message_id:
+        message["reply_to_sender_actor_type"] = None
+        message["reply_to_sender_actor_id"] = None
+        message["reply_to_sender_display_name"] = None
+        message["reply_to_body_plain_excerpt"] = None
+        return message
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT sender_actor_type, sender_actor_id, sender_display_name, body
+              FROM chat_messages
+             WHERE id=%s AND event_id=%s
+             LIMIT 1
+            """,
+            (reply_to_message_id, message["event_id"]),
+        )
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+    if row:
+        message["reply_to_sender_actor_type"] = row["sender_actor_type"]
+        message["reply_to_sender_actor_id"] = row["sender_actor_id"]
+        message["reply_to_sender_display_name"] = row["sender_display_name"]
+        message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
+    else:
+        message["reply_to_sender_actor_type"] = None
+        message["reply_to_sender_actor_id"] = None
+        message["reply_to_sender_display_name"] = "元メッセージ"
+        message["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+    return message
 
 
 def _check_rate_limit(actor: dict[str, Any]) -> bool:
@@ -430,7 +704,8 @@ def room(event_id: int):
     event = _get_event(event_id)
     if not event:
         abort(404)
-    messages = [_present_message(m, actor) for m in _load_messages(event_id)]
+    avatar_cache: dict[str, str] = {}
+    messages = [_present_message(m, actor, avatar_cache=avatar_cache) for m in _load_messages(event_id)]
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     return render_template(
         "chat/room.html",
@@ -441,6 +716,7 @@ def room(event_id: int):
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
         csrf_token=_chat_csrf(),
         can_broadcast=can_broadcast,
+        default_avatar_url=_default_avatar_url(),
     )
 
 
@@ -586,6 +862,7 @@ def on_send(data):
     actor = get_chat_actor()
     event_id = int((data or {}).get("event_id") or 0)
     raw_body = (data or {}).get("body") or ""
+    raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
 
     current_app.logger.warning(
         "chat_send recv event_id=%s actor=%s body_len=%s",
@@ -606,12 +883,13 @@ def on_send(data):
 
     try:
         body = _validate_body(raw_body)
+        reply_to_message_id = _validate_reply_to_message_id(event_id, raw_reply_to_message_id)
     except ValueError as exc:
         emit("chat_error", {"error": str(exc)})
         return
 
-    message = _save_message(event_id, actor, body)
-    message_payload = _present_message(message, actor)
+    message = _enrich_reply_fields(_save_message(event_id, actor, body, reply_to_message_id))
+    message_payload = _present_message(message, actor, avatar_cache={})
     emit("chat_message", message_payload, to=f"event:{event_id}")
 
     mention_names = _extract_mentions(body)
