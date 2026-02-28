@@ -119,6 +119,33 @@
   white-space: nowrap;
 }
 
+.chat-read-indicator {
+  margin-top: 4px;
+  font-size: 0.72rem;
+  color: #4d5c8f;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chat-read-indicator:hover {
+  text-decoration: underline;
+}
+
+.chat-read-list {
+  margin-top: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #334;
+  font-size: 0.76rem;
+  min-width: 120px;
+}
+
+.chat-read-list ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
 .chat-avatar {
   width: 32px;
   height: 32px;
@@ -286,6 +313,10 @@
               </div>
               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
             </div>
+            {% if m.is_me %}
+              <div class="chat-read-indicator d-none"></div>
+              <div class="chat-read-list d-none"></div>
+            {% endif %}
           </div>
 
           {% if m.is_me %}
@@ -367,21 +398,42 @@
   const state = {
     replyToId: null,
     selectedBubble: null,
+    readStateByActor: new Map(),
   };
 
   const socket = io({ transports: ['websocket', 'polling'] });
   socket.emit('chat_join', { event_id: eventId });
 
   scrollToLatestMessage();
-  window.addEventListener('load', scrollToLatestMessage, { once: true });
+  refreshReadIndicators();
+  window.addEventListener('load', () => {
+    scrollToLatestMessage();
+    sendSeenForLatestMessage();
+  }, { once: true });
 
   socket.on('chat_message', (msg) => {
     renderMessage(msg);
     msgBox.scrollTop = msgBox.scrollHeight;
+    sendSeenForMessageId(Number(msg?.id || 0));
   });
   socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
+  socket.on('chat_read_snapshot', (payload) => {
+    applyReadSnapshot(payload?.read_states || []);
+    refreshReadIndicators();
+    sendSeenForLatestMessage();
+  });
+  socket.on('chat_read_update', (payload) => {
+    applyReadUpdate(payload);
+    refreshReadIndicators();
+  });
 
   msgBox.addEventListener('click', (e) => {
+    const readIndicator = e.target.closest('.chat-read-indicator');
+    if (readIndicator) {
+      toggleReadList(readIndicator.closest('.chat-main'));
+      return;
+    }
+
     const quote = e.target.closest('.chat-reply-quote');
     if (quote) {
       jumpToMessage(quote.dataset.jumpToId);
@@ -579,6 +631,17 @@
     wrap.appendChild(bubble);
     wrap.appendChild(time);
     main.appendChild(wrap);
+
+    if (isMe) {
+      const readIndicator = document.createElement('div');
+      readIndicator.className = 'chat-read-indicator d-none';
+      main.appendChild(readIndicator);
+
+      const readList = document.createElement('div');
+      readList.className = 'chat-read-list d-none';
+      main.appendChild(readList);
+    }
+
     line.appendChild(main);
 
     if (isMe) {
@@ -587,6 +650,7 @@
 
     row.appendChild(line);
     msgBox.appendChild(row);
+    refreshReadIndicatorForRow(row);
   }
 
   function makeReplyQuote(messageId, senderName, excerpt, avatarUrl) {
@@ -694,6 +758,89 @@
 
   function formatTimeLabel(date) {
     return fmtTime.format(date);
+  }
+
+  function applyReadSnapshot(states) {
+    state.readStateByActor.clear();
+    for (const readState of states || []) {
+      applyReadUpdate(readState);
+    }
+  }
+
+  function applyReadUpdate(readState) {
+    if (!readState?.actor_type || !readState?.actor_id) return;
+    const key = `${readState.actor_type}:${readState.actor_id}`;
+    const prev = state.readStateByActor.get(key);
+    const nextReadId = Number(readState.last_read_message_id || 0);
+    const prevReadId = Number(prev?.last_read_message_id || 0);
+    if (prev && prevReadId > nextReadId) return;
+    state.readStateByActor.set(key, {
+      actor_type: readState.actor_type,
+      actor_id: String(readState.actor_id),
+      display_name: readState.display_name || prev?.display_name || readState.actor_id,
+      last_read_message_id: Math.max(prevReadId, nextReadId),
+    });
+  }
+
+  function refreshReadIndicators() {
+    msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
+  }
+
+  function refreshReadIndicatorForRow(row) {
+    if (!row?.classList.contains('me')) return;
+    const messageId = Number(row.dataset.messageId || 0);
+    const senderId = row.dataset.senderId || '';
+    const indicator = row.querySelector('.chat-read-indicator');
+    const list = row.querySelector('.chat-read-list');
+    if (!messageId || !indicator || !list) return;
+
+    const readers = [];
+    for (const entry of state.readStateByActor.values()) {
+      if (Number(entry.last_read_message_id || 0) < messageId) continue;
+      const actorKey = `${entry.actor_type}:${entry.actor_id}`;
+      if (senderId && actorKey === senderId) continue;
+      readers.push(entry.display_name || actorKey);
+    }
+    readers.sort((a, b) => a.localeCompare(b, 'ja'));
+
+    if (readers.length === 0) {
+      indicator.classList.add('d-none');
+      indicator.textContent = '';
+      list.classList.add('d-none');
+      list.innerHTML = '';
+      return;
+    }
+
+    indicator.classList.remove('d-none');
+    indicator.textContent = `既読 ${readers.length}`;
+    list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
+  }
+
+  function toggleReadList(chatMain) {
+    const list = chatMain?.querySelector('.chat-read-list');
+    if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
+    list.classList.toggle('d-none');
+  }
+
+  function sendSeenForLatestMessage() {
+    const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
+    const lastRow = rows.length ? rows[rows.length - 1] : null;
+    if (!lastRow) return;
+    sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
+  }
+
+  function sendSeenForMessageId(messageId) {
+    if (!Number.isFinite(messageId) || messageId <= 0) return;
+    socket.emit('chat_seen', { event_id: eventId, last_seen_message_id: messageId });
+  }
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function urlBase64ToUint8Array(base64String) {
