@@ -247,49 +247,116 @@
       return (Math.round(v * 10) / 10) + ' ' + u[i];
     }
 
+    const MAX_FILES_PER_REQUEST = 80;
+    const MAX_BYTES_PER_REQUEST = 350 * 1024 * 1024; // 350MB
+
     // 送信
-    form.addEventListener('submit', function (e) {
+    form.addEventListener('submit', async function (e) {
       e.preventDefault();
       const files = fileInput.files;
       if (!files || !files.length) { alert('ファイルを選択してください'); return; }
-
-      const fd = new FormData();
-      if (MODE === 'process') {
-        fd.append('file', files[0]);
-      } else {
-        for (let i = 0; i < files.length; i++) fd.append('file', files[i]);
-      }
 
       // UI lock
       submitBtn.classList.add('disabled');
       submitBtn.setAttribute('aria-disabled', 'true');
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '', true);
+      try {
+        const selected = MODE === 'process' ? [files[0]] : Array.from(files);
+        const batches = MODE === 'process' ? [selected] : buildBatches(selected);
+        const totalBytes = selected.reduce((sum, f) => sum + (f.size || 0), 0);
+        const totalBatchCount = batches.length;
 
-      xhr.upload.addEventListener('progress', function (ev) {
-        if (!ev.lengthComputable) return;
-        const percent = Math.round((ev.loaded / ev.total) * 100);
-        progressBar.style.width = percent + '%';
-        progressBar.textContent = percent >= 100
-          ? (MODE === 'movie'
-              ? '100%（処理中… 変換が必要な場合は一覧で「変換中…」と表示されます）'
-              : '100%（処理中…）このままページでお待ちください')
-          : percent + '%';
-      });
+        for (let index = 0; index < batches.length; index++) {
+          const batchFiles = batches[index];
+          await uploadBatch(batchFiles, {
+            uploadedBytesBase: sumBytes(batches.slice(0, index)),
+            totalBytes,
+            batchIndex: index + 1,
+            totalBatchCount,
+          });
+        }
 
-      xhr.onreadystatechange = function () {
-        if (xhr.readyState !== XMLHttpRequest.DONE) return;
-        // 完了表示 & リダイレクト
         submitBtn.textContent = '完了しました';
         submitBtn.classList.remove('btn-primary'); submitBtn.classList.add('btn-success');
+        progressBar.style.width = '100%';
+        progressBar.textContent = '100%（保存完了）';
         setTimeout(() => {
           window.location.href = "{{ url_for('album.view_child', album_id=album_id, child_id=child_id) }}";
-        }, 800);
-      };
-
-      xhr.send(fd);
+        }, 500);
+      } catch (err) {
+        submitBtn.classList.remove('disabled');
+        submitBtn.removeAttribute('aria-disabled');
+        const msg = (err && err.message) ? err.message : 'アップロードに失敗しました。時間を置いて再度お試しください。';
+        progressBar.classList.add('bg-danger');
+        progressBar.textContent = '失敗';
+        alert(msg);
+      }
     });
+
+    function buildBatches(files) {
+      const batches = [];
+      let current = [];
+      let currentBytes = 0;
+
+      files.forEach((f) => {
+        const sz = f.size || 0;
+        const wouldExceedCount = current.length >= MAX_FILES_PER_REQUEST;
+        const wouldExceedBytes = current.length > 0 && (currentBytes + sz > MAX_BYTES_PER_REQUEST);
+
+        if (wouldExceedCount || wouldExceedBytes) {
+          batches.push(current);
+          current = [];
+          currentBytes = 0;
+        }
+
+        current.push(f);
+        currentBytes += sz;
+      });
+
+      if (current.length) batches.push(current);
+      return batches;
+    }
+
+    function sumBytes(batches) {
+      return batches.reduce((total, list) => {
+        return total + list.reduce((s, f) => s + (f.size || 0), 0);
+      }, 0);
+    }
+
+    function uploadBatch(files, ctx) {
+      return new Promise((resolve, reject) => {
+        const fd = new FormData();
+        files.forEach((f) => fd.append('file', f));
+
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '', true);
+
+        xhr.upload.addEventListener('progress', function (ev) {
+          if (!ev.lengthComputable || !ctx.totalBytes) return;
+          const currentUploaded = ctx.uploadedBytesBase + ev.loaded;
+          const percent = Math.min(99, Math.round((currentUploaded / ctx.totalBytes) * 100));
+          progressBar.style.width = percent + '%';
+          progressBar.textContent = `${percent}%（${ctx.batchIndex}/${ctx.totalBatchCount}送信中）`;
+        });
+
+        xhr.onerror = () => reject(new Error('通信エラーが発生しました。'));
+        xhr.ontimeout = () => reject(new Error('アップロードがタイムアウトしました。'));
+        xhr.timeout = 10 * 60 * 1000;
+
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== XMLHttpRequest.DONE) return;
+          if (xhr.status >= 200 && xhr.status < 400) {
+            resolve();
+            return;
+          }
+          let detail = `HTTP ${xhr.status}`;
+          if (xhr.status === 413) detail += '（1回あたりのサイズ上限を超えています）';
+          reject(new Error(`アップロードに失敗しました: ${detail}`));
+        };
+
+        xhr.send(fd);
+      });
+    }
   </script>
 </body>
 </html>
