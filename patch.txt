@@ -1,81 +1,588 @@
-diff --git a/__init__.py b/__init__.py
-index 690ed7e47445a641886eb5269310df1ff8a99874..d66d8fc958439e5ed47fc122b03a7dd3600f5300 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -79,55 +79,71 @@ from app.chat.socketio_ext import socketio
- # 🌏 タイムゾーン・定数
- # =====================================
- JST = timezone(timedelta(hours=9))
- APP_DIR = os.path.abspath(os.path.dirname(__file__))
- BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
- STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
- UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
- tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+diff --git a/chat/__init__.py b/chat/__init__.py
+index d38744fb61cd59a286e87bfd91ee437ad55ac5a3..2148214e247c5fa99335e71cc8ec5ca6f4791d6f 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -1,59 +1,99 @@
+ from __future__ import annotations
  
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
+ import html
+ import json
+ import os
+ import re
+ import secrets
+ from datetime import datetime, timedelta
+ from typing import Any
++from zoneinfo import ZoneInfo
+ 
+ from flask import (
+     Blueprint,
+     abort,
+     current_app,
+     jsonify,
+     render_template,
+     request,
+     session,
  )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+ from flask_socketio import disconnect, emit, join_room
  
- def create_app():
-     return app
+ from app.chat.socketio_ext import socketio
+ from app.utils.db import get_db
  
- load_dotenv()
- app.secret_key = os.environ.get("SECRET_KEY")
--app.config["SOCKETIO_MESSAGE_QUEUE"] = (
--    os.environ.get("SOCKETIO_MESSAGE_QUEUE")
--    or os.environ.get("REDIS_URL")
--    or None
--)
+ chat_bp = Blueprint(
+     "chat",
+     __name__,
+     template_folder="templates",
+     static_folder="static",
+     url_prefix="/chat",
+ )
+ 
+ MESSAGE_MAX_LEN = 2000
+ RATE_LIMIT_SECONDS = 1
++JST = ZoneInfo("Asia/Tokyo")
 +
 +
-+def _resolve_socketio_message_queue():
-+    queue_url = (os.environ.get("SOCKETIO_MESSAGE_QUEUE") or "").strip()
-+    if not queue_url:
-+        return None
-+
-+    try:
-+        import importlib
-+        if importlib.util.find_spec("redis") is None:
-+            app.logger.warning("SOCKETIO_MESSAGE_QUEUE is set but redis package is not installed; fallback to local mode")
-+            return None
-+        redis = importlib.import_module("redis")
-+        redis.Redis.from_url(queue_url, socket_connect_timeout=1, socket_timeout=1).ping()
-+        return queue_url
-+    except Exception as exc:
-+        app.logger.warning("SOCKETIO_MESSAGE_QUEUE connection failed; fallback to local mode: %s", exc)
-+        return None
++def _actor_sender_id(actor_type: str, actor_id: str) -> str:
++    return f"{actor_type}:{actor_id}"
 +
 +
-+app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
++def _to_utc_datetime(value: Any) -> datetime:
++    if isinstance(value, datetime):
++        dt = value
++    else:
++        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
++    if dt.tzinfo is None:
++        return dt.replace(tzinfo=ZoneInfo("UTC"))
++    return dt.astimezone(ZoneInfo("UTC"))
++
++
++def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
++    dt_utc = _to_utc_datetime(created_at)
++    dt_jst = dt_utc.astimezone(JST)
++    date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
++    time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
++    return dt_utc.isoformat(), date_label, time_label
++
++
++def _present_message(msg: dict[str, Any], current_actor: dict[str, Any]) -> dict[str, Any]:
++    sender_id = _actor_sender_id(str(msg["sender_actor_type"]), str(msg["sender_actor_id"]))
++    created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
++    return {
++        "id": msg["id"],
++        "event_id": msg["event_id"],
++        "sender_id": sender_id,
++        "sender_display_name": msg["sender_display_name"],
++        "body": msg["body"],
++        "created_at_iso": created_at_iso,
++        "created_at_jst_date_label": date_label,
++        "created_at_jst_time_hm": time_label,
++        "is_me": sender_id == _actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])),
++    }
  
- app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
  
- app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
- app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
+ def _chat_csrf() -> str:
+     token = session.get("chat_csrf")
+     if not token:
+         token = secrets.token_urlsafe(24)
+         session["chat_csrf"] = token
+     return token
  
- app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
  
- # 既定ホワイトリスト（必要なら config で上書き）
- app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
+ def _is_admin() -> bool:
+     return session.get("user") == "admin"
  
- login_manager = LoginManager()
- login_manager.init_app(app)
- login_manager.login_view = "login"
- login_manager.user_loader(load_user)
- socketio.init_app(app, message_queue=app.config["SOCKETIO_MESSAGE_QUEUE"])
  
- if app.config["SOCKETIO_MESSAGE_QUEUE"]:
-     app.logger.info("Socket.IO message queue enabled")
- else:
-     app.logger.warning("Socket.IO message queue is disabled; multi-worker chat delivery may fail")
+ def get_chat_actor() -> dict[str, Any] | None:
+     """admin / acl / line を統一形式へ正規化。"""
+     if session.get("user"):
+         username = str(session.get("user"))
+         actor_type = "admin" if username == "admin" else "acl"
+         email = None
+         db = get_db()
+         cur = db.cursor(dictionary=True)
+         try:
+             cur.execute("SELECT username, email FROM users WHERE username=%s LIMIT 1", (username,))
+             row = cur.fetchone()
+@@ -212,51 +252,51 @@ def _save_message(event_id: int, actor: dict[str, Any], body: str) -> dict[str,
+     try:
+         cur.execute(
+             """
+             INSERT INTO chat_messages (
+                 event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at
+             ) VALUES (%s, %s, %s, %s, %s, %s)
+             """,
+             (
+                 event_id,
+                 actor["actor_type"],
+                 actor["actor_id"],
+                 actor["display_name"],
+                 body,
+                 now,
+             ),
+         )
+         msg_id = cur.lastrowid
+         db.commit()
+         return {
+             "id": msg_id,
+             "event_id": event_id,
+             "sender_actor_type": actor["actor_type"],
+             "sender_actor_id": actor["actor_id"],
+             "sender_display_name": actor["display_name"],
+             "body": body,
+-            "created_at": now.isoformat(),
++            "created_at": now,
+         }
+     finally:
+         cur.close()
+         db.close()
  
- # =====================================
- # 🧠 補助関数群（上段へ集約）
- # =====================================
+ 
+ def _validate_body(raw: str) -> str:
+     body = (raw or "").strip()
+     if not body:
+         raise ValueError("メッセージが空です")
+     if len(body) > MESSAGE_MAX_LEN:
+         raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
+     return html.escape(body)
+ 
+ 
+ def _check_rate_limit(actor: dict[str, Any]) -> bool:
+     key = f"chat_last_post:{actor['actor_type']}:{actor['actor_id']}"
+     now = datetime.utcnow()
+     prev_iso = session.get(key)
+     if prev_iso:
+         try:
+             prev = datetime.fromisoformat(prev_iso)
+             if now - prev < timedelta(seconds=RATE_LIMIT_SECONDS):
+                 return False
+         except Exception:
+@@ -368,55 +408,56 @@ def _require_any_login():
+     if not actor:
+         abort(403)
+     return None
+ 
+ 
+ @chat_bp.route("/")
+ def index():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     events = _accessible_events(actor)
+     return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
+ 
+ 
+ @chat_bp.route("/events/<int:event_id>")
+ def room(event_id: int):
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     if not _can_access_event(event_id, actor):
+         abort(403)
+ 
+     event = _get_event(event_id)
+     if not event:
+         abort(404)
+-    messages = _load_messages(event_id)
++    messages = [_present_message(m, actor) for m in _load_messages(event_id)]
+     can_broadcast = actor["actor_type"] in {"admin", "acl"}
+     return render_template(
+         "chat/room.html",
+         actor=actor,
++        current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
+         event=event,
+         messages=messages,
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+         csrf_token=_chat_csrf(),
+         can_broadcast=can_broadcast,
+     )
+ 
+ 
+ @chat_bp.post("/api/push/subscribe")
+ def push_subscribe():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+     data = request.get_json(silent=True) or {}
+     endpoint = (data.get("endpoint") or "").strip()
+     keys = data.get("keys") or {}
+     if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
+         abort(400)
+ 
+     db = get_db()
+     cur = db.cursor()
+     try:
+@@ -548,63 +589,64 @@ def on_send(data):
+ 
+     current_app.logger.warning(
+         "chat_send recv event_id=%s actor=%s body_len=%s",
+         event_id,
+         actor,
+         len(raw_body),
+     )
+ 
+     if not actor:
+         disconnect()
+         return
+     if not event_id or not _can_access_event(event_id, actor):
+         disconnect()
+         return
+     if not _check_rate_limit(actor):
+         emit("chat_error", {"error": "送信間隔が短すぎます"})
+         return
+ 
+     try:
+         body = _validate_body(raw_body)
+     except ValueError as exc:
+         emit("chat_error", {"error": str(exc)})
+         return
+ 
+     message = _save_message(event_id, actor, body)
+-    emit("chat_message", message, to=f"event:{event_id}")
++    message_payload = _present_message(message, actor)
++    emit("chat_message", message_payload, to=f"event:{event_id}")
+ 
+     mention_names = _extract_mentions(body)
+     mention_targets = _lookup_mention_targets(event_id, mention_names)
+     sent_count = 0
+     for target in mention_targets:
+         sent_count += _send_push_to_actor(
+             target["actor_type"],
+             target["actor_id"],
+             {"title": f"{actor['display_name']}さんからメンション", "body": body, "event_id": event_id},
+         )
+     if mention_targets:
+-        _log_notification(event_id, "mention", {"names": mention_names, "message_id": message["id"]}, sent_count)
++        _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
+ 
+ 
+ @socketio.on("chat_notify_dm")
+ def notify_dm(data):
+     actor = get_chat_actor()
+     if not actor:
+         disconnect()
+         return
+     event_id = int((data or {}).get("event_id") or 0)
+     target_actor_type = (data or {}).get("target_actor_type")
+     target_actor_id = str((data or {}).get("target_actor_id") or "")
+     if not _can_access_event(event_id, actor):
+         disconnect()
+         return
+     sent_count = _send_push_to_actor(
+         target_actor_type,
+         target_actor_id,
+         {
+             "title": "ダイレクト通知",
+             "body": (data or {}).get("body") or "",
+             "event_id": event_id,
+         },
+     )
+     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
+     emit("chat_dm_notified", {"ok": True, "sent_count": sent_count})
+diff --git a/chat/static/chat/css/chat.css b/chat/static/chat/css/chat.css
+new file mode 100644
+index 0000000000000000000000000000000000000000..1d734cdddd14d7f879f78ab5d45d1bf724ee6c6f
+--- /dev/null
++++ b/chat/static/chat/css/chat.css
+@@ -0,0 +1,77 @@
++.chat-messages {
++  height: 360px;
++  overflow: auto;
++  background: #e8f3ff;
++}
++
++.chat-date-divider {
++  display: flex;
++  justify-content: center;
++  margin: 10px 0;
++}
++
++.chat-date-divider span {
++  display: inline-block;
++  font-size: 0.78rem;
++  color: #556;
++  background: rgba(255, 255, 255, 0.95);
++  border-radius: 999px;
++  padding: 3px 12px;
++}
++
++.chat-row {
++  display: flex;
++  flex-direction: column;
++  margin-bottom: 10px;
++}
++
++.chat-row.me {
++  align-items: flex-end;
++}
++
++.chat-row.other {
++  align-items: flex-start;
++}
++
++.chat-sender {
++  font-size: 0.76rem;
++  color: #667;
++  margin: 0 8px 4px;
++}
++
++.chat-bubble-wrap {
++  display: flex;
++  align-items: flex-end;
++  gap: 6px;
++  max-width: min(80%, 560px);
++}
++
++.chat-row.me .chat-bubble-wrap {
++  flex-direction: row-reverse;
++}
++
++.chat-bubble {
++  padding: 8px 12px;
++  border-radius: 16px;
++  line-height: 1.45;
++  word-break: break-word;
++  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
++}
++
++.chat-row.me .chat-bubble {
++  background: #4a8dff;
++  color: #fff;
++  border-bottom-right-radius: 6px;
++}
++
++.chat-row.other .chat-bubble {
++  background: #f1f3f5;
++  color: #222;
++  border-bottom-left-radius: 6px;
++}
++
++.chat-time {
++  font-size: 0.72rem;
++  color: #7a7a7a;
++  white-space: nowrap;
++}
+diff --git a/chat/static/chat/js/chat.js b/chat/static/chat/js/chat.js
+index 9a653fd7b818a3b55052c08347b9906cdc4ac56d..ac3d0309fcbafdd0ee36f8c43b37c78f20ab172f 100644
+--- a/chat/static/chat/js/chat.js
++++ b/chat/static/chat/js/chat.js
+@@ -1,59 +1,141 @@
+ (() => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
+ 
+   const eventId = Number(root.dataset.eventId);
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
++  const meId = root.dataset.me || '';
++  const myDisplayName = root.dataset.displayName || '';
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const pushBtn = document.getElementById('enable-push');
+ 
++  const fmtDate = new Intl.DateTimeFormat('ja-JP', {
++    timeZone: 'Asia/Tokyo',
++    year: 'numeric',
++    month: 'numeric',
++    day: 'numeric',
++    weekday: 'short',
++  });
++  const fmtTime = new Intl.DateTimeFormat('ja-JP', {
++    timeZone: 'Asia/Tokyo',
++    hour: 'numeric',
++    minute: '2-digit',
++    hour12: false,
++  });
++
+   const socket = io({ transports: ['websocket', 'polling'] });
+   socket.emit('chat_join', { event_id: eventId });
+ 
+-  socket.on('chat_message', (m) => {
+-    const div = document.createElement('div');
+-    div.className = 'mb-2';
+-    div.innerHTML = `<strong>${m.sender_display_name}</strong> <small class="text-muted">${m.created_at}</small><br>${m.body}`;
+-    msgBox.appendChild(div);
++  socket.on('chat_message', (msg) => {
++    renderMessage(msg);
+     msgBox.scrollTop = msgBox.scrollHeight;
+   });
+   socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
+ 
+   form?.addEventListener('submit', (e) => {
+     e.preventDefault();
+     socket.emit('chat_send', { event_id: eventId, body: bodyInput.value });
+     bodyInput.value = '';
+   });
+ 
+   pushBtn?.addEventListener('click', async () => {
+     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+       alert('この端末はPush通知に非対応です');
+       return;
+     }
+     const reg = await navigator.serviceWorker.ready;
+     const sub = await reg.pushManager.subscribe({
+       userVisibleOnly: true,
+       applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
+     });
+     const res = await fetch('/chat/api/push/subscribe', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
+     });
+     if (!res.ok) {
+       alert('購読登録に失敗しました');
+       return;
+     }
+     alert('通知を有効化しました');
+   });
+ 
++  function renderMessage(msg) {
++    const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
++    const dateLabel = Number.isNaN(createdAt.getTime())
++      ? (msg.created_at_jst_date_label || '')
++      : formatDateLabel(createdAt);
++    const timeLabel = Number.isNaN(createdAt.getTime())
++      ? (msg.created_at_jst_time_hm || '')
++      : formatTimeLabel(createdAt);
++
++    appendDateDividerIfNeeded(dateLabel);
++
++    const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
++      || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
++
++    const row = document.createElement('div');
++    row.className = `chat-row ${isMe ? 'me' : 'other'}`;
++    if (msg.sender_id) row.dataset.senderId = msg.sender_id;
++    if (msg.created_at_iso) row.dataset.createdAt = msg.created_at_iso;
++
++    if (!isMe) {
++      const sender = document.createElement('div');
++      sender.className = 'chat-sender';
++      sender.textContent = msg.sender_display_name || 'Unknown';
++      row.appendChild(sender);
++    }
++
++    const wrap = document.createElement('div');
++    wrap.className = 'chat-bubble-wrap';
++
++    const bubble = document.createElement('div');
++    bubble.className = 'chat-bubble';
++    bubble.innerHTML = msg.body || '';
++
++    const time = document.createElement('div');
++    time.className = 'chat-time';
++    time.textContent = timeLabel;
++
++    wrap.appendChild(bubble);
++    wrap.appendChild(time);
++    row.appendChild(wrap);
++    msgBox.appendChild(row);
++  }
++
++  function appendDateDividerIfNeeded(dateLabel) {
++    if (!dateLabel) return;
++    const dividers = msgBox.querySelectorAll('.chat-date-divider span');
++    const lastDivider = dividers.length ? dividers[dividers.length - 1] : null;
++    if (lastDivider?.textContent === dateLabel) return;
++
++    const divider = document.createElement('div');
++    divider.className = 'chat-date-divider';
++    divider.dataset.dateLabel = dateLabel;
++
++    const label = document.createElement('span');
++    label.textContent = dateLabel;
++    divider.appendChild(label);
++    msgBox.appendChild(divider);
++  }
++
++  function formatDateLabel(date) {
++    const parts = fmtDate.formatToParts(date);
++    const get = (type) => parts.find((p) => p.type === type)?.value || '';
++    return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
++  }
++
++  function formatTimeLabel(date) {
++    return fmtTime.format(date);
++  }
++
+   function urlBase64ToUint8Array(base64String) {
+     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+     const rawData = window.atob(base64);
+     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+   }
+ })();
+diff --git a/chat/templates/chat/base_chat.html b/chat/templates/chat/base_chat.html
+index 55a9eb40ee97f6d96a2293ad32d39fa7b635466c..0bf0284575783c581904aaa24eb722bf3fbaa5d6 100644
+--- a/chat/templates/chat/base_chat.html
++++ b/chat/templates/chat/base_chat.html
+@@ -1,13 +1,14 @@
+ {% extends "base.html" %}
+ {% block head %}
+   {{ super() }}
+   <link rel="manifest" href="{{ url_for('chat.manifest') }}">
+   <meta name="theme-color" content="#0d6efd">
+   <meta name="apple-mobile-web-app-capable" content="yes">
+   <meta name="apple-mobile-web-app-status-bar-style" content="default">
++  <link rel="stylesheet" href="{{ url_for('chat.static', filename='chat/css/chat.css') }}">
+   <script>
+     if ('serviceWorker' in navigator) {
+       navigator.serviceWorker.register('{{ url_for('chat.sw') }}');
+     }
+   </script>
+ {% endblock %}
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 20800f7fb42e95c6527adb788b117787fc51f6ef..40ae113ca3c0bb900eff287bac9ef357b8b226b8 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -1,30 +1,45 @@
+ {% extends "chat/base_chat.html" %}
+ {% block content %}
+-<div class="container py-3" data-event-id="{{ event.id }}" data-csrf="{{ csrf_token }}" data-vapid="{{ vapid_public_key }}">
++<div class="container py-3" data-event-id="{{ event.id }}" data-csrf="{{ csrf_token }}" data-vapid="{{ vapid_public_key }}" data-me="{{ current_user_id }}" data-display-name="{{ actor.display_name }}">
+   <h3>{{ event.title }} / Chat</h3>
+   <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
+-  <div id="messages" class="border rounded p-3 mb-3" style="height:360px;overflow:auto;">
++  <div id="messages" class="chat-messages border rounded p-3 mb-3">
++    {% set ns = namespace(last_date_label='') %}
+     {% for m in messages %}
+-      <div class="mb-2"><strong>{{ m.sender_display_name }}</strong> <small class="text-muted">{{ m.created_at }}</small><br>{{ m.body|safe }}</div>
++      {% if m.created_at_jst_date_label != ns.last_date_label %}
++        <div class="chat-date-divider" data-date-label="{{ m.created_at_jst_date_label }}">
++          <span>{{ m.created_at_jst_date_label }}</span>
++        </div>
++        {% set ns.last_date_label = m.created_at_jst_date_label %}
++      {% endif %}
++      <div class="chat-row {{ 'me' if m.is_me else 'other' }}" data-sender-id="{{ m.sender_id }}" data-created-at="{{ m.created_at_iso }}">
++        {% if not m.is_me %}
++          <div class="chat-sender">{{ m.sender_display_name }}</div>
++        {% endif %}
++        <div class="chat-bubble-wrap">
++          <div class="chat-bubble">{{ m.body|safe }}</div>
++          <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
++        </div>
++      </div>
+     {% endfor %}
+   </div>
+ 
+   <form id="chat-form" class="d-flex gap-2">
+     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
+     <button class="btn btn-primary" type="submit">送信</button>
+   </form>
+ 
+   <div class="mt-3 d-flex gap-2">
+     <button class="btn btn-outline-secondary btn-sm" id="enable-push">通知を有効化</button>
+     {% if can_broadcast %}
+     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
+       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
+     </form>
+     {% endif %}
+   </div>
+ </div>
+ <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script src="{{ url_for('chat.static', filename='chat/js/chat.js') }}"></script>
+ {% endblock %}

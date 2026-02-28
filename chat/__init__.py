@@ -7,6 +7,7 @@ import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from flask import (
     Blueprint,
@@ -32,6 +33,45 @@ chat_bp = Blueprint(
 
 MESSAGE_MAX_LEN = 2000
 RATE_LIMIT_SECONDS = 1
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def _actor_sender_id(actor_type: str, actor_id: str) -> str:
+    return f"{actor_type}:{actor_id}"
+
+
+def _to_utc_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=ZoneInfo("UTC"))
+    return dt.astimezone(ZoneInfo("UTC"))
+
+
+def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
+    dt_utc = _to_utc_datetime(created_at)
+    dt_jst = dt_utc.astimezone(JST)
+    date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
+    time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
+    return dt_utc.isoformat(), date_label, time_label
+
+
+def _present_message(msg: dict[str, Any], current_actor: dict[str, Any]) -> dict[str, Any]:
+    sender_id = _actor_sender_id(str(msg["sender_actor_type"]), str(msg["sender_actor_id"]))
+    created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
+    return {
+        "id": msg["id"],
+        "event_id": msg["event_id"],
+        "sender_id": sender_id,
+        "sender_display_name": msg["sender_display_name"],
+        "body": msg["body"],
+        "created_at_iso": created_at_iso,
+        "created_at_jst_date_label": date_label,
+        "created_at_jst_time_hm": time_label,
+        "is_me": sender_id == _actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])),
+    }
 
 
 def _chat_csrf() -> str:
@@ -234,7 +274,7 @@ def _save_message(event_id: int, actor: dict[str, Any], body: str) -> dict[str, 
             "sender_actor_id": actor["actor_id"],
             "sender_display_name": actor["display_name"],
             "body": body,
-            "created_at": now.isoformat(),
+            "created_at": now,
         }
     finally:
         cur.close()
@@ -390,11 +430,12 @@ def room(event_id: int):
     event = _get_event(event_id)
     if not event:
         abort(404)
-    messages = _load_messages(event_id)
+    messages = [_present_message(m, actor) for m in _load_messages(event_id)]
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     return render_template(
         "chat/room.html",
         actor=actor,
+        current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
         event=event,
         messages=messages,
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
@@ -570,7 +611,8 @@ def on_send(data):
         return
 
     message = _save_message(event_id, actor, body)
-    emit("chat_message", message, to=f"event:{event_id}")
+    message_payload = _present_message(message, actor)
+    emit("chat_message", message_payload, to=f"event:{event_id}")
 
     mention_names = _extract_mentions(body)
     mention_targets = _lookup_mention_targets(event_id, mention_names)
@@ -582,7 +624,7 @@ def on_send(data):
             {"title": f"{actor['display_name']}さんからメンション", "body": body, "event_id": event_id},
         )
     if mention_targets:
-        _log_notification(event_id, "mention", {"names": mention_names, "message_id": message["id"]}, sent_count)
+        _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
 
 
 @socketio.on("chat_notify_dm")

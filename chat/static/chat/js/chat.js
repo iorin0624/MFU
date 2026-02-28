@@ -5,19 +5,32 @@
   const eventId = Number(root.dataset.eventId);
   const csrfToken = root.dataset.csrf;
   const vapidKey = root.dataset.vapid;
+  const meId = root.dataset.me || '';
+  const myDisplayName = root.dataset.displayName || '';
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
   const bodyInput = document.getElementById('chat-body');
   const pushBtn = document.getElementById('enable-push');
 
+  const fmtDate = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    weekday: 'short',
+  });
+  const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: 'Asia/Tokyo',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: false,
+  });
+
   const socket = io({ transports: ['websocket', 'polling'] });
   socket.emit('chat_join', { event_id: eventId });
 
-  socket.on('chat_message', (m) => {
-    const div = document.createElement('div');
-    div.className = 'mb-2';
-    div.innerHTML = `<strong>${m.sender_display_name}</strong> <small class="text-muted">${m.created_at}</small><br>${m.body}`;
-    msgBox.appendChild(div);
+  socket.on('chat_message', (msg) => {
+    renderMessage(msg);
     msgBox.scrollTop = msgBox.scrollHeight;
   });
   socket.on('chat_error', (d) => alert(d.error || '送信失敗'));
@@ -49,6 +62,75 @@
     }
     alert('通知を有効化しました');
   });
+
+  function renderMessage(msg) {
+    const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+    const dateLabel = Number.isNaN(createdAt.getTime())
+      ? (msg.created_at_jst_date_label || '')
+      : formatDateLabel(createdAt);
+    const timeLabel = Number.isNaN(createdAt.getTime())
+      ? (msg.created_at_jst_time_hm || '')
+      : formatTimeLabel(createdAt);
+
+    appendDateDividerIfNeeded(dateLabel);
+
+    const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+      || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+
+    const row = document.createElement('div');
+    row.className = `chat-row ${isMe ? 'me' : 'other'}`;
+    if (msg.sender_id) row.dataset.senderId = msg.sender_id;
+    if (msg.created_at_iso) row.dataset.createdAt = msg.created_at_iso;
+
+    if (!isMe) {
+      const sender = document.createElement('div');
+      sender.className = 'chat-sender';
+      sender.textContent = msg.sender_display_name || 'Unknown';
+      row.appendChild(sender);
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-bubble-wrap';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    bubble.innerHTML = msg.body || '';
+
+    const time = document.createElement('div');
+    time.className = 'chat-time';
+    time.textContent = timeLabel;
+
+    wrap.appendChild(bubble);
+    wrap.appendChild(time);
+    row.appendChild(wrap);
+    msgBox.appendChild(row);
+  }
+
+  function appendDateDividerIfNeeded(dateLabel) {
+    if (!dateLabel) return;
+    const dividers = msgBox.querySelectorAll('.chat-date-divider span');
+    const lastDivider = dividers.length ? dividers[dividers.length - 1] : null;
+    if (lastDivider?.textContent === dateLabel) return;
+
+    const divider = document.createElement('div');
+    divider.className = 'chat-date-divider';
+    divider.dataset.dateLabel = dateLabel;
+
+    const label = document.createElement('span');
+    label.textContent = dateLabel;
+    divider.appendChild(label);
+    msgBox.appendChild(divider);
+  }
+
+  function formatDateLabel(date) {
+    const parts = fmtDate.formatToParts(date);
+    const get = (type) => parts.find((p) => p.type === type)?.value || '';
+    return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
+  }
+
+  function formatTimeLabel(date) {
+    return fmtTime.format(date);
+  }
 
   function urlBase64ToUint8Array(base64String) {
     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);

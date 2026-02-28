@@ -5,6 +5,7 @@
   <meta name="theme-color" content="#0d6efd">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="stylesheet" href="{{ url_for('chat.static', filename='chat/css/chat.css') }}">
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('{{ url_for('chat.sw') }}');
