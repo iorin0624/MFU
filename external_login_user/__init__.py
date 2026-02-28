@@ -301,3 +301,4 @@ from . import payments  # noqa: F401
 from . import users  # noqa: F401
 from . import admin  # noqa: F401
 from . import admin_users  # ← 外部ログインユーザー管理ルートを有効化
+from . import notifications  # noqa: F401

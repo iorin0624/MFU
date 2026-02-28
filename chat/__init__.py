@@ -762,12 +762,37 @@ def _build_chat_message_push_targets(event_id: int, sender_actor: dict[str, Any]
     return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key]
 
 
+def _create_external_chat_notification(
+    *,
+    recipient_user_id: int,
+    kind: str,
+    title: str,
+    body: str,
+    event_id: int,
+    dedup_key: str,
+) -> None:
+    if not dedup_key:
+        return
+    from app.external_login_user.notifications import create_notification_external
+
+    create_notification_external(
+        user_id=recipient_user_id,
+        kind=kind,
+        title=title,
+        body=_build_plain_excerpt(body, max_len=300),
+        target_url=f"/chat/events/{event_id}",
+        dedup_key=dedup_key,
+        event_id=event_id,
+    )
+
+
 def _send_chat_message_push_async(
     app: Any,
     event_id: int,
     sender_actor: dict[str, Any],
     sender_display_name: str,
     message_body: str,
+    message_id: int,
 ) -> None:
     with app.app_context():
         payload = {
@@ -785,6 +810,15 @@ def _send_chat_message_push_async(
         sent_count = 0
         for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
             sent_count += _send_push_to_actor(actor_type, actor_id, payload)
+            if actor_type == "line":
+                _create_external_chat_notification(
+                    recipient_user_id=int(actor_id),
+                    kind="chat_message",
+                    title=str(payload.get("title") or "イベントチャット"),
+                    body=str(payload.get("body") or message_body),
+                    event_id=event_id,
+                    dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
+                )
 
         _log_notification(event_id, "chat_message", payload, sent_count)
 
@@ -1053,6 +1087,24 @@ def broadcast_push(event_id: int):
     finally:
         cur.close()
         db.close()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+        for row in cur.fetchall() or []:
+            recipient = int(row["user_id"])
+            digest = hashlib.sha256(msg.encode("utf-8")).hexdigest()[:16]
+            _create_external_chat_notification(
+                recipient_user_id=recipient,
+                kind="chat_broadcast",
+                title="イベント通知",
+                body=msg,
+                event_id=event_id,
+                dedup_key=f"chat:broadcast:{event_id}:{digest}:{recipient}",
+            )
+    finally:
+        cur.close()
+        db.close()
     _log_notification(event_id, "broadcast", {"body": msg}, sent_count)
     return jsonify({"ok": True, "sent_count": sent_count})
 
@@ -1149,13 +1201,22 @@ def on_send(data):
                 "url": f"/chat/events/{event_id}",
             },
         )
+        if target.get("actor_type") == "line":
+            _create_external_chat_notification(
+                recipient_user_id=int(target["actor_id"]),
+                kind="chat_mention",
+                title=f"{actor['display_name']}さんからメンション",
+                body=body,
+                event_id=event_id,
+                dedup_key=f"chat:mention:{event_id}:{message_payload['id']}:{target['actor_id']}",
+            )
     if mention_targets:
         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
 
     app = current_app._get_current_object()
     threading.Thread(
         target=_send_chat_message_push_async,
-        args=(app, event_id, actor, actor["display_name"], body),
+        args=(app, event_id, actor, actor["display_name"], body, int(message_payload["id"])),
         daemon=True,
     ).start()
 
@@ -1172,15 +1233,28 @@ def notify_dm(data):
     if not _can_access_event(event_id, actor):
         disconnect()
         return
+    dm_body = (data or {}).get("body") or ""
     sent_count = _send_push_to_actor(
         target_actor_type,
         target_actor_id,
         {
             "title": "ダイレクト通知",
-            "body": (data or {}).get("body") or "",
+            "body": dm_body,
             "event_id": event_id,
             "url": f"/chat/events/{event_id}",
         },
     )
+    source_message_id = int((data or {}).get("message_id") or 0)
+    dm_fallback = hashlib.sha256(str(dm_body).encode("utf-8")).hexdigest()[:12]
+    dedup_suffix = str(source_message_id) if source_message_id > 0 else dm_fallback
+    if target_actor_type == "line":
+        _create_external_chat_notification(
+            recipient_user_id=int(target_actor_id),
+            kind="chat_dm",
+            title="ダイレクト通知",
+            body=str(dm_body),
+            event_id=event_id,
+            dedup_key=f"chat:dm:{event_id}:{dedup_suffix}:{target_actor_id}",
+        )
     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
     emit("chat_dm_notified", {"ok": True, "sent_count": sent_count})
