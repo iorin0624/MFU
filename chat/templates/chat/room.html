@@ -296,8 +296,8 @@
     <button class="btn btn-primary" type="submit">送信</button>
   </form>
 
-  <div class="mt-3 d-flex gap-2">
-    <button class="btn btn-outline-secondary btn-sm" id="enable-push">通知を有効化</button>
+  <div class="mt-3 d-flex gap-2 align-items-center">
+    <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
     {% if can_broadcast %}
     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -395,27 +395,92 @@
     clearReplyState();
   });
 
+  initPushUi();
+
   pushBtn?.addEventListener('click', async () => {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    const pushState = await getPushState();
+    if (!pushState.supported) {
       alert('この端末はPush通知に非対応です');
       return;
     }
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.subscribe({
+
+    if (pushState.subscription) {
+      await disablePush(pushState.registration, pushState.subscription);
+      return;
+    }
+
+    await enablePush(pushState.registration);
+  });
+
+  async function initPushUi() {
+    const pushState = await getPushState();
+    if (!pushState.supported) {
+      if (pushBtn) {
+        pushBtn.disabled = true;
+        pushBtn.textContent = 'Push通知は非対応です';
+      }
+      return;
+    }
+    updatePushButton(Boolean(pushState.subscription));
+  }
+
+  function updatePushButton(enabled) {
+    if (!pushBtn) return;
+    pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
+    pushBtn.classList.toggle('btn-outline-danger', enabled);
+    pushBtn.classList.toggle('btn-outline-secondary', !enabled);
+  }
+
+  async function getPushState() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return { supported: false, registration: null, subscription: null };
+    }
+    const registration = await navigator.serviceWorker.register('/chat/sw.js', { scope: '/chat/' });
+    const subscription = await registration.pushManager.getSubscription();
+    return { supported: true, registration, subscription };
+  }
+
+  async function enablePush(registration) {
+    if (!vapidKey) {
+      alert('VAPID公開鍵が未設定のため通知を有効化できません');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      alert('通知の許可が必要です');
+      return;
+    }
+
+    const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: vapidKey ? urlBase64ToUint8Array(vapidKey) : undefined,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
     });
+
     const res = await fetch('/chat/api/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ csrf_token: csrfToken, ...sub.toJSON() }),
+      body: JSON.stringify({ csrf_token: csrfToken, ...subscription.toJSON() }),
     });
     if (!res.ok) {
       alert('購読登録に失敗しました');
       return;
     }
-    alert('通知を有効化しました');
-  });
+    updatePushButton(true);
+  }
+
+  async function disablePush(registration, subscription) {
+    await subscription.unsubscribe();
+    const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+    if (endpoint) {
+      await fetch('/chat/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+      });
+    }
+    const nextSubscription = await registration.pushManager.getSubscription();
+    updatePushButton(Boolean(nextSubscription));
+  }
 
   function renderMessage(msg) {
     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();

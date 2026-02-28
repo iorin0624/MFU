@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,10 @@ JST = ZoneInfo("Asia/Tokyo")
 
 CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_REPLY_SCHEMA_READY: bool | None = None
+CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_PUSH_SCHEMA_READY: bool | None = None
+CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 
 
@@ -137,6 +142,117 @@ def _ensure_chat_reply_schema() -> bool:
         except Exception:
             current_app.logger.warning('chat schema check failed', exc_info=True)
             CHAT_REPLY_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_push_schema() -> bool:
+    global CHAT_PUSH_SCHEMA_READY
+    if CHAT_PUSH_SCHEMA_READY is not None:
+        return CHAT_PUSH_SCHEMA_READY
+
+    with CHAT_PUSH_SCHEMA_CHECK_LOCK:
+        if CHAT_PUSH_SCHEMA_READY is not None:
+            return CHAT_PUSH_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_push_subscriptions (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  actor_type VARCHAR(16) NOT NULL,
+                  actor_id VARCHAR(64) NOT NULL,
+                  endpoint TEXT NOT NULL,
+                  endpoint_hash CHAR(64) NOT NULL,
+                  p256dh VARCHAR(255) NOT NULL,
+                  auth VARCHAR(255) NOT NULL,
+                  user_agent VARCHAR(255) NULL,
+                  created_at DATETIME NOT NULL,
+                  updated_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash),
+                  KEY idx_chat_push_actor (actor_type, actor_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+
+            try:
+                cur.execute("SHOW COLUMNS FROM chat_push_subscriptions LIKE 'endpoint_hash'")
+                has_endpoint_hash = bool(cur.fetchone())
+                if not has_endpoint_hash:
+                    cur.execute(
+                        "ALTER TABLE chat_push_subscriptions ADD COLUMN endpoint_hash CHAR(64) NOT NULL AFTER endpoint"
+                    )
+                    cur.execute(
+                        "UPDATE chat_push_subscriptions SET endpoint_hash=SHA2(endpoint, 256) WHERE endpoint_hash='' OR endpoint_hash IS NULL"
+                    )
+            except Exception:
+                current_app.logger.warning("chat push schema ensure endpoint_hash failed", exc_info=True)
+
+            try:
+                cur.execute(
+                    "ALTER TABLE chat_push_subscriptions ADD UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash)"
+                )
+            except Exception:
+                pass
+
+            try:
+                cur.execute("ALTER TABLE chat_push_subscriptions ADD KEY idx_chat_push_actor (actor_type, actor_id)")
+            except Exception:
+                pass
+
+            db.commit()
+            CHAT_PUSH_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat push schema ensure failed", exc_info=True)
+            CHAT_PUSH_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_notification_log_schema() -> bool:
+    global CHAT_NOTIFICATION_LOG_SCHEMA_READY
+    if CHAT_NOTIFICATION_LOG_SCHEMA_READY is not None:
+        return CHAT_NOTIFICATION_LOG_SCHEMA_READY
+
+    with CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK:
+        if CHAT_NOTIFICATION_LOG_SCHEMA_READY is not None:
+            return CHAT_NOTIFICATION_LOG_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_notification_log (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  event_id BIGINT NOT NULL,
+                  kind VARCHAR(32) NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  sent_count INT NOT NULL DEFAULT 0,
+                  created_at DATETIME NOT NULL,
+                  KEY idx_chat_notification_event (event_id, created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+
+            try:
+                cur.execute("ALTER TABLE chat_notification_log ADD KEY idx_chat_notification_event (event_id, created_at)")
+            except Exception:
+                pass
+
+            db.commit()
+            CHAT_NOTIFICATION_LOG_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat notification log schema ensure failed", exc_info=True)
+            CHAT_NOTIFICATION_LOG_SCHEMA_READY = False
             return False
         finally:
             cur.close()
@@ -608,7 +724,63 @@ def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, A
         db.close()
 
 
+def _build_chat_message_push_targets(event_id: int, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
+    sender_key = _actor_sender_id(sender_actor["actor_type"], str(sender_actor["actor_id"]))
+    targets: set[tuple[str, str]] = set()
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+        for row in cur.fetchall() or []:
+            targets.add(("line", str(row["user_id"])))
+
+        cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+        for row in cur.fetchall() or []:
+            username = str(row["username"])
+            if username == "admin":
+                targets.add(("admin", "admin"))
+            else:
+                targets.add(("acl", username))
+    finally:
+        cur.close()
+        db.close()
+
+    targets.add(("admin", "admin"))
+    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key]
+
+
+def _send_chat_message_push_async(
+    app: Any,
+    event_id: int,
+    sender_actor: dict[str, Any],
+    sender_display_name: str,
+    message_body: str,
+) -> None:
+    with app.app_context():
+        payload = {
+            "type": "chat_message",
+            "event_id": event_id,
+            "url": f"/chat/events/{event_id}",
+            "title": "イベントチャット",
+            "body": f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
+        }
+
+        event = _get_event(event_id)
+        if event and event.get("title"):
+            payload["title"] = str(event.get("title"))
+
+        sent_count = 0
+        for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
+            sent_count += _send_push_to_actor(actor_type, actor_id, payload)
+
+        _log_notification(event_id, "chat_message", payload, sent_count)
+
+
 def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_count: int = 0) -> None:
+    if not _ensure_chat_notification_log_schema():
+        return
+
     db = get_db()
     cur = db.cursor()
     try:
@@ -628,7 +800,13 @@ def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_co
 
 
 def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any]) -> int:
-    from pywebpush import webpush, WebPushException
+    if not _ensure_chat_push_schema():
+        return 0
+
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        return 0
 
     public = os.getenv("CHAT_VAPID_PUBLIC_KEY")
     private = os.getenv("CHAT_VAPID_PRIVATE_KEY")
@@ -730,9 +908,12 @@ def push_subscribe():
         abort(400)
     data = request.get_json(silent=True) or {}
     endpoint = (data.get("endpoint") or "").strip()
+    endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
     keys = data.get("keys") or {}
     if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
         abort(400)
+    if not _ensure_chat_push_schema():
+        abort(500)
 
     db = get_db()
     cur = db.cursor()
@@ -740,14 +921,15 @@ def push_subscribe():
         cur.execute(
             """
             INSERT INTO chat_push_subscriptions (
-              actor_type, actor_id, endpoint, p256dh, auth, user_agent, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
+              actor_type, actor_id, endpoint, endpoint_hash, p256dh, auth, user_agent, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE endpoint=VALUES(endpoint), p256dh=VALUES(p256dh), auth=VALUES(auth), user_agent=VALUES(user_agent), updated_at=VALUES(updated_at)
             """,
             (
                 actor["actor_type"],
                 actor["actor_id"],
                 endpoint,
+                endpoint_hash,
                 keys["p256dh"],
                 keys["auth"],
                 request.headers.get("User-Agent"),
@@ -771,14 +953,20 @@ def push_unsubscribe():
     if token != session.get("chat_csrf"):
         abort(400)
     endpoint = ((request.get_json(silent=True) or {}).get("endpoint") or "").strip()
+    endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
     if not endpoint:
         abort(400)
+    if not _ensure_chat_push_schema():
+        abort(500)
     db = get_db()
     cur = db.cursor()
     try:
         cur.execute(
-            "DELETE FROM chat_push_subscriptions WHERE actor_type=%s AND actor_id=%s AND endpoint=%s",
-            (actor["actor_type"], actor["actor_id"], endpoint),
+            """
+            DELETE FROM chat_push_subscriptions
+             WHERE actor_type=%s AND actor_id=%s AND endpoint_hash=%s
+            """,
+            (actor["actor_type"], actor["actor_id"], endpoint_hash),
         )
         db.commit()
     finally:
@@ -903,6 +1091,13 @@ def on_send(data):
         )
     if mention_targets:
         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
+
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_send_chat_message_push_async,
+        args=(app, event_id, actor, actor["display_name"], body),
+        daemon=True,
+    ).start()
 
 
 @socketio.on("chat_notify_dm")
