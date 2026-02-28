@@ -1,3 +1,11 @@
+self.addEventListener('install', () => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(clients.claim());
+});
+
 self.addEventListener('push', (event) => {
   let payload = {};
   try {
@@ -40,7 +48,27 @@ self.addEventListener('notificationclick', (event) => {
     });
 
     if (exactClient && 'focus' in exactClient) {
+      if ('navigate' in exactClient && exactClient.url !== targetUrl) {
+        await exactClient.navigate(targetUrl);
+      }
       await exactClient.focus();
+      return;
+    }
+
+    const sameOriginClient = windowClients.find((client) => {
+      try {
+        const u = new URL(client.url);
+        return u.origin === targetUrlObj.origin;
+      } catch (_e) {
+        return false;
+      }
+    });
+
+    if (sameOriginClient && 'navigate' in sameOriginClient) {
+      await sameOriginClient.navigate(targetUrl);
+      if ('focus' in sameOriginClient) {
+        await sameOriginClient.focus();
+      }
       return;
     }
 

@@ -1,8 +1,16 @@
 diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
-index b42d56cb139e08ae791d7c71fd79436f0304411e..1ceff4e1a886931439d3636ec701e5ec14e02b37 100644
+index 1ceff4e1a886931439d3636ec701e5ec14e02b37..214a466f4f7ef01fc096a3895cd0775535a9380b 100644
 --- a/chat/templates/chat/sw.js
 +++ b/chat/templates/chat/sw.js
-@@ -1,54 +1,71 @@
+@@ -1,71 +1,99 @@
++self.addEventListener('install', () => {
++  self.skipWaiting();
++});
++
++self.addEventListener('activate', (event) => {
++  event.waitUntil(clients.claim());
++});
++
  self.addEventListener('push', (event) => {
    let payload = {};
    try {
@@ -26,62 +34,71 @@ index b42d56cb139e08ae791d7c71fd79436f0304411e..1ceff4e1a886931439d3636ec701e5ec
  self.addEventListener('notificationclick', (event) => {
    event.notification.close();
    const rawTargetUrl = event.notification?.data?.url || '/chat/';
--  const targetUrl = new URL(rawTargetUrl, self.location.origin).toString();
-+  const targetUrlObj = new URL(rawTargetUrl, self.location.origin);
-+  const targetUrl = targetUrlObj.toString();
+   const targetUrlObj = new URL(rawTargetUrl, self.location.origin);
+   const targetUrl = targetUrlObj.toString();
  
    event.waitUntil((async () => {
      const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
  
--    const exactClient = windowClients.find((client) => client.url === targetUrl);
-+    const exactClient = windowClients.find((client) => {
-+      try {
-+        const u = new URL(client.url);
-+        return u.origin === targetUrlObj.origin
-+          && u.pathname === targetUrlObj.pathname
-+          && u.search === targetUrlObj.search
-+          && u.hash === targetUrlObj.hash;
-+      } catch (_e) {
-+        return false;
-+      }
-+    });
-+
-     if (exactClient && 'focus' in exactClient) {
-       await exactClient.focus();
-       return;
-     }
- 
-+    if (clients.openWindow) {
-+      const openedClient = await clients.openWindow(targetUrl);
-+      if (openedClient && 'focus' in openedClient) {
-+        await openedClient.focus();
-+        return;
-+      }
-+    }
-+
-     const chatClient = windowClients.find((client) => {
+     const exactClient = windowClients.find((client) => {
        try {
--        const url = new URL(client.url);
--        return url.origin === self.location.origin && url.pathname.startsWith('/chat/');
-+        const u = new URL(client.url);
-+        return u.origin === self.location.origin && u.pathname.startsWith('/chat/');
+         const u = new URL(client.url);
+         return u.origin === targetUrlObj.origin
+           && u.pathname === targetUrlObj.pathname
+           && u.search === targetUrlObj.search
+           && u.hash === targetUrlObj.hash;
        } catch (_e) {
          return false;
        }
      });
  
--    if (chatClient && 'focus' in chatClient && 'navigate' in chatClient) {
--      await chatClient.focus();
-+    if (chatClient && 'navigate' in chatClient) {
-       await chatClient.navigate(targetUrl);
--      return;
--    }
--
--    if (clients.openWindow) {
--      await clients.openWindow(targetUrl);
-+      if ('focus' in chatClient) {
-+        await chatClient.focus();
+     if (exactClient && 'focus' in exactClient) {
++      if ('navigate' in exactClient && exactClient.url !== targetUrl) {
++        await exactClient.navigate(targetUrl);
 +      }
+       await exactClient.focus();
+       return;
+     }
+ 
++    const sameOriginClient = windowClients.find((client) => {
++      try {
++        const u = new URL(client.url);
++        return u.origin === targetUrlObj.origin;
++      } catch (_e) {
++        return false;
++      }
++    });
++
++    if (sameOriginClient && 'navigate' in sameOriginClient) {
++      await sameOriginClient.navigate(targetUrl);
++      if ('focus' in sameOriginClient) {
++        await sameOriginClient.focus();
++      }
++      return;
++    }
++
+     if (clients.openWindow) {
+       const openedClient = await clients.openWindow(targetUrl);
+       if (openedClient && 'focus' in openedClient) {
+         await openedClient.focus();
+         return;
+       }
+     }
+ 
+     const chatClient = windowClients.find((client) => {
+       try {
+         const u = new URL(client.url);
+         return u.origin === self.location.origin && u.pathname.startsWith('/chat/');
+       } catch (_e) {
+         return false;
+       }
+     });
+ 
+     if (chatClient && 'navigate' in chatClient) {
+       await chatClient.navigate(targetUrl);
+       if ('focus' in chatClient) {
+         await chatClient.focus();
+       }
      }
    })());
  });
