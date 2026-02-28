@@ -1,675 +1,41 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index cbe06cf74bead81cafa426f2ebc351661ae07496..f980ba650461ae71b5edb654a7bfacd7d36b8ded 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -48,50 +48,52 @@ except Exception:
- 
- chat_bp = Blueprint(
-     "chat",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
-     url_prefix="/chat",
- )
- 
- MESSAGE_MAX_LEN = 2000
- RATE_LIMIT_SECONDS = 1
- JST = ZoneInfo("Asia/Tokyo")
- 
- CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REPLY_SCHEMA_READY: bool | None = None
- CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_PUSH_SCHEMA_READY: bool | None = None
- CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
- CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_READ_STATE_SCHEMA_READY: bool | None = None
- CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REACTION_SCHEMA_READY: bool | None = None
- CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_IMAGE_SCHEMA_READY: bool | None = None
-+CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
-+CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
- CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
- CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
- CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", "10485760")), 1)
- PUSH_REQUEST_TIMEOUT_SECONDS = 6
- PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
- PUSH_LOG_SUPPRESSION_SECONDS = 300
- PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
- PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
- PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
- PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
- PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
- PUSH_ASYNC_INFLIGHT = 0
- _LINKIFY_RE = re.compile(
-     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
- )
- _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
- 
- 
- def _default_avatar_url() -> str:
-     return DEFAULT_AVATAR_URL
- 
- 
- def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
-     if not row:
-@@ -371,50 +373,94 @@ def _ensure_chat_image_schema() -> bool:
-                 "image_size": "ALTER TABLE chat_messages ADD COLUMN image_size BIGINT NULL AFTER image_mime",
-                 "image_width": "ALTER TABLE chat_messages ADD COLUMN image_width INT NULL AFTER image_size",
-                 "image_height": "ALTER TABLE chat_messages ADD COLUMN image_height INT NULL AFTER image_width",
-             }
-             for column_name, ddl in columns.items():
-                 try:
-                     cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
-                     if not cur.fetchone():
-                         cur.execute(ddl)
-                 except Exception:
-                     current_app.logger.warning("chat image schema ensure %s failed", column_name, exc_info=True)
- 
-             db.commit()
-             cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'image_file'")
-             CHAT_IMAGE_SCHEMA_READY = bool(cur.fetchone())
-             return CHAT_IMAGE_SCHEMA_READY
-         except Exception:
-             current_app.logger.warning("chat image schema ensure failed", exc_info=True)
-             CHAT_IMAGE_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
- 
- 
-+def _ensure_chat_message_images_schema() -> bool:
-+    global CHAT_MESSAGE_IMAGES_SCHEMA_READY
-+    if CHAT_MESSAGE_IMAGES_SCHEMA_READY is not None:
-+        return CHAT_MESSAGE_IMAGES_SCHEMA_READY
-+
-+    with CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK:
-+        if CHAT_MESSAGE_IMAGES_SCHEMA_READY is not None:
-+            return CHAT_MESSAGE_IMAGES_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor()
-+        try:
-+            cur.execute(
-+                """
-+                CREATE TABLE IF NOT EXISTS chat_message_images (
-+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+                  event_id BIGINT NOT NULL,
-+                  message_id BIGINT NOT NULL,
-+                  seq INT NOT NULL,
-+                  image_file VARCHAR(255) NOT NULL,
-+                  image_thumb_file VARCHAR(255) NOT NULL,
-+                  image_mime VARCHAR(64) NOT NULL,
-+                  image_size BIGINT NOT NULL,
-+                  image_width INT NOT NULL,
-+                  image_height INT NOT NULL,
-+                  created_at DATETIME NOT NULL,
-+                  UNIQUE KEY uq_chat_message_images_message_seq (message_id, seq),
-+                  KEY idx_chat_message_images_event_message (event_id, message_id),
-+                  KEY idx_chat_message_images_message (message_id)
-+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+                """
-+            )
-+            db.commit()
-+            CHAT_MESSAGE_IMAGES_SCHEMA_READY = True
-+            return True
-+        except Exception:
-+            current_app.logger.warning("chat message images schema ensure failed", exc_info=True)
-+            CHAT_MESSAGE_IMAGES_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
- def _ensure_chat_read_state_schema() -> bool:
-     global CHAT_READ_STATE_SCHEMA_READY
-     if CHAT_READ_STATE_SCHEMA_READY is not None:
-         return CHAT_READ_STATE_SCHEMA_READY
- 
-     with CHAT_READ_STATE_SCHEMA_CHECK_LOCK:
-         if CHAT_READ_STATE_SCHEMA_READY is not None:
-             return CHAT_READ_STATE_SCHEMA_READY
- 
-         db = get_db()
-         cur = db.cursor()
-         try:
-             cur.execute(
-                 """
-                 CREATE TABLE IF NOT EXISTS chat_read_state (
-                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                   event_id BIGINT NOT NULL,
-                   actor_type VARCHAR(16) NOT NULL,
-                   actor_id VARCHAR(64) NOT NULL,
-                   last_read_message_id BIGINT NOT NULL DEFAULT 0,
-                   updated_at DATETIME NOT NULL,
-                   UNIQUE KEY uq_chat_read_state_actor (event_id, actor_type, actor_id),
-                   KEY idx_chat_read_state_event_message (event_id, last_read_message_id)
-                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                 """
-@@ -577,79 +623,98 @@ def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-     time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
-     return dt_utc.isoformat(), date_label, time_label
- 
- 
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-     avatar_cache: dict[str, str] | None = None,
- ) -> dict[str, Any]:
-     sender_actor_type = str(msg["sender_actor_type"])
-     sender_actor_id = str(msg["sender_actor_id"])
-     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
- 
-     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-     reply_to_sender_avatar_url = None
-     if reply_to_sender_actor_type and reply_to_sender_actor_id:
-         reply_to_sender_avatar_url = _resolve_sender_avatar_url(
-             str(reply_to_sender_actor_type),
-             str(reply_to_sender_actor_id),
-             avatar_cache=avatar_cache,
-         )
- 
--    image_file = (msg.get("image_file") or "").strip()
--    image_thumb_file = (msg.get("image_thumb_file") or "").strip()
--    has_image = bool(image_file and image_thumb_file)
-+    raw_images = msg.get("images") or _fallback_images_from_message(msg)
-+    images: list[dict[str, Any]] = []
-+    for image in raw_images:
-+        image_file = str(image.get("image_file") or "").strip()
-+        image_thumb_file = str(image.get("image_thumb_file") or "").strip()
-+        if not image_file or not image_thumb_file:
-+            continue
-+        images.append(
-+            {
-+                "seq": int(image.get("seq") or (len(images) + 1)),
-+                "url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file),
-+                "thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file),
-+                "mime": image.get("image_mime"),
-+                "size": image.get("image_size"),
-+                "width": image.get("image_width"),
-+                "height": image.get("image_height"),
-+            }
-+        )
-+
-+    has_image = bool(images)
-+    first_image = images[0] if images else None
- 
-     return {
-         "id": msg["id"],
-         "event_id": msg["event_id"],
-         "sender_id": sender_id,
-         "sender_display_name": msg["sender_display_name"],
-         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
-         "body": msg["body"],
-         "body_html": _linkify_escaped_text(msg["body"] or "").replace("\n", "<br>"),
-         "created_at_iso": created_at_iso,
-         "created_at_jst_date_label": date_label,
-         "created_at_jst_time_hm": time_label,
-         "body_plain_excerpt": _build_plain_excerpt(msg.get("body") or ""),
-         "reply_to_message_id": msg.get("reply_to_message_id"),
-         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
-         "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
-         "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
-         "reactions_summary": msg.get("reactions_summary") or [],
-         "my_reaction": msg.get("my_reaction"),
-         "has_image": has_image,
--        "image_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file) if has_image else None,
--        "image_thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file) if has_image else None,
--        "image_mime": msg.get("image_mime"),
--        "image_size": msg.get("image_size"),
--        "image_width": msg.get("image_width"),
--        "image_height": msg.get("image_height"),
-+        "images": images,
-+        "image_url": first_image.get("url") if first_image else None,
-+        "image_thumb_url": first_image.get("thumb_url") if first_image else None,
-+        "image_mime": first_image.get("mime") if first_image else None,
-+        "image_size": first_image.get("size") if first_image else None,
-+        "image_width": first_image.get("width") if first_image else None,
-+        "image_height": first_image.get("height") if first_image else None,
-         "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
-     }
- 
- 
- def _linkify_escaped_text(text: str) -> str:
-     value = str(text or "")
- 
-     def _replace(match: re.Match[str]) -> str:
-         token = match.group(0)
-         trimmed = token
-         while trimmed and trimmed[-1] in _LINKIFY_TRAILING_CHARS:
-             trimmed = trimmed[:-1]
-         if not trimmed:
-             return token
- 
-         suffix = token[len(trimmed):]
-         if match.group("email"):
-             href = f"mailto:{trimmed}"
-         elif trimmed.startswith("http://") or trimmed.startswith("https://"):
-             href = trimmed
-         elif trimmed.startswith("www."):
-             href = f"https://{trimmed}"
-         else:
-             return token
- 
-@@ -966,50 +1031,109 @@ def _load_reactions_by_message_ids(message_ids: list[int]) -> dict[int, list[dic
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             f"""
-             SELECT message_id, emoji, COUNT(*) AS cnt
-               FROM chat_message_reactions
-              WHERE message_id IN ({placeholders})
-              GROUP BY message_id, emoji
-             """,
-             tuple(message_ids),
-         )
-         grouped: dict[int, list[dict[str, Any]]] = {}
-         for row in cur.fetchall() or []:
-             message_id = int(row.get("message_id") or 0)
-             if message_id <= 0:
-                 continue
-             grouped.setdefault(message_id, []).append({"emoji": row.get("emoji") or "", "count": int(row.get("cnt") or 0)})
-         for values in grouped.values():
-             values.sort(key=lambda item: CHAT_ALLOWED_REACTION_EMOJIS.index(item["emoji"]) if item["emoji"] in CHAT_ALLOWED_REACTION_EMOJIS else 999)
-         return grouped
-     finally:
-         cur.close()
-         db.close()
- 
- 
-+def _load_message_images_by_message_ids(message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
-+    if not message_ids:
-+        return {}
-+    if not _ensure_chat_message_images_schema():
-+        return {}
-+
-+    placeholders = ", ".join(["%s"] * len(message_ids))
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            f"""
-+            SELECT message_id, seq, image_file, image_thumb_file, image_mime, image_size, image_width, image_height
-+              FROM chat_message_images
-+             WHERE message_id IN ({placeholders})
-+             ORDER BY message_id ASC, seq ASC
-+            """,
-+            tuple(message_ids),
-+        )
-+        grouped: dict[int, list[dict[str, Any]]] = {}
-+        for row in cur.fetchall() or []:
-+            message_id = int(row.get("message_id") or 0)
-+            if message_id <= 0:
-+                continue
-+            grouped.setdefault(message_id, []).append(
-+                {
-+                    "seq": int(row.get("seq") or 0),
-+                    "image_file": row.get("image_file"),
-+                    "image_thumb_file": row.get("image_thumb_file"),
-+                    "image_mime": row.get("image_mime"),
-+                    "image_size": row.get("image_size"),
-+                    "image_width": row.get("image_width"),
-+                    "image_height": row.get("image_height"),
-+                }
-+            )
-+        return grouped
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _fallback_images_from_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
-+    image_file = (msg.get("image_file") or "").strip()
-+    image_thumb_file = (msg.get("image_thumb_file") or "").strip()
-+    if not image_file or not image_thumb_file:
-+        return []
-+    return [
-+        {
-+            "seq": 1,
-+            "image_file": image_file,
-+            "image_thumb_file": image_thumb_file,
-+            "image_mime": msg.get("image_mime"),
-+            "image_size": msg.get("image_size"),
-+            "image_width": msg.get("image_width"),
-+            "image_height": msg.get("image_height"),
-+        }
-+    ]
-+
-+
- def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, Any]) -> dict[int, str]:
-     if not message_ids:
-         return {}
-     if not _ensure_chat_reaction_schema():
-         return {}
- 
-     placeholders = ", ".join(["%s"] * len(message_ids))
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         params: tuple[Any, ...] = tuple(message_ids) + (actor["actor_type"], str(actor["actor_id"]))
-         cur.execute(
-             f"""
-             SELECT message_id, emoji
-               FROM chat_message_reactions
-              WHERE message_id IN ({placeholders})
-                AND actor_type=%s
-                AND actor_id=%s
-             """,
-             params,
-         )
-         return {int(row["message_id"]): str(row.get("emoji") or "") for row in (cur.fetchall() or [])}
-     finally:
-         cur.close()
-         db.close()
-@@ -1641,113 +1765,168 @@ def index():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     events = _accessible_events(actor)
-     return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
- 
- 
- @chat_bp.route("/events/<int:event_id>")
- def room(event_id: int):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
- 
-     _ensure_chat_read_state_schema()
- 
-     event = _get_event(event_id)
-     if not event:
-         abort(404)
-     avatar_cache: dict[str, str] = {}
-     raw_messages = _load_messages(event_id)
-     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
-     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
-     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
-+    images_by_message = _load_message_images_by_message_ids(message_ids)
-     messages = []
-     for message in raw_messages:
-         message_id = int(message.get("id") or 0)
-         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
-         message["my_reaction"] = my_reaction_by_message.get(message_id)
-+        message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
-         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
-     can_broadcast = actor["actor_type"] in {"admin", "acl"}
-     return render_template(
-         "chat/room.html",
-         actor=actor,
-         current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
-         event=event,
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-         csrf_token=_chat_csrf(),
-         can_broadcast=can_broadcast,
-         default_avatar_url=_default_avatar_url(),
-     )
- 
- 
- @chat_bp.get("/events/<int:event_id>/images/<path:name>")
- def chat_image(event_id: int, name: str):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-     if "/" in name or "\\" in name or name.startswith("."):
-         abort(404)
-     directory = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
-     return send_from_directory(directory, name)
- 
- 
- @chat_bp.post("/api/events/<int:event_id>/upload-image")
- def upload_image(event_id: int):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-     if not _ensure_chat_image_schema():
-         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
-+    if not _ensure_chat_message_images_schema():
-+        return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
- 
-     payload = request.get_json(silent=True) or {}
-     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400)
- 
--    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES:
-+    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
-         return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
- 
--    upload_file = request.files.get("file")
--    if not upload_file or not upload_file.filename:
-+    upload_files = [f for f in (request.files.getlist("file") or []) if f and f.filename]
-+    if not upload_files:
-         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
-+    if len(upload_files) > 6:
-+        return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
- 
-     try:
-         body = _validate_caption_optional(request.form.get("body") or "")
--        image_meta = _save_upload_image_files(event_id, upload_file.stream, filename=upload_file.filename or "")
-+        image_metas = [
-+            _save_upload_image_files(event_id, upload_file.stream, filename=upload_file.filename or "")
-+            for upload_file in upload_files
-+        ]
-     except ValueError as exc:
-         status = 413 if "上限" in str(exc) else 400
-         return jsonify({"ok": False, "error": str(exc)}), status
- 
--    message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_meta))
-+    message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_metas[0]))
-+    message_id = int(message.get("id") or 0)
-+
-+    db = get_db()
-+    cur = db.cursor()
-+    try:
-+        now = datetime.utcnow()
-+        for idx, image_meta in enumerate(image_metas, start=1):
-+            cur.execute(
-+                """
-+                INSERT INTO chat_message_images (
-+                    event_id, message_id, seq,
-+                    image_file, image_thumb_file, image_mime,
-+                    image_size, image_width, image_height, created_at
-+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+                """,
-+                (
-+                    event_id,
-+                    message_id,
-+                    idx,
-+                    image_meta.get("image_file"),
-+                    image_meta.get("image_thumb_file"),
-+                    image_meta.get("image_mime"),
-+                    image_meta.get("image_size"),
-+                    image_meta.get("image_width"),
-+                    image_meta.get("image_height"),
-+                    now,
-+                ),
-+            )
-+        db.commit()
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    message["images"] = [
-+        {
-+            "seq": idx,
-+            "image_file": image_meta.get("image_file"),
-+            "image_thumb_file": image_meta.get("image_thumb_file"),
-+            "image_mime": image_meta.get("image_mime"),
-+            "image_size": image_meta.get("image_size"),
-+            "image_width": image_meta.get("image_width"),
-+            "image_height": image_meta.get("image_height"),
-+        }
-+        for idx, image_meta in enumerate(image_metas, start=1)
-+    ]
-+
-     message_payload = _present_message(message, actor, avatar_cache={})
-     socketio.emit("chat_message", message_payload, to=f"event:{event_id}")
- 
-     app = current_app._get_current_object()
-     now = time.monotonic()
-     _submit_chat_message_push_async(
-         app,
-         event_id,
-         actor,
-         actor["display_name"],
-         body,
-         int(message_payload["id"]),
-         {"t0": now, "t1": now, "t2": now},
-         has_image=True,
-     )
- 
-     return jsonify({"ok": True, "message": message_payload})
- 
- 
- @chat_bp.get("/api/push/bootstrap")
- def push_bootstrap():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     return jsonify(
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8f781e549 100644
+index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe998b2d15 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -328,97 +328,138 @@
-   border-color: #8fa9ff;
- }
+@@ -1,31 +1,31 @@
+ {% extends "chat/base_chat.html" %}
+ {% block content %}
  
- .chat-reaction-summary {
-   display: flex;
-   gap: 6px;
-   flex-wrap: wrap;
- }
- 
- .chat-reaction-chip {
-   border: 1px solid #d8def8;
-   border-radius: 999px;
-   font-size: 0.75rem;
-   padding: 1px 8px;
-   background: rgba(255, 255, 255, 0.92);
- }
- 
- 
- .chat-image-link {
-   display: block;
-   margin-bottom: 6px;
-   max-width: min(320px, 70vw);
-   width: 100%;
- }
- 
-+.chat-image-grid {
-+  display: grid;
-+  grid-template-columns: repeat(2, 1fr);
-+  gap: 4px;
-+  max-width: min(360px, 70vw);
-+  margin-bottom: 6px;
-+}
-+
-+.chat-image-cell {
-+  aspect-ratio: 1 / 1;
-+  overflow: hidden;
-+  border-radius: 10px;
-+  border: 1px solid rgba(0, 0, 0, 0.12);
-+  background: #fff;
-+}
-+
-+.chat-image-cell img {
-+  width: 100%;
-+  height: 100%;
-+  object-fit: cover;
-+  object-position: center;
-+  display: block;
-+}
-+
- .chat-image-thumb {
-   display: block;
-   max-width: min(320px, 70vw);
-   width: 100%;
-   height: auto;
-   border-radius: 10px;
-   border: 1px solid rgba(0, 0, 0, 0.12);
-   background: #fff;
- }
- 
- .chat-bubble {
-   max-width: 100%;
- }
- 
- .chat-body {
+ <style>
+ .chat-messages {
+-  height: 420px;
++  height: 560px;
+   overflow: auto;
    overflow-x: hidden;
+   background: #e8f3ff;
  }
  
- .chat-image-viewer {
-   position: fixed;
-   inset: 0;
-   z-index: 1080;
-   display: none;
-   align-items: center;
-   justify-content: center;
-   background: rgba(0, 0, 0, 0.78);
-   padding: 20px;
- }
- 
- .chat-image-viewer.is-open {
+ .chat-date-divider {
    display: flex;
+   justify-content: center;
+   margin: 10px 0;
  }
  
- .chat-image-viewer-close {
-   position: absolute;
-   top: 10px;
-   right: 14px;
-   border: 0;
-   background: rgba(0, 0, 0, 0.45);
-   color: #fff;
-   width: 40px;
-   height: 40px;
+ .chat-date-divider span {
+   display: inline-block;
+   font-size: 0.78rem;
+   color: #556;
+   background: rgba(255, 255, 255, 0.95);
    border-radius: 999px;
-   font-size: 28px;
-   line-height: 1;
+   padding: 3px 12px;
  }
  
-+.chat-image-viewer-content {
-+  display: flex;
-+  align-items: center;
-+  gap: 10px;
-+}
-+
-+.chat-image-viewer-nav {
-+  border: 0;
-+  background: rgba(0, 0, 0, 0.45);
-+  color: #fff;
-+  width: 40px;
-+  height: 40px;
-+  border-radius: 999px;
-+  font-size: 22px;
-+  line-height: 1;
-+}
-+
- .chat-image-viewer img {
-   max-width: 95vw;
-   max-height: 85vh;
-   width: auto;
-   height: auto;
-   border-radius: 8px;
+ .chat-row {
+   margin-bottom: 10px;
  }
  
- @media (max-width: 576px) {
-   .chat-avatar {
+ .chat-line {
+@@ -451,52 +451,50 @@
      width: 28px;
      height: 28px;
    }
@@ -685,89 +51,44 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
      <div class="chat-reaction-panel d-none"></div>
      <div class="chat-reaction-summary"></div>
    </div>
-@@ -464,220 +505,256 @@
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
+ {%- endmacro %}
  
-           <div class="chat-main">
-             {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
+ <div class="container py-3"
+      data-event-id="{{ event.id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}">
+   <h3>{{ event.title }} / Chat</h3>
+-  <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
+-
+   <div id="messages" class="chat-messages border rounded p-3 mb-3">
+     {% set ns = namespace(last_date=None) %}
+     {% for m in messages %}
+       {% set d = m.created_at_jst_date_label %}
+       {% if loop.first or d != ns.last_date %}
+         <div class="chat-date-divider" data-date-label="{{ d }}"><span>{{ d }}</span></div>
+         {% set ns.last_date = d %}
+       {% endif %}
  
-             {% if m.reply_to_message_id %}
-               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
-                 <img class="chat-avatar-sm"
-                      src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-                      alt=""
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-                 <div class="rq-body">
-                   <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
-                   <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
-                 </div>
-               </div>
-             {% endif %}
- 
-             <div class="chat-bubble-wrap">
-               <div class="chat-bubble">
--                {% if m.has_image %}
--                  <a class="chat-image-link" href="{{ m.image_url }}" data-full-image-url="{{ m.image_url }}">
-+                {% set image_items = m.images or [] %}
-+                {% if image_items|length == 1 %}
-+                  {% set image_item = image_items[0] %}
-+                  <a class="chat-image-link"
-+                     href="{{ image_item.url }}"
-+                     data-full-image-url="{{ image_item.url }}"
-+                     data-image-index="0"
-+                     data-image-list='{{ image_items|tojson }}'>
-                     <img class="chat-image-thumb"
--                         src="{{ m.image_thumb_url }}"
-+                         src="{{ image_item.thumb_url }}"
-                          alt="画像"
-                          loading="lazy"
--                         {% if m.image_width and m.image_height %}style="aspect-ratio: {{ m.image_width }}/{{ m.image_height }};"{% endif %}>
-+                         {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
-                   </a>
-+                {% elif image_items|length >= 2 %}
-+                  <div class="chat-image-grid">
-+                    {% for image_item in image_items %}
-+                      <a class="chat-image-link chat-image-cell"
-+                         href="{{ image_item.url }}"
-+                         data-full-image-url="{{ image_item.url }}"
-+                         data-image-index="{{ loop.index0 }}"
-+                         data-image-list='{{ image_items|tojson }}'>
-+                        <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
-+                      </a>
-+                    {% endfor %}
-+                  </div>
-                 {% endif %}
-                 {% if (m.body_html or m.body or '')|trim %}
-                   <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
-                 {% endif %}
-               </div>
-               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-             </div>
-             {% if m.is_me %}
-               <div class="chat-read-indicator d-none"></div>
-               <div class="chat-read-list d-none"></div>
-             {% endif %}
-             {{ render_reaction_box(m) }}
-           </div>
- 
-           {% if m.is_me %}
+       <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
+            id="msg-{{ m.id }}"
+            data-message-id="{{ m.id }}"
+            data-sender-id="{{ m.sender_id }}"
+            data-sender-name="{{ m.sender_display_name }}"
+            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
+            data-body-plain="{{ m.body_plain_excerpt }}"
+            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
+            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
+            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
+            data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+            data-my-reaction="{{ m.my_reaction or '' }}"
+            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
+         <div class="chat-line">
+           {% if not m.is_me %}
              <img class="chat-avatar"
-                  src="{{ m.sender_avatar_url or default_avatar_url }}"
-                  alt=""
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
-         </div>
-       </div>
-     {% endfor %}
-   </div>
- 
+@@ -583,81 +581,78 @@
    <div id="reply-preview" class="reply-preview d-none">
      <div class="reply-meta">
        <strong id="reply-sender"></strong>
@@ -778,8 +99,7 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
  
    <form id="chat-form" class="d-flex gap-2 align-items-center">
      <input type="hidden" id="reply-to-id" value="">
--    <input type="file" id="chat-image-file" accept="image/*" class="d-none">
-+    <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
+     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
      <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
      <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
      <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
@@ -787,24 +107,25 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
  
    <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
      <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
--    <img id="chatImageViewerImg" src="" alt="拡大画像">
-+    <div class="chat-image-viewer-content">
-+      <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
-+      <img id="chatImageViewerImg" src="" alt="拡大画像">
-+      <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
-+    </div>
+     <div class="chat-image-viewer-content">
+       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
+       <img id="chatImageViewerImg" src="" alt="拡大画像">
+       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+     </div>
    </div>
  
++  {% if can_broadcast %}
    <div class="mt-3 d-flex gap-2 align-items-center">
-     <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
-     {% if can_broadcast %}
+-    <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
+-    {% if can_broadcast %}
      <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
        <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
        <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
      </form>
-     {% endif %}
+-    {% endif %}
    </div>
++  {% endif %}
  </div>
  
  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -815,17 +136,17 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
  
    const eventId = Number(root.dataset.eventId);
    const csrfToken = root.dataset.csrf;
-   const vapidKey = root.dataset.vapid;
+-  const vapidKey = root.dataset.vapid;
    const meId = root.dataset.me || '';
    const myDisplayName = root.dataset.displayName || '';
    const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
    const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
-+  const maxUploadImages = 6;
+   const maxUploadImages = 6;
  
    const msgBox = document.getElementById('messages');
    const form = document.getElementById('chat-form');
    const bodyInput = document.getElementById('chat-body');
-   const pushBtn = document.getElementById('enable-push');
+-  const pushBtn = document.getElementById('enable-push');
    const imageInput = document.getElementById('chat-image-file');
    const imageBtn = document.getElementById('chat-image-btn');
    const sendBtn = document.getElementById('chat-send-btn');
@@ -837,8 +158,8 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
    const imageViewer = document.getElementById('chatImageViewer');
    const imageViewerImg = document.getElementById('chatImageViewerImg');
    const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
-+  const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
-+  const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
+   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
+   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
  
    const fmtDate = new Intl.DateTimeFormat('ja-JP', {
      timeZone: 'Asia/Tokyo',
@@ -851,163 +172,7 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
      timeZone: 'Asia/Tokyo',
      hour: 'numeric',
      minute: '2-digit',
-     hour12: false,
-   });
- 
-   const [myActorType, myActorId] = meId.includes(':')
-     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
-     : ['', ''];
- 
-   const state = {
-     replyToId: null,
-     selectedBubble: null,
-     readStateByActor: new Map(),
-     reactionByMessage: new Map(),
-+    viewerImages: [],
-+    viewerIndex: 0,
-   };
- 
-   const socket = io({ transports: ['websocket', 'polling'] });
-   socket.emit('chat_join', { event_id: eventId });
- 
-   initReactionUis();
-   scrollToLatestMessage();
-   refreshReadIndicators();
-   window.addEventListener('load', () => {
-     scrollToLatestMessage();
-     sendSeenForLatestMessage();
-   }, { once: true });
- 
-   socket.on('chat_message', (msg) => {
-     renderMessage(msg);
-     msgBox.scrollTop = msgBox.scrollHeight;
-     sendSeenForMessageId(Number(msg?.id || 0));
-     setSendingState(false);
-   });
-   socket.on('chat_error', (d) => {
-     setSendingState(false);
-     alert(d.error || '送信失敗');
-   });
-   socket.on('chat_read_snapshot', (payload) => {
-     applyReadSnapshot(payload?.read_states || []);
-     refreshReadIndicators();
-     sendSeenForLatestMessage();
-   });
-   socket.on('chat_read_update', (payload) => {
-     applyReadUpdate(payload);
-     refreshReadIndicators();
-   });
-   socket.on('chat_reaction_update', (payload) => {
-     const messageId = Number(payload?.message_id || 0);
-     if (!messageId) return;
-     const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
-     let myReaction = prev.myReaction || null;
-     const changed = payload?.changed || {};
-     if (changed.actor_type === myActorType && String(changed.actor_id || '') === String(myActorId || '')) {
-       myReaction = changed.emoji || null;
-     }
-     setReactionState(messageId, payload?.reactions || [], myReaction);
-   });
- 
-   msgBox.addEventListener('click', (e) => {
-     const imageLink = e.target.closest('.chat-image-link');
-     if (imageLink) {
-       e.preventDefault();
--      openImageViewer(imageLink.dataset.fullImageUrl || imageLink.href || '');
-+      let imageList = [];
-+      try {
-+        imageList = JSON.parse(imageLink.dataset.imageList || '[]');
-+      } catch (_) {
-+        imageList = [];
-+      }
-+      const imageUrls = imageList.map((item) => item?.url).filter(Boolean);
-+      const fallbackUrl = imageLink.dataset.fullImageUrl || imageLink.href || '';
-+      if (!imageUrls.length && fallbackUrl) imageUrls.push(fallbackUrl);
-+      openImageViewer(imageUrls, Number(imageLink.dataset.imageIndex || 0));
-       return;
-     }
- 
-     const readIndicator = e.target.closest('.chat-read-indicator');
-     if (readIndicator) {
-       toggleReadList(readIndicator.closest('.chat-main'));
-       return;
-     }
- 
-     const quote = e.target.closest('.chat-reply-quote');
-     if (quote) {
-       jumpToMessage(quote.dataset.jumpToId);
-       return;
-     }
- 
-     const reactionToggle = e.target.closest('.chat-reaction-toggle');
-     if (reactionToggle) {
-       const box = reactionToggle.closest('.chat-reaction-box');
-       const panel = box?.querySelector('.chat-reaction-panel');
-       panel?.classList.toggle('d-none');
-       return;
-     }
- 
-     const reactionBtn = e.target.closest('.chat-reaction-emoji');
-     if (reactionBtn) {
-@@ -691,66 +768,76 @@
-     }
- 
-     const contentLink = e.target.closest('a.chat-link');
-     if (contentLink) {
-       return;
-     }
- 
-     const bubble = e.target.closest('.chat-bubble');
-     if (!bubble) return;
-     const row = bubble.closest('.chat-row');
-     if (!row) return;
- 
-     const messageId = row.dataset.messageId;
-     const senderName = row.dataset.senderName || 'Unknown';
-     const bodyPlain = row.dataset.bodyPlain || '';
- 
-     if (state.replyToId && String(state.replyToId) === String(messageId)) {
-       clearReplyState();
-       return;
-     }
-     setReplyState(messageId, senderName, bodyPlain, bubble);
-   });
- 
-   replyCancelBtn?.addEventListener('click', clearReplyState);
-   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
-+  imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
-+  imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
-   imageViewer?.addEventListener('click', (e) => {
-     if (e.target === imageViewer) closeImageViewer();
-   });
-   document.addEventListener('keydown', (e) => {
-     if (e.key === 'Escape') closeImageViewer();
-+    if (e.key === 'ArrowLeft') moveViewerIndex(-1);
-+    if (e.key === 'ArrowRight') moveViewerIndex(1);
-   });
- 
-   imageBtn?.addEventListener('click', () => imageInput?.click());
-   imageInput?.addEventListener('change', async () => {
--    const file = imageInput.files?.[0];
--    if (!file) return;
-+    const files = Array.from(imageInput.files || []);
-+    if (!files.length) return;
-+    if (files.length > maxUploadImages) {
-+      alert('画像は最大6枚までです');
-+      imageInput.value = '';
-+      return;
-+    }
-+
-     setSendingState(true);
-     try {
-       const fd = new FormData();
-       fd.append('csrf_token', csrfToken);
--      fd.append('file', file);
-+      files.forEach((file) => fd.append('file', file));
-       fd.append('body', bodyInput.value || '');
-       const res = await fetch(`/chat/api/events/${eventId}/upload-image`, { method: 'POST', body: fd });
-       const data = await res.json().catch(() => ({}));
-       if (!res.ok || !data.ok) {
+@@ -823,141 +818,50 @@
          throw new Error(data.error || '画像送信に失敗しました');
        }
        bodyInput.value = '';
@@ -1029,194 +194,163 @@ index 393c131709bc8cee3f94d10beafc0604ff3a73c3..80972ff2e9bac7f91cdfd3dd5faa80a8
        reply_to_message_id: state.replyToId,
      });
      bodyInput.value = '';
-@@ -893,121 +980,181 @@
-     const main = document.createElement('div');
-     main.className = 'chat-main';
+     clearReplyState();
+     setSendingState(false);
+   });
  
-     if (!isMe) {
-       const sender = document.createElement('div');
-       sender.className = 'chat-sender';
-       sender.textContent = msg.sender_display_name || 'Unknown';
-       main.appendChild(sender);
-     }
- 
-     if (msg.reply_to_message_id) {
-       main.appendChild(makeReplyQuote(
-         msg.reply_to_message_id,
-         msg.reply_to_sender_display_name || '元メッセージ',
-         msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
-         msg.reply_to_sender_avatar_url || defaultAvatarUrl,
-       ));
-     }
- 
-     const wrap = document.createElement('div');
-     wrap.className = 'chat-bubble-wrap';
- 
-     const bubble = document.createElement('div');
-     bubble.className = 'chat-bubble';
- 
--    if (msg.has_image && msg.image_thumb_url && msg.image_url) {
-+    const images = Array.isArray(msg.images) && msg.images.length
-+      ? msg.images
-+      : (msg.has_image && msg.image_url && msg.image_thumb_url
-+        ? [{
-+            seq: 1,
-+            url: msg.image_url,
-+            thumb_url: msg.image_thumb_url,
-+            width: msg.image_width,
-+            height: msg.image_height,
-+          }]
-+        : []);
-+
-+    if (images.length === 1) {
-+      const imageItem = images[0];
-       const imageLink = document.createElement('a');
-       imageLink.className = 'chat-image-link';
--      imageLink.href = msg.image_url;
--      imageLink.dataset.fullImageUrl = msg.image_url;
-+      imageLink.href = imageItem.url;
-+      imageLink.dataset.fullImageUrl = imageItem.url;
-+      imageLink.dataset.imageIndex = '0';
-+      imageLink.dataset.imageList = JSON.stringify(images);
- 
-       const thumb = document.createElement('img');
-       thumb.className = 'chat-image-thumb';
--      thumb.src = msg.image_thumb_url;
-+      thumb.src = imageItem.thumb_url;
-       thumb.alt = '画像';
-       thumb.loading = 'lazy';
--      if (msg.image_width && msg.image_height) {
--        thumb.style.aspectRatio = `${msg.image_width}/${msg.image_height}`;
-+      if (imageItem.width && imageItem.height) {
-+        thumb.style.aspectRatio = `${imageItem.width}/${imageItem.height}`;
-       }
-       imageLink.appendChild(thumb);
-       bubble.appendChild(imageLink);
-+    } else if (images.length >= 2) {
-+      const grid = document.createElement('div');
-+      grid.className = 'chat-image-grid';
-+      images.forEach((imageItem, idx) => {
-+        const imageLink = document.createElement('a');
-+        imageLink.className = 'chat-image-link chat-image-cell';
-+        imageLink.href = imageItem.url;
-+        imageLink.dataset.fullImageUrl = imageItem.url;
-+        imageLink.dataset.imageIndex = String(idx);
-+        imageLink.dataset.imageList = JSON.stringify(images);
-+
-+        const thumb = document.createElement('img');
-+        thumb.src = imageItem.thumb_url;
-+        thumb.alt = `画像 ${idx + 1}`;
-+        thumb.loading = 'lazy';
-+        imageLink.appendChild(thumb);
-+        grid.appendChild(imageLink);
-+      });
-+      bubble.appendChild(grid);
-     }
- 
-     const rawBody = (msg.body_html || msg.body || '').trim();
-     if (rawBody) {
-       const body = document.createElement('div');
-       body.className = 'chat-body';
-       body.innerHTML = rawBody;
-       bubble.appendChild(body);
-     }
- 
-     const time = document.createElement('div');
-     time.className = 'chat-time';
-     time.textContent = timeLabel;
- 
-     wrap.appendChild(bubble);
-     wrap.appendChild(time);
-     main.appendChild(wrap);
- 
-     if (isMe) {
-       const readIndicator = document.createElement('div');
-       readIndicator.className = 'chat-read-indicator d-none';
-       main.appendChild(readIndicator);
- 
-       const readList = document.createElement('div');
-       readList.className = 'chat-read-list d-none';
-       main.appendChild(readList);
-     }
- 
-     main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
- 
-     line.appendChild(main);
- 
-     if (isMe) {
-       line.appendChild(makeAvatar(msg.sender_avatar_url));
-     }
- 
-     row.appendChild(line);
-     msgBox.appendChild(row);
-     hydrateMessageReactionData(row);
-     refreshReadIndicatorForRow(row);
+-  initPushUi();
+-
+-  pushBtn?.addEventListener('click', async () => {
+-    const pushState = await getPushState();
+-    if (!pushState.supported) {
+-      alert('この端末はPush通知に非対応です');
+-      return;
+-    }
+-
+-    if (pushState.subscription) {
+-      await disablePush(pushState.registration, pushState.subscription);
+-      return;
+-    }
+-
+-    await enablePush(pushState.registration);
+-  });
+-
+-  async function initPushUi() {
+-    const pushState = await getPushState();
+-    if (!pushState.supported) {
+-      if (pushBtn) {
+-        pushBtn.disabled = true;
+-        pushBtn.textContent = 'Push通知は非対応です';
+-      }
+-      return;
+-    }
+-    updatePushButton(Boolean(pushState.subscription));
+-  }
+-
+-  function updatePushButton(enabled) {
+-    if (!pushBtn) return;
+-    pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
+-    pushBtn.classList.toggle('btn-outline-danger', enabled);
+-    pushBtn.classList.toggle('btn-outline-secondary', !enabled);
+-  }
+-
+-  async function getPushState() {
+-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+-      return { supported: false, registration: null, subscription: null };
+-    }
+-    const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+-    const subscription = await registration.pushManager.getSubscription();
+-    return { supported: true, registration, subscription };
+-  }
+-
+-  async function enablePush(registration) {
+-    if (!vapidKey) {
+-      alert('VAPID公開鍵が未設定のため通知を有効化できません');
+-      return;
+-    }
+-    const permission = await Notification.requestPermission();
+-    if (permission !== 'granted') {
+-      alert('通知の許可が必要です');
+-      return;
+-    }
+-
+-    const subscription = await registration.pushManager.subscribe({
+-      userVisibleOnly: true,
+-      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+-    });
+-
+-    const res = await fetch('/chat/api/push/subscribe', {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify({
+-        csrf_token: csrfToken,
+-        sw_scope: new URL(registration.scope).pathname || '/',
+-        ...subscription.toJSON(),
+-      }),
+-    });
+-    if (!res.ok) {
+-      alert('購読登録に失敗しました');
+-      return;
+-    }
+-    updatePushButton(true);
+-  }
+-
+-  async function disablePush(registration, subscription) {
+-    await subscription.unsubscribe();
+-    const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+-    if (endpoint) {
+-      await fetch('/chat/api/push/unsubscribe', {
+-        method: 'POST',
+-        headers: { 'Content-Type': 'application/json' },
+-        body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+-      });
+-    }
+-    const nextSubscription = await registration.pushManager.getSubscription();
+-    updatePushButton(Boolean(nextSubscription));
+-  }
+-
+   function setSendingState(isSending) {
+     if (sendBtn) sendBtn.disabled = isSending;
+     if (imageBtn) imageBtn.disabled = isSending;
    }
  
--  function openImageViewer(src) {
--    if (!imageViewer || !imageViewerImg || !src) return;
--    imageViewerImg.src = src;
-+  function openImageViewer(imageUrls, startIndex = 0) {
-+    if (!imageViewer || !imageViewerImg) return;
-+    const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
-+    if (!urls.length) return;
-+    state.viewerImages = urls;
-+    state.viewerIndex = Math.min(Math.max(0, Number(startIndex) || 0), urls.length - 1);
-+    renderImageViewer();
-     imageViewer.classList.add('is-open');
-     imageViewer.setAttribute('aria-hidden', 'false');
-     document.body.style.overflow = 'hidden';
+   function renderMessage(msg) {
+     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+     const dateLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_date_label || '')
+       : formatDateLabel(createdAt);
+     const timeLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_time_hm || '')
+       : formatTimeLabel(createdAt);
+ 
+     appendDateDividerIfNeeded(dateLabel);
+ 
+     const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+ 
+     const row = document.createElement('div');
+     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
+     row.id = `msg-${msg.id}`;
+     row.dataset.messageId = msg.id;
+     row.dataset.senderName = msg.sender_display_name || 'Unknown';
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+@@ -1451,39 +1355,29 @@
+     if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
+     list.classList.toggle('d-none');
    }
  
-+  function moveViewerIndex(diff) {
-+    if (!imageViewer?.classList.contains('is-open')) return;
-+    if (!state.viewerImages.length) return;
-+    const next = state.viewerIndex + diff;
-+    if (next < 0 || next >= state.viewerImages.length) return;
-+    state.viewerIndex = next;
-+    renderImageViewer();
-+  }
-+
-+  function renderImageViewer() {
-+    if (!imageViewerImg) return;
-+    const src = state.viewerImages[state.viewerIndex] || '';
-+    imageViewerImg.src = src;
-+    const hasMulti = state.viewerImages.length > 1;
-+    if (imageViewerPrevBtn) imageViewerPrevBtn.style.visibility = hasMulti ? 'visible' : 'hidden';
-+    if (imageViewerNextBtn) imageViewerNextBtn.style.visibility = hasMulti ? 'visible' : 'hidden';
-+    if (imageViewerPrevBtn) imageViewerPrevBtn.disabled = state.viewerIndex <= 0;
-+    if (imageViewerNextBtn) imageViewerNextBtn.disabled = state.viewerIndex >= state.viewerImages.length - 1;
-+  }
-+
-   function closeImageViewer() {
-     if (!imageViewer || !imageViewerImg || !imageViewer.classList.contains('is-open')) return;
-     imageViewer.classList.remove('is-open');
-     imageViewer.setAttribute('aria-hidden', 'true');
-     imageViewerImg.src = '';
-+    state.viewerImages = [];
-+    state.viewerIndex = 0;
-     document.body.style.overflow = '';
+   function sendSeenForLatestMessage() {
+     const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
+     const lastRow = rows.length ? rows[rows.length - 1] : null;
+     if (!lastRow) return;
+     sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
    }
  
-   function initReactionUis() {
-     msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
-       const box = ensureReactionBox(row);
-       hydrateMessageReactionData(row, box);
-       const messageId = Number(row.dataset.messageId || 0);
-       if (!messageId) return;
-       const summary = parseReactionSummary(row.dataset.reactionsSummary || '[]');
-       const myReaction = row.dataset.myReaction || null;
-       setReactionState(messageId, summary, myReaction);
-     });
+   function sendSeenForMessageId(messageId) {
+     if (!Number.isFinite(messageId) || messageId <= 0) return;
+     socket.emit('chat_seen', { event_id: eventId, last_seen_message_id: messageId });
    }
  
-   function hydrateMessageReactionData(row, existingBox = null) {
-     const box = existingBox || row.querySelector('.chat-reaction-box');
-     if (!box) return;
+   function escapeHtml(value) {
+     return String(value || '')
+       .replace(/&/g, '&amp;')
+       .replace(/</g, '&lt;')
+       .replace(/>/g, '&gt;')
+       .replace(/"/g, '&quot;')
+       .replace(/'/g, '&#39;');
+   }
  
-     const rowSummary = row.dataset.reactionsSummary;
-     const boxSummary = box.dataset.reactionsSummary;
-     const summary = rowSummary || boxSummary || '[]';
-     row.dataset.reactionsSummary = summary;
-     box.dataset.reactionsSummary = summary;
+-  function urlBase64ToUint8Array(base64String) {
+-    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+-    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+-    const rawData = window.atob(base64);
+-    return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+-  }
  
+-  function scrollToLatestMessage() {
+-    if (!msgBox) return;
+-    msgBox.scrollTop = msgBox.scrollHeight;
+-  }
+ })();
+ </script>
+ {% endblock %}
