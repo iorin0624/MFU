@@ -102,6 +102,27 @@ def create_app():
 load_dotenv()
 app.secret_key = os.environ.get("SECRET_KEY")
 
+
+def _resolve_socketio_message_queue():
+    queue_url = (os.environ.get("SOCKETIO_MESSAGE_QUEUE") or "").strip()
+    if not queue_url:
+        return None
+
+    try:
+        import importlib
+        if importlib.util.find_spec("redis") is None:
+            app.logger.warning("SOCKETIO_MESSAGE_QUEUE is set but redis package is not installed; fallback to local mode")
+            return None
+        redis = importlib.import_module("redis")
+        redis.Redis.from_url(queue_url, socket_connect_timeout=1, socket_timeout=1).ping()
+        return queue_url
+    except Exception as exc:
+        app.logger.warning("SOCKETIO_MESSAGE_QUEUE connection failed; fallback to local mode: %s", exc)
+        return None
+
+
+app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
+
 app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
 
 app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
@@ -116,7 +137,12 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
 login_manager.user_loader(load_user)
-socketio.init_app(app)
+socketio.init_app(app, message_queue=app.config["SOCKETIO_MESSAGE_QUEUE"])
+
+if app.config["SOCKETIO_MESSAGE_QUEUE"]:
+    app.logger.info("Socket.IO message queue enabled")
+else:
+    app.logger.warning("Socket.IO message queue is disabled; multi-worker chat delivery may fail")
 
 # =====================================
 # 🧠 補助関数群（上段へ集約）
