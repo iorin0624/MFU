@@ -96,6 +96,32 @@ app = Flask(
 )
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
+
+@app.get("/sw.js")
+def root_sw():
+    resp = send_from_directory(app.static_folder, "sw.js", mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.get("/manifest.webmanifest")
+def root_manifest():
+    resp = jsonify(
+        {
+            "name": "MFU",
+            "short_name": "MFU",
+            "start_url": "/external-login/",
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#ffffff",
+            "theme_color": "#0d6efd",
+            "icons": [],
+        }
+    )
+    resp.mimetype = "application/manifest+json"
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
 def create_app():
     return app
 
