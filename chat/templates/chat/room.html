@@ -344,16 +344,65 @@
 
 
 .chat-image-link {
-  display: inline-block;
+  display: block;
   margin-bottom: 6px;
+  max-width: min(320px, 70vw);
+  width: 100%;
 }
 
 .chat-image-thumb {
-  max-width: min(240px, 100%);
-  max-height: 240px;
+  display: block;
+  max-width: min(320px, 70vw);
+  width: 100%;
+  height: auto;
   border-radius: 10px;
   border: 1px solid rgba(0, 0, 0, 0.12);
   background: #fff;
+}
+
+.chat-bubble {
+  max-width: 100%;
+}
+
+.chat-body {
+  overflow-x: hidden;
+}
+
+.chat-image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1080;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.78);
+  padding: 20px;
+}
+
+.chat-image-viewer.is-open {
+  display: flex;
+}
+
+.chat-image-viewer-close {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.chat-image-viewer img {
+  max-width: 95vw;
+  max-height: 85vh;
+  width: auto;
+  height: auto;
+  border-radius: 8px;
 }
 
 @media (max-width: 576px) {
@@ -438,13 +487,12 @@
             <div class="chat-bubble-wrap">
               <div class="chat-bubble">
                 {% if m.has_image %}
-                  <a class="chat-image-link" href="{{ m.image_url }}" target="_blank" rel="noopener">
+                  <a class="chat-image-link" href="{{ m.image_url }}" data-full-image-url="{{ m.image_url }}">
                     <img class="chat-image-thumb"
                          src="{{ m.image_thumb_url }}"
                          alt="画像"
                          loading="lazy"
-                         width="{{ m.image_width or '' }}"
-                         height="{{ m.image_height or '' }}">
+                         {% if m.image_width and m.image_height %}style="aspect-ratio: {{ m.image_width }}/{{ m.image_height }};"{% endif %}>
                   </a>
                 {% endif %}
                 {% if (m.body_html or m.body or '')|trim %}
@@ -489,6 +537,11 @@
     <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
   </form>
 
+  <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
+    <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
+    <img id="chatImageViewerImg" src="" alt="拡大画像">
+  </div>
+
   <div class="mt-3 d-flex gap-2 align-items-center">
     <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
     {% if can_broadcast %}
@@ -527,6 +580,9 @@
   const replyText = document.getElementById('reply-text');
   const replyToInput = document.getElementById('reply-to-id');
   const replyCancelBtn = document.getElementById('reply-cancel');
+  const imageViewer = document.getElementById('chatImageViewer');
+  const imageViewerImg = document.getElementById('chatImageViewerImg');
+  const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
 
   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
     timeZone: 'Asia/Tokyo',
@@ -596,6 +652,13 @@
   });
 
   msgBox.addEventListener('click', (e) => {
+    const imageLink = e.target.closest('.chat-image-link');
+    if (imageLink) {
+      e.preventDefault();
+      openImageViewer(imageLink.dataset.fullImageUrl || imageLink.href || '');
+      return;
+    }
+
     const readIndicator = e.target.closest('.chat-read-indicator');
     if (readIndicator) {
       toggleReadList(readIndicator.closest('.chat-main'));
@@ -649,6 +712,13 @@
   });
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
+  imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
+  imageViewer?.addEventListener('click', (e) => {
+    if (e.target === imageViewer) closeImageViewer();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeImageViewer();
+  });
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
   imageInput?.addEventListener('change', async () => {
@@ -849,14 +919,16 @@
       const imageLink = document.createElement('a');
       imageLink.className = 'chat-image-link';
       imageLink.href = msg.image_url;
-      imageLink.target = '_blank';
-      imageLink.rel = 'noopener';
+      imageLink.dataset.fullImageUrl = msg.image_url;
 
       const thumb = document.createElement('img');
       thumb.className = 'chat-image-thumb';
       thumb.src = msg.image_thumb_url;
       thumb.alt = '画像';
       thumb.loading = 'lazy';
+      if (msg.image_width && msg.image_height) {
+        thumb.style.aspectRatio = `${msg.image_width}/${msg.image_height}`;
+      }
       imageLink.appendChild(thumb);
       bubble.appendChild(imageLink);
     }
@@ -899,6 +971,22 @@
     msgBox.appendChild(row);
     hydrateMessageReactionData(row);
     refreshReadIndicatorForRow(row);
+  }
+
+  function openImageViewer(src) {
+    if (!imageViewer || !imageViewerImg || !src) return;
+    imageViewerImg.src = src;
+    imageViewer.classList.add('is-open');
+    imageViewer.setAttribute('aria-hidden', 'false');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeImageViewer() {
+    if (!imageViewer || !imageViewerImg || !imageViewer.classList.contains('is-open')) return;
+    imageViewer.classList.remove('is-open');
+    imageViewer.setAttribute('aria-hidden', 'true');
+    imageViewerImg.src = '';
+    document.body.style.overflow = '';
   }
 
   function initReactionUis() {
