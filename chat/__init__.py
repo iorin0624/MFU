@@ -66,6 +66,10 @@ PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")),
 PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
 PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
 PUSH_ASYNC_INFLIGHT = 0
+_LINKIFY_RE = re.compile(
+    r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+)
+_LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
 
 
 def _default_avatar_url() -> str:
@@ -544,6 +548,7 @@ def _present_message(
         "sender_display_name": msg["sender_display_name"],
         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
         "body": msg["body"],
+        "body_html": _linkify_escaped_text(msg["body"] or "").replace("\n", "<br>"),
         "created_at_iso": created_at_iso,
         "created_at_jst_date_label": date_label,
         "created_at_jst_time_hm": time_label,
@@ -556,6 +561,34 @@ def _present_message(
         "my_reaction": msg.get("my_reaction"),
         "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
     }
+
+
+def _linkify_escaped_text(text: str) -> str:
+    value = str(text or "")
+
+    def _replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        trimmed = token
+        while trimmed and trimmed[-1] in _LINKIFY_TRAILING_CHARS:
+            trimmed = trimmed[:-1]
+        if not trimmed:
+            return token
+
+        suffix = token[len(trimmed):]
+        if match.group("email"):
+            href = f"mailto:{trimmed}"
+        elif trimmed.startswith("http://") or trimmed.startswith("https://"):
+            href = trimmed
+        elif trimmed.startswith("www."):
+            href = f"https://{trimmed}"
+        else:
+            return token
+
+        return (
+            f'<a class="chat-link" href="{href}" target="_blank" rel="noopener noreferrer">{trimmed}</a>{suffix}'
+        )
+
+    return _LINKIFY_RE.sub(_replace, value)
 
 
 def _build_plain_excerpt(value: str, max_len: int = 80) -> str:
