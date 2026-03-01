@@ -1056,9 +1056,9 @@
     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
   });
   socket.on('chat_edit_update', (payload) => {
-    const messageId = Number(payload?.message_id || 0);
+    const messageId = Number(payload?.message_id || payload?.id || 0);
     if (!messageId) return;
-    applyEditedState(messageId, payload?.body_html || '', payload?.body_plain_excerpt || '', Number(payload?.edited_flag || 0) === 1);
+    applyEditedState(messageId, payload);
   });
   socket.on('chat_typing_update', (payload) => {
     applyTypingUpdate(payload || {});
@@ -1684,11 +1684,16 @@
     });
   }
 
-  function applyEditedState(messageId, bodyHtml, bodyPlainExcerpt, editedFlag) {
+  function applyEditedState(messageId, payload) {
     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
     const bubble = row.querySelector('.chat-bubble');
     if (!bubble) return;
+
+    const bodyHtml = payload?.body_html || '';
+    const bodyPlainExcerpt = payload?.body_plain_excerpt || '';
+    const editedFlag = Number(payload?.edited_flag || 0) === 1;
+
     let body = bubble.querySelector('.chat-body');
     if (!body) {
       body = document.createElement('div');
@@ -1696,9 +1701,10 @@
       bubble.appendChild(body);
     }
     body.className = 'chat-body';
-    body.innerHTML = bodyHtml || '';
+    body.innerHTML = bodyHtml;
     row.dataset.bodyPlain = bodyPlainExcerpt || makeExcerpt(body.textContent || '');
     row.dataset.editedFlag = editedFlag ? '1' : '0';
+    if (payload?.can_edit !== undefined) row.dataset.canEdit = payload.can_edit ? '1' : '0';
 
     const metaCol = row.querySelector('.chat-meta-col');
     if (metaCol) {
@@ -1714,6 +1720,10 @@
         editedLabel.remove();
       }
     }
+
+    document.querySelectorAll(`.chat-row[data-reply-to-id="${messageId}"] .rq-text`).forEach((quoteText) => {
+      quoteText.textContent = bodyPlainExcerpt || row.dataset.bodyPlain || '';
+    });
   }
 
   function openImageViewer(imageUrls, startIndex = 0) {
