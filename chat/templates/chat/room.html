@@ -850,9 +850,28 @@
 }
 
 .chat-body-layout {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+.chat-bottom-jump-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 86px;
+  z-index: 1400;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 999px;
+  padding: 8px 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.chat-bottom-jump-btn:active {
+  transform: translateY(1px);
 }
 
 .chat-composer {
@@ -1021,6 +1040,11 @@
 
   .chat-nav-link-top .chat-nav-label {
     display: inline;
+  }
+
+  .chat-bottom-jump-btn {
+    right: 8px;
+    bottom: calc(78px + env(safe-area-inset-bottom));
   }
 }
 
@@ -1205,6 +1229,7 @@
     {% endfor %}
     <div id="typing-indicator" class="chat-typing-indicator is-hidden"></div>
   </div>
+  <button type="button" id="chat-bottom-jump-btn" class="chat-bottom-jump-btn d-none" aria-label="最新へ" title="最新へ">↓ 最新へ</button>
 
   <div class="chat-composer">
   <div id="reply-preview" class="reply-preview d-none">
@@ -1416,6 +1441,7 @@
   const editTargetInput = document.getElementById('edit-target-id');
   const replyCancelBtn = document.getElementById('reply-cancel');
   const typingIndicator = document.getElementById('typing-indicator');
+  const bottomJumpBtn = document.getElementById('chat-bottom-jump-btn');
   const searchInput = document.getElementById('chat-search-input');
   const searchToggleBtn = document.getElementById('chat-search-toggle');
   const searchRow = document.getElementById('chat-search-row');
@@ -1525,6 +1551,7 @@
   bodyInput?.addEventListener('keydown', handleMentionKeydown);
 
   socket.on('chat_message', (msg) => {
+    const wasNearBottom = isNearBottom(msgBox);
     const messageId = Number(msg?.id || 0);
     const threadRootId = Number(msg?.thread_root_id || 0);
     const isThreadReply = threadRootId > 0;
@@ -1542,8 +1569,12 @@
       }
       if (composerFocused) {
         scrollForComposerFocus();
+        hideJumpBtn();
+      } else if (wasNearBottom) {
+        scrollToBottom();
+        hideJumpBtn();
       } else {
-        keepBottomIfNeeded();
+        showJumpBtn();
       }
       sendSeenForMessageId(messageId);
     }
@@ -1826,7 +1857,16 @@
   msgBox.addEventListener('scroll', () => {
     closeContextMenu();
     if (msgBox.scrollTop <= 80) loadOlderMessages();
+    if (isNearBottom(msgBox)) {
+      hideJumpBtn();
+    } else {
+      showJumpBtn();
+    }
   }, { passive: true });
+  bottomJumpBtn?.addEventListener('click', () => {
+    scrollToBottom();
+    hideJumpBtn();
+  });
   window.addEventListener('scroll', () => {
     closeContextMenu();
   }, { passive: true });
@@ -1871,6 +1911,14 @@
   function scrollToBottom() {
     if (!msgBox) return;
     msgBox.scrollTop = msgBox.scrollHeight;
+  }
+
+  function showJumpBtn() {
+    bottomJumpBtn?.classList.remove('d-none');
+  }
+
+  function hideJumpBtn() {
+    bottomJumpBtn?.classList.add('d-none');
   }
 
   function scrollToReplyTarget() {
@@ -2055,7 +2103,6 @@
       room_id: roomId,
       body: bodyInput.value,
       reply_to_message_id: state.replyToId,
-      thread_root_id: state.threadRootId || null,
     });
     bodyInput.value = '';
     updateAutoGrow();
@@ -2791,7 +2838,11 @@
     const label = document.createElement('span');
     label.textContent = dateLabel;
     divider.appendChild(label);
-    msgBox.appendChild(divider);
+    if (typingIndicator && typingIndicator.parentElement === msgBox) {
+      msgBox.insertBefore(divider, typingIndicator);
+    } else {
+      msgBox.appendChild(divider);
+    }
   }
 
   function setReplyState(messageId, senderName, plainText, bubbleEl) {
