@@ -96,6 +96,10 @@
   </style>
 </head>
 <body class="container py-4">
+{% if show_extlogin_nav %}
+  {% include "_extlogin_nav.html" %}
+{% endif %}
+
 
 {% set ns = namespace(has_requested=false) %}
 {% if event_process_members %}

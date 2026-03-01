@@ -1203,6 +1203,8 @@ def album_home(album_id):
         return redirect(url_for('album.album_access', album_id=album_id))
 
     ext_user_nickname = _get_ext_user_nickname()
+    album_meta = _fetch_album_meta(album_id)
+    show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
 
     # ★追加：加工ロック一覧を取得
     processing_list = []
@@ -1267,6 +1269,7 @@ def album_home(album_id):
         processing_list=processing_list,   # ★追加
         ext_user_nickname=ext_user_nickname,
         completed_process_children=completed_process_children,
+        show_extlogin_nav=show_extlogin_nav,
     )
 
 @album_bp.route('/<album_id>/create_child', methods=['POST'])
@@ -1855,6 +1858,8 @@ def view_child(album_id, child_id):
         return '子アルバムが存在しません', 404
 
     mode = child_meta.get("mode", "normal")
+    album_meta = _fetch_album_meta(album_id)
+    show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
 
     # ★HDD保管中フラグ（テンプレ側で作成/追加UIをブロックするために渡す）
     try:
@@ -2004,7 +2009,8 @@ def view_child(album_id, child_id):
             is_admin=is_admin,
             is_owner=is_owner,
             # ★追加：HDD保管中フラグをテンプレへ渡す
-            is_readonly=is_readonly
+            is_readonly=is_readonly,
+            show_extlogin_nav=show_extlogin_nav,
         )
 
     else:
@@ -2096,6 +2102,7 @@ def view_child(album_id, child_id):
         event_process_members=event_process_members,
         current_ext_user_id=current_ext_user_id,
         current_user_process_status=current_user_process_status,
+        show_extlogin_nav=show_extlogin_nav,
     )
 
 # =============================================================================
