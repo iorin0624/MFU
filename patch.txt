@@ -1,15 +1,16 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe998b2d15 100644
+index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..a74736955bcde27cbedf9483cca2c7c739837f05 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1,31 +1,31 @@
+@@ -1,31 +1,32 @@
  {% extends "chat/base_chat.html" %}
  {% block content %}
  
  <style>
  .chat-messages {
 -  height: 420px;
-+  height: 560px;
++  height: min(70vh, 780px);
++  min-height: 520px;
    overflow: auto;
    overflow-x: hidden;
    background: #e8f3ff;
@@ -35,7 +36,38 @@ index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe
  }
  
  .chat-line {
-@@ -451,52 +451,50 @@
+@@ -425,77 +426,81 @@
+   display: flex;
+   align-items: center;
+   gap: 10px;
+ }
+ 
+ .chat-image-viewer-nav {
+   border: 0;
+   background: rgba(0, 0, 0, 0.45);
+   color: #fff;
+   width: 40px;
+   height: 40px;
+   border-radius: 999px;
+   font-size: 22px;
+   line-height: 1;
+ }
+ 
+ .chat-image-viewer img {
+   max-width: 95vw;
+   max-height: 85vh;
+   width: auto;
+   height: auto;
+   border-radius: 8px;
+ }
+ 
+ @media (max-width: 576px) {
++  .chat-messages {
++    height: 70dvh;
++    min-height: 60dvh;
++  }
++
+   .chat-avatar {
      width: 28px;
      height: 28px;
    }
@@ -62,7 +94,7 @@ index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe
       data-default-avatar="{{ default_avatar_url }}">
    <h3>{{ event.title }} / Chat</h3>
 -  <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
--
+ 
    <div id="messages" class="chat-messages border rounded p-3 mb-3">
      {% set ns = namespace(last_date=None) %}
      {% for m in messages %}
@@ -87,9 +119,7 @@ index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe
             data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
          <div class="chat-line">
            {% if not m.is_me %}
-             <img class="chat-avatar"
-@@ -583,81 +581,78 @@
-   <div id="reply-preview" class="reply-preview d-none">
+@@ -584,51 +589,50 @@
      <div class="reply-meta">
        <strong id="reply-sender"></strong>
        <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
@@ -114,18 +144,16 @@ index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe
      </div>
    </div>
  
-+  {% if can_broadcast %}
    <div class="mt-3 d-flex gap-2 align-items-center">
 -    <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
--    {% if can_broadcast %}
+     {% if can_broadcast %}
      <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
        <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
        <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
      </form>
--    {% endif %}
+     {% endif %}
    </div>
-+  {% endif %}
  </div>
  
  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
@@ -136,43 +164,14 @@ index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe
  
    const eventId = Number(root.dataset.eventId);
    const csrfToken = root.dataset.csrf;
--  const vapidKey = root.dataset.vapid;
+   const vapidKey = root.dataset.vapid;
    const meId = root.dataset.me || '';
    const myDisplayName = root.dataset.displayName || '';
    const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
    const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
    const maxUploadImages = 6;
  
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
--  const pushBtn = document.getElementById('enable-push');
-   const imageInput = document.getElementById('chat-image-file');
-   const imageBtn = document.getElementById('chat-image-btn');
-   const sendBtn = document.getElementById('chat-send-btn');
-   const replyPreview = document.getElementById('reply-preview');
-   const replySender = document.getElementById('reply-sender');
-   const replyText = document.getElementById('reply-text');
-   const replyToInput = document.getElementById('reply-to-id');
-   const replyCancelBtn = document.getElementById('reply-cancel');
-   const imageViewer = document.getElementById('chatImageViewer');
-   const imageViewerImg = document.getElementById('chatImageViewerImg');
-   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
-   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
-   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
- 
-   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     year: 'numeric',
-     month: 'numeric',
-     day: 'numeric',
-     weekday: 'short',
-   });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-@@ -823,141 +818,50 @@
+@@ -823,51 +827,53 @@
          throw new Error(data.error || '画像送信に失敗しました');
        }
        bodyInput.value = '';
@@ -199,158 +198,31 @@ index 80972ff2e9bac7f91cdfd3dd5faa80a8f781e549..e0f4f069a449fbc7f032ff25ec7dafbe
    });
  
 -  initPushUi();
--
--  pushBtn?.addEventListener('click', async () => {
--    const pushState = await getPushState();
--    if (!pushState.supported) {
--      alert('この端末はPush通知に非対応です');
--      return;
--    }
--
--    if (pushState.subscription) {
--      await disablePush(pushState.registration, pushState.subscription);
--      return;
--    }
--
--    await enablePush(pushState.registration);
--  });
--
--  async function initPushUi() {
--    const pushState = await getPushState();
--    if (!pushState.supported) {
--      if (pushBtn) {
--        pushBtn.disabled = true;
--        pushBtn.textContent = 'Push通知は非対応です';
--      }
--      return;
--    }
--    updatePushButton(Boolean(pushState.subscription));
--  }
--
--  function updatePushButton(enabled) {
--    if (!pushBtn) return;
--    pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
--    pushBtn.classList.toggle('btn-outline-danger', enabled);
--    pushBtn.classList.toggle('btn-outline-secondary', !enabled);
--  }
--
--  async function getPushState() {
--    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
--      return { supported: false, registration: null, subscription: null };
--    }
--    const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
--    const subscription = await registration.pushManager.getSubscription();
--    return { supported: true, registration, subscription };
--  }
--
--  async function enablePush(registration) {
--    if (!vapidKey) {
--      alert('VAPID公開鍵が未設定のため通知を有効化できません');
--      return;
--    }
--    const permission = await Notification.requestPermission();
--    if (permission !== 'granted') {
--      alert('通知の許可が必要です');
--      return;
--    }
--
--    const subscription = await registration.pushManager.subscribe({
--      userVisibleOnly: true,
--      applicationServerKey: urlBase64ToUint8Array(vapidKey),
--    });
--
--    const res = await fetch('/chat/api/push/subscribe', {
--      method: 'POST',
--      headers: { 'Content-Type': 'application/json' },
--      body: JSON.stringify({
--        csrf_token: csrfToken,
--        sw_scope: new URL(registration.scope).pathname || '/',
--        ...subscription.toJSON(),
--      }),
--    });
--    if (!res.ok) {
--      alert('購読登録に失敗しました');
--      return;
--    }
--    updatePushButton(true);
--  }
--
--  async function disablePush(registration, subscription) {
--    await subscription.unsubscribe();
--    const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
--    if (endpoint) {
--      await fetch('/chat/api/push/unsubscribe', {
--        method: 'POST',
--        headers: { 'Content-Type': 'application/json' },
--        body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
--      });
--    }
--    const nextSubscription = await registration.pushManager.getSubscription();
--    updatePushButton(Boolean(nextSubscription));
--  }
--
-   function setSendingState(isSending) {
-     if (sendBtn) sendBtn.disabled = isSending;
-     if (imageBtn) imageBtn.disabled = isSending;
-   }
++  if (pushBtn) {
++    initPushUi();
++  }
  
-   function renderMessage(msg) {
-     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
-     const dateLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_date_label || '')
-       : formatDateLabel(createdAt);
-     const timeLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_time_hm || '')
-       : formatTimeLabel(createdAt);
+   pushBtn?.addEventListener('click', async () => {
+     const pushState = await getPushState();
+     if (!pushState.supported) {
+       alert('この端末はPush通知に非対応です');
+       return;
+     }
  
-     appendDateDividerIfNeeded(dateLabel);
+     if (pushState.subscription) {
+       await disablePush(pushState.registration, pushState.subscription);
+       return;
+     }
  
-     const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
-       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+     await enablePush(pushState.registration);
+   });
  
-     const row = document.createElement('div');
-     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
-     row.id = `msg-${msg.id}`;
-     row.dataset.messageId = msg.id;
-     row.dataset.senderName = msg.sender_display_name || 'Unknown';
-     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-@@ -1451,39 +1355,29 @@
-     if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
-     list.classList.toggle('d-none');
-   }
- 
-   function sendSeenForLatestMessage() {
-     const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
-     const lastRow = rows.length ? rows[rows.length - 1] : null;
-     if (!lastRow) return;
-     sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
-   }
- 
-   function sendSeenForMessageId(messageId) {
-     if (!Number.isFinite(messageId) || messageId <= 0) return;
-     socket.emit('chat_seen', { event_id: eventId, last_seen_message_id: messageId });
-   }
- 
-   function escapeHtml(value) {
-     return String(value || '')
-       .replace(/&/g, '&amp;')
-       .replace(/</g, '&lt;')
-       .replace(/>/g, '&gt;')
-       .replace(/"/g, '&quot;')
-       .replace(/'/g, '&#39;');
-   }
- 
--  function urlBase64ToUint8Array(base64String) {
--    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
--    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
--    const rawData = window.atob(base64);
--    return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
--  }
- 
--  function scrollToLatestMessage() {
--    if (!msgBox) return;
--    msgBox.scrollTop = msgBox.scrollHeight;
--  }
- })();
- </script>
- {% endblock %}
+   async function initPushUi() {
+     const pushState = await getPushState();
+     if (!pushState.supported) {
+       if (pushBtn) {
+         pushBtn.disabled = true;
+         pushBtn.textContent = 'Push通知は非対応です';
+       }
+       return;
+     }

@@ -3,7 +3,8 @@
 
 <style>
 .chat-messages {
-  height: 420px;
+  height: min(70vh, 780px);
+  min-height: 520px;
   overflow: auto;
   overflow-x: hidden;
   background: #e8f3ff;
@@ -447,6 +448,11 @@
 }
 
 @media (max-width: 576px) {
+  .chat-messages {
+    height: 70dvh;
+    min-height: 60dvh;
+  }
+
   .chat-avatar {
     width: 28px;
     height: 28px;
@@ -473,7 +479,6 @@
      data-display-name="{{ actor.display_name }}"
      data-default-avatar="{{ default_avatar_url }}">
   <h3>{{ event.title }} / Chat</h3>
-  <div class="alert alert-warning small">iPhone/iPadは「共有 → ホーム画面に追加」後に通知を許可してください。</div>
 
   <div id="messages" class="chat-messages border rounded p-3 mb-3">
     {% set ns = namespace(last_date=None) %}
@@ -606,7 +611,6 @@
   </div>
 
   <div class="mt-3 d-flex gap-2 align-items-center">
-    <button class="btn btn-outline-secondary btn-sm" id="enable-push" type="button">Push通知を有効化</button>
     {% if can_broadcast %}
     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -845,7 +849,9 @@
     setSendingState(false);
   });
 
-  initPushUi();
+  if (pushBtn) {
+    initPushUi();
+  }
 
   pushBtn?.addEventListener('click', async () => {
     const pushState = await getPushState();
