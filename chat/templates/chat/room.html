@@ -27,8 +27,45 @@
 }
 
 .chat-row {
+  position: relative;
   margin-bottom: 10px;
   touch-action: pan-y;
+}
+
+
+/* ===== Swipe-to-reply animation ===== */
+.chat-row .chat-bubble {
+  will-change: transform;
+}
+
+.chat-swipe-underlay {
+  position: absolute;
+  right: 18px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.chat-row.swiping .chat-bubble {
+  transition: none;
+}
+
+.chat-row.swiping .chat-swipe-underlay {
+  opacity: 1;
+}
+
+.chat-row.snapback .chat-bubble {
+  transition: transform 160ms ease;
+}
+
+.chat-row.commit .chat-bubble {
+  transition: transform 120ms ease;
 }
 
 .chat-line {
@@ -105,13 +142,21 @@
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
-  -webkit-user-select: text;
-  user-select: text;
 }
 
-.chat-body * {
-  -webkit-user-select: text;
-  user-select: text;
+/* 通常画面：本文は選択禁止（OSのコピー/選択UIを出さない） */
+.chat-bubble .chat-body,
+.chat-bubble .chat-body * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* リンクはタップできる */
+.chat-bubble .chat-body a {
+  -webkit-user-select: auto;
+  user-select: auto;
+  -webkit-touch-callout: default;
 }
 
 .chat-body img {
@@ -760,13 +805,6 @@
   background: #eef4ff;
 }
 
-/* 通常のバブルはOSの長押しメニューを出さない（LINE式） */
-.chat-bubble {
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
 /* 全文モーダル内は選択コピーを許可 */
 .chat-fulltext-modal .chat-fulltext-body {
   -webkit-touch-callout: default;
@@ -845,6 +883,7 @@
            data-sender-name="{{ m.sender_display_name }}"
            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
            data-body-plain="{{ m.body_plain_excerpt }}"
+           data-body-plain-full="{{ m.body_plain or m.body_plain_excerpt }}"
            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
            data-thread-root-id="{{ m.thread_root_id or '' }}"
            data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
@@ -859,6 +898,7 @@
            data-edited-flag="{{ m.edited_flag or 0 }}"
            data-my-reaction="{{ m.my_reaction or '' }}"
            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
+        <div class="chat-swipe-underlay" aria-hidden="true">↩︎</div>
         <div class="chat-line">
           {% if not m.is_me %}
             <img class="chat-avatar"
@@ -1116,6 +1156,9 @@
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const maxUploadImages = 6;
   const maxUploadImageBytes = 20 * 1024 * 1024;
+  const SWIPE_MAX = 92;
+  const SWIPE_COMMIT = 56;
+  const SWIPE_LOCK = 10;
 
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
@@ -1196,11 +1239,17 @@
     longPressTimer: null,
     longPressTriggered: false,
     longPressRow: null,
-    touchStartX: 0,
-    touchStartY: 0,
     touchPointerId: null,
-    swipeArmed: false,
-    swipeHandled: false,
+    swipe: {
+      row: null,
+      bubble: null,
+      startX: 0,
+      startY: 0,
+      dx: 0,
+      dy: 0,
+      active: false,
+      locked: false,
+    },
     ctxRow: null,
     ctxBodyPlain: '',
     editTargetMessageId: null,
@@ -1423,18 +1472,16 @@
   });
 
   msgBox.addEventListener('contextmenu', (e) => {
-    if (!isMobile) return;
-    if (e.target.closest('.chat-fulltext-modal')) return;
-    if (e.target.closest('.chat-bubble')) {
-      e.preventDefault();
-    }
-  });
-
-  msgBox.addEventListener('contextmenu', (e) => {
     const row = e.target.closest('.chat-row[data-message-id]');
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+
+    if (e.target.closest('#chat-fulltext-modal')) return;
+
     e.preventDefault();
-    openContextMenu(row);
+
+    if (!isMobile) {
+      openContextMenu(row);
+    }
   });
 
   threadModal?.addEventListener('click', (e) => {
@@ -1448,58 +1495,133 @@
   });
 
   msgBox.addEventListener('pointerdown', (e) => {
+    if (!isMobile) return;
     if (e.pointerType === 'mouse') return;
+
     const row = e.target.closest('.chat-row[data-message-id]');
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
     if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
+
+    const bubble = row.querySelector('.chat-bubble');
+    if (!bubble) return;
+
+    row.classList.remove('swiping', 'snapback', 'commit');
+    bubble.style.transform = 'translateX(0px)';
+
     clearLongPressTimer();
     state.longPressTriggered = false;
     state.longPressRow = row;
-    state.touchStartX = e.clientX;
-    state.touchStartY = e.clientY;
     state.touchPointerId = e.pointerId;
-    state.swipeArmed = true;
-    state.swipeHandled = false;
+
+    state.swipe.row = row;
+    state.swipe.bubble = bubble;
+    state.swipe.startX = e.clientX;
+    state.swipe.startY = e.clientY;
+    state.swipe.dx = 0;
+    state.swipe.dy = 0;
+    state.swipe.active = true;
+    state.swipe.locked = false;
+
     state.longPressTimer = window.setTimeout(() => {
-      if (state.swipeHandled) return;
+      if (state.swipe.locked) return;
       state.longPressTriggered = true;
       openContextMenu(row);
     }, 500);
   });
+
   msgBox.addEventListener('pointermove', (e) => {
+    if (!isMobile) return;
     if (e.pointerType === 'mouse') return;
-    if (!state.longPressTimer || !state.longPressRow) return;
+    if (!state.swipe.active || !state.swipe.row || !state.swipe.bubble) return;
     if (state.touchPointerId !== e.pointerId) return;
 
-    const dx = e.clientX - state.touchStartX;
-    const dy = e.clientY - state.touchStartY;
+    const dx = e.clientX - state.swipe.startX;
+    const dy = e.clientY - state.swipe.startY;
+    state.swipe.dx = dx;
+    state.swipe.dy = dy;
 
-    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
-      clearLongPressTimer();
-    }
-  });
-  msgBox.addEventListener('pointerup', (e) => {
-    if (isMobile) {
-      const row = e.target.closest('.chat-row[data-message-id]');
-      if (row && Number(row.dataset.deletedFlag || 0) !== 1 && !e.target.closest('a, button, input, textarea, .chat-reaction-panel')) {
-        const dx = e.clientX - (state.touchStartX || 0);
-        const dy = e.clientY - (state.touchStartY || 0);
-        const isLeftSwipe = dx < -40 && Math.abs(dx) > Math.abs(dy) * 1.2;
-        if (isLeftSwipe) {
-          const bubble = row.querySelector('.chat-bubble');
-          if (bubble) {
-            const messageId = row.dataset.messageId;
-            const senderName = row.dataset.senderName || 'Unknown';
-            const bodyPlain = row.dataset.bodyPlain || '';
-            setReplyState(messageId, senderName, bodyPlain, bubble);
-            state.swipeHandled = true;
-          }
-        }
+    if (!state.swipe.locked) {
+      if (Math.abs(dx) > SWIPE_LOCK && Math.abs(dx) > Math.abs(dy) * 1.2) {
+        state.swipe.locked = true;
+        clearLongPressTimer();
+      } else if (Math.abs(dy) > SWIPE_LOCK && Math.abs(dy) > Math.abs(dx) * 1.2) {
+        state.swipe.active = false;
+        clearLongPressTimer();
+        return;
+      } else {
+        return;
       }
     }
-    clearLongPressTimer();
+
+    if (dx >= 0) {
+      setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
+      return;
+    }
+
+    const x = clamp(dx, -SWIPE_MAX, 0);
+    setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
   });
-  msgBox.addEventListener('pointercancel', clearLongPressTimer);
+
+  msgBox.addEventListener('pointerup', () => {
+    if (!isMobile) return;
+
+    const row = state.swipe.row;
+    const bubble = state.swipe.bubble;
+    const dx = state.swipe.dx;
+    const locked = state.swipe.locked;
+
+    state.swipe.active = false;
+    state.swipe.locked = false;
+    state.swipe.row = null;
+    state.swipe.bubble = null;
+
+    clearLongPressTimer();
+
+    if (!row || !bubble || !locked) return;
+
+    const moved = Math.abs(dx);
+    if (dx < 0 && moved >= SWIPE_COMMIT) {
+      row.classList.add('commit');
+      bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
+
+      if (navigator?.vibrate) navigator.vibrate(10);
+
+      window.setTimeout(() => {
+        const messageId = row.dataset.messageId;
+        const senderName = row.dataset.senderName || 'Unknown';
+        const bodyPlain = row.dataset.bodyPlain || '';
+        setReplyState(messageId, senderName, bodyPlain, bubble);
+        resetSwipe(row, bubble);
+      }, 90);
+      return;
+    }
+
+    resetSwipe(row, bubble);
+  });
+
+  msgBox.addEventListener('pointercancel', () => {
+    if (!isMobile) return;
+    const row = state.swipe.row;
+    const bubble = state.swipe.bubble;
+    state.swipe.active = false;
+    state.swipe.locked = false;
+    state.swipe.row = null;
+    state.swipe.bubble = null;
+    clearLongPressTimer();
+    if (row && bubble) resetSwipe(row, bubble);
+  });
+
+  msgBox.addEventListener('touchcancel', () => {
+    if (!isMobile) return;
+    const row = state.swipe.row;
+    const bubble = state.swipe.bubble;
+    state.swipe.active = false;
+    state.swipe.locked = false;
+    state.swipe.row = null;
+    state.swipe.bubble = null;
+    clearLongPressTimer();
+    if (row && bubble) resetSwipe(row, bubble);
+  });
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
   threadModalCloseBtn?.addEventListener('click', closeThreadModal);
@@ -1800,6 +1922,7 @@
     row.dataset.senderName = msg.sender_display_name || 'Unknown';
     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
+    row.dataset.bodyPlainFull = msg.body_plain || msg.body_plain_excerpt || msg.body || '';
     row.dataset.replyToId = msg.reply_to_message_id || '';
     row.dataset.threadRootId = msg.thread_root_id || '';
     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
@@ -1815,6 +1938,12 @@
     row.dataset.myReaction = msg.my_reaction || '';
     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
+
+    const swipeUnderlay = document.createElement('div');
+    swipeUnderlay.className = 'chat-swipe-underlay';
+    swipeUnderlay.setAttribute('aria-hidden', 'true');
+    swipeUnderlay.textContent = '↩︎';
+    row.appendChild(swipeUnderlay);
 
     const line = document.createElement('div');
     line.className = 'chat-line';
@@ -2037,6 +2166,7 @@
     row.dataset.deletedFlag = '1';
     row.dataset.deletedByActorType = deletedByActorType || '';
     row.dataset.bodyPlain = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
+    row.dataset.bodyPlainFull = row.dataset.bodyPlain;
 
     row.querySelectorAll('.chat-image-link, .chat-image-grid').forEach((el) => el.remove());
 
@@ -2086,6 +2216,7 @@
     body.className = 'chat-body';
     body.innerHTML = bodyHtml;
     row.dataset.bodyPlain = bodyPlainExcerpt || makeExcerpt(body.textContent || '');
+    row.dataset.bodyPlainFull = payload?.body_plain || row.dataset.bodyPlain;
     row.dataset.editedFlag = editedFlag ? '1' : '0';
     if (payload?.can_edit !== undefined) row.dataset.canEdit = payload.can_edit ? '1' : '0';
 
@@ -2725,6 +2856,22 @@
     if (searchPanel) searchPanel.innerHTML = '';
   }
 
+  function clamp(n, min, max) {
+    return Math.max(min, Math.min(max, n));
+  }
+
+  function setSwipeTransform(row, bubble, x) {
+    bubble.style.transform = `translateX(${x}px)`;
+    row.classList.add('swiping');
+  }
+
+  function resetSwipe(row, bubble) {
+    row.classList.remove('swiping', 'commit');
+    row.classList.add('snapback');
+    bubble.style.transform = 'translateX(0px)';
+    window.setTimeout(() => row.classList.remove('snapback'), 180);
+  }
+
   function clearLongPressTimer() {
     if (state.longPressTimer) {
       window.clearTimeout(state.longPressTimer);
@@ -2732,7 +2879,6 @@
     }
     state.longPressRow = null;
     state.touchPointerId = null;
-    state.swipeArmed = false;
   }
 
   function openContextMenu(row) {
@@ -2782,13 +2928,12 @@
     const bodyEl = document.getElementById('chat-fulltext-body');
     if (!modalEl || !metaEl || !bodyEl || !row) return;
 
-    const sender = row.dataset.senderName || 'Unknown';
-    const createdAtIso = row.dataset.createdAtIso || '';
-    const createdAt = createdAtIso ? formatDateTimeLabel(createdAtIso) : '';
-    const bodyPlain = row.dataset.bodyPlain || '';
+    const sender = row.dataset.senderName || '';
+    const createdIso = row.dataset.createdAtIso || '';
+    const full = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
 
-    metaEl.textContent = `${sender}${createdAt ? ` / ${createdAt}` : ''}`;
-    bodyEl.textContent = bodyPlain;
+    metaEl.textContent = `${sender}${createdIso ? ` / ${createdIso}` : ''}`;
+    bodyEl.textContent = full;
 
     const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
     bsModal.show();
