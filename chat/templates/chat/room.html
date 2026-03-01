@@ -537,6 +537,21 @@
   line-height: 1;
 }
 
+.chat-image-viewer-share {
+  position: absolute;
+  top: 10px;
+  right: 62px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  min-width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  padding: 0 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+
 .chat-image-viewer-content {
   display: flex;
   align-items: center;
@@ -759,6 +774,7 @@
   </form>
 
   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
+    <button type="button" id="chatImageViewerShare" class="chat-image-viewer-share" aria-label="共有" title="共有">共有</button>
     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
     <div class="chat-image-viewer-content">
       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
@@ -871,6 +887,7 @@
   const replyCancelBtn = document.getElementById('reply-cancel');
   const imageViewer = document.getElementById('chatImageViewer');
   const imageViewerImg = document.getElementById('chatImageViewerImg');
+  const imageViewerShareBtn = document.getElementById('chatImageViewerShare');
   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
@@ -1100,6 +1117,7 @@
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
+  imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
   imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
   imageViewer?.addEventListener('click', (e) => {
@@ -1879,6 +1897,84 @@
     temp.select();
     document.execCommand('copy');
     document.body.removeChild(temp);
+  }
+
+  function isShareCancelled(error) {
+    const name = String(error?.name || '');
+    return name === 'AbortError' || name === 'NotAllowedError';
+  }
+
+  function extensionFromMimeType(mimeType) {
+    const map = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/gif': '.gif',
+      'image/webp': '.webp',
+      'image/heic': '.heic',
+      'image/heif': '.heif',
+      'image/bmp': '.bmp',
+      'image/svg+xml': '.svg',
+    };
+    return map[String(mimeType || '').toLowerCase()] || '.jpg';
+  }
+
+  async function tryShareAsFile(imageUrl, title, text) {
+    if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false;
+    try {
+      const res = await fetch(imageUrl, { credentials: 'include' });
+      if (!res.ok) return false;
+      const blob = await res.blob();
+      const type = blob.type || 'image/jpeg';
+      const file = new File([blob], `mfu-image-${state.viewerIndex + 1}${extensionFromMimeType(type)}`, { type });
+      if (!navigator.canShare({ files: [file] })) return false;
+      await navigator.share({ files: [file], title, text });
+      return true;
+    } catch (error) {
+      if (isShareCancelled(error)) return null;
+      return false;
+    }
+  }
+
+  async function tryShareAsUrl(imageUrl, title, text) {
+    if (typeof navigator.share !== 'function') return false;
+    try {
+      await navigator.share({ url: imageUrl, title, text });
+      return true;
+    } catch (error) {
+      if (isShareCancelled(error)) return null;
+      return false;
+    }
+  }
+
+  async function fallbackShareByCopy(imageUrl) {
+    try {
+      await copyTextWithFallback(imageUrl);
+      alert('画像URLをコピーしました');
+    } catch (_err) {
+      window.prompt('このURLをコピーして共有してください', imageUrl);
+    }
+  }
+
+  async function shareCurrentViewerImage() {
+    const imageUrl = state.viewerImages[state.viewerIndex] || '';
+    if (!imageUrl) {
+      alert('共有する画像がありません');
+      return;
+    }
+
+    const title = `画像 ${state.viewerIndex + 1}`;
+    const text = 'チャット画像を共有';
+
+    const fileShared = await tryShareAsFile(imageUrl, title, text);
+    if (fileShared === true || fileShared === null) return;
+
+    const urlShared = await tryShareAsUrl(imageUrl, title, text);
+    if (urlShared === true || urlShared === null) return;
+
+    if (typeof navigator.share === 'function') {
+      alert('共有に失敗しました');
+    }
+    await fallbackShareByCopy(imageUrl);
   }
 
   async function handleContextMenuClick(e) {
