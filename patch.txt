@@ -1,355 +1,336 @@
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index e6826b6248db05f4eb716a99f99d516397366956..9104115b2b96e33743174de9a09bd6ed36d00d21 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -515,50 +515,65 @@
-   display: none;
-   align-items: center;
-   justify-content: center;
-   background: rgba(0, 0, 0, 0.78);
-   padding: 20px;
- }
- 
- .chat-image-viewer.is-open {
-   display: flex;
- }
- 
- .chat-image-viewer-close {
-   position: absolute;
-   top: 10px;
-   right: 14px;
-   border: 0;
-   background: rgba(0, 0, 0, 0.45);
-   color: #fff;
-   width: 40px;
-   height: 40px;
-   border-radius: 999px;
-   font-size: 28px;
-   line-height: 1;
- }
- 
-+.chat-image-viewer-share {
-+  position: absolute;
-+  top: 10px;
-+  right: 62px;
-+  border: 0;
-+  background: rgba(0, 0, 0, 0.45);
-+  color: #fff;
-+  min-width: 40px;
-+  height: 40px;
-+  border-radius: 999px;
-+  padding: 0 10px;
-+  font-size: 14px;
-+  line-height: 1;
-+}
-+
- .chat-image-viewer-content {
-   display: flex;
-   align-items: center;
-   gap: 10px;
- }
- 
- .chat-image-viewer-nav {
-   border: 0;
-   background: rgba(0, 0, 0, 0.45);
-   color: #fff;
-   width: 40px;
-   height: 40px;
-   border-radius: 999px;
-   font-size: 22px;
-   line-height: 1;
- }
- 
- .chat-image-viewer img {
-   max-width: 95vw;
-   max-height: 85vh;
-   width: auto;
-   height: auto;
-   border-radius: 8px;
- }
- 
-@@ -737,50 +752,51 @@
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
-         </div>
-       </div>
-     {% endfor %}
-   </div>
- 
-   <div id="reply-preview" class="reply-preview d-none">
-     <div class="reply-meta">
-       <strong id="reply-sender"></strong>
-       <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
-     </div>
-     <div id="reply-text" class="reply-text"></div>
-   </div>
- 
-   <form id="chat-form" class="d-flex gap-2 align-items-center">
-     <input type="hidden" id="reply-to-id" value="">
-     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
-     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
-     <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
-     <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
-   </form>
- 
-   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
-+    <button type="button" id="chatImageViewerShare" class="chat-image-viewer-share" aria-label="共有" title="共有">共有</button>
-     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
-     <div class="chat-image-viewer-content">
-       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
-       <img id="chatImageViewerImg" src="" alt="拡大画像">
-       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
-     </div>
-   </div>
- 
-   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
-     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
-     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
-       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
-       <hr class="chat-ctx-sep">
-       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
-       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
-       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
-       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
-       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
-     </div>
-   </div>
- 
- 
- 
-   <div id="roomCreateModal" class="room-member-modal" aria-hidden="true">
-     <div class="backdrop" data-close="1"></div>
-@@ -849,50 +865,51 @@
-   const isAdmin = root.dataset.isAdmin === '1';
-   const isMobile = window.matchMedia('(hover: none)').matches;
-   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
-   const maxUploadImages = 6;
- 
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
-   const maxInputLines = 6;
-   const pushBtn = document.getElementById('enable-push');
-   const roomSwitch = document.getElementById('chat-room-switch');
-   const roomCreateBtn = document.getElementById('chat-room-create-btn');
-   const roomMembersBtn = document.getElementById('chat-room-members-btn');
-   const roomCreateModal = document.getElementById('roomCreateModal');
-   const roomMembersModal = document.getElementById('roomMembersModal');
-   const imageInput = document.getElementById('chat-image-file');
-   const imageBtn = document.getElementById('chat-image-btn');
-   const sendBtn = document.getElementById('chat-send-btn');
-   const replyPreview = document.getElementById('reply-preview');
-   const replySender = document.getElementById('reply-sender');
-   const replyText = document.getElementById('reply-text');
-   const replyToInput = document.getElementById('reply-to-id');
-   const replyCancelBtn = document.getElementById('reply-cancel');
-   const imageViewer = document.getElementById('chatImageViewer');
-   const imageViewerImg = document.getElementById('chatImageViewerImg');
-+  const imageViewerShareBtn = document.getElementById('chatImageViewerShare');
-   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
-   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
-   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
-   const ctxMenu = document.getElementById('chatCtxMenu');
-   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
-   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
-   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
- 
-   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     year: 'numeric',
-     month: 'numeric',
-     day: 'numeric',
-     weekday: 'short',
+diff --git a/albums/templates/view_child.html b/albums/templates/view_child.html
+index 2697cdb42521414ba8116b2690200ccec34084ad..8c4aa7739b6f433996f5e7bc942fb8340fafc307 100644
+--- a/albums/templates/view_child.html
++++ b/albums/templates/view_child.html
+@@ -183,167 +183,196 @@
+     // 加工中ロックがある場合はクリック無効化（拡大禁止）
+     {% if lock and not lock_expired %}
+       document.querySelectorAll('.gallery a.preview').forEach(el => {
+         el.addEventListener('click', e => e.preventDefault(), true);
+         el.style.pointerEvents = 'none';
+         el.style.opacity = '0.6';
+         el.style.cursor = 'not-allowed';
+         // キーボード操作も防ぐ
+         el.addEventListener('keydown', e => { e.preventDefault(); e.stopPropagation(); }, true);
+       });
+     {% endif %}
    });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-     hour12: false,
+ </script>
+ 
+ {% if files %}
+ <script>
+   /* ====== 選択 & ZIP ====== */
+   const $$ = (s, c=document) => Array.from(c.querySelectorAll(s));
+   const checks = $$('.file-check');
+   const countEl = document.getElementById('sel-count');
+   const btnAll  = document.getElementById('btn-all');
+   const btnNone = document.getElementById('btn-none');
+   const btnShare = document.getElementById('btn-share');
+   const btnZip  = document.getElementById('btn-zip');
+   const statusEl = document.getElementById('zip-status');
++  let lastOpenedImageUrl = '';
+ 
+   /* ラベル（✓）タップで確実にトグル＋UI更新 */
+   document.addEventListener('click', (e)=>{
+     const tb = e.target.closest('.tapbox');
+     if (!tb) return;
+     e.preventDefault(); e.stopPropagation();
+     const forId = tb.getAttribute('for');
+     const chk = document.getElementById(forId);
+     if (chk) {
+       chk.checked = !chk.checked;
+       chk.dispatchEvent(new Event('change', {bubbles:true}));
+     }
    });
  
-   const [myActorType, myActorId] = meId.includes(':')
-     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
-     : ['', ''];
-@@ -1078,50 +1095,51 @@
-     state.longPressTimer = window.setTimeout(() => {
-       state.longPressTriggered = true;
-       openContextMenu(row);
-     }, 500);
-   });
-   msgBox.addEventListener('touchstart', (e) => {
-     if (!state.longPressTimer || !state.longPressRow) return;
-     const row = e.target.closest('.chat-row[data-message-id]');
-     if (!row || row !== state.longPressRow) return;
-     if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
-     e.preventDefault();
-   }, { passive: false });
-   msgBox.addEventListener('touchmove', (e) => {
-     if (!state.longPressTimer || !state.longPressRow) return;
-     const row = e.target.closest('.chat-row[data-message-id]');
-     if (!row || row !== state.longPressRow) return;
-     if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
-     e.preventDefault();
-   }, { passive: false });
-   msgBox.addEventListener('pointerup', clearLongPressTimer);
-   msgBox.addEventListener('pointercancel', clearLongPressTimer);
-   msgBox.addEventListener('pointermove', clearLongPressTimer);
- 
-   replyCancelBtn?.addEventListener('click', clearReplyState);
-   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
-+  imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
-   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
-   imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
-   imageViewer?.addEventListener('click', (e) => {
-     if (e.target === imageViewer) closeImageViewer();
-   });
-   document.addEventListener('keydown', (e) => {
-     if (e.key === 'Escape') closeImageViewer();
-     if (e.key === 'Escape') closeContextMenu();
-     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
-     if (e.key === 'ArrowRight') moveViewerIndex(1);
-   });
-   msgBox.addEventListener('scroll', () => {
-     clearLongPressTimer();
-     closeContextMenu();
-   }, { passive: true });
-   window.addEventListener('scroll', () => {
-     clearLongPressTimer();
-     closeContextMenu();
-   }, { passive: true });
-   ctxMenu?.addEventListener('click', handleContextMenuClick);
-   document.addEventListener('pointerdown', (e) => {
-     if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
-     if (ctxPanel?.contains(e.target)) return;
-     closeContextMenu();
-   });
-@@ -1859,50 +1877,128 @@
-   function makeContextPreviewText(row, bodyPlain) {
-     if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
-     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
-     if (normalized) return normalized;
-     return '（画像）';
+   function currentSelectionPaths(){
+     return checks.filter(c=>c.checked).map(c=>c.dataset.path).filter(Boolean);
    }
- 
- 
-   async function copyTextWithFallback(text) {
-     if (!text) return;
-     if (navigator.clipboard?.writeText) {
-       await navigator.clipboard.writeText(text);
-       return;
-     }
-     const temp = document.createElement('textarea');
-     temp.value = text;
-     temp.setAttribute('readonly', 'readonly');
-     temp.style.position = 'fixed';
-     temp.style.left = '-9999px';
-     document.body.appendChild(temp);
-     temp.select();
-     document.execCommand('copy');
-     document.body.removeChild(temp);
++  function toAbsoluteUrl(urlLike){
++    if (!urlLike) return '';
++    try { return new URL(urlLike, location.href).href; }
++    catch(_){ return ''; }
++  }
+   function extractFilename(value, fallback='image.jpg'){
+     const raw = (value || '').split('/').pop() || '';
+     const clean = decodeURIComponent(raw).trim();
+     return clean || fallback;
    }
- 
-+  function isShareCancelled(error) {
-+    const name = String(error?.name || '');
-+    return name === 'AbortError' || name === 'NotAllowedError';
+   function safeFilename(nameHint, mimeType='image/jpeg'){
+     const fallbackExt = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi,'') || 'jpg';
+     const base = (nameHint || 'image').replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
+     const file = base || `image.${fallbackExt}`;
+     return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
+   }
++  function mimeTypeFromName(name=''){
++    const lower = `${name}`.toLowerCase();
++    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
++    if (lower.endsWith('.png')) return 'image/png';
++    if (lower.endsWith('.webp')) return 'image/webp';
++    return 'image/jpeg';
 +  }
-+
-+  function extensionFromMimeType(mimeType) {
-+    const map = {
-+      'image/jpeg': '.jpg',
-+      'image/png': '.png',
-+      'image/gif': '.gif',
-+      'image/webp': '.webp',
-+      'image/heic': '.heic',
-+      'image/heif': '.heif',
-+      'image/bmp': '.bmp',
-+      'image/svg+xml': '.svg',
-+    };
-+    return map[String(mimeType || '').toLowerCase()] || '.jpg';
+   function isShareCanceled(error){
+     const msg = `${error?.message || ''}`.toLowerCase();
+     return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
+   }
+   function resolveImageUrlByPath(path){
+     const chk = checks.find(c => c.dataset.path === path);
+     const href = chk?.closest('.item')?.querySelector('a.preview')?.getAttribute('href') || '';
+-    if (href) return new URL(href, location.href).href;
+-    return path ? new URL(path, location.origin + '/').href : '';
++    if (href) return toAbsoluteUrl(href);
++    return '';
 +  }
-+
-+  async function tryShareAsFile(imageUrl, title, text) {
-+    if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false;
-+    try {
-+      const res = await fetch(imageUrl, { credentials: 'include' });
-+      if (!res.ok) return false;
-+      const blob = await res.blob();
-+      const type = blob.type || 'image/jpeg';
-+      const file = new File([blob], `mfu-image-${state.viewerIndex + 1}${extensionFromMimeType(type)}`, { type });
-+      if (!navigator.canShare({ files: [file] })) return false;
-+      await navigator.share({ files: [file], title, text });
-+      return true;
-+    } catch (error) {
-+      if (isShareCancelled(error)) return null;
-+      return false;
-+    }
-+  }
-+
-+  async function tryShareAsUrl(imageUrl, title, text) {
-+    if (typeof navigator.share !== 'function') return false;
-+    try {
-+      await navigator.share({ url: imageUrl, title, text });
-+      return true;
-+    } catch (error) {
-+      if (isShareCancelled(error)) return null;
-+      return false;
-+    }
-+  }
-+
-+  async function fallbackShareByCopy(imageUrl) {
-+    try {
-+      await copyTextWithFallback(imageUrl);
-+      alert('画像URLをコピーしました');
-+    } catch (_err) {
-+      window.prompt('このURLをコピーして共有してください', imageUrl);
-+    }
-+  }
-+
-+  async function shareCurrentViewerImage() {
-+    const imageUrl = state.viewerImages[state.viewerIndex] || '';
-+    if (!imageUrl) {
-+      alert('共有する画像がありません');
-+      return;
-+    }
-+
-+    const title = `画像 ${state.viewerIndex + 1}`;
-+    const text = 'チャット画像を共有';
-+
-+    const fileShared = await tryShareAsFile(imageUrl, title, text);
-+    if (fileShared === true || fileShared === null) return;
-+
-+    const urlShared = await tryShareAsUrl(imageUrl, title, text);
-+    if (urlShared === true || urlShared === null) return;
-+
-+    if (typeof navigator.share === 'function') {
-+      alert('共有に失敗しました');
-+    }
-+    await fallbackShareByCopy(imageUrl);
-+  }
-+
-   async function handleContextMenuClick(e) {
-     if (!ctxMenu) return;
-     if (e.target.closest('[data-ctx-close="1"]')) {
-       closeContextMenu();
++  function resolveUrlFromOverlay(overlay){
++    const img = overlay?.querySelector('figure img, .full-image img, #baguetteBox-slider img, img');
++    const imgSrc = toAbsoluteUrl(img?.currentSrc || img?.src || '');
++    if (!imgSrc) return '';
++    const anchors = $$('.gallery a.preview');
++    const targetName = extractFilename(imgSrc).toLowerCase();
++    const matched = anchors.find((a)=>{
++      const hrefAbs = toAbsoluteUrl(a.getAttribute('href') || a.href || '');
++      const thumbAbs = toAbsoluteUrl(a.querySelector('img')?.currentSrc || a.querySelector('img')?.src || '');
++      return hrefAbs === imgSrc || thumbAbs === imgSrc || extractFilename(hrefAbs).toLowerCase() === targetName;
++    });
++    return toAbsoluteUrl(matched?.getAttribute('href') || matched?.href || '');
+   }
+   function suggestZipFallback(message){
+     const guide = `${message}\n\nこの端末は複数ファイル共有に未対応の可能性があります。ZIPダウンロードをご利用ください。`;
+     const canAutoZip = !!btnZip && !btnZip.disabled && !btnZip.classList.contains('btn-busy');
+     if (canAutoZip && confirm(`${guide}\n\n「OK」でZIPダウンロードを開始します。`)) {
+       btnZip.click();
        return;
      }
- 
-     const actionEl = e.target.closest('[data-ctx-action], .chat-reaction-emoji');
-     if (!actionEl) return;
- 
-     const row = state.ctxRow || document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
-     const messageId = Number(row?.dataset?.messageId || 0);
-     if (!row || !messageId) {
-       closeContextMenu();
+     alert(`${guide}\n\n下の「選択した写真をZIPダウンロード」ボタンをご利用ください。`);
+   }
+   async function shareByUrl(imageUrl, filenameHint='image.jpg'){
+-    if (!imageUrl) {
+-      alert('共有URLを取得できませんでした');
++    const absoluteImageUrl = toAbsoluteUrl(imageUrl);
++    if (!absoluteImageUrl) {
++      alert('共有する画像URLを取得できませんでした');
        return;
      }
- 
-     if (actionEl.classList.contains('chat-reaction-emoji')) {
-       const emoji = actionEl.dataset.emoji || '';
-       if (reactionEmojis.includes(emoji)) {
-         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+     try {
+       if (navigator.share && navigator.canShare) {
+         try {
+-          const response = await fetch(imageUrl, { credentials:'include', cache:'no-store' });
++          const response = await fetch(absoluteImageUrl, { credentials:'include', cache:'no-store' });
+           if (response.ok) {
+             const blob = await response.blob();
+-            const type = blob.type || 'image/jpeg';
+-            const file = new File([blob], safeFilename(filenameHint, type), { type });
++            const mimeType = blob.type || mimeTypeFromName(filenameHint || absoluteImageUrl);
++            const file = new File([blob], safeFilename(filenameHint, mimeType), { type: mimeType });
+             if (navigator.canShare({ files:[file] })) {
+-              await navigator.share({ files:[file], title:'MFU', text:'' });
++              await navigator.share({ files:[file], title:'MFU' });
+               return;
+             }
+           }
+         } catch(_) { }
        }
-       closeContextMenu();
+       if (navigator.share) {
+-        await navigator.share({ url:imageUrl, title:'MFU', text:'' });
++        await navigator.share({ url:absoluteImageUrl, title:'MFU' });
+         return;
+       }
+       if (navigator.clipboard?.writeText) {
+-        await navigator.clipboard.writeText(imageUrl);
++        await navigator.clipboard.writeText(absoluteImageUrl);
+         alert('共有URLをクリップボードにコピーしました。');
+         return;
+       }
+-      prompt('このURLをコピーして共有してください。', imageUrl);
++      prompt('このURLをコピーして共有してください。', absoluteImageUrl);
+     } catch (error) {
+       if (!isShareCanceled(error)) console.error('shareByUrl failed:', error);
+     }
+   }
+   async function shareSingleByPath(path){
+     const imageUrl = resolveImageUrlByPath(path);
+     await shareByUrl(imageUrl, extractFilename(path));
+   }
+   async function collectFileForShare(path){
+-    const imageUrl = resolveImageUrlByPath(path);
++    const imageUrl = toAbsoluteUrl(resolveImageUrlByPath(path));
++    if (!imageUrl) throw new Error('image url not found');
+     const res = await fetch(imageUrl, { credentials:'include', cache:'no-store' });
+     if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
+     const blob = await res.blob();
+-    const type = blob.type || 'image/jpeg';
+-    return new File([blob], safeFilename(extractFilename(path), type), { type });
++    const filename = extractFilename(path || imageUrl);
++    const mimeType = blob.type || mimeTypeFromName(filename);
++    return new File([blob], safeFilename(filename, mimeType), { type: mimeType });
+   }
+   async function mapWithConcurrency(items, limit, worker){
+     const out = [];
+     let index = 0;
+     const runners = Array.from({ length: Math.min(limit, items.length) }, async ()=>{
+       while(index < items.length){
+         const i = index++;
+         out[i] = await worker(items[i], i);
+       }
+     });
+     await Promise.all(runners);
+     return out;
+   }
+   async function shareMultipleByPaths(paths){
+     if (!navigator.share) {
+       suggestZipFallback('このブラウザは共有機能に対応していません。');
        return;
      }
+     try {
+       const files = await mapWithConcurrency(paths, 3, collectFileForShare);
+       if (files.length && navigator.canShare?.({ files })) {
+         await navigator.share({ files, title:'MFU', text:'' });
+         return;
+       }
+-      suggestZipFallback('この端末は複数ファイル共有に未対応です。');
++      suggestZipFallback('この端末では複数枚の写真保存が難しいため、ZIPで保存してください。');
+     } catch (error) {
+       if (!isShareCanceled(error)) {
+         console.error('shareMultipleByPaths failed:', error);
+         suggestZipFallback('複数共有の準備に失敗しました。');
+       }
+     }
+   }
+   function updateSelectionUI(){
+     const sel = checks.filter(c=>c.checked);
+     if (countEl) countEl.textContent = `選択中: ${sel.length}枚`;
+     const inflight = btnZip?.classList.contains('btn-busy');
+     if (btnZip)  btnZip.disabled = !!inflight || sel.length === 0;
+     if (btnShare) btnShare.disabled = !!inflight || sel.length === 0;
+     checks.forEach(c => c.closest('.item')?.classList.toggle('selected', c.checked));
+   }
+   checks.forEach(c => c.addEventListener('change', updateSelectionUI));
+   btnAll?.addEventListener('click', ()=>{ checks.forEach(c=>c.checked=true); updateSelectionUI(); });
+   btnNone?.addEventListener('click', ()=>{ checks.forEach(c=>c.checked=false); updateSelectionUI(); });
+   updateSelectionUI();
+ 
+   /* 進行率UI */
+   let pollTimer=null;
+   function fmtBytes(n){ if(!n&&n!==0) return "-"; const u=["B","KB","MB","GB","TB"]; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (Math.round(n*10)/10)+' '+u[i]; }
+   function showProgress(){ document.getElementById('zip-progress')?.removeAttribute('hidden'); setupBottomSpacer(); }
+   function hideProgress(){ document.getElementById('zip-progress')?.setAttribute('hidden',''); setProgress(0,"0%"); setupBottomSpacer(); }
+@@ -371,50 +400,56 @@
+       }catch(_){ }
+     },500);
+   }
+   function stopProgressPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+ 
+   async function forceProgress100(key){
+     try{
+       const res=await fetch(`/api/zip-progress?key=${encodeURIComponent(key)}`,{cache:'no-store'});
+       if (res.ok) {
+         const d=await res.json();
+         setProgress(100, `100%（${d.processed_files||d.total_files||'-'}/${d.total_files||'-'}・${fmtBytes(d.processed_bytes)||'-'}/${fmtBytes(d.total_bytes)||'-'}）`);
+       } else {
+         setProgress(100, "100%（完了）");
+       }
+     }catch(_){
+       setProgress(100, "100%（完了）");
+     }
+   }
+ 
+   /* トグル文言 */
+   const defaultZipText = btnZip?.textContent || '選択した写真をZIPダウンロード';
+   let resetTimer=null;
+   const setBtnText = (t)=>{ if(btnZip){ btnZip.textContent=t; if(statusEl) statusEl.textContent=t; requestAnimationFrame(setupBottomSpacer);} };
+   const scheduleReset=(ms=5000)=>{ if(resetTimer) clearTimeout(resetTimer); resetTimer=setTimeout(()=>setBtnText(defaultZipText),ms); };
+ 
++  $$('.gallery a.preview').forEach((a)=>{
++    a.addEventListener('click', ()=>{
++      lastOpenedImageUrl = toAbsoluteUrl(a.getAttribute('href') || a.href || '');
++    }, true);
++  });
++
+   btnShare?.addEventListener('click', async ()=>{
+     const paths=currentSelectionPaths();
+     if(!paths.length){ alert('ファイルを選択してください'); return; }
+     if(paths.length===1){ await shareSingleByPath(paths[0]); return; }
+     await shareMultipleByPaths(paths);
+   });
+ 
+   btnZip?.addEventListener('click', async ()=>{
+     if(btnZip.classList.contains('btn-busy')) return;
+     const paths=currentSelectionPaths();
+     if(!paths.length){ alert('ファイルを選択してください'); return; }
+ 
+     btnZip.classList.add('btn-busy');
+     [btnAll, btnNone, btnShare].forEach(b=>{ if(b) b.disabled=true; });
+     btnZip.disabled = true;
+     setBtnText('ZIP生成中…');
+ 
+     const idKey=(crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
+     startProgressPolling(idKey);
+ 
+     const hideAfterMs = 1200;
+ 
+     try{
+       const res=await fetch('/api/zip-stream',{
+         method:'POST',
+@@ -454,55 +489,57 @@
+   });
+ 
+   /* 下部バー余白確保＆拡大時は隠す */
+   function setupBottomSpacer(){
+     const bottomBar=document.querySelector('.zip-toolbar');
+     const bottomSp=document.getElementById('zip-bottom-spacer');
+     if(!bottomBar||!bottomSp) return;
+     bottomSp.style.height=(bottomBar.offsetHeight+12)+'px';
+   }
+   function setupToolbarVisibilityWithLightbox(){
+     const bar=document.querySelector('.zip-toolbar'); if(!bar) return;
+     const hide=()=>bar.classList.add('hidden');
+     const show=()=>{ bar.classList.remove('hidden'); setupBottomSpacer(); };
+     document.querySelector('.gallery')?.addEventListener('click', (e)=>{ if(e.target.closest('a')) hide(); });
+     const ensureOverlayShareButton=(overlay)=>{
+       if (overlay.querySelector('#bb-share')) return;
+       const button=document.createElement('button');
+       button.id='bb-share';
+       button.type='button';
+       button.setAttribute('aria-label','共有');
+       button.setAttribute('title','共有');
+       button.textContent='↗️';
+       button.addEventListener('click', async (e)=>{
+         e.preventDefault();
+         e.stopPropagation();
+-        const img=overlay.querySelector('figure img, #baguette-img-0, #baguette-img-1') || overlay.querySelector('img');
+-        const src=img?.currentSrc || img?.src || '';
+-        const caption=(overlay.querySelector('#baguetteBox-figcaption')?.textContent || '').trim();
+-        const hint=extractFilename(caption || src || 'image.jpg');
+-        await shareByUrl(src, hint);
++        const candidateUrl = toAbsoluteUrl(lastOpenedImageUrl) || resolveUrlFromOverlay(overlay);
++        if (!candidateUrl) {
++          alert('共有する画像URLを取得できませんでした');
++          return;
++        }
++        const hint=extractFilename(candidateUrl || 'image.jpg');
++        await shareByUrl(candidateUrl, hint);
+       });
+       overlay.appendChild(button);
+     };
+     const applyOverlayObserver=(overlay)=>{
+       const toggle=()=>{
+         const visible=overlay.classList.contains('visible') && overlay.style.display!=='none';
+         if(visible){ hide(); ensureOverlayShareButton(overlay); }
+         else show();
+       };
+       toggle();
+       const mo=new MutationObserver(toggle);
+       mo.observe(overlay,{ attributes:true, attributeFilter:['class','style'] });
+     };
+     const tryAttach=()=>{ const overlay=document.getElementById('baguetteBox-overlay'); if(overlay){ applyOverlayObserver(overlay); return true; } return false; };
+     if(!tryAttach()){
+       const bodyMO=new MutationObserver(()=>{ if(tryAttach()) bodyMO.disconnect(); });
+       bodyMO.observe(document.body,{ childList:true, subtree:true });
+     }
+   }
+ 
+   window.addEventListener('DOMContentLoaded', ()=>{
+     setupBottomSpacer();
+     setupToolbarVisibilityWithLightbox();
+     const recalc=()=>requestAnimationFrame(setupBottomSpacer);
+     window.addEventListener('resize',recalc);
