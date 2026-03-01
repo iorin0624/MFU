@@ -503,6 +503,11 @@
   overflow-x: hidden;
 }
 
+#chat-body {
+  resize: none;
+  overflow-y: auto;
+}
+
 .chat-image-viewer {
   position: fixed;
   inset: 0;
@@ -716,8 +721,8 @@
     <input type="hidden" id="reply-to-id" value="">
     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
-    <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
-    <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
+    <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
+    <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
   </form>
 
   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
@@ -766,12 +771,14 @@
   const myDisplayName = root.dataset.displayName || '';
   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
   const isAdmin = root.dataset.isAdmin === '1';
+  const isMobile = window.matchMedia('(hover: none)').matches;
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const maxUploadImages = 6;
 
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
   const bodyInput = document.getElementById('chat-body');
+  const maxInputLines = 6;
   const pushBtn = document.getElementById('enable-push');
   const imageInput = document.getElementById('chat-image-file');
   const imageBtn = document.getElementById('chat-image-btn');
@@ -845,6 +852,9 @@
     scrollToLatestMessage();
     sendSeenForLatestMessage();
   }, { once: true });
+
+  updateAutoGrow();
+  bodyInput?.addEventListener('input', updateAutoGrow);
 
   socket.on('chat_message', (msg) => {
     renderMessage(msg);
@@ -1057,6 +1067,7 @@
         throw new Error(data.error || '画像送信に失敗しました');
       }
       bodyInput.value = '';
+      updateAutoGrow();
       clearReplyState();
     } catch (err) {
       alert(err?.message || '画像送信に失敗しました');
@@ -1066,8 +1077,34 @@
     }
   });
 
+  function updateAutoGrow() {
+    if (!bodyInput) return;
+    const cs = window.getComputedStyle(bodyInput);
+    const lineHeight = parseFloat(cs.lineHeight) || 20;
+    const padding = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    const maxHeightPx = lineHeight * maxInputLines + padding;
+
+    bodyInput.style.height = 'auto';
+    const nextHeight = Math.min(bodyInput.scrollHeight, maxHeightPx);
+    bodyInput.style.height = `${nextHeight}px`;
+    bodyInput.style.overflowY = bodyInput.scrollHeight > maxHeightPx ? 'auto' : 'hidden';
+  }
+
+  bodyInput?.addEventListener('keydown', (e) => {
+    if (isMobile) return;
+    if (e.key === 'Enter' && e.altKey === true) {
+      e.preventDefault();
+      submitChatMessage();
+    }
+  });
+
   form?.addEventListener('submit', (e) => {
     e.preventDefault();
+    submitChatMessage();
+  });
+
+  function submitChatMessage() {
+    if (!bodyInput || !sendBtn || sendBtn.disabled) return;
     setSendingState(true);
     socket.emit('chat_send', {
       event_id: eventId,
@@ -1075,9 +1112,9 @@
       reply_to_message_id: state.replyToId,
     });
     bodyInput.value = '';
+    updateAutoGrow();
     clearReplyState();
-    setSendingState(false);
-  });
+  }
 
   if (pushBtn) {
     initPushUi();
