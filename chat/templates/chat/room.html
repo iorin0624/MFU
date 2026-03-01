@@ -883,9 +883,8 @@
            data-sender-id="{{ m.sender_id }}"
            data-sender-name="{{ m.sender_display_name }}"
            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
-           data-body-plain="{{ m.body_plain_excerpt }}"
-           data-body-plain-full="{{ m.body_plain or m.body_plain_excerpt }}"
-           data-body-plain-full-json='{{ (m.body_plain or m.body_plain_excerpt or "")|tojson }}'
+           data-body-plain='{{ (m.body_plain_excerpt or "")|tojson }}'
+           data-body-plain-full='{{ (m.body_plain or m.body_plain_excerpt or "")|tojson }}'
            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
            data-thread-root-id="{{ m.thread_root_id or '' }}"
            data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
@@ -1868,10 +1867,9 @@
     row.dataset.messageId = msg.id;
     row.dataset.senderName = msg.sender_display_name || 'Unknown';
     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-    row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
     const fullPlain = msg.body_plain || msg.body || '';
-    row.dataset.bodyPlainFull = fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || '');
-    row.dataset.bodyPlainFullJson = JSON.stringify(fullPlain || '');
+    row.dataset.bodyPlain = JSON.stringify(msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
+    row.dataset.bodyPlainFull = JSON.stringify(fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
     row.dataset.replyToId = msg.reply_to_message_id || '';
     row.dataset.threadRootId = msg.thread_root_id || '';
     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
@@ -2108,7 +2106,7 @@
     }
     row.dataset.deletedFlag = '1';
     row.dataset.deletedByActorType = deletedByActorType || '';
-    row.dataset.bodyPlain = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
+    row.dataset.bodyPlain = JSON.stringify(deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました');
     row.dataset.bodyPlainFull = row.dataset.bodyPlain;
 
     row.querySelectorAll('.chat-image-link, .chat-image-grid').forEach((el) => el.remove());
@@ -2158,8 +2156,8 @@
     }
     body.className = 'chat-body';
     body.innerHTML = bodyHtml;
-    row.dataset.bodyPlain = bodyPlainExcerpt || makeExcerpt(body.textContent || '');
-    row.dataset.bodyPlainFull = payload?.body_plain || row.dataset.bodyPlain;
+    row.dataset.bodyPlain = JSON.stringify(bodyPlainExcerpt || makeExcerpt(body.textContent || ''));
+    row.dataset.bodyPlainFull = JSON.stringify(payload?.body_plain || bodyPlainExcerpt || makeExcerpt(body.textContent || ''));
     row.dataset.editedFlag = editedFlag ? '1' : '0';
     if (payload?.can_edit !== undefined) row.dataset.canEdit = payload.can_edit ? '1' : '0';
 
@@ -2179,7 +2177,7 @@
     }
 
     document.querySelectorAll(`.chat-row[data-reply-to-id="${messageId}"] .rq-text`).forEach((quoteText) => {
-      quoteText.textContent = bodyPlainExcerpt || row.dataset.bodyPlain || '';
+      quoteText.textContent = bodyPlainExcerpt || getPlainTextFromDataset(row.dataset.bodyPlain);
     });
   }
 
@@ -2813,7 +2811,7 @@
     const messageId = row.dataset.messageId;
     if (!messageId) return;
     const senderName = row.dataset.senderName || 'Unknown';
-    const bodyPlain = row.dataset.bodyPlain || '';
+    const bodyPlain = getPlainTextFromDataset(row.dataset.bodyPlain);
     setReplyState(messageId, senderName, bodyPlain, bubble);
   }
 
@@ -2864,7 +2862,7 @@
 
     state.ctxMessageId = messageId;
     state.ctxRow = row;
-    state.ctxBodyPlain = row.dataset.bodyPlain || '';
+    state.ctxBodyPlain = getPlainTextFromDataset(row.dataset.bodyPlain);
     ctxMenu.dataset.messageId = String(messageId);
 
     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
@@ -2899,19 +2897,36 @@
     return '（画像）';
   }
 
+  function getPlainTextFromDataset(rawValue) {
+    if (!rawValue) return '';
+    try {
+      return JSON.parse(rawValue) || '';
+    } catch (_err) {
+      return rawValue;
+    }
+  }
+
   function getFullPlainText(row) {
     if (!row) return '';
-    const json = row.dataset.bodyPlainFullJson;
-    if (json) {
+    const rawFull = row.dataset.bodyPlainFull;
+    if (rawFull) {
       try {
-        return JSON.parse(json) || '';
-      } catch (_err) {}
+        return JSON.parse(rawFull) || '';
+      } catch (_err) {
+        return rawFull;
+      }
     }
-    const attr = row.dataset.bodyPlainFull;
-    if (attr) return attr;
+    const rawExcerpt = row.dataset.bodyPlain;
+    if (rawExcerpt) {
+      try {
+        return JSON.parse(rawExcerpt) || '';
+      } catch (_err) {
+        return rawExcerpt;
+      }
+    }
     const bodyEl = row.querySelector('.chat-body');
     if (bodyEl) return (bodyEl.innerText || bodyEl.textContent || '');
-    return row.dataset.bodyPlain || '';
+    return '';
   }
 
   function openFulltextModal(row) {
@@ -2922,7 +2937,7 @@
 
     const sender = row.dataset.senderName || '';
     const createdIso = row.dataset.createdAtIso || '';
-    const full = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
+    const full = getFullPlainText(row);
 
     metaEl.textContent = `${sender}${createdIso ? ` / ${createdIso}` : ''}`;
     bodyEl.textContent = full;
@@ -3057,7 +3072,7 @@
     if (action === 'reply') {
       const bubble = row.querySelector('.chat-bubble');
       if (bubble) {
-        setReplyState(messageId, row.dataset.senderName || 'Unknown', row.dataset.bodyPlain || '', bubble);
+        setReplyState(messageId, row.dataset.senderName || 'Unknown', getPlainTextFromDataset(row.dataset.bodyPlain), bubble);
       }
       closeContextMenu();
       return;
@@ -3079,7 +3094,7 @@
     }
     if (action === 'copy') {
       try {
-        await copyTextWithFallback(state.ctxBodyPlain || row.dataset.bodyPlain || '');
+        await copyTextWithFallback(state.ctxBodyPlain || getPlainTextFromDataset(row.dataset.bodyPlain));
         alert('コピーしました');
       } catch (_err) {
         alert('コピーに失敗しました');
