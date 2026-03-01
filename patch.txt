@@ -1,142 +1,301 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 38faa0d3831fbb6f05079d7050f735eb3e021395..e4d45469337b8b79f08191b94777370d55bf7eb4 100644
+index 28e9bc0d9c529c0ddb52b528b3e0c6c812617f94..18731cce220f1c7d0c67cc987e08eca641ae230c 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -18,51 +18,51 @@
+@@ -329,89 +329,106 @@
+   overflow: hidden;
+   text-overflow: ellipsis;
+   max-width: 280px;
  }
  
- .chat-date-divider span {
-   display: inline-block;
-   font-size: 0.78rem;
-   color: #556;
-   background: rgba(255, 255, 255, 0.95);
-   border-radius: 999px;
-   padding: 3px 12px;
+ .chat-jump-highlight {
+   outline: 2px solid rgba(252, 198, 48, 0.95);
+   box-shadow: 0 0 0 5px rgba(252, 198, 48, 0.25);
+   transition: box-shadow 0.25s ease;
  }
  
- .chat-row {
+ .chat-deleted-text {
+   color: #6b748b;
+   font-style: italic;
+ }
+ 
+ .chat-reaction-box {
    position: relative;
-   margin-bottom: 10px;
-   touch-action: pan-y;
- }
- 
- 
- /* ===== Swipe-to-reply animation ===== */
- .chat-row .chat-bubble {
-   will-change: transform;
- }
- 
- .chat-swipe-underlay {
-   position: absolute;
--  right: 18px;
-+  left: 18px;
-   top: 50%;
-   transform: translateY(-50%);
+   margin-top: 4px;
    display: flex;
+   flex-direction: column;
+   gap: 4px;
+   width: 100%;
+ }
+ 
+-.react-open-btn {
++.react-open-btn,
++.chat-menu-open-btn {
+   width: 26px;
+   height: 26px;
+   padding: 0;
+   border: 1px solid #cdd6f8;
+   background: #fff;
+   color: #4b5b91;
+   border-radius: 999px;
+   display: inline-flex;
    align-items: center;
    justify-content: center;
    font-size: 18px;
+   line-height: 1;
+   position: absolute;
+-  right: 6px;
+   top: -40px;
+   box-shadow: 0 1px 2px rgba(45, 74, 154, 0.18);
+ }
+ 
+-.chat-message .react-open-btn {
++.react-open-btn {
++  right: 38px;
++}
++
++.chat-menu-open-btn {
++  right: 6px;
++  font-size: 15px;
++  letter-spacing: 1px;
++}
++
++.chat-message .react-open-btn,
++.chat-message .chat-menu-open-btn {
    opacity: 0;
    pointer-events: none;
-   transition: opacity 120ms ease;
+   transition: opacity 0.12s ease;
  }
  
- .chat-row.swiping .chat-bubble {
-   transition: none;
- }
- 
- .chat-row.swiping .chat-swipe-underlay {
+-.chat-message:hover .react-open-btn {
++.chat-message:hover .react-open-btn,
++.chat-message:hover .chat-menu-open-btn {
    opacity: 1;
+   pointer-events: auto;
  }
  
- .chat-row.snapback .chat-bubble {
-   transition: transform 160ms ease;
+ .chat-row.me .react-open-btn {
+   display: none !important;
  }
  
- .chat-row.commit .chat-bubble {
-   transition: transform 120ms ease;
-@@ -1535,80 +1535,80 @@
+ @media (hover: none) {
+   .chat-message .react-open-btn {
+     opacity: 0;
+     pointer-events: none;
+   }
++
++  .chat-message .chat-menu-open-btn {
++    opacity: 1;
++    pointer-events: auto;
++  }
+ }
  
-   msgBox.addEventListener('pointermove', (e) => {
-     if (!isMobile) return;
-     if (e.pointerType === 'mouse') return;
-     if (!state.swipe.active || !state.swipe.row || !state.swipe.bubble) return;
-     if (state.touchPointerId !== e.pointerId) return;
+ .chat-ctx-menu {
+   position: fixed;
+   inset: 0;
+   z-index: 2000;
+   display: none;
+   align-items: center;
+   justify-content: center;
+   padding: 16px;
+ }
  
-     const dx = e.clientX - state.swipe.startX;
-     const dy = e.clientY - state.swipe.startY;
-     state.swipe.dx = dx;
-     state.swipe.dy = dy;
+ .chat-ctx-menu.d-none {
+   display: none;
+ }
  
-     if (!state.swipe.locked) {
-       if (Math.abs(dx) > SWIPE_LOCK && Math.abs(dx) > Math.abs(dy) * 1.2) {
-         state.swipe.locked = true;
-         clearLongPressTimer();
-       } else if (Math.abs(dy) > SWIPE_LOCK && Math.abs(dy) > Math.abs(dx) * 1.2) {
-         state.swipe.active = false;
-         clearLongPressTimer();
-         return;
-       } else {
-         return;
+ .chat-ctx-menu.is-open {
+   display: flex;
+ }
+ 
+ .chat-ctx-backdrop {
+   position: absolute;
+   inset: 0;
+   background: rgba(0, 0, 0, 0.35);
+ }
+@@ -765,50 +782,51 @@
+   color: #6d7385;
+ }
+ 
+ .chat-mention-item.is-active,
+ .chat-mention-item:hover {
+   background: #eef4ff;
+ }
+ 
+ /* 全文モーダル内は選択コピーを許可 */
+ .chat-fulltext-modal .chat-fulltext-body {
+   -webkit-touch-callout: default;
+   -webkit-user-select: text;
+   user-select: text;
+   white-space: pre-wrap;
+   word-break: break-word;
+ }
+ 
+ </style>
+ 
+ {% macro render_reaction_box(message) -%}
+   <div class="chat-reaction-box"
+        data-reaction-box="1"
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
++    <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
+ 
+ <div class="container py-3"
+      data-event-id="{{ event.id }}"
+      data-room-id="{{ active_room.room_id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}"
+      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
+   <h3>{{ event.title }} / Chat</h3>
+   <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+     <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
+       {% for r in accessible_rooms %}
+       <option value="{{ r.room_id }}" {% if r.room_id == active_room.room_id %}selected{% endif %}>{{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}</option>
+       {% endfor %}
+     </select>
+     <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
+     <div class="chat-mute-wrap">
+       <button type="button" id="chat-mute-btn" class="btn btn-sm btn-outline-secondary">🔕ミュート</button>
+       <div id="chat-mute-menu" class="chat-mute-menu d-none">
+@@ -1360,50 +1378,59 @@
+     if (readIndicator) {
+       toggleReadList(readIndicator.closest('.chat-main'));
+       return;
+     }
+ 
+     const quote = e.target.closest('.chat-reply-quote');
+     if (quote) {
+       jumpToMessage(quote.dataset.jumpToId);
+       return;
+     }
+ 
+     const threadOpenBtn = e.target.closest('[data-thread-open]');
+     if (threadOpenBtn) {
+       openThreadModal(Number(threadOpenBtn.dataset.threadOpen || 0));
+       return;
+     }
+ 
+     const reactionToggle = e.target.closest('.chat-reaction-toggle');
+     if (reactionToggle) {
+       const box = reactionToggle.closest('.chat-reaction-box');
+       const panel = box?.querySelector('.chat-reaction-panel');
+       panel?.classList.toggle('d-none');
+       return;
+     }
+ 
++    const menuToggle = e.target.closest('.chat-menu-toggle');
++    if (menuToggle) {
++      const row = menuToggle.closest('.chat-row[data-message-id]');
++      if (row && Number(row.dataset.deletedFlag || 0) !== 1) {
++        openContextMenu(row);
++      }
++      return;
++    }
++
+     const reactionBtn = e.target.closest('.chat-reaction-emoji');
+     if (reactionBtn) {
+       const row = reactionBtn.closest('.chat-row');
+       const messageId = Number(row?.dataset.messageId || 0);
+       const emoji = reactionBtn.dataset.emoji || '';
+       if (messageId && reactionEmojis.includes(emoji)) {
+         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+       }
+       return;
+     }
+ 
+     const reactionChip = e.target.closest('.chat-reaction-chip');
+     if (reactionChip) {
+       const row = reactionChip.closest('.chat-row');
+       const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
+       if (messageId) {
+         openReactionDetailModal(messageId);
+       }
+       return;
+     }
+ 
+ 
+     const contentLink = e.target.closest('a.chat-link');
+     if (contentLink) {
+       return;
+@@ -2214,65 +2241,73 @@
+     if (panel && panel.childElementCount === 0) {
+       for (const emoji of reactionEmojis) {
+         const btn = document.createElement('button');
+         btn.type = 'button';
+         btn.className = 'chat-reaction-emoji';
+         btn.dataset.emoji = emoji;
+         btn.textContent = emoji;
+         panel.appendChild(btn);
        }
      }
+     return box;
+   }
  
--    if (dx >= 0) {
-+    if (dx <= 0) {
-       setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
-       return;
+   function createReactionBox(reactionsSummary, myReaction) {
+     const box = document.createElement('div');
+     box.className = 'chat-reaction-box';
+     box.dataset.reactionBox = '1';
+ 
+     const toggle = document.createElement('button');
+     toggle.type = 'button';
+     toggle.className = 'chat-reaction-toggle react-open-btn';
+     toggle.setAttribute('aria-label', 'リアクション');
+     toggle.setAttribute('title', 'リアクション');
+     toggle.textContent = '+';
+ 
++    const menuBtn = document.createElement('button');
++    menuBtn.type = 'button';
++    menuBtn.className = 'chat-menu-toggle chat-menu-open-btn';
++    menuBtn.setAttribute('aria-label', 'メニュー');
++    menuBtn.setAttribute('title', 'メニュー');
++    menuBtn.textContent = '⋯';
++
+     const panel = document.createElement('div');
+     panel.className = 'chat-reaction-panel d-none';
+     for (const emoji of reactionEmojis) {
+       const btn = document.createElement('button');
+       btn.type = 'button';
+       btn.className = 'chat-reaction-emoji';
+       btn.dataset.emoji = emoji;
+       btn.textContent = emoji;
+       panel.appendChild(btn);
      }
  
--    const x = clamp(dx, -SWIPE_MAX, 0);
-+    const x = clamp(dx, 0, SWIPE_MAX);
-     setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
-   });
+     const summary = document.createElement('div');
+     summary.className = 'chat-reaction-summary';
  
-   msgBox.addEventListener('pointerup', () => {
-     if (!isMobile) return;
+     box.appendChild(toggle);
++    box.appendChild(menuBtn);
+     box.appendChild(panel);
+     box.appendChild(summary);
  
-     const row = state.swipe.row;
-     const bubble = state.swipe.bubble;
-     const dx = state.swipe.dx;
-     const locked = state.swipe.locked;
+     applyReactionUi(box, reactionsSummary, myReaction);
+     return box;
+   }
  
-     state.swipe.active = false;
-     state.swipe.locked = false;
-     state.swipe.row = null;
-     state.swipe.bubble = null;
- 
-     clearLongPressTimer();
- 
-     if (!row || !bubble || !locked) return;
- 
-     const moved = Math.abs(dx);
--    if (dx < 0 && moved >= SWIPE_COMMIT) {
-+    if (dx > 0 && moved >= SWIPE_COMMIT) {
-       row.classList.add('commit');
--      bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
-+      bubble.style.transform = `translateX(${SWIPE_MAX}px)`;
- 
-       if (navigator?.vibrate) navigator.vibrate(10);
- 
-       window.setTimeout(() => {
-         state.swipeIgnoreClickUntil = Date.now() + 500;
-         const messageId = row.dataset.messageId;
-         const senderName = row.dataset.senderName || 'Unknown';
-         const bodyPlain = row.dataset.bodyPlain || '';
-         setReplyState(messageId, senderName, bodyPlain, bubble);
-         resetSwipe(row, bubble);
-       }, 90);
-       return;
+   function parseReactionSummary(value) {
+     try {
+       const parsed = JSON.parse(value || '[]');
+       return Array.isArray(parsed) ? parsed : [];
+     } catch (_err) {
+       return [];
      }
+   }
  
-     resetSwipe(row, bubble);
-   });
- 
-   msgBox.addEventListener('pointercancel', () => {
-     if (!isMobile) return;
-     const row = state.swipe.row;
-     const bubble = state.swipe.bubble;
-     state.swipe.active = false;
-     state.swipe.locked = false;
-     state.swipe.row = null;
-     state.swipe.bubble = null;
+   function normalizeReactionSummary(summary) {
+     const mapped = [];
+     for (const item of summary || []) {
+       const emoji = item?.emoji || '';
+       const count = Number(item?.count || 0);
+       if (!reactionEmojis.includes(emoji) || count <= 0) continue;
+       mapped.push({ emoji, count });
+     }
+     mapped.sort((a, b) => reactionEmojis.indexOf(a.emoji) - reactionEmojis.indexOf(b.emoji));
