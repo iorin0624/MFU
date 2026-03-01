@@ -1,223 +1,284 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index edab718a5d4e7c0cd3d19d42424ab4126af91e6e..48399c2a89e0ef5ada4e22c393197e00930388c9 100644
+index 0559d9ce73247e61c72c2c7acb847ba42af871b8..6436055778a9714c0f4a39ed79e05965559e923a 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -738,50 +738,66 @@
-   bottom: calc(100% + 6px);
-   z-index: 1300;
-   max-height: 220px;
-   overflow-y: auto;
-   background: #fff;
-   border: 1px solid #d0d7e9;
-   border-radius: 8px;
-   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+@@ -5,54 +5,91 @@
+ .chat-messages {
+   height: min(70vh, 780px);
+   min-height: 520px;
+   overflow: auto;
+   overflow-x: hidden;
+   background: #e8f3ff;
+   touch-action: pan-y;
  }
  
- .chat-mention-item {
-   padding: 8px 10px;
-   font-size: 0.85rem;
-   cursor: pointer;
+ .chat-date-divider {
+   display: flex;
+   justify-content: center;
+   margin: 10px 0;
  }
  
- .chat-mention-item small {
-   color: #6d7385;
+ .chat-date-divider span {
+   display: inline-block;
+   font-size: 0.78rem;
+   color: #556;
+   background: rgba(255, 255, 255, 0.95);
+   border-radius: 999px;
+   padding: 3px 12px;
  }
  
- .chat-mention-item.is-active,
- .chat-mention-item:hover {
-   background: #eef4ff;
+ .chat-row {
++  position: relative;
+   margin-bottom: 10px;
+   touch-action: pan-y;
  }
  
-+/* 通常のバブルはOSの長押しメニューを出さない（LINE式） */
-+.chat-bubble {
-+  -webkit-touch-callout: none;
-+  -webkit-user-select: none;
-+  user-select: none;
++
++/* ===== Swipe-to-reply animation ===== */
++.chat-row .chat-bubble {
++  will-change: transform;
 +}
 +
-+/* 全文モーダル内は選択コピーを許可 */
-+.chat-fulltext-modal .chat-fulltext-body {
-+  -webkit-touch-callout: default;
-+  -webkit-user-select: text;
-+  user-select: text;
-+  white-space: pre-wrap;
-+  word-break: break-word;
++.chat-swipe-underlay {
++  position: absolute;
++  right: 18px;
++  top: 50%;
++  transform: translateY(-50%);
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  font-size: 18px;
++  opacity: 0;
++  pointer-events: none;
++  transition: opacity 120ms ease;
 +}
 +
- </style>
++.chat-row.swiping .chat-bubble {
++  transition: none;
++}
++
++.chat-row.swiping .chat-swipe-underlay {
++  opacity: 1;
++}
++
++.chat-row.snapback .chat-bubble {
++  transition: transform 160ms ease;
++}
++
++.chat-row.commit .chat-bubble {
++  transition: transform 120ms ease;
++}
++
+ .chat-line {
+   display: flex;
+   gap: 8px;
+   align-items: flex-start;
+   min-width: 0;
+ }
  
- {% macro render_reaction_box(message) -%}
-   <div class="chat-reaction-box"
-        data-reaction-box="1"
-        data-my-reaction="{{ message.my_reaction or '' }}"
-        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
-     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-     <div class="chat-reaction-panel d-none"></div>
-     <div class="chat-reaction-summary"></div>
-   </div>
- {%- endmacro %}
+ .chat-row.me .chat-line {
+   justify-content: flex-end;
+ }
  
- <div class="container py-3"
-      data-event-id="{{ event.id }}"
-      data-room-id="{{ active_room.room_id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
-      data-display-name="{{ actor.display_name }}"
-      data-default-avatar="{{ default_avatar_url }}"
-      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
-   <h3>{{ event.title }} / Chat</h3>
-   <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
-     <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
-@@ -950,90 +966,109 @@
-       <input type="hidden" id="edit-target-id" value="">
-       <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
-       <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
-       <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
-       <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+ .chat-row.other .chat-line {
+   justify-content: flex-start;
+ }
+ 
+ .chat-main {
+   display: flex;
+   flex-direction: column;
+   max-width: min(80%, 560px);
+   min-width: 0;
+ }
+ 
+ .chat-row.me .chat-main {
+   align-items: flex-end;
+ }
+@@ -839,50 +876,51 @@
+         {% set ns.last_date = d %}
+       {% endif %}
+ 
+       <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
+            id="msg-{{ m.id }}"
+            data-message-id="{{ m.id }}"
+            data-sender-id="{{ m.sender_id }}"
+            data-sender-name="{{ m.sender_display_name }}"
+            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
+            data-body-plain="{{ m.body_plain_excerpt }}"
+            data-body-plain-full="{{ m.body_plain or m.body_plain_excerpt }}"
+            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
+            data-thread-root-id="{{ m.thread_root_id or '' }}"
+            data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
+            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
+            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
+            data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+            data-created-at-iso="{{ m.created_at_iso }}"
+            data-deleted-flag="{{ m.deleted_flag or 0 }}"
+            data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
+            data-can-delete="{{ 1 if m.can_delete else 0 }}"
+            data-can-edit="{{ 1 if m.can_edit else 0 }}"
+            data-edited-flag="{{ m.edited_flag or 0 }}"
+            data-my-reaction="{{ m.my_reaction or '' }}"
+            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
++        <div class="chat-swipe-underlay" aria-hidden="true">↩︎</div>
+         <div class="chat-line">
+           {% if not m.is_me %}
+             <img class="chat-avatar"
+                  src="{{ m.sender_avatar_url or default_avatar_url }}"
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+           {% endif %}
+ 
+           <div class="chat-main">
+             {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
+ 
+             {% if m.reply_to_message_id %}
+               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
+                 <img class="chat-avatar-sm"
+                      src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+                      alt=""
+                      loading="lazy"
+                      referrerpolicy="no-referrer"
+                      onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+                 <div class="rq-body">
+                   <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
+                   <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
+                 </div>
+@@ -1096,50 +1134,53 @@
+       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
+       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
      </form>
-     <div id="chat-mention-menu" class="chat-mention-menu d-none"></div>
+     {% endif %}
    </div>
+ </div>
  
-   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
-     <button type="button" id="chatImageViewerShare" class="chat-image-viewer-share" aria-label="共有" title="共有">共有</button>
-     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
-     <div class="chat-image-viewer-content">
-       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
-       <img id="chatImageViewerImg" src="" alt="拡大画像">
-       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
-     </div>
-   </div>
+ <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+ (() => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
  
-   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
-     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
-     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
-       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
-       <hr class="chat-ctx-sep">
-       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
-+      <button type="button" class="chat-ctx-item" data-ctx-action="fulltext">全文表示</button>
-       <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッドを開く</button>
-       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
-       <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
-       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
-       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
-       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
-     </div>
-   </div>
+   const eventId = Number(root.dataset.eventId);
+   const roomId = root.dataset.roomId || "";
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
+   const meId = root.dataset.me || '';
+   const myDisplayName = root.dataset.displayName || '';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const isAdmin = root.dataset.isAdmin === '1';
+   const isMobile = window.matchMedia('(hover: none)').matches;
+   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+   const maxUploadImages = 6;
+   const maxUploadImageBytes = 20 * 1024 * 1024;
++  const SWIPE_MAX = 92;
++  const SWIPE_COMMIT = 56;
++  const SWIPE_LOCK = 10;
  
- 
-   <div id="threadModal" class="room-member-modal" aria-hidden="true">
-     <div class="backdrop" data-close="1"></div>
-     <div class="panel">
-       <div class="d-flex justify-content-between align-items-center mb-2">
-         <h5 class="mb-0">スレッド</h5>
-         <button type="button" id="thread-modal-close" class="btn btn-sm btn-light">閉じる</button>
-       </div>
-       <div id="thread-modal-body" class="thread-modal-body">
-         <div id="thread-root" class="thread-modal-root"></div>
-         <div id="thread-replies"></div>
-       </div>
-       <form id="thread-form" class="d-flex gap-2 align-items-center mt-2">
-         <textarea id="thread-body" class="form-control" maxlength="2000" placeholder="スレッドに返信" rows="1"></textarea>
-         <button class="btn btn-primary" id="thread-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
-       </form>
-     </div>
-   </div>
- 
- 
-   <div id="reactionDetailModal" class="room-member-modal" aria-hidden="true">
-     <div class="backdrop" data-close="1"></div>
-     <div class="panel">
-       <div class="d-flex justify-content-between align-items-center mb-2">
-         <h5 class="mb-0">リアクション</h5>
-         <button type="button" id="reaction-detail-close" class="btn btn-sm btn-light">閉じる</button>
-       </div>
-       <div id="reaction-detail-body"></div>
-     </div>
-   </div>
- 
-+  <div id="chat-fulltext-modal" class="modal fade chat-fulltext-modal" tabindex="-1" aria-hidden="true">
-+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
-+      <div class="modal-content">
-+        <div class="modal-header">
-+          <h6 class="modal-title">メッセージ全文</h6>
-+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
-+        </div>
-+        <div class="modal-body">
-+          <div class="small text-muted mb-2" id="chat-fulltext-meta"></div>
-+          <div class="chat-fulltext-body" id="chat-fulltext-body"></div>
-+        </div>
-+        <div class="modal-footer">
-+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">閉じる</button>
-+        </div>
-+      </div>
-+    </div>
-+  </div>
-+
-   <div id="roomCreateModal" class="room-member-modal" aria-hidden="true">
-     <div class="backdrop" data-close="1"></div>
-     <div class="panel">
-       <h5 class="mb-2">サブルーム作成</h5>
-       <div class="mb-2">
-         <label class="form-label">ルーム名</label>
-         <input id="room-create-name" type="text" class="form-control" maxlength="80" placeholder="例: 撮影班A" />
-       </div>
-       <div class="d-flex gap-2 mb-2">
-         <input id="room-create-search" type="text" class="form-control form-control-sm" placeholder="候補検索（名前 / actor_key）">
-         <button type="button" id="room-create-select-all" class="btn btn-sm btn-outline-secondary">全選択</button>
-         <button type="button" id="room-create-unselect-all" class="btn btn-sm btn-outline-secondary">全解除</button>
-       </div>
-       <div class="small mb-1">選択中 <span id="room-create-count">0</span>名</div>
-       <div id="room-create-candidates" class="room-member-candidate-list"></div>
-       <div class="d-flex justify-content-end gap-2 mt-3">
-         <button type="button" id="room-create-cancel" class="btn btn-sm btn-light">キャンセル</button>
-         <button type="button" id="room-create-submit" class="btn btn-sm btn-primary">作成</button>
-       </div>
-     </div>
-   </div>
- 
-   <div id="roomMembersModal" class="room-member-modal" aria-hidden="true">
-     <div class="backdrop" data-close="1"></div>
-     <div class="panel">
-@@ -1365,50 +1400,58 @@
- 
-     const contentLink = e.target.closest('a.chat-link');
-     if (contentLink) {
-       return;
-     }
- 
-     const bubble = e.target.closest('.chat-bubble');
-     if (!bubble) return;
-     const row = bubble.closest('.chat-row');
-     if (!row) return;
- 
-     const messageId = row.dataset.messageId;
-     if (Number(row.dataset.deletedFlag || 0) === 1) return;
- 
-     const senderName = row.dataset.senderName || 'Unknown';
-     const bodyPlain = row.dataset.bodyPlain || '';
- 
-     if (state.replyToId && String(state.replyToId) === String(messageId)) {
-       clearReplyState();
-       return;
-     }
-     if (isMobile) return;
-     setReplyState(messageId, senderName, bodyPlain, bubble);
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const maxInputLines = 6;
+   const pushBtn = document.getElementById('enable-push');
+   const roomSwitch = document.getElementById('chat-room-switch');
+   const roomCreateBtn = document.getElementById('chat-room-create-btn');
+   const roomMembersBtn = document.getElementById('chat-room-members-btn');
+   const unreadJumpBtn = document.getElementById('chat-unread-jump-btn');
+   const muteBtn = document.getElementById('chat-mute-btn');
+   const muteMenu = document.getElementById('chat-mute-menu');
+   const mentionMenu = document.getElementById('chat-mention-menu');
+   const roomCreateModal = document.getElementById('roomCreateModal');
+   const roomMembersModal = document.getElementById('roomMembersModal');
+   const threadModal = document.getElementById('threadModal');
+   const threadModalCloseBtn = document.getElementById('thread-modal-close');
+   const threadRootContainer = document.getElementById('thread-root');
+   const threadRepliesContainer = document.getElementById('thread-replies');
+   const threadForm = document.getElementById('thread-form');
+   const threadBodyInput = document.getElementById('thread-body');
+   const reactionDetailModal = document.getElementById('reactionDetailModal');
+   const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
+   const reactionDetailBody = document.getElementById('reaction-detail-body');
+   const imageInput = document.getElementById('chat-image-file');
+@@ -1176,55 +1217,61 @@
+     day: 'numeric',
+     weekday: 'short',
+   });
+   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     hour: 'numeric',
+     minute: '2-digit',
+     hour12: false,
    });
  
-+  msgBox.addEventListener('contextmenu', (e) => {
-+    if (!isMobile) return;
-+    if (e.target.closest('.chat-fulltext-modal')) return;
-+    if (e.target.closest('.chat-bubble')) {
-+      e.preventDefault();
-+    }
-+  });
-+
+   const [myActorType, myActorId] = meId.includes(':')
+     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+     : ['', ''];
+ 
+   const state = {
+     replyToId: null,
+     selectedBubble: null,
+     readStateByActor: new Map(),
+     reactionByMessage: new Map(),
+     viewerImages: [],
+     viewerIndex: 0,
+     ctxMessageId: null,
+     longPressTimer: null,
+     longPressTriggered: false,
+     longPressRow: null,
+-    touchStartX: 0,
+-    touchStartY: 0,
+     touchPointerId: null,
+-    swipeArmed: false,
+-    swipeHandled: false,
++    swipe: {
++      row: null,
++      bubble: null,
++      startX: 0,
++      startY: 0,
++      dx: 0,
++      dy: 0,
++      active: false,
++      locked: false,
++    },
+     ctxRow: null,
+     ctxBodyPlain: '',
+     editTargetMessageId: null,
+     typingMembers: new Map(),
+     typingDebounceTimer: null,
+     typingStopTimer: null,
+     typingSent: false,
+     threadRootId: null,
+     loadingOlder: false,
+     hasMoreOlder: true,
+     messageIds: new Set(),
+     unreadByRoomId: new Map(),
+     unreadRefreshTimer: null,
+     muteUntilByRoomId: new Map(),
+     mentionCandidates: [],
+     mentionActiveIndex: 0,
+     mentionRange: null,
+     mentionDebounceTimer: null,
+   };
+ 
+   if (ctxReactions && ctxReactions.childElementCount === 0) {
+     reactionEmojis.forEach((emoji) => {
+       const btn = document.createElement('button');
+       btn.type = 'button';
+       btn.className = 'chat-reaction-emoji';
+@@ -1426,102 +1473,177 @@
+ 
    msgBox.addEventListener('contextmenu', (e) => {
      const row = e.target.closest('.chat-row[data-message-id]');
      if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+ 
+     if (e.target.closest('#chat-fulltext-modal')) return;
+ 
      e.preventDefault();
-     openContextMenu(row);
+ 
+     if (!isMobile) {
+       openContextMenu(row);
+     }
    });
  
    threadModal?.addEventListener('click', (e) => {
@@ -231,14 +292,312 @@ index edab718a5d4e7c0cd3d19d42424ab4126af91e6e..48399c2a89e0ef5ada4e22c393197e00
    });
  
    msgBox.addEventListener('pointerdown', (e) => {
++    if (!isMobile) return;
      if (e.pointerType === 'mouse') return;
++
      const row = e.target.closest('.chat-row[data-message-id]');
      if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
      if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
++
++    const bubble = row.querySelector('.chat-bubble');
++    if (!bubble) return;
++
++    row.classList.remove('swiping', 'snapback', 'commit');
++    bubble.style.transform = 'translateX(0px)';
++
      clearLongPressTimer();
      state.longPressTriggered = false;
      state.longPressRow = row;
-@@ -2711,50 +2754,68 @@
+-    state.touchStartX = e.clientX;
+-    state.touchStartY = e.clientY;
+     state.touchPointerId = e.pointerId;
+-    state.swipeArmed = true;
+-    state.swipeHandled = false;
++
++    state.swipe.row = row;
++    state.swipe.bubble = bubble;
++    state.swipe.startX = e.clientX;
++    state.swipe.startY = e.clientY;
++    state.swipe.dx = 0;
++    state.swipe.dy = 0;
++    state.swipe.active = true;
++    state.swipe.locked = false;
++
+     state.longPressTimer = window.setTimeout(() => {
+-      if (state.swipeHandled) return;
++      if (state.swipe.locked) return;
+       state.longPressTriggered = true;
+       openContextMenu(row);
+     }, 500);
+   });
++
+   msgBox.addEventListener('pointermove', (e) => {
++    if (!isMobile) return;
+     if (e.pointerType === 'mouse') return;
+-    if (!state.longPressTimer || !state.longPressRow) return;
++    if (!state.swipe.active || !state.swipe.row || !state.swipe.bubble) return;
+     if (state.touchPointerId !== e.pointerId) return;
+ 
+-    const dx = e.clientX - state.touchStartX;
+-    const dy = e.clientY - state.touchStartY;
++    const dx = e.clientX - state.swipe.startX;
++    const dy = e.clientY - state.swipe.startY;
++    state.swipe.dx = dx;
++    state.swipe.dy = dy;
++
++    if (!state.swipe.locked) {
++      if (Math.abs(dx) > SWIPE_LOCK && Math.abs(dx) > Math.abs(dy) * 1.2) {
++        state.swipe.locked = true;
++        clearLongPressTimer();
++      } else if (Math.abs(dy) > SWIPE_LOCK && Math.abs(dy) > Math.abs(dx) * 1.2) {
++        state.swipe.active = false;
++        clearLongPressTimer();
++        return;
++      } else {
++        return;
++      }
++    }
+ 
+-    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+-      clearLongPressTimer();
++    if (dx >= 0) {
++      setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
++      return;
+     }
++
++    const x = clamp(dx, -SWIPE_MAX, 0);
++    setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
+   });
+-  msgBox.addEventListener('pointerup', (e) => {
+-    if (isMobile) {
+-      const row = e.target.closest('.chat-row[data-message-id]');
+-      if (row && Number(row.dataset.deletedFlag || 0) !== 1 && !e.target.closest('a, button, input, textarea, .chat-reaction-panel')) {
+-        const dx = e.clientX - (state.touchStartX || 0);
+-        const dy = e.clientY - (state.touchStartY || 0);
+-        const isLeftSwipe = dx < -40 && Math.abs(dx) > Math.abs(dy) * 1.2;
+-        if (isLeftSwipe) {
+-          const bubble = row.querySelector('.chat-bubble');
+-          if (bubble) {
+-            const messageId = row.dataset.messageId;
+-            const senderName = row.dataset.senderName || 'Unknown';
+-            const bodyPlain = row.dataset.bodyPlain || '';
+-            setReplyState(messageId, senderName, bodyPlain, bubble);
+-            state.swipeHandled = true;
+-          }
+-        }
+-      }
++
++  msgBox.addEventListener('pointerup', () => {
++    if (!isMobile) return;
++
++    const row = state.swipe.row;
++    const bubble = state.swipe.bubble;
++    const dx = state.swipe.dx;
++    const locked = state.swipe.locked;
++
++    state.swipe.active = false;
++    state.swipe.locked = false;
++    state.swipe.row = null;
++    state.swipe.bubble = null;
++
++    clearLongPressTimer();
++
++    if (!row || !bubble || !locked) return;
++
++    const moved = Math.abs(dx);
++    if (dx < 0 && moved >= SWIPE_COMMIT) {
++      row.classList.add('commit');
++      bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
++
++      if (navigator?.vibrate) navigator.vibrate(10);
++
++      window.setTimeout(() => {
++        const messageId = row.dataset.messageId;
++        const senderName = row.dataset.senderName || 'Unknown';
++        const bodyPlain = row.dataset.bodyPlain || '';
++        setReplyState(messageId, senderName, bodyPlain, bubble);
++        resetSwipe(row, bubble);
++      }, 90);
++      return;
+     }
++
++    resetSwipe(row, bubble);
++  });
++
++  msgBox.addEventListener('pointercancel', () => {
++    if (!isMobile) return;
++    const row = state.swipe.row;
++    const bubble = state.swipe.bubble;
++    state.swipe.active = false;
++    state.swipe.locked = false;
++    state.swipe.row = null;
++    state.swipe.bubble = null;
++    clearLongPressTimer();
++    if (row && bubble) resetSwipe(row, bubble);
++  });
++
++  msgBox.addEventListener('touchcancel', () => {
++    if (!isMobile) return;
++    const row = state.swipe.row;
++    const bubble = state.swipe.bubble;
++    state.swipe.active = false;
++    state.swipe.locked = false;
++    state.swipe.row = null;
++    state.swipe.bubble = null;
+     clearLongPressTimer();
++    if (row && bubble) resetSwipe(row, bubble);
+   });
+-  msgBox.addEventListener('pointercancel', clearLongPressTimer);
+ 
+   replyCancelBtn?.addEventListener('click', clearReplyState);
+   threadModalCloseBtn?.addEventListener('click', closeThreadModal);
+   threadModal?.querySelector('[data-close="1"]')?.addEventListener('click', closeThreadModal);
+   reactionDetailCloseBtn?.addEventListener('click', () => closeModal(reactionDetailModal));
+   reactionDetailModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(reactionDetailModal));
+   threadForm?.addEventListener('submit', (e) => {
+     e.preventDefault();
+     submitThreadMessage();
+   });
+   threadBodyInput?.addEventListener('input', () => updateAutoGrow(threadBodyInput));
+   replyCancelBtn?.addEventListener('click', clearEditState);
+   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
+   imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
+   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
+   imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
+   imageViewer?.addEventListener('click', (e) => {
+     if (e.target === imageViewer) closeImageViewer();
+   });
+   document.addEventListener('keydown', (e) => {
+     if (e.key === 'Escape') closeImageViewer();
+     if (e.key === 'Escape') closeContextMenu();
+     if (e.key === 'Escape') closeThreadModal();
+     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
+     if (e.key === 'ArrowRight') moveViewerIndex(1);
+@@ -1795,50 +1917,56 @@
+ 
+     const row = document.createElement('div');
+     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
+     row.id = `msg-${msg.id}`;
+     row.dataset.messageId = msg.id;
+     row.dataset.senderName = msg.sender_display_name || 'Unknown';
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
+     row.dataset.bodyPlainFull = msg.body_plain || msg.body_plain_excerpt || msg.body || '';
+     row.dataset.replyToId = msg.reply_to_message_id || '';
+     row.dataset.threadRootId = msg.thread_root_id || '';
+     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
+     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
+     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
+     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
+     row.dataset.createdAtIso = msg.created_at_iso || '';
+     row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
+     row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
+     row.dataset.canDelete = canDeleteMessage(msg, isMe) ? '1' : '0';
+     row.dataset.canEdit = canEditMessage(msg, isMe) ? '1' : '0';
+     row.dataset.editedFlag = String(Number(msg.edited_flag || 0));
+     row.dataset.myReaction = msg.my_reaction || '';
+     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
+     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
+ 
++    const swipeUnderlay = document.createElement('div');
++    swipeUnderlay.className = 'chat-swipe-underlay';
++    swipeUnderlay.setAttribute('aria-hidden', 'true');
++    swipeUnderlay.textContent = '↩︎';
++    row.appendChild(swipeUnderlay);
++
+     const line = document.createElement('div');
+     line.className = 'chat-line';
+ 
+     if (!isMe) {
+       line.appendChild(makeAvatar(msg.sender_avatar_url));
+     }
+ 
+     const main = document.createElement('div');
+     main.className = 'chat-main';
+ 
+     if (!isMe) {
+       const sender = document.createElement('div');
+       sender.className = 'chat-sender';
+       sender.textContent = msg.sender_display_name || 'Unknown';
+       main.appendChild(sender);
+     }
+ 
+     if (msg.reply_to_message_id) {
+       main.appendChild(makeReplyQuote(
+         msg.reply_to_message_id,
+         msg.reply_to_sender_display_name || '元メッセージ',
+         msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
+         msg.reply_to_sender_avatar_url || defaultAvatarUrl,
+       ));
+     }
+@@ -2706,58 +2834,73 @@
+     searchPanel.innerHTML = '';
+     if (!Array.isArray(results) || results.length === 0) {
+       searchPanel.innerHTML = '<div class="small text-muted">一致するメッセージはありません</div>';
+     } else {
+       results.forEach((item) => {
+         const btn = document.createElement('button');
+         btn.type = 'button';
+         btn.className = 'chat-search-item';
+         btn.dataset.messageId = String(item?.message_id || '');
+         btn.innerHTML = `<div class="small text-muted">${escapeHtml(item?.sender || '')} / ${escapeHtml(item?.time || '')}</div><div>${escapeHtml(item?.excerpt || '')}</div>`;
+         btn.addEventListener('click', () => {
+           hideSearchPanel();
+           jumpToMessage(item?.message_id);
+         });
+         searchPanel.appendChild(btn);
+       });
+     }
+     searchPanel.classList.remove('d-none');
+   }
+ 
+   function hideSearchPanel() {
+     searchPanel?.classList.add('d-none');
+     if (searchPanel) searchPanel.innerHTML = '';
+   }
+ 
++  function clamp(n, min, max) {
++    return Math.max(min, Math.min(max, n));
++  }
++
++  function setSwipeTransform(row, bubble, x) {
++    bubble.style.transform = `translateX(${x}px)`;
++    row.classList.add('swiping');
++  }
++
++  function resetSwipe(row, bubble) {
++    row.classList.remove('swiping', 'commit');
++    row.classList.add('snapback');
++    bubble.style.transform = 'translateX(0px)';
++    window.setTimeout(() => row.classList.remove('snapback'), 180);
++  }
++
+   function clearLongPressTimer() {
+     if (state.longPressTimer) {
+       window.clearTimeout(state.longPressTimer);
+       state.longPressTimer = null;
+     }
+     state.longPressRow = null;
+     state.touchPointerId = null;
+-    state.swipeArmed = false;
+   }
+ 
+   function openContextMenu(row) {
+     if (!ctxMenu || !ctxPanel) return;
+     const messageId = Number(row?.dataset?.messageId || 0);
+     if (!messageId) return;
+ 
+     state.ctxMessageId = messageId;
+     state.ctxRow = row;
+     state.ctxBodyPlain = row.dataset.bodyPlain || '';
+     ctxMenu.dataset.messageId = String(messageId);
+ 
+     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
+     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
+     const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
+     editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
+ 
+     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
      if (ctxPreview) ctxPreview.textContent = previewText;
  
      ctxReactions?.classList.add('d-none');
@@ -246,178 +605,3 @@ index edab718a5d4e7c0cd3d19d42424ab4126af91e6e..48399c2a89e0ef5ada4e22c393197e00
      ctxMenu.classList.add('is-open');
    }
  
-   function closeContextMenu() {
-     if (!ctxMenu) return;
-     ctxMenu.classList.add('d-none');
-     ctxMenu.classList.remove('is-open');
-     ctxMenu.dataset.messageId = '';
-     state.ctxMessageId = null;
-     state.ctxRow = null;
-     state.ctxBodyPlain = '';
-     ctxReactions?.classList.add('d-none');
-   }
- 
-   function makeContextPreviewText(row, bodyPlain) {
-     if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
-     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
-     if (normalized) return normalized;
-     return '（画像）';
-   }
- 
-+  function openFulltextModal(row) {
-+    const modalEl = document.getElementById('chat-fulltext-modal');
-+    const metaEl = document.getElementById('chat-fulltext-meta');
-+    const bodyEl = document.getElementById('chat-fulltext-body');
-+    if (!modalEl || !metaEl || !bodyEl || !row) return;
-+
-+    const sender = row.dataset.senderName || 'Unknown';
-+    const createdAtIso = row.dataset.createdAtIso || '';
-+    const createdAt = createdAtIso ? formatDateTimeLabel(createdAtIso) : '';
-+    const bodyPlain = row.dataset.bodyPlain || '';
-+
-+    metaEl.textContent = `${sender}${createdAt ? ` / ${createdAt}` : ''}`;
-+    bodyEl.textContent = bodyPlain;
-+
-+    const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
-+    bsModal.show();
-+  }
-+
- 
-   async function copyTextWithFallback(text) {
-     if (!text) return;
-     if (navigator.clipboard?.writeText) {
-       await navigator.clipboard.writeText(text);
-       return;
-     }
-     const temp = document.createElement('textarea');
-     temp.value = text;
-     temp.setAttribute('readonly', 'readonly');
-     temp.style.position = 'fixed';
-     temp.style.left = '-9999px';
-     document.body.appendChild(temp);
-     temp.select();
-     document.execCommand('copy');
-     document.body.removeChild(temp);
-   }
- 
-   function isShareCancelled(error) {
-     const name = String(error?.name || '');
-     return name === 'AbortError' || name === 'NotAllowedError';
-   }
- 
-   function extensionFromMimeType(mimeType) {
-     const map = {
-@@ -2842,50 +2903,55 @@
-     const row = state.ctxRow || document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
-     const messageId = Number(row?.dataset?.messageId || 0);
-     if (!row || !messageId) {
-       closeContextMenu();
-       return;
-     }
- 
-     if (actionEl.classList.contains('chat-reaction-emoji')) {
-       const emoji = actionEl.dataset.emoji || '';
-       if (reactionEmojis.includes(emoji)) {
-         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
-       }
-       closeContextMenu();
-       return;
-     }
- 
-     const action = actionEl.dataset.ctxAction;
-     if (action === 'reply') {
-       const bubble = row.querySelector('.chat-bubble');
-       if (bubble) {
-         setReplyState(messageId, row.dataset.senderName || 'Unknown', row.dataset.bodyPlain || '', bubble);
-       }
-       closeContextMenu();
-       return;
-     }
-+    if (action === 'fulltext') {
-+      closeContextMenu();
-+      openFulltextModal(row);
-+      return;
-+    }
-     if (action === 'react') {
-       ctxReactions?.classList.toggle('d-none');
-       return;
-     }
-     if (action === 'open-thread') {
-       const rootId = Number(row.dataset.threadRootId || row.dataset.messageId || 0);
-       closeContextMenu();
-       openThreadModal(rootId);
-       return;
-     }
-     if (action === 'copy') {
-       try {
-         await copyTextWithFallback(state.ctxBodyPlain || row.dataset.bodyPlain || '');
-         alert('コピーしました');
-       } catch (_err) {
-         alert('コピーに失敗しました');
-       }
-       closeContextMenu();
-       return;
-     }
-     if (action === 'edit') {
-       if (row.dataset.canEdit !== '1') {
-         closeContextMenu();
-         return;
-       }
-@@ -2915,50 +2981,57 @@
-       updateAutoGrow();
-       bodyInput.focus();
-     }
-   }
- 
-   function clearEditState() {
-     state.editTargetMessageId = null;
-     editTargetInput.value = '';
-     if (replySender?.textContent === '編集中') {
-       replySender.textContent = '';
-       replyText.textContent = '';
-       replyPreview.classList.add('d-none');
-     }
-   }
- 
-   function formatDateLabel(date) {
-     const parts = fmtDate.formatToParts(date);
-     const get = (type) => parts.find((p) => p.type === type)?.value || '';
-     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
-   }
- 
-   function formatTimeLabel(date) {
-     return fmtTime.format(date);
-   }
- 
-+  function formatDateTimeLabel(isoText) {
-+    if (!isoText) return '';
-+    const date = new Date(isoText);
-+    if (Number.isNaN(date.getTime())) return '';
-+    return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
-+  }
-+
-   function applyReadSnapshot(states) {
-     state.readStateByActor.clear();
-     for (const readState of states || []) {
-       applyReadUpdate(readState);
-     }
-   }
- 
-   function applyReadUpdate(readState) {
-     if (!readState?.actor_type || !readState?.actor_id) return;
-     const key = `${readState.actor_type}:${readState.actor_id}`;
-     const prev = state.readStateByActor.get(key);
-     const nextReadId = Number(readState.last_read_message_id || 0);
-     const prevReadId = Number(prev?.last_read_message_id || 0);
-     if (prev && prevReadId > nextReadId) return;
-     state.readStateByActor.set(key, {
-       actor_type: readState.actor_type,
-       actor_id: String(readState.actor_id),
-       display_name: readState.display_name || prev?.display_name || readState.actor_id,
-       last_read_message_id: Math.max(prevReadId, nextReadId),
-     });
-   }
- 
-   function refreshReadIndicators() {
-     msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
-   }
