@@ -1,295 +1,58 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 18731cce220f1c7d0c67cc987e08eca641ae230c..bfd201843cbdc618ac3638bfdeef17b348ef1116 100644
+index bfd201843cbdc618ac3638bfdeef17b348ef1116..b41f3720882a966cb36a18ccd153403a2b757d54 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -371,61 +371,79 @@
- }
- 
- .react-open-btn {
-   right: 38px;
- }
- 
- .chat-menu-open-btn {
-   right: 6px;
-   font-size: 15px;
-   letter-spacing: 1px;
- }
- 
- .chat-message .react-open-btn,
- .chat-message .chat-menu-open-btn {
-   opacity: 0;
-   pointer-events: none;
-   transition: opacity 0.12s ease;
- }
- 
- .chat-message:hover .react-open-btn,
- .chat-message:hover .chat-menu-open-btn {
-   opacity: 1;
-   pointer-events: auto;
- }
- 
-+.chat-message.is-selected .react-open-btn,
-+.chat-message.is-selected .chat-menu-open-btn {
-+  opacity: 1;
-+  pointer-events: auto;
-+}
-+
- .chat-row.me .react-open-btn {
-   display: none !important;
- }
- 
-+.chat-row.me .chat-menu-open-btn {
-+  left: 6px;
-+  right: auto;
-+}
-+
-+.chat-row.other .chat-menu-open-btn {
-+  right: 6px;
-+  left: auto;
-+}
-+
- @media (hover: none) {
--  .chat-message .react-open-btn {
-+  .chat-message .react-open-btn,
-+  .chat-message .chat-menu-open-btn {
-     opacity: 0;
-     pointer-events: none;
-   }
- 
--  .chat-message .chat-menu-open-btn {
-+  .chat-message.is-selected .react-open-btn,
-+  .chat-message.is-selected .chat-menu-open-btn {
-     opacity: 1;
-     pointer-events: auto;
-   }
- }
- 
- .chat-ctx-menu {
-   position: fixed;
-   inset: 0;
-   z-index: 2000;
-   display: none;
-   align-items: center;
-   justify-content: center;
-   padding: 16px;
- }
- 
- .chat-ctx-menu.d-none {
-   display: none;
- }
- 
- .chat-ctx-menu.is-open {
-   display: flex;
- }
- 
- .chat-ctx-backdrop {
-   position: absolute;
-@@ -1191,50 +1209,51 @@
-   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
-   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
-   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
- 
-   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     year: 'numeric',
-     month: 'numeric',
-     day: 'numeric',
-     weekday: 'short',
-   });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-     hour12: false,
-   });
- 
-   const [myActorType, myActorId] = meId.includes(':')
-     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
-     : ['', ''];
- 
-   const state = {
-     replyToId: null,
-     selectedBubble: null,
-+    selectedRowEl: null,
-     readStateByActor: new Map(),
-     reactionByMessage: new Map(),
-     viewerImages: [],
-     viewerIndex: 0,
-     ctxMessageId: null,
-     touchDoubleTap: {
-       startX: 0,
-       startY: 0,
-       moved: false,
-       row: null,
-       bubble: null,
-       lastTapAt: 0,
-       lastTapX: 0,
-       lastTapY: 0,
-       lastTapMessageId: null,
-     },
-     ctxRow: null,
-     ctxBodyPlain: '',
-     editTargetMessageId: null,
-     typingMembers: new Map(),
-     typingDebounceTimer: null,
-     typingStopTimer: null,
-     typingSent: false,
-     threadRootId: null,
-     loadingOlder: false,
-@@ -1414,53 +1433,63 @@
-       const row = reactionBtn.closest('.chat-row');
-       const messageId = Number(row?.dataset.messageId || 0);
-       const emoji = reactionBtn.dataset.emoji || '';
-       if (messageId && reactionEmojis.includes(emoji)) {
-         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+@@ -3052,51 +3052,52 @@
+     if (action === 'react') {
+       ctxReactions?.classList.toggle('d-none');
+       return;
+     }
+     if (action === 'open-thread') {
+       const rootId = Number(row.dataset.threadRootId || row.dataset.messageId || 0);
+       closeContextMenu();
+       openThreadModal(rootId);
+       return;
+     }
+     if (action === 'copy') {
+       try {
+         await copyTextWithFallback(state.ctxBodyPlain || row.dataset.bodyPlain || '');
+         alert('コピーしました');
+       } catch (_err) {
+         alert('コピーに失敗しました');
        }
+       closeContextMenu();
        return;
      }
- 
-     const reactionChip = e.target.closest('.chat-reaction-chip');
-     if (reactionChip) {
-       const row = reactionChip.closest('.chat-row');
-       const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
-       if (messageId) {
-         openReactionDetailModal(messageId);
+     if (action === 'edit') {
+       if (row.dataset.canEdit !== '1') {
+         closeContextMenu();
+         return;
        }
+-      setEditState(messageId, row.dataset.bodyPlain || '');
++      const fullText = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
++      setEditState(messageId, fullText);
+       closeContextMenu();
        return;
      }
- 
- 
-     const contentLink = e.target.closest('a.chat-link');
-     if (contentLink) {
-       return;
+     if (action === 'delete') {
+       if (row.dataset.canDelete !== '1') {
+         closeContextMenu();
+         return;
+       }
+       closeContextMenu();
+       await handleDeleteMessage(row, messageId);
      }
+   }
  
-+    const row = e.target.closest('.chat-row[data-message-id]');
-+    const bubble = e.target.closest('.chat-bubble, .chat-body, .chat-image-thumb, .chat-image-link');
-+    if (row && bubble && Number(row.dataset.deletedFlag || 0) !== 1) {
-+      selectMessageRow(row);
-+      return;
-+    }
-+
-+    clearMessageSelection();
-+
-   });
- 
-   msgBox.addEventListener('contextmenu', (e) => {
-+    clearMessageSelection();
-     const row = e.target.closest('.chat-row[data-message-id]');
-     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
- 
-     if (e.target.closest('#chat-fulltext-modal')) return;
- 
-     e.preventDefault();
- 
-     if (!isMobile) {
-       openContextMenu(row);
+   function setEditState(messageId, plainText) {
+     clearReplyState();
+     state.editTargetMessageId = messageId;
+     editTargetInput.value = String(messageId);
+     if (replySender) replySender.textContent = '編集中';
+     if (replyText) replyText.textContent = makeExcerpt(plainText || '');
+     replyPreview.classList.remove('d-none');
+     if (bodyInput) {
+       bodyInput.value = plainText || '';
+       updateAutoGrow();
+       bodyInput.focus();
      }
-   });
- 
-   threadModal?.addEventListener('click', (e) => {
-     const reactionChip = e.target.closest('.chat-reaction-chip');
-     if (!reactionChip) return;
-     const row = reactionChip.closest('.chat-row');
-     const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
-     if (!messageId) return;
-     e.preventDefault();
-     openReactionDetailModal(messageId);
-   });
- 
- 
-   msgBox.addEventListener('dblclick', (e) => {
-     const target = getReplyTargetFromEvent(e);
-@@ -2786,74 +2815,92 @@
-   }
- 
-   function getReplyTargetFromEvent(e) {
-     if (e.target.closest('.chat-reaction-chip, .chat-reaction-panel, .chat-reply-quote, .chat-image-link, a, button, input, textarea, .chat-read-inline, .chat-read-indicator, .chat-thread-link')) {
-       return null;
-     }
-     const row = e.target.closest('.chat-row[data-message-id]');
-     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return null;
-     const bubble = e.target.closest('.chat-bubble') || row.querySelector('.chat-bubble');
-     if (!bubble) return null;
-     return { row, bubble };
-   }
- 
-   function resetTouchDoubleTap() {
-     state.touchDoubleTap.startX = 0;
-     state.touchDoubleTap.startY = 0;
-     state.touchDoubleTap.moved = false;
-     state.touchDoubleTap.row = null;
-     state.touchDoubleTap.bubble = null;
-     state.touchDoubleTap.lastTapAt = 0;
-     state.touchDoubleTap.lastTapX = 0;
-     state.touchDoubleTap.lastTapY = 0;
-     state.touchDoubleTap.lastTapMessageId = null;
-   }
- 
-+  function selectMessageRow(row) {
-+    if (!row) return;
-+    if (state.selectedRowEl === row) return;
-+    if (state.selectedRowEl) {
-+      state.selectedRowEl.classList.remove('is-selected');
-+    }
-+    state.selectedRowEl = row;
-+    state.selectedRowEl.classList.add('is-selected');
-+  }
-+
-+  function clearMessageSelection() {
-+    if (!state.selectedRowEl) return;
-+    state.selectedRowEl.classList.remove('is-selected');
-+    state.selectedRowEl = null;
-+  }
-+
-   function openContextMenu(row) {
-+    clearMessageSelection();
-     if (!ctxMenu || !ctxPanel) return;
-     const messageId = Number(row?.dataset?.messageId || 0);
-     if (!messageId) return;
- 
-     state.ctxMessageId = messageId;
-     state.ctxRow = row;
-     state.ctxBodyPlain = row.dataset.bodyPlain || '';
-     ctxMenu.dataset.messageId = String(messageId);
- 
-     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
-     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
-     const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
-     editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
- 
-     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
-     if (ctxPreview) ctxPreview.textContent = previewText;
- 
-     ctxReactions?.classList.add('d-none');
-     ctxMenu.classList.remove('d-none');
-     ctxMenu.classList.add('is-open');
-   }
- 
-   function closeContextMenu() {
-+    clearMessageSelection();
-     if (!ctxMenu) return;
-     ctxMenu.classList.add('d-none');
-     ctxMenu.classList.remove('is-open');
-     ctxMenu.dataset.messageId = '';
-     state.ctxMessageId = null;
-     state.ctxRow = null;
-     state.ctxBodyPlain = '';
-     ctxReactions?.classList.add('d-none');
-   }
- 
-   function makeContextPreviewText(row, bodyPlain) {
-     if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
-     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
-     if (normalized) return normalized;
-     return '（画像）';
-   }
- 
-   function openFulltextModal(row) {
-     const modalEl = document.getElementById('chat-fulltext-modal');
-     const metaEl = document.getElementById('chat-fulltext-meta');
-     const bodyEl = document.getElementById('chat-fulltext-body');
-     if (!modalEl || !metaEl || !bodyEl || !row) return;
- 
-     const sender = row.dataset.senderName || '';
-     const createdIso = row.dataset.createdAtIso || '';
