@@ -1,1031 +1,104 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 63ba461af49933adfc2753155d36374a47ab7db0..a06685d9e91d4b3a527498dfede5c96f1ef6f002 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -50,50 +50,52 @@ chat_bp = Blueprint(
-     "chat",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
-     url_prefix="/chat",
- )
- 
- MESSAGE_MAX_LEN = 2000
- RATE_LIMIT_SECONDS = 1
- JST = ZoneInfo("Asia/Tokyo")
- 
- CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REPLY_SCHEMA_READY: bool | None = None
- CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_PUSH_SCHEMA_READY: bool | None = None
- CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
- CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_READ_STATE_SCHEMA_READY: bool | None = None
- CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REACTION_SCHEMA_READY: bool | None = None
- CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_IMAGE_SCHEMA_READY: bool | None = None
- CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
-+CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
-+CHAT_DELETE_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
- CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
- CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
- CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", "10485760")), 1)
- PUSH_REQUEST_TIMEOUT_SECONDS = 6
- PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
- PUSH_LOG_SUPPRESSION_SECONDS = 300
- PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
- PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
- PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
- PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
- PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
- PUSH_ASYNC_INFLIGHT = 0
- _LINKIFY_RE = re.compile(
-     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
- )
- _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
- 
- 
- def _default_avatar_url() -> str:
-     return DEFAULT_AVATAR_URL
- 
- 
- def _build_ext_avatar_url(row: dict[str, Any] | None) -> str:
-     if not row:
-@@ -417,50 +419,96 @@ def _ensure_chat_message_images_schema() -> bool:
-                   image_file VARCHAR(255) NOT NULL,
-                   image_thumb_file VARCHAR(255) NOT NULL,
-                   image_mime VARCHAR(64) NOT NULL,
-                   image_size BIGINT NOT NULL,
-                   image_width INT NOT NULL,
-                   image_height INT NOT NULL,
-                   created_at DATETIME NOT NULL,
-                   UNIQUE KEY uq_chat_message_images_message_seq (message_id, seq),
-                   KEY idx_chat_message_images_event_message (event_id, message_id),
-                   KEY idx_chat_message_images_message (message_id)
-                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                 """
-             )
-             db.commit()
-             CHAT_MESSAGE_IMAGES_SCHEMA_READY = True
-             return True
-         except Exception:
-             current_app.logger.warning("chat message images schema ensure failed", exc_info=True)
-             CHAT_MESSAGE_IMAGES_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
- 
- 
-+def _ensure_chat_delete_schema() -> bool:
-+    global CHAT_DELETE_SCHEMA_READY
-+    if CHAT_DELETE_SCHEMA_READY is not None:
-+        return CHAT_DELETE_SCHEMA_READY
-+
-+    with CHAT_DELETE_SCHEMA_CHECK_LOCK:
-+        if CHAT_DELETE_SCHEMA_READY is not None:
-+            return CHAT_DELETE_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor(dictionary=True)
-+        try:
-+            definitions = {
-+                "deleted_flag": "ALTER TABLE chat_messages ADD COLUMN deleted_flag TINYINT NOT NULL DEFAULT 0 AFTER created_at",
-+                "deleted_at": "ALTER TABLE chat_messages ADD COLUMN deleted_at DATETIME NULL AFTER deleted_flag",
-+                "deleted_by_actor_type": "ALTER TABLE chat_messages ADD COLUMN deleted_by_actor_type VARCHAR(16) NULL AFTER deleted_at",
-+                "deleted_by_actor_id": "ALTER TABLE chat_messages ADD COLUMN deleted_by_actor_id VARCHAR(64) NULL AFTER deleted_by_actor_type",
-+            }
-+            for column_name, ddl in definitions.items():
-+                cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
-+                if cur.fetchone():
-+                    continue
-+                try:
-+                    cur.execute(ddl)
-+                except Exception:
-+                    current_app.logger.warning("chat delete schema ensure column failed column=%s", column_name, exc_info=True)
-+
-+            db.commit()
-+            missing_columns: list[str] = []
-+            for column_name in definitions:
-+                cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
-+                if not cur.fetchone():
-+                    missing_columns.append(column_name)
-+            CHAT_DELETE_SCHEMA_READY = len(missing_columns) == 0
-+            if missing_columns:
-+                current_app.logger.warning("chat delete schema ensure missing columns=%s", ",".join(missing_columns))
-+            return CHAT_DELETE_SCHEMA_READY
-+        except Exception:
-+            current_app.logger.warning("chat delete schema ensure failed", exc_info=True)
-+            CHAT_DELETE_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
- def _ensure_chat_read_state_schema() -> bool:
-     global CHAT_READ_STATE_SCHEMA_READY
-     if CHAT_READ_STATE_SCHEMA_READY is not None:
-         return CHAT_READ_STATE_SCHEMA_READY
- 
-     with CHAT_READ_STATE_SCHEMA_CHECK_LOCK:
-         if CHAT_READ_STATE_SCHEMA_READY is not None:
-             return CHAT_READ_STATE_SCHEMA_READY
- 
-         db = get_db()
-         cur = db.cursor()
-         try:
-             cur.execute(
-                 """
-                 CREATE TABLE IF NOT EXISTS chat_read_state (
-                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                   event_id BIGINT NOT NULL,
-                   actor_type VARCHAR(16) NOT NULL,
-                   actor_id VARCHAR(64) NOT NULL,
-                   last_read_message_id BIGINT NOT NULL DEFAULT 0,
-                   updated_at DATETIME NOT NULL,
-                   UNIQUE KEY uq_chat_read_state_actor (event_id, actor_type, actor_id),
-                   KEY idx_chat_read_state_event_message (event_id, last_read_message_id)
-                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                 """
-@@ -612,110 +660,133 @@ def _to_utc_datetime(value: Any) -> datetime:
-         dt = value
-     else:
-         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=ZoneInfo("UTC"))
-     return dt.astimezone(ZoneInfo("UTC"))
- 
- 
- def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     dt_utc = _to_utc_datetime(created_at)
-     dt_jst = dt_utc.astimezone(JST)
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-     time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
-     return dt_utc.isoformat(), date_label, time_label
- 
- 
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-     avatar_cache: dict[str, str] | None = None,
- ) -> dict[str, Any]:
-     sender_actor_type = str(msg["sender_actor_type"])
-     sender_actor_id = str(msg["sender_actor_id"])
-     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
-+    deleted_flag = int(msg.get("deleted_flag") or 0) == 1
-+    deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
-+    deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
- 
-     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-     reply_to_sender_avatar_url = None
-     if reply_to_sender_actor_type and reply_to_sender_actor_id:
-         reply_to_sender_avatar_url = _resolve_sender_avatar_url(
-             str(reply_to_sender_actor_type),
-             str(reply_to_sender_actor_id),
-             avatar_cache=avatar_cache,
-         )
- 
--    raw_images = msg.get("images") or _fallback_images_from_message(msg)
-+    raw_images = [] if deleted_flag else (msg.get("images") or _fallback_images_from_message(msg))
-     images: list[dict[str, Any]] = []
-     for image in raw_images:
-         image_file = str(image.get("image_file") or "").strip()
-         image_thumb_file = str(image.get("image_thumb_file") or "").strip()
-         if not image_file or not image_thumb_file:
-             continue
-         images.append(
-             {
-                 "seq": int(image.get("seq") or (len(images) + 1)),
-                 "url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file),
-                 "thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file),
-                 "mime": image.get("image_mime"),
-                 "size": image.get("image_size"),
-                 "width": image.get("image_width"),
-                 "height": image.get("image_height"),
-             }
-         )
- 
-     has_image = bool(images)
-     first_image = images[0] if images else None
-+    body_value = "" if deleted_flag else (msg.get("body") or "")
-+    body_html = deleted_text if deleted_flag else _linkify_escaped_text(body_value).replace("\n", "<br>")
-+    reply_excerpt = msg.get("reply_to_body_plain_excerpt")
-+    if not reply_excerpt and msg.get("reply_to_message_id"):
-+        reply_excerpt = "元メッセージが見つかりません"
-+
-+    actor_is_admin = _is_admin_actor(current_actor)
-+    is_me = str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])))
-+    can_delete = False
-+    if not deleted_flag:
-+        if actor_is_admin:
-+            can_delete = True
-+        elif is_me and isinstance(msg.get("created_at"), datetime):
-+            can_delete = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
- 
-     return {
-         "id": msg["id"],
-         "event_id": msg["event_id"],
-         "sender_id": sender_id,
-         "sender_display_name": msg["sender_display_name"],
-         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
--        "body": msg["body"],
--        "body_html": _linkify_escaped_text(msg["body"] or "").replace("\n", "<br>"),
-+        "body": body_value,
-+        "body_html": body_html,
-+        "deleted_flag": 1 if deleted_flag else 0,
-+        "deleted_at": msg.get("deleted_at").isoformat() if msg.get("deleted_at") else None,
-+        "deleted_by_actor_type": deleted_by_actor_type,
-+        "deleted_by_actor_id": msg.get("deleted_by_actor_id"),
-+        "deleted_text": deleted_text,
-         "created_at_iso": created_at_iso,
-         "created_at_jst_date_label": date_label,
-         "created_at_jst_time_hm": time_label,
--        "body_plain_excerpt": _build_plain_excerpt(msg.get("body") or ""),
-+        "body_plain_excerpt": deleted_text if deleted_flag else _build_plain_excerpt(body_value),
-         "reply_to_message_id": msg.get("reply_to_message_id"),
-         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
--        "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
-+        "reply_to_body_plain_excerpt": reply_excerpt,
-         "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
--        "reactions_summary": msg.get("reactions_summary") or [],
--        "my_reaction": msg.get("my_reaction"),
-+        "reactions_summary": [] if deleted_flag else (msg.get("reactions_summary") or []),
-+        "my_reaction": None if deleted_flag else msg.get("my_reaction"),
-         "has_image": has_image,
-         "images": images,
-         "image_url": first_image.get("url") if first_image else None,
-         "image_thumb_url": first_image.get("thumb_url") if first_image else None,
-         "image_mime": first_image.get("mime") if first_image else None,
-         "image_size": first_image.get("size") if first_image else None,
-         "image_width": first_image.get("width") if first_image else None,
-         "image_height": first_image.get("height") if first_image else None,
--        "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
-+        "is_me": is_me,
-+        "can_delete": can_delete,
-     }
- 
- 
- def _linkify_escaped_text(text: str) -> str:
-     value = str(text or "")
- 
-     def _replace(match: re.Match[str]) -> str:
-         token = match.group(0)
-         trimmed = token
-         while trimmed and trimmed[-1] in _LINKIFY_TRAILING_CHARS:
-             trimmed = trimmed[:-1]
-         if not trimmed:
-             return token
- 
-         suffix = token[len(trimmed):]
-         if match.group("email"):
-             href = f"mailto:{trimmed}"
-         elif trimmed.startswith("http://") or trimmed.startswith("https://"):
-             href = trimmed
-         elif trimmed.startswith("www."):
-             href = f"https://{trimmed}"
-         else:
-             return token
- 
-         return (
-@@ -723,50 +794,56 @@ def _linkify_escaped_text(text: str) -> str:
-         )
- 
-     return _LINKIFY_RE.sub(_replace, value)
- 
- 
- def _build_plain_excerpt(value: str, max_len: int = 80) -> str:
-     text = re.sub(r"<[^>]+>", "", value or "")
-     text = re.sub(r"\s+", " ", text).strip()
-     if len(text) <= max_len:
-         return text
-     return f"{text[:max_len - 1]}…"
- 
- 
- def _chat_csrf() -> str:
-     token = session.get("chat_csrf")
-     if not token:
-         token = secrets.token_urlsafe(24)
-         session["chat_csrf"] = token
-     return token
- 
- 
- def _is_admin() -> bool:
-     return session.get("user") == "admin"
- 
- 
-+def _is_admin_actor(actor: dict[str, Any] | None) -> bool:
-+    if not actor:
-+        return False
-+    return str(actor.get("actor_type") or "") == "admin"
-+
-+
- def get_chat_actor() -> dict[str, Any] | None:
-     """admin / acl / line を統一形式へ正規化。"""
-     if session.get("user"):
-         username = str(session.get("user"))
-         actor_type = "admin" if username == "admin" else "acl"
-         email = None
-         db = get_db()
-         cur = db.cursor(dictionary=True)
-         try:
-             cur.execute("SELECT username, email FROM users WHERE username=%s LIMIT 1", (username,))
-             row = cur.fetchone()
-             if row:
-                 email = row.get("email")
-         except Exception:
-             current_app.logger.warning("chat actor load failed for mfu user=%s", username, exc_info=True)
-         finally:
-             cur.close()
-             db.close()
-         return {
-             "actor_type": actor_type,
-             "actor_id": username,
-             "display_name": username,
-             "email": email,
-         }
- 
-@@ -864,178 +941,206 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
-              ORDER BY e.starts_at DESC
-              LIMIT 100
-             """,
-             (actor["actor_id"],),
-         )
-         return cur.fetchall() or []
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _get_event(event_id: int) -> dict[str, Any] | None:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-         return cur.fetchone()
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
-     has_reply_schema = _ensure_chat_reply_schema()
-     has_image_schema = _ensure_chat_image_schema()
-+    has_delete_schema = _ensure_chat_delete_schema()
-     image_columns = (
-         "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
-         if has_image_schema
-         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
-     )
-+    delete_columns = (
-+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
-+        if has_delete_schema
-+        else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
-+    )
-+    reply_delete_columns = (
-+        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
-+        if has_delete_schema
-+        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
-+    )
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         if has_reply_schema:
-             cur.execute(
-                 f"""
-                 SELECT m.id,
-                        m.event_id,
-                        m.sender_actor_type,
-                        m.sender_actor_id,
-                        m.sender_display_name,
-                        m.body,
-                        m.created_at,
-                        {image_columns},
-+                       {delete_columns},
-                        m.reply_to_message_id,
-                        p.sender_actor_type AS reply_to_sender_actor_type,
-                        p.sender_actor_id AS reply_to_sender_actor_id,
-                        p.sender_display_name AS reply_to_sender_display_name,
--                       p.body AS reply_to_body
-+                       p.body AS reply_to_body,
-+                       {reply_delete_columns}
-                   FROM chat_messages m
-                   LEFT JOIN chat_messages p
-                          ON p.id = m.reply_to_message_id
-                         AND p.event_id = m.event_id
-                  WHERE m.event_id=%s
-                  ORDER BY m.created_at DESC
-                  LIMIT %s
-                 """,
-                 (event_id, limit),
-             )
-             rows = cur.fetchall() or []
-             for row in rows:
-                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
--                    row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
-+                    if int(row.get("reply_to_deleted_flag") or 0) == 1:
-+                        row["reply_to_body_plain_excerpt"] = (
-+                            "管理者により削除"
-+                            if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
-+                            else "削除されました"
-+                        )
-+                    else:
-+                        row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
-                 elif row.get("reply_to_message_id"):
-                     row["reply_to_sender_display_name"] = "元メッセージ"
-                     row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
-                 else:
-                     row["reply_to_sender_display_name"] = None
-                     row["reply_to_body_plain_excerpt"] = None
-             return list(reversed(rows))
- 
-         cur.execute(
-             f"""
-             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
--                   {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'}
-+                   {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
-+                   {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'}
-               FROM chat_messages
-              WHERE event_id=%s
-              ORDER BY created_at DESC
-              LIMIT %s
-             """,
-             (event_id, limit),
-         )
-         rows = cur.fetchall() or []
-         for row in rows:
-             row["reply_to_message_id"] = None
-             row["reply_to_sender_actor_type"] = None
-             row["reply_to_sender_actor_id"] = None
-             row["reply_to_sender_display_name"] = None
-             row["reply_to_body_plain_excerpt"] = None
-+            row["reply_to_deleted_flag"] = 0
-+            row["reply_to_deleted_by_actor_type"] = None
-         return list(reversed(rows))
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _save_message(
-     event_id: int,
-     actor: dict[str, Any],
-     body: str,
-     reply_to_message_id: int | None = None,
-     image_meta: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
-     now = datetime.utcnow()
-     has_reply_schema = _ensure_chat_reply_schema()
-     has_image_schema = _ensure_chat_image_schema()
-+    _ensure_chat_delete_schema()
-     image_meta = image_meta or {}
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         insert_columns = ["event_id", "sender_actor_type", "sender_actor_id", "sender_display_name", "body", "created_at"]
-         insert_values: list[Any] = [event_id, actor["actor_type"], actor["actor_id"], actor["display_name"], body, now]
- 
-         if has_reply_schema:
-             insert_columns.append("reply_to_message_id")
-             insert_values.append(reply_to_message_id)
-         else:
-             reply_to_message_id = None
- 
-         if has_image_schema:
-             insert_columns.extend(["image_file", "image_thumb_file", "image_mime", "image_size", "image_width", "image_height"])
-             insert_values.extend(
-                 [
-                     image_meta.get("image_file"),
-                     image_meta.get("image_thumb_file"),
-                     image_meta.get("image_mime"),
-                     image_meta.get("image_size"),
-                     image_meta.get("image_width"),
-                     image_meta.get("image_height"),
-                 ]
-             )
- 
-         placeholders = ", ".join(["%s"] * len(insert_columns))
-         cur.execute(
-             f"INSERT INTO chat_messages ({', '.join(insert_columns)}) VALUES ({placeholders})",
-             tuple(insert_values),
-         )
-         msg_id = cur.lastrowid
-         db.commit()
-         return {
-             "id": msg_id,
-             "event_id": event_id,
-             "sender_actor_type": actor["actor_type"],
-             "sender_actor_id": actor["actor_id"],
-             "sender_display_name": actor["display_name"],
-             "body": body,
-             "created_at": now,
-             "reply_to_message_id": reply_to_message_id,
-             "image_file": image_meta.get("image_file"),
-             "image_thumb_file": image_meta.get("image_thumb_file"),
-             "image_mime": image_meta.get("image_mime"),
-             "image_size": image_meta.get("image_size"),
-             "image_width": image_meta.get("image_width"),
-             "image_height": image_meta.get("image_height"),
-+            "deleted_flag": 0,
-+            "deleted_at": None,
-+            "deleted_by_actor_type": None,
-+            "deleted_by_actor_id": None,
-         }
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _load_reactions_by_message_ids(message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
-     if not message_ids:
-         return {}
-     if not _ensure_chat_reaction_schema():
-         return {}
- 
-     placeholders = ", ".join(["%s"] * len(message_ids))
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             f"""
-             SELECT message_id, emoji, COUNT(*) AS cnt
-               FROM chat_message_reactions
-              WHERE message_id IN ({placeholders})
-              GROUP BY message_id, emoji
-             """,
-             tuple(message_ids),
-         )
-@@ -1285,67 +1390,74 @@ def _validate_reply_to_message_id(event_id: int, raw_value: Any) -> int | None:
-         db.close()
- 
- 
- def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
-     if not _ensure_chat_reply_schema():
-         message["reply_to_message_id"] = None
-         message["reply_to_sender_actor_type"] = None
-         message["reply_to_sender_actor_id"] = None
-         message["reply_to_sender_display_name"] = None
-         message["reply_to_body_plain_excerpt"] = None
-         return message
- 
-     reply_to_message_id = message.get("reply_to_message_id")
-     if not reply_to_message_id:
-         message["reply_to_sender_actor_type"] = None
-         message["reply_to_sender_actor_id"] = None
-         message["reply_to_sender_display_name"] = None
-         message["reply_to_body_plain_excerpt"] = None
-         return message
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
--            SELECT sender_actor_type, sender_actor_id, sender_display_name, body
-+            SELECT sender_actor_type, sender_actor_id, sender_display_name, body,
-+                   COALESCE(deleted_flag, 0) AS deleted_flag,
-+                   deleted_by_actor_type
-               FROM chat_messages
-              WHERE id=%s AND event_id=%s
-              LIMIT 1
-             """,
-             (reply_to_message_id, message["event_id"]),
-         )
-         row = cur.fetchone()
-     finally:
-         cur.close()
-         db.close()
- 
-     if row:
-         message["reply_to_sender_actor_type"] = row["sender_actor_type"]
-         message["reply_to_sender_actor_id"] = row["sender_actor_id"]
-         message["reply_to_sender_display_name"] = row["sender_display_name"]
--        message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
-+        if int(row.get("deleted_flag") or 0) == 1:
-+            message["reply_to_body_plain_excerpt"] = (
-+                "管理者により削除" if str(row.get("deleted_by_actor_type") or "") == "admin" else "削除されました"
-+            )
-+        else:
-+            message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
-     else:
-         message["reply_to_sender_actor_type"] = None
-         message["reply_to_sender_actor_id"] = None
-         message["reply_to_sender_display_name"] = "元メッセージ"
-         message["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
-     return message
- 
- 
- def _check_rate_limit(actor: dict[str, Any]) -> bool:
-     key = f"chat_last_post:{actor['actor_type']}:{actor['actor_id']}"
-     now = datetime.utcnow()
-     prev_iso = session.get(key)
-     if prev_iso:
-         try:
-             prev = datetime.fromisoformat(prev_iso)
-             if now - prev < timedelta(seconds=RATE_LIMIT_SECONDS):
-                 return False
-         except Exception:
-             pass
-     session[key] = now.isoformat()
-     return True
- 
- 
- def _extract_mentions(body: str) -> list[str]:
-     return re.findall(r"@([\w\-ぁ-んァ-ン一-龥ー]+)", body)
-@@ -1778,50 +1890,51 @@ def _require_any_login():
-         return None
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     return None
- 
- 
- @chat_bp.route("/")
- def index():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     events = _accessible_events(actor)
-     return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
- 
- 
- @chat_bp.route("/events/<int:event_id>")
- def room(event_id: int):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
- 
-     _ensure_chat_read_state_schema()
-+    _ensure_chat_delete_schema()
- 
-     event = _get_event(event_id)
-     if not event:
-         abort(404)
-     avatar_cache: dict[str, str] = {}
-     raw_messages = _load_messages(event_id)
-     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
-     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
-     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
-     images_by_message = _load_message_images_by_message_ids(message_ids)
-     messages = []
-     for message in raw_messages:
-         message_id = int(message.get("id") or 0)
-         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
-         message["my_reaction"] = my_reaction_by_message.get(message_id)
-         message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
-         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
-     can_broadcast = actor["actor_type"] in {"admin", "acl"}
-     return render_template(
-         "chat/room.html",
-         actor=actor,
-         current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
-         event=event,
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-@@ -1829,50 +1942,52 @@ def room(event_id: int):
-         can_broadcast=can_broadcast,
-         default_avatar_url=_default_avatar_url(),
-     )
- 
- 
- @chat_bp.get("/events/<int:event_id>/images/<path:name>")
- def chat_image(event_id: int, name: str):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-     if "/" in name or "\\" in name or name.startswith("."):
-         abort(404)
-     directory = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
-     return send_from_directory(directory, name)
- 
- 
- @chat_bp.post("/api/events/<int:event_id>/upload-image")
- def upload_image(event_id: int):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-+    if not _ensure_chat_delete_schema():
-+        return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
-     if not _ensure_chat_image_schema():
-         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
-     if not _ensure_chat_message_images_schema():
-         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
- 
-     payload = request.get_json(silent=True) or {}
-     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         current_app.logger.warning(
-             "chat upload-image csrf mismatch event_id=%s actor=%s:%s ua=%s",
-             event_id,
-             actor.get("actor_type"),
-             actor.get("actor_id"),
-             request.headers.get("User-Agent", ""),
-         )
-         return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再送してください"}), 400
- 
-     if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
-         return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
- 
-     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
-     if not raw_upload_files:
-         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
-     if len(raw_upload_files) > 6:
-         return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
-@@ -1979,50 +2094,139 @@ def upload_image(event_id: int):
-             "image_width": image_meta.get("image_width"),
-             "image_height": image_meta.get("image_height"),
-         }
-         for idx, image_meta in enumerate(image_metas, start=1)
-     ]
- 
-     message_payload = _present_message(message, actor, avatar_cache={})
-     socketio.emit("chat_message", message_payload, to=f"event:{event_id}")
- 
-     app = current_app._get_current_object()
-     now = time.monotonic()
-     _submit_chat_message_push_async(
-         app,
-         event_id,
-         actor,
-         actor["display_name"],
-         body,
-         int(message_payload["id"]),
-         {"t0": now, "t1": now, "t2": now},
-         has_image=True,
-     )
- 
-     return jsonify({"ok": True, "message": message_payload})
- 
- 
-+@chat_bp.post("/api/events/<int:event_id>/messages/<int:message_id>/delete")
-+def delete_message(event_id: int, message_id: int):
-+    actor = get_chat_actor()
-+    if not actor:
-+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
-+    if not _can_access_event(event_id, actor):
-+        return jsonify({"ok": False, "error": "このイベントにはアクセスできません"}), 403
-+    if not _ensure_chat_delete_schema():
-+        return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
-+
-+    payload = request.get_json(silent=True) or {}
-+    token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
-+    if token != session.get("chat_csrf"):
-+        return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再試行してください"}), 400
-+
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    deleted_at: datetime | None = None
-+    deleted_by_actor_type = actor.get("actor_type")
-+    try:
-+        cur.execute(
-+            """
-+            SELECT id, event_id, sender_actor_type, sender_actor_id, created_at,
-+                   COALESCE(deleted_flag, 0) AS deleted_flag,
-+                   deleted_at, deleted_by_actor_type
-+              FROM chat_messages
-+             WHERE id=%s AND event_id=%s
-+             LIMIT 1
-+            """,
-+            (message_id, event_id),
-+        )
-+        row = cur.fetchone()
-+        if not row:
-+            return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
-+
-+        if int(row.get("deleted_flag") or 0) == 1:
-+            return jsonify({"ok": True})
-+
-+        is_admin_actor = _is_admin_actor(actor)
-+        actor_sender_id = _actor_sender_id(str(actor.get("actor_type") or ""), str(actor.get("actor_id") or ""))
-+        message_sender_id = _actor_sender_id(
-+            str(row.get("sender_actor_type") or ""),
-+            str(row.get("sender_actor_id") or ""),
-+        )
-+
-+        if not is_admin_actor and actor_sender_id != message_sender_id:
-+            return jsonify({"ok": False, "error": "このメッセージを削除する権限がありません"}), 403
-+
-+        if not is_admin_actor:
-+            created_at = row.get("created_at")
-+            if not isinstance(created_at, datetime):
-+                return jsonify({"ok": False, "error": "送信時刻の取得に失敗しました"}), 400
-+            if created_at + timedelta(hours=12) < datetime.utcnow():
-+                return jsonify({"ok": False, "error": "送信から12時間を過ぎたため、送信取消できません"}), 403
-+
-+        cur.execute(
-+            """
-+            UPDATE chat_messages
-+               SET deleted_flag=1,
-+                   deleted_at=NOW(),
-+                   deleted_by_actor_type=%s,
-+                   deleted_by_actor_id=%s
-+             WHERE id=%s
-+            """,
-+            (actor.get("actor_type"), str(actor.get("actor_id") or ""), message_id),
-+        )
-+        cur.execute("SELECT deleted_at, deleted_by_actor_type FROM chat_messages WHERE id=%s LIMIT 1", (message_id,))
-+        latest = cur.fetchone() or {}
-+        deleted_at = latest.get("deleted_at")
-+        deleted_by_actor_type = latest.get("deleted_by_actor_type") or deleted_by_actor_type
-+        db.commit()
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    socketio.emit(
-+        "chat_delete_update",
-+        {
-+            "event_id": event_id,
-+            "message_id": message_id,
-+            "deleted_flag": 1,
-+            "deleted_at": deleted_at.isoformat() if deleted_at else None,
-+            "deleted_by_actor_type": deleted_by_actor_type,
-+        },
-+        room=f"event:{event_id}",
-+    )
-+    return jsonify({"ok": True})
-+
-+
- @chat_bp.get("/api/push/bootstrap")
- def push_bootstrap():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     return jsonify(
-         {
-             "ok": True,
-             "csrf_token": _chat_csrf(),
-             "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-             "sw_url": "/sw.js",
-         }
-     )
- 
- 
- @chat_bp.post("/api/push/subscribe")
- def push_subscribe():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400)
-     data = request.get_json(silent=True) or {}
-     endpoint = (data.get("endpoint") or "").strip()
-@@ -2235,50 +2439,53 @@ def on_seen(data):
-         to=f"event:{event_id}",
-     )
- 
- 
- @socketio.on("chat_send")
- def on_send(data):
-     actor = get_chat_actor()
-     event_id = int((data or {}).get("event_id") or 0)
-     raw_body = (data or {}).get("body") or ""
-     raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
- 
-     t0 = time.monotonic()
-     current_app.logger.warning(
-         "chat_send recv event_id=%s actor=%s body_len=%s",
-         event_id,
-         actor,
-         len(raw_body),
-     )
- 
-     if not actor:
-         disconnect()
-         return
-     if not event_id or not _can_access_event(event_id, actor):
-         disconnect()
-         return
-+    if not _ensure_chat_delete_schema():
-+        emit("chat_error", {"error": "メッセージ削除機能の初期化に失敗しました"})
-+        return
-     if not _check_rate_limit(actor):
-         emit("chat_error", {"error": "送信間隔が短すぎます"})
-         return
- 
-     try:
-         body = _validate_body(raw_body)
-         reply_to_message_id = _validate_reply_to_message_id(event_id, raw_reply_to_message_id)
-     except ValueError as exc:
-         emit("chat_error", {"error": str(exc)})
-         return
- 
-     message = _enrich_reply_fields(_save_message(event_id, actor, body, reply_to_message_id))
-     t1 = time.monotonic()
-     message_payload = _present_message(message, actor, avatar_cache={})
-     emit("chat_message", message_payload, to=f"event:{event_id}")
- 
-     mention_names = _extract_mentions(body)
-     mention_targets = _lookup_mention_targets(event_id, mention_names)
-     sent_count = 0
-     for target in mention_targets:
-         sent_count += _send_push_to_actor(
-             target["actor_type"],
-             target["actor_id"],
-             {
-                 "title": f"{actor['display_name']}さんからメンション",
-@@ -2300,74 +2507,81 @@ def on_send(data):
-         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
- 
-     t2 = time.monotonic()
-     app = current_app._get_current_object()
-     _submit_chat_message_push_async(
-         app,
-         event_id,
-         actor,
-         actor["display_name"],
-         body,
-         int(message_payload["id"]),
-         {"t0": t0, "t1": t1, "t2": t2},
-         has_image=bool(message.get("image_file")),
-     )
- 
- 
- @socketio.on("chat_react")
- def on_react(data):
-     actor = get_chat_actor()
-     if not actor:
-         disconnect()
-         return
-     if not _ensure_chat_reaction_schema():
-         emit("chat_error", {"error": "リアクション機能の初期化に失敗しました"})
-         return
-+    if not _ensure_chat_delete_schema():
-+        emit("chat_error", {"error": "メッセージ削除機能の初期化に失敗しました"})
-+        return
- 
-     try:
-         event_id = int((data or {}).get("event_id") or 0)
-         message_id = int((data or {}).get("message_id") or 0)
-     except (TypeError, ValueError):
-         disconnect()
-         return
- 
-     emoji = str((data or {}).get("emoji") or "")
-     if event_id <= 0 or message_id <= 0 or not _can_access_event(event_id, actor):
-         disconnect()
-         return
-     if emoji not in CHAT_ALLOWED_REACTION_EMOJIS:
-         emit("chat_error", {"error": "利用できないリアクションです"})
-         return
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     changed_emoji: str | None = emoji
-     try:
--        cur.execute("SELECT 1 FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (message_id, event_id))
--        if not cur.fetchone():
-+        cur.execute("SELECT COALESCE(deleted_flag, 0) AS deleted_flag FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (message_id, event_id))
-+        msg_row = cur.fetchone()
-+        if not msg_row:
-             emit("chat_error", {"error": "対象メッセージが見つかりません"})
-             return
-+        if int(msg_row.get("deleted_flag") or 0) == 1:
-+            emit("chat_error", {"error": "削除済みメッセージにはリアクションできません"})
-+            return
- 
-         cur.execute(
-             """
-             SELECT emoji
-               FROM chat_message_reactions
-              WHERE message_id=%s
-                AND actor_type=%s
-                AND actor_id=%s
-              LIMIT 1
-             """,
-             (message_id, actor["actor_type"], str(actor["actor_id"])),
-         )
-         existing = cur.fetchone()
-         now = datetime.utcnow()
-         if existing and (existing.get("emoji") or "") == emoji:
-             cur.execute(
-                 """
-                 DELETE FROM chat_message_reactions
-                  WHERE message_id=%s
-                    AND actor_type=%s
-                    AND actor_id=%s
-                 """,
-                 (message_id, actor["actor_type"], str(actor["actor_id"])),
-             )
-             changed_emoji = None
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d041013405845881 100644
+index 52dcdec0221aec054792af05d041013405845881..1b02e11cc35ef37ee8b896a4dd6715ee21dea42e 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -237,50 +237,68 @@
+@@ -71,56 +71,66 @@
+   gap: 6px;
+   min-width: 0;
+   flex: 0 1 auto;
+   position: relative;
+ }
+ 
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+ }
+ 
+ .chat-bubble {
+   display: inline-block;
+   max-width: min(100%, 28rem);
+   padding: 8px 12px;
+   border-radius: 16px;
+   line-height: 1.4;
+   white-space: normal;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+   min-width: 0;
+   flex: 0 1 auto;
+   position: relative;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
++  -webkit-user-select: none;
++  user-select: none;
++  -webkit-touch-callout: none;
+ }
+ 
+ .chat-body {
+   min-width: 0;
+   overflow-wrap: anywhere;
+   word-break: break-word;
++  -webkit-user-select: text;
++  user-select: text;
++}
++
++.chat-body * {
++  -webkit-user-select: text;
++  user-select: text;
+ }
+ 
+ .chat-body img {
+   max-width: 100%;
+   height: auto;
+ }
+ 
+ .chat-body .chat-link {
+   text-decoration: underline;
+   color: #1f57d6;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
+ 
+ .chat-body p,
+ .chat-body ul,
+ .chat-body ol {
+   margin: 0;
+ }
+ 
+ .chat-row.me .chat-bubble {
+   background: #4a8dff;
+   color: #fff;
+   border-bottom-right-radius: 6px;
+ }
+@@ -211,137 +221,192 @@
+ 
+ .reply-preview .reply-text {
+   font-size: 0.82rem;
+   color: #445;
+   white-space: nowrap;
+   overflow: hidden;
+   text-overflow: ellipsis;
+ }
+ 
+ .reply-preview .reply-cancel-btn {
+   border: none;
+   background: transparent;
+   color: #667;
+   cursor: pointer;
+ }
+ 
+ .chat-reply-quote {
+   background: rgba(255, 255, 255, 0.68);
+   border-left: 3px solid rgba(68, 102, 220, 0.8);
+   padding: 6px 8px;
+   border-radius: 10px;
+   margin-bottom: 6px;
+   cursor: pointer;
+   display: flex;
+   align-items: flex-start;
++  -webkit-user-select: none;
++  user-select: none;
++  -webkit-touch-callout: none;
+ }
  
  .chat-row.other .chat-reply-quote {
    background: rgba(235, 240, 255, 0.86);
@@ -1051,24 +124,24 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
    transition: box-shadow 0.25s ease;
  }
  
-+.chat-delete-btn {
-+  border: 1px solid #d6d9e8;
-+  background: #fff;
-+  color: #60708f;
-+  border-radius: 999px;
-+  font-size: 0.72rem;
-+  padding: 2px 8px;
-+}
-+
-+.chat-delete-btn:disabled {
-+  opacity: 0.6;
-+}
-+
-+.chat-deleted-text {
-+  color: #6b748b;
-+  font-style: italic;
-+}
-+
+-.chat-delete-btn {
+-  border: 1px solid #d6d9e8;
+-  background: #fff;
+-  color: #60708f;
+-  border-radius: 999px;
+-  font-size: 0.72rem;
+-  padding: 2px 8px;
+-}
+-
+-.chat-delete-btn:disabled {
+-  opacity: 0.6;
+-}
+-
+ .chat-deleted-text {
+   color: #6b748b;
+   font-style: italic;
+ }
+ 
  .chat-reaction-box {
    position: relative;
    margin-top: 4px;
@@ -1094,35 +167,180 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
    position: absolute;
    right: 6px;
    top: -40px;
-@@ -455,73 +473,77 @@
+   box-shadow: 0 1px 2px rgba(45, 74, 154, 0.18);
+ }
  
-   .chat-avatar {
-     width: 28px;
-     height: 28px;
+ .chat-message .react-open-btn {
+   opacity: 0;
+   pointer-events: none;
+   transition: opacity 0.12s ease;
+ }
+ 
+ .chat-message:hover .react-open-btn {
+   opacity: 1;
+   pointer-events: auto;
+ }
+ 
+ @media (hover: none) {
+   .chat-message .react-open-btn {
+-    opacity: 1;
+-    pointer-events: auto;
++    opacity: 0;
++    pointer-events: none;
++  }
++}
++
++.chat-ctx-menu {
++  position: fixed;
++  inset: 0;
++  z-index: 1200;
++}
++
++.chat-ctx-menu.d-none {
++  display: none;
++}
++
++.chat-ctx-backdrop {
++  position: absolute;
++  inset: 0;
++  background: rgba(0, 0, 0, 0.12);
++}
++
++.chat-ctx-panel {
++  position: absolute;
++  min-width: 180px;
++  max-width: min(92vw, 280px);
++  background: #fff;
++  border: 1px solid #dbe1f4;
++  border-radius: 14px;
++  box-shadow: 0 8px 30px rgba(35, 46, 83, 0.24);
++  padding: 8px;
++}
++
++.chat-ctx-item {
++  width: 100%;
++  border: 0;
++  background: transparent;
++  text-align: left;
++  border-radius: 10px;
++  padding: 8px 10px;
++  color: #26324f;
++}
++
++.chat-ctx-item:hover {
++  background: #eef3ff;
++}
++
++.chat-ctx-item-delete {
++  color: #b42318;
++}
++
++.chat-ctx-reactions {
++  display: flex;
++  gap: 6px;
++  flex-wrap: wrap;
++  padding: 8px 4px 2px;
++}
++
++@media (hover: none) {
++  .chat-ctx-panel {
++    left: 50% !important;
++    right: auto !important;
++    top: auto !important;
++    bottom: max(8px, env(safe-area-inset-bottom));
++    transform: translateX(-50%);
++    width: min(92vw, 420px);
++    max-width: min(92vw, 420px);
++    border-radius: 16px;
    }
  }
- </style>
  
- {% macro render_reaction_box(message) -%}
-   <div class="chat-reaction-box"
-        data-reaction-box="1"
-        data-my-reaction="{{ message.my_reaction or '' }}"
-        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
-     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-     <div class="chat-reaction-panel d-none"></div>
-     <div class="chat-reaction-summary"></div>
-   </div>
- {%- endmacro %}
+ .chat-reaction-panel {
+   display: flex;
+   gap: 4px;
+   flex-wrap: wrap;
+ }
  
- <div class="container py-3"
-      data-event-id="{{ event.id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
-      data-display-name="{{ actor.display_name }}"
--     data-default-avatar="{{ default_avatar_url }}">
-+     data-default-avatar="{{ default_avatar_url }}"
-+     data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
+ .chat-reaction-panel.d-none {
+   display: none;
+ }
+ 
+ .chat-reaction-emoji {
+   border: 1px solid #d7def5;
+   background: #fff;
+   border-radius: 999px;
+   font-size: 0.9rem;
+   line-height: 1;
+   padding: 4px 8px;
+ }
+ 
+ .chat-reaction-emoji.is-active {
+   background: #e7eeff;
+   border-color: #8fa9ff;
+@@ -369,60 +434,62 @@
+   width: 100%;
+ }
+ 
+ .chat-image-grid {
+   display: grid;
+   grid-template-columns: repeat(2, 1fr);
+   gap: 4px;
+   max-width: min(360px, 70vw);
+   margin-bottom: 6px;
+ }
+ 
+ .chat-image-cell {
+   aspect-ratio: 1 / 1;
+   overflow: hidden;
+   border-radius: 10px;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: #fff;
+ }
+ 
+ .chat-image-cell img {
+   width: 100%;
+   height: 100%;
+   object-fit: cover;
+   object-position: center;
+   display: block;
++  -webkit-touch-callout: none;
+ }
+ 
+ .chat-image-thumb {
+   display: block;
+   max-width: min(320px, 70vw);
+   width: 100%;
+   height: auto;
+   border-radius: 10px;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: #fff;
++  -webkit-touch-callout: none;
+ }
+ 
+ .chat-bubble {
+   max-width: 100%;
+ }
+ 
+ .chat-body {
+   overflow-x: hidden;
+ }
+ 
+ .chat-image-viewer {
+   position: fixed;
+   inset: 0;
+   z-index: 1080;
+   display: none;
+   align-items: center;
+   justify-content: center;
+   background: rgba(0, 0, 0, 0.78);
+   padding: 20px;
+ }
+ 
+ .chat-image-viewer.is-open {
+   display: flex;
+ }
+ 
+@@ -500,50 +567,51 @@
    <h3>{{ event.title }} / Chat</h3>
  
    <div id="messages" class="chat-messages border rounded p-3 mb-3">
@@ -1145,9 +363,10 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
             data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
             data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
             data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-+           data-created-at-iso="{{ m.created_at_iso }}"
-+           data-deleted-flag="{{ m.deleted_flag or 0 }}"
-+           data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
+            data-created-at-iso="{{ m.created_at_iso }}"
+            data-deleted-flag="{{ m.deleted_flag or 0 }}"
+            data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
++           data-can-delete="{{ 1 if m.can_delete else 0 }}"
             data-my-reaction="{{ m.my_reaction or '' }}"
             data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
          <div class="chat-line">
@@ -1173,11 +392,7 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
                       onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
                  <div class="rq-body">
                    <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
-@@ -538,60 +560,63 @@
-                   <a class="chat-image-link"
-                      href="{{ image_item.url }}"
-                      data-full-image-url="{{ image_item.url }}"
-                      data-image-index="0"
+@@ -564,171 +632,199 @@
                       data-image-list='{{ image_items|tojson }}'>
                      <img class="chat-image-thumb"
                           src="{{ image_item.thumb_url }}"
@@ -1199,21 +414,19 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
                    </div>
                  {% endif %}
                  {% if (m.body_html or m.body or '')|trim %}
--                  <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
-+                  <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
+                   <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
                  {% endif %}
                </div>
                <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-+              {% if m.can_delete %}
-+                <button type="button" class="chat-delete-btn" data-delete-btn="1">削除</button>
-+              {% endif %}
+-              {% if m.can_delete %}
+-                <button type="button" class="chat-delete-btn" data-delete-btn="1">削除</button>
+-              {% endif %}
              </div>
              {% if m.is_me %}
                <div class="chat-read-indicator d-none"></div>
                <div class="chat-read-list d-none"></div>
              {% endif %}
--            {{ render_reaction_box(m) }}
-+            {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
+             {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
            </div>
  
            {% if m.is_me %}
@@ -1239,9 +452,32 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
  
    <form id="chat-form" class="d-flex gap-2 align-items-center">
      <input type="hidden" id="reply-to-id" value="">
-@@ -611,50 +636,51 @@
+     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
+     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
+     <input id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力">
+     <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
+   </form>
+ 
+   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
+     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
+     <div class="chat-image-viewer-content">
+       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
+       <img id="chatImageViewerImg" src="" alt="拡大画像">
+       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+     </div>
    </div>
  
++  <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
++    <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
++    <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
++      <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
++      <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
++      <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
++      <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
++      <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
++    </div>
++  </div>
++
    <div class="mt-3 d-flex gap-2 align-items-center">
      {% if can_broadcast %}
      <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
@@ -1265,7 +501,7 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
    const meId = root.dataset.me || '';
    const myDisplayName = root.dataset.displayName || '';
    const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
-+  const isAdmin = root.dataset.isAdmin === '1';
+   const isAdmin = root.dataset.isAdmin === '1';
    const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
    const maxUploadImages = 6;
  
@@ -1286,12 +522,62 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
    const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
    const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
    const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
++  const ctxMenu = document.getElementById('chatCtxMenu');
++  const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
++  const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
  
    const fmtDate = new Intl.DateTimeFormat('ja-JP', {
      timeZone: 'Asia/Tokyo',
      year: 'numeric',
      month: 'numeric',
-@@ -692,60 +718,86 @@
+     day: 'numeric',
+     weekday: 'short',
+   });
+   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     hour: 'numeric',
+     minute: '2-digit',
+     hour12: false,
+   });
+ 
+   const [myActorType, myActorId] = meId.includes(':')
+     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+     : ['', ''];
+ 
+   const state = {
+     replyToId: null,
+     selectedBubble: null,
+     readStateByActor: new Map(),
+     reactionByMessage: new Map(),
+     viewerImages: [],
+     viewerIndex: 0,
++    ctxMessageId: null,
++    longPressTimer: null,
++    longPressTriggered: false,
++    suppressNativeLongPress: false,
++    longPressStartX: 0,
++    longPressStartY: 0,
+   };
+ 
++  if (ctxReactions && ctxReactions.childElementCount === 0) {
++    reactionEmojis.forEach((emoji) => {
++      const btn = document.createElement('button');
++      btn.type = 'button';
++      btn.className = 'chat-reaction-emoji';
++      btn.dataset.emoji = emoji;
++      btn.textContent = emoji;
++      ctxReactions.appendChild(btn);
++    });
++  }
++
+   const socket = io({ transports: ['websocket', 'polling'] });
+   socket.emit('chat_join', { event_id: eventId });
+ 
+   initReactionUis();
+   scrollToLatestMessage();
+   refreshReadIndicators();
+   window.addEventListener('load', () => {
+     scrollToLatestMessage();
      sendSeenForLatestMessage();
    }, { once: true });
  
@@ -1309,16 +595,15 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      applyReadSnapshot(payload?.read_states || []);
      refreshReadIndicators();
      sendSeenForLatestMessage();
-   });
-   socket.on('chat_read_update', (payload) => {
+@@ -737,67 +833,62 @@
      applyReadUpdate(payload);
      refreshReadIndicators();
    });
    socket.on('chat_reaction_update', (payload) => {
      const messageId = Number(payload?.message_id || 0);
      if (!messageId) return;
-+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
-+    if (row && Number(row.dataset.deletedFlag || 0) === 1) return;
+     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+     if (row && Number(row.dataset.deletedFlag || 0) === 1) return;
      const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
      let myReaction = prev.myReaction || null;
      const changed = payload?.changed || {};
@@ -1327,32 +612,36 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      }
      setReactionState(messageId, payload?.reactions || [], myReaction);
    });
-+  socket.on('chat_delete_update', (payload) => {
-+    const messageId = Number(payload?.message_id || 0);
-+    if (!messageId) return;
-+    applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
-+  });
-+
-+
+   socket.on('chat_delete_update', (payload) => {
+     const messageId = Number(payload?.message_id || 0);
+     if (!messageId) return;
+     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
+   });
+ 
+ 
  
    msgBox.addEventListener('click', (e) => {
-+    const rowForAction = e.target.closest('.chat-row');
-+    if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
-+      if (e.target.closest('.chat-reply-quote')) {
-+        jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
-+      }
++    if (state.longPressTriggered) {
++      state.longPressTriggered = false;
 +      return;
 +    }
-+
-+    const deleteBtn = e.target.closest('[data-delete-btn]');
-+    if (deleteBtn) {
-+      const row = deleteBtn.closest('.chat-row');
-+      const messageId = Number(row?.dataset.messageId || 0);
-+      if (!messageId) return;
-+      handleDeleteMessage(row, messageId, deleteBtn);
-+      return;
-+    }
-+
+     const rowForAction = e.target.closest('.chat-row');
+     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
+       if (e.target.closest('.chat-reply-quote')) {
+         jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
+       }
+       return;
+     }
+ 
+-    const deleteBtn = e.target.closest('[data-delete-btn]');
+-    if (deleteBtn) {
+-      const row = deleteBtn.closest('.chat-row');
+-      const messageId = Number(row?.dataset.messageId || 0);
+-      if (!messageId) return;
+-      handleDeleteMessage(row, messageId, deleteBtn);
+-      return;
+-    }
+-
      const imageLink = e.target.closest('.chat-image-link');
      if (imageLink) {
        e.preventDefault();
@@ -1378,19 +667,7 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      const quote = e.target.closest('.chat-reply-quote');
      if (quote) {
        jumpToMessage(quote.dataset.jumpToId);
-@@ -760,50 +812,52 @@
-       return;
-     }
- 
-     const reactionBtn = e.target.closest('.chat-reaction-emoji');
-     if (reactionBtn) {
-       const row = reactionBtn.closest('.chat-row');
-       const messageId = Number(row?.dataset.messageId || 0);
-       const emoji = reactionBtn.dataset.emoji || '';
-       if (messageId && reactionEmojis.includes(emoji)) {
-         socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
-       }
-       return;
+@@ -824,62 +915,114 @@
      }
  
      const contentLink = e.target.closest('a.chat-link');
@@ -1404,8 +681,8 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      if (!row) return;
  
      const messageId = row.dataset.messageId;
-+    if (Number(row.dataset.deletedFlag || 0) === 1) return;
-+
+     if (Number(row.dataset.deletedFlag || 0) === 1) return;
+ 
      const senderName = row.dataset.senderName || 'Unknown';
      const bodyPlain = row.dataset.bodyPlain || '';
  
@@ -1416,6 +693,52 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      setReplyState(messageId, senderName, bodyPlain, bubble);
    });
  
++  msgBox.addEventListener('contextmenu', (e) => {
++    const row = e.target.closest('.chat-row[data-message-id]');
++    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
++    e.preventDefault();
++    openContextMenu(row, { x: e.clientX, y: e.clientY });
++  });
++
++  msgBox.addEventListener('pointerdown', (e) => {
++    if (e.pointerType === 'mouse') return;
++    const row = e.target.closest('.chat-row[data-message-id]');
++    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
++    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
++    clearLongPressTimer();
++    state.longPressTriggered = false;
++    state.suppressNativeLongPress = true;
++    state.longPressStartX = Number(e.clientX || 0);
++    state.longPressStartY = Number(e.clientY || 0);
++    state.longPressTimer = window.setTimeout(() => {
++      state.longPressTriggered = true;
++      state.suppressNativeLongPress = false;
++      openContextMenu(row, { x: e.clientX, y: e.clientY, forceSheet: true });
++    }, 500);
++  });
++  msgBox.addEventListener('touchstart', (e) => {
++    if (!state.suppressNativeLongPress) return;
++    if (!e.target.closest('.chat-bubble, .chat-reply-quote')) return;
++    e.preventDefault();
++  }, { passive: false });
++  msgBox.addEventListener('touchmove', (e) => {
++    if (!state.suppressNativeLongPress) return;
++    if (!e.target.closest('.chat-bubble, .chat-reply-quote')) return;
++    const touch = e.touches?.[0];
++    if (touch) {
++      const movedX = Math.abs(Number(touch.clientX || 0) - state.longPressStartX);
++      const movedY = Math.abs(Number(touch.clientY || 0) - state.longPressStartY);
++      if (movedX > 8 || movedY > 8) {
++        clearLongPressTimer();
++        return;
++      }
++    }
++    e.preventDefault();
++  }, { passive: false });
++  msgBox.addEventListener('pointerup', clearLongPressTimer);
++  msgBox.addEventListener('pointercancel', clearLongPressTimer);
++  msgBox.addEventListener('pointermove', clearLongPressTimer);
++
    replyCancelBtn?.addEventListener('click', clearReplyState);
    imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
    imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
@@ -1425,16 +748,41 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
    });
    document.addEventListener('keydown', (e) => {
      if (e.key === 'Escape') closeImageViewer();
++    if (e.key === 'Escape') closeContextMenu();
      if (e.key === 'ArrowLeft') moveViewerIndex(-1);
      if (e.key === 'ArrowRight') moveViewerIndex(1);
    });
++  msgBox.addEventListener('scroll', closeContextMenu, { passive: true });
++  msgBox.addEventListener('scroll', clearLongPressTimer, { passive: true });
++  window.addEventListener('scroll', closeContextMenu, { passive: true });
++  window.addEventListener('scroll', clearLongPressTimer, { passive: true });
++  ctxMenu?.addEventListener('click', handleContextMenuClick);
  
    imageBtn?.addEventListener('click', () => imageInput?.click());
    imageInput?.addEventListener('change', async () => {
-@@ -950,50 +1004,53 @@
-   function renderMessage(msg) {
-     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
-     const dateLabel = Number.isNaN(createdAt.getTime())
+     const files = Array.from(imageInput.files || []);
+     if (!files.length) return;
+     if (files.length > maxUploadImages) {
+       alert('画像は最大6枚までです');
+       imageInput.value = '';
+       return;
+     }
+ 
+     setSendingState(true);
+     try {
+       const fd = new FormData();
+       fd.append('csrf_token', csrfToken);
+       files.forEach((file) => fd.append('file', file));
+       fd.append('body', bodyInput.value || '');
+       const res = await fetch(`/chat/api/events/${eventId}/upload-image`, { method: 'POST', body: fd });
+       const data = await res.json().catch(() => ({}));
+       if (!res.ok || !data.ok) {
+         throw new Error(data.error || '画像送信に失敗しました');
+       }
+       bodyInput.value = '';
+       clearReplyState();
+     } catch (err) {
+@@ -1007,50 +1150,51 @@
        ? (msg.created_at_jst_date_label || '')
        : formatDateLabel(createdAt);
      const timeLabel = Number.isNaN(createdAt.getTime())
@@ -1457,9 +805,10 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
      row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
      row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
-+    row.dataset.createdAtIso = msg.created_at_iso || '';
-+    row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
-+    row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
+     row.dataset.createdAtIso = msg.created_at_iso || '';
+     row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
+     row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
++    row.dataset.canDelete = canDeleteMessage(msg, isMe) ? '1' : '0';
      row.dataset.myReaction = msg.my_reaction || '';
      row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
      if (msg.sender_id) row.dataset.senderId = msg.sender_id;
@@ -1485,19 +834,7 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
        main.appendChild(makeReplyQuote(
          msg.reply_to_message_id,
          msg.reply_to_sender_display_name || '元メッセージ',
-@@ -1041,131 +1098,212 @@
-       bubble.appendChild(imageLink);
-     } else if (images.length >= 2) {
-       const grid = document.createElement('div');
-       grid.className = 'chat-image-grid';
-       images.forEach((imageItem, idx) => {
-         const imageLink = document.createElement('a');
-         imageLink.className = 'chat-image-link chat-image-cell';
-         imageLink.href = imageItem.url;
-         imageLink.dataset.fullImageUrl = imageItem.url;
-         imageLink.dataset.imageIndex = String(idx);
-         imageLink.dataset.imageList = JSON.stringify(images);
- 
+@@ -1110,142 +1254,132 @@
          const thumb = document.createElement('img');
          thumb.src = imageItem.thumb_url;
          thumb.alt = `画像 ${idx + 1}`;
@@ -1511,8 +848,7 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      const rawBody = (msg.body_html || msg.body || '').trim();
      if (rawBody) {
        const body = document.createElement('div');
--      body.className = 'chat-body';
-+      body.className = Number(msg.deleted_flag || 0) === 1 ? 'chat-body chat-deleted-text' : 'chat-body';
+       body.className = Number(msg.deleted_flag || 0) === 1 ? 'chat-body chat-deleted-text' : 'chat-body';
        body.innerHTML = rawBody;
        bubble.appendChild(body);
      }
@@ -1523,15 +859,15 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
  
      wrap.appendChild(bubble);
      wrap.appendChild(time);
-+
-+    if (canDeleteMessage(msg, isMe)) {
-+      const deleteBtn = document.createElement('button');
-+      deleteBtn.type = 'button';
-+      deleteBtn.className = 'chat-delete-btn';
-+      deleteBtn.dataset.deleteBtn = '1';
-+      deleteBtn.textContent = '削除';
-+      wrap.appendChild(deleteBtn);
-+    }
+ 
+-    if (canDeleteMessage(msg, isMe)) {
+-      const deleteBtn = document.createElement('button');
+-      deleteBtn.type = 'button';
+-      deleteBtn.className = 'chat-delete-btn';
+-      deleteBtn.dataset.deleteBtn = '1';
+-      deleteBtn.textContent = '削除';
+-      wrap.appendChild(deleteBtn);
+-    }
      main.appendChild(wrap);
  
      if (isMe) {
@@ -1544,10 +880,9 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
        main.appendChild(readList);
      }
  
--    main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
-+    if (Number(msg.deleted_flag || 0) !== 1) {
-+      main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
-+    }
+     if (Number(msg.deleted_flag || 0) !== 1) {
+       main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+     }
  
      line.appendChild(main);
  
@@ -1561,71 +896,74 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      refreshReadIndicatorForRow(row);
    }
  
-+
-+  function canDeleteMessage(msg, isMe) {
-+    if (Number(msg?.deleted_flag || 0) === 1) return false;
-+    if (isAdmin) return true;
-+    if (!isMe) return false;
-+    const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
-+    if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
-+    const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
-+    return Date.now() <= expires;
-+  }
-+
-+  async function handleDeleteMessage(row, messageId, buttonEl) {
-+    if (!confirm('このメッセージを削除しますか？')) return;
-+    if (buttonEl) buttonEl.disabled = true;
-+    try {
-+      const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
-+        method: 'POST',
-+        headers: { 'Content-Type': 'application/json' },
-+        body: JSON.stringify({ csrf_token: csrfToken }),
-+      });
-+      const data = await res.json().catch(() => ({}));
-+      if (!res.ok || !data.ok) {
-+        throw new Error(data?.error || '削除に失敗しました');
-+      }
-+      applyDeletedState(messageId, data?.deleted_by_actor_type || row?.dataset?.deletedByActorType || '');
-+    } catch (err) {
-+      alert(err?.message || '削除に失敗しました');
-+      if (buttonEl) buttonEl.disabled = false;
-+    }
-+  }
-+
-+  function applyDeletedState(messageId, deletedByActorType) {
-+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
-+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
-+    row.dataset.deletedFlag = '1';
-+    row.dataset.deletedByActorType = deletedByActorType || '';
-+    row.dataset.bodyPlain = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
-+
-+    row.querySelectorAll('.chat-image-link, .chat-image-grid').forEach((el) => el.remove());
-+
-+    const bubble = row.querySelector('.chat-bubble');
-+    if (bubble) {
-+      let body = bubble.querySelector('.chat-body');
-+      if (!body) {
-+        body = document.createElement('div');
-+        bubble.appendChild(body);
-+      }
-+      body.className = 'chat-body chat-deleted-text';
-+      body.textContent = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
-+    }
-+
-+    const reactionBox = row.querySelector('.chat-reaction-box');
-+    if (reactionBox) reactionBox.remove();
-+
-+    const deleteBtn = row.querySelector('[data-delete-btn]');
-+    if (deleteBtn) deleteBtn.remove();
-+
-+    const myReactionKey = String(messageId);
-+    state.reactionByMessage.set(myReactionKey, { reactionsSummary: [], myReaction: null });
-+
-+    document.querySelectorAll(`.chat-row[data-reply-to-id="${messageId}"] .rq-text`).forEach((quoteText) => {
-+      quoteText.textContent = deletedByActorType === 'admin' ? '管理者により削除' : '削除されました';
-+    });
-+  }
-+
+ 
+   function canDeleteMessage(msg, isMe) {
+     if (Number(msg?.deleted_flag || 0) === 1) return false;
++    if (typeof msg?.can_delete !== 'undefined') return Boolean(msg.can_delete);
+     if (isAdmin) return true;
+     if (!isMe) return false;
+     const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
+     if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+     const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
+     return Date.now() <= expires;
+   }
+ 
+-  async function handleDeleteMessage(row, messageId, buttonEl) {
++  async function handleDeleteMessage(row, messageId) {
+     if (!confirm('このメッセージを削除しますか？')) return;
+-    if (buttonEl) buttonEl.disabled = true;
+     try {
+       const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ csrf_token: csrfToken }),
+       });
+       const data = await res.json().catch(() => ({}));
+       if (!res.ok || !data.ok) {
+         throw new Error(data?.error || '削除に失敗しました');
+       }
+       applyDeletedState(messageId, data?.deleted_by_actor_type || row?.dataset?.deletedByActorType || '');
+     } catch (err) {
+       alert(err?.message || '削除に失敗しました');
+-      if (buttonEl) buttonEl.disabled = false;
+     }
+   }
+ 
+   function applyDeletedState(messageId, deletedByActorType) {
+     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+     row.dataset.deletedFlag = '1';
+     row.dataset.deletedByActorType = deletedByActorType || '';
+     row.dataset.bodyPlain = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
+ 
+     row.querySelectorAll('.chat-image-link, .chat-image-grid').forEach((el) => el.remove());
+ 
+     const bubble = row.querySelector('.chat-bubble');
+     if (bubble) {
+       let body = bubble.querySelector('.chat-body');
+       if (!body) {
+         body = document.createElement('div');
+         bubble.appendChild(body);
+       }
+       body.className = 'chat-body chat-deleted-text';
+       body.textContent = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
+     }
+ 
+     const reactionBox = row.querySelector('.chat-reaction-box');
+     if (reactionBox) reactionBox.remove();
+ 
+-    const deleteBtn = row.querySelector('[data-delete-btn]');
+-    if (deleteBtn) deleteBtn.remove();
++    row.dataset.canDelete = '0';
+ 
+     const myReactionKey = String(messageId);
+     state.reactionByMessage.set(myReactionKey, { reactionsSummary: [], myReaction: null });
+ 
+     document.querySelectorAll(`.chat-row[data-reply-to-id="${messageId}"] .rq-text`).forEach((quoteText) => {
+       quoteText.textContent = deletedByActorType === 'admin' ? '管理者により削除' : '削除されました';
+     });
+   }
+ 
    function openImageViewer(imageUrls, startIndex = 0) {
      if (!imageViewer || !imageViewerImg) return;
      const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
@@ -1642,114 +980,173 @@ index a74736955bcde27cbedf9483cca2c7c739837f05..52dcdec0221aec054792af05d0410134
      if (!imageViewer?.classList.contains('is-open')) return;
      if (!state.viewerImages.length) return;
      const next = state.viewerIndex + diff;
-     if (next < 0 || next >= state.viewerImages.length) return;
-     state.viewerIndex = next;
-     renderImageViewer();
+@@ -1502,50 +1636,169 @@
+     replyText.textContent = '';
+     replyPreview.classList.add('d-none');
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+       state.selectedBubble = null;
+     }
    }
  
-   function renderImageViewer() {
-     if (!imageViewerImg) return;
-     const src = state.viewerImages[state.viewerIndex] || '';
-     imageViewerImg.src = src;
-     const hasMulti = state.viewerImages.length > 1;
-     if (imageViewerPrevBtn) imageViewerPrevBtn.style.visibility = hasMulti ? 'visible' : 'hidden';
-     if (imageViewerNextBtn) imageViewerNextBtn.style.visibility = hasMulti ? 'visible' : 'hidden';
-     if (imageViewerPrevBtn) imageViewerPrevBtn.disabled = state.viewerIndex <= 0;
-     if (imageViewerNextBtn) imageViewerNextBtn.disabled = state.viewerIndex >= state.viewerImages.length - 1;
+   function jumpToMessage(messageId) {
+     if (!messageId) return;
+     const target = document.getElementById(`msg-${messageId}`);
+     if (!target) {
+       alert('元メッセージが見つかりません');
+       return;
+     }
+     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+     target.classList.add('chat-jump-highlight');
+     window.setTimeout(() => target.classList.remove('chat-jump-highlight'), 1200);
    }
  
-   function closeImageViewer() {
-     if (!imageViewer || !imageViewerImg || !imageViewer.classList.contains('is-open')) return;
-     imageViewer.classList.remove('is-open');
-     imageViewer.setAttribute('aria-hidden', 'true');
-     imageViewerImg.src = '';
-     state.viewerImages = [];
-     state.viewerIndex = 0;
-     document.body.style.overflow = '';
+   function makeExcerpt(value) {
+     const text = String(value || '').replace(/\s+/g, ' ').trim();
+     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
    }
  
-   function initReactionUis() {
-     msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
-+      if (Number(row.dataset.deletedFlag || 0) === 1) {
-+        const box = row.querySelector('.chat-reaction-box');
-+        if (box) box.remove();
++  function clearLongPressTimer() {
++    if (state.longPressTimer) {
++      window.clearTimeout(state.longPressTimer);
++      state.longPressTimer = null;
++    }
++    state.suppressNativeLongPress = false;
++  }
++
++  function openContextMenu(row, { x = 0, y = 0, forceSheet = false } = {}) {
++    if (!ctxMenu || !ctxPanel) return;
++    const messageId = Number(row?.dataset?.messageId || 0);
++    if (!messageId) return;
++
++    state.ctxMessageId = messageId;
++    ctxMenu.dataset.messageId = String(messageId);
++    const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
++    deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
++    ctxReactions?.classList.add('d-none');
++    ctxMenu.classList.remove('d-none');
++
++    const isTouchLike = forceSheet || window.matchMedia('(hover: none)').matches;
++    if (isTouchLike) {
++      ctxPanel.style.left = '50%';
++      ctxPanel.style.top = 'auto';
++      return;
++    }
++
++    const panelWidth = ctxPanel.offsetWidth || 220;
++    const panelHeight = ctxPanel.offsetHeight || 240;
++    const margin = 8;
++    const left = Math.min(Math.max(margin, x), window.innerWidth - panelWidth - margin);
++    const top = Math.min(Math.max(margin, y), window.innerHeight - panelHeight - margin);
++    ctxPanel.style.left = `${left}px`;
++    ctxPanel.style.top = `${top}px`;
++  }
++
++  function closeContextMenu() {
++    if (!ctxMenu) return;
++    ctxMenu.classList.add('d-none');
++    ctxMenu.dataset.messageId = '';
++    state.ctxMessageId = null;
++    ctxReactions?.classList.add('d-none');
++  }
++
++  async function copyTextWithFallback(text) {
++    if (!text) return;
++    if (navigator.clipboard?.writeText) {
++      await navigator.clipboard.writeText(text);
++      return;
++    }
++    const temp = document.createElement('textarea');
++    temp.value = text;
++    temp.setAttribute('readonly', 'readonly');
++    temp.style.position = 'fixed';
++    temp.style.left = '-9999px';
++    document.body.appendChild(temp);
++    temp.select();
++    document.execCommand('copy');
++    document.body.removeChild(temp);
++  }
++
++  async function handleContextMenuClick(e) {
++    if (!ctxMenu) return;
++    if (e.target.closest('[data-ctx-close="1"]')) {
++      closeContextMenu();
++      return;
++    }
++
++    const actionEl = e.target.closest('[data-ctx-action], .chat-reaction-emoji');
++    if (!actionEl) return;
++
++    const row = document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
++    const messageId = Number(row?.dataset?.messageId || 0);
++    if (!row || !messageId) {
++      closeContextMenu();
++      return;
++    }
++
++    if (actionEl.classList.contains('chat-reaction-emoji')) {
++      const emoji = actionEl.dataset.emoji || '';
++      if (reactionEmojis.includes(emoji)) {
++        socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
++      }
++      closeContextMenu();
++      return;
++    }
++
++    const action = actionEl.dataset.ctxAction;
++    if (action === 'reply') {
++      const bubble = row.querySelector('.chat-bubble');
++      if (bubble) {
++        setReplyState(messageId, row.dataset.senderName || 'Unknown', row.dataset.bodyPlain || '', bubble);
++      }
++      closeContextMenu();
++      return;
++    }
++    if (action === 'react') {
++      ctxReactions?.classList.toggle('d-none');
++      return;
++    }
++    if (action === 'copy') {
++      try {
++        await copyTextWithFallback(row.dataset.bodyPlain || '');
++      } catch (_err) {
++        alert('コピーに失敗しました');
++      }
++      closeContextMenu();
++      return;
++    }
++    if (action === 'delete') {
++      if (row.dataset.canDelete !== '1') {
++        closeContextMenu();
 +        return;
 +      }
-       const box = ensureReactionBox(row);
-       hydrateMessageReactionData(row, box);
-       const messageId = Number(row.dataset.messageId || 0);
-       if (!messageId) return;
-       const summary = parseReactionSummary(row.dataset.reactionsSummary || '[]');
-       const myReaction = row.dataset.myReaction || null;
-       setReactionState(messageId, summary, myReaction);
-     });
++      closeContextMenu();
++      await handleDeleteMessage(row, messageId);
++    }
++  }
++
+   function formatDateLabel(date) {
+     const parts = fmtDate.formatToParts(date);
+     const get = (type) => parts.find((p) => p.type === type)?.value || '';
+     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
    }
  
-   function hydrateMessageReactionData(row, existingBox = null) {
-     const box = existingBox || row.querySelector('.chat-reaction-box');
-     if (!box) return;
+   function formatTimeLabel(date) {
+     return fmtTime.format(date);
+   }
  
-     const rowSummary = row.dataset.reactionsSummary;
-     const boxSummary = box.dataset.reactionsSummary;
-     const summary = rowSummary || boxSummary || '[]';
-     row.dataset.reactionsSummary = summary;
-     box.dataset.reactionsSummary = summary;
- 
-     const rowMyReaction = row.dataset.myReaction;
-     const boxMyReaction = box.dataset.myReaction;
-     const myReaction = rowMyReaction || boxMyReaction || '';
-     row.dataset.myReaction = myReaction;
-     box.dataset.myReaction = myReaction;
-@@ -1238,51 +1376,51 @@
+   function applyReadSnapshot(states) {
+     state.readStateByActor.clear();
+     for (const readState of states || []) {
+       applyReadUpdate(readState);
      }
    }
  
-   function normalizeReactionSummary(summary) {
-     const mapped = [];
-     for (const item of summary || []) {
-       const emoji = item?.emoji || '';
-       const count = Number(item?.count || 0);
-       if (!reactionEmojis.includes(emoji) || count <= 0) continue;
-       mapped.push({ emoji, count });
-     }
-     mapped.sort((a, b) => reactionEmojis.indexOf(a.emoji) - reactionEmojis.indexOf(b.emoji));
-     return mapped;
-   }
- 
-   function setReactionState(messageId, reactionsSummary, myReaction) {
-     const key = String(messageId);
-     const normalized = normalizeReactionSummary(reactionsSummary);
-     const next = {
-       reactionsSummary: normalized,
-       myReaction: reactionEmojis.includes(myReaction || '') ? myReaction : null,
-     };
-     state.reactionByMessage.set(key, next);
- 
-     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
--    if (!row) return;
-+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
-     row.dataset.reactionsSummary = JSON.stringify(next.reactionsSummary);
-     row.dataset.myReaction = next.myReaction || '';
-     const box = ensureReactionBox(row);
-     if (box) {
-       box.dataset.reactionsSummary = row.dataset.reactionsSummary;
-       box.dataset.myReaction = row.dataset.myReaction;
-       applyReactionUi(box, next.reactionsSummary, next.myReaction);
-     }
-   }
- 
-   function applyReactionUi(box, reactionsSummary, myReaction) {
-     const summaryEl = box.querySelector('.chat-reaction-summary');
-     if (summaryEl) {
-       summaryEl.innerHTML = '';
-       for (const item of reactionsSummary) {
-         const chip = document.createElement('span');
-         chip.className = 'chat-reaction-chip';
-         chip.textContent = `${item.emoji} ${item.count}`;
-         summaryEl.appendChild(chip);
-       }
-       summaryEl.classList.toggle('d-none', reactionsSummary.length === 0);
-     }
- 
-     box.querySelectorAll('.chat-reaction-emoji').forEach((btn) => {
-       btn.classList.toggle('is-active', btn.dataset.emoji === myReaction);
+   function applyReadUpdate(readState) {
+     if (!readState?.actor_type || !readState?.actor_id) return;
+     const key = `${readState.actor_type}:${readState.actor_id}`;
+     const prev = state.readStateByActor.get(key);
+     const nextReadId = Number(readState.last_read_message_id || 0);
+     const prevReadId = Number(prev?.last_read_message_id || 0);
+     if (prev && prevReadId > nextReadId) return;
+     state.readStateByActor.set(key, {
