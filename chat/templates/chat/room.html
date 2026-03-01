@@ -33,41 +33,6 @@
 }
 
 
-/* ===== Swipe-to-reply animation ===== */
-.chat-row .chat-bubble {
-  will-change: transform;
-}
-
-.chat-swipe-underlay {
-  position: absolute;
-  left: 18px;
-  top: 50%;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.chat-row.swiping .chat-bubble {
-  transition: none;
-}
-
-.chat-row.swiping .chat-swipe-underlay {
-  opacity: 1;
-}
-
-.chat-row.snapback .chat-bubble {
-  transition: transform 160ms ease;
-}
-
-.chat-row.commit .chat-bubble {
-  transition: transform 120ms ease;
-}
-
 .chat-line {
   display: flex;
   gap: 8px;
@@ -135,7 +100,8 @@
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
-  touch-action: pan-y;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .chat-body {
@@ -291,7 +257,6 @@
 
 .chat-bubble.chat-selected-reply-target {
   box-shadow: 0 0 0 2px #4a8dff, 0 8px 20px rgba(74, 141, 255, 0.2);
-  transform: translateY(-1px);
 }
 
 .reply-preview {
@@ -386,7 +351,8 @@
   width: 100%;
 }
 
-.react-open-btn {
+.react-open-btn,
+.chat-menu-open-btn {
   width: 26px;
   height: 26px;
   padding: 0;
@@ -400,18 +366,29 @@
   font-size: 18px;
   line-height: 1;
   position: absolute;
-  right: 6px;
   top: -40px;
   box-shadow: 0 1px 2px rgba(45, 74, 154, 0.18);
 }
 
-.chat-message .react-open-btn {
+.react-open-btn {
+  right: 38px;
+}
+
+.chat-menu-open-btn {
+  right: 6px;
+  font-size: 15px;
+  letter-spacing: 1px;
+}
+
+.chat-message .react-open-btn,
+.chat-message .chat-menu-open-btn {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
 }
 
-.chat-message:hover .react-open-btn {
+.chat-message:hover .react-open-btn,
+.chat-message:hover .chat-menu-open-btn {
   opacity: 1;
   pointer-events: auto;
 }
@@ -424,6 +401,11 @@
   .chat-message .react-open-btn {
     opacity: 0;
     pointer-events: none;
+  }
+
+  .chat-message .chat-menu-open-btn {
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 
@@ -822,6 +804,7 @@
        data-my-reaction="{{ message.my_reaction or '' }}"
        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+    <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
     <div class="chat-reaction-panel d-none"></div>
     <div class="chat-reaction-summary"></div>
   </div>
@@ -898,7 +881,6 @@
            data-edited-flag="{{ m.edited_flag or 0 }}"
            data-my-reaction="{{ m.my_reaction or '' }}"
            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
-        <div class="chat-swipe-underlay" aria-hidden="true">↩︎</div>
         <div class="chat-line">
           {% if not m.is_me %}
             <img class="chat-avatar"
@@ -1156,9 +1138,9 @@
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const maxUploadImages = 6;
   const maxUploadImageBytes = 20 * 1024 * 1024;
-  const SWIPE_MAX = 92;
-  const SWIPE_COMMIT = 56;
-  const SWIPE_LOCK = 10;
+  const DOUBLE_TAP_INTERVAL_MS = 280;
+  const DOUBLE_TAP_MAX_DISTANCE = 12;
+  const DOUBLE_TAP_MOVE_CANCEL = 8;
 
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
@@ -1236,21 +1218,17 @@
     viewerImages: [],
     viewerIndex: 0,
     ctxMessageId: null,
-    longPressTimer: null,
-    longPressTriggered: false,
-    longPressRow: null,
-    touchPointerId: null,
-    swipe: {
-      row: null,
-      bubble: null,
+    touchDoubleTap: {
       startX: 0,
       startY: 0,
-      dx: 0,
-      dy: 0,
-      active: false,
-      locked: false,
+      moved: false,
+      row: null,
+      bubble: null,
+      lastTapAt: 0,
+      lastTapX: 0,
+      lastTapY: 0,
+      lastTapMessageId: null,
     },
-    swipeIgnoreClickUntil: 0,
     ctxRow: null,
     ctxBodyPlain: '',
     editTargetMessageId: null,
@@ -1372,13 +1350,6 @@
 
 
   msgBox.addEventListener('click', (e) => {
-    if (state.longPressTriggered) {
-      state.longPressTriggered = false;
-      return;
-    }
-    if (isMobile && state.swipeIgnoreClickUntil && Date.now() < state.swipeIgnoreClickUntil) {
-      return;
-    }
     const rowForAction = e.target.closest('.chat-row');
     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
       if (e.target.closest('.chat-reply-quote')) {
@@ -1429,6 +1400,15 @@
       return;
     }
 
+    const menuToggle = e.target.closest('.chat-menu-toggle');
+    if (menuToggle) {
+      const row = menuToggle.closest('.chat-row[data-message-id]');
+      if (row && Number(row.dataset.deletedFlag || 0) !== 1) {
+        openContextMenu(row);
+      }
+      return;
+    }
+
     const reactionBtn = e.target.closest('.chat-reaction-emoji');
     if (reactionBtn) {
       const row = reactionBtn.closest('.chat-row');
@@ -1456,23 +1436,6 @@
       return;
     }
 
-    const bubble = e.target.closest('.chat-bubble');
-    if (!bubble) return;
-    const row = bubble.closest('.chat-row');
-    if (!row) return;
-
-    const messageId = row.dataset.messageId;
-    if (Number(row.dataset.deletedFlag || 0) === 1) return;
-
-    const senderName = row.dataset.senderName || 'Unknown';
-    const bodyPlain = row.dataset.bodyPlain || '';
-
-    if (state.replyToId && String(state.replyToId) === String(messageId)) {
-      clearReplyState();
-      return;
-    }
-    if (isMobile) return;
-    setReplyState(messageId, senderName, bodyPlain, bubble);
   });
 
   msgBox.addEventListener('contextmenu', (e) => {
@@ -1498,134 +1461,85 @@
     openReactionDetailModal(messageId);
   });
 
-  msgBox.addEventListener('pointerdown', (e) => {
-    if (!isMobile) return;
-    if (e.pointerType === 'mouse') return;
 
-    const row = e.target.closest('.chat-row[data-message-id]');
-    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
-    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
-
-    const bubble = row.querySelector('.chat-bubble');
-    if (!bubble) return;
-
-    row.classList.remove('swiping', 'snapback', 'commit');
-    bubble.style.transform = 'translateX(0px)';
-
-    clearLongPressTimer();
-    state.longPressTriggered = false;
-    state.longPressRow = row;
-    state.touchPointerId = e.pointerId;
-
-    state.swipe.row = row;
-    state.swipe.bubble = bubble;
-    state.swipe.startX = e.clientX;
-    state.swipe.startY = e.clientY;
-    state.swipe.dx = 0;
-    state.swipe.dy = 0;
-    state.swipe.active = true;
-    state.swipe.locked = false;
-
-    state.longPressTimer = window.setTimeout(() => {
-      if (state.swipe.locked) return;
-      state.longPressTriggered = true;
-      openContextMenu(row);
-    }, 500);
+  msgBox.addEventListener('dblclick', (e) => {
+    const target = getReplyTargetFromEvent(e);
+    if (!target) return;
+    e.preventDefault();
+    startReplyFromRow(target.row, target.bubble);
   });
 
-  msgBox.addEventListener('pointermove', (e) => {
+  msgBox.addEventListener('touchstart', (e) => {
     if (!isMobile) return;
-    if (e.pointerType === 'mouse') return;
-    if (!state.swipe.active || !state.swipe.row || !state.swipe.bubble) return;
-    if (state.touchPointerId !== e.pointerId) return;
-
-    const dx = e.clientX - state.swipe.startX;
-    const dy = e.clientY - state.swipe.startY;
-    state.swipe.dx = dx;
-    state.swipe.dy = dy;
-
-    if (!state.swipe.locked) {
-      if (Math.abs(dx) > SWIPE_LOCK && Math.abs(dx) > Math.abs(dy) * 1.2) {
-        state.swipe.locked = true;
-        clearLongPressTimer();
-      } else if (Math.abs(dy) > SWIPE_LOCK && Math.abs(dy) > Math.abs(dx) * 1.2) {
-        state.swipe.active = false;
-        clearLongPressTimer();
-        return;
-      } else {
-        return;
-      }
+    if (e.touches.length !== 1) {
+      resetTouchDoubleTap();
+      return;
     }
+    const touch = e.touches[0];
+    const target = getReplyTargetFromEvent(e);
+    state.touchDoubleTap.startX = touch.clientX;
+    state.touchDoubleTap.startY = touch.clientY;
+    state.touchDoubleTap.moved = false;
+    state.touchDoubleTap.row = target?.row || null;
+    state.touchDoubleTap.bubble = target?.bubble || null;
+  }, { passive: true });
 
-    if (dx <= 0) {
-      setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
+  msgBox.addEventListener('touchmove', (e) => {
+    if (!isMobile) return;
+    if (e.touches.length !== 1) {
+      state.touchDoubleTap.moved = true;
+      return;
+    }
+    const touch = e.touches[0];
+    const dx = touch.clientX - state.touchDoubleTap.startX;
+    const dy = touch.clientY - state.touchDoubleTap.startY;
+    if (Math.hypot(dx, dy) > DOUBLE_TAP_MOVE_CANCEL) {
+      state.touchDoubleTap.moved = true;
+    }
+  }, { passive: true });
+
+  msgBox.addEventListener('touchend', (e) => {
+    if (!isMobile) return;
+    if (state.touchDoubleTap.moved) {
+      resetTouchDoubleTap();
+      return;
+    }
+    const touch = e.changedTouches?.[0];
+    const row = state.touchDoubleTap.row;
+    const bubble = state.touchDoubleTap.bubble;
+    if (!touch || !row || !bubble) {
+      resetTouchDoubleTap();
       return;
     }
 
-    const x = clamp(dx, 0, SWIPE_MAX);
-    setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
-  });
+    const now = Date.now();
+    const messageId = row.dataset.messageId;
+    const isWithinTime = now - state.touchDoubleTap.lastTapAt <= DOUBLE_TAP_INTERVAL_MS;
+    const movedFromLastTap = Math.hypot(
+      touch.clientX - state.touchDoubleTap.lastTapX,
+      touch.clientY - state.touchDoubleTap.lastTapY,
+    );
+    const isSameSpot = movedFromLastTap <= DOUBLE_TAP_MAX_DISTANCE;
+    const isSameMessage = String(state.touchDoubleTap.lastTapMessageId || '') === String(messageId || '');
 
-  msgBox.addEventListener('pointerup', () => {
-    if (!isMobile) return;
-
-    const row = state.swipe.row;
-    const bubble = state.swipe.bubble;
-    const dx = state.swipe.dx;
-    const locked = state.swipe.locked;
-
-    state.swipe.active = false;
-    state.swipe.locked = false;
-    state.swipe.row = null;
-    state.swipe.bubble = null;
-
-    clearLongPressTimer();
-
-    if (!row || !bubble || !locked) return;
-
-    const moved = Math.abs(dx);
-    if (dx > 0 && moved >= SWIPE_COMMIT) {
-      row.classList.add('commit');
-      bubble.style.transform = `translateX(${SWIPE_MAX}px)`;
-
-      if (navigator?.vibrate) navigator.vibrate(10);
-
-      window.setTimeout(() => {
-        state.swipeIgnoreClickUntil = Date.now() + 500;
-        const messageId = row.dataset.messageId;
-        const senderName = row.dataset.senderName || 'Unknown';
-        const bodyPlain = row.dataset.bodyPlain || '';
-        setReplyState(messageId, senderName, bodyPlain, bubble);
-        resetSwipe(row, bubble);
-      }, 90);
+    if (isWithinTime && isSameSpot && isSameMessage) {
+      e.preventDefault();
+      startReplyFromRow(row, bubble);
+      resetTouchDoubleTap();
       return;
     }
 
-    resetSwipe(row, bubble);
-  });
-
-  msgBox.addEventListener('pointercancel', () => {
-    if (!isMobile) return;
-    const row = state.swipe.row;
-    const bubble = state.swipe.bubble;
-    state.swipe.active = false;
-    state.swipe.locked = false;
-    state.swipe.row = null;
-    state.swipe.bubble = null;
-    clearLongPressTimer();
-    if (row && bubble) resetSwipe(row, bubble);
-  });
+    state.touchDoubleTap.lastTapAt = now;
+    state.touchDoubleTap.lastTapX = touch.clientX;
+    state.touchDoubleTap.lastTapY = touch.clientY;
+    state.touchDoubleTap.lastTapMessageId = messageId || null;
+    state.touchDoubleTap.row = null;
+    state.touchDoubleTap.bubble = null;
+  }, { passive: false });
 
   msgBox.addEventListener('touchcancel', () => {
     if (!isMobile) return;
-    const row = state.swipe.row;
-    const bubble = state.swipe.bubble;
-    state.swipe.active = false;
-    state.swipe.locked = false;
-    state.swipe.row = null;
-    state.swipe.bubble = null;
-    clearLongPressTimer();
-    if (row && bubble) resetSwipe(row, bubble);
+    resetTouchDoubleTap();
   });
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
@@ -1654,12 +1568,10 @@
     if (e.key === 'ArrowRight') moveViewerIndex(1);
   });
   msgBox.addEventListener('scroll', () => {
-    clearLongPressTimer();
     closeContextMenu();
     if (msgBox.scrollTop <= 80) loadOlderMessages();
   }, { passive: true });
   window.addEventListener('scroll', () => {
-    clearLongPressTimer();
     closeContextMenu();
   }, { passive: true });
   ctxMenu?.addEventListener('click', handleContextMenuClick);
@@ -1943,12 +1855,6 @@
     row.dataset.myReaction = msg.my_reaction || '';
     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
-
-    const swipeUnderlay = document.createElement('div');
-    swipeUnderlay.className = 'chat-swipe-underlay';
-    swipeUnderlay.setAttribute('aria-hidden', 'true');
-    swipeUnderlay.textContent = '↩︎';
-    row.appendChild(swipeUnderlay);
 
     const line = document.createElement('div');
     line.className = 'chat-line';
@@ -2357,6 +2263,13 @@
     toggle.setAttribute('title', 'リアクション');
     toggle.textContent = '+';
 
+    const menuBtn = document.createElement('button');
+    menuBtn.type = 'button';
+    menuBtn.className = 'chat-menu-toggle chat-menu-open-btn';
+    menuBtn.setAttribute('aria-label', 'メニュー');
+    menuBtn.setAttribute('title', 'メニュー');
+    menuBtn.textContent = '⋯';
+
     const panel = document.createElement('div');
     panel.className = 'chat-reaction-panel d-none';
     for (const emoji of reactionEmojis) {
@@ -2372,6 +2285,7 @@
     summary.className = 'chat-reaction-summary';
 
     box.appendChild(toggle);
+    box.appendChild(menuBtn);
     box.appendChild(panel);
     box.appendChild(summary);
 
@@ -2861,29 +2775,37 @@
     if (searchPanel) searchPanel.innerHTML = '';
   }
 
-  function clamp(n, min, max) {
-    return Math.max(min, Math.min(max, n));
+  function startReplyFromRow(row, bubble) {
+    if (!row || !bubble) return;
+    if (Number(row.dataset.deletedFlag || 0) === 1) return;
+    const messageId = row.dataset.messageId;
+    if (!messageId) return;
+    const senderName = row.dataset.senderName || 'Unknown';
+    const bodyPlain = row.dataset.bodyPlain || '';
+    setReplyState(messageId, senderName, bodyPlain, bubble);
   }
 
-  function setSwipeTransform(row, bubble, x) {
-    bubble.style.transform = `translateX(${x}px)`;
-    row.classList.add('swiping');
-  }
-
-  function resetSwipe(row, bubble) {
-    row.classList.remove('swiping', 'commit');
-    row.classList.add('snapback');
-    bubble.style.transform = 'translateX(0px)';
-    window.setTimeout(() => row.classList.remove('snapback'), 180);
-  }
-
-  function clearLongPressTimer() {
-    if (state.longPressTimer) {
-      window.clearTimeout(state.longPressTimer);
-      state.longPressTimer = null;
+  function getReplyTargetFromEvent(e) {
+    if (e.target.closest('.chat-reaction-chip, .chat-reaction-panel, .chat-reply-quote, .chat-image-link, a, button, input, textarea, .chat-read-inline, .chat-read-indicator, .chat-thread-link')) {
+      return null;
     }
-    state.longPressRow = null;
-    state.touchPointerId = null;
+    const row = e.target.closest('.chat-row[data-message-id]');
+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return null;
+    const bubble = e.target.closest('.chat-bubble') || row.querySelector('.chat-bubble');
+    if (!bubble) return null;
+    return { row, bubble };
+  }
+
+  function resetTouchDoubleTap() {
+    state.touchDoubleTap.startX = 0;
+    state.touchDoubleTap.startY = 0;
+    state.touchDoubleTap.moved = false;
+    state.touchDoubleTap.row = null;
+    state.touchDoubleTap.bubble = null;
+    state.touchDoubleTap.lastTapAt = 0;
+    state.touchDoubleTap.lastTapX = 0;
+    state.touchDoubleTap.lastTapY = 0;
+    state.touchDoubleTap.lastTapMessageId = null;
   }
 
   function openContextMenu(row) {
