@@ -1626,6 +1626,8 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
         else "0 AS edited_flag, NULL AS edited_at"
     )
     thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
+    timeline_thread_filter = "AND m.thread_root_id IS NULL" if has_thread_schema else ""
+    timeline_thread_filter_plain = "AND thread_root_id IS NULL" if has_thread_schema else ""
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -1655,6 +1657,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
                         AND p.event_id = m.event_id
                  WHERE m.event_id=%s
                    AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
+                   {timeline_thread_filter}
                  ORDER BY m.created_at DESC
                  LIMIT %s
                 """,
@@ -1691,6 +1694,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
               FROM chat_messages
              WHERE event_id=%s
                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
+               {timeline_thread_filter_plain}
              ORDER BY created_at DESC
              LIMIT %s
             """,
@@ -2188,8 +2192,7 @@ def _apply_thread_reply_count(event_id: int, room_id: str, rows: list[dict[str, 
 
     for row in rows:
         row_id = int(row.get("id") or 0)
-        thread_root_id = int(row.get("thread_root_id") or 0)
-        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 and thread_root_id == row_id else 0
+        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 else 0
 
 
 def _check_rate_limit(actor: dict[str, Any], *, route: str, event_id: int | None = None, room_id: str | None = None) -> bool:

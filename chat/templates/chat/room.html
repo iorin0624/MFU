@@ -1072,12 +1072,24 @@
   });
 
   socket.on('chat_message', (msg) => {
-    renderMessage(msg);
-    if (state.threadRootId && (Number(msg?.thread_root_id || 0) === Number(state.threadRootId) || Number(msg?.id || 0) === Number(state.threadRootId))) {
-      appendThreadMessage(msg);
+    const messageId = Number(msg?.id || 0);
+    const threadRootId = Number(msg?.thread_root_id || 0);
+    const isThreadReply = threadRootId > 0;
+
+    if (isThreadReply) {
+      bumpThreadReplyCount(threadRootId);
+      if (state.threadRootId && threadRootId === Number(state.threadRootId)) {
+        appendThreadMessage(msg);
+        sendSeenForMessageId(messageId);
+      }
+    } else {
+      renderMessage(msg);
+      if (state.threadRootId && messageId === Number(state.threadRootId)) {
+        appendThreadMessage(msg);
+      }
+      msgBox.scrollTop = msgBox.scrollHeight;
+      sendSeenForMessageId(messageId);
     }
-    msgBox.scrollTop = msgBox.scrollHeight;
-    sendSeenForMessageId(Number(msg?.id || 0));
     setSendingState(false);
   });
   socket.on('chat_error', (d) => {
@@ -2161,6 +2173,26 @@
     threadRepliesContainer.appendChild(buildThreadItem(msg));
     const panel = document.getElementById('thread-modal-body');
     if (panel) panel.scrollTop = panel.scrollHeight;
+  }
+
+  function bumpThreadReplyCount(threadRootId) {
+    const rootRow = msgBox?.querySelector(`.chat-row[data-message-id="${threadRootId}"]`);
+    if (!rootRow) return;
+
+    const nextCount = Number(rootRow.dataset.threadReplyCount || 0) + 1;
+    rootRow.dataset.threadReplyCount = String(nextCount);
+
+    let threadLink = rootRow.querySelector('.thread-summary-link');
+    if (!threadLink) {
+      const lineMain = rootRow.querySelector('.chat-main');
+      if (!lineMain) return;
+      threadLink = document.createElement('button');
+      threadLink.type = 'button';
+      threadLink.className = 'thread-summary-link';
+      threadLink.dataset.threadOpen = String(threadRootId);
+      lineMain.appendChild(threadLink);
+    }
+    threadLink.textContent = `返信 ${nextCount}`;
   }
 
   function renderThreadModal(root, replies) {
