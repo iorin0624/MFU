@@ -75,6 +75,17 @@ def _normalize_email(s: str) -> str | None:
     return s
 
 
+def _normalize_external_url(raw: str | None) -> str | None:
+    if not isinstance(raw, str):
+        return None
+    url = raw.strip()
+    if not url:
+        return None
+    if url.startswith(("http://", "https://")):
+        return url
+    return f"https://{url}"
+
+
 def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24, redirect_url: str | None = None) -> str:
     """
     検証用トークンを発行して DB に保存し、URL に載せるプレーントークンを返す。
@@ -783,7 +794,7 @@ def index():
         cur.execute("""
           SELECT
             e.id, e.event_uuid, e.title,
-            e.starts_at, e.fee_yen, e.album_id,
+            e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
             COALESCE(e.tip_enabled,0) AS tip_enabled,
             m.id AS member_id,
             COALESCE(m.status,'pending')                        AS status,
@@ -837,6 +848,7 @@ def index():
                 "tip_enabled": int(r.get("tip_enabled") or 0),
                 "my_payment_status": r["payment_status"] or "unpaid",
                 "my_receipt_url": r["receipt_url"],
+                "line_openchat_url": _normalize_external_url(r.get("line_openchat_url")),
             }
             receipt_pdf_url = None
             if (
@@ -2291,7 +2303,8 @@ def view_event(event_uuid: str):
                     return u
         return None
 
-    openchat_url    = _pick_http_url("openchat_url", "line_openchat_url", "open_chat_url", "line_oc_url")
+    raw_openchat_url = _pick_str("openchat_url", "line_openchat_url", "open_chat_url", "line_oc_url")
+    openchat_url = _normalize_external_url(raw_openchat_url)
     openchat_pass   = _pick_str("openchat_password", "openchat_pass", "line_openchat_password", "line_openchat_pass", "oc_pass", "oc_password")
 
     # ===== アンケートURL =====
