@@ -79,6 +79,15 @@
       border: 1px solid #ffeeba; margin: 4px;
     }
 
+    #bb-share{
+      position:absolute; top:12px; right:60px; z-index:10000;
+      width:40px; height:40px; border-radius:999px;
+      border:1px solid rgba(255,255,255,.5); background:rgba(0,0,0,.55); color:#fff;
+      display:flex; align-items:center; justify-content:center;
+      font-size:18px; line-height:1; cursor:pointer;
+    }
+    #bb-share:hover{ background:rgba(0,0,0,.72); }
+
     .btn-lg { padding: 0.9rem 1.4rem; font-size: 1rem; }
 
     .upload-panel { border-radius: 16px; border: 1px dashed #cdd6e3; background: #fdfdff; padding: 16px; }
@@ -491,6 +500,130 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
+  function toAbsoluteUrl(urlLike){
+    if (!urlLike) return '';
+    try { return new URL(urlLike, location.href).href; }
+    catch(_) { return ''; }
+  }
+
+  function extractFilename(value, fallback='image.jpg'){
+    const raw = (value || '').split('/').pop() || '';
+    const clean = decodeURIComponent(raw).trim();
+    return clean || fallback;
+  }
+
+  function safeFilename(nameHint, mimeType='image/jpeg'){
+    const fallbackExt = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi,'') || 'jpg';
+    const base = (nameHint || 'image').replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
+    const file = base || `image.${fallbackExt}`;
+    return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
+  }
+
+  function mimeTypeFromName(name=''){
+    const lower = `${name}`.toLowerCase();
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+
+  function isShareCanceled(error){
+    const msg = `${error?.message || ''}`.toLowerCase();
+    return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
+  }
+
+  async function shareByUrl(imageUrl, filenameHint='image.jpg'){
+    const absoluteImageUrl = toAbsoluteUrl(imageUrl);
+    if (!absoluteImageUrl) {
+      alert('共有する画像URLを取得できませんでした');
+      return;
+    }
+    try {
+      if (navigator.share && navigator.canShare) {
+        try {
+          const response = await fetch(absoluteImageUrl, { credentials:'include', cache:'no-store' });
+          if (response.ok) {
+            const blob = await response.blob();
+            const mimeType = blob.type || mimeTypeFromName(filenameHint || absoluteImageUrl);
+            const file = new File([blob], safeFilename(filenameHint, mimeType), { type: mimeType });
+            if (navigator.canShare({ files:[file] })) {
+              await navigator.share({ files:[file], title:'MFU' });
+              return;
+            }
+          }
+        } catch(_) { }
+      }
+      if (navigator.share) {
+        await navigator.share({ url:absoluteImageUrl, title:'MFU' });
+        return;
+      }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(absoluteImageUrl);
+        alert('共有URLをクリップボードにコピーしました。');
+        return;
+      }
+      prompt('このURLをコピーして共有してください。', absoluteImageUrl);
+    } catch (error) {
+      if (!isShareCanceled(error)) console.error('shareByUrl failed:', error);
+    }
+  }
+
+  function resolveUrlFromOverlay(overlay){
+    const img = overlay?.querySelector('figure img, .full-image img, #baguetteBox-slider img, img');
+    const imgSrc = toAbsoluteUrl(img?.currentSrc || img?.src || '');
+    if (!imgSrc) return '';
+    const anchors = Array.from(document.querySelectorAll('.gallery a.preview'));
+    const targetName = extractFilename(imgSrc).toLowerCase();
+    const matched = anchors.find((a)=>{
+      const hrefAbs = toAbsoluteUrl(a.getAttribute('href') || a.href || '');
+      const thumbAbs = toAbsoluteUrl(a.querySelector('img')?.currentSrc || a.querySelector('img')?.src || '');
+      return hrefAbs === imgSrc || thumbAbs === imgSrc || extractFilename(hrefAbs).toLowerCase() === targetName;
+    });
+    return toAbsoluteUrl(matched?.getAttribute('href') || matched?.href || '');
+  }
+
+  function setupLightboxShareButton(){
+    const ensureOverlayShareButton=(overlay)=>{
+      if (overlay.querySelector('#bb-share')) return;
+      const button=document.createElement('button');
+      button.id='bb-share';
+      button.type='button';
+      button.setAttribute('aria-label','共有');
+      button.setAttribute('title','共有');
+      button.textContent='↗️';
+      button.addEventListener('click', async (e)=>{
+        e.preventDefault();
+        e.stopPropagation();
+        const candidateUrl = resolveUrlFromOverlay(overlay);
+        if (!candidateUrl) {
+          alert('共有する画像URLを取得できませんでした');
+          return;
+        }
+        const hint = extractFilename(candidateUrl || 'image.jpg');
+        await shareByUrl(candidateUrl, hint);
+      });
+      overlay.appendChild(button);
+    };
+    const applyOverlayObserver=(overlay)=>{
+      const toggle=()=>{
+        const visible=overlay.classList.contains('visible') && overlay.style.display!=='none';
+        if(visible) ensureOverlayShareButton(overlay);
+      };
+      toggle();
+      const mo=new MutationObserver(toggle);
+      mo.observe(overlay,{ attributes:true, attributeFilter:['class','style'] });
+    };
+    const tryAttach=()=>{
+      const overlay=document.getElementById('baguetteBox-overlay');
+      if(overlay){ applyOverlayObserver(overlay); return true; }
+      return false;
+    };
+    if(!tryAttach()){
+      const bodyMO=new MutationObserver(()=>{ if(tryAttach()) bodyMO.disconnect(); });
+      bodyMO.observe(document.body,{ childList:true, subtree:true });
+    }
+  }
+
   const dlButton = document.getElementById("btn-process-download");
   if (dlButton) {
     dlButton.addEventListener("click", async (e) => {
@@ -669,6 +802,7 @@
   /* ====== Lightbox & Lock Timer ====== */
   window.addEventListener('DOMContentLoaded', ()=>{
     baguetteBox.run('.gallery',{ animation:'fadeIn', noScrollbars:true });
+    setupLightboxShareButton();
     {% if lock and not lock_expired %}
       document.querySelectorAll('.gallery a.preview').forEach(el => {
         el.addEventListener('click', e => e.preventDefault(), true);
