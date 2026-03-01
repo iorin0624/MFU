@@ -745,6 +745,18 @@ def _ensure_chat_room_members_schema() -> bool:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
             cur.execute(sql)
+            cur.execute("SHOW COLUMNS FROM chat_room_members LIKE 'muted_until'")
+            if not cur.fetchone():
+                sql = "ALTER TABLE chat_room_members ADD COLUMN muted_until DATETIME NULL AFTER added_by_actor_id"
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    _log_auto_migration_error("_ensure_chat_room_members_schema", sql)
+
+            try:
+                cur.execute("ALTER TABLE chat_room_members ADD KEY idx_chat_room_members_muted (room_id, muted_until)")
+            except Exception:
+                pass
             db.commit()
             CHAT_ROOM_MEMBERS_SCHEMA_READY = True
             return True
@@ -1154,6 +1166,39 @@ def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
         db.close()
 
     return participants
+
+
+def _build_room_member_candidates(event_id: int) -> list[dict[str, str]]:
+    participants = _build_chat_participants(event_id)
+    candidates: list[dict[str, str]] = []
+    for actor_key, participant in participants.items():
+        actor_type = str(participant.get("actor_type") or "")
+        role_hint = "参加者"
+        if actor_type == "admin":
+            role_hint = "admin"
+        elif actor_type == "acl":
+            role_hint = "ACL"
+        candidates.append(
+            {
+                "actor_key": actor_key,
+                "display_name": str(participant.get("display_name") or actor_key),
+                "role_hint": role_hint,
+            }
+        )
+    return sorted(candidates, key=lambda x: str(x.get("display_name") or ""))
+
+
+def _parse_mute_until(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        mute_dt = _to_utc_datetime(text)
+    except Exception:
+        return None
+    return mute_dt.replace(tzinfo=None)
 
 
 def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str]]) -> dict[str, str]:
@@ -2472,9 +2517,40 @@ def _build_chat_message_push_targets(event_id: int, room_id: str, sender_actor: 
         cur.close()
         db.close()
 
+    muted_targets: set[tuple[str, str]] = set()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_type, actor_id
+              FROM chat_room_members
+             WHERE room_id=%s
+               AND muted_until IS NOT NULL
+               AND muted_until > NOW()
+            """,
+            (room_id,),
+        )
+        for row in cur.fetchall() or []:
+            actor_type = str(row.get("actor_type") or "")
+            actor_id = str(row.get("actor_id") or "")
+            if actor_type and actor_id:
+                muted_targets.add((actor_type, actor_id))
+    except Exception:
+        current_app.logger.warning("chat muted target lookup failed room=%s", room_id, exc_info=True)
+    finally:
+        cur.close()
+        db.close()
+
     if int(room.get("is_main") or 0) == 1:
         targets.add(("admin", "admin"))
-    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key and _can_notify_actor_in_room(event_id, room_id, t[0], t[1])]
+    return [
+        t
+        for t in targets
+        if t not in muted_targets
+        and _actor_sender_id(t[0], t[1]) != sender_key
+        and _can_notify_actor_in_room(event_id, room_id, t[0], t[1])
+    ]
 
 
 def _create_external_chat_notification(
@@ -3827,35 +3903,289 @@ def api_room_member_candidates(event_id: int):
     actor = get_chat_actor()
     if not actor or not _can_manage_rooms(event_id, actor):
         return jsonify({"ok": False}), 403
+    return jsonify({"ok": True, "candidates": _build_room_member_candidates(event_id)})
+
+
+@chat_bp.get("/api/events/<int:event_id>/mentions")
+def api_mentions(event_id: int):
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False}), 403
+
+    room_id = (request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False}), 403
+
+    prefix = (request.args.get("q") or "").strip()
+    candidates = _build_room_member_candidates(event_id)
+    if prefix:
+        candidates = [c for c in candidates if str(c.get("display_name") or "").startswith(prefix)]
+    return jsonify({"ok": True, "candidates": candidates[:10]})
+
+
+@chat_bp.get("/api/events/<int:event_id>/messages")
+def api_older_messages(event_id: int):
+    _ensure_chat_messages_room_schema()
+    has_reply_schema = _ensure_chat_reply_schema()
+    has_image_schema = _ensure_chat_image_schema()
+    has_delete_schema = _ensure_chat_delete_schema()
+    has_edit_schema = _ensure_chat_edit_schema()
+    has_thread_schema = _ensure_chat_thread_schema()
+
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False}), 403
+
+    room_id = (request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False}), 403
+
+    before_id = int(request.args.get("before_id") or 0)
+    if before_id <= 0:
+        return jsonify({"ok": False, "error": "before_id required"}), 400
+
+    limit = max(1, min(int(request.args.get("limit") or 50), 100))
+    query_limit = limit + 1
+    image_columns = (
+        "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
+        if has_image_schema
+        else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
+    )
+    delete_columns = (
+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+        if has_delete_schema
+        else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
+    )
+    edit_columns = "m.edited_flag, m.edited_at" if has_edit_schema else "0 AS edited_flag, NULL AS edited_at"
+    thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
+    thread_filter = "AND m.thread_root_id IS NULL" if has_thread_schema else ""
+    reply_delete_columns = (
+        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
+        if has_delete_schema
+        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
+    )
+
     db = get_db()
     cur = db.cursor(dictionary=True)
-    candidates: dict[str, dict[str, str]] = {"admin:admin": {"actor_key": "admin:admin", "display_name": "admin", "role_hint": "admin"}}
     try:
-        cur.execute(
-            """
-            SELECT u.id, u.nickname
-              FROM mfu_event_member m
-              JOIN external_login_user u ON u.id=m.user_id
-             WHERE m.event_id=%s
-            """,
-            (event_id,),
-        )
-        for row in cur.fetchall() or []:
-            key = f"line:{row['id']}"
-            candidates[key] = {"actor_key": key, "display_name": str(row.get("nickname") or f"LINE-{row['id']}") , "role_hint": "参加者"}
-        cur.execute("SELECT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
-        for row in cur.fetchall() or []:
-            username = str(row.get("username") or "")
-            if not username:
-                continue
-            if username == "admin":
-                continue
-            key = f"acl:{username}"
-            candidates[key] = {"actor_key": key, "display_name": username, "role_hint": "ACL"}
+        if has_reply_schema:
+            cur.execute(
+                f"""
+                SELECT m.id,
+                       m.event_id,
+                       m.sender_actor_type,
+                       m.sender_actor_id,
+                       m.sender_display_name,
+                       m.body,
+                       m.created_at,
+                       {image_columns},
+                       {delete_columns},
+                       {edit_columns},
+                       {thread_column},
+                       m.reply_to_message_id,
+                       p.sender_actor_type AS reply_to_sender_actor_type,
+                       p.sender_actor_id AS reply_to_sender_actor_id,
+                       p.sender_display_name AS reply_to_sender_display_name,
+                       p.body AS reply_to_body,
+                       {reply_delete_columns}
+                  FROM chat_messages m
+                  LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.event_id = m.event_id
+                 WHERE m.event_id=%s
+                   AND m.room_id=%s
+                   AND COALESCE(m.deleted_flag,0)=0
+                   {thread_filter}
+                   AND m.id < %s
+                 ORDER BY m.id DESC
+                 LIMIT %s
+                """,
+                (event_id, effective_room_id, before_id, query_limit),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT m.id,
+                       m.event_id,
+                       m.sender_actor_type,
+                       m.sender_actor_id,
+                       m.sender_display_name,
+                       m.body,
+                       m.created_at,
+                       {image_columns},
+                       {delete_columns},
+                       {edit_columns},
+                       {thread_column},
+                       NULL AS reply_to_message_id,
+                       NULL AS reply_to_sender_actor_type,
+                       NULL AS reply_to_sender_actor_id,
+                       NULL AS reply_to_sender_display_name,
+                       NULL AS reply_to_body,
+                       0 AS reply_to_deleted_flag,
+                       NULL AS reply_to_deleted_by_actor_type
+                  FROM chat_messages m
+                 WHERE m.event_id=%s
+                   AND m.room_id=%s
+                   AND COALESCE(m.deleted_flag,0)=0
+                   {thread_filter}
+                   AND m.id < %s
+                 ORDER BY m.id DESC
+                 LIMIT %s
+                """,
+                (event_id, effective_room_id, before_id, query_limit),
+            )
+        rows = cur.fetchall() or []
     finally:
         cur.close()
         db.close()
-    return jsonify({"ok": True, "candidates": sorted(candidates.values(), key=lambda x: x["display_name"])})
+
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    if has_thread_schema:
+        _apply_thread_reply_count(event_id, effective_room_id, rows)
+
+    for row in rows:
+        if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
+            if int(row.get("reply_to_deleted_flag") or 0) == 1:
+                row["reply_to_body_plain_excerpt"] = (
+                    "管理者により削除"
+                    if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
+                    else "削除されました"
+                )
+            else:
+                row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
+        elif row.get("reply_to_message_id"):
+            row["reply_to_sender_display_name"] = "元メッセージ"
+            row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+        else:
+            row["reply_to_sender_display_name"] = None
+            row["reply_to_body_plain_excerpt"] = None
+
+    rows = list(reversed(rows))
+    message_ids = [int(m.get("id") or 0) for m in rows if int(m.get("id") or 0) > 0]
+    reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
+    my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
+    images_by_message = _load_message_images_by_message_ids(message_ids)
+    avatar_cache: dict[str, str] = {}
+
+    messages: list[dict[str, Any]] = []
+    for message in rows:
+        message_id = int(message.get("id") or 0)
+        message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
+        message["my_reaction"] = my_reaction_by_message.get(message_id)
+        message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
+        messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
+
+    return jsonify({"ok": True, "messages": messages, "has_more": has_more})
+
+
+@chat_bp.get("/api/events/<int:event_id>/rooms/unread")
+def api_room_unread(event_id: int):
+    _ensure_chat_messages_room_schema()
+    _ensure_chat_read_state_room_schema()
+    _ensure_chat_thread_schema()
+    _ensure_chat_delete_schema()
+
+    actor = get_chat_actor()
+    if not actor or not _can_access_event(event_id, actor):
+        return jsonify({"ok": False}), 403
+
+    rooms = _list_accessible_rooms(event_id, actor)
+    room_ids = [str(r.get("room_id") or "") for r in rooms if str(r.get("room_id") or "")]
+    if not room_ids:
+        return jsonify({"ok": True, "rooms": []})
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    results: list[dict[str, Any]] = []
+    try:
+        for rid in room_ids:
+            cur.execute(
+                """
+                SELECT COALESCE(last_read_message_id, 0) AS last_read_message_id
+                  FROM chat_read_state
+                 WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
+                 LIMIT 1
+                """,
+                (event_id, rid, actor.get("actor_type"), str(actor.get("actor_id") or "")),
+            )
+            last_read_id = int((cur.fetchone() or {}).get("last_read_message_id") or 0)
+            cur.execute(
+                """
+                SELECT COUNT(*) AS unread_count, MIN(id) AS first_unread_id
+                  FROM chat_messages
+                 WHERE event_id=%s
+                   AND room_id=%s
+                   AND COALESCE(deleted_flag, 0)=0
+                   AND thread_root_id IS NULL
+                   AND id > %s
+                """,
+                (event_id, rid, last_read_id),
+            )
+            row = cur.fetchone() or {}
+            results.append(
+                {
+                    "room_id": rid,
+                    "unread_count": int(row.get("unread_count") or 0),
+                    "first_unread_id": int(row.get("first_unread_id") or 0) or None,
+                }
+            )
+    finally:
+        cur.close()
+        db.close()
+
+    return jsonify({"ok": True, "rooms": results})
+
+
+@chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/mute")
+def api_room_mute(event_id: int, room_id: str):
+    _ensure_chat_room_members_schema()
+
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False}), 403
+
+    allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False}), 403
+
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+
+    muted_until = _parse_mute_until(payload.get("muted_until")) if payload.get("muted_until", None) is not None else None
+    if payload.get("muted_until", None) is not None and muted_until is None:
+        return jsonify({"ok": False, "error": "invalid muted_until"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    now = datetime.utcnow()
+    try:
+        cur.execute(
+            """
+            INSERT IGNORE INTO chat_room_members (
+              room_id, actor_type, actor_id,
+              added_at, added_by_actor_type, added_by_actor_id
+            ) VALUES (%s,%s,%s,%s,%s,%s)
+            """,
+            (effective_room_id, actor["actor_type"], str(actor["actor_id"]), now, actor["actor_type"], str(actor["actor_id"])),
+        )
+        cur.execute(
+            """
+            UPDATE chat_room_members
+               SET muted_until=%s
+             WHERE room_id=%s AND actor_type=%s AND actor_id=%s
+            """,
+            (muted_until, effective_room_id, actor["actor_type"], str(actor["actor_id"])),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    return jsonify({"ok": True, "muted_until": muted_until.isoformat() if muted_until else None})
 
 
 @chat_bp.get("/api/push/bootstrap")

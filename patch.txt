@@ -1,545 +1,1429 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index 7ea4d9560fd3faa6e48b32563c199e4bbdb3ee0c..906ead5ea93d631c791bd4d25d2bb58c153dbf01 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -1181,50 +1181,52 @@ def album_access(album_id):
- 
-     token = request.args.get('token')
-     if token and token == meta.get('access_token'):
-         session[f'auth_{album_id}'] = True
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
-     if request.method == 'POST':
-         return 'このアルバムはトークン式です', 403
- 
-     return render_template('access.html', album_id=album_id)
- 
- @album_bp.route('/<album_id>/')
- def album_home(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     user = session.get('user')
-     is_admin = (user == 'admin')
-     is_owner = user and meta.get('owner') == user
-     is_authed = session.get(f'auth_{album_id}') is True
-     if not (is_admin or is_owner or is_authed):
-         return redirect(url_for('album.album_access', album_id=album_id))
- 
-     ext_user_nickname = _get_ext_user_nickname()
-+    album_meta = _fetch_album_meta(album_id)
-+    show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
- 
-     # ★追加：加工ロック一覧を取得
-     processing_list = []
-     try:
-         conn = get_db()
-         cur = conn.cursor(dictionary=True)
-         cur.execute("""
-             SELECT child_id, username, expires_at
-               FROM album_locks
-              WHERE album_id=%s
-              ORDER BY expires_at DESC
-         """, (album_id,))
-         rows = cur.fetchall() or []
-         cur.close()
-         conn.close()
- 
-         # child_id → 子アルバム名 に変換
-         child_map = {c["folder"]: c["name"] for c in meta.get("children", [])}
- 
-         for r in rows:
-             processing_list.append({
-                 "child_id": r["child_id"],
-                 "child_name": child_map.get(r["child_id"], "(不明)"),
-                 "username": r["username"],
-                 "expires_at": r["expires_at"].strftime("%H:%M")
-@@ -1245,50 +1247,51 @@ def album_home(album_id):
-             status_map = _fetch_album_process_status_map(album_id, child.get("folder"))
-             requested_ids = [
-                 ext_user_id
-                 for ext_user_id, status in status_map.items()
-                 if int(status.get("request_flag", 0)) == 1
-             ]
-             if requested_ids and all(
-                 int(status_map.get(ext_user_id, {}).get("complete_flag", 0)) == 1
-                 for ext_user_id in requested_ids
-             ):
-                 completed_process_children.add(child.get("folder"))
- 
-     for child in meta.get("children", []):
-         mode = child.get("mode") or "normal"
-         child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
-         child["media_unit"] = "本" if mode == "movie" else "枚"
- 
-     return render_template(
-         'album_home.html',
-         album_id=album_id, meta=meta,
-         is_admin=is_admin, is_owner=is_owner,
-         is_readonly=is_readonly,
-         processing_list=processing_list,   # ★追加
-         ext_user_nickname=ext_user_nickname,
-         completed_process_children=completed_process_children,
-+        show_extlogin_nav=show_extlogin_nav,
-     )
- 
- @album_bp.route('/<album_id>/create_child', methods=['POST'])
- def create_child(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return redirect(url_for('album.album_access', album_id=album_id))
- 
-     # ★HDD保管中は子作成を禁止（アーカイブ扱い）
-     if is_album_readonly(album_id):
-         flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
-     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
- 
-     folder_name = (request.form.get('child_name') or '').strip()
-     selected_mode = (request.form.get('child_mode') or 'normal').strip().lower()
-     if selected_mode not in ('normal', 'process', 'movie'):
-         selected_mode = 'normal'
- 
-     if not folder_name:
-         flash('子アルバム名を入力してください', 'danger')
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
-@@ -1833,50 +1836,52 @@ def upload_child(album_id, child_id):
- # ビュー（画像/加工/動画）
- # =============================================================================
- @album_bp.route('/<album_id>/view/<child_id>', methods=['GET', 'POST'])
- def view_child(album_id, child_id):
-     """
-     子アルバムビュー
-     - mode == 'movie' の場合:
-         * 変換済み encoded/*.web.mp4 を優先して再生URLに採用
-         * .web.mp4 が未生成なら converting=True を渡す（テンプレ側で「変換中…」表示）
-         * 一覧は「アップロード順（連番名）」で昇順ソート
-           期待ファイル名: {child_id}_YYYYMMDD_HHMM_NNNN.ext
-     - それ以外は静止画/加工。SSD/HDD 両方を探索して表示
-     """
-     import re
-     from datetime import datetime
- 
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     child_meta = next((c for c in meta.get("children", []) if c.get("folder") == child_id), None)
-     if not child_meta:
-         return '子アルバムが存在しません', 404
- 
-     mode = child_meta.get("mode", "normal")
-+    album_meta = _fetch_album_meta(album_id)
-+    show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
- 
-     # ★HDD保管中フラグ（テンプレ側で作成/追加UIをブロックするために渡す）
-     try:
-         storage, _ = _get_album_storage(album_id)  # 'ssd' or 'hdd'
-     except Exception:
-         storage = None
-     is_readonly = (storage == 'hdd')
- 
-     # SSD/HDD のどちらか実体がある方を優先
-     child_path = _prefer_existing_child_dir(album_id, child_id, mode)
-     os.makedirs(child_path, exist_ok=True)
- 
-     # 加工ロック（静止画側で使用）
-     lock_path = os.path.join(child_path, 'lock.json')
-     lock = None
-     lock_expired = False
-     if os.path.exists(lock_path):
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 53687720e0627a4ce395070c7fbcc014d9d3bdd5..204ffe601844f3a5caed86994f719ebfb1b76dff 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -723,50 +723,62 @@ def _ensure_chat_rooms_schema() -> bool:
+ def _ensure_chat_room_members_schema() -> bool:
+     global CHAT_ROOM_MEMBERS_SCHEMA_READY
+     if CHAT_ROOM_MEMBERS_SCHEMA_READY is not None:
+         return CHAT_ROOM_MEMBERS_SCHEMA_READY
+     with CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK:
+         if CHAT_ROOM_MEMBERS_SCHEMA_READY is not None:
+             return CHAT_ROOM_MEMBERS_SCHEMA_READY
+         db = get_db()
+         cur = db.cursor()
          try:
-             with open(lock_path, 'r') as f:
-                 lock = json.load(f)
-             lock_expired = (time.time() - lock.get('timestamp', 0)) > LOCK_TTL_SEC
+             sql = """
+             CREATE TABLE IF NOT EXISTS chat_room_members (
+               id BIGINT AUTO_INCREMENT PRIMARY KEY,
+               room_id VARCHAR(36) NOT NULL,
+               actor_type VARCHAR(16) NOT NULL,
+               actor_id VARCHAR(64) NOT NULL,
+               added_at DATETIME NOT NULL,
+               added_by_actor_type VARCHAR(16) NOT NULL,
+               added_by_actor_id VARCHAR(64) NOT NULL,
+               UNIQUE KEY uq_chat_room_member (room_id, actor_type, actor_id),
+               KEY idx_chat_room_member_room (room_id),
+               KEY idx_chat_room_member_actor (actor_type, actor_id)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+             cur.execute(sql)
++            cur.execute("SHOW COLUMNS FROM chat_room_members LIKE 'muted_until'")
++            if not cur.fetchone():
++                sql = "ALTER TABLE chat_room_members ADD COLUMN muted_until DATETIME NULL AFTER added_by_actor_id"
++                try:
++                    cur.execute(sql)
++                except Exception:
++                    _log_auto_migration_error("_ensure_chat_room_members_schema", sql)
++
++            try:
++                cur.execute("ALTER TABLE chat_room_members ADD KEY idx_chat_room_members_muted (room_id, muted_until)")
++            except Exception:
++                pass
+             db.commit()
+             CHAT_ROOM_MEMBERS_SCHEMA_READY = True
+             return True
          except Exception:
-             lock = None
+             _log_auto_migration_error("_ensure_chat_room_members_schema", sql)
+             CHAT_ROOM_MEMBERS_SCHEMA_READY = False
+             return False
+         finally:
+             cur.close()
+             db.close()
  
-     username = session.get("user")
-@@ -1982,51 +1987,52 @@ def view_child(album_id, child_id):
-                     poster_url = url_for('album.movie_poster', album_id=album_id, child_id=child_id, filename=poster)
-                     break
  
-             # 再生URLは、変換済みがあればそれ（encoded/）、無ければ原本（original/）
-             use_name = web_name if web_exists else f
+ def _ensure_main_room(event_id: int) -> str | None:
+     if not _ensure_chat_rooms_schema():
+         return None
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT room_id FROM chat_rooms WHERE event_id=%s AND is_main=1 LIMIT 1", (event_id,))
+         row = cur.fetchone()
+         if row and row.get("room_id"):
+             return str(row["room_id"])
+         room_id = str(uuid.uuid4())
+         now = datetime.utcnow()
+         cur.execute(
+@@ -1134,50 +1146,83 @@ def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
+         acl_rows = [str(row["username"]) for row in (cur.fetchall() or [])]
+         non_admin_acls = [name for name in acl_rows if name != "admin"]
+         if non_admin_acls:
+             placeholders = ",".join(["%s"] * len(non_admin_acls))
+             cur.execute(
+                 f"SELECT username FROM users WHERE username IN ({placeholders})",
+                 tuple(non_admin_acls),
+             )
+             for row in cur.fetchall() or []:
+                 username = str(row["username"])
+                 participants[f"acl:{username}"] = {
+                     "actor_type": "acl",
+                     "actor_id": username,
+                     "display_name": username,
+                 }
  
-             videos.append({
-                 "name": f,
-                 "poster": poster_url,
-                 "raw": url_for('album.movie_raw', album_id=album_id, child_id=child_id, filename=use_name),
-                 "web": url_for('album.movie_raw', album_id=album_id, child_id=child_id, filename=web_name),
-                 "converting": (not web_exists)
-             })
+         if "admin" in acl_rows:
+             participants["admin:admin"] = {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}
+     finally:
+         cur.close()
+         db.close()
  
-         return render_template(
-             "view_child_movie.html",
-             album_id=album_id,
-             child_id=child_id,
-             meta=meta,
-             videos=videos,
-             mode=mode,
-             session=session,
-             is_admin=is_admin,
-             is_owner=is_owner,
-             # ★追加：HDD保管中フラグをテンプレへ渡す
--            is_readonly=is_readonly
-+            is_readonly=is_readonly,
-+            show_extlogin_nav=show_extlogin_nav,
+     return participants
+ 
+ 
++def _build_room_member_candidates(event_id: int) -> list[dict[str, str]]:
++    participants = _build_chat_participants(event_id)
++    candidates: list[dict[str, str]] = []
++    for actor_key, participant in participants.items():
++        actor_type = str(participant.get("actor_type") or "")
++        role_hint = "参加者"
++        if actor_type == "admin":
++            role_hint = "admin"
++        elif actor_type == "acl":
++            role_hint = "ACL"
++        candidates.append(
++            {
++                "actor_key": actor_key,
++                "display_name": str(participant.get("display_name") or actor_key),
++                "role_hint": role_hint,
++            }
++        )
++    return sorted(candidates, key=lambda x: str(x.get("display_name") or ""))
++
++
++def _parse_mute_until(value: Any) -> datetime | None:
++    if value is None:
++        return None
++    text = str(value).strip()
++    if not text:
++        return None
++    try:
++        mute_dt = _to_utc_datetime(text)
++    except Exception:
++        return None
++    return mute_dt.replace(tzinfo=None)
++
++
+ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str]]) -> dict[str, str]:
+     resolved: dict[str, str] = {}
+     line_ids = sorted({str(actor_id) for actor_type, actor_id in actor_pairs if str(actor_type) == "line" and str(actor_id)})
+     acl_ids = sorted({str(actor_id) for actor_type, actor_id in actor_pairs if str(actor_type) == "acl" and str(actor_id)})
+     admin_keys = {f"{actor_type}:{actor_id}" for actor_type, actor_id in actor_pairs if str(actor_type) == "admin"}
+ 
+     for key in admin_keys:
+         resolved[key] = "admin"
+ 
+     if not line_ids and not acl_ids:
+         for actor_type, actor_id in actor_pairs:
+             key = f"{actor_type}:{actor_id}"
+             if key not in resolved:
+                 resolved[key] = str(actor_id)
+         return resolved
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         if line_ids:
+             placeholders = ",".join(["%s"] * len(line_ids))
+             cur.execute(
+                 f"SELECT id, nickname FROM external_login_user WHERE id IN ({placeholders})",
+                 tuple(line_ids),
+             )
+@@ -2450,53 +2495,84 @@ def _build_chat_message_push_targets(event_id: int, room_id: str, sender_actor:
+             cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+             for row in cur.fetchall() or []:
+                 targets.add(("line", str(row["user_id"])))
+ 
+             cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+             for row in cur.fetchall() or []:
+                 username = str(row["username"])
+                 if username == "admin":
+                     targets.add(("admin", "admin"))
+                 else:
+                     targets.add(("acl", username))
+         else:
+             cur.execute(
+                 "SELECT actor_type, actor_id FROM chat_room_members WHERE room_id=%s",
+                 (room_id,),
+             )
+             for row in cur.fetchall() or []:
+                 actor_type = str(row.get("actor_type") or "")
+                 actor_id = str(row.get("actor_id") or "")
+                 if actor_type and actor_id:
+                     targets.add((actor_type, actor_id))
+     finally:
+         cur.close()
+         db.close()
+ 
++    muted_targets: set[tuple[str, str]] = set()
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT actor_type, actor_id
++              FROM chat_room_members
++             WHERE room_id=%s
++               AND muted_until IS NOT NULL
++               AND muted_until > NOW()
++            """,
++            (room_id,),
++        )
++        for row in cur.fetchall() or []:
++            actor_type = str(row.get("actor_type") or "")
++            actor_id = str(row.get("actor_id") or "")
++            if actor_type and actor_id:
++                muted_targets.add((actor_type, actor_id))
++    except Exception:
++        current_app.logger.warning("chat muted target lookup failed room=%s", room_id, exc_info=True)
++    finally:
++        cur.close()
++        db.close()
++
+     if int(room.get("is_main") or 0) == 1:
+         targets.add(("admin", "admin"))
+-    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key and _can_notify_actor_in_room(event_id, room_id, t[0], t[1])]
++    return [
++        t
++        for t in targets
++        if t not in muted_targets
++        and _actor_sender_id(t[0], t[1]) != sender_key
++        and _can_notify_actor_in_room(event_id, room_id, t[0], t[1])
++    ]
+ 
+ 
+ def _create_external_chat_notification(
+     *,
+     recipient_user_id: int,
+     kind: str,
+     title: str,
+     body: str,
+     event_id: int,
+     room_id: str | None,
+     room_name: str | None,
+     dedup_key: str,
+ ) -> None:
+     if not dedup_key:
+         return
+     from app.external_login_user.notifications import create_notification_external
+ 
+     params = {"event_id": event_id}
+     if room_id:
+         params["room_id"] = room_id
+     target_url = f"/chat/events/{event_id}?{urlencode(params)}"
+     title_text = title
+     if room_name:
+         title_text = f"[{room_name}] {title}"
+ 
+@@ -3805,79 +3881,333 @@ def api_rooms_members_set(event_id: int, room_id: str):
+     try:
+         cur.execute("SELECT actor_type, actor_id FROM chat_room_members WHERE room_id=%s", (room_id,))
+         existing = {(str(r["actor_type"]), str(r["actor_id"])) for r in (cur.fetchall() or [])}
+         to_remove = existing - target_members
+         to_add = target_members - existing
+         for at, aid in to_remove:
+             cur.execute("DELETE FROM chat_room_members WHERE room_id=%s AND actor_type=%s AND actor_id=%s", (room_id, at, aid))
+         now = datetime.utcnow()
+         for at, aid in to_add:
+             cur.execute(
+                 "INSERT IGNORE INTO chat_room_members (room_id,actor_type,actor_id,added_at,added_by_actor_type,added_by_actor_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                 (room_id, at, aid, now, actor["actor_type"], actor["actor_id"]),
+             )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+     return jsonify({"ok": True})
+ 
+ 
+ @chat_bp.get("/api/events/<int:event_id>/room-member-candidates")
+ def api_room_member_candidates(event_id: int):
+     actor = get_chat_actor()
+     if not actor or not _can_manage_rooms(event_id, actor):
+         return jsonify({"ok": False}), 403
++    return jsonify({"ok": True, "candidates": _build_room_member_candidates(event_id)})
++
++
++@chat_bp.get("/api/events/<int:event_id>/mentions")
++def api_mentions(event_id: int):
++    actor = get_chat_actor()
++    if not actor:
++        return jsonify({"ok": False}), 403
++
++    room_id = (request.args.get("room_id") or "").strip() or None
++    allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
++    if not allowed or not effective_room_id:
++        return jsonify({"ok": False}), 403
++
++    prefix = (request.args.get("q") or "").strip()
++    candidates = _build_room_member_candidates(event_id)
++    if prefix:
++        candidates = [c for c in candidates if str(c.get("display_name") or "").startswith(prefix)]
++    return jsonify({"ok": True, "candidates": candidates[:10]})
++
++
++@chat_bp.get("/api/events/<int:event_id>/messages")
++def api_older_messages(event_id: int):
++    _ensure_chat_messages_room_schema()
++    has_reply_schema = _ensure_chat_reply_schema()
++    has_image_schema = _ensure_chat_image_schema()
++    has_delete_schema = _ensure_chat_delete_schema()
++    has_edit_schema = _ensure_chat_edit_schema()
++    has_thread_schema = _ensure_chat_thread_schema()
++
++    actor = get_chat_actor()
++    if not actor:
++        return jsonify({"ok": False}), 403
++
++    room_id = (request.args.get("room_id") or "").strip() or None
++    allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
++    if not allowed or not effective_room_id:
++        return jsonify({"ok": False}), 403
++
++    before_id = int(request.args.get("before_id") or 0)
++    if before_id <= 0:
++        return jsonify({"ok": False, "error": "before_id required"}), 400
++
++    limit = max(1, min(int(request.args.get("limit") or 50), 100))
++    query_limit = limit + 1
++    image_columns = (
++        "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
++        if has_image_schema
++        else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
++    )
++    delete_columns = (
++        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
++        if has_delete_schema
++        else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
++    )
++    edit_columns = "m.edited_flag, m.edited_at" if has_edit_schema else "0 AS edited_flag, NULL AS edited_at"
++    thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
++    thread_filter = "AND m.thread_root_id IS NULL" if has_thread_schema else ""
++    reply_delete_columns = (
++        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
++        if has_delete_schema
++        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
++    )
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        if has_reply_schema:
++            cur.execute(
++                f"""
++                SELECT m.id,
++                       m.event_id,
++                       m.sender_actor_type,
++                       m.sender_actor_id,
++                       m.sender_display_name,
++                       m.body,
++                       m.created_at,
++                       {image_columns},
++                       {delete_columns},
++                       {edit_columns},
++                       {thread_column},
++                       m.reply_to_message_id,
++                       p.sender_actor_type AS reply_to_sender_actor_type,
++                       p.sender_actor_id AS reply_to_sender_actor_id,
++                       p.sender_display_name AS reply_to_sender_display_name,
++                       p.body AS reply_to_body,
++                       {reply_delete_columns}
++                  FROM chat_messages m
++                  LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.event_id = m.event_id
++                 WHERE m.event_id=%s
++                   AND m.room_id=%s
++                   AND COALESCE(m.deleted_flag,0)=0
++                   {thread_filter}
++                   AND m.id < %s
++                 ORDER BY m.id DESC
++                 LIMIT %s
++                """,
++                (event_id, effective_room_id, before_id, query_limit),
++            )
++        else:
++            cur.execute(
++                f"""
++                SELECT m.id,
++                       m.event_id,
++                       m.sender_actor_type,
++                       m.sender_actor_id,
++                       m.sender_display_name,
++                       m.body,
++                       m.created_at,
++                       {image_columns},
++                       {delete_columns},
++                       {edit_columns},
++                       {thread_column},
++                       NULL AS reply_to_message_id,
++                       NULL AS reply_to_sender_actor_type,
++                       NULL AS reply_to_sender_actor_id,
++                       NULL AS reply_to_sender_display_name,
++                       NULL AS reply_to_body,
++                       0 AS reply_to_deleted_flag,
++                       NULL AS reply_to_deleted_by_actor_type
++                  FROM chat_messages m
++                 WHERE m.event_id=%s
++                   AND m.room_id=%s
++                   AND COALESCE(m.deleted_flag,0)=0
++                   {thread_filter}
++                   AND m.id < %s
++                 ORDER BY m.id DESC
++                 LIMIT %s
++                """,
++                (event_id, effective_room_id, before_id, query_limit),
++            )
++        rows = cur.fetchall() or []
++    finally:
++        cur.close()
++        db.close()
++
++    has_more = len(rows) > limit
++    if has_more:
++        rows = rows[:limit]
++
++    if has_thread_schema:
++        _apply_thread_reply_count(event_id, effective_room_id, rows)
++
++    for row in rows:
++        if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
++            if int(row.get("reply_to_deleted_flag") or 0) == 1:
++                row["reply_to_body_plain_excerpt"] = (
++                    "管理者により削除"
++                    if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
++                    else "削除されました"
++                )
++            else:
++                row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
++        elif row.get("reply_to_message_id"):
++            row["reply_to_sender_display_name"] = "元メッセージ"
++            row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
++        else:
++            row["reply_to_sender_display_name"] = None
++            row["reply_to_body_plain_excerpt"] = None
++
++    rows = list(reversed(rows))
++    message_ids = [int(m.get("id") or 0) for m in rows if int(m.get("id") or 0) > 0]
++    reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
++    my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
++    images_by_message = _load_message_images_by_message_ids(message_ids)
++    avatar_cache: dict[str, str] = {}
++
++    messages: list[dict[str, Any]] = []
++    for message in rows:
++        message_id = int(message.get("id") or 0)
++        message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
++        message["my_reaction"] = my_reaction_by_message.get(message_id)
++        message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
++        messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
++
++    return jsonify({"ok": True, "messages": messages, "has_more": has_more})
++
++
++@chat_bp.get("/api/events/<int:event_id>/rooms/unread")
++def api_room_unread(event_id: int):
++    _ensure_chat_messages_room_schema()
++    _ensure_chat_read_state_room_schema()
++    _ensure_chat_thread_schema()
++    _ensure_chat_delete_schema()
++
++    actor = get_chat_actor()
++    if not actor or not _can_access_event(event_id, actor):
++        return jsonify({"ok": False}), 403
++
++    rooms = _list_accessible_rooms(event_id, actor)
++    room_ids = [str(r.get("room_id") or "") for r in rooms if str(r.get("room_id") or "")]
++    if not room_ids:
++        return jsonify({"ok": True, "rooms": []})
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    results: list[dict[str, Any]] = []
++    try:
++        for rid in room_ids:
++            cur.execute(
++                """
++                SELECT COALESCE(last_read_message_id, 0) AS last_read_message_id
++                  FROM chat_read_state
++                 WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
++                 LIMIT 1
++                """,
++                (event_id, rid, actor.get("actor_type"), str(actor.get("actor_id") or "")),
++            )
++            last_read_id = int((cur.fetchone() or {}).get("last_read_message_id") or 0)
++            cur.execute(
++                """
++                SELECT COUNT(*) AS unread_count, MIN(id) AS first_unread_id
++                  FROM chat_messages
++                 WHERE event_id=%s
++                   AND room_id=%s
++                   AND COALESCE(deleted_flag, 0)=0
++                   AND thread_root_id IS NULL
++                   AND id > %s
++                """,
++                (event_id, rid, last_read_id),
++            )
++            row = cur.fetchone() or {}
++            results.append(
++                {
++                    "room_id": rid,
++                    "unread_count": int(row.get("unread_count") or 0),
++                    "first_unread_id": int(row.get("first_unread_id") or 0) or None,
++                }
++            )
++    finally:
++        cur.close()
++        db.close()
++
++    return jsonify({"ok": True, "rooms": results})
++
++
++@chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/mute")
++def api_room_mute(event_id: int, room_id: str):
++    _ensure_chat_room_members_schema()
++
++    actor = get_chat_actor()
++    if not actor:
++        return jsonify({"ok": False}), 403
++
++    allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
++    if not allowed or not effective_room_id:
++        return jsonify({"ok": False}), 403
++
++    payload = request.get_json(silent=True) or {}
++    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
++        return jsonify({"ok": False, "error": "csrf"}), 400
++
++    muted_until = _parse_mute_until(payload.get("muted_until")) if payload.get("muted_until", None) is not None else None
++    if payload.get("muted_until", None) is not None and muted_until is None:
++        return jsonify({"ok": False, "error": "invalid muted_until"}), 400
++
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+-    candidates: dict[str, dict[str, str]] = {"admin:admin": {"actor_key": "admin:admin", "display_name": "admin", "role_hint": "admin"}}
++    now = datetime.utcnow()
+     try:
+         cur.execute(
+             """
+-            SELECT u.id, u.nickname
+-              FROM mfu_event_member m
+-              JOIN external_login_user u ON u.id=m.user_id
+-             WHERE m.event_id=%s
++            INSERT IGNORE INTO chat_room_members (
++              room_id, actor_type, actor_id,
++              added_at, added_by_actor_type, added_by_actor_id
++            ) VALUES (%s,%s,%s,%s,%s,%s)
+             """,
+-            (event_id,),
++            (effective_room_id, actor["actor_type"], str(actor["actor_id"]), now, actor["actor_type"], str(actor["actor_id"])),
          )
+-        for row in cur.fetchall() or []:
+-            key = f"line:{row['id']}"
+-            candidates[key] = {"actor_key": key, "display_name": str(row.get("nickname") or f"LINE-{row['id']}") , "role_hint": "参加者"}
+-        cur.execute("SELECT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+-        for row in cur.fetchall() or []:
+-            username = str(row.get("username") or "")
+-            if not username:
+-                continue
+-            if username == "admin":
+-                continue
+-            key = f"acl:{username}"
+-            candidates[key] = {"actor_key": key, "display_name": username, "role_hint": "ACL"}
++        cur.execute(
++            """
++            UPDATE chat_room_members
++               SET muted_until=%s
++             WHERE room_id=%s AND actor_type=%s AND actor_id=%s
++            """,
++            (muted_until, effective_room_id, actor["actor_type"], str(actor["actor_id"])),
++        )
++        db.commit()
+     finally:
+         cur.close()
+         db.close()
+-    return jsonify({"ok": True, "candidates": sorted(candidates.values(), key=lambda x: x["display_name"])})
++
++    return jsonify({"ok": True, "muted_until": muted_until.isoformat() if muted_until else None})
  
-     else:
-         # 通常モード（静止画）: 両ルートをマージ
-         seen = set()
-         merged = []
-         roots = _get_roots_for_album(album_id)  # ← 1回だけ取得して使い回す
-         for root in roots:
-             p = os.path.join(root, album_id, child_id)
-             if not os.path.isdir(p):
-                 continue
-             for f in os.listdir(p):
-                 full = os.path.join(p, f)
-                 if not os.path.isfile(full):
-                     continue
-                 if not allowed_file(f) or f.startswith("latest."):
-                     continue
-                 if f in seen:
-                     continue
-                 seen.add(f)
-                 # resolve_thumb_url を大量呼び出ししない（roots を使い回す）
-                 merged.append({"name": f, "thumb": _thumb_with_cached_roots(album_id, child_id, f, roots)})
-         files = sorted(merged, key=lambda x: x["name"])
  
-     zip_token = session.pop('zip_token', None)
-@@ -2074,50 +2080,51 @@ def view_child(album_id, child_id):
-     else:
-         template_name = "view_child_process.html" if mode == "process" else "view_child.html"
-     return render_template(
-         template_name,
-         album_id=album_id,
-         child_id=child_id,
-         files=files,
-         videos=videos,
-         image_count=len(files),
-         meta=meta,
-         mode=mode,
-         lock=lock,
-         lock_expired=lock_expired,
-         zip_token=zip_token,
-         is_admin=is_admin,
-         is_owner=is_owner,
-         session=session,
-         history_list=history_list,
-         # ★追加：HDD保管中フラグをテンプレへ渡す
-         is_readonly=is_readonly,
-         ext_user_nickname=_get_ext_user_nickname(),
-         is_event_login=is_event_login,
-         event_process_members=event_process_members,
-         current_ext_user_id=current_ext_user_id,
-         current_user_process_status=current_user_process_status,
-+        show_extlogin_nav=show_extlogin_nav,
+ @chat_bp.get("/api/push/bootstrap")
+ def push_bootstrap():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     return jsonify(
+         {
+             "ok": True,
+             "csrf_token": _chat_csrf(),
+             "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+             "sw_url": "/sw.js",
+         }
      )
  
- # =============================================================================
- # サーブ（画像/動画/ポスター/ダウンロード）
- # =============================================================================
- @album_bp.route('/<album_id>/thumb/<child_id>/<filename>')
- def album_thumb(album_id, child_id, filename):
-     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     # 両ルートを探索して実体から返す
-     for root in _get_roots_for_album(album_id):
-         p = os.path.join(root, album_id, child_id, 'thumbs', filename)
-         if os.path.isfile(p):
-             return send_file(p, conditional=True)
-     abort(404)
  
- @album_bp.route('/<album_id>/<child_id>/process_status', methods=['POST'])
- def update_process_status(album_id, child_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return jsonify({"ok": False, "error": "album_not_found"}), 404
+ @chat_bp.post("/api/push/subscribe")
+ def push_subscribe():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index db0050a9896eee3a11fd1b9476b0577779adb3f8..6487aad9de2560641b8218c3246d0dabee5d9e74 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -670,79 +670,154 @@
+   padding-top: 10px;
+   border-top: 1px solid #e2e8f7;
+ }
  
-     is_authed = session.get(f'auth_{album_id}') is True
-     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-diff --git a/albums/templates/album_home.html b/albums/templates/album_home.html
-index 0370a492a741434a0f2b8d28af4d42c1edf3bbfb..c3f089a6662ffadb4c0cc9cf1b0b3d0a15b24b6e 100644
---- a/albums/templates/album_home.html
-+++ b/albums/templates/album_home.html
-@@ -1,41 +1,44 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>子アルバム一覧</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .child-actions{ gap:.5rem; }
-     .badge-mode{ font-weight:700; }
-     .badge-normal{ background:#e9f7ef; color:#0f5132; }
-     .badge-movie{ background:#e7f1ff; color:#084298; }
-     .badge-process{ background:#fff3cd; color:#664d03; }
-   </style>
- </head>
- <body class="container py-4">
-+  {% if show_extlogin_nav %}
-+    {% include "_extlogin_nav.html" %}
-+  {% endif %}
+ .reaction-detail-emoji {
+   font-weight: 700;
+   margin-bottom: 4px;
+ }
  
-   <div class="d-flex align-items-center justify-content-between mb-3">
-     <h2 class="mb-0">📂 {{ meta.album_name }}</h2>
-   </div>
+ .reaction-detail-actors {
+   margin: 0;
+   padding-left: 18px;
+ }
  
-   {% if is_admin %}
-     <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
-   {% elif is_owner %}
-     <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
-   {% endif %}
+ @media (max-width: 576px) {
+   .chat-messages {
+     height: 70dvh;
+     min-height: 60dvh;
+   }
  
-   {# ★HDD保管中（読み取り専用）向けの注意喚起。is_readonly はビュー側で True を渡す #}
-   {% if is_readonly %}
-     <div class="alert alert-warning text-center mb-3">
-       このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、子アルバムの新規作成はできません。
-     </div>
-   {% endif %}
- 
-   {% if processing_list %}
-   <div class="alert alert-warning mt-3">
-     <div class="fw-bold">⏳ 現在加工中の子アルバム：</div>
-     <ul class="mb-0">
-       {% for p in processing_list %}
-         <li>
-           <b>{{ p.child_name }}</b>
-diff --git a/albums/templates/view_child.html b/albums/templates/view_child.html
-index 8c4aa7739b6f433996f5e7bc942fb8340fafc307..2532dcc140e38c969b9d5552ee6aba67c550d72e 100644
---- a/albums/templates/view_child.html
-+++ b/albums/templates/view_child.html
-@@ -60,50 +60,54 @@
-     .btn-busy::after{
-       content:""; display:inline-block; width:1em; height:1em;
-       border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
-       margin-left:.5em; vertical-align:-2px; animation:zipspin .7s linear infinite;
-     }
-     @keyframes zipspin{ to{ transform:rotate(360deg); } }
- 
-     @media (max-width:480px){
-       .zip-toolbar{ gap:.5em; padding:.5em .6em; border-radius:8px; }
-       .zip-progress .bar{ height:8px; }
-       .zip-progress .txt{ font-size:.8rem; }
-       .sel-count{ font-size:.9rem; padding:.3em .6em; }
-     }
- 
-     #bb-share{
-       position:absolute; top:12px; right:60px; z-index:10000;
-       width:40px; height:40px; border-radius:999px;
-       border:1px solid rgba(255,255,255,.5); background:rgba(0,0,0,.55); color:#fff;
-       display:flex; align-items:center; justify-content:center;
-       font-size:18px; line-height:1; cursor:pointer;
-     }
-     #bb-share:hover{ background:rgba(0,0,0,.72); }
-   </style>
- </head>
- <body class="container py-4">
-+{% if show_extlogin_nav %}
-+  {% include "_extlogin_nav.html" %}
-+{% endif %}
+   .chat-avatar {
+     width: 28px;
+     height: 28px;
+   }
+ }
 +
++.chat-mute-wrap {
++  position: relative;
++}
++
++.chat-mute-menu {
++  position: absolute;
++  top: calc(100% + 4px);
++  left: 0;
++  z-index: 1200;
++  min-width: 120px;
++  background: #fff;
++  border: 1px solid #d0d7e9;
++  border-radius: 8px;
++  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.14);
++  padding: 4px;
++}
++
++.chat-mute-menu button {
++  width: 100%;
++  border: none;
++  background: transparent;
++  text-align: left;
++  padding: 6px 8px;
++  border-radius: 6px;
++  font-size: 0.85rem;
++}
++
++.chat-mute-menu button:hover {
++  background: #f1f5ff;
++}
++
++.chat-mention-wrap {
++  position: relative;
++}
++
++.chat-mention-menu {
++  position: absolute;
++  left: 52px;
++  right: 52px;
++  bottom: calc(100% + 6px);
++  z-index: 1300;
++  max-height: 220px;
++  overflow-y: auto;
++  background: #fff;
++  border: 1px solid #d0d7e9;
++  border-radius: 8px;
++  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
++}
++
++.chat-mention-item {
++  padding: 8px 10px;
++  font-size: 0.85rem;
++  cursor: pointer;
++}
++
++.chat-mention-item small {
++  color: #6d7385;
++}
++
++.chat-mention-item.is-active,
++.chat-mention-item:hover {
++  background: #eef4ff;
++}
++
+ </style>
  
- <h2 class="mb-3">
-   📂 {{ meta.album_name }} /
-   {% for child in meta.children %}
-     {% if child.folder == child_id %}
-       {{ child.name }}
-       <small class="text-muted ms-2">（{{ image_count }}枚）</small>
+ {% macro render_reaction_box(message) -%}
+   <div class="chat-reaction-box"
+        data-reaction-box="1"
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
+ 
+ <div class="container py-3"
+      data-event-id="{{ event.id }}"
+      data-room-id="{{ active_room.room_id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}"
+      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
+   <h3>{{ event.title }} / Chat</h3>
+-  <div class="mb-2 d-flex gap-2 align-items-center">
++  <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+     <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
+       {% for r in accessible_rooms %}
+       <option value="{{ r.room_id }}" {% if r.room_id == active_room.room_id %}selected{% endif %}>{{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}</option>
+       {% endfor %}
+     </select>
++    <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
++    <div class="chat-mute-wrap">
++      <button type="button" id="chat-mute-btn" class="btn btn-sm btn-outline-secondary">🔕ミュート</button>
++      <div id="chat-mute-menu" class="chat-mute-menu d-none">
++        <button type="button" data-mute-hours="1">1時間</button>
++        <button type="button" data-mute-hours="8">8時間</button>
++        <button type="button" data-mute-hours="24">24時間</button>
++        <button type="button" data-mute-clear="1">解除</button>
++      </div>
++    </div>
+     {% if can_manage_rooms %}
+     <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
+     {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
      {% endif %}
-   {% endfor %}
- </h2>
- 
- {% if lock and not lock_expired %}
-   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
-     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
-     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
-       <button class="btn btn-outline-danger btn-sm" type="submit"
-               onclick="return confirm('本当にロックを解除しますか？');">
-         🔓 ロックを解除
-       </button>
-     </form>
    </div>
- {% endif %}
  
- {% if is_admin %}
-   <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
-diff --git a/albums/templates/view_child_movie.html b/albums/templates/view_child_movie.html
-index 5906e017ea456ceb5c90b7ebc6253101aae1c9dd..e104e8d2dfbcf5d3fb0fbf543a4cb2e6953ca152 100644
---- a/albums/templates/view_child_movie.html
-+++ b/albums/templates/view_child_movie.html
-@@ -4,50 +4,54 @@
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .gallery { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
-     .gallery .item { position:relative; display:inline-block; text-align:center; }
-     .caption { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+   <div class="mb-2 d-flex gap-2 align-items-center">
+     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="🔎 このルームを検索">
+     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary">検索</button>
+     <button type="button" id="chat-search-close" class="btn btn-sm btn-light d-none">閉じる</button>
+   </div>
+   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
  
-     .poster { width: 220px; aspect-ratio: 16/9; border-radius: 8px; background:#000; object-fit: cover; cursor: pointer; display:block; }
-     video.thumb { width: 220px; max-height: 160px; border-radius: 8px; background:#000; display:none; }
- 
-     .play-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
-       background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
-       border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
- 
-     /* 変換中バッジ */
-     .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
-       background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
-       border:1px solid rgba(255,255,255,.5); user-select:none; }
- 
-     @media (pointer:coarse){ .poster, video.thumb { width: 260px; } }
-   </style>
- </head>
- <body class="container py-4">
-+{% if show_extlogin_nav %}
-+  {% include "_extlogin_nav.html" %}
-+{% endif %}
-+
- 
-   <h2 class="mb-3">
-     📂 {{ meta.album_name }} /
-     {% for child in meta.children %}
-       {% if child.folder == child_id %}
-         🎥 {{ child.name }}
-         <small class="text-muted ms-2">（{{ videos|length }}本）</small>
+   <div id="messages" class="chat-messages border rounded p-3 mb-3">
+     {% set ns = namespace(last_date=None) %}
+     {% for m in messages %}
+       {% set d = m.created_at_jst_date_label %}
+       {% if loop.first or d != ns.last_date %}
+         <div class="chat-date-divider" data-date-label="{{ d }}"><span>{{ d }}</span></div>
+         {% set ns.last_date = d %}
        {% endif %}
+ 
+       <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
+            id="msg-{{ m.id }}"
+            data-message-id="{{ m.id }}"
+@@ -843,58 +918,59 @@
+           </div>
+ 
+           {% if m.is_me %}
+             <img class="chat-avatar"
+                  src="{{ m.sender_avatar_url or default_avatar_url }}"
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+           {% endif %}
+         </div>
+       </div>
      {% endfor %}
-   </h2>
- 
-   <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
-   <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-secondary mb-3 ms-2">⬆️ 動画を追加</a>
- 
-   {% set any_converting = videos|selectattr('converting')|list|length > 0 %}
-   {% if any_converting %}
-     <div class="alert alert-info py-2">⏳ 一部の動画をブラウザ互換に変換中です。準備でき次第、自動で再生可能になります。</div>
-   {% endif %}
- 
-   <div class="gallery">
-     {% if videos %}
-       {% for v in videos %}
-         {# 再生URLの拡張子からMIME推定（typeは必須ではないが、正しければ付与） #}
-         {% set raw_url = v.raw|lower %}
-         {% if raw_url.endswith('.webm') %}
-diff --git a/albums/templates/view_child_process.html b/albums/templates/view_child_process.html
-index df74a77bf9ef237142e0e6a0d9a22fd754fb116b..9ef5348f4e184c5c965bab18d3cd941ac9883cb3 100644
---- a/albums/templates/view_child_process.html
-+++ b/albums/templates/view_child_process.html
-@@ -1,42 +1,46 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
-   <style>
-     .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
-     .gallery .item { position: relative; display: inline-block; text-align: center; }
-     img.thumb { width: 100px; height: auto; border-radius: 6px; }
- 
-     @media (pointer:coarse){ img.thumb{ width:120px; } }
-   </style>
- </head>
- <body class="container py-4">
-+{% if show_extlogin_nav %}
-+  {% include "_extlogin_nav.html" %}
-+{% endif %}
-+
- 
- <h2 class="mb-3">
-   📂 {{ meta.album_name }} /
-   {% for child in meta.children %}
-     {% if child.folder == child_id %}
-       {{ child.name }}
-       <small class="text-muted ms-2">（{{ image_count }}枚）</small>
-     {% endif %}
-   {% endfor %}
- </h2>
- 
- {% if lock and not lock_expired %}
-   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
-     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
-     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
-       <button class="btn btn-outline-danger btn-sm" type="submit"
-               onclick="return confirm('本当にロックを解除しますか？');">
-         🔓 ロックを解除
-       </button>
-     </form>
    </div>
- {% endif %}
  
- {% if is_admin %}
-   <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
-diff --git a/albums/templates/view_child_process_event.html b/albums/templates/view_child_process_event.html
-index aa4b790fb8e221ca28945ee631ee8ad02475c319..b1dde7aca90fd2c16e6056b7c97b734677e83852 100644
---- a/albums/templates/view_child_process_event.html
-+++ b/albums/templates/view_child_process_event.html
-@@ -74,50 +74,54 @@
-     img.thumb { width: 110px; height: auto; border-radius: 10px; }
+   <div id="reply-preview" class="reply-preview d-none">
+     <div class="reply-meta">
+       <strong id="reply-sender"></strong>
+       <button type="button" id="reply-cancel" class="reply-cancel-btn">×</button>
+     </div>
+     <div id="reply-text" class="reply-text"></div>
+   </div>
  
-     .member-chip {
-       display: inline-flex; align-items: center; gap: 8px;
-       background: #fff3cd; color: #664d03; border-radius: 999px; padding: 6px 12px; font-size: 0.9rem;
-       border: 1px solid #ffeeba; margin: 4px;
+   <div id="typing-indicator" class="chat-typing-indicator"></div>
+ 
+-  <form id="chat-form" class="d-flex gap-2 align-items-center">
++  <form id="chat-form" class="d-flex gap-2 align-items-center chat-mention-wrap">
+     <input type="hidden" id="reply-to-id" value="">
+     <input type="hidden" id="edit-target-id" value="">
+     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
+     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
+     <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
+     <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+   </form>
++  <div id="chat-mention-menu" class="chat-mention-menu d-none"></div>
+ 
+   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
+     <button type="button" id="chatImageViewerShare" class="chat-image-viewer-share" aria-label="共有" title="共有">共有</button>
+     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
+     <div class="chat-image-viewer-content">
+       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
+       <img id="chatImageViewerImg" src="" alt="拡大画像">
+       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+     </div>
+   </div>
+ 
+   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
+     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
+     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
+       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
+       <hr class="chat-ctx-sep">
+       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッドを開く</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
+       <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
+       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
+       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
+     </div>
+   </div>
+@@ -986,50 +1062,54 @@
+ (() => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
+ 
+   const eventId = Number(root.dataset.eventId);
+   const roomId = root.dataset.roomId || "";
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
+   const meId = root.dataset.me || '';
+   const myDisplayName = root.dataset.displayName || '';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const isAdmin = root.dataset.isAdmin === '1';
+   const isMobile = window.matchMedia('(hover: none)').matches;
+   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+   const maxUploadImages = 6;
+   const maxUploadImageBytes = 20 * 1024 * 1024;
+ 
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const maxInputLines = 6;
+   const pushBtn = document.getElementById('enable-push');
+   const roomSwitch = document.getElementById('chat-room-switch');
+   const roomCreateBtn = document.getElementById('chat-room-create-btn');
+   const roomMembersBtn = document.getElementById('chat-room-members-btn');
++  const unreadJumpBtn = document.getElementById('chat-unread-jump-btn');
++  const muteBtn = document.getElementById('chat-mute-btn');
++  const muteMenu = document.getElementById('chat-mute-menu');
++  const mentionMenu = document.getElementById('chat-mention-menu');
+   const roomCreateModal = document.getElementById('roomCreateModal');
+   const roomMembersModal = document.getElementById('roomMembersModal');
+   const threadModal = document.getElementById('threadModal');
+   const threadModalCloseBtn = document.getElementById('thread-modal-close');
+   const threadRootContainer = document.getElementById('thread-root');
+   const threadRepliesContainer = document.getElementById('thread-replies');
+   const threadForm = document.getElementById('thread-form');
+   const threadBodyInput = document.getElementById('thread-body');
+   const reactionDetailModal = document.getElementById('reactionDetailModal');
+   const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
+   const reactionDetailBody = document.getElementById('reaction-detail-body');
+   const imageInput = document.getElementById('chat-image-file');
+   const imageBtn = document.getElementById('chat-image-btn');
+   const sendBtn = document.getElementById('chat-send-btn');
+   const replyPreview = document.getElementById('reply-preview');
+   const replySender = document.getElementById('reply-sender');
+   const replyText = document.getElementById('reply-text');
+   const replyToInput = document.getElementById('reply-to-id');
+   const editTargetInput = document.getElementById('edit-target-id');
+   const replyCancelBtn = document.getElementById('reply-cancel');
+   const typingIndicator = document.getElementById('typing-indicator');
+   const searchInput = document.getElementById('chat-search-input');
+   const searchBtn = document.getElementById('chat-search-btn');
+   const searchCloseBtn = document.getElementById('chat-search-close');
+   const searchPanel = document.getElementById('chat-search-panel');
+@@ -1059,100 +1139,116 @@
+   });
+ 
+   const [myActorType, myActorId] = meId.includes(':')
+     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+     : ['', ''];
+ 
+   const state = {
+     replyToId: null,
+     selectedBubble: null,
+     readStateByActor: new Map(),
+     reactionByMessage: new Map(),
+     viewerImages: [],
+     viewerIndex: 0,
+     ctxMessageId: null,
+     longPressTimer: null,
+     longPressTriggered: false,
+     longPressRow: null,
+     ctxRow: null,
+     ctxBodyPlain: '',
+     editTargetMessageId: null,
+     typingMembers: new Map(),
+     typingDebounceTimer: null,
+     typingStopTimer: null,
+     typingSent: false,
+     threadRootId: null,
++    loadingOlder: false,
++    hasMoreOlder: true,
++    messageIds: new Set(),
++    unreadByRoomId: new Map(),
++    unreadRefreshTimer: null,
++    muteUntilByRoomId: new Map(),
++    mentionCandidates: [],
++    mentionActiveIndex: 0,
++    mentionRange: null,
++    mentionDebounceTimer: null,
+   };
+ 
+   if (ctxReactions && ctxReactions.childElementCount === 0) {
+     reactionEmojis.forEach((emoji) => {
+       const btn = document.createElement('button');
+       btn.type = 'button';
+       btn.className = 'chat-reaction-emoji';
+       btn.dataset.emoji = emoji;
+       btn.textContent = emoji;
+       ctxReactions.appendChild(btn);
+     });
+   }
+ 
+   const socket = io({ transports: ['websocket', 'polling'] });
+   socket.emit('chat_join', { event_id: eventId, room_id: roomId });
+ 
+   initReactionUis();
++  syncExistingMessageIds();
++  scheduleUnreadRefresh();
++  refreshMuteButton();
+   scrollToLatestMessage();
+   refreshReadIndicators();
+   window.addEventListener('load', () => {
+     scrollToLatestMessage();
+     sendSeenForLatestMessage();
+   }, { once: true });
+ 
+   updateAutoGrow();
+   bodyInput?.addEventListener('input', () => {
+     updateAutoGrow();
+     queueTypingStart();
++    handleMentionInput();
+   });
++  bodyInput?.addEventListener('keydown', handleMentionKeydown);
+ 
+   socket.on('chat_message', (msg) => {
+     const messageId = Number(msg?.id || 0);
+     const threadRootId = Number(msg?.thread_root_id || 0);
+     const isThreadReply = threadRootId > 0;
+ 
+     if (isThreadReply) {
+       bumpThreadReplyCount(threadRootId);
+       if (state.threadRootId && threadRootId === Number(state.threadRootId)) {
+         appendThreadMessage(msg);
+         sendSeenForMessageId(messageId);
+       }
+     } else {
+       renderMessage(msg);
+       if (state.threadRootId && messageId === Number(state.threadRootId)) {
+         appendThreadMessage(msg);
+       }
+       msgBox.scrollTop = msgBox.scrollHeight;
+       sendSeenForMessageId(messageId);
+     }
+     setSendingState(false);
++    scheduleUnreadRefresh();
+   });
+   socket.on('chat_error', (d) => {
+     setSendingState(false);
+     alert(d.error || '送信失敗');
+   });
+   socket.on('chat_read_snapshot', (payload) => {
+     applyReadSnapshot(payload?.read_states || []);
+     refreshReadIndicators();
+     sendSeenForLatestMessage();
+   });
+   socket.on('chat_read_update', (payload) => {
+     applyReadUpdate(payload);
+     refreshReadIndicators();
+   });
+   socket.on('chat_reaction_update', (payload) => {
+     const messageId = Number(payload?.message_id || 0);
+     if (!messageId) return;
+     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+     if (row && Number(row.dataset.deletedFlag || 0) === 1) return;
+     const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
+     let myReaction = prev.myReaction || null;
+     const changed = payload?.changed || {};
+     if (changed.actor_type === myActorType && String(changed.actor_id || '') === String(myActorId || '')) {
+       myReaction = changed.emoji || null;
+     }
+@@ -1331,50 +1427,51 @@
+   reactionDetailCloseBtn?.addEventListener('click', () => closeModal(reactionDetailModal));
+   reactionDetailModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(reactionDetailModal));
+   threadForm?.addEventListener('submit', (e) => {
+     e.preventDefault();
+     submitThreadMessage();
+   });
+   threadBodyInput?.addEventListener('input', () => updateAutoGrow(threadBodyInput));
+   replyCancelBtn?.addEventListener('click', clearEditState);
+   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
+   imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
+   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
+   imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
+   imageViewer?.addEventListener('click', (e) => {
+     if (e.target === imageViewer) closeImageViewer();
+   });
+   document.addEventListener('keydown', (e) => {
+     if (e.key === 'Escape') closeImageViewer();
+     if (e.key === 'Escape') closeContextMenu();
+     if (e.key === 'Escape') closeThreadModal();
+     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
+     if (e.key === 'ArrowRight') moveViewerIndex(1);
+   });
+   msgBox.addEventListener('scroll', () => {
+     clearLongPressTimer();
+     closeContextMenu();
++    if (msgBox.scrollTop <= 80) loadOlderMessages();
+   }, { passive: true });
+   window.addEventListener('scroll', () => {
+     clearLongPressTimer();
+     closeContextMenu();
+   }, { passive: true });
+   ctxMenu?.addEventListener('click', handleContextMenuClick);
+   document.addEventListener('pointerdown', (e) => {
+     if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
+     if (ctxPanel?.contains(e.target)) return;
+     closeContextMenu();
+   });
+   searchBtn?.addEventListener('click', () => runRoomSearch());
+   searchCloseBtn?.addEventListener('click', hideSearchPanel);
+   searchInput?.addEventListener('keydown', (e) => {
+     if (e.key !== 'Enter') return;
+     e.preventDefault();
+     runRoomSearch();
+   });
+   window.addEventListener('beforeunload', () => sendTypingStop());
+ 
+   imageBtn?.addEventListener('click', () => imageInput?.click());
+   imageInput?.addEventListener('change', async () => {
+     const files = Array.from(imageInput.files || []);
+     if (!files.length) return;
+     if (files.length > maxUploadImages) {
+@@ -1754,50 +1851,68 @@
+       const threadLink = document.createElement('button');
+       threadLink.type = 'button';
+       threadLink.className = 'thread-summary-link';
+       threadLink.dataset.threadOpen = String(msg.id || '');
+       threadLink.textContent = `返信 ${threadReplyCount}`;
+       main.appendChild(threadLink);
      }
  
-     .btn-lg { padding: 0.9rem 1.4rem; font-size: 1rem; }
- 
-     .upload-panel { border-radius: 16px; border: 1px dashed #cdd6e3; background: #fdfdff; padding: 16px; }
-     .upload-dropzone {
-       border: 2px dashed #a9b4c2; border-radius: 12px; padding: 20px; text-align: center;
-       color: #6c757d; background: #fff; transition: background-color .2s, border-color .2s, color .2s;
-     }
-     .upload-dropzone.dragover { background: #e9f5ff; border-color: #0d6efd; color: #0d6efd; }
-     .upload-preview img {
-       width: 110px; height: 110px; object-fit: contain;
-       background: #f8f9fa; border-radius: 10px; margin: 4px; border: 1px solid #dfe4ea;
+     if (Number(msg.deleted_flag || 0) !== 1) {
+       main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
      }
  
-     @media (pointer:coarse){ img.thumb{ width:130px; } }
-   </style>
- </head>
- <body class="container py-4">
-+{% if show_extlogin_nav %}
-+  {% include "_extlogin_nav.html" %}
-+{% endif %}
+     line.appendChild(main);
+ 
+     if (isMe) {
+       line.appendChild(makeAvatar(msg.sender_avatar_url));
+     }
+ 
+     row.appendChild(line);
+     msgBox.appendChild(row);
+     hydrateMessageReactionData(row);
+     refreshReadIndicatorForRow(row);
+   }
+ 
+ 
 +
++  function buildMessageNodes(msg) {
++    renderMessage(msg);
++    const row = document.getElementById(`msg-${msg.id}`);
++    if (!row) return [];
++    const nodes = [];
++    const prev = row.previousElementSibling;
++    if (prev && prev.classList.contains('chat-date-divider')) {
++      const next = prev.nextElementSibling;
++      if (next === row) {
++        nodes.push(prev);
++      }
++    }
++    nodes.push(row);
++    nodes.forEach((node) => node.parentElement?.removeChild(node));
++    return nodes;
++  }
++
+   function canDeleteMessage(msg, isMe) {
+     if (Number(msg?.deleted_flag || 0) === 1) return false;
+     if (typeof msg?.can_delete !== 'undefined') return Boolean(msg.can_delete);
+     if (isAdmin) return true;
+     if (!isMe) return false;
+     const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
+     if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+     const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
+     return Date.now() <= expires;
+   }
  
- {% set ns = namespace(has_requested=false) %}
- {% if event_process_members %}
-   {% for member in event_process_members %}
-     {% if member.request_flag|default(0)|int == 1 %}
-       {% set ns.has_requested = true %}
-     {% endif %}
-   {% endfor %}
- {% endif %}
- {% set has_image = files and (files|length > 0) %}
- {% set current_step = 1 %}
- {% if has_image %}{% set current_step = 2 %}{% endif %}
- {% if ns.has_requested %}{% set current_step = 3 %}{% endif %}
- {% if lock and not lock_expired %}{% set current_step = 4 %}{% endif %}
- {% if history_list and not lock and ns.has_requested %}{% set current_step = 5 %}{% endif %}
- {% set can_upload = (not is_readonly) and (not has_image or (lock and not lock_expired)) %}
- {% set ext_user_id = session.get('ext_user_id') %}
+   function canEditMessage(msg, isMe) {
+     if (Number(msg?.deleted_flag || 0) === 1) return false;
+     if (typeof msg?.can_edit !== 'undefined') return Boolean(msg.can_edit);
+     if (!isMe) return false;
+     const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
+     if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+     const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
+     return Date.now() <= expires;
+   }
  
- <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
-   <div>
-     <h1 class="page-title fw-bold mb-1">📂 {{ meta.album_name }} /
-       {% for child in meta.children %}
-         {% if child.folder == child_id %}
-           {{ child.name }}
-           <small class="text-muted ms-2">（{{ image_count }}枚）</small>
+   async function handleDeleteMessage(row, messageId) {
+     if (!confirm('このメッセージを削除しますか？')) return;
+     try {
+       const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
+@@ -2844,58 +2959,324 @@
+     if (!Number.isFinite(messageId) || messageId <= 0) return;
+     socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
+   }
+ 
+   function escapeHtml(value) {
+     return String(value || '')
+       .replace(/&/g, '&amp;')
+       .replace(/</g, '&lt;')
+       .replace(/>/g, '&gt;')
+       .replace(/"/g, '&quot;')
+       .replace(/'/g, '&#39;');
+   }
+ 
+   function urlBase64ToUint8Array(base64String) {
+     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+     const rawData = window.atob(base64);
+     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+   }
+ 
+   function scrollToLatestMessage() {
+     if (!msgBox) return;
+     msgBox.scrollTop = msgBox.scrollHeight;
+   }
+ 
++  function syncExistingMessageIds() {
++    msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
++      const id = Number(row.dataset.messageId || 0);
++      if (id > 0) state.messageIds.add(id);
++    });
++  }
++
++  function getOldestMessageId() {
++    let oldest = 0;
++    msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
++      const id = Number(row.dataset.messageId || 0);
++      if (id > 0 && (!oldest || id < oldest)) oldest = id;
++    });
++    return oldest;
++  }
++
++  async function loadOlderMessages() {
++    if (state.loadingOlder || !state.hasMoreOlder) return;
++    const beforeId = getOldestMessageId();
++    if (!beforeId) return;
++    state.loadingOlder = true;
++    const oldHeight = msgBox.scrollHeight;
++    try {
++      const res = await fetch(`/chat/api/events/${eventId}/messages?room_id=${encodeURIComponent(roomId)}&before_id=${beforeId}&limit=50`, { credentials: 'same-origin' });
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok || !data.ok) return;
++      const messages = Array.isArray(data.messages) ? data.messages : [];
++      prependMessages(messages);
++      state.hasMoreOlder = Boolean(data.has_more);
++      const delta = msgBox.scrollHeight - oldHeight;
++      msgBox.scrollTop += delta;
++    } finally {
++      state.loadingOlder = false;
++    }
++  }
++
++  function prependMessages(messages) {
++    if (!Array.isArray(messages) || !messages.length) return;
++    const currentRows = Array.from(msgBox.querySelectorAll('.chat-row[data-message-id]'));
++    const firstRow = currentRows[0] || null;
++    const firstDateDivider = msgBox.querySelector('.chat-date-divider');
++    const anchor = firstDateDivider || firstRow;
++    messages.forEach((msg) => {
++      const messageId = Number(msg?.id || 0);
++      if (!messageId || state.messageIds.has(messageId)) return;
++      const nodes = buildMessageNodes(msg);
++      nodes.forEach((node) => {
++        if (anchor) {
++          msgBox.insertBefore(node, anchor);
++        } else {
++          msgBox.appendChild(node);
++        }
++      });
++      state.messageIds.add(messageId);
++    });
++  }
++
++  function scheduleUnreadRefresh() {
++    if (state.unreadRefreshTimer) clearTimeout(state.unreadRefreshTimer);
++    state.unreadRefreshTimer = setTimeout(() => {
++      refreshUnread();
++    }, 1000);
++  }
++
++  async function refreshUnread() {
++    const res = await fetch(`/chat/api/events/${eventId}/rooms/unread`, { credentials: 'same-origin' });
++    const data = await res.json().catch(() => ({}));
++    if (!res.ok || !data.ok) return;
++    state.unreadByRoomId.clear();
++    (data.rooms || []).forEach((item) => {
++      if (!item?.room_id) return;
++      state.unreadByRoomId.set(String(item.room_id), item);
++    });
++    updateRoomOptionUnreadBadges();
++    updateUnreadJumpButton();
++  }
++
++  function updateRoomOptionUnreadBadges() {
++    if (!roomSwitch) return;
++    Array.from(roomSwitch.options).forEach((opt) => {
++      const baseLabel = String(opt.textContent || '').replace(/\s*\(未読\d+\)$/u, '');
++      const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
++      opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
++    });
++  }
++
++  function updateUnreadJumpButton() {
++    const info = state.unreadByRoomId.get(roomId) || {};
++    const firstUnreadId = Number(info.first_unread_id || 0);
++    if (!unreadJumpBtn) return;
++    if (!firstUnreadId) {
++      unreadJumpBtn.classList.add('d-none');
++      unreadJumpBtn.disabled = true;
++      return;
++    }
++    unreadJumpBtn.classList.remove('d-none');
++    unreadJumpBtn.disabled = false;
++  }
++
++  async function jumpToFirstUnread(firstUnreadId) {
++    let retry = 0;
++    while (retry < 10) {
++      const target = document.getElementById(`msg-${firstUnreadId}`);
++      if (target) {
++        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
++        return;
++      }
++      if (!state.hasMoreOlder) break;
++      await loadOlderMessages();
++      retry += 1;
++    }
++  }
++
++  async function postRoomMute(mutedUntil) {
++    const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/mute`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      credentials: 'same-origin',
++      body: JSON.stringify({ csrf_token: csrfToken, muted_until: mutedUntil }),
++    });
++    const data = await res.json().catch(() => ({}));
++    if (!res.ok || !data.ok) {
++      alert(data.error || 'ミュート更新に失敗しました');
++      return;
++    }
++    state.muteUntilByRoomId.set(roomId, data.muted_until || null);
++    refreshMuteButton();
++  }
++
++  function refreshMuteButton() {
++    if (!muteBtn) return;
++    const mutedUntil = state.muteUntilByRoomId.get(roomId);
++    muteBtn.textContent = mutedUntil ? '🔕ミュート中' : '🔕ミュート';
++  }
++
++  function handleMentionInput() {
++    if (!bodyInput) return;
++    const caret = Number(bodyInput.selectionStart || 0);
++    const text = bodyInput.value || '';
++    const head = text.slice(0, caret);
++    const at = head.lastIndexOf('@');
++    if (at < 0) {
++      closeMentionMenu();
++      return;
++    }
++    const prefix = head.slice(at + 1);
++    if (!prefix || /[\s.,!?()\[\]{}]/.test(prefix)) {
++      closeMentionMenu();
++      return;
++    }
++    state.mentionRange = { start: at, end: caret };
++    if (state.mentionDebounceTimer) clearTimeout(state.mentionDebounceTimer);
++    state.mentionDebounceTimer = setTimeout(() => {
++      fetchMentionCandidates(prefix);
++    }, 200);
++  }
++
++  async function fetchMentionCandidates(prefix) {
++    const res = await fetch(`/chat/api/events/${eventId}/mentions?room_id=${encodeURIComponent(roomId)}&q=${encodeURIComponent(prefix)}`, { credentials: 'same-origin' });
++    const data = await res.json().catch(() => ({}));
++    if (!res.ok || !data.ok) {
++      closeMentionMenu();
++      return;
++    }
++    state.mentionCandidates = (data.candidates || []).slice(0, 10);
++    state.mentionActiveIndex = 0;
++    renderMentionMenu();
++  }
++
++  function renderMentionMenu() {
++    if (!mentionMenu) return;
++    if (!state.mentionCandidates.length) {
++      closeMentionMenu();
++      return;
++    }
++    mentionMenu.innerHTML = state.mentionCandidates.map((c, idx) => `
++      <div class="chat-mention-item ${idx === state.mentionActiveIndex ? 'is-active' : ''}" data-mention-index="${idx}">
++        @${escapeHtml(c.display_name || '')} <small>${escapeHtml(c.role_hint || '')}</small>
++      </div>
++    `).join('');
++    mentionMenu.classList.remove('d-none');
++  }
++
++  function closeMentionMenu() {
++    if (!mentionMenu) return;
++    state.mentionCandidates = [];
++    state.mentionRange = null;
++    mentionMenu.classList.add('d-none');
++    mentionMenu.innerHTML = '';
++  }
++
++  function handleMentionKeydown(e) {
++    if (!state.mentionCandidates.length) return;
++    if (e.key === 'ArrowDown') {
++      e.preventDefault();
++      state.mentionActiveIndex = (state.mentionActiveIndex + 1) % state.mentionCandidates.length;
++      renderMentionMenu();
++    } else if (e.key === 'ArrowUp') {
++      e.preventDefault();
++      state.mentionActiveIndex = (state.mentionActiveIndex - 1 + state.mentionCandidates.length) % state.mentionCandidates.length;
++      renderMentionMenu();
++    } else if (e.key === 'Enter') {
++      e.preventDefault();
++      applyMentionCandidate(state.mentionActiveIndex);
++    } else if (e.key === 'Escape') {
++      e.preventDefault();
++      closeMentionMenu();
++    }
++  }
++
++  function applyMentionCandidate(index) {
++    const candidate = state.mentionCandidates[index];
++    if (!candidate || !state.mentionRange || !bodyInput) return;
++    const text = bodyInput.value || '';
++    const before = text.slice(0, state.mentionRange.start);
++    const after = text.slice(state.mentionRange.end);
++    const mentionText = `@${candidate.display_name} `;
++    bodyInput.value = `${before}${mentionText}${after}`;
++    const nextCaret = before.length + mentionText.length;
++    bodyInput.setSelectionRange(nextCaret, nextCaret);
++    closeMentionMenu();
++    updateAutoGrow();
++  }
++
++  mentionMenu?.addEventListener('mousedown', (e) => {
++    const item = e.target.closest('[data-mention-index]');
++    if (!item) return;
++    e.preventDefault();
++    applyMentionCandidate(Number(item.dataset.mentionIndex || 0));
++  });
++
++  document.addEventListener('click', (e) => {
++    if (!mentionMenu || mentionMenu.classList.contains('d-none')) return;
++    if (mentionMenu.contains(e.target) || bodyInput?.contains(e.target)) return;
++    closeMentionMenu();
++  });
++
+   roomSwitch?.addEventListener('change', () => {
+     const nextRoomId = roomSwitch.value || '';
+     if (!nextRoomId || nextRoomId === roomId) return;
+     const u = new URL(window.location.href);
+     u.searchParams.set('room_id', nextRoomId);
+     window.location.href = u.toString();
+   });
+ 
++  unreadJumpBtn?.addEventListener('click', async () => {
++    const info = state.unreadByRoomId.get(roomId) || {};
++    const firstUnreadId = Number(info.first_unread_id || 0);
++    if (!firstUnreadId) return;
++    await jumpToFirstUnread(firstUnreadId);
++  });
++
++  muteBtn?.addEventListener('click', (e) => {
++    e.preventDefault();
++    muteMenu?.classList.toggle('d-none');
++  });
++  muteMenu?.addEventListener('click', async (e) => {
++    const btn = e.target.closest('button');
++    if (!btn) return;
++    let mutedUntil = null;
++    if (!btn.dataset.muteClear) {
++      const hours = Number(btn.dataset.muteHours || 0);
++      if (!hours) return;
++      mutedUntil = new Date(Date.now() + (hours * 60 * 60 * 1000)).toISOString();
++    }
++    await postRoomMute(mutedUntil);
++    muteMenu?.classList.add('d-none');
++  });
++  document.addEventListener('click', (e) => {
++    if (!muteMenu || muteMenu.classList.contains('d-none')) return;
++    if (muteMenu.contains(e.target) || muteBtn?.contains(e.target)) return;
++    muteMenu.classList.add('d-none');
++  });
++
+   const roomUi = {
+     candidates: [],
+     createSelected: new Set(),
+     editSelected: new Set(),
+   };
+ 
+   async function fetchCandidates() {
+     const res = await fetch(`/chat/api/events/${eventId}/room-member-candidates`, { credentials: 'same-origin' });
+     const data = await res.json().catch(() => ({}));
+     if (res.status === 401 || res.status === 403) {
+       alert('権限がありません');
+       closeModal(roomCreateModal);
+       closeModal(roomMembersModal);
+       return null;
+     }
+     if (!data.ok) {
+       alert(data.error || '候補取得に失敗しました');
+       return null;
+     }
+     roomUi.candidates = data.candidates || [];
+     return roomUi.candidates;
+   }
+ 
+   function openModal(modal) { modal?.classList.add('is-open'); }
+   function closeModal(modal) { modal?.classList.remove('is-open'); }
