@@ -1,530 +1,423 @@
-diff --git a/albums/templates/view_child_movie.html b/albums/templates/view_child_movie.html
-index e104e8d2dfbcf5d3fb0fbf543a4cb2e6953ca152..831b072e74e1cf2a210b15e5e89cfbc4525ec248 100644
---- a/albums/templates/view_child_movie.html
-+++ b/albums/templates/view_child_movie.html
-@@ -1,164 +1,235 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .gallery { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
-     .gallery .item { position:relative; display:inline-block; text-align:center; }
-     .caption { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index edab718a5d4e7c0cd3d19d42424ab4126af91e6e..48399c2a89e0ef5ada4e22c393197e00930388c9 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -738,50 +738,66 @@
+   bottom: calc(100% + 6px);
+   z-index: 1300;
+   max-height: 220px;
+   overflow-y: auto;
+   background: #fff;
+   border: 1px solid #d0d7e9;
+   border-radius: 8px;
+   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.16);
+ }
  
-     .poster { width: 220px; aspect-ratio: 16/9; border-radius: 8px; background:#000; object-fit: cover; cursor: pointer; display:block; }
-     video.thumb { width: 220px; max-height: 160px; border-radius: 8px; background:#000; display:none; }
+ .chat-mention-item {
+   padding: 8px 10px;
+   font-size: 0.85rem;
+   cursor: pointer;
+ }
  
-     .play-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
-       background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
-       border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
+ .chat-mention-item small {
+   color: #6d7385;
+ }
  
-+    .share-badge { position:absolute; top:8px; right:8px;
-+      background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.35);
-+      border-radius:999px; width:38px; height:38px; display:flex; align-items:center; justify-content:center;
-+      font-size:17px; line-height:1; cursor:pointer; }
-+    .share-badge:hover { background:rgba(0,0,0,.75); }
+ .chat-mention-item.is-active,
+ .chat-mention-item:hover {
+   background: #eef4ff;
+ }
+ 
++/* 通常のバブルはOSの長押しメニューを出さない（LINE式） */
++.chat-bubble {
++  -webkit-touch-callout: none;
++  -webkit-user-select: none;
++  user-select: none;
++}
 +
-     /* 変換中バッジ */
-     .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
-       background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
-       border:1px solid rgba(255,255,255,.5); user-select:none; }
++/* 全文モーダル内は選択コピーを許可 */
++.chat-fulltext-modal .chat-fulltext-body {
++  -webkit-touch-callout: default;
++  -webkit-user-select: text;
++  user-select: text;
++  white-space: pre-wrap;
++  word-break: break-word;
++}
++
+ </style>
  
-     @media (pointer:coarse){ .poster, video.thumb { width: 260px; } }
-   </style>
- </head>
- <body class="container py-4">
- {% if show_extlogin_nav %}
-   {% include "_extlogin_nav.html" %}
- {% endif %}
+ {% macro render_reaction_box(message) -%}
+   <div class="chat-reaction-box"
+        data-reaction-box="1"
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
  
- 
-   <h2 class="mb-3">
-     📂 {{ meta.album_name }} /
-     {% for child in meta.children %}
-       {% if child.folder == child_id %}
-         🎥 {{ child.name }}
-         <small class="text-muted ms-2">（{{ videos|length }}本）</small>
-       {% endif %}
-     {% endfor %}
-   </h2>
- 
-   <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
-   <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-secondary mb-3 ms-2">⬆️ 動画を追加</a>
- 
-   {% set any_converting = videos|selectattr('converting')|list|length > 0 %}
-   {% if any_converting %}
-     <div class="alert alert-info py-2">⏳ 一部の動画をブラウザ互換に変換中です。準備でき次第、自動で再生可能になります。</div>
-   {% endif %}
- 
-   <div class="gallery">
-     {% if videos %}
-       {% for v in videos %}
-         {# 再生URLの拡張子からMIME推定（typeは必須ではないが、正しければ付与） #}
-         {% set raw_url = v.raw|lower %}
-         {% if raw_url.endswith('.webm') %}
-           {% set mime = 'video/webm' %}
-         {% elif raw_url.endswith('.mp4') or raw_url.endswith('.m4v') %}
-           {% set mime = 'video/mp4' %}
-         {% elif raw_url.endswith('.mov') %}
-           {% set mime = 'video/quicktime' %}
-         {% else %}
-           {% set mime = '' %}
-         {% endif %}
- 
-         <div class="item"
-              data-raw="{{ v.raw }}"
-+             data-name="{{ v.name }}"
-              data-web="{{ v.web }}"
-              data-mime="{{ mime }}"
-              data-converting="{{ 'true' if v.converting else 'false' }}">
-+          <button type="button" class="share-badge" aria-label="動画を共有" title="共有">↗️</button>
-           {% if v.poster %}
-             <img src="{{ v.poster }}" class="poster" alt="poster" loading="lazy">
-           {% endif %}
- 
-           {% if v.converting %}
-             <span class="conv-badge">⏳ 変換中…</span>
-           {% else %}
-             <button type="button" class="play-badge">▶ 再生</button>
-           {% endif %}
- 
-           <video class="thumb" controls preload="none" playsinline>
-             <!-- src は遅延で設定 -->
-           </video>
- 
-           <div class="small text-muted caption mt-1" title="{{ v.name }}">{{ v.name }}</div>
-           <div class="mt-1 d-flex justify-content-center gap-2">
-             <a class="btn btn-sm btn-outline-secondary"
-                href="{{ url_for('album.movie_download', album_id=album_id, child_id=child_id, filename=v.name) }}">
-               ⬇️ ダウンロード
-             </a>
-             <a class="btn btn-sm btn-outline-primary" href="{{ v.raw }}" target="_blank" rel="noopener">🔗 直接リンク</a>
-           </div>
-         </div>
-       {% endfor %}
-     {% else %}
-       <p class="text-muted">まだ動画がアップロードされていません。</p>
-     {% endif %}
+ <div class="container py-3"
+      data-event-id="{{ event.id }}"
+      data-room-id="{{ active_room.room_id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}"
+      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
+   <h3>{{ event.title }} / Chat</h3>
+   <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+     <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
+@@ -950,90 +966,109 @@
+       <input type="hidden" id="edit-target-id" value="">
+       <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
+       <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
+       <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
+       <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+     </form>
+     <div id="chat-mention-menu" class="chat-mention-menu d-none"></div>
    </div>
  
-   <script>
-+    function toAbsoluteUrl(urlLike){
-+      if (!urlLike) return '';
-+      try { return new URL(urlLike, location.href).href; }
-+      catch(_) { return ''; }
-+    }
-+
-+    function safeFilename(nameHint='video.mp4', mimeType='video/mp4'){
-+      const fallbackExt = (mimeType.split('/')[1] || 'mp4').replace(/[^a-z0-9]/gi,'') || 'mp4';
-+      const base = `${nameHint || ''}`.split('/').pop().replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
-+      const file = base || `video.${fallbackExt}`;
-+      return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
-+    }
-+
-+    function isShareCanceled(error){
-+      const msg = `${error?.message || ''}`.toLowerCase();
-+      return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
-+    }
-+
-+    async function shareMovieByUrl(movieUrl, filenameHint='movie.mp4'){
-+      const absoluteMovieUrl = toAbsoluteUrl(movieUrl);
-+      if (!absoluteMovieUrl) {
-+        alert('共有する動画URLを取得できませんでした');
-+        return;
-+      }
-+      try {
-+        if (navigator.share && navigator.canShare) {
-+          try {
-+            const response = await fetch(absoluteMovieUrl, { credentials:'include', cache:'no-store' });
-+            if (response.ok) {
-+              const blob = await response.blob();
-+              const mimeType = blob.type || 'video/mp4';
-+              const file = new File([blob], safeFilename(filenameHint, mimeType), { type: mimeType });
-+              if (navigator.canShare({ files:[file] })) {
-+                await navigator.share({ files:[file], title:'MFU' });
-+                return;
-+              }
-+            }
-+          } catch(_) { }
-+        }
-+        if (navigator.share) {
-+          await navigator.share({ url:absoluteMovieUrl, title:'MFU' });
-+          return;
-+        }
-+        if (navigator.clipboard?.writeText) {
-+          await navigator.clipboard.writeText(absoluteMovieUrl);
-+          alert('共有URLをクリップボードにコピーしました。');
-+          return;
-+        }
-+        prompt('このURLをコピーして共有してください。', absoluteMovieUrl);
-+      } catch (error) {
-+        if (!isShareCanceled(error)) console.error('shareMovieByUrl failed:', error);
-+      }
-+    }
-+
-     function setVideoSrcIfEmpty(videoEl, raw, mime){
-       if (!videoEl) return;
-       if (videoEl.currentSrc) return;
-       if (videoEl.querySelector('source')) return;
-       const src = document.createElement('source');
-       src.src = raw;
-       if (mime && (mime === 'video/mp4' || mime === 'video/webm' || mime === 'video/quicktime')) {
-         src.type = mime;
-       }
-       videoEl.appendChild(src);
-       try { videoEl.load(); } catch(_){}
-     }
- 
-     function startPlayback(item){
-       const video = item.querySelector('video.thumb');
-       const raw   = item.dataset.raw;
-       const mime  = item.dataset.mime;
-       const poster= item.querySelector('img.poster');
-       const badge = item.querySelector('.play-badge');
- 
-       if (badge)  badge.style.display  = 'none';
-       if (poster) poster.style.display = 'none';
-       video.style.display = 'block';
- 
-       setVideoSrcIfEmpty(video, raw, mime);
-       const p = video.play(); if (p && p.catch) p.catch(()=>{});
-     }
- 
-     // 再生ボタン/ポスタークリック
-     document.addEventListener('click', (e)=>{
-       const item = e.target.closest('.item');
-       if (!item) return;
- 
-       // 変換中は再生させない
-       if (item.dataset.converting === 'true') return;
- 
-       if (e.target.closest('.play-badge') || e.target.closest('img.poster')) {
-         startPlayback(item);
-+        return;
-+      }
-+
-+      if (e.target.closest('.share-badge')) {
-+        e.preventDefault();
-+        e.stopPropagation();
-+        const movieUrl = item.dataset.raw;
-+        const nameHint = item.dataset.name || 'movie.mp4';
-+        shareMovieByUrl(movieUrl, nameHint);
-       }
-     }, true);
- 
-     // ポスターが無いものは画面内に入ったら src セット
-     const items = Array.from(document.querySelectorAll('.item'));
-     const io = new IntersectionObserver((entries)=>{
-       for(const e of entries){
-         if(!e.isIntersecting) continue;
-         const item = e.target;
-         if (item.dataset.converting === 'true') { io.unobserve(item); continue; }
-         const poster = item.querySelector('img.poster');
-         const video  = item.querySelector('video.thumb');
-         if (video && !poster) {
-           setVideoSrcIfEmpty(video, item.dataset.raw, item.dataset.mime);
-           video.style.display = 'block';
-         }
-         io.unobserve(item);
-       }
-     }, { rootMargin:'200px' });
-     items.forEach(el=>io.observe(el));
- 
-     // ===== 変換完了ポーリング（.web.mp4 のHEAD） =====
-     const pollingItems = items.filter(it => it.dataset.converting === 'true');
-     if (pollingItems.length){
-       const tick = async () => {
-diff --git a/albums/templates/view_child_process_event.html b/albums/templates/view_child_process_event.html
-index b1dde7aca90fd2c16e6056b7c97b734677e83852..d3441f5f3fd37970ac7ca9479a4859591ea6f038 100644
---- a/albums/templates/view_child_process_event.html
-+++ b/albums/templates/view_child_process_event.html
-@@ -57,50 +57,59 @@
-       box-shadow: 0 8px 16px rgba(13,110,253,0.18);
-       background: #eaf2ff;
-     }
-     .stepper-item.active span.badge { background: var(--wizard-accent); color: #fff; }
-     .step-arrow { display: none; font-size: 0.95rem; color: var(--wizard-accent); margin-left: auto; }
-     .stepper-item.active .step-arrow { display: inline-flex; }
- 
-     .status-card { border-radius: 16px; border: 1px solid var(--wizard-border); }
-     .status-danger { border-color: rgba(220,53,69,0.3); background: #fff5f6; }
-     .status-success { border-color: rgba(25,135,84,0.3); background: #f1fbf5; }
-     .status-info { border-color: rgba(13,110,253,0.3); background: #f1f7ff; }
- 
-     .next-action { border-radius: 16px; background: #fff; border: 2px dashed rgba(13,110,253,0.3); }
-     .next-action h4 { font-size: clamp(1.2rem, 2vw, 1.5rem); }
- 
-     .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
-     .gallery .item { position: relative; display: inline-block; text-align: center; }
-     img.thumb { width: 110px; height: auto; border-radius: 10px; }
- 
-     .member-chip {
-       display: inline-flex; align-items: center; gap: 8px;
-       background: #fff3cd; color: #664d03; border-radius: 999px; padding: 6px 12px; font-size: 0.9rem;
-       border: 1px solid #ffeeba; margin: 4px;
-     }
- 
-+    #bb-share{
-+      position:absolute; top:12px; right:60px; z-index:10000;
-+      width:40px; height:40px; border-radius:999px;
-+      border:1px solid rgba(255,255,255,.5); background:rgba(0,0,0,.55); color:#fff;
-+      display:flex; align-items:center; justify-content:center;
-+      font-size:18px; line-height:1; cursor:pointer;
-+    }
-+    #bb-share:hover{ background:rgba(0,0,0,.72); }
-+
-     .btn-lg { padding: 0.9rem 1.4rem; font-size: 1rem; }
- 
-     .upload-panel { border-radius: 16px; border: 1px dashed #cdd6e3; background: #fdfdff; padding: 16px; }
-     .upload-dropzone {
-       border: 2px dashed #a9b4c2; border-radius: 12px; padding: 20px; text-align: center;
-       color: #6c757d; background: #fff; transition: background-color .2s, border-color .2s, color .2s;
-     }
-     .upload-dropzone.dragover { background: #e9f5ff; border-color: #0d6efd; color: #0d6efd; }
-     .upload-preview img {
-       width: 110px; height: 110px; object-fit: contain;
-       background: #f8f9fa; border-radius: 10px; margin: 4px; border: 1px solid #dfe4ea;
-     }
- 
-     @media (pointer:coarse){ img.thumb{ width:130px; } }
-   </style>
- </head>
- <body class="container py-4">
- {% if show_extlogin_nav %}
-   {% include "_extlogin_nav.html" %}
- {% endif %}
- 
- 
- {% set ns = namespace(has_requested=false) %}
- {% if event_process_members %}
-   {% for member in event_process_members %}
-@@ -469,50 +478,174 @@
-     </table>
+   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
+     <button type="button" id="chatImageViewerShare" class="chat-image-viewer-share" aria-label="共有" title="共有">共有</button>
+     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
+     <div class="chat-image-viewer-content">
+       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
+       <img id="chatImageViewerImg" src="" alt="拡大画像">
+       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+     </div>
    </div>
- {% endif %}
  
- {% if history_list %}
-   <hr>
-   <h5 class="mt-4">📜 加工履歴（１番上が最新）</h5>
-   <div class="table-responsive">
-     <table class="table table-sm table-striped table-bordered text-center align-middle">
-       <thead class="table-light">
-         <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
-       </thead>
-       <tbody>
-         {% for record in history_list|reverse %}
-           <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
-         {% endfor %}
-       </tbody>
-     </table>
+   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
+     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
+     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
+       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
+       <hr class="chat-ctx-sep">
+       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
++      <button type="button" class="chat-ctx-item" data-ctx-action="fulltext">全文表示</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッドを開く</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
+       <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
+       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
+       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
+     </div>
    </div>
- {% endif %}
  
- <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
- <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
  
- <script>
-+  function toAbsoluteUrl(urlLike){
-+    if (!urlLike) return '';
-+    try { return new URL(urlLike, location.href).href; }
-+    catch(_) { return ''; }
+   <div id="threadModal" class="room-member-modal" aria-hidden="true">
+     <div class="backdrop" data-close="1"></div>
+     <div class="panel">
+       <div class="d-flex justify-content-between align-items-center mb-2">
+         <h5 class="mb-0">スレッド</h5>
+         <button type="button" id="thread-modal-close" class="btn btn-sm btn-light">閉じる</button>
+       </div>
+       <div id="thread-modal-body" class="thread-modal-body">
+         <div id="thread-root" class="thread-modal-root"></div>
+         <div id="thread-replies"></div>
+       </div>
+       <form id="thread-form" class="d-flex gap-2 align-items-center mt-2">
+         <textarea id="thread-body" class="form-control" maxlength="2000" placeholder="スレッドに返信" rows="1"></textarea>
+         <button class="btn btn-primary" id="thread-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+       </form>
+     </div>
+   </div>
+ 
+ 
+   <div id="reactionDetailModal" class="room-member-modal" aria-hidden="true">
+     <div class="backdrop" data-close="1"></div>
+     <div class="panel">
+       <div class="d-flex justify-content-between align-items-center mb-2">
+         <h5 class="mb-0">リアクション</h5>
+         <button type="button" id="reaction-detail-close" class="btn btn-sm btn-light">閉じる</button>
+       </div>
+       <div id="reaction-detail-body"></div>
+     </div>
+   </div>
+ 
++  <div id="chat-fulltext-modal" class="modal fade chat-fulltext-modal" tabindex="-1" aria-hidden="true">
++    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
++      <div class="modal-content">
++        <div class="modal-header">
++          <h6 class="modal-title">メッセージ全文</h6>
++          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
++        </div>
++        <div class="modal-body">
++          <div class="small text-muted mb-2" id="chat-fulltext-meta"></div>
++          <div class="chat-fulltext-body" id="chat-fulltext-body"></div>
++        </div>
++        <div class="modal-footer">
++          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">閉じる</button>
++        </div>
++      </div>
++    </div>
++  </div>
++
+   <div id="roomCreateModal" class="room-member-modal" aria-hidden="true">
+     <div class="backdrop" data-close="1"></div>
+     <div class="panel">
+       <h5 class="mb-2">サブルーム作成</h5>
+       <div class="mb-2">
+         <label class="form-label">ルーム名</label>
+         <input id="room-create-name" type="text" class="form-control" maxlength="80" placeholder="例: 撮影班A" />
+       </div>
+       <div class="d-flex gap-2 mb-2">
+         <input id="room-create-search" type="text" class="form-control form-control-sm" placeholder="候補検索（名前 / actor_key）">
+         <button type="button" id="room-create-select-all" class="btn btn-sm btn-outline-secondary">全選択</button>
+         <button type="button" id="room-create-unselect-all" class="btn btn-sm btn-outline-secondary">全解除</button>
+       </div>
+       <div class="small mb-1">選択中 <span id="room-create-count">0</span>名</div>
+       <div id="room-create-candidates" class="room-member-candidate-list"></div>
+       <div class="d-flex justify-content-end gap-2 mt-3">
+         <button type="button" id="room-create-cancel" class="btn btn-sm btn-light">キャンセル</button>
+         <button type="button" id="room-create-submit" class="btn btn-sm btn-primary">作成</button>
+       </div>
+     </div>
+   </div>
+ 
+   <div id="roomMembersModal" class="room-member-modal" aria-hidden="true">
+     <div class="backdrop" data-close="1"></div>
+     <div class="panel">
+@@ -1365,50 +1400,58 @@
+ 
+     const contentLink = e.target.closest('a.chat-link');
+     if (contentLink) {
+       return;
+     }
+ 
+     const bubble = e.target.closest('.chat-bubble');
+     if (!bubble) return;
+     const row = bubble.closest('.chat-row');
+     if (!row) return;
+ 
+     const messageId = row.dataset.messageId;
+     if (Number(row.dataset.deletedFlag || 0) === 1) return;
+ 
+     const senderName = row.dataset.senderName || 'Unknown';
+     const bodyPlain = row.dataset.bodyPlain || '';
+ 
+     if (state.replyToId && String(state.replyToId) === String(messageId)) {
+       clearReplyState();
+       return;
+     }
+     if (isMobile) return;
+     setReplyState(messageId, senderName, bodyPlain, bubble);
+   });
+ 
++  msgBox.addEventListener('contextmenu', (e) => {
++    if (!isMobile) return;
++    if (e.target.closest('.chat-fulltext-modal')) return;
++    if (e.target.closest('.chat-bubble')) {
++      e.preventDefault();
++    }
++  });
++
+   msgBox.addEventListener('contextmenu', (e) => {
+     const row = e.target.closest('.chat-row[data-message-id]');
+     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+     e.preventDefault();
+     openContextMenu(row);
+   });
+ 
+   threadModal?.addEventListener('click', (e) => {
+     const reactionChip = e.target.closest('.chat-reaction-chip');
+     if (!reactionChip) return;
+     const row = reactionChip.closest('.chat-row');
+     const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
+     if (!messageId) return;
+     e.preventDefault();
+     openReactionDetailModal(messageId);
+   });
+ 
+   msgBox.addEventListener('pointerdown', (e) => {
+     if (e.pointerType === 'mouse') return;
+     const row = e.target.closest('.chat-row[data-message-id]');
+     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+     if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
+     clearLongPressTimer();
+     state.longPressTriggered = false;
+     state.longPressRow = row;
+@@ -2711,50 +2754,68 @@
+     if (ctxPreview) ctxPreview.textContent = previewText;
+ 
+     ctxReactions?.classList.add('d-none');
+     ctxMenu.classList.remove('d-none');
+     ctxMenu.classList.add('is-open');
+   }
+ 
+   function closeContextMenu() {
+     if (!ctxMenu) return;
+     ctxMenu.classList.add('d-none');
+     ctxMenu.classList.remove('is-open');
+     ctxMenu.dataset.messageId = '';
+     state.ctxMessageId = null;
+     state.ctxRow = null;
+     state.ctxBodyPlain = '';
+     ctxReactions?.classList.add('d-none');
+   }
+ 
+   function makeContextPreviewText(row, bodyPlain) {
+     if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
+     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
+     if (normalized) return normalized;
+     return '（画像）';
+   }
+ 
++  function openFulltextModal(row) {
++    const modalEl = document.getElementById('chat-fulltext-modal');
++    const metaEl = document.getElementById('chat-fulltext-meta');
++    const bodyEl = document.getElementById('chat-fulltext-body');
++    if (!modalEl || !metaEl || !bodyEl || !row) return;
++
++    const sender = row.dataset.senderName || 'Unknown';
++    const createdAtIso = row.dataset.createdAtIso || '';
++    const createdAt = createdAtIso ? formatDateTimeLabel(createdAtIso) : '';
++    const bodyPlain = row.dataset.bodyPlain || '';
++
++    metaEl.textContent = `${sender}${createdAt ? ` / ${createdAt}` : ''}`;
++    bodyEl.textContent = bodyPlain;
++
++    const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
++    bsModal.show();
 +  }
 +
-+  function extractFilename(value, fallback='image.jpg'){
-+    const raw = (value || '').split('/').pop() || '';
-+    const clean = decodeURIComponent(raw).trim();
-+    return clean || fallback;
-+  }
-+
-+  function safeFilename(nameHint, mimeType='image/jpeg'){
-+    const fallbackExt = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi,'') || 'jpg';
-+    const base = (nameHint || 'image').replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
-+    const file = base || `image.${fallbackExt}`;
-+    return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
-+  }
-+
-+  function mimeTypeFromName(name=''){
-+    const lower = `${name}`.toLowerCase();
-+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-+    if (lower.endsWith('.png')) return 'image/png';
-+    if (lower.endsWith('.webp')) return 'image/webp';
-+    return 'image/jpeg';
-+  }
-+
-+  function isShareCanceled(error){
-+    const msg = `${error?.message || ''}`.toLowerCase();
-+    return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
-+  }
-+
-+  async function shareByUrl(imageUrl, filenameHint='image.jpg'){
-+    const absoluteImageUrl = toAbsoluteUrl(imageUrl);
-+    if (!absoluteImageUrl) {
-+      alert('共有する画像URLを取得できませんでした');
+ 
+   async function copyTextWithFallback(text) {
+     if (!text) return;
+     if (navigator.clipboard?.writeText) {
+       await navigator.clipboard.writeText(text);
+       return;
+     }
+     const temp = document.createElement('textarea');
+     temp.value = text;
+     temp.setAttribute('readonly', 'readonly');
+     temp.style.position = 'fixed';
+     temp.style.left = '-9999px';
+     document.body.appendChild(temp);
+     temp.select();
+     document.execCommand('copy');
+     document.body.removeChild(temp);
+   }
+ 
+   function isShareCancelled(error) {
+     const name = String(error?.name || '');
+     return name === 'AbortError' || name === 'NotAllowedError';
+   }
+ 
+   function extensionFromMimeType(mimeType) {
+     const map = {
+@@ -2842,50 +2903,55 @@
+     const row = state.ctxRow || document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
+     const messageId = Number(row?.dataset?.messageId || 0);
+     if (!row || !messageId) {
+       closeContextMenu();
+       return;
+     }
+ 
+     if (actionEl.classList.contains('chat-reaction-emoji')) {
+       const emoji = actionEl.dataset.emoji || '';
+       if (reactionEmojis.includes(emoji)) {
+         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+       }
+       closeContextMenu();
+       return;
+     }
+ 
+     const action = actionEl.dataset.ctxAction;
+     if (action === 'reply') {
+       const bubble = row.querySelector('.chat-bubble');
+       if (bubble) {
+         setReplyState(messageId, row.dataset.senderName || 'Unknown', row.dataset.bodyPlain || '', bubble);
+       }
+       closeContextMenu();
+       return;
+     }
++    if (action === 'fulltext') {
++      closeContextMenu();
++      openFulltextModal(row);
 +      return;
 +    }
-+    try {
-+      if (navigator.share && navigator.canShare) {
-+        try {
-+          const response = await fetch(absoluteImageUrl, { credentials:'include', cache:'no-store' });
-+          if (response.ok) {
-+            const blob = await response.blob();
-+            const mimeType = blob.type || mimeTypeFromName(filenameHint || absoluteImageUrl);
-+            const file = new File([blob], safeFilename(filenameHint, mimeType), { type: mimeType });
-+            if (navigator.canShare({ files:[file] })) {
-+              await navigator.share({ files:[file], title:'MFU' });
-+              return;
-+            }
-+          }
-+        } catch(_) { }
-+      }
-+      if (navigator.share) {
-+        await navigator.share({ url:absoluteImageUrl, title:'MFU' });
-+        return;
-+      }
-+      if (navigator.clipboard?.writeText) {
-+        await navigator.clipboard.writeText(absoluteImageUrl);
-+        alert('共有URLをクリップボードにコピーしました。');
-+        return;
-+      }
-+      prompt('このURLをコピーして共有してください。', absoluteImageUrl);
-+    } catch (error) {
-+      if (!isShareCanceled(error)) console.error('shareByUrl failed:', error);
-+    }
-+  }
-+
-+  function resolveUrlFromOverlay(overlay){
-+    const img = overlay?.querySelector('figure img, .full-image img, #baguetteBox-slider img, img');
-+    const imgSrc = toAbsoluteUrl(img?.currentSrc || img?.src || '');
-+    if (!imgSrc) return '';
-+    const anchors = Array.from(document.querySelectorAll('.gallery a.preview'));
-+    const targetName = extractFilename(imgSrc).toLowerCase();
-+    const matched = anchors.find((a)=>{
-+      const hrefAbs = toAbsoluteUrl(a.getAttribute('href') || a.href || '');
-+      const thumbAbs = toAbsoluteUrl(a.querySelector('img')?.currentSrc || a.querySelector('img')?.src || '');
-+      return hrefAbs === imgSrc || thumbAbs === imgSrc || extractFilename(hrefAbs).toLowerCase() === targetName;
-+    });
-+    return toAbsoluteUrl(matched?.getAttribute('href') || matched?.href || '');
-+  }
-+
-+  function setupLightboxShareButton(){
-+    const ensureOverlayShareButton=(overlay)=>{
-+      if (overlay.querySelector('#bb-share')) return;
-+      const button=document.createElement('button');
-+      button.id='bb-share';
-+      button.type='button';
-+      button.setAttribute('aria-label','共有');
-+      button.setAttribute('title','共有');
-+      button.textContent='↗️';
-+      button.addEventListener('click', async (e)=>{
-+        e.preventDefault();
-+        e.stopPropagation();
-+        const candidateUrl = resolveUrlFromOverlay(overlay);
-+        if (!candidateUrl) {
-+          alert('共有する画像URLを取得できませんでした');
-+          return;
-+        }
-+        const hint = extractFilename(candidateUrl || 'image.jpg');
-+        await shareByUrl(candidateUrl, hint);
-+      });
-+      overlay.appendChild(button);
-+    };
-+    const applyOverlayObserver=(overlay)=>{
-+      const toggle=()=>{
-+        const visible=overlay.classList.contains('visible') && overlay.style.display!=='none';
-+        if(visible) ensureOverlayShareButton(overlay);
-+      };
-+      toggle();
-+      const mo=new MutationObserver(toggle);
-+      mo.observe(overlay,{ attributes:true, attributeFilter:['class','style'] });
-+    };
-+    const tryAttach=()=>{
-+      const overlay=document.getElementById('baguetteBox-overlay');
-+      if(overlay){ applyOverlayObserver(overlay); return true; }
-+      return false;
-+    };
-+    if(!tryAttach()){
-+      const bodyMO=new MutationObserver(()=>{ if(tryAttach()) bodyMO.disconnect(); });
-+      bodyMO.observe(document.body,{ childList:true, subtree:true });
-+    }
-+  }
-+
-   const dlButton = document.getElementById("btn-process-download");
-   if (dlButton) {
-     dlButton.addEventListener("click", async (e) => {
-       e.preventDefault();
-       let preWin = window.open("about:blank", "_blank");
-       const formData = new FormData();
+     if (action === 'react') {
+       ctxReactions?.classList.toggle('d-none');
+       return;
+     }
+     if (action === 'open-thread') {
+       const rootId = Number(row.dataset.threadRootId || row.dataset.messageId || 0);
+       closeContextMenu();
+       openThreadModal(rootId);
+       return;
+     }
+     if (action === 'copy') {
        try {
-         const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", { method: "POST", body: formData });
-         if (response.status === 409) {
-           if (preWin && !preWin.closed) preWin.close();
-           alert("他の方が加工中です。\n" + await response.text());
-           return;
-         }
-         if (!response.ok) {
-           if (preWin && !preWin.closed) preWin.close();
-           const text = await response.text().catch(()=>response.statusText);
-           alert("❌ 開始に失敗しました:\n" + text);
-           return;
-         }
-         const data = await response.json();
-         const openUrl = data.image_url;
-         if (!openUrl) {
-           if (preWin && !preWin.closed) preWin.close();
-           alert("❌ 画像URLの取得に失敗しました。");
-           return;
-@@ -647,49 +780,50 @@
-       rows.forEach((row) => {
-         const requestBox = row.querySelector('[data-field="request"]');
-         if (!requestBox) return;
-         const userId = requestBox.dataset.userId;
-         if (!userId) return;
-         members.push({ ext_user_id: userId, request_flag: requestBox.checked ? 1 : 0 });
-       });
-       try {
-         const response = await fetch("{{ url_for('album.request_process', album_id=album_id, child_id=child_id) }}", {
-           method: "POST", headers: { "Content-Type": "application/json" },
-           body: JSON.stringify({ members: members, mode: 'request_only' }),
-         });
-         if (!response.ok) throw new Error(await response.text());
-         if (statusEl) statusEl.textContent = "保存しました！画面を更新します...";
-         setTimeout(() => location.reload(), 800);
-       } catch (error) {
-         if (statusEl) statusEl.textContent = "保存に失敗しました。";
-         alert("保存に失敗しました: " + error.message);
+         await copyTextWithFallback(state.ctxBodyPlain || row.dataset.bodyPlain || '');
+         alert('コピーしました');
+       } catch (_err) {
+         alert('コピーに失敗しました');
        }
+       closeContextMenu();
+       return;
+     }
+     if (action === 'edit') {
+       if (row.dataset.canEdit !== '1') {
+         closeContextMenu();
+         return;
+       }
+@@ -2915,50 +2981,57 @@
+       updateAutoGrow();
+       bodyInput.focus();
+     }
+   }
+ 
+   function clearEditState() {
+     state.editTargetMessageId = null;
+     editTargetInput.value = '';
+     if (replySender?.textContent === '編集中') {
+       replySender.textContent = '';
+       replyText.textContent = '';
+       replyPreview.classList.add('d-none');
+     }
+   }
+ 
+   function formatDateLabel(date) {
+     const parts = fmtDate.formatToParts(date);
+     const get = (type) => parts.find((p) => p.type === type)?.value || '';
+     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
+   }
+ 
+   function formatTimeLabel(date) {
+     return fmtTime.format(date);
+   }
+ 
++  function formatDateTimeLabel(isoText) {
++    if (!isoText) return '';
++    const date = new Date(isoText);
++    if (Number.isNaN(date.getTime())) return '';
++    return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
++  }
++
+   function applyReadSnapshot(states) {
+     state.readStateByActor.clear();
+     for (const readState of states || []) {
+       applyReadUpdate(readState);
+     }
+   }
+ 
+   function applyReadUpdate(readState) {
+     if (!readState?.actor_type || !readState?.actor_id) return;
+     const key = `${readState.actor_type}:${readState.actor_id}`;
+     const prev = state.readStateByActor.get(key);
+     const nextReadId = Number(readState.last_read_message_id || 0);
+     const prevReadId = Number(prev?.last_read_message_id || 0);
+     if (prev && prevReadId > nextReadId) return;
+     state.readStateByActor.set(key, {
+       actor_type: readState.actor_type,
+       actor_id: String(readState.actor_id),
+       display_name: readState.display_name || prev?.display_name || readState.actor_id,
+       last_read_message_id: Math.max(prevReadId, nextReadId),
      });
    }
  
-   /* ====== Lightbox & Lock Timer ====== */
-   window.addEventListener('DOMContentLoaded', ()=>{
-     baguetteBox.run('.gallery',{ animation:'fadeIn', noScrollbars:true });
-+    setupLightboxShareButton();
-     {% if lock and not lock_expired %}
-       document.querySelectorAll('.gallery a.preview').forEach(el => {
-         el.addEventListener('click', e => e.preventDefault(), true);
-         el.style.pointerEvents = 'none'; el.style.opacity = '0.6'; el.style.cursor = 'not-allowed';
-       });
-     {% endif %}
-     const lockStatus = document.getElementById('lock-status');
-     const remainingEl = document.getElementById('lock-remaining');
-     if (lockStatus && remainingEl) {
-       const lockTimestamp = Number(lockStatus.dataset.lockTimestamp || 0);
-       const ttlSeconds = 30 * 60;
-       const updateRemaining = () => {
-         if (!lockTimestamp) return;
-         const elapsed = Math.floor(Date.now() / 1000 - lockTimestamp);
-         const remaining = Math.max(ttlSeconds - elapsed, 0);
-         remainingEl.textContent = Math.ceil(remaining / 60).toString();
-       };
-       updateRemaining();
-       setInterval(updateRemaining, 30000);
-     }
-   });
- </script>
- </body>
- </html>
+   function refreshReadIndicators() {
+     msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
+   }
