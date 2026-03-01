@@ -1,93 +1,67 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 28e9bc0d9c529c0ddb52b528b3e0c6c812617f94..18731cce220f1c7d0c67cc987e08eca641ae230c 100644
+index 18731cce220f1c7d0c67cc987e08eca641ae230c..bfd201843cbdc618ac3638bfdeef17b348ef1116 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -329,89 +329,106 @@
-   overflow: hidden;
-   text-overflow: ellipsis;
-   max-width: 280px;
+@@ -371,61 +371,79 @@
  }
  
- .chat-jump-highlight {
-   outline: 2px solid rgba(252, 198, 48, 0.95);
-   box-shadow: 0 0 0 5px rgba(252, 198, 48, 0.25);
-   transition: box-shadow 0.25s ease;
+ .react-open-btn {
+   right: 38px;
  }
  
- .chat-deleted-text {
-   color: #6b748b;
-   font-style: italic;
+ .chat-menu-open-btn {
+   right: 6px;
+   font-size: 15px;
+   letter-spacing: 1px;
  }
  
- .chat-reaction-box {
-   position: relative;
-   margin-top: 4px;
-   display: flex;
-   flex-direction: column;
-   gap: 4px;
-   width: 100%;
- }
- 
--.react-open-btn {
-+.react-open-btn,
-+.chat-menu-open-btn {
-   width: 26px;
-   height: 26px;
-   padding: 0;
-   border: 1px solid #cdd6f8;
-   background: #fff;
-   color: #4b5b91;
-   border-radius: 999px;
-   display: inline-flex;
-   align-items: center;
-   justify-content: center;
-   font-size: 18px;
-   line-height: 1;
-   position: absolute;
--  right: 6px;
-   top: -40px;
-   box-shadow: 0 1px 2px rgba(45, 74, 154, 0.18);
- }
- 
--.chat-message .react-open-btn {
-+.react-open-btn {
-+  right: 38px;
-+}
-+
-+.chat-menu-open-btn {
-+  right: 6px;
-+  font-size: 15px;
-+  letter-spacing: 1px;
-+}
-+
-+.chat-message .react-open-btn,
-+.chat-message .chat-menu-open-btn {
+ .chat-message .react-open-btn,
+ .chat-message .chat-menu-open-btn {
    opacity: 0;
    pointer-events: none;
    transition: opacity 0.12s ease;
  }
  
--.chat-message:hover .react-open-btn {
-+.chat-message:hover .react-open-btn,
-+.chat-message:hover .chat-menu-open-btn {
+ .chat-message:hover .react-open-btn,
+ .chat-message:hover .chat-menu-open-btn {
    opacity: 1;
    pointer-events: auto;
  }
  
++.chat-message.is-selected .react-open-btn,
++.chat-message.is-selected .chat-menu-open-btn {
++  opacity: 1;
++  pointer-events: auto;
++}
++
  .chat-row.me .react-open-btn {
    display: none !important;
  }
  
++.chat-row.me .chat-menu-open-btn {
++  left: 6px;
++  right: auto;
++}
++
++.chat-row.other .chat-menu-open-btn {
++  right: 6px;
++  left: auto;
++}
++
  @media (hover: none) {
-   .chat-message .react-open-btn {
+-  .chat-message .react-open-btn {
++  .chat-message .react-open-btn,
++  .chat-message .chat-menu-open-btn {
      opacity: 0;
      pointer-events: none;
    }
-+
-+  .chat-message .chat-menu-open-btn {
-+    opacity: 1;
-+    pointer-events: auto;
-+  }
+ 
+-  .chat-message .chat-menu-open-btn {
++  .chat-message.is-selected .react-open-btn,
++  .chat-message.is-selected .chat-menu-open-btn {
+     opacity: 1;
+     pointer-events: auto;
+   }
  }
  
  .chat-ctx-menu {
@@ -110,98 +84,59 @@ index 28e9bc0d9c529c0ddb52b528b3e0c6c812617f94..18731cce220f1c7d0c67cc987e08eca6
  
  .chat-ctx-backdrop {
    position: absolute;
-   inset: 0;
-   background: rgba(0, 0, 0, 0.35);
- }
-@@ -765,50 +782,51 @@
-   color: #6d7385;
- }
+@@ -1191,50 +1209,51 @@
+   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
+   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
+   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
  
- .chat-mention-item.is-active,
- .chat-mention-item:hover {
-   background: #eef4ff;
- }
+   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     year: 'numeric',
+     month: 'numeric',
+     day: 'numeric',
+     weekday: 'short',
+   });
+   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     hour: 'numeric',
+     minute: '2-digit',
+     hour12: false,
+   });
  
- /* 全文モーダル内は選択コピーを許可 */
- .chat-fulltext-modal .chat-fulltext-body {
-   -webkit-touch-callout: default;
-   -webkit-user-select: text;
-   user-select: text;
-   white-space: pre-wrap;
-   word-break: break-word;
- }
+   const [myActorType, myActorId] = meId.includes(':')
+     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+     : ['', ''];
  
- </style>
- 
- {% macro render_reaction_box(message) -%}
-   <div class="chat-reaction-box"
-        data-reaction-box="1"
-        data-my-reaction="{{ message.my_reaction or '' }}"
-        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
-     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-+    <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-     <div class="chat-reaction-panel d-none"></div>
-     <div class="chat-reaction-summary"></div>
-   </div>
- {%- endmacro %}
- 
- <div class="container py-3"
-      data-event-id="{{ event.id }}"
-      data-room-id="{{ active_room.room_id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
-      data-display-name="{{ actor.display_name }}"
-      data-default-avatar="{{ default_avatar_url }}"
-      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
-   <h3>{{ event.title }} / Chat</h3>
-   <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
-     <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
-       {% for r in accessible_rooms %}
-       <option value="{{ r.room_id }}" {% if r.room_id == active_room.room_id %}selected{% endif %}>{{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}</option>
-       {% endfor %}
-     </select>
-     <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
-     <div class="chat-mute-wrap">
-       <button type="button" id="chat-mute-btn" class="btn btn-sm btn-outline-secondary">🔕ミュート</button>
-       <div id="chat-mute-menu" class="chat-mute-menu d-none">
-@@ -1360,50 +1378,59 @@
-     if (readIndicator) {
-       toggleReadList(readIndicator.closest('.chat-main'));
-       return;
-     }
- 
-     const quote = e.target.closest('.chat-reply-quote');
-     if (quote) {
-       jumpToMessage(quote.dataset.jumpToId);
-       return;
-     }
- 
-     const threadOpenBtn = e.target.closest('[data-thread-open]');
-     if (threadOpenBtn) {
-       openThreadModal(Number(threadOpenBtn.dataset.threadOpen || 0));
-       return;
-     }
- 
-     const reactionToggle = e.target.closest('.chat-reaction-toggle');
-     if (reactionToggle) {
-       const box = reactionToggle.closest('.chat-reaction-box');
-       const panel = box?.querySelector('.chat-reaction-panel');
-       panel?.classList.toggle('d-none');
-       return;
-     }
- 
-+    const menuToggle = e.target.closest('.chat-menu-toggle');
-+    if (menuToggle) {
-+      const row = menuToggle.closest('.chat-row[data-message-id]');
-+      if (row && Number(row.dataset.deletedFlag || 0) !== 1) {
-+        openContextMenu(row);
-+      }
-+      return;
-+    }
-+
-     const reactionBtn = e.target.closest('.chat-reaction-emoji');
-     if (reactionBtn) {
+   const state = {
+     replyToId: null,
+     selectedBubble: null,
++    selectedRowEl: null,
+     readStateByActor: new Map(),
+     reactionByMessage: new Map(),
+     viewerImages: [],
+     viewerIndex: 0,
+     ctxMessageId: null,
+     touchDoubleTap: {
+       startX: 0,
+       startY: 0,
+       moved: false,
+       row: null,
+       bubble: null,
+       lastTapAt: 0,
+       lastTapX: 0,
+       lastTapY: 0,
+       lastTapMessageId: null,
+     },
+     ctxRow: null,
+     ctxBodyPlain: '',
+     editTargetMessageId: null,
+     typingMembers: new Map(),
+     typingDebounceTimer: null,
+     typingStopTimer: null,
+     typingSent: false,
+     threadRootId: null,
+     loadingOlder: false,
+@@ -1414,53 +1433,63 @@
        const row = reactionBtn.closest('.chat-row');
        const messageId = Number(row?.dataset.messageId || 0);
        const emoji = reactionBtn.dataset.emoji || '';
@@ -225,77 +160,136 @@ index 28e9bc0d9c529c0ddb52b528b3e0c6c812617f94..18731cce220f1c7d0c67cc987e08eca6
      const contentLink = e.target.closest('a.chat-link');
      if (contentLink) {
        return;
-@@ -2214,65 +2241,73 @@
-     if (panel && panel.childElementCount === 0) {
-       for (const emoji of reactionEmojis) {
-         const btn = document.createElement('button');
-         btn.type = 'button';
-         btn.className = 'chat-reaction-emoji';
-         btn.dataset.emoji = emoji;
-         btn.textContent = emoji;
-         panel.appendChild(btn);
-       }
      }
-     return box;
-   }
  
-   function createReactionBox(reactionsSummary, myReaction) {
-     const box = document.createElement('div');
-     box.className = 'chat-reaction-box';
-     box.dataset.reactionBox = '1';
- 
-     const toggle = document.createElement('button');
-     toggle.type = 'button';
-     toggle.className = 'chat-reaction-toggle react-open-btn';
-     toggle.setAttribute('aria-label', 'リアクション');
-     toggle.setAttribute('title', 'リアクション');
-     toggle.textContent = '+';
- 
-+    const menuBtn = document.createElement('button');
-+    menuBtn.type = 'button';
-+    menuBtn.className = 'chat-menu-toggle chat-menu-open-btn';
-+    menuBtn.setAttribute('aria-label', 'メニュー');
-+    menuBtn.setAttribute('title', 'メニュー');
-+    menuBtn.textContent = '⋯';
++    const row = e.target.closest('.chat-row[data-message-id]');
++    const bubble = e.target.closest('.chat-bubble, .chat-body, .chat-image-thumb, .chat-image-link');
++    if (row && bubble && Number(row.dataset.deletedFlag || 0) !== 1) {
++      selectMessageRow(row);
++      return;
++    }
 +
-     const panel = document.createElement('div');
-     panel.className = 'chat-reaction-panel d-none';
-     for (const emoji of reactionEmojis) {
-       const btn = document.createElement('button');
-       btn.type = 'button';
-       btn.className = 'chat-reaction-emoji';
-       btn.dataset.emoji = emoji;
-       btn.textContent = emoji;
-       panel.appendChild(btn);
++    clearMessageSelection();
++
+   });
+ 
+   msgBox.addEventListener('contextmenu', (e) => {
++    clearMessageSelection();
+     const row = e.target.closest('.chat-row[data-message-id]');
+     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+ 
+     if (e.target.closest('#chat-fulltext-modal')) return;
+ 
+     e.preventDefault();
+ 
+     if (!isMobile) {
+       openContextMenu(row);
      }
+   });
  
-     const summary = document.createElement('div');
-     summary.className = 'chat-reaction-summary';
+   threadModal?.addEventListener('click', (e) => {
+     const reactionChip = e.target.closest('.chat-reaction-chip');
+     if (!reactionChip) return;
+     const row = reactionChip.closest('.chat-row');
+     const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
+     if (!messageId) return;
+     e.preventDefault();
+     openReactionDetailModal(messageId);
+   });
  
-     box.appendChild(toggle);
-+    box.appendChild(menuBtn);
-     box.appendChild(panel);
-     box.appendChild(summary);
  
-     applyReactionUi(box, reactionsSummary, myReaction);
-     return box;
+   msgBox.addEventListener('dblclick', (e) => {
+     const target = getReplyTargetFromEvent(e);
+@@ -2786,74 +2815,92 @@
    }
  
-   function parseReactionSummary(value) {
-     try {
-       const parsed = JSON.parse(value || '[]');
-       return Array.isArray(parsed) ? parsed : [];
-     } catch (_err) {
-       return [];
+   function getReplyTargetFromEvent(e) {
+     if (e.target.closest('.chat-reaction-chip, .chat-reaction-panel, .chat-reply-quote, .chat-image-link, a, button, input, textarea, .chat-read-inline, .chat-read-indicator, .chat-thread-link')) {
+       return null;
      }
+     const row = e.target.closest('.chat-row[data-message-id]');
+     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return null;
+     const bubble = e.target.closest('.chat-bubble') || row.querySelector('.chat-bubble');
+     if (!bubble) return null;
+     return { row, bubble };
    }
  
-   function normalizeReactionSummary(summary) {
-     const mapped = [];
-     for (const item of summary || []) {
-       const emoji = item?.emoji || '';
-       const count = Number(item?.count || 0);
-       if (!reactionEmojis.includes(emoji) || count <= 0) continue;
-       mapped.push({ emoji, count });
-     }
-     mapped.sort((a, b) => reactionEmojis.indexOf(a.emoji) - reactionEmojis.indexOf(b.emoji));
+   function resetTouchDoubleTap() {
+     state.touchDoubleTap.startX = 0;
+     state.touchDoubleTap.startY = 0;
+     state.touchDoubleTap.moved = false;
+     state.touchDoubleTap.row = null;
+     state.touchDoubleTap.bubble = null;
+     state.touchDoubleTap.lastTapAt = 0;
+     state.touchDoubleTap.lastTapX = 0;
+     state.touchDoubleTap.lastTapY = 0;
+     state.touchDoubleTap.lastTapMessageId = null;
+   }
+ 
++  function selectMessageRow(row) {
++    if (!row) return;
++    if (state.selectedRowEl === row) return;
++    if (state.selectedRowEl) {
++      state.selectedRowEl.classList.remove('is-selected');
++    }
++    state.selectedRowEl = row;
++    state.selectedRowEl.classList.add('is-selected');
++  }
++
++  function clearMessageSelection() {
++    if (!state.selectedRowEl) return;
++    state.selectedRowEl.classList.remove('is-selected');
++    state.selectedRowEl = null;
++  }
++
+   function openContextMenu(row) {
++    clearMessageSelection();
+     if (!ctxMenu || !ctxPanel) return;
+     const messageId = Number(row?.dataset?.messageId || 0);
+     if (!messageId) return;
+ 
+     state.ctxMessageId = messageId;
+     state.ctxRow = row;
+     state.ctxBodyPlain = row.dataset.bodyPlain || '';
+     ctxMenu.dataset.messageId = String(messageId);
+ 
+     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
+     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
+     const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
+     editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
+ 
+     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
+     if (ctxPreview) ctxPreview.textContent = previewText;
+ 
+     ctxReactions?.classList.add('d-none');
+     ctxMenu.classList.remove('d-none');
+     ctxMenu.classList.add('is-open');
+   }
+ 
+   function closeContextMenu() {
++    clearMessageSelection();
+     if (!ctxMenu) return;
+     ctxMenu.classList.add('d-none');
+     ctxMenu.classList.remove('is-open');
+     ctxMenu.dataset.messageId = '';
+     state.ctxMessageId = null;
+     state.ctxRow = null;
+     state.ctxBodyPlain = '';
+     ctxReactions?.classList.add('d-none');
+   }
+ 
+   function makeContextPreviewText(row, bodyPlain) {
+     if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
+     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
+     if (normalized) return normalized;
+     return '（画像）';
+   }
+ 
+   function openFulltextModal(row) {
+     const modalEl = document.getElementById('chat-fulltext-modal');
+     const metaEl = document.getElementById('chat-fulltext-meta');
+     const bodyEl = document.getElementById('chat-fulltext-body');
+     if (!modalEl || !metaEl || !bodyEl || !row) return;
+ 
+     const sender = row.dataset.senderName || '';
+     const createdIso = row.dataset.createdAtIso || '';
