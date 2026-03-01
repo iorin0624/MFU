@@ -168,7 +168,10 @@
                       <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
                     {% endif %}
 
-                    <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+                    {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
+                    {% if not has_openchat %}
+                      <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+                    {% endif %}
 
                     {% if album_url %}
                       <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
@@ -232,7 +235,10 @@
                         <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
                       {% endif %}
 
-                      <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+                      {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
+                      {% if not has_openchat %}
+                        <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+                      {% endif %}
 
                       {% if album_url %}
                         <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
