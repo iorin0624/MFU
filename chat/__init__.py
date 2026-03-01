@@ -1405,6 +1405,13 @@ def _present_message(
     has_image = bool(images)
     first_image = images[0] if images else None
     body_value = "" if deleted_flag else (msg.get("body") or "")
+    body_plain = (
+        str(body_value)
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+        .strip()
+    )
     body_html = deleted_text if deleted_flag else _linkify_escaped_text(body_value).replace("\n", "<br>")
     reply_excerpt = msg.get("reply_to_body_plain_excerpt")
     if not reply_excerpt and msg.get("reply_to_message_id"):
@@ -1431,6 +1438,7 @@ def _present_message(
         "sender_display_name": msg["sender_display_name"],
         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
         "body": body_value,
+        "body_plain": deleted_text if deleted_flag else body_plain,
         "body_html": body_html,
         "edited_flag": edited_flag,
         "edited_at": msg.get("edited_at").isoformat() if msg.get("edited_at") else None,
