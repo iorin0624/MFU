@@ -1,217 +1,8 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 0559d9ce73247e61c72c2c7acb847ba42af871b8..6436055778a9714c0f4a39ed79e05965559e923a 100644
+index 6436055778a9714c0f4a39ed79e05965559e923a..38faa0d3831fbb6f05079d7050f735eb3e021395 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -5,54 +5,91 @@
- .chat-messages {
-   height: min(70vh, 780px);
-   min-height: 520px;
-   overflow: auto;
-   overflow-x: hidden;
-   background: #e8f3ff;
-   touch-action: pan-y;
- }
- 
- .chat-date-divider {
-   display: flex;
-   justify-content: center;
-   margin: 10px 0;
- }
- 
- .chat-date-divider span {
-   display: inline-block;
-   font-size: 0.78rem;
-   color: #556;
-   background: rgba(255, 255, 255, 0.95);
-   border-radius: 999px;
-   padding: 3px 12px;
- }
- 
- .chat-row {
-+  position: relative;
-   margin-bottom: 10px;
-   touch-action: pan-y;
- }
- 
-+
-+/* ===== Swipe-to-reply animation ===== */
-+.chat-row .chat-bubble {
-+  will-change: transform;
-+}
-+
-+.chat-swipe-underlay {
-+  position: absolute;
-+  right: 18px;
-+  top: 50%;
-+  transform: translateY(-50%);
-+  display: flex;
-+  align-items: center;
-+  justify-content: center;
-+  font-size: 18px;
-+  opacity: 0;
-+  pointer-events: none;
-+  transition: opacity 120ms ease;
-+}
-+
-+.chat-row.swiping .chat-bubble {
-+  transition: none;
-+}
-+
-+.chat-row.swiping .chat-swipe-underlay {
-+  opacity: 1;
-+}
-+
-+.chat-row.snapback .chat-bubble {
-+  transition: transform 160ms ease;
-+}
-+
-+.chat-row.commit .chat-bubble {
-+  transition: transform 120ms ease;
-+}
-+
- .chat-line {
-   display: flex;
-   gap: 8px;
-   align-items: flex-start;
-   min-width: 0;
- }
- 
- .chat-row.me .chat-line {
-   justify-content: flex-end;
- }
- 
- .chat-row.other .chat-line {
-   justify-content: flex-start;
- }
- 
- .chat-main {
-   display: flex;
-   flex-direction: column;
-   max-width: min(80%, 560px);
-   min-width: 0;
- }
- 
- .chat-row.me .chat-main {
-   align-items: flex-end;
- }
-@@ -839,50 +876,51 @@
-         {% set ns.last_date = d %}
-       {% endif %}
- 
-       <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
-            id="msg-{{ m.id }}"
-            data-message-id="{{ m.id }}"
-            data-sender-id="{{ m.sender_id }}"
-            data-sender-name="{{ m.sender_display_name }}"
-            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
-            data-body-plain="{{ m.body_plain_excerpt }}"
-            data-body-plain-full="{{ m.body_plain or m.body_plain_excerpt }}"
-            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
-            data-thread-root-id="{{ m.thread_root_id or '' }}"
-            data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
-            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
-            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
-            data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-            data-created-at-iso="{{ m.created_at_iso }}"
-            data-deleted-flag="{{ m.deleted_flag or 0 }}"
-            data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
-            data-can-delete="{{ 1 if m.can_delete else 0 }}"
-            data-can-edit="{{ 1 if m.can_edit else 0 }}"
-            data-edited-flag="{{ m.edited_flag or 0 }}"
-            data-my-reaction="{{ m.my_reaction or '' }}"
-            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
-+        <div class="chat-swipe-underlay" aria-hidden="true">↩︎</div>
-         <div class="chat-line">
-           {% if not m.is_me %}
-             <img class="chat-avatar"
-                  src="{{ m.sender_avatar_url or default_avatar_url }}"
-                  alt=""
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
- 
-           <div class="chat-main">
-             {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
- 
-             {% if m.reply_to_message_id %}
-               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
-                 <img class="chat-avatar-sm"
-                      src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-                      alt=""
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-                 <div class="rq-body">
-                   <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
-                   <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
-                 </div>
-@@ -1096,50 +1134,53 @@
-       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
-       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
-     </form>
-     {% endif %}
-   </div>
- </div>
- 
- <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
- (() => {
-   const root = document.querySelector('[data-event-id]');
-   if (!root) return;
- 
-   const eventId = Number(root.dataset.eventId);
-   const roomId = root.dataset.roomId || "";
-   const csrfToken = root.dataset.csrf;
-   const vapidKey = root.dataset.vapid;
-   const meId = root.dataset.me || '';
-   const myDisplayName = root.dataset.displayName || '';
-   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
-   const isAdmin = root.dataset.isAdmin === '1';
-   const isMobile = window.matchMedia('(hover: none)').matches;
-   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
-   const maxUploadImages = 6;
-   const maxUploadImageBytes = 20 * 1024 * 1024;
-+  const SWIPE_MAX = 92;
-+  const SWIPE_COMMIT = 56;
-+  const SWIPE_LOCK = 10;
- 
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
-   const maxInputLines = 6;
-   const pushBtn = document.getElementById('enable-push');
-   const roomSwitch = document.getElementById('chat-room-switch');
-   const roomCreateBtn = document.getElementById('chat-room-create-btn');
-   const roomMembersBtn = document.getElementById('chat-room-members-btn');
-   const unreadJumpBtn = document.getElementById('chat-unread-jump-btn');
-   const muteBtn = document.getElementById('chat-mute-btn');
-   const muteMenu = document.getElementById('chat-mute-menu');
-   const mentionMenu = document.getElementById('chat-mention-menu');
-   const roomCreateModal = document.getElementById('roomCreateModal');
-   const roomMembersModal = document.getElementById('roomMembersModal');
-   const threadModal = document.getElementById('threadModal');
-   const threadModalCloseBtn = document.getElementById('thread-modal-close');
-   const threadRootContainer = document.getElementById('thread-root');
-   const threadRepliesContainer = document.getElementById('thread-replies');
-   const threadForm = document.getElementById('thread-form');
-   const threadBodyInput = document.getElementById('thread-body');
-   const reactionDetailModal = document.getElementById('reactionDetailModal');
-   const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
-   const reactionDetailBody = document.getElementById('reaction-detail-body');
-   const imageInput = document.getElementById('chat-image-file');
-@@ -1176,55 +1217,61 @@
-     day: 'numeric',
-     weekday: 'short',
-   });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-     hour12: false,
-   });
- 
-   const [myActorType, myActorId] = meId.includes(':')
+@@ -1228,50 +1228,51 @@
      ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
      : ['', ''];
  
@@ -226,21 +17,18 @@ index 0559d9ce73247e61c72c2c7acb847ba42af871b8..6436055778a9714c0f4a39ed79e05965
      longPressTimer: null,
      longPressTriggered: false,
      longPressRow: null,
--    touchStartX: 0,
--    touchStartY: 0,
      touchPointerId: null,
--    swipeArmed: false,
--    swipeHandled: false,
-+    swipe: {
-+      row: null,
-+      bubble: null,
-+      startX: 0,
-+      startY: 0,
-+      dx: 0,
-+      dy: 0,
-+      active: false,
-+      locked: false,
-+    },
+     swipe: {
+       row: null,
+       bubble: null,
+       startX: 0,
+       startY: 0,
+       dx: 0,
+       dy: 0,
+       active: false,
+       locked: false,
+     },
++    swipeIgnoreClickUntil: 0,
      ctxRow: null,
      ctxBodyPlain: '',
      editTargetMessageId: null,
@@ -266,342 +54,109 @@ index 0559d9ce73247e61c72c2c7acb847ba42af871b8..6436055778a9714c0f4a39ed79e05965
        const btn = document.createElement('button');
        btn.type = 'button';
        btn.className = 'chat-reaction-emoji';
-@@ -1426,102 +1473,177 @@
- 
-   msgBox.addEventListener('contextmenu', (e) => {
-     const row = e.target.closest('.chat-row[data-message-id]');
-     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
- 
-     if (e.target.closest('#chat-fulltext-modal')) return;
- 
-     e.preventDefault();
- 
-     if (!isMobile) {
-       openContextMenu(row);
-     }
+@@ -1353,50 +1354,53 @@
+     if (isMessageInOpenThread(messageId)) refreshOpenThread();
    });
- 
-   threadModal?.addEventListener('click', (e) => {
-     const reactionChip = e.target.closest('.chat-reaction-chip');
-     if (!reactionChip) return;
-     const row = reactionChip.closest('.chat-row');
-     const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
+   socket.on('chat_delete_update', (payload) => {
+     const messageId = Number(payload?.message_id || 0);
      if (!messageId) return;
-     e.preventDefault();
-     openReactionDetailModal(messageId);
+     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
+     if (isMessageInOpenThread(messageId)) refreshOpenThread();
+   });
+   socket.on('chat_edit_update', (payload) => {
+     const messageId = Number(payload?.message_id || payload?.id || 0);
+     if (!messageId) return;
+     applyEditedState(messageId, payload);
+     if (isMessageInOpenThread(messageId)) refreshOpenThread();
+   });
+   socket.on('chat_typing_update', (payload) => {
+     applyTypingUpdate(payload || {});
    });
  
-   msgBox.addEventListener('pointerdown', (e) => {
-+    if (!isMobile) return;
-     if (e.pointerType === 'mouse') return;
-+
-     const row = e.target.closest('.chat-row[data-message-id]');
-     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
-     if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
-+
-+    const bubble = row.querySelector('.chat-bubble');
-+    if (!bubble) return;
-+
-+    row.classList.remove('swiping', 'snapback', 'commit');
-+    bubble.style.transform = 'translateX(0px)';
-+
-     clearLongPressTimer();
-     state.longPressTriggered = false;
-     state.longPressRow = row;
--    state.touchStartX = e.clientX;
--    state.touchStartY = e.clientY;
-     state.touchPointerId = e.pointerId;
--    state.swipeArmed = true;
--    state.swipeHandled = false;
-+
-+    state.swipe.row = row;
-+    state.swipe.bubble = bubble;
-+    state.swipe.startX = e.clientX;
-+    state.swipe.startY = e.clientY;
-+    state.swipe.dx = 0;
-+    state.swipe.dy = 0;
-+    state.swipe.active = true;
-+    state.swipe.locked = false;
-+
-     state.longPressTimer = window.setTimeout(() => {
--      if (state.swipeHandled) return;
-+      if (state.swipe.locked) return;
-       state.longPressTriggered = true;
-       openContextMenu(row);
-     }, 500);
-   });
-+
-   msgBox.addEventListener('pointermove', (e) => {
-+    if (!isMobile) return;
-     if (e.pointerType === 'mouse') return;
--    if (!state.longPressTimer || !state.longPressRow) return;
-+    if (!state.swipe.active || !state.swipe.row || !state.swipe.bubble) return;
-     if (state.touchPointerId !== e.pointerId) return;
  
--    const dx = e.clientX - state.touchStartX;
--    const dy = e.clientY - state.touchStartY;
-+    const dx = e.clientX - state.swipe.startX;
-+    const dy = e.clientY - state.swipe.startY;
-+    state.swipe.dx = dx;
-+    state.swipe.dy = dy;
-+
-+    if (!state.swipe.locked) {
-+      if (Math.abs(dx) > SWIPE_LOCK && Math.abs(dx) > Math.abs(dy) * 1.2) {
-+        state.swipe.locked = true;
-+        clearLongPressTimer();
-+      } else if (Math.abs(dy) > SWIPE_LOCK && Math.abs(dy) > Math.abs(dx) * 1.2) {
-+        state.swipe.active = false;
-+        clearLongPressTimer();
-+        return;
-+      } else {
-+        return;
-+      }
+ 
+   msgBox.addEventListener('click', (e) => {
+     if (state.longPressTriggered) {
+       state.longPressTriggered = false;
+       return;
+     }
++    if (isMobile && state.swipeIgnoreClickUntil && Date.now() < state.swipeIgnoreClickUntil) {
++      return;
 +    }
+     const rowForAction = e.target.closest('.chat-row');
+     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
+       if (e.target.closest('.chat-reply-quote')) {
+         jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
+       }
+       return;
+     }
  
--    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
--      clearLongPressTimer();
-+    if (dx >= 0) {
-+      setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
-+      return;
+     const imageLink = e.target.closest('.chat-image-link');
+     if (imageLink) {
+       e.preventDefault();
+       let imageList = [];
+       try {
+         imageList = JSON.parse(imageLink.dataset.imageList || '[]');
+       } catch (_) {
+         imageList = [];
+       }
+       const imageUrls = imageList.map((item) => item?.url).filter(Boolean);
+       const fallbackUrl = imageLink.dataset.fullImageUrl || imageLink.href || '';
+       if (!imageUrls.length && fallbackUrl) imageUrls.push(fallbackUrl);
+       openImageViewer(imageUrls, Number(imageLink.dataset.imageIndex || 0));
+       return;
      }
-+
-+    const x = clamp(dx, -SWIPE_MAX, 0);
-+    setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
-   });
--  msgBox.addEventListener('pointerup', (e) => {
--    if (isMobile) {
--      const row = e.target.closest('.chat-row[data-message-id]');
--      if (row && Number(row.dataset.deletedFlag || 0) !== 1 && !e.target.closest('a, button, input, textarea, .chat-reaction-panel')) {
--        const dx = e.clientX - (state.touchStartX || 0);
--        const dy = e.clientY - (state.touchStartY || 0);
--        const isLeftSwipe = dx < -40 && Math.abs(dx) > Math.abs(dy) * 1.2;
--        if (isLeftSwipe) {
--          const bubble = row.querySelector('.chat-bubble');
--          if (bubble) {
--            const messageId = row.dataset.messageId;
--            const senderName = row.dataset.senderName || 'Unknown';
--            const bodyPlain = row.dataset.bodyPlain || '';
--            setReplyState(messageId, senderName, bodyPlain, bubble);
--            state.swipeHandled = true;
--          }
--        }
--      }
-+
-+  msgBox.addEventListener('pointerup', () => {
-+    if (!isMobile) return;
-+
-+    const row = state.swipe.row;
-+    const bubble = state.swipe.bubble;
-+    const dx = state.swipe.dx;
-+    const locked = state.swipe.locked;
-+
-+    state.swipe.active = false;
-+    state.swipe.locked = false;
-+    state.swipe.row = null;
-+    state.swipe.bubble = null;
-+
-+    clearLongPressTimer();
-+
-+    if (!row || !bubble || !locked) return;
-+
-+    const moved = Math.abs(dx);
-+    if (dx < 0 && moved >= SWIPE_COMMIT) {
-+      row.classList.add('commit');
-+      bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
-+
-+      if (navigator?.vibrate) navigator.vibrate(10);
-+
-+      window.setTimeout(() => {
-+        const messageId = row.dataset.messageId;
-+        const senderName = row.dataset.senderName || 'Unknown';
-+        const bodyPlain = row.dataset.bodyPlain || '';
-+        setReplyState(messageId, senderName, bodyPlain, bubble);
-+        resetSwipe(row, bubble);
-+      }, 90);
-+      return;
-     }
-+
-+    resetSwipe(row, bubble);
-+  });
-+
-+  msgBox.addEventListener('pointercancel', () => {
-+    if (!isMobile) return;
-+    const row = state.swipe.row;
-+    const bubble = state.swipe.bubble;
-+    state.swipe.active = false;
-+    state.swipe.locked = false;
-+    state.swipe.row = null;
-+    state.swipe.bubble = null;
-+    clearLongPressTimer();
-+    if (row && bubble) resetSwipe(row, bubble);
-+  });
-+
-+  msgBox.addEventListener('touchcancel', () => {
-+    if (!isMobile) return;
-+    const row = state.swipe.row;
-+    const bubble = state.swipe.bubble;
-+    state.swipe.active = false;
-+    state.swipe.locked = false;
-+    state.swipe.row = null;
-+    state.swipe.bubble = null;
+ 
+     const readIndicator = e.target.closest('.chat-read-inline, .chat-read-indicator');
+@@ -1565,50 +1569,51 @@
+   msgBox.addEventListener('pointerup', () => {
+     if (!isMobile) return;
+ 
+     const row = state.swipe.row;
+     const bubble = state.swipe.bubble;
+     const dx = state.swipe.dx;
+     const locked = state.swipe.locked;
+ 
+     state.swipe.active = false;
+     state.swipe.locked = false;
+     state.swipe.row = null;
+     state.swipe.bubble = null;
+ 
      clearLongPressTimer();
-+    if (row && bubble) resetSwipe(row, bubble);
+ 
+     if (!row || !bubble || !locked) return;
+ 
+     const moved = Math.abs(dx);
+     if (dx < 0 && moved >= SWIPE_COMMIT) {
+       row.classList.add('commit');
+       bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
+ 
+       if (navigator?.vibrate) navigator.vibrate(10);
+ 
+       window.setTimeout(() => {
++        state.swipeIgnoreClickUntil = Date.now() + 500;
+         const messageId = row.dataset.messageId;
+         const senderName = row.dataset.senderName || 'Unknown';
+         const bodyPlain = row.dataset.bodyPlain || '';
+         setReplyState(messageId, senderName, bodyPlain, bubble);
+         resetSwipe(row, bubble);
+       }, 90);
+       return;
+     }
+ 
+     resetSwipe(row, bubble);
    });
--  msgBox.addEventListener('pointercancel', clearLongPressTimer);
  
-   replyCancelBtn?.addEventListener('click', clearReplyState);
-   threadModalCloseBtn?.addEventListener('click', closeThreadModal);
-   threadModal?.querySelector('[data-close="1"]')?.addEventListener('click', closeThreadModal);
-   reactionDetailCloseBtn?.addEventListener('click', () => closeModal(reactionDetailModal));
-   reactionDetailModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(reactionDetailModal));
-   threadForm?.addEventListener('submit', (e) => {
-     e.preventDefault();
-     submitThreadMessage();
+   msgBox.addEventListener('pointercancel', () => {
+     if (!isMobile) return;
+     const row = state.swipe.row;
+     const bubble = state.swipe.bubble;
+     state.swipe.active = false;
+     state.swipe.locked = false;
+     state.swipe.row = null;
+     state.swipe.bubble = null;
+     clearLongPressTimer();
+     if (row && bubble) resetSwipe(row, bubble);
    });
-   threadBodyInput?.addEventListener('input', () => updateAutoGrow(threadBodyInput));
-   replyCancelBtn?.addEventListener('click', clearEditState);
-   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
-   imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
-   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
-   imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
-   imageViewer?.addEventListener('click', (e) => {
-     if (e.target === imageViewer) closeImageViewer();
-   });
-   document.addEventListener('keydown', (e) => {
-     if (e.key === 'Escape') closeImageViewer();
-     if (e.key === 'Escape') closeContextMenu();
-     if (e.key === 'Escape') closeThreadModal();
-     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
-     if (e.key === 'ArrowRight') moveViewerIndex(1);
-@@ -1795,50 +1917,56 @@
  
-     const row = document.createElement('div');
-     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
-     row.id = `msg-${msg.id}`;
-     row.dataset.messageId = msg.id;
-     row.dataset.senderName = msg.sender_display_name || 'Unknown';
-     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
-     row.dataset.bodyPlainFull = msg.body_plain || msg.body_plain_excerpt || msg.body || '';
-     row.dataset.replyToId = msg.reply_to_message_id || '';
-     row.dataset.threadRootId = msg.thread_root_id || '';
-     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
-     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
-     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
-     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
-     row.dataset.createdAtIso = msg.created_at_iso || '';
-     row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
-     row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
-     row.dataset.canDelete = canDeleteMessage(msg, isMe) ? '1' : '0';
-     row.dataset.canEdit = canEditMessage(msg, isMe) ? '1' : '0';
-     row.dataset.editedFlag = String(Number(msg.edited_flag || 0));
-     row.dataset.myReaction = msg.my_reaction || '';
-     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
-     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
- 
-+    const swipeUnderlay = document.createElement('div');
-+    swipeUnderlay.className = 'chat-swipe-underlay';
-+    swipeUnderlay.setAttribute('aria-hidden', 'true');
-+    swipeUnderlay.textContent = '↩︎';
-+    row.appendChild(swipeUnderlay);
-+
-     const line = document.createElement('div');
-     line.className = 'chat-line';
- 
-     if (!isMe) {
-       line.appendChild(makeAvatar(msg.sender_avatar_url));
-     }
- 
-     const main = document.createElement('div');
-     main.className = 'chat-main';
- 
-     if (!isMe) {
-       const sender = document.createElement('div');
-       sender.className = 'chat-sender';
-       sender.textContent = msg.sender_display_name || 'Unknown';
-       main.appendChild(sender);
-     }
- 
-     if (msg.reply_to_message_id) {
-       main.appendChild(makeReplyQuote(
-         msg.reply_to_message_id,
-         msg.reply_to_sender_display_name || '元メッセージ',
-         msg.reply_to_body_plain_excerpt || '元メッセージが見つかりません',
-         msg.reply_to_sender_avatar_url || defaultAvatarUrl,
-       ));
-     }
-@@ -2706,58 +2834,73 @@
-     searchPanel.innerHTML = '';
-     if (!Array.isArray(results) || results.length === 0) {
-       searchPanel.innerHTML = '<div class="small text-muted">一致するメッセージはありません</div>';
-     } else {
-       results.forEach((item) => {
-         const btn = document.createElement('button');
-         btn.type = 'button';
-         btn.className = 'chat-search-item';
-         btn.dataset.messageId = String(item?.message_id || '');
-         btn.innerHTML = `<div class="small text-muted">${escapeHtml(item?.sender || '')} / ${escapeHtml(item?.time || '')}</div><div>${escapeHtml(item?.excerpt || '')}</div>`;
-         btn.addEventListener('click', () => {
-           hideSearchPanel();
-           jumpToMessage(item?.message_id);
-         });
-         searchPanel.appendChild(btn);
-       });
-     }
-     searchPanel.classList.remove('d-none');
-   }
- 
-   function hideSearchPanel() {
-     searchPanel?.classList.add('d-none');
-     if (searchPanel) searchPanel.innerHTML = '';
-   }
- 
-+  function clamp(n, min, max) {
-+    return Math.max(min, Math.min(max, n));
-+  }
-+
-+  function setSwipeTransform(row, bubble, x) {
-+    bubble.style.transform = `translateX(${x}px)`;
-+    row.classList.add('swiping');
-+  }
-+
-+  function resetSwipe(row, bubble) {
-+    row.classList.remove('swiping', 'commit');
-+    row.classList.add('snapback');
-+    bubble.style.transform = 'translateX(0px)';
-+    window.setTimeout(() => row.classList.remove('snapback'), 180);
-+  }
-+
-   function clearLongPressTimer() {
-     if (state.longPressTimer) {
-       window.clearTimeout(state.longPressTimer);
-       state.longPressTimer = null;
-     }
-     state.longPressRow = null;
-     state.touchPointerId = null;
--    state.swipeArmed = false;
-   }
- 
-   function openContextMenu(row) {
-     if (!ctxMenu || !ctxPanel) return;
-     const messageId = Number(row?.dataset?.messageId || 0);
-     if (!messageId) return;
- 
-     state.ctxMessageId = messageId;
-     state.ctxRow = row;
-     state.ctxBodyPlain = row.dataset.bodyPlain || '';
-     ctxMenu.dataset.messageId = String(messageId);
- 
-     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
-     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
-     const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
-     editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
- 
-     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
-     if (ctxPreview) ctxPreview.textContent = previewText;
- 
-     ctxReactions?.classList.add('d-none');
-     ctxMenu.classList.remove('d-none');
-     ctxMenu.classList.add('is-open');
-   }
- 
+   msgBox.addEventListener('touchcancel', () => {

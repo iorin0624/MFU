@@ -1250,6 +1250,7 @@
       active: false,
       locked: false,
     },
+    swipeIgnoreClickUntil: 0,
     ctxRow: null,
     ctxBodyPlain: '',
     editTargetMessageId: null,
@@ -1373,6 +1374,9 @@
   msgBox.addEventListener('click', (e) => {
     if (state.longPressTriggered) {
       state.longPressTriggered = false;
+      return;
+    }
+    if (isMobile && state.swipeIgnoreClickUntil && Date.now() < state.swipeIgnoreClickUntil) {
       return;
     }
     const rowForAction = e.target.closest('.chat-row');
@@ -1587,6 +1591,7 @@
       if (navigator?.vibrate) navigator.vibrate(10);
 
       window.setTimeout(() => {
+        state.swipeIgnoreClickUntil = Date.now() + 500;
         const messageId = row.dataset.messageId;
         const senderName = row.dataset.senderName || 'Unknown';
         const bodyPlain = row.dataset.bodyPlain || '';
