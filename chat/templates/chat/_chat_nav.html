@@ -1,0 +1,33 @@
+<div class="chat-nav">
+  <a class="chat-nav-link chat-nav-link-top" href="{{ chat_top_url|default('/external-login/') }}">
+    <span class="chat-nav-icon" aria-hidden="true">←</span>
+    <span class="chat-nav-label">イベントTOP</span>
+  </a>
+  <div class="chat-nav-actions" role="navigation" aria-label="チャットナビ">
+    <button type="button" id="chat-room-picker-toggle" class="chat-nav-link chat-nav-button" aria-label="サブルーム選択" title="サブルーム">
+      <span class="chat-nav-icon" aria-hidden="true">💬</span>
+      <span class="chat-nav-label">ルーム</span>
+    </button>
+    <a class="chat-nav-link chat-notification-link" href="{{ chat_notifications_url|default('/external-login/notifications') }}" aria-label="通知履歴">
+      <span class="chat-nav-icon" aria-hidden="true">🔔</span>
+      <span id="chat-notification-badge" class="chat-notification-badge d-none" aria-live="polite"></span>
+      <span class="chat-nav-label">通知履歴</span>
+    </a>
+    <div class="chat-mute-wrap">
+      <button type="button" id="chat-mute-btn" class="chat-nav-link chat-nav-button" aria-label="ミュート">
+        <span class="chat-nav-icon" aria-hidden="true">🔕</span>
+        <span class="chat-nav-label">ミュート</span>
+      </button>
+      <div id="chat-mute-menu" class="chat-mute-menu d-none">
+        <button type="button" data-mute-hours="1">1時間</button>
+        <button type="button" data-mute-hours="8">8時間</button>
+        <button type="button" data-mute-hours="24">24時間</button>
+        <button type="button" data-mute-clear="1">解除</button>
+      </div>
+    </div>
+    <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
+      <span class="chat-nav-icon" aria-hidden="true">🔎</span>
+      <span class="chat-nav-label">検索</span>
+    </button>
+  </div>
+</div>

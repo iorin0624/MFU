@@ -814,6 +814,181 @@
   word-break: break-word;
 }
 
+
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+}
+
+.chat-room-main {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+}
+
+.chat-body-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chat-composer {
+  background: #fff;
+  padding-bottom: .25rem;
+}
+
+.chat-nav {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #d9deec;
+  border-radius: .75rem;
+  padding: .4rem .5rem;
+  backdrop-filter: blur(8px);
+}
+
+.chat-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: .25rem;
+}
+
+.chat-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  border: 1px solid #ced5ec;
+  border-radius: 999px;
+  padding: .2rem .55rem;
+  background: #fff;
+  color: #2f3f75;
+  text-decoration: none;
+  font-size: .85rem;
+  white-space: nowrap;
+}
+
+.chat-nav-button {
+  cursor: pointer;
+}
+
+
+.chat-notification-link {
+  position: relative;
+}
+
+.chat-notification-badge {
+  min-width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  background: #dc3545;
+  color: #fff;
+  font-size: .72rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 .3rem;
+}
+
+.chat-room-picker-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+
+.chat-room-picker-modal .backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, .35);
+}
+
+.chat-room-picker-modal .panel {
+  position: relative;
+  width: min(92vw, 420px);
+  margin: 12vh auto 0;
+  background: #fff;
+  border-radius: 12px;
+  padding: .75rem;
+  box-shadow: 0 16px 36px rgba(0,0,0,.2);
+}
+
+.chat-room-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+  max-height: 48vh;
+  overflow: auto;
+}
+
+.chat-room-picker-item {
+  width: 100%;
+  border: 1px solid #ced5ec;
+  background: #fff;
+  border-radius: .5rem;
+  text-align: left;
+  padding: .45rem .6rem;
+}
+
+.chat-room-picker-item.is-active {
+  border-color: #4a8dff;
+  background: #edf4ff;
+}
+
+@media (max-width: 768px) {
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body > .container {
+    height: 100%;
+    padding-bottom: 0;
+  }
+
+  .chat-page {
+    height: calc(var(--vh, 1vh) * 100);
+    overflow: hidden;
+  }
+
+  .chat-room-main,
+  .chat-body-layout {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .chat-messages {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+    margin-bottom: .5rem !important;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  .chat-nav-label {
+    display: none;
+  }
+
+  .chat-nav-link {
+    padding: .3rem .45rem;
+  }
+
+  #chat-search-input {
+    font-size: 16px;
+  }
+
+  .chat-nav-link-top .chat-nav-label {
+    display: inline;
+  }
+}
+
 </style>
 
 {% macro render_reaction_box(message) -%}
@@ -828,7 +1003,7 @@
   </div>
 {%- endmacro %}
 
-<div class="container py-3"
+<div class="container py-3 chat-page"
      data-event-id="{{ event.id }}"
      data-room-id="{{ active_room.room_id }}"
      data-csrf="{{ csrf_token }}"
@@ -837,36 +1012,41 @@
      data-display-name="{{ actor.display_name }}"
      data-default-avatar="{{ default_avatar_url }}"
      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
-  <h3>{{ event.title }} / Chat</h3>
-  <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
-    <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
-      {% for r in accessible_rooms %}
-      <option value="{{ r.room_id }}" {% if r.room_id == active_room.room_id %}selected{% endif %}>{{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}</option>
-      {% endfor %}
-    </select>
-    <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
-    <div class="chat-mute-wrap">
-      <button type="button" id="chat-mute-btn" class="btn btn-sm btn-outline-secondary">🔕ミュート</button>
-      <div id="chat-mute-menu" class="chat-mute-menu d-none">
-        <button type="button" data-mute-hours="1">1時間</button>
-        <button type="button" data-mute-hours="8">8時間</button>
-        <button type="button" data-mute-hours="24">24時間</button>
-        <button type="button" data-mute-clear="1">解除</button>
-      </div>
+  {% include "chat/_chat_nav.html" %}
+  <div class="chat-room-main">
+    <div class="small text-muted mb-2">{{ event.title }}/{{ active_room.room_name }}</div>
+    <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+      <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
+      {% if can_manage_rooms %}
+      <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
+      {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
+      {% endif %}
     </div>
-    <button type="button" id="chat-search-toggle" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
-    {% if can_manage_rooms %}
-    <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
-    {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
-    {% endif %}
-  </div>
 
+    <div class="chat-body-layout">
   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
   </div>
   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+
+  <div id="chatRoomPickerModal" class="chat-room-picker-modal d-none" aria-hidden="true">
+    <div class="backdrop" data-room-picker-close="1"></div>
+    <div class="panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">サブルーム選択</h6>
+        <button type="button" class="btn btn-sm btn-light" data-room-picker-close="1">閉じる</button>
+      </div>
+      <div class="chat-room-picker-list">
+        {% for r in accessible_rooms %}
+          <button type="button" class="chat-room-picker-item {% if r.room_id == active_room.room_id %}is-active{% endif %}" data-room-pick-id="{{ r.room_id }}">
+            {{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}
+          </button>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
 
   <div id="messages" class="chat-messages border rounded p-3 mb-3">
     {% set ns = namespace(last_date=None) %}
@@ -990,6 +1170,7 @@
     {% endfor %}
   </div>
 
+  <div class="chat-composer">
   <div id="reply-preview" class="reply-preview d-none">
     <div class="reply-meta">
       <strong id="reply-sender"></strong>
@@ -1010,6 +1191,10 @@
       <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
     </form>
     <div id="chat-mention-menu" class="chat-mention-menu d-none"></div>
+  </div>
+
+  </div>
+    </div>
   </div>
 
   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
@@ -1166,6 +1351,9 @@
   const maxInputLines = 6;
   const pushBtn = document.getElementById('enable-push');
   const roomSwitch = document.getElementById('chat-room-switch');
+  const roomPickerToggle = document.getElementById('chat-room-picker-toggle');
+  const roomPickerModal = document.getElementById('chatRoomPickerModal');
+  const notificationBadge = document.getElementById('chat-notification-badge');
   const roomCreateBtn = document.getElementById('chat-room-create-btn');
   const roomMembersBtn = document.getElementById('chat-room-members-btn');
   const unreadJumpBtn = document.getElementById('chat-unread-jump-btn');
@@ -1603,6 +1791,17 @@
   window.addEventListener('scroll', () => {
     closeContextMenu();
   }, { passive: true });
+
+  function setVh() {
+    const vv = window.visualViewport;
+    const h = (vv && vv.height) ? vv.height : window.innerHeight;
+    document.documentElement.style.setProperty('--vh', `${h * 0.01}px`);
+  }
+
+  setVh();
+  window.addEventListener('resize', setVh);
+  window.addEventListener('orientationchange', setVh);
+  window.visualViewport?.addEventListener('resize', setVh);
   ctxMenu?.addEventListener('click', handleContextMenuClick);
   document.addEventListener('pointerdown', (e) => {
     if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
@@ -1623,6 +1822,7 @@
   searchBtn?.addEventListener('click', () => runRoomSearch());
   searchCloseBtn?.addEventListener('click', () => {
     hideSearchPanel();
+    if (searchInput) searchInput.value = '';
     searchRow?.classList.add('d-none');
   });
   searchInput?.addEventListener('keydown', (e) => {
@@ -1631,6 +1831,9 @@
     runRoomSearch();
   });
   window.addEventListener('beforeunload', () => sendTypingStop());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshNotificationBadge();
+  });
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
   imageInput?.addEventListener('change', async () => {
@@ -3319,6 +3522,7 @@
     if (state.unreadRefreshTimer) clearTimeout(state.unreadRefreshTimer);
     state.unreadRefreshTimer = setTimeout(() => {
       refreshUnread();
+      refreshNotificationBadge();
     }, 1000);
   }
 
@@ -3342,6 +3546,27 @@
       const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
       opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
     });
+  }
+
+
+
+  async function refreshNotificationBadge() {
+    try {
+      const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) return;
+      const unread = Number(data.unread_count || 0);
+      if (!notificationBadge) return;
+      if (unread > 0) {
+        notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
+        notificationBadge.classList.remove('d-none');
+      } else {
+        notificationBadge.textContent = '';
+        notificationBadge.classList.add('d-none');
+      }
+    } catch (_e) {
+      // noop
+    }
   }
 
   function updateUnreadJumpButton() {
@@ -3495,12 +3720,41 @@
     closeMentionMenu();
   });
 
-  roomSwitch?.addEventListener('change', () => {
-    const nextRoomId = roomSwitch.value || '';
+  function moveToRoom(nextRoomId) {
     if (!nextRoomId || nextRoomId === roomId) return;
     const u = new URL(window.location.href);
     u.searchParams.set('room_id', nextRoomId);
     window.location.href = u.toString();
+  }
+
+  function openRoomPicker() {
+    roomPickerModal?.classList.remove('d-none');
+  }
+
+  function closeRoomPicker() {
+    roomPickerModal?.classList.add('d-none');
+  }
+
+  roomSwitch?.addEventListener('change', () => {
+    moveToRoom(roomSwitch.value || '');
+  });
+
+  roomPickerToggle?.addEventListener('click', (e) => {
+    e.preventDefault();
+    openRoomPicker();
+  });
+
+  roomPickerModal?.addEventListener('click', (e) => {
+    const closeBtn = e.target.closest('[data-room-picker-close]');
+    if (closeBtn || e.target.classList.contains('backdrop')) {
+      closeRoomPicker();
+      return;
+    }
+    const roomBtn = e.target.closest('[data-room-pick-id]');
+    if (!roomBtn) return;
+    const nextRoomId = String(roomBtn.dataset.roomPickId || '');
+    closeRoomPicker();
+    moveToRoom(nextRoomId);
   });
 
   unreadJumpBtn?.addEventListener('click', async () => {

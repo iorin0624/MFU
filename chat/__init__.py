@@ -2968,7 +2968,7 @@ def index():
     if not actor:
         abort(403)
     events = _accessible_events(actor)
-    return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf())
+    return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf(), nav_mode="chat")
 
 
 @chat_bp.route("/events/<int:event_id>")
@@ -3023,6 +3023,7 @@ def room(event_id: int):
         accessible_rooms=accessible_rooms,
         active_room=active_room,
         default_avatar_url=_default_avatar_url(),
+        nav_mode="chat",
     )
 
 
