@@ -259,6 +259,24 @@
   transition: box-shadow 0.25s ease;
 }
 
+.chat-delete-btn {
+  border: 1px solid #d6d9e8;
+  background: #fff;
+  color: #60708f;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+}
+
+.chat-delete-btn:disabled {
+  opacity: 0.6;
+}
+
+.chat-deleted-text {
+  color: #6b748b;
+  font-style: italic;
+}
+
 .chat-reaction-box {
   position: relative;
   margin-top: 4px;
@@ -477,7 +495,8 @@
      data-vapid="{{ vapid_public_key }}"
      data-me="{{ current_user_id or me_user_id or '' }}"
      data-display-name="{{ actor.display_name }}"
-     data-default-avatar="{{ default_avatar_url }}">
+     data-default-avatar="{{ default_avatar_url }}"
+     data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
   <h3>{{ event.title }} / Chat</h3>
 
   <div id="messages" class="chat-messages border rounded p-3 mb-3">
@@ -500,6 +519,9 @@
            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
            data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+           data-created-at-iso="{{ m.created_at_iso }}"
+           data-deleted-flag="{{ m.deleted_flag or 0 }}"
+           data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
            data-my-reaction="{{ m.my_reaction or '' }}"
            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
         <div class="chat-line">
@@ -560,16 +582,19 @@
                   </div>
                 {% endif %}
                 {% if (m.body_html or m.body or '')|trim %}
-                  <div class="chat-body">{{ (m.body_html or m.body or '')|trim|safe }}</div>
+                  <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
                 {% endif %}
               </div>
               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+              {% if m.can_delete %}
+                <button type="button" class="chat-delete-btn" data-delete-btn="1">削除</button>
+              {% endif %}
             </div>
             {% if m.is_me %}
               <div class="chat-read-indicator d-none"></div>
               <div class="chat-read-list d-none"></div>
             {% endif %}
-            {{ render_reaction_box(m) }}
+            {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
           </div>
 
           {% if m.is_me %}
@@ -633,6 +658,7 @@
   const meId = root.dataset.me || '';
   const myDisplayName = root.dataset.displayName || '';
   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+  const isAdmin = root.dataset.isAdmin === '1';
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const maxUploadImages = 6;
 
@@ -714,6 +740,8 @@
   socket.on('chat_reaction_update', (payload) => {
     const messageId = Number(payload?.message_id || 0);
     if (!messageId) return;
+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+    if (row && Number(row.dataset.deletedFlag || 0) === 1) return;
     const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
     let myReaction = prev.myReaction || null;
     const changed = payload?.changed || {};
@@ -722,8 +750,32 @@
     }
     setReactionState(messageId, payload?.reactions || [], myReaction);
   });
+  socket.on('chat_delete_update', (payload) => {
+    const messageId = Number(payload?.message_id || 0);
+    if (!messageId) return;
+    applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
+  });
+
+
 
   msgBox.addEventListener('click', (e) => {
+    const rowForAction = e.target.closest('.chat-row');
+    if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
+      if (e.target.closest('.chat-reply-quote')) {
+        jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
+      }
+      return;
+    }
+
+    const deleteBtn = e.target.closest('[data-delete-btn]');
+    if (deleteBtn) {
+      const row = deleteBtn.closest('.chat-row');
+      const messageId = Number(row?.dataset.messageId || 0);
+      if (!messageId) return;
+      handleDeleteMessage(row, messageId, deleteBtn);
+      return;
+    }
+
     const imageLink = e.target.closest('.chat-image-link');
     if (imageLink) {
       e.preventDefault();
@@ -782,6 +834,8 @@
     if (!row) return;
 
     const messageId = row.dataset.messageId;
+    if (Number(row.dataset.deletedFlag || 0) === 1) return;
+
     const senderName = row.dataset.senderName || 'Unknown';
     const bodyPlain = row.dataset.bodyPlain || '';
 
@@ -972,6 +1026,9 @@
     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
+    row.dataset.createdAtIso = msg.created_at_iso || '';
+    row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
+    row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
     row.dataset.myReaction = msg.my_reaction || '';
     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
@@ -1063,7 +1120,7 @@
     const rawBody = (msg.body_html || msg.body || '').trim();
     if (rawBody) {
       const body = document.createElement('div');
-      body.className = 'chat-body';
+      body.className = Number(msg.deleted_flag || 0) === 1 ? 'chat-body chat-deleted-text' : 'chat-body';
       body.innerHTML = rawBody;
       bubble.appendChild(body);
     }
@@ -1074,6 +1131,15 @@
 
     wrap.appendChild(bubble);
     wrap.appendChild(time);
+
+    if (canDeleteMessage(msg, isMe)) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'chat-delete-btn';
+      deleteBtn.dataset.deleteBtn = '1';
+      deleteBtn.textContent = '削除';
+      wrap.appendChild(deleteBtn);
+    }
     main.appendChild(wrap);
 
     if (isMe) {
@@ -1086,7 +1152,9 @@
       main.appendChild(readList);
     }
 
-    main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+    if (Number(msg.deleted_flag || 0) !== 1) {
+      main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+    }
 
     line.appendChild(main);
 
@@ -1098,6 +1166,71 @@
     msgBox.appendChild(row);
     hydrateMessageReactionData(row);
     refreshReadIndicatorForRow(row);
+  }
+
+
+  function canDeleteMessage(msg, isMe) {
+    if (Number(msg?.deleted_flag || 0) === 1) return false;
+    if (isAdmin) return true;
+    if (!isMe) return false;
+    const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+    const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
+    return Date.now() <= expires;
+  }
+
+  async function handleDeleteMessage(row, messageId, buttonEl) {
+    if (!confirm('このメッセージを削除しますか？')) return;
+    if (buttonEl) buttonEl.disabled = true;
+    try {
+      const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csrf_token: csrfToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || '削除に失敗しました');
+      }
+      applyDeletedState(messageId, data?.deleted_by_actor_type || row?.dataset?.deletedByActorType || '');
+    } catch (err) {
+      alert(err?.message || '削除に失敗しました');
+      if (buttonEl) buttonEl.disabled = false;
+    }
+  }
+
+  function applyDeletedState(messageId, deletedByActorType) {
+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+    row.dataset.deletedFlag = '1';
+    row.dataset.deletedByActorType = deletedByActorType || '';
+    row.dataset.bodyPlain = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
+
+    row.querySelectorAll('.chat-image-link, .chat-image-grid').forEach((el) => el.remove());
+
+    const bubble = row.querySelector('.chat-bubble');
+    if (bubble) {
+      let body = bubble.querySelector('.chat-body');
+      if (!body) {
+        body = document.createElement('div');
+        bubble.appendChild(body);
+      }
+      body.className = 'chat-body chat-deleted-text';
+      body.textContent = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
+    }
+
+    const reactionBox = row.querySelector('.chat-reaction-box');
+    if (reactionBox) reactionBox.remove();
+
+    const deleteBtn = row.querySelector('[data-delete-btn]');
+    if (deleteBtn) deleteBtn.remove();
+
+    const myReactionKey = String(messageId);
+    state.reactionByMessage.set(myReactionKey, { reactionsSummary: [], myReaction: null });
+
+    document.querySelectorAll(`.chat-row[data-reply-to-id="${messageId}"] .rq-text`).forEach((quoteText) => {
+      quoteText.textContent = deletedByActorType === 'admin' ? '管理者により削除' : '削除されました';
+    });
   }
 
   function openImageViewer(imageUrls, startIndex = 0) {
@@ -1144,6 +1277,11 @@
 
   function initReactionUis() {
     msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => {
+      if (Number(row.dataset.deletedFlag || 0) === 1) {
+        const box = row.querySelector('.chat-reaction-box');
+        if (box) box.remove();
+        return;
+      }
       const box = ensureReactionBox(row);
       hydrateMessageReactionData(row, box);
       const messageId = Number(row.dataset.messageId || 0);
@@ -1260,7 +1398,7 @@
     state.reactionByMessage.set(key, next);
 
     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
-    if (!row) return;
+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
     row.dataset.reactionsSummary = JSON.stringify(next.reactionsSummary);
     row.dataset.myReaction = next.myReaction || '';
     const box = ensureReactionBox(row);
