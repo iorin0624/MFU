@@ -393,17 +393,35 @@
   pointer-events: auto;
 }
 
+.chat-message.is-selected .react-open-btn,
+.chat-message.is-selected .chat-menu-open-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .chat-row.me .react-open-btn {
   display: none !important;
 }
 
+.chat-row.me .chat-menu-open-btn {
+  left: 6px;
+  right: auto;
+}
+
+.chat-row.other .chat-menu-open-btn {
+  right: 6px;
+  left: auto;
+}
+
 @media (hover: none) {
-  .chat-message .react-open-btn {
+  .chat-message .react-open-btn,
+  .chat-message .chat-menu-open-btn {
     opacity: 0;
     pointer-events: none;
   }
 
-  .chat-message .chat-menu-open-btn {
+  .chat-message.is-selected .react-open-btn,
+  .chat-message.is-selected .chat-menu-open-btn {
     opacity: 1;
     pointer-events: auto;
   }
@@ -1213,6 +1231,7 @@
   const state = {
     replyToId: null,
     selectedBubble: null,
+    selectedRowEl: null,
     readStateByActor: new Map(),
     reactionByMessage: new Map(),
     viewerImages: [],
@@ -1436,9 +1455,19 @@
       return;
     }
 
+    const row = e.target.closest('.chat-row[data-message-id]');
+    const bubble = e.target.closest('.chat-bubble, .chat-body, .chat-image-thumb, .chat-image-link');
+    if (row && bubble && Number(row.dataset.deletedFlag || 0) !== 1) {
+      selectMessageRow(row);
+      return;
+    }
+
+    clearMessageSelection();
+
   });
 
   msgBox.addEventListener('contextmenu', (e) => {
+    clearMessageSelection();
     const row = e.target.closest('.chat-row[data-message-id]');
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
 
@@ -2808,7 +2837,24 @@
     state.touchDoubleTap.lastTapMessageId = null;
   }
 
+  function selectMessageRow(row) {
+    if (!row) return;
+    if (state.selectedRowEl === row) return;
+    if (state.selectedRowEl) {
+      state.selectedRowEl.classList.remove('is-selected');
+    }
+    state.selectedRowEl = row;
+    state.selectedRowEl.classList.add('is-selected');
+  }
+
+  function clearMessageSelection() {
+    if (!state.selectedRowEl) return;
+    state.selectedRowEl.classList.remove('is-selected');
+    state.selectedRowEl = null;
+  }
+
   function openContextMenu(row) {
+    clearMessageSelection();
     if (!ctxMenu || !ctxPanel) return;
     const messageId = Number(row?.dataset?.messageId || 0);
     if (!messageId) return;
@@ -2832,6 +2878,7 @@
   }
 
   function closeContextMenu() {
+    clearMessageSelection();
     if (!ctxMenu) return;
     ctxMenu.classList.add('d-none');
     ctxMenu.classList.remove('is-open');
