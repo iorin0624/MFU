@@ -634,6 +634,29 @@
 .room-member-item { display:flex; align-items:center; justify-content:space-between; gap: 8px; padding: 4px 6px; }
 .room-member-item small { color: #667; }
 
+.thread-summary-link {
+  margin-top: 4px;
+  font-size: 0.76rem;
+  color: #3d5ec9;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.thread-modal-body {
+  max-height: min(62vh, 560px);
+  overflow-y: auto;
+  background: #eef4ff;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.thread-modal-root {
+  border-bottom: 1px solid #d9e3ff;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+
 @media (max-width: 576px) {
   .chat-messages {
     height: 70dvh;
@@ -704,6 +727,8 @@
            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
            data-body-plain="{{ m.body_plain_excerpt }}"
            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
+           data-thread-root-id="{{ m.thread_root_id or '' }}"
+           data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
            data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
@@ -787,6 +812,9 @@
             {% if m.is_me %}
               <div class="chat-read-list d-none"></div>
             {% endif %}
+            {% if (m.thread_reply_count or 0) > 0 %}
+              <button type="button" class="thread-summary-link" data-thread-open="{{ m.id }}">返信 {{ m.thread_reply_count }}</button>
+            {% endif %}
             {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
           </div>
 
@@ -838,6 +866,7 @@
       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
       <hr class="chat-ctx-sep">
       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッドを開く</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
       <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
@@ -847,6 +876,23 @@
   </div>
 
 
+  <div id="threadModal" class="room-member-modal" aria-hidden="true">
+    <div class="backdrop" data-close="1"></div>
+    <div class="panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">スレッド</h5>
+        <button type="button" id="thread-modal-close" class="btn btn-sm btn-light">閉じる</button>
+      </div>
+      <div id="thread-modal-body" class="thread-modal-body">
+        <div id="thread-root" class="thread-modal-root"></div>
+        <div id="thread-replies"></div>
+      </div>
+      <form id="thread-form" class="d-flex gap-2 align-items-center mt-2">
+        <textarea id="thread-body" class="form-control" maxlength="2000" placeholder="スレッドに返信" rows="1"></textarea>
+        <button class="btn btn-primary" id="thread-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+      </form>
+    </div>
+  </div>
 
   <div id="roomCreateModal" class="room-member-modal" aria-hidden="true">
     <div class="backdrop" data-close="1"></div>
@@ -927,6 +973,12 @@
   const roomMembersBtn = document.getElementById('chat-room-members-btn');
   const roomCreateModal = document.getElementById('roomCreateModal');
   const roomMembersModal = document.getElementById('roomMembersModal');
+  const threadModal = document.getElementById('threadModal');
+  const threadModalCloseBtn = document.getElementById('thread-modal-close');
+  const threadRootContainer = document.getElementById('thread-root');
+  const threadRepliesContainer = document.getElementById('thread-replies');
+  const threadForm = document.getElementById('thread-form');
+  const threadBodyInput = document.getElementById('thread-body');
   const imageInput = document.getElementById('chat-image-file');
   const imageBtn = document.getElementById('chat-image-btn');
   const sendBtn = document.getElementById('chat-send-btn');
@@ -988,6 +1040,7 @@
     typingDebounceTimer: null,
     typingStopTimer: null,
     typingSent: false,
+    threadRootId: null,
   };
 
   if (ctxReactions && ctxReactions.childElementCount === 0) {
@@ -1020,6 +1073,9 @@
 
   socket.on('chat_message', (msg) => {
     renderMessage(msg);
+    if (state.threadRootId && (Number(msg?.thread_root_id || 0) === Number(state.threadRootId) || Number(msg?.id || 0) === Number(state.threadRootId))) {
+      appendThreadMessage(msg);
+    }
     msgBox.scrollTop = msgBox.scrollHeight;
     sendSeenForMessageId(Number(msg?.id || 0));
     setSendingState(false);
@@ -1049,16 +1105,19 @@
       myReaction = changed.emoji || null;
     }
     setReactionState(messageId, payload?.reactions || [], myReaction);
+    if (isMessageInOpenThread(messageId)) refreshOpenThread();
   });
   socket.on('chat_delete_update', (payload) => {
     const messageId = Number(payload?.message_id || 0);
     if (!messageId) return;
     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
+    if (isMessageInOpenThread(messageId)) refreshOpenThread();
   });
   socket.on('chat_edit_update', (payload) => {
     const messageId = Number(payload?.message_id || payload?.id || 0);
     if (!messageId) return;
     applyEditedState(messageId, payload);
+    if (isMessageInOpenThread(messageId)) refreshOpenThread();
   });
   socket.on('chat_typing_update', (payload) => {
     applyTypingUpdate(payload || {});
@@ -1104,6 +1163,12 @@
     const quote = e.target.closest('.chat-reply-quote');
     if (quote) {
       jumpToMessage(quote.dataset.jumpToId);
+      return;
+    }
+
+    const threadOpenBtn = e.target.closest('[data-thread-open]');
+    if (threadOpenBtn) {
+      openThreadModal(Number(threadOpenBtn.dataset.threadOpen || 0));
       return;
     }
 
@@ -1188,6 +1253,13 @@
   msgBox.addEventListener('pointermove', clearLongPressTimer);
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
+  threadModalCloseBtn?.addEventListener('click', closeThreadModal);
+  threadModal?.querySelector('[data-close="1"]')?.addEventListener('click', closeThreadModal);
+  threadForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitThreadMessage();
+  });
+  threadBodyInput?.addEventListener('input', () => updateAutoGrow(threadBodyInput));
   replyCancelBtn?.addEventListener('click', clearEditState);
   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
   imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
@@ -1199,6 +1271,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeImageViewer();
     if (e.key === 'Escape') closeContextMenu();
+    if (e.key === 'Escape') closeThreadModal();
     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
     if (e.key === 'ArrowRight') moveViewerIndex(1);
   });
@@ -1242,6 +1315,7 @@
       fd.append('csrf_token', csrfToken);
       files.forEach((file) => fd.append('file', file));
       fd.append('body', bodyInput.value || '');
+      if (state.replyToId) fd.append('reply_to_message_id', String(state.replyToId));
       const res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
@@ -1258,17 +1332,17 @@
     }
   });
 
-  function updateAutoGrow() {
-    if (!bodyInput) return;
-    const cs = window.getComputedStyle(bodyInput);
+  function updateAutoGrow(targetInput = bodyInput) {
+    if (!targetInput) return;
+    const cs = window.getComputedStyle(targetInput);
     const lineHeight = parseFloat(cs.lineHeight) || 20;
     const padding = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
     const maxHeightPx = lineHeight * maxInputLines + padding;
 
-    bodyInput.style.height = 'auto';
-    const nextHeight = Math.min(bodyInput.scrollHeight, maxHeightPx);
-    bodyInput.style.height = `${nextHeight}px`;
-    bodyInput.style.overflowY = bodyInput.scrollHeight > maxHeightPx ? 'auto' : 'hidden';
+    targetInput.style.height = 'auto';
+    const nextHeight = Math.min(targetInput.scrollHeight, maxHeightPx);
+    targetInput.style.height = `${nextHeight}px`;
+    targetInput.style.overflowY = targetInput.scrollHeight > maxHeightPx ? 'auto' : 'hidden';
   }
 
   bodyInput?.addEventListener('keydown', (e) => {
@@ -1297,6 +1371,7 @@
       room_id: roomId,
       body: bodyInput.value,
       reply_to_message_id: state.replyToId,
+      thread_root_id: state.threadRootId || null,
     });
     bodyInput.value = '';
     updateAutoGrow();
@@ -1448,6 +1523,8 @@
     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
     row.dataset.replyToId = msg.reply_to_message_id || '';
+    row.dataset.threadRootId = msg.thread_root_id || '';
+    row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
@@ -1583,6 +1660,16 @@
       const readList = document.createElement('div');
       readList.className = 'chat-read-list d-none';
       main.appendChild(readList);
+    }
+
+    const threadReplyCount = Number(msg.thread_reply_count || 0);
+    if (threadReplyCount > 0) {
+      const threadLink = document.createElement('button');
+      threadLink.type = 'button';
+      threadLink.className = 'thread-summary-link';
+      threadLink.dataset.threadOpen = String(msg.id || '');
+      threadLink.textContent = `返信 ${threadReplyCount}`;
+      main.appendChild(threadLink);
     }
 
     if (Number(msg.deleted_flag || 0) !== 1) {
@@ -2018,6 +2105,104 @@
     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
   }
 
+  function isMessageInOpenThread(messageId) {
+    if (!state.threadRootId || !messageId) return false;
+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+    if (!row) return false;
+    const rowId = Number(row.dataset.messageId || 0);
+    const rootId = Number(row.dataset.threadRootId || 0);
+    return rowId === Number(state.threadRootId) || rootId === Number(state.threadRootId);
+  }
+
+  async function openThreadModal(rootId) {
+    if (!rootId) return;
+    state.threadRootId = Number(rootId);
+    await refreshOpenThread();
+    openModal(threadModal);
+    threadBodyInput?.focus();
+  }
+
+  function closeThreadModal() {
+    state.threadRootId = null;
+    if (threadRootContainer) threadRootContainer.innerHTML = '';
+    if (threadRepliesContainer) threadRepliesContainer.innerHTML = '';
+    if (threadBodyInput) {
+      threadBodyInput.value = '';
+      updateAutoGrow(threadBodyInput);
+    }
+    closeModal(threadModal);
+  }
+
+  async function refreshOpenThread() {
+    if (!state.threadRootId) return;
+    try {
+      const res = await fetch(`/chat/api/events/${eventId}/threads/${state.threadRootId}?room_id=${encodeURIComponent(roomId)}&limit=200`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || 'スレッドの取得に失敗しました');
+      renderThreadModal(data.root, data.replies || []);
+    } catch (err) {
+      alert(err?.message || 'スレッドの取得に失敗しました');
+      closeThreadModal();
+    }
+  }
+
+  function appendThreadMessage(msg) {
+    if (!state.threadRootId || !threadRepliesContainer || !threadRootContainer) return;
+    const messageId = Number(msg?.id || 0);
+    if (!messageId) return;
+    if (messageId === Number(state.threadRootId)) {
+      threadRootContainer.innerHTML = '';
+      threadRootContainer.appendChild(buildThreadItem(msg));
+      return;
+    }
+    if (Number(msg?.thread_root_id || 0) !== Number(state.threadRootId)) return;
+    const existing = threadRepliesContainer.querySelector(`[data-thread-message-id="${messageId}"]`);
+    if (existing) existing.remove();
+    threadRepliesContainer.appendChild(buildThreadItem(msg));
+    const panel = document.getElementById('thread-modal-body');
+    if (panel) panel.scrollTop = panel.scrollHeight;
+  }
+
+  function renderThreadModal(root, replies) {
+    if (!threadRootContainer || !threadRepliesContainer) return;
+    threadRootContainer.innerHTML = '';
+    threadRepliesContainer.innerHTML = '';
+    if (root) {
+      threadRootContainer.appendChild(buildThreadItem(root));
+    }
+    replies.forEach((item) => threadRepliesContainer.appendChild(buildThreadItem(item)));
+  }
+
+  function buildThreadItem(msg) {
+    const item = document.createElement('div');
+    item.className = 'chat-row other mb-2';
+    item.dataset.threadMessageId = String(msg.id || '');
+    const sender = document.createElement('div');
+    sender.className = 'small text-muted';
+    sender.textContent = `${msg.sender_display_name || 'Unknown'}  ${msg.created_at_jst_time_hm || ''}`;
+    const body = document.createElement('div');
+    body.className = 'chat-bubble';
+    body.innerHTML = (msg.body_html || '').trim() || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
+    item.appendChild(sender);
+    item.appendChild(body);
+    return item;
+  }
+
+  function submitThreadMessage() {
+    if (!threadBodyInput || !state.threadRootId) return;
+    const body = threadBodyInput.value || '';
+    if (!body.trim()) return;
+    socket.emit('chat_send', {
+      event_id: eventId,
+      room_id: roomId,
+      body,
+      reply_to_message_id: state.threadRootId,
+      thread_root_id: state.threadRootId,
+    });
+    threadBodyInput.value = '';
+    updateAutoGrow(threadBodyInput);
+  }
+
   function queueTypingStart() {
     if (!bodyInput) return;
     const hasValue = (bodyInput.value || '').trim().length > 0;
@@ -2322,6 +2507,12 @@
     }
     if (action === 'react') {
       ctxReactions?.classList.toggle('d-none');
+      return;
+    }
+    if (action === 'open-thread') {
+      const rootId = Number(row.dataset.threadRootId || row.dataset.messageId || 0);
+      closeContextMenu();
+      openThreadModal(rootId);
       return;
     }
     if (action === 'copy') {
