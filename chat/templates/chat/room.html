@@ -8,6 +8,7 @@
   overflow: auto;
   overflow-x: hidden;
   background: #e8f3ff;
+  touch-action: pan-y;
 }
 
 .chat-date-divider {
@@ -27,6 +28,7 @@
 
 .chat-row {
   margin-bottom: 10px;
+  touch-action: pan-y;
 }
 
 .chat-line {
@@ -96,6 +98,7 @@
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+  touch-action: pan-y;
 }
 
 .chat-body {
@@ -757,6 +760,22 @@
   background: #eef4ff;
 }
 
+/* 通常のバブルはOSの長押しメニューを出さない（LINE式） */
+.chat-bubble {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 全文モーダル内は選択コピーを許可 */
+.chat-fulltext-modal .chat-fulltext-body {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 </style>
 
 {% macro render_reaction_box(message) -%}
@@ -796,16 +815,17 @@
         <button type="button" data-mute-clear="1">解除</button>
       </div>
     </div>
+    <button type="button" id="chat-search-toggle" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
     {% if can_manage_rooms %}
     <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
     {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
     {% endif %}
   </div>
 
-  <div class="mb-2 d-flex gap-2 align-items-center">
-    <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="🔎 このルームを検索">
-    <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary">検索</button>
-    <button type="button" id="chat-search-close" class="btn btn-sm btn-light d-none">閉じる</button>
+  <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
+    <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
+    <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
+    <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
   </div>
   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
 
@@ -968,6 +988,7 @@
       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
       <hr class="chat-ctx-sep">
       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="fulltext">全文表示</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッドを開く</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
       <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
@@ -1005,6 +1026,24 @@
         <button type="button" id="reaction-detail-close" class="btn btn-sm btn-light">閉じる</button>
       </div>
       <div id="reaction-detail-body"></div>
+    </div>
+  </div>
+
+  <div id="chat-fulltext-modal" class="modal fade chat-fulltext-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h6 class="modal-title">メッセージ全文</h6>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+        </div>
+        <div class="modal-body">
+          <div class="small text-muted mb-2" id="chat-fulltext-meta"></div>
+          <div class="chat-fulltext-body" id="chat-fulltext-body"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">閉じる</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1112,6 +1151,8 @@
   const replyCancelBtn = document.getElementById('reply-cancel');
   const typingIndicator = document.getElementById('typing-indicator');
   const searchInput = document.getElementById('chat-search-input');
+  const searchToggleBtn = document.getElementById('chat-search-toggle');
+  const searchRow = document.getElementById('chat-search-row');
   const searchBtn = document.getElementById('chat-search-btn');
   const searchCloseBtn = document.getElementById('chat-search-close');
   const searchPanel = document.getElementById('chat-search-panel');
@@ -1155,6 +1196,11 @@
     longPressTimer: null,
     longPressTriggered: false,
     longPressRow: null,
+    touchStartX: 0,
+    touchStartY: 0,
+    touchPointerId: null,
+    swipeArmed: false,
+    swipeHandled: false,
     ctxRow: null,
     ctxBodyPlain: '',
     editTargetMessageId: null,
@@ -1372,7 +1418,16 @@
       clearReplyState();
       return;
     }
+    if (isMobile) return;
     setReplyState(messageId, senderName, bodyPlain, bubble);
+  });
+
+  msgBox.addEventListener('contextmenu', (e) => {
+    if (!isMobile) return;
+    if (e.target.closest('.chat-fulltext-modal')) return;
+    if (e.target.closest('.chat-bubble')) {
+      e.preventDefault();
+    }
   });
 
   msgBox.addEventListener('contextmenu', (e) => {
@@ -1400,28 +1455,51 @@
     clearLongPressTimer();
     state.longPressTriggered = false;
     state.longPressRow = row;
+    state.touchStartX = e.clientX;
+    state.touchStartY = e.clientY;
+    state.touchPointerId = e.pointerId;
+    state.swipeArmed = true;
+    state.swipeHandled = false;
     state.longPressTimer = window.setTimeout(() => {
+      if (state.swipeHandled) return;
       state.longPressTriggered = true;
       openContextMenu(row);
     }, 500);
   });
-  msgBox.addEventListener('touchstart', (e) => {
+  msgBox.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'mouse') return;
     if (!state.longPressTimer || !state.longPressRow) return;
-    const row = e.target.closest('.chat-row[data-message-id]');
-    if (!row || row !== state.longPressRow) return;
-    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
-    e.preventDefault();
-  }, { passive: false });
-  msgBox.addEventListener('touchmove', (e) => {
-    if (!state.longPressTimer || !state.longPressRow) return;
-    const row = e.target.closest('.chat-row[data-message-id]');
-    if (!row || row !== state.longPressRow) return;
-    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
-    e.preventDefault();
-  }, { passive: false });
-  msgBox.addEventListener('pointerup', clearLongPressTimer);
+    if (state.touchPointerId !== e.pointerId) return;
+
+    const dx = e.clientX - state.touchStartX;
+    const dy = e.clientY - state.touchStartY;
+
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+      clearLongPressTimer();
+    }
+  });
+  msgBox.addEventListener('pointerup', (e) => {
+    if (isMobile) {
+      const row = e.target.closest('.chat-row[data-message-id]');
+      if (row && Number(row.dataset.deletedFlag || 0) !== 1 && !e.target.closest('a, button, input, textarea, .chat-reaction-panel')) {
+        const dx = e.clientX - (state.touchStartX || 0);
+        const dy = e.clientY - (state.touchStartY || 0);
+        const isLeftSwipe = dx < -40 && Math.abs(dx) > Math.abs(dy) * 1.2;
+        if (isLeftSwipe) {
+          const bubble = row.querySelector('.chat-bubble');
+          if (bubble) {
+            const messageId = row.dataset.messageId;
+            const senderName = row.dataset.senderName || 'Unknown';
+            const bodyPlain = row.dataset.bodyPlain || '';
+            setReplyState(messageId, senderName, bodyPlain, bubble);
+            state.swipeHandled = true;
+          }
+        }
+      }
+    }
+    clearLongPressTimer();
+  });
   msgBox.addEventListener('pointercancel', clearLongPressTimer);
-  msgBox.addEventListener('pointermove', clearLongPressTimer);
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
   threadModalCloseBtn?.addEventListener('click', closeThreadModal);
@@ -1463,8 +1541,22 @@
     if (ctxPanel?.contains(e.target)) return;
     closeContextMenu();
   });
+  searchToggleBtn?.addEventListener('click', () => {
+    if (!searchRow) return;
+    const isHidden = searchRow.classList.contains('d-none');
+    if (isHidden) {
+      searchRow.classList.remove('d-none');
+      searchInput?.focus();
+    } else {
+      searchRow.classList.add('d-none');
+      hideSearchPanel();
+    }
+  });
   searchBtn?.addEventListener('click', () => runRoomSearch());
-  searchCloseBtn?.addEventListener('click', hideSearchPanel);
+  searchCloseBtn?.addEventListener('click', () => {
+    hideSearchPanel();
+    searchRow?.classList.add('d-none');
+  });
   searchInput?.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
     e.preventDefault();
@@ -2626,13 +2718,11 @@
       });
     }
     searchPanel.classList.remove('d-none');
-    searchCloseBtn?.classList.remove('d-none');
   }
 
   function hideSearchPanel() {
     searchPanel?.classList.add('d-none');
     if (searchPanel) searchPanel.innerHTML = '';
-    searchCloseBtn?.classList.add('d-none');
   }
 
   function clearLongPressTimer() {
@@ -2641,6 +2731,8 @@
       state.longPressTimer = null;
     }
     state.longPressRow = null;
+    state.touchPointerId = null;
+    state.swipeArmed = false;
   }
 
   function openContextMenu(row) {
@@ -2682,6 +2774,24 @@
     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
     if (normalized) return normalized;
     return '（画像）';
+  }
+
+  function openFulltextModal(row) {
+    const modalEl = document.getElementById('chat-fulltext-modal');
+    const metaEl = document.getElementById('chat-fulltext-meta');
+    const bodyEl = document.getElementById('chat-fulltext-body');
+    if (!modalEl || !metaEl || !bodyEl || !row) return;
+
+    const sender = row.dataset.senderName || 'Unknown';
+    const createdAtIso = row.dataset.createdAtIso || '';
+    const createdAt = createdAtIso ? formatDateTimeLabel(createdAtIso) : '';
+    const bodyPlain = row.dataset.bodyPlain || '';
+
+    metaEl.textContent = `${sender}${createdAt ? ` / ${createdAt}` : ''}`;
+    bodyEl.textContent = bodyPlain;
+
+    const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    bsModal.show();
   }
 
 
@@ -2815,6 +2925,11 @@
       closeContextMenu();
       return;
     }
+    if (action === 'fulltext') {
+      closeContextMenu();
+      openFulltextModal(row);
+      return;
+    }
     if (action === 'react') {
       ctxReactions?.classList.toggle('d-none');
       return;
@@ -2886,6 +3001,13 @@
 
   function formatTimeLabel(date) {
     return fmtTime.format(date);
+  }
+
+  function formatDateTimeLabel(isoText) {
+    if (!isoText) return '';
+    const date = new Date(isoText);
+    if (Number.isNaN(date.getTime())) return '';
+    return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
   }
 
   function applyReadSnapshot(states) {
