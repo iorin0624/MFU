@@ -562,6 +562,27 @@
   border-radius: 8px;
 }
 
+
+.room-member-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  display: none;
+}
+.room-member-modal.is-open { display: block; }
+.room-member-modal .backdrop {
+  position: absolute; inset: 0; background: rgba(0,0,0,.45);
+}
+.room-member-modal .panel {
+  position: relative; z-index: 1; background: #fff; margin: 6vh auto 0;
+  width: min(92vw, 680px); border-radius: 10px; padding: 14px;
+}
+.room-member-candidate-list {
+  border: 1px solid #d8dbe3; border-radius: 8px; max-height: 42vh; overflow: auto; padding: 6px;
+}
+.room-member-item { display:flex; align-items:center; justify-content:space-between; gap: 8px; padding: 4px 6px; }
+.room-member-item small { color: #667; }
+
 @media (max-width: 576px) {
   .chat-messages {
     height: 70dvh;
@@ -588,6 +609,7 @@
 
 <div class="container py-3"
      data-event-id="{{ event.id }}"
+     data-room-id="{{ active_room.room_id }}"
      data-csrf="{{ csrf_token }}"
      data-vapid="{{ vapid_public_key }}"
      data-me="{{ current_user_id or me_user_id or '' }}"
@@ -595,6 +617,17 @@
      data-default-avatar="{{ default_avatar_url }}"
      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
   <h3>{{ event.title }} / Chat</h3>
+  <div class="mb-2 d-flex gap-2 align-items-center">
+    <select id="chat-room-switch" class="form-select form-select-sm" style="max-width: 260px;">
+      {% for r in accessible_rooms %}
+      <option value="{{ r.room_id }}" {% if r.room_id == active_room.room_id %}selected{% endif %}>{{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}</option>
+      {% endfor %}
+    </select>
+    {% if can_manage_rooms %}
+    <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
+    {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
+    {% endif %}
+  </div>
 
   <div id="messages" class="chat-messages border rounded p-3 mb-3">
     {% set ns = namespace(last_date=None) %}
@@ -747,6 +780,48 @@
     </div>
   </div>
 
+
+
+  <div id="roomCreateModal" class="room-member-modal" aria-hidden="true">
+    <div class="backdrop" data-close="1"></div>
+    <div class="panel">
+      <h5 class="mb-2">サブルーム作成</h5>
+      <div class="mb-2">
+        <label class="form-label">ルーム名</label>
+        <input id="room-create-name" type="text" class="form-control" maxlength="80" placeholder="例: 撮影班A" />
+      </div>
+      <div class="d-flex gap-2 mb-2">
+        <input id="room-create-search" type="text" class="form-control form-control-sm" placeholder="候補検索（名前 / actor_key）">
+        <button type="button" id="room-create-select-all" class="btn btn-sm btn-outline-secondary">全選択</button>
+        <button type="button" id="room-create-unselect-all" class="btn btn-sm btn-outline-secondary">全解除</button>
+      </div>
+      <div class="small mb-1">選択中 <span id="room-create-count">0</span>名</div>
+      <div id="room-create-candidates" class="room-member-candidate-list"></div>
+      <div class="d-flex justify-content-end gap-2 mt-3">
+        <button type="button" id="room-create-cancel" class="btn btn-sm btn-light">キャンセル</button>
+        <button type="button" id="room-create-submit" class="btn btn-sm btn-primary">作成</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="roomMembersModal" class="room-member-modal" aria-hidden="true">
+    <div class="backdrop" data-close="1"></div>
+    <div class="panel">
+      <h5 class="mb-2">メンバー編集</h5>
+      <div class="d-flex gap-2 mb-2">
+        <input id="room-members-search" type="text" class="form-control form-control-sm" placeholder="候補検索（名前 / actor_key）">
+        <button type="button" id="room-members-select-all" class="btn btn-sm btn-outline-secondary">全選択</button>
+        <button type="button" id="room-members-unselect-all" class="btn btn-sm btn-outline-secondary">全解除</button>
+      </div>
+      <div class="small mb-1">選択中 <span id="room-members-count">0</span>名</div>
+      <div id="room-members-candidates" class="room-member-candidate-list"></div>
+      <div class="d-flex justify-content-end gap-2 mt-3">
+        <button type="button" id="room-members-cancel" class="btn btn-sm btn-light">キャンセル</button>
+        <button type="button" id="room-members-submit" class="btn btn-sm btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
   <div class="mt-3 d-flex gap-2 align-items-center">
     {% if can_broadcast %}
     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
@@ -765,6 +840,7 @@
   if (!root) return;
 
   const eventId = Number(root.dataset.eventId);
+  const roomId = root.dataset.roomId || "";
   const csrfToken = root.dataset.csrf;
   const vapidKey = root.dataset.vapid;
   const meId = root.dataset.me || '';
@@ -780,6 +856,11 @@
   const bodyInput = document.getElementById('chat-body');
   const maxInputLines = 6;
   const pushBtn = document.getElementById('enable-push');
+  const roomSwitch = document.getElementById('chat-room-switch');
+  const roomCreateBtn = document.getElementById('chat-room-create-btn');
+  const roomMembersBtn = document.getElementById('chat-room-members-btn');
+  const roomCreateModal = document.getElementById('roomCreateModal');
+  const roomMembersModal = document.getElementById('roomMembersModal');
   const imageInput = document.getElementById('chat-image-file');
   const imageBtn = document.getElementById('chat-image-btn');
   const sendBtn = document.getElementById('chat-send-btn');
@@ -843,7 +924,7 @@
   }
 
   const socket = io({ transports: ['websocket', 'polling'] });
-  socket.emit('chat_join', { event_id: eventId });
+  socket.emit('chat_join', { event_id: eventId, room_id: roomId });
 
   initReactionUis();
   scrollToLatestMessage();
@@ -951,7 +1032,7 @@
       const messageId = Number(row?.dataset.messageId || 0);
       const emoji = reactionBtn.dataset.emoji || '';
       if (messageId && reactionEmojis.includes(emoji)) {
-        socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
+        socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
       }
       return;
     }
@@ -1061,7 +1142,7 @@
       fd.append('csrf_token', csrfToken);
       files.forEach((file) => fd.append('file', file));
       fd.append('body', bodyInput.value || '');
-      const res = await fetch(`/chat/api/events/${eventId}/upload-image`, { method: 'POST', body: fd });
+      const res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(data.error || '画像送信に失敗しました');
@@ -1108,6 +1189,7 @@
     setSendingState(true);
     socket.emit('chat_send', {
       event_id: eventId,
+      room_id: roomId,
       body: bodyInput.value,
       reply_to_message_id: state.replyToId,
     });
@@ -1398,7 +1480,7 @@
       const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csrf_token: csrfToken }),
+        body: JSON.stringify({ csrf_token: csrfToken, room_id: roomId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
@@ -1819,7 +1901,7 @@
     if (actionEl.classList.contains('chat-reaction-emoji')) {
       const emoji = actionEl.dataset.emoji || '';
       if (reactionEmojis.includes(emoji)) {
-        socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
+        socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
       }
       closeContextMenu();
       return;
@@ -1939,7 +2021,7 @@
 
   function sendSeenForMessageId(messageId) {
     if (!Number.isFinite(messageId) || messageId <= 0) return;
-    socket.emit('chat_seen', { event_id: eventId, last_seen_message_id: messageId });
+    socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
   }
 
   function escapeHtml(value) {
@@ -1962,6 +2044,152 @@
     if (!msgBox) return;
     msgBox.scrollTop = msgBox.scrollHeight;
   }
+
+  roomSwitch?.addEventListener('change', () => {
+    const nextRoomId = roomSwitch.value || '';
+    if (!nextRoomId || nextRoomId === roomId) return;
+    const u = new URL(window.location.href);
+    u.searchParams.set('room_id', nextRoomId);
+    window.location.href = u.toString();
+  });
+
+  const roomUi = {
+    candidates: [],
+    createSelected: new Set(),
+    editSelected: new Set(),
+  };
+
+  async function fetchCandidates() {
+    const res = await fetch(`/chat/api/events/${eventId}/room-member-candidates`, { credentials: 'same-origin' });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) {
+      alert('権限がありません');
+      closeModal(roomCreateModal);
+      closeModal(roomMembersModal);
+      return null;
+    }
+    if (!data.ok) {
+      alert(data.error || '候補取得に失敗しました');
+      return null;
+    }
+    roomUi.candidates = data.candidates || [];
+    return roomUi.candidates;
+  }
+
+  function openModal(modal) { modal?.classList.add('is-open'); }
+  function closeModal(modal) { modal?.classList.remove('is-open'); }
+
+  function renderCandidateList(containerId, selectedSet, searchText = '') {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    const q = String(searchText || '').toLowerCase().trim();
+    const items = roomUi.candidates.filter((c) => {
+      if (!q) return true;
+      return String(c.display_name || '').toLowerCase().includes(q) || String(c.actor_key || '').toLowerCase().includes(q);
+    });
+    box.innerHTML = items.map((c) => `
+      <label class="room-member-item">
+        <span>
+          <input type="checkbox" data-actor-key="${escapeHtml(c.actor_key || '')}" ${selectedSet.has(c.actor_key) ? 'checked' : ''}>
+          ${escapeHtml(c.display_name || c.actor_key || '')}
+          <small>(${escapeHtml(c.role_hint || '')} / ${escapeHtml(c.actor_key || '')})</small>
+        </span>
+      </label>
+    `).join('');
+    box.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const key = cb.dataset.actorKey || '';
+        if (!key) return;
+        if (cb.checked) selectedSet.add(key); else selectedSet.delete(key);
+        updateCounts();
+      });
+    });
+    updateCounts();
+  }
+
+  function updateCounts() {
+    const c1 = document.getElementById('room-create-count');
+    const c2 = document.getElementById('room-members-count');
+    if (c1) c1.textContent = String(roomUi.createSelected.size);
+    if (c2) c2.textContent = String(roomUi.editSelected.size);
+  }
+
+  function bindListTools(prefix, selectedSet, containerId) {
+    document.getElementById(`${prefix}-search`)?.addEventListener('input', (e) => renderCandidateList(containerId, selectedSet, e.target.value));
+    document.getElementById(`${prefix}-select-all`)?.addEventListener('click', () => {
+      roomUi.candidates.forEach((c) => selectedSet.add(c.actor_key));
+      renderCandidateList(containerId, selectedSet, document.getElementById(`${prefix}-search`)?.value || '');
+    });
+    document.getElementById(`${prefix}-unselect-all`)?.addEventListener('click', () => {
+      selectedSet.clear();
+      renderCandidateList(containerId, selectedSet, document.getElementById(`${prefix}-search`)?.value || '');
+    });
+  }
+
+  bindListTools('room-create', roomUi.createSelected, 'room-create-candidates');
+  bindListTools('room-members', roomUi.editSelected, 'room-members-candidates');
+
+  roomCreateModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(roomCreateModal));
+  roomMembersModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(roomMembersModal));
+  document.getElementById('room-create-cancel')?.addEventListener('click', () => closeModal(roomCreateModal));
+  document.getElementById('room-members-cancel')?.addEventListener('click', () => closeModal(roomMembersModal));
+
+  roomCreateBtn?.addEventListener('click', async () => {
+    const candidates = await fetchCandidates();
+    if (!candidates) return;
+    roomUi.createSelected.clear();
+    renderCandidateList('room-create-candidates', roomUi.createSelected, '');
+    const input = document.getElementById('room-create-name');
+    if (input) input.value = '';
+    openModal(roomCreateModal);
+  });
+
+  document.getElementById('room-create-submit')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const roomName = (document.getElementById('room-create-name')?.value || '').trim();
+    if (!roomName) { alert('ルーム名を入力してください'); return; }
+    btn.disabled = true;
+    const res = await fetch(`/chat/api/events/${eventId}/rooms/create`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+      body: JSON.stringify({ csrf_token: csrfToken, room_name: roomName, member_actor_keys: Array.from(roomUi.createSelected) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    btn.disabled = false;
+    if (res.status === 401 || res.status === 403) { alert('権限がありません'); closeModal(roomCreateModal); return; }
+    if (!data.ok || !data.room_id) { alert(data.error || 'サブルーム作成に失敗しました'); return; }
+    const u = new URL(window.location.href);
+    u.searchParams.set('room_id', data.room_id);
+    window.location.href = u.toString();
+  });
+
+  roomMembersBtn?.addEventListener('click', async () => {
+    const candidates = await fetchCandidates();
+    if (!candidates) return;
+    const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members`, { credentials: 'same-origin' });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) { alert('権限がありません'); return; }
+    if (!data.ok) { alert(data.error || '現在メンバー取得に失敗しました'); return; }
+    roomUi.editSelected.clear();
+    (data.members || []).forEach((m) => { if (m?.actor_key) roomUi.editSelected.add(m.actor_key); });
+    renderCandidateList('room-members-candidates', roomUi.editSelected, '');
+    openModal(roomMembersModal);
+  });
+
+  document.getElementById('room-members-submit')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members/set`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+      body: JSON.stringify({ csrf_token: csrfToken, member_actor_keys: Array.from(roomUi.editSelected) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    btn.disabled = false;
+    if (res.status === 401 || res.status === 403) { alert('権限がありません'); closeModal(roomMembersModal); return; }
+    if (!data.ok) { alert(data.error || 'メンバー更新に失敗しました'); return; }
+    closeModal(roomMembersModal);
+    alert('メンバーを更新しました');
+  });
+
 })();
 </script>
 {% endblock %}
