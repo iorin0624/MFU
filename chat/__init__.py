@@ -82,6 +82,8 @@ CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
 CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
+CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_EDIT_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -99,6 +101,9 @@ _LINKIFY_RE = re.compile(
     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
 )
 _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
+CHAT_TYPING_STATE_LOCK = threading.Lock()
+CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
+CHAT_TYPING_TTL_SECONDS = 3
 
 
 def _default_avatar_url() -> str:
@@ -489,6 +494,50 @@ def _ensure_chat_delete_schema() -> bool:
         except Exception:
             current_app.logger.warning("chat delete schema ensure failed", exc_info=True)
             CHAT_DELETE_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_edit_schema() -> bool:
+    global CHAT_EDIT_SCHEMA_READY
+    if CHAT_EDIT_SCHEMA_READY is not None:
+        return CHAT_EDIT_SCHEMA_READY
+
+    with CHAT_EDIT_SCHEMA_CHECK_LOCK:
+        if CHAT_EDIT_SCHEMA_READY is not None:
+            return CHAT_EDIT_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            definitions = {
+                "edited_flag": "ALTER TABLE chat_messages ADD COLUMN edited_flag TINYINT NOT NULL DEFAULT 0 AFTER body",
+                "edited_at": "ALTER TABLE chat_messages ADD COLUMN edited_at DATETIME NULL AFTER edited_flag",
+            }
+            for column_name, ddl in definitions.items():
+                cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
+                if cur.fetchone():
+                    continue
+                try:
+                    cur.execute(ddl)
+                except Exception:
+                    current_app.logger.warning("chat edit schema ensure column failed column=%s", column_name, exc_info=True)
+
+            db.commit()
+            missing_columns: list[str] = []
+            for column_name in definitions:
+                cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
+                if not cur.fetchone():
+                    missing_columns.append(column_name)
+            CHAT_EDIT_SCHEMA_READY = len(missing_columns) == 0
+            if missing_columns:
+                current_app.logger.warning("chat edit schema ensure missing columns=%s", ",".join(missing_columns))
+            return CHAT_EDIT_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("chat edit schema ensure failed", exc_info=True)
+            CHAT_EDIT_SCHEMA_READY = False
             return False
         finally:
             cur.close()
@@ -1065,11 +1114,16 @@ def _present_message(
     actor_is_admin = _is_admin_actor(current_actor)
     is_me = str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])))
     can_delete = False
+    can_edit = False
     if not deleted_flag:
         if actor_is_admin:
             can_delete = True
         elif is_me and isinstance(msg.get("created_at"), datetime):
             can_delete = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+        if is_me and isinstance(msg.get("created_at"), datetime):
+            can_edit = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+
+    edited_flag = 1 if int(msg.get("edited_flag") or 0) == 1 else 0
 
     return {
         "id": msg["id"],
@@ -1079,6 +1133,8 @@ def _present_message(
         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
         "body": body_value,
         "body_html": body_html,
+        "edited_flag": edited_flag,
+        "edited_at": msg.get("edited_at").isoformat() if msg.get("edited_at") else None,
         "deleted_flag": 1 if deleted_flag else 0,
         "deleted_at": msg.get("deleted_at").isoformat() if msg.get("deleted_at") else None,
         "deleted_by_actor_type": deleted_by_actor_type,
@@ -1104,6 +1160,7 @@ def _present_message(
         "image_height": first_image.get("height") if first_image else None,
         "is_me": is_me,
         "can_delete": can_delete,
+        "can_edit": can_edit,
     }
 
 
@@ -1149,6 +1206,53 @@ def _chat_csrf() -> str:
         token = secrets.token_urlsafe(24)
         session["chat_csrf"] = token
     return token
+
+
+def _typing_state_key(event_id: int, room_id: str, actor_type: str, actor_id: str) -> str:
+    return f"{event_id}:{room_id}:{actor_type}:{actor_id}"
+
+
+def _emit_typing_state(event_id: int, room_id: str, actor: dict[str, Any], is_typing: bool) -> None:
+    socketio.emit(
+        "chat_typing_update",
+        {
+            "actor_type": actor["actor_type"],
+            "actor_id": str(actor["actor_id"]),
+            "display_name": actor.get("display_name") or str(actor["actor_id"]),
+            "is_typing": bool(is_typing),
+            "event_id": event_id,
+            "room_id": room_id,
+        },
+        room=f"event:{event_id}:room:{room_id}",
+    )
+
+
+def _cleanup_stale_typing_states(event_id: int | None = None, room_id: str | None = None) -> None:
+    now = time.monotonic()
+    stale_keys: list[str] = []
+    stale_payloads: list[tuple[int, str, dict[str, Any]]] = []
+
+    with CHAT_TYPING_STATE_LOCK:
+        for key, item in list(CHAT_TYPING_STATE.items()):
+            if not item.get("is_typing"):
+                stale_keys.append(key)
+                continue
+            if event_id is not None and item.get("event_id") != event_id:
+                continue
+            if room_id is not None and item.get("room_id") != room_id:
+                continue
+            last_ts = float(item.get("last_ts") or 0)
+            if now - last_ts >= CHAT_TYPING_TTL_SECONDS:
+                stale_keys.append(key)
+                stale_payloads.append((int(item.get("event_id") or 0), str(item.get("room_id") or ""), dict(item.get("actor") or {})))
+
+        for key in stale_keys:
+            CHAT_TYPING_STATE.pop(key, None)
+
+    for stale_event_id, stale_room_id, stale_actor in stale_payloads:
+        if stale_event_id <= 0 or not stale_room_id or not stale_actor:
+            continue
+        _emit_typing_state(stale_event_id, stale_room_id, stale_actor, False)
 
 
 def _is_admin() -> bool:
@@ -1305,6 +1409,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
     has_delete_schema = _ensure_chat_delete_schema()
+    has_edit_schema = _ensure_chat_edit_schema()
     image_columns = (
         "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
         if has_image_schema
@@ -1319,6 +1424,11 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
         "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
         if has_delete_schema
         else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
+    )
+    edit_columns = (
+        "m.edited_flag, m.edited_at"
+        if has_edit_schema
+        else "0 AS edited_flag, NULL AS edited_at"
     )
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -1335,6 +1445,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
                        m.created_at,
                        {image_columns},
                        {delete_columns},
+                       {edit_columns},
                        m.reply_to_message_id,
                        p.sender_actor_type AS reply_to_sender_actor_type,
                        p.sender_actor_id AS reply_to_sender_actor_id,
@@ -1375,7 +1486,8 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
             f"""
             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
                    {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
-                   {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'}
+                   {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'},
+                   {'edited_flag, edited_at' if has_edit_schema else '0 AS edited_flag, NULL AS edited_at'}
               FROM chat_messages
              WHERE event_id=%s
                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
@@ -1412,6 +1524,7 @@ def _save_message(
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
     _ensure_chat_delete_schema()
+    _ensure_chat_edit_schema()
     image_meta = image_meta or {}
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -1465,6 +1578,8 @@ def _save_message(
             "deleted_at": None,
             "deleted_by_actor_type": None,
             "deleted_by_actor_id": None,
+            "edited_flag": 0,
+            "edited_at": None,
         }
     finally:
         cur.close()
@@ -2310,6 +2425,7 @@ def room(event_id: int):
     _ensure_chat_messages_room_schema()
     _ensure_chat_read_state_room_schema()
     _ensure_chat_delete_schema()
+    _ensure_chat_edit_schema()
 
     requested_room_id = (request.args.get("room_id") or "").strip() or None
     allowed, effective_room_id, active_room = _can_access_room(event_id, requested_room_id, actor)
@@ -2368,6 +2484,7 @@ def upload_image(event_id: int):
     _ensure_chat_rooms_schema()
     _ensure_chat_room_members_schema()
     _ensure_chat_messages_room_schema()
+    _ensure_chat_edit_schema()
     actor = get_chat_actor()
     if not actor:
         abort(403)
@@ -2619,6 +2736,162 @@ def delete_message(event_id: int, message_id: int):
         room=f"event:{event_id}:room:{effective_room_id}",
     )
     return jsonify({"ok": True})
+
+
+@chat_bp.post("/api/events/<int:event_id>/messages/<int:message_id>/edit")
+def edit_message(event_id: int, message_id: int):
+    _ensure_chat_messages_room_schema()
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
+    if not _can_access_event(event_id, actor):
+        return jsonify({"ok": False, "error": "このイベントにはアクセスできません"}), 403
+    if not _ensure_chat_edit_schema():
+        return jsonify({"ok": False, "error": "メッセージ編集機能の初期化に失敗しました"}), 500
+    if not _ensure_chat_delete_schema():
+        return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    room_id = str(payload.get("room_id") or request.form.get("room_id") or request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
+
+    token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再試行してください"}), 400
+
+    raw_body = payload.get("body") if "body" in payload else request.form.get("body")
+    try:
+        body = _validate_body(str(raw_body or ""))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    actor_sender_id = _actor_sender_id(str(actor.get("actor_type") or ""), str(actor.get("actor_id") or ""))
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, event_id, room_id, sender_actor_type, sender_actor_id, created_at,
+                   COALESCE(deleted_flag, 0) AS deleted_flag
+              FROM chat_messages
+             WHERE id=%s AND event_id=%s AND room_id=%s
+             LIMIT 1
+            """,
+            (message_id, event_id, effective_room_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
+        if int(row.get("deleted_flag") or 0) == 1:
+            return jsonify({"ok": False, "error": "削除済みメッセージは編集できません"}), 403
+
+        message_sender_id = _actor_sender_id(str(row.get("sender_actor_type") or ""), str(row.get("sender_actor_id") or ""))
+        if actor_sender_id != message_sender_id:
+            return jsonify({"ok": False, "error": "このメッセージを編集する権限がありません"}), 403
+
+        created_at = row.get("created_at")
+        if not isinstance(created_at, datetime):
+            return jsonify({"ok": False, "error": "送信時刻の取得に失敗しました"}), 400
+        if created_at + timedelta(hours=12) < datetime.utcnow():
+            return jsonify({"ok": False, "error": "送信から12時間を過ぎたため、編集できません"}), 403
+
+        cur.execute(
+            """
+            UPDATE chat_messages
+               SET body=%s,
+                   edited_flag=1,
+                   edited_at=NOW()
+             WHERE id=%s
+            """,
+            (body, message_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    socketio.emit(
+        "chat_edit_update",
+        {
+            "event_id": event_id,
+            "room_id": effective_room_id,
+            "message_id": message_id,
+            "body_html": _linkify_escaped_text(body).replace("\n", "<br>"),
+            "body_plain_excerpt": _build_plain_excerpt(body),
+            "edited_flag": 1,
+        },
+        room=f"event:{event_id}:room:{effective_room_id}",
+    )
+    return jsonify({"ok": True})
+
+
+@chat_bp.get("/api/events/<int:event_id>/search")
+def search_messages(event_id: int):
+    _ensure_chat_messages_room_schema()
+    _ensure_chat_delete_schema()
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
+    if not _can_access_event(event_id, actor):
+        return jsonify({"ok": False, "error": "このイベントにはアクセスできません"}), 403
+
+    room_id = str(request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
+
+    q = str(request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"ok": False, "error": "検索キーワードを入力してください"}), 400
+    if len(q) > 100:
+        return jsonify({"ok": False, "error": "検索キーワードは100文字以内です"}), 400
+
+    raw_limit = request.args.get("limit")
+    try:
+        limit = int(raw_limit) if raw_limit is not None else 50
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 100))
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id AS message_id,
+                   sender_display_name,
+                   body,
+                   created_at
+              FROM chat_messages
+             WHERE event_id=%s
+               AND room_id=%s
+               AND COALESCE(deleted_flag, 0)=0
+               AND body LIKE %s
+             ORDER BY id DESC
+             LIMIT %s
+            """,
+            (event_id, effective_room_id, f"%{q}%", limit),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        _created_at_iso, _date_label, time_label = _format_jst_labels(row.get("created_at") or datetime.utcnow())
+        results.append(
+            {
+                "message_id": int(row.get("message_id") or 0),
+                "sender": row.get("sender_display_name") or "Unknown",
+                "time": time_label,
+                "excerpt": _build_plain_excerpt(str(row.get("body") or ""), max_len=80),
+            }
+        )
+
+    return jsonify({"ok": True, "results": results})
 
 
 def _parse_actor_key(value: str) -> tuple[str, str] | None:
@@ -3048,6 +3321,7 @@ def on_join(data):
     _ensure_chat_room_members_schema()
     _ensure_chat_messages_room_schema()
     _ensure_chat_read_state_room_schema()
+    _ensure_chat_edit_schema()
     actor = get_chat_actor()
     event_id = int((data or {}).get("event_id") or 0)
     room_id = str((data or {}).get("room_id") or "").strip() or None
@@ -3090,6 +3364,49 @@ def on_seen(data):
     )
 
 
+@socketio.on("chat_typing")
+def on_typing(data):
+    actor = get_chat_actor()
+    if not actor:
+        disconnect()
+        return
+
+    try:
+        event_id = int((data or {}).get("event_id") or 0)
+        room_id = str((data or {}).get("room_id") or "").strip() or None
+    except (TypeError, ValueError):
+        disconnect()
+        return
+    is_typing = bool((data or {}).get("is_typing"))
+
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if event_id <= 0 or not allowed or not effective_room_id:
+        disconnect()
+        return
+
+    _cleanup_stale_typing_states(event_id, effective_room_id)
+
+    key = _typing_state_key(event_id, effective_room_id, actor["actor_type"], str(actor["actor_id"]))
+    if is_typing:
+        with CHAT_TYPING_STATE_LOCK:
+            CHAT_TYPING_STATE[key] = {
+                "event_id": event_id,
+                "room_id": effective_room_id,
+                "actor": {
+                    "actor_type": actor["actor_type"],
+                    "actor_id": str(actor["actor_id"]),
+                    "display_name": actor.get("display_name") or str(actor["actor_id"]),
+                },
+                "last_ts": time.monotonic(),
+                "is_typing": True,
+            }
+        _emit_typing_state(event_id, effective_room_id, actor, True)
+    else:
+        with CHAT_TYPING_STATE_LOCK:
+            CHAT_TYPING_STATE.pop(key, None)
+        _emit_typing_state(event_id, effective_room_id, actor, False)
+
+
 @socketio.on("chat_send")
 def on_send(data):
     actor = get_chat_actor()
@@ -3116,6 +3433,9 @@ def on_send(data):
     if not _ensure_chat_delete_schema():
         emit("chat_error", {"error": "メッセージ削除機能の初期化に失敗しました"})
         return
+    if not _ensure_chat_edit_schema():
+        emit("chat_error", {"error": "メッセージ編集機能の初期化に失敗しました"})
+        return
     if not _check_rate_limit(actor):
         emit("chat_error", {"error": "送信間隔が短すぎます"})
         return
@@ -3128,6 +3448,12 @@ def on_send(data):
         return
 
     message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id))
+
+    typing_key = _typing_state_key(event_id, effective_room_id, actor["actor_type"], str(actor["actor_id"]))
+    with CHAT_TYPING_STATE_LOCK:
+        CHAT_TYPING_STATE.pop(typing_key, None)
+    _emit_typing_state(event_id, effective_room_id, actor, False)
+
     t1 = time.monotonic()
     active_room = _get_room(event_id, effective_room_id, allow_archived=True)
     active_room_name = str(active_room.get("room_name") or "") if active_room else None
