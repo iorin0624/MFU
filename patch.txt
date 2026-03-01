@@ -1,129 +1,8 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index b2aeb117ab18aa03d45148ec8f4f60b5f6967d8d..dc616a47bcb5e718e8eee9976ec2ad82e11a9e7a 100644
+index e25fe3a2c80a427753c04049999914ea37e3daa6..f94219f45caa8ecaaed551fa4979dde69db8c0a9 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -119,65 +119,76 @@
- .chat-body .chat-link {
-   text-decoration: underline;
-   color: #1f57d6;
-   overflow-wrap: anywhere;
-   word-break: break-word;
- }
- 
- .chat-body p,
- .chat-body ul,
- .chat-body ol {
-   margin: 0;
- }
- 
- .chat-row.me .chat-bubble {
-   background: #4a8dff;
-   color: #fff;
-   border-bottom-right-radius: 6px;
- }
- 
- .chat-row.other .chat-bubble {
-   background: #f1f3f5;
-   color: #222;
-   border-bottom-left-radius: 6px;
- }
- 
-+.chat-meta-col {
-+  display: flex;
-+  flex-direction: column;
-+  align-items: flex-end;
-+  justify-content: flex-end;
-+  gap: 2px;
-+  min-width: 48px;
-+}
-+
- .chat-time {
-   font-size: 0.72rem;
-   color: #7a7a7a;
-   white-space: nowrap;
-+  line-height: 1.1;
- }
- 
--.chat-read-indicator {
--  margin-top: 4px;
-+.chat-read-inline {
-   font-size: 0.72rem;
-   color: #4d5c8f;
-   cursor: pointer;
-   user-select: none;
-+  white-space: nowrap;
-+  line-height: 1.1;
- }
- 
--.chat-read-indicator:hover {
-+.chat-read-inline:hover {
-   text-decoration: underline;
- }
- 
- .chat-read-list {
-   margin-top: 2px;
-   padding: 6px 8px;
-   border-radius: 8px;
-   background: rgba(255, 255, 255, 0.82);
-   color: #334;
-   font-size: 0.76rem;
-   min-width: 120px;
- }
- 
- .chat-read-list ul {
-   margin: 0;
-   padding-left: 1rem;
- }
- 
- .chat-avatar {
-   width: 32px;
-   height: 32px;
-   border-radius: 50%;
-   object-fit: cover;
-   flex: 0 0 auto;
-   background: #fff;
-@@ -645,54 +656,58 @@
-                      data-image-index="0"
-                      data-image-list='{{ image_items|tojson }}'>
-                     <img class="chat-image-thumb"
-                          src="{{ image_item.thumb_url }}"
-                          alt="画像"
-                          loading="lazy"
-                          {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
-                   </a>
-                 {% elif image_items|length >= 2 %}
-                   <div class="chat-image-grid">
-                     {% for image_item in image_items %}
-                       <a class="chat-image-link chat-image-cell"
-                          href="{{ image_item.url }}"
-                          data-full-image-url="{{ image_item.url }}"
-                          data-image-index="{{ loop.index0 }}"
-                          data-image-list='{{ image_items|tojson }}'>
-                         <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
-                       </a>
-                     {% endfor %}
-                   </div>
-                 {% endif %}
-                 {% if (m.body_html or m.body or '')|trim %}
-                   <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
-                 {% endif %}
-               </div>
--              <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-+              <div class="chat-meta-col">
-+                {% if m.is_me %}
-+                  <div class="chat-read-inline d-none"></div>
-+                {% endif %}
-+                <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-+              </div>
-             </div>
-             {% if m.is_me %}
--              <div class="chat-read-indicator d-none"></div>
-               <div class="chat-read-list d-none"></div>
-             {% endif %}
-             {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
-           </div>
- 
-           {% if m.is_me %}
+@@ -700,51 +700,51 @@
              <img class="chat-avatar"
                   src="{{ m.sender_avatar_url or default_avatar_url }}"
                   alt=""
@@ -143,185 +22,36 @@ index b2aeb117ab18aa03d45148ec8f4f60b5f6967d8d..dc616a47bcb5e718e8eee9976ec2ad82
      </div>
      <div id="reply-text" class="reply-text"></div>
    </div>
-@@ -878,51 +893,51 @@
-     }
-     const rowForAction = e.target.closest('.chat-row');
-     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
-       if (e.target.closest('.chat-reply-quote')) {
-         jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
-       }
-       return;
-     }
  
-     const imageLink = e.target.closest('.chat-image-link');
-     if (imageLink) {
-       e.preventDefault();
-       let imageList = [];
-       try {
-         imageList = JSON.parse(imageLink.dataset.imageList || '[]');
-       } catch (_) {
-         imageList = [];
-       }
-       const imageUrls = imageList.map((item) => item?.url).filter(Boolean);
-       const fallbackUrl = imageLink.dataset.fullImageUrl || imageLink.href || '';
-       if (!imageUrls.length && fallbackUrl) imageUrls.push(fallbackUrl);
-       openImageViewer(imageUrls, Number(imageLink.dataset.imageIndex || 0));
-       return;
-     }
+   <form id="chat-form" class="d-flex gap-2 align-items-center">
+     <input type="hidden" id="reply-to-id" value="">
+     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
+     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
+     <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
+-    <button class="btn btn-primary" id="chat-send-btn" type="submit">送信</button>
++    <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+   </form>
  
--    const readIndicator = e.target.closest('.chat-read-indicator');
-+    const readIndicator = e.target.closest('.chat-read-inline, .chat-read-indicator');
-     if (readIndicator) {
-       toggleReadList(readIndicator.closest('.chat-main'));
-       return;
-     }
+   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
+     <button type="button" id="chatImageViewerClose" class="chat-image-viewer-close" aria-label="閉じる">×</button>
+     <div class="chat-image-viewer-content">
+       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
+       <img id="chatImageViewerImg" src="" alt="拡大画像">
+       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+     </div>
+   </div>
  
-     const quote = e.target.closest('.chat-reply-quote');
-     if (quote) {
-       jumpToMessage(quote.dataset.jumpToId);
-       return;
-     }
+   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
+     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
+     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
+       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
+       <hr class="chat-ctx-sep">
+       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
+       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
+       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
+       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
+     </div>
+   </div>
  
-     const reactionToggle = e.target.closest('.chat-reaction-toggle');
-     if (reactionToggle) {
-       const box = reactionToggle.closest('.chat-reaction-box');
-       const panel = box?.querySelector('.chat-reaction-panel');
-       panel?.classList.toggle('d-none');
-       return;
-     }
- 
-     const reactionBtn = e.target.closest('.chat-reaction-emoji');
-     if (reactionBtn) {
-       const row = reactionBtn.closest('.chat-row');
-       const messageId = Number(row?.dataset.messageId || 0);
-       const emoji = reactionBtn.dataset.emoji || '';
-       if (messageId && reactionEmojis.includes(emoji)) {
-@@ -1265,64 +1280,70 @@
-         const imageLink = document.createElement('a');
-         imageLink.className = 'chat-image-link chat-image-cell';
-         imageLink.href = imageItem.url;
-         imageLink.dataset.fullImageUrl = imageItem.url;
-         imageLink.dataset.imageIndex = String(idx);
-         imageLink.dataset.imageList = JSON.stringify(images);
- 
-         const thumb = document.createElement('img');
-         thumb.src = imageItem.thumb_url;
-         thumb.alt = `画像 ${idx + 1}`;
-         thumb.loading = 'lazy';
-         imageLink.appendChild(thumb);
-         grid.appendChild(imageLink);
-       });
-       bubble.appendChild(grid);
-     }
- 
-     const rawBody = (msg.body_html || msg.body || '').trim();
-     if (rawBody) {
-       const body = document.createElement('div');
-       body.className = Number(msg.deleted_flag || 0) === 1 ? 'chat-body chat-deleted-text' : 'chat-body';
-       body.innerHTML = rawBody;
-       bubble.appendChild(body);
-     }
- 
-+    const metaCol = document.createElement('div');
-+    metaCol.className = 'chat-meta-col';
-+
-+    if (isMe) {
-+      const readInline = document.createElement('div');
-+      readInline.className = 'chat-read-inline d-none';
-+      metaCol.appendChild(readInline);
-+    }
-+
-     const time = document.createElement('div');
-     time.className = 'chat-time';
-     time.textContent = timeLabel;
-+    metaCol.appendChild(time);
- 
-     wrap.appendChild(bubble);
--    wrap.appendChild(time);
-+    wrap.appendChild(metaCol);
- 
-     main.appendChild(wrap);
- 
-     if (isMe) {
--      const readIndicator = document.createElement('div');
--      readIndicator.className = 'chat-read-indicator d-none';
--      main.appendChild(readIndicator);
--
-       const readList = document.createElement('div');
-       readList.className = 'chat-read-list d-none';
-       main.appendChild(readList);
-     }
- 
-     if (Number(msg.deleted_flag || 0) !== 1) {
-       main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
-     }
- 
-     line.appendChild(main);
- 
-     if (isMe) {
-       line.appendChild(makeAvatar(msg.sender_avatar_url));
-     }
- 
-     row.appendChild(line);
-     msgBox.appendChild(row);
-     hydrateMessageReactionData(row);
-     refreshReadIndicatorForRow(row);
-   }
- 
- 
-   function canDeleteMessage(msg, isMe) {
-     if (Number(msg?.deleted_flag || 0) === 1) return false;
-     if (typeof msg?.can_delete !== 'undefined') return Boolean(msg.can_delete);
-@@ -1818,51 +1839,51 @@
-   }
- 
-   function applyReadUpdate(readState) {
-     if (!readState?.actor_type || !readState?.actor_id) return;
-     const key = `${readState.actor_type}:${readState.actor_id}`;
-     const prev = state.readStateByActor.get(key);
-     const nextReadId = Number(readState.last_read_message_id || 0);
-     const prevReadId = Number(prev?.last_read_message_id || 0);
-     if (prev && prevReadId > nextReadId) return;
-     state.readStateByActor.set(key, {
-       actor_type: readState.actor_type,
-       actor_id: String(readState.actor_id),
-       display_name: readState.display_name || prev?.display_name || readState.actor_id,
-       last_read_message_id: Math.max(prevReadId, nextReadId),
-     });
-   }
- 
-   function refreshReadIndicators() {
-     msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
-   }
- 
-   function refreshReadIndicatorForRow(row) {
-     if (!row?.classList.contains('me')) return;
-     const messageId = Number(row.dataset.messageId || 0);
-     const senderId = row.dataset.senderId || '';
--    const indicator = row.querySelector('.chat-read-indicator');
-+    const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
-     const list = row.querySelector('.chat-read-list');
-     if (!messageId || !indicator || !list) return;
- 
-     const readers = [];
-     for (const entry of state.readStateByActor.values()) {
-       if (Number(entry.last_read_message_id || 0) < messageId) continue;
-       const actorKey = `${entry.actor_type}:${entry.actor_id}`;
-       if (senderId && actorKey === senderId) continue;
-       readers.push(entry.display_name || actorKey);
-     }
-     readers.sort((a, b) => a.localeCompare(b, 'ja'));
- 
-     if (readers.length === 0) {
-       indicator.classList.add('d-none');
-       indicator.textContent = '';
-       list.classList.add('d-none');
-       list.innerHTML = '';
-       return;
-     }
- 
-     indicator.classList.remove('d-none');
-     indicator.textContent = `既読 ${readers.length}`;
-     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
-   }
- 
+   <div class="mt-3 d-flex gap-2 align-items-center">
