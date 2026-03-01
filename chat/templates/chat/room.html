@@ -32,7 +32,7 @@
 .chat-line {
   display: flex;
   gap: 8px;
-  align-items: flex-end;
+  align-items: flex-start;
   min-width: 0;
 }
 
@@ -93,12 +93,22 @@
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
   transition: box-shadow 0.2s ease, transform 0.2s ease;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .chat-body {
   min-width: 0;
   overflow-wrap: anywhere;
   word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.chat-body * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .chat-body img {
@@ -131,21 +141,32 @@
   border-bottom-left-radius: 6px;
 }
 
+.chat-meta-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 2px;
+  min-width: 48px;
+}
+
 .chat-time {
   font-size: 0.72rem;
   color: #7a7a7a;
   white-space: nowrap;
+  line-height: 1.1;
 }
 
-.chat-read-indicator {
-  margin-top: 4px;
+.chat-read-inline {
   font-size: 0.72rem;
   color: #4d5c8f;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
+  line-height: 1.1;
 }
 
-.chat-read-indicator:hover {
+.chat-read-inline:hover {
   text-decoration: underline;
 }
 
@@ -233,6 +254,14 @@
   cursor: pointer;
   display: flex;
   align-items: flex-start;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.chat-image-thumb,
+.chat-image-cell img {
+  -webkit-touch-callout: none;
 }
 
 .chat-row.other .chat-reply-quote {
@@ -313,66 +342,77 @@
 .chat-ctx-menu {
   position: fixed;
   inset: 0;
-  z-index: 1200;
+  z-index: 2000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
 }
 
 .chat-ctx-menu.d-none {
   display: none;
 }
 
+.chat-ctx-menu.is-open {
+  display: flex;
+}
+
 .chat-ctx-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.12);
+  background: rgba(0, 0, 0, 0.35);
 }
 
 .chat-ctx-panel {
-  position: absolute;
-  min-width: 180px;
-  max-width: min(92vw, 280px);
+  position: relative;
+  width: min(92vw, 420px);
   background: #fff;
-  border: 1px solid #dbe1f4;
-  border-radius: 14px;
-  box-shadow: 0 8px 30px rgba(35, 46, 83, 0.24);
-  padding: 8px;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+}
+
+.chat-ctx-preview {
+  padding: 14px 16px;
+  font-size: 0.95rem;
+  color: #223;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-ctx-sep {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid #e3e8f8;
 }
 
 .chat-ctx-item {
   width: 100%;
+  min-height: 48px;
   border: 0;
-  background: transparent;
+  background: #fff;
   text-align: left;
-  border-radius: 10px;
-  padding: 8px 10px;
+  padding: 14px 16px;
   color: #26324f;
+  font-size: 1rem;
 }
 
-.chat-ctx-item:hover {
-  background: #eef3ff;
+.chat-ctx-item:hover,
+.chat-ctx-item:active {
+  background: #f3f5ff;
 }
 
 .chat-ctx-item-delete {
-  color: #b42318;
+  color: #d33;
 }
 
 .chat-ctx-reactions {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding: 8px 4px 2px;
-}
-
-@media (hover: none) {
-  .chat-ctx-panel {
-    left: 50% !important;
-    right: auto !important;
-    top: auto !important;
-    bottom: max(8px, env(safe-area-inset-bottom));
-    transform: translateX(-50%);
-    width: min(92vw, 420px);
-    max-width: min(92vw, 420px);
-    border-radius: 16px;
-  }
+  padding: 8px 16px 14px;
 }
 
 .chat-reaction-panel {
@@ -638,10 +678,14 @@
                   <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
                 {% endif %}
               </div>
-              <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+              <div class="chat-meta-col">
+                {% if m.is_me %}
+                  <div class="chat-read-inline d-none"></div>
+                {% endif %}
+                <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+              </div>
             </div>
             {% if m.is_me %}
-              <div class="chat-read-indicator d-none"></div>
               <div class="chat-read-list d-none"></div>
             {% endif %}
             {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
@@ -688,11 +732,13 @@
   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
+      <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
+      <hr class="chat-ctx-sep">
       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
-      <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
-      <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
+      <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
     </div>
   </div>
 
@@ -742,6 +788,7 @@
   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
   const ctxMenu = document.getElementById('chatCtxMenu');
   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
+  const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
 
   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
@@ -772,6 +819,9 @@
     ctxMessageId: null,
     longPressTimer: null,
     longPressTriggered: false,
+    longPressRow: null,
+    ctxRow: null,
+    ctxBodyPlain: '',
   };
 
   if (ctxReactions && ctxReactions.childElementCount === 0) {
@@ -865,7 +915,7 @@
       return;
     }
 
-    const readIndicator = e.target.closest('.chat-read-indicator');
+    const readIndicator = e.target.closest('.chat-read-inline, .chat-read-indicator');
     if (readIndicator) {
       toggleReadList(readIndicator.closest('.chat-main'));
       return;
@@ -923,7 +973,7 @@
     const row = e.target.closest('.chat-row[data-message-id]');
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
     e.preventDefault();
-    openContextMenu(row, { x: e.clientX, y: e.clientY });
+    openContextMenu(row);
   });
 
   msgBox.addEventListener('pointerdown', (e) => {
@@ -933,11 +983,26 @@
     if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
     clearLongPressTimer();
     state.longPressTriggered = false;
+    state.longPressRow = row;
     state.longPressTimer = window.setTimeout(() => {
       state.longPressTriggered = true;
-      openContextMenu(row, { x: e.clientX, y: e.clientY, forceSheet: true });
+      openContextMenu(row);
     }, 500);
   });
+  msgBox.addEventListener('touchstart', (e) => {
+    if (!state.longPressTimer || !state.longPressRow) return;
+    const row = e.target.closest('.chat-row[data-message-id]');
+    if (!row || row !== state.longPressRow) return;
+    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
+    e.preventDefault();
+  }, { passive: false });
+  msgBox.addEventListener('touchmove', (e) => {
+    if (!state.longPressTimer || !state.longPressRow) return;
+    const row = e.target.closest('.chat-row[data-message-id]');
+    if (!row || row !== state.longPressRow) return;
+    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
+    e.preventDefault();
+  }, { passive: false });
   msgBox.addEventListener('pointerup', clearLongPressTimer);
   msgBox.addEventListener('pointercancel', clearLongPressTimer);
   msgBox.addEventListener('pointermove', clearLongPressTimer);
@@ -955,9 +1020,20 @@
     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
     if (e.key === 'ArrowRight') moveViewerIndex(1);
   });
-  msgBox.addEventListener('scroll', closeContextMenu, { passive: true });
-  window.addEventListener('scroll', closeContextMenu, { passive: true });
+  msgBox.addEventListener('scroll', () => {
+    clearLongPressTimer();
+    closeContextMenu();
+  }, { passive: true });
+  window.addEventListener('scroll', () => {
+    clearLongPressTimer();
+    closeContextMenu();
+  }, { passive: true });
   ctxMenu?.addEventListener('click', handleContextMenuClick);
+  document.addEventListener('pointerdown', (e) => {
+    if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
+    if (ctxPanel?.contains(e.target)) return;
+    closeContextMenu();
+  });
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
   imageInput?.addEventListener('change', async () => {
@@ -1226,20 +1302,26 @@
       bubble.appendChild(body);
     }
 
+    const metaCol = document.createElement('div');
+    metaCol.className = 'chat-meta-col';
+
+    if (isMe) {
+      const readInline = document.createElement('div');
+      readInline.className = 'chat-read-inline d-none';
+      metaCol.appendChild(readInline);
+    }
+
     const time = document.createElement('div');
     time.className = 'chat-time';
     time.textContent = timeLabel;
+    metaCol.appendChild(time);
 
     wrap.appendChild(bubble);
-    wrap.appendChild(time);
+    wrap.appendChild(metaCol);
 
     main.appendChild(wrap);
 
     if (isMe) {
-      const readIndicator = document.createElement('div');
-      readIndicator.className = 'chat-read-indicator d-none';
-      main.appendChild(readIndicator);
-
       const readList = document.createElement('div');
       readList.className = 'chat-read-list d-none';
       main.appendChild(readList);
@@ -1616,46 +1698,52 @@
   }
 
   function clearLongPressTimer() {
-    if (!state.longPressTimer) return;
-    window.clearTimeout(state.longPressTimer);
-    state.longPressTimer = null;
+    if (state.longPressTimer) {
+      window.clearTimeout(state.longPressTimer);
+      state.longPressTimer = null;
+    }
+    state.longPressRow = null;
   }
 
-  function openContextMenu(row, { x = 0, y = 0, forceSheet = false } = {}) {
+  function openContextMenu(row) {
     if (!ctxMenu || !ctxPanel) return;
     const messageId = Number(row?.dataset?.messageId || 0);
     if (!messageId) return;
 
     state.ctxMessageId = messageId;
+    state.ctxRow = row;
+    state.ctxBodyPlain = row.dataset.bodyPlain || '';
     ctxMenu.dataset.messageId = String(messageId);
+
     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
+
+    const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
+    if (ctxPreview) ctxPreview.textContent = previewText;
+
     ctxReactions?.classList.add('d-none');
     ctxMenu.classList.remove('d-none');
-
-    const isTouchLike = forceSheet || window.matchMedia('(hover: none)').matches;
-    if (isTouchLike) {
-      ctxPanel.style.left = '50%';
-      ctxPanel.style.top = 'auto';
-      return;
-    }
-
-    const panelWidth = ctxPanel.offsetWidth || 220;
-    const panelHeight = ctxPanel.offsetHeight || 240;
-    const margin = 8;
-    const left = Math.min(Math.max(margin, x), window.innerWidth - panelWidth - margin);
-    const top = Math.min(Math.max(margin, y), window.innerHeight - panelHeight - margin);
-    ctxPanel.style.left = `${left}px`;
-    ctxPanel.style.top = `${top}px`;
+    ctxMenu.classList.add('is-open');
   }
 
   function closeContextMenu() {
     if (!ctxMenu) return;
     ctxMenu.classList.add('d-none');
+    ctxMenu.classList.remove('is-open');
     ctxMenu.dataset.messageId = '';
     state.ctxMessageId = null;
+    state.ctxRow = null;
+    state.ctxBodyPlain = '';
     ctxReactions?.classList.add('d-none');
   }
+
+  function makeContextPreviewText(row, bodyPlain) {
+    if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
+    const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
+    if (normalized) return normalized;
+    return '（画像）';
+  }
+
 
   async function copyTextWithFallback(text) {
     if (!text) return;
@@ -1684,7 +1772,7 @@
     const actionEl = e.target.closest('[data-ctx-action], .chat-reaction-emoji');
     if (!actionEl) return;
 
-    const row = document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
+    const row = state.ctxRow || document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
     const messageId = Number(row?.dataset?.messageId || 0);
     if (!row || !messageId) {
       closeContextMenu();
@@ -1715,7 +1803,8 @@
     }
     if (action === 'copy') {
       try {
-        await copyTextWithFallback(row.dataset.bodyPlain || '');
+        await copyTextWithFallback(state.ctxBodyPlain || row.dataset.bodyPlain || '');
+        alert('コピーしました');
       } catch (_err) {
         alert('コピーに失敗しました');
       }
@@ -1772,7 +1861,7 @@
     if (!row?.classList.contains('me')) return;
     const messageId = Number(row.dataset.messageId || 0);
     const senderId = row.dataset.senderId || '';
-    const indicator = row.querySelector('.chat-read-indicator');
+    const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
     const list = row.querySelector('.chat-read-list');
     if (!messageId || !indicator || !list) return;
 
