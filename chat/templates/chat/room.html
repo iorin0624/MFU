@@ -157,6 +157,42 @@
   line-height: 1.1;
 }
 
+.chat-edited-label {
+  font-size: 0.68rem;
+  color: #697187;
+  white-space: nowrap;
+}
+
+.chat-typing-indicator {
+  min-height: 1.1rem;
+  font-size: 0.82rem;
+  color: #5e6780;
+  margin: -4px 0 8px;
+}
+
+.chat-search-panel {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #d7dcef;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+}
+
+.chat-search-item {
+  width: 100%;
+  border: none;
+  background: #f7f9ff;
+  border-radius: 8px;
+  padding: 8px;
+  text-align: left;
+  margin-bottom: 6px;
+}
+
+.chat-search-item:last-child {
+  margin-bottom: 0;
+}
+
 .chat-read-inline {
   font-size: 0.72rem;
   color: #4d5c8f;
@@ -644,6 +680,13 @@
     {% endif %}
   </div>
 
+  <div class="mb-2 d-flex gap-2 align-items-center">
+    <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="🔎 このルームを検索">
+    <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary">検索</button>
+    <button type="button" id="chat-search-close" class="btn btn-sm btn-light d-none">閉じる</button>
+  </div>
+  <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+
   <div id="messages" class="chat-messages border rounded p-3 mb-3">
     {% set ns = namespace(last_date=None) %}
     {% for m in messages %}
@@ -668,6 +711,8 @@
            data-deleted-flag="{{ m.deleted_flag or 0 }}"
            data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
            data-can-delete="{{ 1 if m.can_delete else 0 }}"
+           data-can-edit="{{ 1 if m.can_edit else 0 }}"
+           data-edited-flag="{{ m.edited_flag or 0 }}"
            data-my-reaction="{{ m.my_reaction or '' }}"
            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
         <div class="chat-line">
@@ -735,6 +780,7 @@
                 {% if m.is_me %}
                   <div class="chat-read-inline d-none"></div>
                 {% endif %}
+                {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
                 <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
               </div>
             </div>
@@ -765,8 +811,11 @@
     <div id="reply-text" class="reply-text"></div>
   </div>
 
+  <div id="typing-indicator" class="chat-typing-indicator"></div>
+
   <form id="chat-form" class="d-flex gap-2 align-items-center">
     <input type="hidden" id="reply-to-id" value="">
+    <input type="hidden" id="edit-target-id" value="">
     <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
     <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
     <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
@@ -790,6 +839,7 @@
       <hr class="chat-ctx-sep">
       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
+      <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
@@ -884,7 +934,13 @@
   const replySender = document.getElementById('reply-sender');
   const replyText = document.getElementById('reply-text');
   const replyToInput = document.getElementById('reply-to-id');
+  const editTargetInput = document.getElementById('edit-target-id');
   const replyCancelBtn = document.getElementById('reply-cancel');
+  const typingIndicator = document.getElementById('typing-indicator');
+  const searchInput = document.getElementById('chat-search-input');
+  const searchBtn = document.getElementById('chat-search-btn');
+  const searchCloseBtn = document.getElementById('chat-search-close');
+  const searchPanel = document.getElementById('chat-search-panel');
   const imageViewer = document.getElementById('chatImageViewer');
   const imageViewerImg = document.getElementById('chatImageViewerImg');
   const imageViewerShareBtn = document.getElementById('chatImageViewerShare');
@@ -927,6 +983,11 @@
     longPressRow: null,
     ctxRow: null,
     ctxBodyPlain: '',
+    editTargetMessageId: null,
+    typingMembers: new Map(),
+    typingDebounceTimer: null,
+    typingStopTimer: null,
+    typingSent: false,
   };
 
   if (ctxReactions && ctxReactions.childElementCount === 0) {
@@ -952,7 +1013,10 @@
   }, { once: true });
 
   updateAutoGrow();
-  bodyInput?.addEventListener('input', updateAutoGrow);
+  bodyInput?.addEventListener('input', () => {
+    updateAutoGrow();
+    queueTypingStart();
+  });
 
   socket.on('chat_message', (msg) => {
     renderMessage(msg);
@@ -990,6 +1054,14 @@
     const messageId = Number(payload?.message_id || 0);
     if (!messageId) return;
     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
+  });
+  socket.on('chat_edit_update', (payload) => {
+    const messageId = Number(payload?.message_id || 0);
+    if (!messageId) return;
+    applyEditedState(messageId, payload?.body_html || '', payload?.body_plain_excerpt || '', Number(payload?.edited_flag || 0) === 1);
+  });
+  socket.on('chat_typing_update', (payload) => {
+    applyTypingUpdate(payload || {});
   });
 
 
@@ -1116,6 +1188,7 @@
   msgBox.addEventListener('pointermove', clearLongPressTimer);
 
   replyCancelBtn?.addEventListener('click', clearReplyState);
+  replyCancelBtn?.addEventListener('click', clearEditState);
   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
   imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
@@ -1143,6 +1216,14 @@
     if (ctxPanel?.contains(e.target)) return;
     closeContextMenu();
   });
+  searchBtn?.addEventListener('click', () => runRoomSearch());
+  searchCloseBtn?.addEventListener('click', hideSearchPanel);
+  searchInput?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    runRoomSearch();
+  });
+  window.addEventListener('beforeunload', () => sendTypingStop());
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
   imageInput?.addEventListener('change', async () => {
@@ -1155,6 +1236,7 @@
     }
 
     setSendingState(true);
+    sendTypingStop();
     try {
       const fd = new FormData();
       fd.append('csrf_token', csrfToken);
@@ -1204,7 +1286,12 @@
 
   function submitChatMessage() {
     if (!bodyInput || !sendBtn || sendBtn.disabled) return;
+    if (state.editTargetMessageId) {
+      submitEditMessage();
+      return;
+    }
     setSendingState(true);
+    sendTypingStop();
     socket.emit('chat_send', {
       event_id: eventId,
       room_id: roomId,
@@ -1214,6 +1301,31 @@
     bodyInput.value = '';
     updateAutoGrow();
     clearReplyState();
+  }
+
+  async function submitEditMessage() {
+    const messageId = Number(state.editTargetMessageId || 0);
+    if (!messageId || !bodyInput) return;
+    setSendingState(true);
+    sendTypingStop();
+    try {
+      const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csrf_token: csrfToken, room_id: roomId, body: bodyInput.value || '' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || '編集に失敗しました');
+      }
+      clearEditState();
+      bodyInput.value = '';
+      updateAutoGrow();
+    } catch (err) {
+      alert(err?.message || '編集に失敗しました');
+    } finally {
+      setSendingState(false);
+    }
   }
 
   if (pushBtn) {
@@ -1343,6 +1455,8 @@
     row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
     row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
     row.dataset.canDelete = canDeleteMessage(msg, isMe) ? '1' : '0';
+    row.dataset.canEdit = canEditMessage(msg, isMe) ? '1' : '0';
+    row.dataset.editedFlag = String(Number(msg.edited_flag || 0));
     row.dataset.myReaction = msg.my_reaction || '';
     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
@@ -1451,6 +1565,13 @@
     const time = document.createElement('div');
     time.className = 'chat-time';
     time.textContent = timeLabel;
+
+    if (Number(msg.edited_flag || 0) === 1) {
+      const edited = document.createElement('div');
+      edited.className = 'chat-edited-label';
+      edited.textContent = '編集済み';
+      metaCol.appendChild(edited);
+    }
     metaCol.appendChild(time);
 
     wrap.appendChild(bubble);
@@ -1492,6 +1613,16 @@
     return Date.now() <= expires;
   }
 
+  function canEditMessage(msg, isMe) {
+    if (Number(msg?.deleted_flag || 0) === 1) return false;
+    if (typeof msg?.can_edit !== 'undefined') return Boolean(msg.can_edit);
+    if (!isMe) return false;
+    const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
+    if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+    const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
+    return Date.now() <= expires;
+  }
+
   async function handleDeleteMessage(row, messageId) {
     if (!confirm('このメッセージを削除しますか？')) return;
     try {
@@ -1513,6 +1644,13 @@
   function applyDeletedState(messageId, deletedByActorType) {
     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+    if (Number(state.editTargetMessageId || 0) === Number(messageId)) {
+      clearEditState();
+      if (bodyInput) {
+        bodyInput.value = '';
+        updateAutoGrow();
+      }
+    }
     row.dataset.deletedFlag = '1';
     row.dataset.deletedByActorType = deletedByActorType || '';
     row.dataset.bodyPlain = deletedByActorType === 'admin' ? '管理者により、削除されました' : 'このメッセージは削除されました';
@@ -1534,6 +1672,9 @@
     if (reactionBox) reactionBox.remove();
 
     row.dataset.canDelete = '0';
+    row.dataset.canEdit = '0';
+    row.dataset.editedFlag = '0';
+    row.querySelector('.chat-edited-label')?.remove();
 
     const myReactionKey = String(messageId);
     state.reactionByMessage.set(myReactionKey, { reactionsSummary: [], myReaction: null });
@@ -1541,6 +1682,38 @@
     document.querySelectorAll(`.chat-row[data-reply-to-id="${messageId}"] .rq-text`).forEach((quoteText) => {
       quoteText.textContent = deletedByActorType === 'admin' ? '管理者により削除' : '削除されました';
     });
+  }
+
+  function applyEditedState(messageId, bodyHtml, bodyPlainExcerpt, editedFlag) {
+    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+    const bubble = row.querySelector('.chat-bubble');
+    if (!bubble) return;
+    let body = bubble.querySelector('.chat-body');
+    if (!body) {
+      body = document.createElement('div');
+      body.className = 'chat-body';
+      bubble.appendChild(body);
+    }
+    body.className = 'chat-body';
+    body.innerHTML = bodyHtml || '';
+    row.dataset.bodyPlain = bodyPlainExcerpt || makeExcerpt(body.textContent || '');
+    row.dataset.editedFlag = editedFlag ? '1' : '0';
+
+    const metaCol = row.querySelector('.chat-meta-col');
+    if (metaCol) {
+      let editedLabel = metaCol.querySelector('.chat-edited-label');
+      if (editedFlag) {
+        if (!editedLabel) {
+          editedLabel = document.createElement('div');
+          editedLabel.className = 'chat-edited-label';
+          editedLabel.textContent = '編集済み';
+          metaCol.insertBefore(editedLabel, metaCol.querySelector('.chat-time') || null);
+        }
+      } else if (editedLabel) {
+        editedLabel.remove();
+      }
+    }
   }
 
   function openImageViewer(imageUrls, startIndex = 0) {
@@ -1793,6 +1966,7 @@
   }
 
   function setReplyState(messageId, senderName, plainText, bubbleEl) {
+    clearEditState();
     if (state.selectedBubble) {
       state.selectedBubble.classList.remove('chat-selected-reply-target');
     }
@@ -1834,6 +2008,128 @@
     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
   }
 
+  function queueTypingStart() {
+    if (!bodyInput) return;
+    const hasValue = (bodyInput.value || '').trim().length > 0;
+    if (!hasValue) {
+      sendTypingStop();
+      return;
+    }
+    if (state.typingStopTimer) {
+      window.clearTimeout(state.typingStopTimer);
+      state.typingStopTimer = null;
+    }
+    if (state.typingDebounceTimer) {
+      window.clearTimeout(state.typingDebounceTimer);
+    }
+    state.typingDebounceTimer = window.setTimeout(() => {
+      socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: true });
+      state.typingSent = true;
+      state.typingDebounceTimer = null;
+    }, 500);
+    state.typingStopTimer = window.setTimeout(() => {
+      sendTypingStop();
+    }, 2000);
+  }
+
+  function sendTypingStop() {
+    if (state.typingDebounceTimer) {
+      window.clearTimeout(state.typingDebounceTimer);
+      state.typingDebounceTimer = null;
+    }
+    if (state.typingStopTimer) {
+      window.clearTimeout(state.typingStopTimer);
+      state.typingStopTimer = null;
+    }
+    if (!state.typingSent) return;
+    socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: false });
+    state.typingSent = false;
+  }
+
+  function applyTypingUpdate(payload) {
+    const actorType = payload?.actor_type || '';
+    const actorId = String(payload?.actor_id || '');
+    if (!actorType || !actorId) return;
+    const key = `${actorType}:${actorId}`;
+    if (key === meId) return;
+
+    if (payload?.is_typing) {
+      state.typingMembers.set(key, payload?.display_name || key);
+    } else {
+      state.typingMembers.delete(key);
+    }
+    renderTypingIndicator();
+  }
+
+  function renderTypingIndicator() {
+    if (!typingIndicator) return;
+    const names = Array.from(state.typingMembers.values());
+    if (!names.length) {
+      typingIndicator.textContent = '';
+      return;
+    }
+    if (names.length === 1) {
+      typingIndicator.textContent = `${names[0]}が入力中…`;
+      return;
+    }
+    if (names.length <= 3) {
+      typingIndicator.textContent = `${names.join('、')}が入力中…`;
+      return;
+    }
+    typingIndicator.textContent = `${names[0]}、${names[1]}、他${names.length - 2}人が入力中…`;
+  }
+
+  async function runRoomSearch() {
+    const keyword = String(searchInput?.value || '').trim();
+    if (!keyword) {
+      alert('検索キーワードを入力してください');
+      return;
+    }
+    const u = new URL(`/chat/api/events/${eventId}/search`, window.location.origin);
+    u.searchParams.set('room_id', roomId);
+    u.searchParams.set('q', keyword);
+    u.searchParams.set('limit', '50');
+    try {
+      const res = await fetch(u.toString(), { method: 'GET' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || '検索に失敗しました');
+      }
+      renderSearchResults(data?.results || []);
+    } catch (err) {
+      alert(err?.message || '検索に失敗しました');
+    }
+  }
+
+  function renderSearchResults(results) {
+    if (!searchPanel) return;
+    searchPanel.innerHTML = '';
+    if (!Array.isArray(results) || results.length === 0) {
+      searchPanel.innerHTML = '<div class="small text-muted">一致するメッセージはありません</div>';
+    } else {
+      results.forEach((item) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chat-search-item';
+        btn.dataset.messageId = String(item?.message_id || '');
+        btn.innerHTML = `<div class="small text-muted">${escapeHtml(item?.sender || '')} / ${escapeHtml(item?.time || '')}</div><div>${escapeHtml(item?.excerpt || '')}</div>`;
+        btn.addEventListener('click', () => {
+          hideSearchPanel();
+          jumpToMessage(item?.message_id);
+        });
+        searchPanel.appendChild(btn);
+      });
+    }
+    searchPanel.classList.remove('d-none');
+    searchCloseBtn?.classList.remove('d-none');
+  }
+
+  function hideSearchPanel() {
+    searchPanel?.classList.add('d-none');
+    if (searchPanel) searchPanel.innerHTML = '';
+    searchCloseBtn?.classList.add('d-none');
+  }
+
   function clearLongPressTimer() {
     if (state.longPressTimer) {
       window.clearTimeout(state.longPressTimer);
@@ -1854,6 +2150,8 @@
 
     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
+    const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
+    editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
 
     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
     if (ctxPreview) ctxPreview.textContent = previewText;
@@ -2026,6 +2324,15 @@
       closeContextMenu();
       return;
     }
+    if (action === 'edit') {
+      if (row.dataset.canEdit !== '1') {
+        closeContextMenu();
+        return;
+      }
+      setEditState(messageId, row.dataset.bodyPlain || '');
+      closeContextMenu();
+      return;
+    }
     if (action === 'delete') {
       if (row.dataset.canDelete !== '1') {
         closeContextMenu();
@@ -2033,6 +2340,30 @@
       }
       closeContextMenu();
       await handleDeleteMessage(row, messageId);
+    }
+  }
+
+  function setEditState(messageId, plainText) {
+    clearReplyState();
+    state.editTargetMessageId = messageId;
+    editTargetInput.value = String(messageId);
+    if (replySender) replySender.textContent = '編集中';
+    if (replyText) replyText.textContent = makeExcerpt(plainText || '');
+    replyPreview.classList.remove('d-none');
+    if (bodyInput) {
+      bodyInput.value = plainText || '';
+      updateAutoGrow();
+      bodyInput.focus();
+    }
+  }
+
+  function clearEditState() {
+    state.editTargetMessageId = null;
+    editTargetInput.value = '';
+    if (replySender?.textContent === '編集中') {
+      replySender.textContent = '';
+      replyText.textContent = '';
+      replyPreview.classList.add('d-none');
     }
   }
 
