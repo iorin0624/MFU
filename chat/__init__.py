@@ -95,6 +95,8 @@ CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_EDIT_SCHEMA_READY: bool | None = None
 CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_SEARCH_SCHEMA_READY: bool | None = None
+CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_THREAD_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -883,6 +885,76 @@ def _ensure_chat_search_schema() -> bool:
             db.close()
 
 
+def _ensure_chat_thread_schema() -> bool:
+    global CHAT_THREAD_SCHEMA_READY
+    if CHAT_THREAD_SCHEMA_READY is not None:
+        return CHAT_THREAD_SCHEMA_READY
+
+    with CHAT_THREAD_SCHEMA_CHECK_LOCK:
+        if CHAT_THREAD_SCHEMA_READY is not None:
+            return CHAT_THREAD_SCHEMA_READY
+
+        _ensure_chat_messages_room_schema()
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'thread_root_id'")
+            thread_column_rows = cur.fetchall() or []
+            if not thread_column_rows:
+                try:
+                    cur.execute("ALTER TABLE chat_messages ADD COLUMN thread_root_id BIGINT NULL AFTER reply_to_message_id")
+                    db.commit()
+                except Exception:
+                    current_app.logger.warning("chat auto-migration: add thread_root_id failed", exc_info=True)
+                    CHAT_THREAD_SCHEMA_READY = False
+                    return False
+
+            for idx_name, sql in (
+                (
+                    "idx_chat_thread_root",
+                    "ALTER TABLE chat_messages ADD KEY idx_chat_thread_root (event_id, room_id, thread_root_id, id)",
+                ),
+                (
+                    "idx_chat_thread_room",
+                    "ALTER TABLE chat_messages ADD KEY idx_chat_thread_room (event_id, room_id, id)",
+                ),
+            ):
+                try:
+                    cur.execute(f"SHOW INDEX FROM chat_messages WHERE Key_name='{idx_name}'")
+                    index_rows = cur.fetchall() or []
+                    if not index_rows:
+                        cur.execute(sql)
+                        db.commit()
+                except Exception:
+                    current_app.logger.warning("chat auto-migration: add %s failed", idx_name, exc_info=True)
+
+            try:
+                cur.execute(
+                    """
+                    UPDATE chat_messages child
+                    LEFT JOIN chat_messages parent ON parent.id = child.reply_to_message_id
+                    SET child.thread_root_id = COALESCE(parent.thread_root_id, child.reply_to_message_id)
+                    WHERE child.reply_to_message_id IS NOT NULL
+                      AND child.thread_root_id IS NULL
+                    """
+                )
+                db.commit()
+            except Exception:
+                current_app.logger.warning("chat auto-migration: backfill thread_root_id failed", exc_info=True)
+
+            cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'thread_root_id'")
+            verified_rows = cur.fetchall() or []
+            CHAT_THREAD_SCHEMA_READY = bool(verified_rows)
+            return CHAT_THREAD_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("chat thread schema ensure failed", exc_info=True)
+            CHAT_THREAD_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
 def _ensure_chat_read_state_room_schema() -> bool:
     if not _ensure_chat_read_state_schema() or not _ensure_chat_messages_room_schema():
         return False
@@ -1265,6 +1337,8 @@ def _present_message(
         "created_at_jst_time_hm": time_label,
         "body_plain_excerpt": deleted_text if deleted_flag else _build_plain_excerpt(body_value),
         "reply_to_message_id": msg.get("reply_to_message_id"),
+        "thread_root_id": msg.get("thread_root_id"),
+        "thread_reply_count": int(msg.get("thread_reply_count") or 0),
         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
         "reply_to_body_plain_excerpt": reply_excerpt,
         "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
@@ -1530,6 +1604,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
     has_image_schema = _ensure_chat_image_schema()
     has_delete_schema = _ensure_chat_delete_schema()
     has_edit_schema = _ensure_chat_edit_schema()
+    has_thread_schema = _ensure_chat_thread_schema()
     image_columns = (
         "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
         if has_image_schema
@@ -1550,6 +1625,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
         if has_edit_schema
         else "0 AS edited_flag, NULL AS edited_at"
     )
+    thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -1566,6 +1642,7 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
                        {image_columns},
                        {delete_columns},
                        {edit_columns},
+                       {thread_column},
                        m.reply_to_message_id,
                        p.sender_actor_type AS reply_to_sender_actor_type,
                        p.sender_actor_id AS reply_to_sender_actor_id,
@@ -1584,6 +1661,8 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
                 (event_id, effective_room_id, effective_room_id, limit),
             )
             rows = cur.fetchall() or []
+            if has_thread_schema:
+                _apply_thread_reply_count(event_id, effective_room_id, rows)
             for row in rows:
                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
                     if int(row.get("reply_to_deleted_flag") or 0) == 1:
@@ -1607,7 +1686,8 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
                    {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
                    {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'},
-                   {'edited_flag, edited_at' if has_edit_schema else '0 AS edited_flag, NULL AS edited_at'}
+                   {'edited_flag, edited_at' if has_edit_schema else '0 AS edited_flag, NULL AS edited_at'},
+                   {'thread_root_id' if has_thread_schema else 'NULL AS thread_root_id'}
               FROM chat_messages
              WHERE event_id=%s
                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
@@ -1617,6 +1697,8 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) 
             (event_id, effective_room_id, effective_room_id, limit),
         )
         rows = cur.fetchall() or []
+        if has_thread_schema:
+            _apply_thread_reply_count(event_id, effective_room_id, rows)
         for row in rows:
             row["reply_to_message_id"] = None
             row["reply_to_sender_actor_type"] = None
@@ -1637,12 +1719,14 @@ def _save_message(
     actor: dict[str, Any],
     body: str,
     reply_to_message_id: int | None = None,
+    thread_root_id: int | None = None,
     image_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = datetime.utcnow()
     _ensure_chat_messages_room_schema()
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
+    has_thread_schema = _ensure_chat_thread_schema()
     _ensure_chat_delete_schema()
     _ensure_chat_edit_schema()
     image_meta = image_meta or {}
@@ -1657,6 +1741,12 @@ def _save_message(
             insert_values.append(reply_to_message_id)
         else:
             reply_to_message_id = None
+
+        if has_thread_schema:
+            insert_columns.append("thread_root_id")
+            insert_values.append(thread_root_id)
+        else:
+            thread_root_id = None
 
         if has_image_schema:
             insert_columns.extend(["image_file", "image_thumb_file", "image_mime", "image_size", "image_width", "image_height"])
@@ -1688,6 +1778,7 @@ def _save_message(
             "body": body,
             "created_at": now,
             "reply_to_message_id": reply_to_message_id,
+            "thread_root_id": thread_root_id,
             "image_file": image_meta.get("image_file"),
             "image_thumb_file": image_meta.get("image_thumb_file"),
             "image_mime": image_meta.get("image_mime"),
@@ -2033,6 +2124,72 @@ def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
         message["reply_to_sender_display_name"] = "元メッセージ"
         message["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
     return message
+
+
+def _resolve_thread_root_id(event_id: int, room_id: str, reply_to_message_id: int | None) -> int | None:
+    if not reply_to_message_id:
+        return None
+    if not _ensure_chat_thread_schema():
+        return None
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, thread_root_id
+              FROM chat_messages
+             WHERE id=%s AND event_id=%s AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
+             LIMIT 1
+            """,
+            (reply_to_message_id, event_id, room_id, room_id),
+        )
+        parent = cur.fetchone()
+        if not parent:
+            raise ValueError("返信先メッセージが見つかりません")
+        return int(parent.get("thread_root_id") or parent["id"])
+    finally:
+        cur.close()
+        db.close()
+
+
+def _apply_thread_reply_count(event_id: int, room_id: str, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+
+    root_ids = {int(row.get("id") or 0) for row in rows}
+    root_ids.discard(0)
+    if not root_ids:
+        return
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        placeholders = ", ".join(["%s"] * len(root_ids))
+        cur.execute(
+            f"""
+            SELECT thread_root_id, COUNT(*) AS cnt
+              FROM chat_messages
+             WHERE event_id=%s
+               AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
+               AND COALESCE(deleted_flag, 0)=0
+               AND thread_root_id IN ({placeholders})
+             GROUP BY thread_root_id
+            """,
+            (event_id, room_id, room_id, *list(root_ids)),
+        )
+        counts = {int(row.get("thread_root_id") or 0): int(row.get("cnt") or 0) for row in (cur.fetchall() or [])}
+    except Exception:
+        current_app.logger.warning("chat thread count aggregation failed", exc_info=True)
+        counts = {}
+    finally:
+        cur.close()
+        db.close()
+
+    for row in rows:
+        row_id = int(row.get("id") or 0)
+        thread_root_id = int(row.get("thread_root_id") or 0)
+        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 and thread_root_id == row_id else 0
 
 
 def _check_rate_limit(actor: dict[str, Any], *, route: str, event_id: int | None = None, room_id: str | None = None) -> bool:
@@ -2583,6 +2740,7 @@ def room(event_id: int):
     _ensure_chat_rooms_schema()
     _ensure_chat_room_members_schema()
     _ensure_chat_messages_room_schema()
+    _ensure_chat_thread_schema()
     _ensure_chat_read_state_room_schema()
     _ensure_chat_delete_schema()
     _ensure_chat_edit_schema()
@@ -2644,6 +2802,7 @@ def upload_image(event_id: int):
     _ensure_chat_rooms_schema()
     _ensure_chat_room_members_schema()
     _ensure_chat_messages_room_schema()
+    _ensure_chat_thread_schema()
     _ensure_chat_edit_schema()
     actor = get_chat_actor()
     if not actor:
@@ -2708,6 +2867,8 @@ def upload_image(event_id: int):
 
     try:
         body = _validate_caption_optional(request.form.get("body") or "")
+        reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, request.form.get("reply_to_message_id"))
+        thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
     except ValueError as exc:
         status = 413 if "上限" in str(exc) else 400
         return jsonify({"ok": False, "error": str(exc)}), status
@@ -2741,7 +2902,7 @@ def upload_image(event_id: int):
             status = 413 if "上限" in str(exc) else 400
             return jsonify({"ok": False, "error": f"{idx}枚目({filename}): {str(exc)}"}), status
 
-    message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, None, image_meta=image_metas[0]))
+    message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id, thread_root_id, image_meta=image_metas[0]))
     message_id = int(message.get("id") or 0)
 
     db = get_db()
@@ -2799,7 +2960,7 @@ def upload_image(event_id: int):
         effective_room_id,
         actor,
         actor["display_name"],
-        body,
+        f"[スレッド] {body}" if message.get("thread_root_id") else body,
         int(message_payload["id"]),
         {"t0": now, "t1": now, "t2": now},
         has_image=True,
@@ -2812,6 +2973,7 @@ def upload_image(event_id: int):
 @chat_bp.post("/api/events/<int:event_id>/messages/<int:message_id>/delete")
 def delete_message(event_id: int, message_id: int):
     _ensure_chat_messages_room_schema()
+    _ensure_chat_thread_schema()
     actor = get_chat_actor()
     if not actor:
         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
@@ -3019,6 +3181,125 @@ def edit_message(event_id: int, message_id: int):
     )
     _audit_log("chat_edit", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_id, result="ok")
     return jsonify({"ok": True})
+
+
+@chat_bp.get("/api/events/<int:event_id>/threads/<int:root_message_id>")
+def get_thread_messages(event_id: int, root_message_id: int):
+    _ensure_chat_messages_room_schema()
+    _ensure_chat_thread_schema()
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
+
+    room_id = str(request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
+
+    limit_raw = request.args.get("limit") or 200
+    try:
+        limit = max(1, min(int(limit_raw), 200))
+    except (TypeError, ValueError):
+        limit = 200
+
+    has_reply_schema = _ensure_chat_reply_schema()
+    has_image_schema = _ensure_chat_image_schema()
+    has_delete_schema = _ensure_chat_delete_schema()
+    has_edit_schema = _ensure_chat_edit_schema()
+    image_columns = (
+        "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
+        if has_image_schema
+        else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
+    )
+    delete_columns = (
+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+        if has_delete_schema
+        else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
+    )
+    edit_columns = (
+        "m.edited_flag, m.edited_at"
+        if has_edit_schema
+        else "0 AS edited_flag, NULL AS edited_at"
+    )
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT m.id, m.event_id, m.room_id, m.sender_actor_type, m.sender_actor_id, m.sender_display_name,
+                   m.body, m.created_at, {image_columns}, {delete_columns}, {edit_columns},
+                   m.reply_to_message_id, m.thread_root_id,
+                   p.sender_actor_type AS reply_to_sender_actor_type,
+                   p.sender_actor_id AS reply_to_sender_actor_id,
+                   p.sender_display_name AS reply_to_sender_display_name,
+                   p.body AS reply_to_body,
+                   {'p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type' if has_delete_schema else '0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type'}
+              FROM chat_messages m
+              LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.event_id = m.event_id
+             WHERE m.id=%s AND m.event_id=%s AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
+             LIMIT 1
+            """,
+            (root_message_id, event_id, effective_room_id, effective_room_id),
+        )
+        root_row = cur.fetchone()
+        if not root_row:
+            return jsonify({"ok": False, "error": "スレッドが見つかりません"}), 404
+
+        if has_reply_schema and root_row.get("reply_to_message_id") and root_row.get("reply_to_sender_display_name"):
+            if int(root_row.get("reply_to_deleted_flag") or 0) == 1:
+                root_row["reply_to_body_plain_excerpt"] = "管理者により削除" if str(root_row.get("reply_to_deleted_by_actor_type") or "") == "admin" else "削除されました"
+            else:
+                root_row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(root_row.get("reply_to_body") or "")
+        elif has_reply_schema and root_row.get("reply_to_message_id"):
+            root_row["reply_to_sender_display_name"] = "元メッセージ"
+            root_row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+        else:
+            root_row["reply_to_sender_display_name"] = None
+            root_row["reply_to_body_plain_excerpt"] = None
+
+        cur.execute(
+            f"""
+            SELECT m.id, m.event_id, m.room_id, m.sender_actor_type, m.sender_actor_id, m.sender_display_name,
+                   m.body, m.created_at, {image_columns}, {delete_columns}, {edit_columns},
+                   m.reply_to_message_id, m.thread_root_id,
+                   p.sender_actor_type AS reply_to_sender_actor_type,
+                   p.sender_actor_id AS reply_to_sender_actor_id,
+                   p.sender_display_name AS reply_to_sender_display_name,
+                   p.body AS reply_to_body,
+                   {'p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type' if has_delete_schema else '0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type'}
+              FROM chat_messages m
+              LEFT JOIN chat_messages p ON p.id = m.reply_to_message_id AND p.event_id = m.event_id
+             WHERE m.event_id=%s
+               AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
+               AND m.thread_root_id=%s
+             ORDER BY m.id ASC
+             LIMIT %s
+            """,
+            (event_id, effective_room_id, effective_room_id, root_message_id, limit),
+        )
+        replies = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    for row in replies:
+        if has_reply_schema and row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
+            if int(row.get("reply_to_deleted_flag") or 0) == 1:
+                row["reply_to_body_plain_excerpt"] = "管理者により削除" if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin" else "削除されました"
+            else:
+                row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
+        elif has_reply_schema and row.get("reply_to_message_id"):
+            row["reply_to_sender_display_name"] = "元メッセージ"
+            row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+        else:
+            row["reply_to_sender_display_name"] = None
+            row["reply_to_body_plain_excerpt"] = None
+
+    avatar_cache: dict[str, str] = {}
+    root_payload = _present_message(root_row, actor, avatar_cache=avatar_cache)
+    replies_payload = [_present_message(r, actor, avatar_cache=avatar_cache) for r in replies]
+    return jsonify({"ok": True, "root": root_payload, "replies": replies_payload})
 
 
 @chat_bp.get("/api/events/<int:event_id>/search")
@@ -3652,6 +3933,9 @@ def on_send(data):
     if not _ensure_chat_edit_schema():
         emit("chat_error", {"error": "メッセージ編集機能の初期化に失敗しました"})
         return
+    if not _ensure_chat_thread_schema():
+        emit("chat_error", {"error": "スレッド機能の初期化に失敗しました"})
+        return
     if not _check_rate_limit(actor, route="chat_send", event_id=event_id, room_id=effective_room_id):
         emit("chat_error", {"error": RATE_LIMIT_ERROR_MESSAGE})
         return
@@ -3659,11 +3943,12 @@ def on_send(data):
     try:
         body = _validate_body(raw_body)
         reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, raw_reply_to_message_id)
+        thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
     except ValueError as exc:
         emit("chat_error", {"error": str(exc)})
         return
 
-    message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id))
+    message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id, thread_root_id))
 
     typing_key = _typing_state_key(event_id, effective_room_id, actor["actor_type"], str(actor["actor_id"]))
     with CHAT_TYPING_STATE_LOCK:
@@ -3686,7 +3971,7 @@ def on_send(data):
             target["actor_id"],
             {
                 "title": f"{actor['display_name']}さんからメンション",
-                "body": body,
+                "body": f"[スレッド] {body}" if thread_root_id else body,
                 "event_id": event_id,
                 "room_id": effective_room_id,
                 "url": f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': effective_room_id})}",
@@ -3697,7 +3982,7 @@ def on_send(data):
                 recipient_user_id=int(target["actor_id"]),
                 kind="chat_mention",
                 title=f"{actor['display_name']}さんからメンション",
-                body=body,
+                body=f"[スレッド] {body}" if thread_root_id else body,
                 event_id=event_id,
                 room_id=effective_room_id,
                 room_name=active_room_name,
@@ -3714,7 +3999,7 @@ def on_send(data):
         effective_room_id,
         actor,
         actor["display_name"],
-        body,
+        f"[スレッド] {body}" if thread_root_id else body,
         int(message_payload["id"]),
         {"t0": t0, "t1": t1, "t2": t2},
         has_image=bool(message.get("image_file")),
