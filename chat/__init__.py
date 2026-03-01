@@ -72,6 +72,8 @@ CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_IMAGE_SCHEMA_READY: bool | None = None
 CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
+CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_DELETE_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -439,6 +441,52 @@ def _ensure_chat_message_images_schema() -> bool:
             db.close()
 
 
+def _ensure_chat_delete_schema() -> bool:
+    global CHAT_DELETE_SCHEMA_READY
+    if CHAT_DELETE_SCHEMA_READY is not None:
+        return CHAT_DELETE_SCHEMA_READY
+
+    with CHAT_DELETE_SCHEMA_CHECK_LOCK:
+        if CHAT_DELETE_SCHEMA_READY is not None:
+            return CHAT_DELETE_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            definitions = {
+                "deleted_flag": "ALTER TABLE chat_messages ADD COLUMN deleted_flag TINYINT NOT NULL DEFAULT 0 AFTER created_at",
+                "deleted_at": "ALTER TABLE chat_messages ADD COLUMN deleted_at DATETIME NULL AFTER deleted_flag",
+                "deleted_by_actor_type": "ALTER TABLE chat_messages ADD COLUMN deleted_by_actor_type VARCHAR(16) NULL AFTER deleted_at",
+                "deleted_by_actor_id": "ALTER TABLE chat_messages ADD COLUMN deleted_by_actor_id VARCHAR(64) NULL AFTER deleted_by_actor_type",
+            }
+            for column_name, ddl in definitions.items():
+                cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
+                if cur.fetchone():
+                    continue
+                try:
+                    cur.execute(ddl)
+                except Exception:
+                    current_app.logger.warning("chat delete schema ensure column failed column=%s", column_name, exc_info=True)
+
+            db.commit()
+            missing_columns: list[str] = []
+            for column_name in definitions:
+                cur.execute(f"SHOW COLUMNS FROM chat_messages LIKE '{column_name}'")
+                if not cur.fetchone():
+                    missing_columns.append(column_name)
+            CHAT_DELETE_SCHEMA_READY = len(missing_columns) == 0
+            if missing_columns:
+                current_app.logger.warning("chat delete schema ensure missing columns=%s", ",".join(missing_columns))
+            return CHAT_DELETE_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("chat delete schema ensure failed", exc_info=True)
+            CHAT_DELETE_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
 def _ensure_chat_read_state_schema() -> bool:
     global CHAT_READ_STATE_SCHEMA_READY
     if CHAT_READ_STATE_SCHEMA_READY is not None:
@@ -634,6 +682,9 @@ def _present_message(
     sender_actor_id = str(msg["sender_actor_id"])
     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
+    deleted_flag = int(msg.get("deleted_flag") or 0) == 1
+    deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
+    deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
 
     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
@@ -645,7 +696,7 @@ def _present_message(
             avatar_cache=avatar_cache,
         )
 
-    raw_images = msg.get("images") or _fallback_images_from_message(msg)
+    raw_images = [] if deleted_flag else (msg.get("images") or _fallback_images_from_message(msg))
     images: list[dict[str, Any]] = []
     for image in raw_images:
         image_file = str(image.get("image_file") or "").strip()
@@ -666,6 +717,20 @@ def _present_message(
 
     has_image = bool(images)
     first_image = images[0] if images else None
+    body_value = "" if deleted_flag else (msg.get("body") or "")
+    body_html = deleted_text if deleted_flag else _linkify_escaped_text(body_value).replace("\n", "<br>")
+    reply_excerpt = msg.get("reply_to_body_plain_excerpt")
+    if not reply_excerpt and msg.get("reply_to_message_id"):
+        reply_excerpt = "元メッセージが見つかりません"
+
+    actor_is_admin = _is_admin_actor(current_actor)
+    is_me = str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])))
+    can_delete = False
+    if not deleted_flag:
+        if actor_is_admin:
+            can_delete = True
+        elif is_me and isinstance(msg.get("created_at"), datetime):
+            can_delete = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
 
     return {
         "id": msg["id"],
@@ -673,18 +738,23 @@ def _present_message(
         "sender_id": sender_id,
         "sender_display_name": msg["sender_display_name"],
         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
-        "body": msg["body"],
-        "body_html": _linkify_escaped_text(msg["body"] or "").replace("\n", "<br>"),
+        "body": body_value,
+        "body_html": body_html,
+        "deleted_flag": 1 if deleted_flag else 0,
+        "deleted_at": msg.get("deleted_at").isoformat() if msg.get("deleted_at") else None,
+        "deleted_by_actor_type": deleted_by_actor_type,
+        "deleted_by_actor_id": msg.get("deleted_by_actor_id"),
+        "deleted_text": deleted_text,
         "created_at_iso": created_at_iso,
         "created_at_jst_date_label": date_label,
         "created_at_jst_time_hm": time_label,
-        "body_plain_excerpt": _build_plain_excerpt(msg.get("body") or ""),
+        "body_plain_excerpt": deleted_text if deleted_flag else _build_plain_excerpt(body_value),
         "reply_to_message_id": msg.get("reply_to_message_id"),
         "reply_to_sender_display_name": msg.get("reply_to_sender_display_name"),
-        "reply_to_body_plain_excerpt": msg.get("reply_to_body_plain_excerpt"),
+        "reply_to_body_plain_excerpt": reply_excerpt,
         "reply_to_sender_avatar_url": reply_to_sender_avatar_url or _default_avatar_url(),
-        "reactions_summary": msg.get("reactions_summary") or [],
-        "my_reaction": msg.get("my_reaction"),
+        "reactions_summary": [] if deleted_flag else (msg.get("reactions_summary") or []),
+        "my_reaction": None if deleted_flag else msg.get("my_reaction"),
         "has_image": has_image,
         "images": images,
         "image_url": first_image.get("url") if first_image else None,
@@ -693,7 +763,8 @@ def _present_message(
         "image_size": first_image.get("size") if first_image else None,
         "image_width": first_image.get("width") if first_image else None,
         "image_height": first_image.get("height") if first_image else None,
-        "is_me": str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"]))),
+        "is_me": is_me,
+        "can_delete": can_delete,
     }
 
 
@@ -743,6 +814,12 @@ def _chat_csrf() -> str:
 
 def _is_admin() -> bool:
     return session.get("user") == "admin"
+
+
+def _is_admin_actor(actor: dict[str, Any] | None) -> bool:
+    if not actor:
+        return False
+    return str(actor.get("actor_type") or "") == "admin"
 
 
 def get_chat_actor() -> dict[str, Any] | None:
@@ -886,10 +963,21 @@ def _get_event(event_id: int) -> dict[str, Any] | None:
 def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
+    has_delete_schema = _ensure_chat_delete_schema()
     image_columns = (
         "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
         if has_image_schema
         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
+    )
+    delete_columns = (
+        "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+        if has_delete_schema
+        else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
+    )
+    reply_delete_columns = (
+        "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
+        if has_delete_schema
+        else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
     )
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -905,11 +993,13 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
                        m.body,
                        m.created_at,
                        {image_columns},
+                       {delete_columns},
                        m.reply_to_message_id,
                        p.sender_actor_type AS reply_to_sender_actor_type,
                        p.sender_actor_id AS reply_to_sender_actor_id,
                        p.sender_display_name AS reply_to_sender_display_name,
-                       p.body AS reply_to_body
+                       p.body AS reply_to_body,
+                       {reply_delete_columns}
                   FROM chat_messages m
                   LEFT JOIN chat_messages p
                          ON p.id = m.reply_to_message_id
@@ -923,7 +1013,14 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
             rows = cur.fetchall() or []
             for row in rows:
                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
-                    row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
+                    if int(row.get("reply_to_deleted_flag") or 0) == 1:
+                        row["reply_to_body_plain_excerpt"] = (
+                            "管理者により削除"
+                            if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
+                            else "削除されました"
+                        )
+                    else:
+                        row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
                 elif row.get("reply_to_message_id"):
                     row["reply_to_sender_display_name"] = "元メッセージ"
                     row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
@@ -935,7 +1032,8 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
         cur.execute(
             f"""
             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
-                   {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'}
+                   {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
+                   {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'}
               FROM chat_messages
              WHERE event_id=%s
              ORDER BY created_at DESC
@@ -950,6 +1048,8 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
             row["reply_to_sender_actor_id"] = None
             row["reply_to_sender_display_name"] = None
             row["reply_to_body_plain_excerpt"] = None
+            row["reply_to_deleted_flag"] = 0
+            row["reply_to_deleted_by_actor_type"] = None
         return list(reversed(rows))
     finally:
         cur.close()
@@ -966,6 +1066,7 @@ def _save_message(
     now = datetime.utcnow()
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
+    _ensure_chat_delete_schema()
     image_meta = image_meta or {}
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -1014,6 +1115,10 @@ def _save_message(
             "image_size": image_meta.get("image_size"),
             "image_width": image_meta.get("image_width"),
             "image_height": image_meta.get("image_height"),
+            "deleted_flag": 0,
+            "deleted_at": None,
+            "deleted_by_actor_type": None,
+            "deleted_by_actor_id": None,
         }
     finally:
         cur.close()
@@ -1307,7 +1412,9 @@ def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
     try:
         cur.execute(
             """
-            SELECT sender_actor_type, sender_actor_id, sender_display_name, body
+            SELECT sender_actor_type, sender_actor_id, sender_display_name, body,
+                   COALESCE(deleted_flag, 0) AS deleted_flag,
+                   deleted_by_actor_type
               FROM chat_messages
              WHERE id=%s AND event_id=%s
              LIMIT 1
@@ -1323,7 +1430,12 @@ def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
         message["reply_to_sender_actor_type"] = row["sender_actor_type"]
         message["reply_to_sender_actor_id"] = row["sender_actor_id"]
         message["reply_to_sender_display_name"] = row["sender_display_name"]
-        message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
+        if int(row.get("deleted_flag") or 0) == 1:
+            message["reply_to_body_plain_excerpt"] = (
+                "管理者により削除" if str(row.get("deleted_by_actor_type") or "") == "admin" else "削除されました"
+            )
+        else:
+            message["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("body") or "")
     else:
         message["reply_to_sender_actor_type"] = None
         message["reply_to_sender_actor_id"] = None
@@ -1800,6 +1912,7 @@ def room(event_id: int):
         abort(403)
 
     _ensure_chat_read_state_schema()
+    _ensure_chat_delete_schema()
 
     event = _get_event(event_id)
     if not event:
@@ -1851,6 +1964,8 @@ def upload_image(event_id: int):
         abort(403)
     if not _can_access_event(event_id, actor):
         abort(403)
+    if not _ensure_chat_delete_schema():
+        return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
     if not _ensure_chat_image_schema():
         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
     if not _ensure_chat_message_images_schema():
@@ -1999,6 +2114,95 @@ def upload_image(event_id: int):
     )
 
     return jsonify({"ok": True, "message": message_payload})
+
+
+@chat_bp.post("/api/events/<int:event_id>/messages/<int:message_id>/delete")
+def delete_message(event_id: int, message_id: int):
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
+    if not _can_access_event(event_id, actor):
+        return jsonify({"ok": False, "error": "このイベントにはアクセスできません"}), 403
+    if not _ensure_chat_delete_schema():
+        return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再試行してください"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    deleted_at: datetime | None = None
+    deleted_by_actor_type = actor.get("actor_type")
+    try:
+        cur.execute(
+            """
+            SELECT id, event_id, sender_actor_type, sender_actor_id, created_at,
+                   COALESCE(deleted_flag, 0) AS deleted_flag,
+                   deleted_at, deleted_by_actor_type
+              FROM chat_messages
+             WHERE id=%s AND event_id=%s
+             LIMIT 1
+            """,
+            (message_id, event_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
+
+        if int(row.get("deleted_flag") or 0) == 1:
+            return jsonify({"ok": True})
+
+        is_admin_actor = _is_admin_actor(actor)
+        actor_sender_id = _actor_sender_id(str(actor.get("actor_type") or ""), str(actor.get("actor_id") or ""))
+        message_sender_id = _actor_sender_id(
+            str(row.get("sender_actor_type") or ""),
+            str(row.get("sender_actor_id") or ""),
+        )
+
+        if not is_admin_actor and actor_sender_id != message_sender_id:
+            return jsonify({"ok": False, "error": "このメッセージを削除する権限がありません"}), 403
+
+        if not is_admin_actor:
+            created_at = row.get("created_at")
+            if not isinstance(created_at, datetime):
+                return jsonify({"ok": False, "error": "送信時刻の取得に失敗しました"}), 400
+            if created_at + timedelta(hours=12) < datetime.utcnow():
+                return jsonify({"ok": False, "error": "送信から12時間を過ぎたため、送信取消できません"}), 403
+
+        cur.execute(
+            """
+            UPDATE chat_messages
+               SET deleted_flag=1,
+                   deleted_at=NOW(),
+                   deleted_by_actor_type=%s,
+                   deleted_by_actor_id=%s
+             WHERE id=%s
+            """,
+            (actor.get("actor_type"), str(actor.get("actor_id") or ""), message_id),
+        )
+        cur.execute("SELECT deleted_at, deleted_by_actor_type FROM chat_messages WHERE id=%s LIMIT 1", (message_id,))
+        latest = cur.fetchone() or {}
+        deleted_at = latest.get("deleted_at")
+        deleted_by_actor_type = latest.get("deleted_by_actor_type") or deleted_by_actor_type
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    socketio.emit(
+        "chat_delete_update",
+        {
+            "event_id": event_id,
+            "message_id": message_id,
+            "deleted_flag": 1,
+            "deleted_at": deleted_at.isoformat() if deleted_at else None,
+            "deleted_by_actor_type": deleted_by_actor_type,
+        },
+        room=f"event:{event_id}",
+    )
+    return jsonify({"ok": True})
 
 
 @chat_bp.get("/api/push/bootstrap")
@@ -2257,6 +2461,9 @@ def on_send(data):
     if not event_id or not _can_access_event(event_id, actor):
         disconnect()
         return
+    if not _ensure_chat_delete_schema():
+        emit("chat_error", {"error": "メッセージ削除機能の初期化に失敗しました"})
+        return
     if not _check_rate_limit(actor):
         emit("chat_error", {"error": "送信間隔が短すぎます"})
         return
@@ -2322,6 +2529,9 @@ def on_react(data):
     if not _ensure_chat_reaction_schema():
         emit("chat_error", {"error": "リアクション機能の初期化に失敗しました"})
         return
+    if not _ensure_chat_delete_schema():
+        emit("chat_error", {"error": "メッセージ削除機能の初期化に失敗しました"})
+        return
 
     try:
         event_id = int((data or {}).get("event_id") or 0)
@@ -2342,9 +2552,13 @@ def on_react(data):
     cur = db.cursor(dictionary=True)
     changed_emoji: str | None = emoji
     try:
-        cur.execute("SELECT 1 FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (message_id, event_id))
-        if not cur.fetchone():
+        cur.execute("SELECT COALESCE(deleted_flag, 0) AS deleted_flag FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (message_id, event_id))
+        msg_row = cur.fetchone()
+        if not msg_row:
             emit("chat_error", {"error": "対象メッセージが見つかりません"})
+            return
+        if int(msg_row.get("deleted_flag") or 0) == 1:
+            emit("chat_error", {"error": "削除済みメッセージにはリアクションできません"})
             return
 
         cur.execute(
