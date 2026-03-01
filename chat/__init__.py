@@ -4496,6 +4496,7 @@ def on_send(data):
     room_id = str((data or {}).get("room_id") or "").strip() or None
     raw_body = (data or {}).get("body") or ""
     raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
+    raw_thread_root_id = (data or {}).get("thread_root_id")
 
     t0 = time.monotonic()
     _audit_log("chat_send", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="recv", body_len=len(raw_body))
@@ -4523,7 +4524,19 @@ def on_send(data):
     try:
         body = _validate_body(raw_body)
         reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, raw_reply_to_message_id)
-        thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
+        thread_root_id = None
+
+        if raw_thread_root_id not in (None, "", 0, "0"):
+            requested_thread_root_id = int(raw_thread_root_id)
+            if requested_thread_root_id <= 0:
+                raise ValueError("不正なスレッドIDです")
+            if not reply_to_message_id:
+                raise ValueError("スレッド返信には返信先が必要です")
+
+            resolved_thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
+            if resolved_thread_root_id != requested_thread_root_id:
+                raise ValueError("スレッドIDが一致しません")
+            thread_root_id = requested_thread_root_id
     except ValueError as exc:
         emit("chat_error", {"error": str(exc)})
         return
