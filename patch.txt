@@ -1,178 +1,619 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index ce70583bc178e8e5e4413bc6018d82ba7965799d..682acdd1fe23cbb50fdc2249c45c6089fa0efb0d 100644
+index 3e3b0122c4f4d29399314d385437e098ea2dcc87..53687720e0627a4ce395070c7fbcc014d9d3bdd5 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1604,115 +1604,119 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100)
-     has_image_schema = _ensure_chat_image_schema()
-     has_delete_schema = _ensure_chat_delete_schema()
-     has_edit_schema = _ensure_chat_edit_schema()
-     has_thread_schema = _ensure_chat_thread_schema()
-     image_columns = (
-         "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
-         if has_image_schema
-         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
-     )
-     delete_columns = (
-         "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
-         if has_delete_schema
-         else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
-     )
-     reply_delete_columns = (
-         "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
-         if has_delete_schema
-         else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
-     )
-     edit_columns = (
-         "m.edited_flag, m.edited_at"
-         if has_edit_schema
-         else "0 AS edited_flag, NULL AS edited_at"
-     )
-     thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
-+    timeline_thread_filter = "AND m.thread_root_id IS NULL" if has_thread_schema else ""
-+    timeline_thread_filter_plain = "AND thread_root_id IS NULL" if has_thread_schema else ""
+@@ -78,51 +78,52 @@ CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
+ CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_READ_STATE_SCHEMA_READY: bool | None = None
+ CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_REACTION_SCHEMA_READY: bool | None = None
+ CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_IMAGE_SCHEMA_READY: bool | None = None
+ CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
+ CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DELETE_SCHEMA_READY: bool | None = None
+ CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_ROOMS_SCHEMA_READY: bool | None = None
+ CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
+ CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
+ CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_EDIT_SCHEMA_READY: bool | None = None
+ CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_SEARCH_SCHEMA_READY: bool | None = None
+ CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_THREAD_SCHEMA_READY: bool | None = None
+ DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+ CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
+ CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
+-CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", "10485760")), 1)
++CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
++CHAT_UPLOAD_MAX_FILES = 6
+ PUSH_REQUEST_TIMEOUT_SECONDS = 6
+ PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
+ PUSH_LOG_SUPPRESSION_SECONDS = 300
+ PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
+ PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
+ PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
+ PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
+ PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
+ PUSH_ASYNC_INFLIGHT = 0
+ _LINKIFY_RE = re.compile(
+     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+ )
+ _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
+ CHAT_TYPING_STATE_LOCK = threading.Lock()
+ CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
+ CHAT_TYPING_TTL_SECONDS = 3
+ 
+ CHAT_RATE_LIMIT_LOCK = threading.Lock()
+ CHAT_RATE_LIMIT_MEMORY: dict[str, deque[float]] = {}
+ CHAT_RATE_LIMIT_MEMORY_MAX_KEYS = 5000
+ CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS = 60
+ CHAT_RATE_LIMIT_REDIS_CLIENT: Any | None = None
+ CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED = False
+ 
+ 
+@@ -1959,148 +1960,241 @@ def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, A
+         return {}
+     if not _ensure_chat_reaction_schema():
+         return {}
+ 
+     placeholders = ", ".join(["%s"] * len(message_ids))
      db = get_db()
      cur = db.cursor(dictionary=True)
      try:
-         if has_reply_schema:
-             cur.execute(
-                 f"""
-                 SELECT m.id,
-                        m.event_id,
-                        m.sender_actor_type,
-                        m.sender_actor_id,
-                        m.sender_display_name,
-                        m.body,
-                        m.created_at,
-                        {image_columns},
-                        {delete_columns},
-                        {edit_columns},
-                        {thread_column},
-                        m.reply_to_message_id,
-                        p.sender_actor_type AS reply_to_sender_actor_type,
-                        p.sender_actor_id AS reply_to_sender_actor_id,
-                        p.sender_display_name AS reply_to_sender_display_name,
-                        p.body AS reply_to_body,
-                        {reply_delete_columns}
-                   FROM chat_messages m
-                   LEFT JOIN chat_messages p
-                          ON p.id = m.reply_to_message_id
-                         AND p.event_id = m.event_id
-                  WHERE m.event_id=%s
-                    AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
-+                   {timeline_thread_filter}
-                  ORDER BY m.created_at DESC
-                  LIMIT %s
-                 """,
-                 (event_id, effective_room_id, effective_room_id, limit),
-             )
-             rows = cur.fetchall() or []
-             if has_thread_schema:
-                 _apply_thread_reply_count(event_id, effective_room_id, rows)
-             for row in rows:
-                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
-                     if int(row.get("reply_to_deleted_flag") or 0) == 1:
-                         row["reply_to_body_plain_excerpt"] = (
-                             "管理者により削除"
-                             if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
-                             else "削除されました"
-                         )
-                     else:
-                         row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
-                 elif row.get("reply_to_message_id"):
-                     row["reply_to_sender_display_name"] = "元メッセージ"
-                     row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
-                 else:
-                     row["reply_to_sender_display_name"] = None
-                     row["reply_to_body_plain_excerpt"] = None
-             return list(reversed(rows))
- 
+         params: tuple[Any, ...] = tuple(message_ids) + (actor["actor_type"], str(actor["actor_id"]))
          cur.execute(
              f"""
-             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
-                    {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
-                    {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'},
-                    {'edited_flag, edited_at' if has_edit_schema else '0 AS edited_flag, NULL AS edited_at'},
-                    {'thread_root_id' if has_thread_schema else 'NULL AS thread_root_id'}
-               FROM chat_messages
-              WHERE event_id=%s
-                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
-+               {timeline_thread_filter_plain}
-              ORDER BY created_at DESC
-              LIMIT %s
+             SELECT message_id, emoji
+               FROM chat_message_reactions
+              WHERE message_id IN ({placeholders})
+                AND actor_type=%s
+                AND actor_id=%s
              """,
-             (event_id, effective_room_id, effective_room_id, limit),
+             params,
          )
-         rows = cur.fetchall() or []
-         if has_thread_schema:
-             _apply_thread_reply_count(event_id, effective_room_id, rows)
-         for row in rows:
-             row["reply_to_message_id"] = None
-             row["reply_to_sender_actor_type"] = None
-             row["reply_to_sender_actor_id"] = None
-             row["reply_to_sender_display_name"] = None
-             row["reply_to_body_plain_excerpt"] = None
-             row["reply_to_deleted_flag"] = 0
-             row["reply_to_deleted_by_actor_type"] = None
-         return list(reversed(rows))
+         return {int(row["message_id"]): str(row.get("emoji") or "") for row in (cur.fetchall() or [])}
      finally:
          cur.close()
          db.close()
  
  
- def _save_message(
-     event_id: int,
-     room_id: str,
-@@ -2166,52 +2170,51 @@ def _apply_thread_reply_count(event_id: int, room_id: str, rows: list[dict[str,
-     cur = db.cursor(dictionary=True)
++class ChatUploadImageError(ValueError):
++    def __init__(self, code: str, message: str, status: int = 400, detail: dict[str, Any] | None = None):
++        super().__init__(message)
++        self.code = code
++        self.message = message
++        self.status = status
++        self.detail = detail or {}
++
++
++def _log_chat_upload_image_error(
++    *,
++    code: str,
++    event_id: int,
++    room_id: str | None,
++    actor: dict[str, Any] | None,
++    filename: str = "",
++    size: int | None = None,
++    mimetype: str = "",
++    err: str = "",
++) -> None:
++    current_app.logger.warning(
++        "action=chat_upload_image result=error code=%s event_id=%s room_id=%s actor=%s filename=%s size=%s mimetype=%s err=%s",
++        code,
++        event_id,
++        room_id or "",
++        _actor_log_id(actor),
++        filename,
++        size if size is not None else "",
++        mimetype,
++        err,
++    )
++
++
++def _upload_image_error_response(
++    *,
++    code: str,
++    message: str,
++    status: int,
++    detail: dict[str, Any] | None = None,
++):
++    payload: dict[str, Any] = {"ok": False, "code": code, "error": message}
++    if detail:
++        payload["detail"] = detail
++    return jsonify(payload), status
++
++
+ def _validate_caption_optional(raw: str) -> str:
+     caption = (raw or "").strip()
+     if len(caption) > MESSAGE_MAX_LEN:
+         raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
+     return html.escape(caption)
+ 
+ 
+ def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
+     fmt = (image_format or "").upper()
+     mapping: dict[str, tuple[str, str, bool]] = {
+         "JPEG": ("jpg", "image/jpeg", False),
+         "PNG": ("png", "image/png", False),
+         "WEBP": ("webp", "image/webp", False),
+-        "MPO": ("jpg", "image/jpeg", True),
+         "HEIF": ("jpg", "image/jpeg", True),
+         "HEIC": ("jpg", "image/jpeg", True),
+     }
+     if fmt not in mapping:
+         show_fmt = fmt or "unknown"
+-        raise ValueError(f"未対応の画像形式({show_fmt})です。JPEG/PNG/WEBP/MPO/HEICのみ対応")
++        raise ChatUploadImageError(
++            "unsupported_format",
++            f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: 不明（{show_fmt}）",
++            detail={"detected": show_fmt},
++        )
+     return mapping[fmt]
+ 
+ 
+ def _looks_like_mpo_bytes(raw_bytes: bytes) -> bool:
+     if len(raw_bytes) < 64:
+         return False
+     return raw_bytes[:2] == b"\xff\xd8" and b"MPF\x00" in raw_bytes[:4096]
+ 
+ 
+ def _looks_like_heif_bytes(raw_bytes: bytes) -> bool:
+     if len(raw_bytes) < 12:
+         return False
+     if raw_bytes[4:8] != b"ftyp":
+         return False
+     heif_brands = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1"}
+     major_brand = raw_bytes[8:12]
+     if major_brand in heif_brands:
+         return True
+     compatible = raw_bytes[16:64]
+     return any(brand in compatible for brand in heif_brands)
+ 
+ 
+-def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") -> dict[str, Any]:
++def _save_upload_image_files(event_id: int, storage: Any, filename: str = "", mimetype: str = "") -> dict[str, Any]:
+     os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
+     event_dir = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
+     os.makedirs(event_dir, exist_ok=True)
+ 
+     raw_bytes = storage.read()
+     if not isinstance(raw_bytes, (bytes, bytearray)):
+         raw_bytes = bytes(raw_bytes or b"")
+     image_size = len(raw_bytes)
++    detected = str(mimetype or "").strip()
+     if image_size <= 0:
+-        raise ValueError("画像ファイルが空です")
++        raise ChatUploadImageError(
++            "empty_file",
++            f"画像ファイルが空です。対象: {filename}（iPhoneの共有不具合で0バイトになることがあります。再選択して再送してください）",
++            detail={"filename": filename, "size": image_size},
++        )
+     if image_size > CHAT_UPLOAD_MAX_BYTES:
+-        raise ValueError("画像サイズが上限を超えています")
++        size_mb = image_size / (1024 * 1024)
++        raise ChatUploadImageError(
++            "file_too_large",
++            f"画像サイズが大きすぎます（最大20MB）。対象: {filename}（{size_mb:.2f}MB）",
++            status=413,
++            detail={"filename": filename, "size": image_size, "max_bytes": CHAT_UPLOAD_MAX_BYTES},
++        )
+ 
+     lower_name = (filename or "").lower()
+     looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif") or _looks_like_heif_bytes(raw_bytes)
+     looks_like_mpo = lower_name.endswith(".mpo") or _looks_like_mpo_bytes(raw_bytes)
+ 
+     if looks_like_heif and not HEIF_OPENER_AVAILABLE:
+-        raise ValueError(HEIC_UNSUPPORTED_MESSAGE)
++        raise ChatUploadImageError(
++            "convert_failed",
++            f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
++            detail={"filename": filename, "detected": "HEIC"},
++        )
+ 
      try:
-         placeholders = ", ".join(["%s"] * len(root_ids))
-         cur.execute(
-             f"""
-             SELECT thread_root_id, COUNT(*) AS cnt
-               FROM chat_messages
-              WHERE event_id=%s
-                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
-                AND COALESCE(deleted_flag, 0)=0
-                AND thread_root_id IN ({placeholders})
-              GROUP BY thread_root_id
-             """,
-             (event_id, room_id, room_id, *list(root_ids)),
+         with Image.open(io.BytesIO(raw_bytes)) as im:
+             image_format = (im.format or "").upper()
+-            if image_format == "MPO":
+-                try:
+-                    im.seek(0)
+-                except Exception:
+-                    pass
+-            ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
++            detected = image_format or detected or "unknown"
++            if image_format == "MPO" or looks_like_mpo:
++                raise ChatUploadImageError(
++                    "unsupported_format",
++                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（MPO） iPhoneのLive Photo/連写の可能性があります。Live Photoをオフにして撮影してください。",
++                    detail={"filename": filename, "detected": "MPO"},
++                )
++
++            try:
++                ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
++            except ChatUploadImageError as exc:
++                detected_fmt = str(exc.detail.get("detected") or detected or "unknown")
++                raise ChatUploadImageError(
++                    "unsupported_format",
++                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（{detected_fmt}）",
++                    detail={"filename": filename, "detected": detected_fmt},
++                ) from exc
++
+             normalized = ImageOps.exif_transpose(im)
+             width, height = normalized.size
+ 
+             if convert_original_to_jpeg:
+-                rgb = normalized.convert("RGB")
+-                original_buffer = io.BytesIO()
+-                rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
+-                original_bytes = original_buffer.getvalue()
+-                image_size = len(original_bytes)
++                try:
++                    rgb = normalized.convert("RGB")
++                    original_buffer = io.BytesIO()
++                    rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
++                    original_bytes = original_buffer.getvalue()
++                    image_size = len(original_bytes)
++                except Exception as exc:
++                    raise ChatUploadImageError(
++                        "convert_failed",
++                        f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
++                        detail={"filename": filename, "detected": image_format or "HEIC"},
++                    ) from exc
+             else:
+                 original_bytes = bytes(raw_bytes)
+ 
+             thumb_image = normalized.convert("RGBA")
++    except ChatUploadImageError:
++        raise
+     except UnidentifiedImageError as exc:
+-        if looks_like_heif:
+-            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
+-        raise ValueError("画像ファイルとして読み取れません。Live Photo/連写画像やHEIC形式の可能性があります") from exc
++        raise ChatUploadImageError(
++            "decode_failed",
++            f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}",
++            detail={"filename": filename, "detected": detected or "unknown"},
++        ) from exc
+     except OSError as exc:
+-        if looks_like_heif and not HEIF_OPENER_AVAILABLE:
+-            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
+-        if looks_like_mpo or "MPO" in str(exc).upper():
+-            raise ValueError("MPO画像の読み込みに失敗しました。Live Photo/連写画像の可能性があります。互換性優先で再撮影をお試しください") from exc
+-        raise ValueError("画像ファイルとして読み取れません") from exc
++        raise ChatUploadImageError(
++            "decode_failed",
++            f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}",
++            detail={"filename": filename, "detected": detected or "unknown"},
++        ) from exc
+ 
+     if image_size > CHAT_UPLOAD_MAX_BYTES:
+-        raise ValueError("画像サイズが上限を超えています")
++        size_mb = image_size / (1024 * 1024)
++        raise ChatUploadImageError(
++            "file_too_large",
++            f"画像サイズが大きすぎます（最大20MB）。対象: {filename}（{size_mb:.2f}MB）",
++            status=413,
++            detail={"filename": filename, "size": image_size, "max_bytes": CHAT_UPLOAD_MAX_BYTES},
++        )
+ 
+     base_name = secrets.token_urlsafe(18)
+     image_file = f"{base_name}.{ext}"
+     image_thumb_file = f"{base_name}_thumb.jpg"
+     image_path = os.path.join(event_dir, image_file)
+     thumb_path = os.path.join(event_dir, image_thumb_file)
+ 
+     with open(image_path, "wb") as fp:
+         fp.write(original_bytes)
+ 
+     thumb_image.thumbnail((480, 480))
+     bg = Image.new("RGB", thumb_image.size, (255, 255, 255))
+     bg.paste(thumb_image, mask=thumb_image.split()[3] if thumb_image.mode == "RGBA" else None)
+     bg.save(thumb_path, format="JPEG", quality=85, optimize=True)
+ 
+     return {
+         "image_file": image_file,
+         "image_thumb_file": image_thumb_file,
+         "image_mime": image_mime,
+         "image_size": image_size,
+         "image_width": width,
+         "image_height": height,
+     }
+ 
+ 
+@@ -2852,141 +2946,157 @@ def room(event_id: int):
+ def chat_image(event_id: int, name: str):
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     if not _can_access_event(event_id, actor):
+         abort(403)
+     if "/" in name or "\\" in name or name.startswith("."):
+         abort(404)
+     directory = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
+     return send_from_directory(directory, name)
+ 
+ 
+ @chat_bp.post("/api/events/<int:event_id>/upload-image")
+ def upload_image(event_id: int):
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     _ensure_chat_thread_schema()
+     _ensure_chat_edit_schema()
+     actor = get_chat_actor()
+     if not actor:
+         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
+     room_id = (request.form.get("room_id") or request.args.get("room_id") or (request.get_json(silent=True) or {}).get("room_id") or "").strip() or None
+     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+     if not allowed or not effective_room_id:
+-        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
++        _log_chat_upload_image_error(code="forbidden", event_id=event_id, room_id=effective_room_id or room_id, actor=actor, err="room_forbidden")
++        return _upload_image_error_response(code="forbidden", message="このルームには画像を送信できません", status=403)
+     if not _ensure_chat_delete_schema():
+         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
+     if not _ensure_chat_image_schema():
+         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
+     if not _ensure_chat_message_images_schema():
+         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
+ 
+     payload = request.get_json(silent=True) or {}
+     if not _check_rate_limit(actor, route="upload_image", event_id=event_id, room_id=effective_room_id):
+         return jsonify({"ok": False, "error": RATE_LIMIT_ERROR_MESSAGE}), 429
+ 
+     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         current_app.logger.info(
+             "chat upload-image csrf mismatch event_id=%s actor=%s:%s ua=%s",
+             event_id,
+             actor.get("actor_type"),
+             actor.get("actor_id"),
+             request.headers.get("User-Agent", ""),
          )
-         counts = {int(row.get("thread_root_id") or 0): int(row.get("cnt") or 0) for row in (cur.fetchall() or [])}
-     except Exception:
-         current_app.logger.warning("chat thread count aggregation failed", exc_info=True)
-         counts = {}
-     finally:
-         cur.close()
-         db.close()
+         return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再送してください"}), 400
  
-     for row in rows:
-         row_id = int(row.get("id") or 0)
--        thread_root_id = int(row.get("thread_root_id") or 0)
--        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 and thread_root_id == row_id else 0
-+        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 else 0
+-    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
+-        return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
++    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * CHAT_UPLOAD_MAX_FILES:
++        return _upload_image_error_response(code="file_too_large", message="画像サイズが大きすぎます（最大20MB）。対象ファイルを見直してください", status=413)
  
+     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
+     if not raw_upload_files:
+         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
+-    if len(raw_upload_files) > 6:
+-        return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
++    if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:
++        return _upload_image_error_response(code="too_many_files", message=f"画像は最大6枚まで送れます（現在: {len(raw_upload_files)}枚）", status=400, detail={"count": len(raw_upload_files), "max": CHAT_UPLOAD_MAX_FILES})
  
- def _check_rate_limit(actor: dict[str, Any], *, route: str, event_id: int | None = None, room_id: str | None = None) -> bool:
-     actor_key = _actor_log_id(actor)
-     now_ts = time.time()
-     redis_client = _get_rate_limit_redis_client()
+     def _fallback_filename(file_idx: int, upload_file: Any) -> str:
+         original_name = (getattr(upload_file, "filename", "") or "").strip()
+         if original_name:
+             return original_name
+         mimetype = str(getattr(upload_file, "mimetype", "") or "").lower()
+         if mimetype in {"image/jpeg", "image/jpg", "image/heic", "image/heif"}:
+             ext = "jpg"
+         elif mimetype == "image/png":
+             ext = "png"
+         elif mimetype == "image/webp":
+             ext = "webp"
+         else:
+             ext = "bin"
+         return f"upload_{file_idx}.{ext}"
  
-     if redis_client is not None:
-         sec_key = f"chat:rl:sec:{actor_key}"
-         min_key = f"chat:rl:min:{actor_key}"
+     upload_files: list[dict[str, Any]] = []
+     for idx, upload_file in enumerate(raw_upload_files, start=1):
+         normalized_name = _fallback_filename(idx, upload_file)
+         mimetype = str(getattr(upload_file, "mimetype", "") or "")
+         if mimetype and not mimetype.lower().startswith("image/"):
+-            return jsonify({"ok": False, "error": f"画像以外が混ざっています: {normalized_name}/{mimetype}"}), 400
++            msg = f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {normalized_name}（{mimetype}）"
++            _log_chat_upload_image_error(code="unsupported_format", event_id=event_id, room_id=effective_room_id, actor=actor, filename=normalized_name, mimetype=mimetype, err="mimetype_not_image")
++            return _upload_image_error_response(code="unsupported_format", message=msg, status=400, detail={"filename": normalized_name, "detected": mimetype})
+         upload_files.append({"idx": idx, "file": upload_file, "name": normalized_name, "mimetype": mimetype})
+ 
+     try:
+         body = _validate_caption_optional(request.form.get("body") or "")
+         reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, request.form.get("reply_to_message_id"))
+         thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
+     except ValueError as exc:
+         status = 413 if "上限" in str(exc) else 400
+         return jsonify({"ok": False, "error": str(exc)}), status
+ 
+     image_metas: list[dict[str, Any]] = []
+     for upload in upload_files:
+         idx = int(upload["idx"])
+         upload_file = upload["file"]
+         filename = str(upload["name"])
+         mimetype = str(upload.get("mimetype") or "")
+         current_app.logger.info(
+             "chat upload-image processing event_id=%s idx=%s filename=%s mimetype=%s size=%s",
+             event_id,
+             idx,
+             filename,
+             mimetype,
+             getattr(upload_file, "content_length", None),
+         )
          try:
-             sec_count = int(redis_client.incr(sec_key))
-             if sec_count == 1:
-                 redis_client.expire(sec_key, RATE_LIMIT_SECONDS)
+-            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename))
++            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename, mimetype=mimetype))
++        except ChatUploadImageError as exc:
++            size = exc.detail.get("size") if isinstance(exc.detail, dict) else None
++            _log_chat_upload_image_error(
++                code=exc.code,
++                event_id=event_id,
++                room_id=effective_room_id,
++                actor=actor,
++                filename=filename,
++                size=int(size) if isinstance(size, (int, float)) else getattr(upload_file, "content_length", None),
++                mimetype=mimetype,
++                err=exc.message,
++            )
++            return _upload_image_error_response(code=exc.code, message=exc.message, status=exc.status, detail=exc.detail)
+         except ValueError as exc:
+-            current_app.logger.warning(
+-                "chat upload-image invalid file event_id=%s idx=%s filename=%s mimetype=%s size=%s error=%s",
+-                event_id,
+-                idx,
+-                filename,
+-                mimetype,
+-                getattr(upload_file, "content_length", None),
+-                str(exc),
++            _log_chat_upload_image_error(
++                code="decode_failed",
++                event_id=event_id,
++                room_id=effective_room_id,
++                actor=actor,
++                filename=filename,
++                size=getattr(upload_file, "content_length", None),
++                mimetype=mimetype,
++                err=str(exc),
+             )
+-            status = 413 if "上限" in str(exc) else 400
+-            return jsonify({"ok": False, "error": f"{idx}枚目({filename}): {str(exc)}"}), status
++            return _upload_image_error_response(code="decode_failed", message=f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}", status=400, detail={"filename": filename})
  
-             min_count = int(redis_client.incr(min_key))
-             if min_count == 1:
-                 redis_client.expire(min_key, CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS)
+     message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id, thread_root_id, image_meta=image_metas[0]))
+     message_id = int(message.get("id") or 0)
  
-             allowed = sec_count <= RATE_LIMIT_PER_SECOND and min_count <= RATE_LIMIT_PER_MINUTE
-             if not allowed:
-                 _audit_log(
-                     "rate_limit",
-                     actor=actor_key,
-                     event_id=event_id,
+     db = get_db()
+     cur = db.cursor()
+     try:
+         now = datetime.utcnow()
+         for idx, image_meta in enumerate(image_metas, start=1):
+             cur.execute(
+                 """
+                 INSERT INTO chat_message_images (
+                     event_id, message_id, seq,
+                     image_file, image_thumb_file, image_mime,
+                     image_size, image_width, image_height, created_at
+                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 """,
+                 (
+                     event_id,
+                     message_id,
+                     idx,
+                     image_meta.get("image_file"),
+                     image_meta.get("image_thumb_file"),
+                     image_meta.get("image_mime"),
+                     image_meta.get("image_size"),
+
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 4229354c8d10bb9bd87bc31bc8c633bb57c4f1a4..db0050a9896eee3a11fd1b9476b0577779adb3f8 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -976,50 +976,51 @@
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
+       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
+     </form>
+     {% endif %}
+   </div>
+ </div>
+ 
+ <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+ (() => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
+ 
+   const eventId = Number(root.dataset.eventId);
+   const roomId = root.dataset.roomId || "";
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
+   const meId = root.dataset.me || '';
+   const myDisplayName = root.dataset.displayName || '';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const isAdmin = root.dataset.isAdmin === '1';
+   const isMobile = window.matchMedia('(hover: none)').matches;
+   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+   const maxUploadImages = 6;
++  const maxUploadImageBytes = 20 * 1024 * 1024;
+ 
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const maxInputLines = 6;
+   const pushBtn = document.getElementById('enable-push');
+   const roomSwitch = document.getElementById('chat-room-switch');
+   const roomCreateBtn = document.getElementById('chat-room-create-btn');
+   const roomMembersBtn = document.getElementById('chat-room-members-btn');
+   const roomCreateModal = document.getElementById('roomCreateModal');
+   const roomMembersModal = document.getElementById('roomMembersModal');
+   const threadModal = document.getElementById('threadModal');
+   const threadModalCloseBtn = document.getElementById('thread-modal-close');
+   const threadRootContainer = document.getElementById('thread-root');
+   const threadRepliesContainer = document.getElementById('thread-replies');
+   const threadForm = document.getElementById('thread-form');
+   const threadBodyInput = document.getElementById('thread-body');
+   const reactionDetailModal = document.getElementById('reactionDetailModal');
+   const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
+   const reactionDetailBody = document.getElementById('reaction-detail-body');
+   const imageInput = document.getElementById('chat-image-file');
+   const imageBtn = document.getElementById('chat-image-btn');
+   const sendBtn = document.getElementById('chat-send-btn');
+   const replyPreview = document.getElementById('reply-preview');
+   const replySender = document.getElementById('reply-sender');
+@@ -1355,51 +1356,59 @@
+   }, { passive: true });
+   window.addEventListener('scroll', () => {
+     clearLongPressTimer();
+     closeContextMenu();
+   }, { passive: true });
+   ctxMenu?.addEventListener('click', handleContextMenuClick);
+   document.addEventListener('pointerdown', (e) => {
+     if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
+     if (ctxPanel?.contains(e.target)) return;
+     closeContextMenu();
+   });
+   searchBtn?.addEventListener('click', () => runRoomSearch());
+   searchCloseBtn?.addEventListener('click', hideSearchPanel);
+   searchInput?.addEventListener('keydown', (e) => {
+     if (e.key !== 'Enter') return;
+     e.preventDefault();
+     runRoomSearch();
+   });
+   window.addEventListener('beforeunload', () => sendTypingStop());
+ 
+   imageBtn?.addEventListener('click', () => imageInput?.click());
+   imageInput?.addEventListener('change', async () => {
+     const files = Array.from(imageInput.files || []);
+     if (!files.length) return;
+     if (files.length > maxUploadImages) {
+-      alert('画像は最大6枚までです');
++      alert(`画像は最大6枚まで送れます（現在: ${files.length}枚）`);
++      imageInput.value = '';
++      return;
++    }
++
++    const tooLarge = files.find((file) => Number(file?.size || 0) > maxUploadImageBytes);
++    if (tooLarge) {
++      const sizeMb = (Number(tooLarge.size || 0) / (1024 * 1024)).toFixed(2);
++      alert(`画像サイズが大きすぎます（最大20MB）。対象: ${tooLarge.name || '名称不明'}（${sizeMb}MB）`);
+       imageInput.value = '';
+       return;
+     }
+ 
+     setSendingState(true);
+     sendTypingStop();
+     try {
+       const fd = new FormData();
+       fd.append('csrf_token', csrfToken);
+       files.forEach((file) => fd.append('file', file));
+       fd.append('body', bodyInput.value || '');
+       if (state.replyToId) fd.append('reply_to_message_id', String(state.replyToId));
+       const res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
+       const data = await res.json().catch(() => ({}));
+       if (!res.ok || !data.ok) {
+         throw new Error(data.error || '画像送信に失敗しました');
+       }
+       bodyInput.value = '';
+       updateAutoGrow();
+       clearReplyState();
+     } catch (err) {
+       alert(err?.message || '画像送信に失敗しました');
+     } finally {
+       imageInput.value = '';
+       setSendingState(false);
