@@ -10,6 +10,8 @@ import re
 import secrets
 import threading
 import time
+import uuid
+from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
@@ -74,6 +76,12 @@ CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
 CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_DELETE_SCHEMA_READY: bool | None = None
+CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_ROOMS_SCHEMA_READY: bool | None = None
+CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
+CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -525,6 +533,337 @@ def _ensure_chat_read_state_schema() -> bool:
             db.close()
 
 
+def _log_auto_migration_error(name: str, sql: str, event_id: int | None = None) -> None:
+    current_app.logger.warning(
+        "chat auto-migration failed name=%s event_id=%s sql=%s",
+        name,
+        event_id,
+        sql,
+        exc_info=True,
+    )
+
+
+def _ensure_chat_rooms_schema() -> bool:
+    global CHAT_ROOMS_SCHEMA_READY
+    if CHAT_ROOMS_SCHEMA_READY is not None:
+        return CHAT_ROOMS_SCHEMA_READY
+    with CHAT_ROOMS_SCHEMA_CHECK_LOCK:
+        if CHAT_ROOMS_SCHEMA_READY is not None:
+            return CHAT_ROOMS_SCHEMA_READY
+        db = get_db()
+        cur = db.cursor()
+        try:
+            sql = """
+            CREATE TABLE IF NOT EXISTS chat_rooms (
+              room_id VARCHAR(36) PRIMARY KEY,
+              event_id BIGINT NOT NULL,
+              room_name VARCHAR(80) NOT NULL,
+              is_main TINYINT NOT NULL DEFAULT 0,
+              is_archived TINYINT NOT NULL DEFAULT 0,
+              created_at DATETIME NOT NULL,
+              created_by_actor_type VARCHAR(16) NOT NULL,
+              created_by_actor_id VARCHAR(64) NOT NULL,
+              updated_at DATETIME NOT NULL,
+              updated_by_actor_type VARCHAR(16) NOT NULL,
+              updated_by_actor_id VARCHAR(64) NOT NULL,
+              UNIQUE KEY uq_chat_rooms_event_main (event_id, is_main),
+              KEY idx_chat_rooms_event (event_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            cur.execute(sql)
+            db.commit()
+            CHAT_ROOMS_SCHEMA_READY = True
+            return True
+        except Exception:
+            _log_auto_migration_error("_ensure_chat_rooms_schema", sql)
+            CHAT_ROOMS_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_room_members_schema() -> bool:
+    global CHAT_ROOM_MEMBERS_SCHEMA_READY
+    if CHAT_ROOM_MEMBERS_SCHEMA_READY is not None:
+        return CHAT_ROOM_MEMBERS_SCHEMA_READY
+    with CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK:
+        if CHAT_ROOM_MEMBERS_SCHEMA_READY is not None:
+            return CHAT_ROOM_MEMBERS_SCHEMA_READY
+        db = get_db()
+        cur = db.cursor()
+        try:
+            sql = """
+            CREATE TABLE IF NOT EXISTS chat_room_members (
+              id BIGINT AUTO_INCREMENT PRIMARY KEY,
+              room_id VARCHAR(36) NOT NULL,
+              actor_type VARCHAR(16) NOT NULL,
+              actor_id VARCHAR(64) NOT NULL,
+              added_at DATETIME NOT NULL,
+              added_by_actor_type VARCHAR(16) NOT NULL,
+              added_by_actor_id VARCHAR(64) NOT NULL,
+              UNIQUE KEY uq_chat_room_member (room_id, actor_type, actor_id),
+              KEY idx_chat_room_member_room (room_id),
+              KEY idx_chat_room_member_actor (actor_type, actor_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            cur.execute(sql)
+            db.commit()
+            CHAT_ROOM_MEMBERS_SCHEMA_READY = True
+            return True
+        except Exception:
+            _log_auto_migration_error("_ensure_chat_room_members_schema", sql)
+            CHAT_ROOM_MEMBERS_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_main_room(event_id: int) -> str | None:
+    if not _ensure_chat_rooms_schema():
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT room_id FROM chat_rooms WHERE event_id=%s AND is_main=1 LIMIT 1", (event_id,))
+        row = cur.fetchone()
+        if row and row.get("room_id"):
+            return str(row["room_id"])
+        room_id = str(uuid.uuid4())
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            INSERT INTO chat_rooms (
+              room_id, event_id, room_name, is_main, is_archived,
+              created_at, created_by_actor_type, created_by_actor_id,
+              updated_at, updated_by_actor_type, updated_by_actor_id
+            ) VALUES (%s,%s,%s,1,0,%s,'system','migration',%s,'system','migration')
+            """,
+            (room_id, event_id, "メイン", now, now),
+        )
+        db.commit()
+        return room_id
+    except Exception:
+        _log_auto_migration_error("_ensure_main_room", "INSERT chat_rooms is_main", event_id)
+        return None
+    finally:
+        cur.close()
+        db.close()
+
+
+def _ensure_chat_messages_room_schema() -> bool:
+    global CHAT_MESSAGES_ROOM_SCHEMA_READY
+    if CHAT_MESSAGES_ROOM_SCHEMA_READY is not None:
+        return CHAT_MESSAGES_ROOM_SCHEMA_READY
+    with CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK:
+        if CHAT_MESSAGES_ROOM_SCHEMA_READY is not None:
+            return CHAT_MESSAGES_ROOM_SCHEMA_READY
+        if not _ensure_chat_rooms_schema():
+            CHAT_MESSAGES_ROOM_SCHEMA_READY = False
+            return False
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'room_id'")
+            if not cur.fetchone():
+                sql = "ALTER TABLE chat_messages ADD COLUMN room_id VARCHAR(36) NULL AFTER event_id"
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    _log_auto_migration_error("_ensure_chat_messages_room_schema", sql)
+
+            cur.execute("SELECT DISTINCT event_id FROM chat_messages")
+            for row in cur.fetchall() or []:
+                event_id = int(row.get("event_id") or 0)
+                if event_id > 0:
+                    _ensure_main_room(event_id)
+
+            sql = """
+            UPDATE chat_messages m
+            JOIN chat_rooms r ON r.event_id=m.event_id AND r.is_main=1
+            SET m.room_id=r.room_id
+            WHERE m.room_id IS NULL
+            """
+            try:
+                cur.execute(sql)
+            except Exception:
+                _log_auto_migration_error("_ensure_chat_messages_room_schema", sql)
+
+            try:
+                sql = "ALTER TABLE chat_messages MODIFY COLUMN room_id VARCHAR(36) NOT NULL"
+                cur.execute(sql)
+            except Exception:
+                _log_auto_migration_error("_ensure_chat_messages_room_schema", sql)
+
+            try:
+                sql = "ALTER TABLE chat_messages ADD KEY idx_chat_messages_room (room_id, id)"
+                cur.execute(sql)
+            except Exception:
+                pass
+
+            db.commit()
+            CHAT_MESSAGES_ROOM_SCHEMA_READY = True
+            return True
+        except Exception:
+            _log_auto_migration_error("_ensure_chat_messages_room_schema", "chat_messages room migration")
+            CHAT_MESSAGES_ROOM_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_read_state_room_schema() -> bool:
+    if not _ensure_chat_read_state_schema() or not _ensure_chat_messages_room_schema():
+        return False
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SHOW COLUMNS FROM chat_read_state LIKE 'room_id'")
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE chat_read_state ADD COLUMN room_id VARCHAR(36) NULL AFTER event_id")
+
+        cur.execute("SELECT DISTINCT event_id FROM chat_read_state WHERE room_id IS NULL")
+        for row in cur.fetchall() or []:
+            event_id = int(row.get("event_id") or 0)
+            if event_id <= 0:
+                continue
+            main_room_id = _ensure_main_room(event_id)
+            if main_room_id:
+                cur.execute(
+                    "UPDATE chat_read_state SET room_id=%s WHERE event_id=%s AND room_id IS NULL",
+                    (main_room_id, event_id),
+                )
+        try:
+            cur.execute("ALTER TABLE chat_read_state MODIFY COLUMN room_id VARCHAR(36) NOT NULL")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE chat_read_state DROP INDEX uq_chat_read_state_actor")
+        except Exception:
+            pass
+        try:
+            cur.execute("ALTER TABLE chat_read_state ADD UNIQUE KEY uq_chat_read_state_actor_room (event_id, room_id, actor_type, actor_id)")
+        except Exception:
+            pass
+        db.commit()
+        return True
+    except Exception:
+        _log_auto_migration_error("_ensure_chat_read_state_room_schema", "chat_read_state room migration")
+        return False
+    finally:
+        cur.close()
+        db.close()
+
+
+def _get_room(event_id: int, room_id: str | None, *, allow_archived: bool = False) -> dict[str, Any] | None:
+    if not _ensure_chat_rooms_schema():
+        return None
+    target_room_id = room_id or _ensure_main_room(event_id)
+    if not target_room_id:
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        sql = "SELECT room_id,event_id,room_name,is_main,is_archived FROM chat_rooms WHERE event_id=%s AND room_id=%s LIMIT 1"
+        cur.execute(sql, (event_id, target_room_id))
+        room = cur.fetchone()
+        if not room:
+            return None
+        if not allow_archived and int(room.get("is_archived") or 0) == 1:
+            return None
+        return room
+    finally:
+        cur.close()
+        db.close()
+
+
+def _is_room_member(room_id: str, actor: dict[str, Any]) -> bool:
+    if not _ensure_chat_room_members_schema():
+        return False
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT 1 FROM chat_room_members WHERE room_id=%s AND actor_type=%s AND actor_id=%s LIMIT 1",
+            (room_id, actor.get("actor_type"), str(actor.get("actor_id") or "")),
+        )
+        return bool(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def _can_manage_rooms(event_id: int, actor: dict[str, Any]) -> bool:
+    if actor.get("actor_type") == "admin":
+        return True
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        if actor.get("actor_type") == "line":
+            cur.execute(
+                "SELECT 1 FROM mfu_event_member WHERE event_id=%s AND user_id=%s AND (COALESCE(is_host,0)=1 OR COALESCE(is_subhost,0)=1) LIMIT 1",
+                (event_id, actor.get("actor_id")),
+            )
+            if cur.fetchone():
+                return True
+        cur.execute(
+            "SELECT 1 FROM mfu_event_admin_acl WHERE event_id=%s AND username=%s LIMIT 1",
+            (event_id, actor.get("actor_id")),
+        )
+        return bool(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def _can_access_room(event_id: int, room_id: str | None, actor: dict[str, Any]) -> tuple[bool, str | None, dict[str, Any] | None]:
+    if not _can_access_event(event_id, actor):
+        return False, None, None
+    room = _get_room(event_id, room_id)
+    if not room:
+        return False, None, None
+    rid = str(room.get("room_id") or "")
+    if int(room.get("is_main") or 0) == 1:
+        return True, rid, room
+    if _is_room_member(rid, actor):
+        return True, rid, room
+    return False, rid, room
+
+
+def _list_accessible_rooms(event_id: int, actor: dict[str, Any]) -> list[dict[str, Any]]:
+    main_room = _ensure_main_room(event_id)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT room_id, room_name, is_main
+              FROM chat_rooms
+             WHERE event_id=%s
+               AND is_archived=0
+               AND (
+                    is_main=1
+                    OR room_id IN (
+                        SELECT room_id
+                          FROM chat_room_members
+                         WHERE actor_type=%s AND actor_id=%s
+                    )
+               )
+             ORDER BY is_main DESC, room_name ASC
+            """,
+            (event_id, actor.get("actor_type"), str(actor.get("actor_id") or "")),
+        )
+        rooms = cur.fetchall() or []
+        if main_room and not any(str(r.get("room_id")) == main_room for r in rooms):
+            rooms.insert(0, {"room_id": main_room, "room_name": "メイン", "is_main": 1})
+        return rooms
+    finally:
+        cur.close()
+        db.close()
+
+
 def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
     participants: dict[str, dict[str, str]] = {"admin:admin": {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}}
 
@@ -575,8 +914,8 @@ def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
     return participants
 
 
-def _load_event_read_state_snapshot(event_id: int) -> list[dict[str, Any]]:
-    if not _ensure_chat_read_state_schema():
+def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
+    if not _ensure_chat_read_state_room_schema():
         return []
 
     participants = _build_chat_participants(event_id)
@@ -587,9 +926,9 @@ def _load_event_read_state_snapshot(event_id: int) -> list[dict[str, Any]]:
             """
             SELECT actor_type, actor_id, last_read_message_id, updated_at
               FROM chat_read_state
-             WHERE event_id=%s
+             WHERE event_id=%s AND room_id=%s
             """,
-            (event_id,),
+            (event_id, room_id),
         )
         rows = cur.fetchall() or []
     finally:
@@ -616,8 +955,8 @@ def _load_event_read_state_snapshot(event_id: int) -> list[dict[str, Any]]:
     return snapshot
 
 
-def _upsert_chat_read_state(event_id: int, actor: dict[str, Any], last_seen_message_id: int) -> int:
-    if not _ensure_chat_read_state_schema():
+def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> int:
+    if not _ensure_chat_read_state_room_schema():
         return 0
 
     now = datetime.utcnow()
@@ -626,22 +965,22 @@ def _upsert_chat_read_state(event_id: int, actor: dict[str, Any], last_seen_mess
     try:
         cur.execute(
             """
-            INSERT INTO chat_read_state (event_id, actor_type, actor_id, last_read_message_id, updated_at)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO chat_read_state (event_id, room_id, actor_type, actor_id, last_read_message_id, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
               last_read_message_id = GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
               updated_at = VALUES(updated_at)
             """,
-            (event_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
+            (event_id, room_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
         )
         cur.execute(
             """
             SELECT last_read_message_id
               FROM chat_read_state
-             WHERE event_id=%s AND actor_type=%s AND actor_id=%s
+             WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
              LIMIT 1
             """,
-            (event_id, actor["actor_type"], actor["actor_id"]),
+            (event_id, room_id, actor["actor_type"], actor["actor_id"]),
         )
         row = cur.fetchone() or {}
         db.commit()
@@ -960,7 +1299,9 @@ def _get_event(event_id: int) -> dict[str, Any] | None:
         db.close()
 
 
-def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
+def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    _ensure_chat_messages_room_schema()
+    effective_room_id = room_id or _ensure_main_room(event_id)
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
     has_delete_schema = _ensure_chat_delete_schema()
@@ -1005,10 +1346,11 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
                          ON p.id = m.reply_to_message_id
                         AND p.event_id = m.event_id
                  WHERE m.event_id=%s
+                   AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
                  ORDER BY m.created_at DESC
                  LIMIT %s
                 """,
-                (event_id, limit),
+                (event_id, effective_room_id, effective_room_id, limit),
             )
             rows = cur.fetchall() or []
             for row in rows:
@@ -1036,10 +1378,11 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
                    {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'}
               FROM chat_messages
              WHERE event_id=%s
+               AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
              ORDER BY created_at DESC
              LIMIT %s
             """,
-            (event_id, limit),
+            (event_id, effective_room_id, effective_room_id, limit),
         )
         rows = cur.fetchall() or []
         for row in rows:
@@ -1058,12 +1401,14 @@ def _load_messages(event_id: int, limit: int = 100) -> list[dict[str, Any]]:
 
 def _save_message(
     event_id: int,
+    room_id: str,
     actor: dict[str, Any],
     body: str,
     reply_to_message_id: int | None = None,
     image_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = datetime.utcnow()
+    _ensure_chat_messages_room_schema()
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
     _ensure_chat_delete_schema()
@@ -1071,8 +1416,8 @@ def _save_message(
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        insert_columns = ["event_id", "sender_actor_type", "sender_actor_id", "sender_display_name", "body", "created_at"]
-        insert_values: list[Any] = [event_id, actor["actor_type"], actor["actor_id"], actor["display_name"], body, now]
+        insert_columns = ["event_id", "room_id", "sender_actor_type", "sender_actor_id", "sender_display_name", "body", "created_at"]
+        insert_values: list[Any] = [event_id, room_id, actor["actor_type"], actor["actor_id"], actor["display_name"], body, now]
 
         if has_reply_schema:
             insert_columns.append("reply_to_message_id")
@@ -1103,6 +1448,7 @@ def _save_message(
         return {
             "id": msg_id,
             "event_id": event_id,
+            "room_id": room_id,
             "sender_actor_type": actor["actor_type"],
             "sender_actor_id": actor["actor_id"],
             "sender_display_name": actor["display_name"],
@@ -1366,7 +1712,7 @@ def _validate_body(raw: str) -> str:
     return html.escape(body)
 
 
-def _validate_reply_to_message_id(event_id: int, raw_value: Any) -> int | None:
+def _validate_reply_to_message_id(event_id: int, room_id: str, raw_value: Any) -> int | None:
     if raw_value in (None, "", 0, "0"):
         return None
     if not _ensure_chat_reply_schema():
@@ -1381,7 +1727,7 @@ def _validate_reply_to_message_id(event_id: int, raw_value: Any) -> int | None:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT id FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (reply_to_message_id, event_id))
+        cur.execute("SELECT id FROM chat_messages WHERE id=%s AND event_id=%s AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL)) LIMIT 1", (reply_to_message_id, event_id, room_id, room_id))
         if not cur.fetchone():
             raise ValueError("返信先メッセージが見つかりません")
         return reply_to_message_id
@@ -1463,7 +1809,7 @@ def _extract_mentions(body: str) -> list[str]:
     return re.findall(r"@([\w\-ぁ-んァ-ン一-龥ー]+)", body)
 
 
-def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, Any]]:
+def _lookup_mention_targets(event_id: int, room_id: str, names: list[str]) -> list[dict[str, Any]]:
     if not names:
         return []
     uniq_names = sorted(set(names))
@@ -1482,36 +1828,64 @@ def _lookup_mention_targets(event_id: int, names: list[str]) -> list[dict[str, A
             tuple([event_id] + uniq_names),
         )
         rows = cur.fetchall() or []
-        return [{"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]} for r in rows]
+        return [
+            {"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]}
+            for r in rows
+            if _can_notify_actor_in_room(event_id, room_id, "line", str(r["id"]))
+        ]
     finally:
         cur.close()
         db.close()
 
 
-def _build_chat_message_push_targets(event_id: int, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
+def _can_notify_actor_in_room(event_id: int, room_id: str, actor_type: str, actor_id: str) -> bool:
+    room = _get_room(event_id, room_id, allow_archived=True)
+    if not room:
+        return False
+    if int(room.get("is_main") or 0) == 1:
+        return True
+    return _is_room_member(room_id, {"actor_type": actor_type, "actor_id": actor_id})
+
+
+def _build_chat_message_push_targets(event_id: int, room_id: str, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
     sender_key = _actor_sender_id(sender_actor["actor_type"], str(sender_actor["actor_id"]))
     targets: set[tuple[str, str]] = set()
+    room = _get_room(event_id, room_id, allow_archived=True)
+    if not room:
+        return []
 
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
-        for row in cur.fetchall() or []:
-            targets.add(("line", str(row["user_id"])))
+        if int(room.get("is_main") or 0) == 1:
+            cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+            for row in cur.fetchall() or []:
+                targets.add(("line", str(row["user_id"])))
 
-        cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
-        for row in cur.fetchall() or []:
-            username = str(row["username"])
-            if username == "admin":
-                targets.add(("admin", "admin"))
-            else:
-                targets.add(("acl", username))
+            cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+            for row in cur.fetchall() or []:
+                username = str(row["username"])
+                if username == "admin":
+                    targets.add(("admin", "admin"))
+                else:
+                    targets.add(("acl", username))
+        else:
+            cur.execute(
+                "SELECT actor_type, actor_id FROM chat_room_members WHERE room_id=%s",
+                (room_id,),
+            )
+            for row in cur.fetchall() or []:
+                actor_type = str(row.get("actor_type") or "")
+                actor_id = str(row.get("actor_id") or "")
+                if actor_type and actor_id:
+                    targets.add((actor_type, actor_id))
     finally:
         cur.close()
         db.close()
 
-    targets.add(("admin", "admin"))
-    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key]
+    if int(room.get("is_main") or 0) == 1:
+        targets.add(("admin", "admin"))
+    return [t for t in targets if _actor_sender_id(t[0], t[1]) != sender_key and _can_notify_actor_in_room(event_id, room_id, t[0], t[1])]
 
 
 def _create_external_chat_notification(
@@ -1521,18 +1895,28 @@ def _create_external_chat_notification(
     title: str,
     body: str,
     event_id: int,
+    room_id: str | None,
+    room_name: str | None,
     dedup_key: str,
 ) -> None:
     if not dedup_key:
         return
     from app.external_login_user.notifications import create_notification_external
 
+    params = {"event_id": event_id}
+    if room_id:
+        params["room_id"] = room_id
+    target_url = f"/chat/events/{event_id}?{urlencode(params)}"
+    title_text = title
+    if room_name:
+        title_text = f"[{room_name}] {title}"
+
     create_notification_external(
         user_id=recipient_user_id,
         kind=kind,
-        title=title,
+        title=title_text,
         body=_build_plain_excerpt(body, max_len=300),
-        target_url=f"/chat/events/{event_id}",
+        target_url=target_url,
         dedup_key=dedup_key,
         event_id=event_id,
     )
@@ -1541,6 +1925,7 @@ def _create_external_chat_notification(
 def _send_chat_message_push_async(
     app: Any,
     event_id: int,
+    room_id: str,
     sender_actor: dict[str, Any],
     sender_display_name: str,
     message_body: str,
@@ -1577,7 +1962,8 @@ def _send_chat_message_push_async(
             payload = {
                 "type": "chat_message",
                 "event_id": event_id,
-                "url": f"/chat/events/{event_id}",
+                "room_id": room_id,
+                "url": f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
                 "title": "イベントチャット",
                 "body": payload_body,
             }
@@ -1585,9 +1971,15 @@ def _send_chat_message_push_async(
             event = _get_event(event_id)
             if event and event.get("title"):
                 payload["title"] = str(event.get("title"))
+            room = _get_room(event_id, room_id, allow_archived=True)
+            room_name = str(room.get("room_name") or "") if room else ""
+            if room_name:
+                payload["title"] = f"[{room_name}] {payload['title']}"
 
             sent_count = 0
-            for actor_type, actor_id in _build_chat_message_push_targets(event_id, sender_actor):
+            for actor_type, actor_id in _build_chat_message_push_targets(event_id, room_id, sender_actor):
+                if not _can_notify_actor_in_room(event_id, room_id, actor_type, actor_id):
+                    continue
                 actor_push_metrics["target_actors"] += 1
                 sent_count += _send_push_to_actor(actor_type, actor_id, payload, metrics=actor_push_metrics)
                 if actor_type == "line":
@@ -1596,8 +1988,8 @@ def _send_chat_message_push_async(
                         kind="chat_message",
                         title=str(payload.get("title") or "イベントチャット"),
                         body=str(payload.get("body") or message_body),
-                        target_url=f"/chat/events/{event_id}",
-                        dedup_key=f"chat:{event_id}:{message_id}:{actor_id}",
+                        target_url=f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
+                        dedup_key=f"chat:{event_id}:{room_id}:{message_id}:{actor_id}",
                         event_id=event_id,
                     )
                     if inserted:
@@ -1643,6 +2035,7 @@ def _send_chat_message_push_async(
 def _submit_chat_message_push_async(
     app: Any,
     event_id: int,
+    room_id: str,
     sender_actor: dict[str, Any],
     sender_display_name: str,
     message_body: str,
@@ -1667,6 +2060,7 @@ def _submit_chat_message_push_async(
         _send_chat_message_push_async,
         app,
         event_id,
+        room_id,
         sender_actor,
         sender_display_name,
         message_body,
@@ -1911,14 +2305,22 @@ def room(event_id: int):
     if not _can_access_event(event_id, actor):
         abort(403)
 
-    _ensure_chat_read_state_schema()
+    _ensure_chat_rooms_schema()
+    _ensure_chat_room_members_schema()
+    _ensure_chat_messages_room_schema()
+    _ensure_chat_read_state_room_schema()
     _ensure_chat_delete_schema()
+
+    requested_room_id = (request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, active_room = _can_access_room(event_id, requested_room_id, actor)
+    if not allowed or not effective_room_id or not active_room:
+        abort(403)
 
     event = _get_event(event_id)
     if not event:
         abort(404)
     avatar_cache: dict[str, str] = {}
-    raw_messages = _load_messages(event_id)
+    raw_messages = _load_messages(event_id, effective_room_id)
     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
@@ -1931,6 +2333,7 @@ def room(event_id: int):
         message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
+    accessible_rooms = _list_accessible_rooms(event_id, actor)
     return render_template(
         "chat/room.html",
         actor=actor,
@@ -1940,6 +2343,9 @@ def room(event_id: int):
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
         csrf_token=_chat_csrf(),
         can_broadcast=can_broadcast,
+        can_manage_rooms=_can_manage_rooms(event_id, actor),
+        accessible_rooms=accessible_rooms,
+        active_room=active_room,
         default_avatar_url=_default_avatar_url(),
     )
 
@@ -1959,10 +2365,15 @@ def chat_image(event_id: int, name: str):
 
 @chat_bp.post("/api/events/<int:event_id>/upload-image")
 def upload_image(event_id: int):
+    _ensure_chat_rooms_schema()
+    _ensure_chat_room_members_schema()
+    _ensure_chat_messages_room_schema()
     actor = get_chat_actor()
     if not actor:
         abort(403)
-    if not _can_access_event(event_id, actor):
+    room_id = (request.form.get("room_id") or request.args.get("room_id") or (request.get_json(silent=True) or {}).get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
         abort(403)
     if not _ensure_chat_delete_schema():
         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
@@ -2050,7 +2461,7 @@ def upload_image(event_id: int):
             status = 413 if "上限" in str(exc) else 400
             return jsonify({"ok": False, "error": f"{idx}枚目({filename}): {str(exc)}"}), status
 
-    message = _enrich_reply_fields(_save_message(event_id, actor, body, None, image_meta=image_metas[0]))
+    message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, None, image_meta=image_metas[0]))
     message_id = int(message.get("id") or 0)
 
     db = get_db()
@@ -2098,13 +2509,14 @@ def upload_image(event_id: int):
     ]
 
     message_payload = _present_message(message, actor, avatar_cache={})
-    socketio.emit("chat_message", message_payload, to=f"event:{event_id}")
+    socketio.emit("chat_message", message_payload, to=f"event:{event_id}:room:{effective_room_id}")
 
     app = current_app._get_current_object()
     now = time.monotonic()
     _submit_chat_message_push_async(
         app,
         event_id,
+        effective_room_id,
         actor,
         actor["display_name"],
         body,
@@ -2113,16 +2525,20 @@ def upload_image(event_id: int):
         has_image=True,
     )
 
-    return jsonify({"ok": True, "message": message_payload})
+    return jsonify({"ok": True, "message": message_payload, "room_id": effective_room_id})
 
 
 @chat_bp.post("/api/events/<int:event_id>/messages/<int:message_id>/delete")
 def delete_message(event_id: int, message_id: int):
+    _ensure_chat_messages_room_schema()
     actor = get_chat_actor()
     if not actor:
         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
-    if not _can_access_event(event_id, actor):
-        return jsonify({"ok": False, "error": "このイベントにはアクセスできません"}), 403
+    payload = request.get_json(silent=True) or {}
+    room_id = str(payload.get("room_id") or request.form.get("room_id") or request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
     if not _ensure_chat_delete_schema():
         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
 
@@ -2141,11 +2557,11 @@ def delete_message(event_id: int, message_id: int):
             SELECT id, event_id, sender_actor_type, sender_actor_id, created_at,
                    COALESCE(deleted_flag, 0) AS deleted_flag,
                    deleted_at, deleted_by_actor_type
-              FROM chat_messages
-             WHERE id=%s AND event_id=%s
+             FROM chat_messages
+             WHERE id=%s AND event_id=%s AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
              LIMIT 1
             """,
-            (message_id, event_id),
+            (message_id, event_id, effective_room_id, effective_room_id),
         )
         row = cur.fetchone()
         if not row:
@@ -2200,9 +2616,232 @@ def delete_message(event_id: int, message_id: int):
             "deleted_at": deleted_at.isoformat() if deleted_at else None,
             "deleted_by_actor_type": deleted_by_actor_type,
         },
-        room=f"event:{event_id}",
+        room=f"event:{event_id}:room:{effective_room_id}",
     )
     return jsonify({"ok": True})
+
+
+def _parse_actor_key(value: str) -> tuple[str, str] | None:
+    raw = (value or "").strip()
+    if ":" not in raw:
+        return None
+    actor_type, actor_id = raw.split(":", 1)
+    actor_type = actor_type.strip()
+    actor_id = actor_id.strip()
+    if not actor_type or not actor_id:
+        return None
+    return actor_type, actor_id
+
+
+@chat_bp.get("/api/events/<int:event_id>/rooms")
+def api_rooms(event_id: int):
+    actor = get_chat_actor()
+    if not actor or not _can_access_event(event_id, actor):
+        return jsonify({"ok": False}), 403
+    _ensure_chat_rooms_schema()
+    _ensure_chat_room_members_schema()
+    _ensure_chat_messages_room_schema()
+    rooms = _list_accessible_rooms(event_id, actor)
+    return jsonify({"ok": True, "rooms": rooms})
+
+
+@chat_bp.post("/api/events/<int:event_id>/rooms/create")
+def api_rooms_create(event_id: int):
+    actor = get_chat_actor()
+    if not actor or not _can_manage_rooms(event_id, actor):
+        return jsonify({"ok": False}), 403
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    room_name = str(payload.get("room_name") or "").strip()
+    if not (1 <= len(room_name) <= 80):
+        return jsonify({"ok": False, "error": "room_nameは1〜80文字です"}), 400
+    _ensure_chat_rooms_schema()
+    _ensure_chat_room_members_schema()
+    room_id = str(uuid.uuid4())
+    now = datetime.utcnow()
+    actor_keys = set(payload.get("member_actor_keys") or [])
+    actor_keys.add(f"{actor['actor_type']}:{actor['actor_id']}")
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO chat_rooms (
+              room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
+            ) VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s)
+            """,
+            (room_id, event_id, room_name, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
+        )
+        for key in actor_keys:
+            parsed = _parse_actor_key(str(key))
+            if not parsed:
+                continue
+            at, aid = parsed
+            cur.execute(
+                """
+                INSERT IGNORE INTO chat_room_members (room_id,actor_type,actor_id,added_at,added_by_actor_type,added_by_actor_id)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (room_id, at, aid, now, actor["actor_type"], actor["actor_id"]),
+            )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+    return jsonify({"ok": True, "room_id": room_id})
+
+
+@chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/update")
+def api_rooms_update(event_id: int, room_id: str):
+    actor = get_chat_actor()
+    if not actor or not _can_manage_rooms(event_id, actor):
+        return jsonify({"ok": False}), 403
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    room = _get_room(event_id, room_id, allow_archived=True)
+    if not room or int(room.get("is_main") or 0) == 1:
+        return jsonify({"ok": False}), 404
+    updates = []
+    params: list[Any] = []
+    if "room_name" in payload:
+        name = str(payload.get("room_name") or "").strip()
+        if not (1 <= len(name) <= 80):
+            return jsonify({"ok": False, "error": "room_nameは1〜80文字です"}), 400
+        updates.append("room_name=%s")
+        params.append(name)
+    if "is_archived" in payload:
+        updates.append("is_archived=%s")
+        params.append(1 if payload.get("is_archived") else 0)
+    if not updates:
+        return jsonify({"ok": True})
+    updates.extend(["updated_at=%s", "updated_by_actor_type=%s", "updated_by_actor_id=%s"])
+    params.extend([datetime.utcnow(), actor["actor_type"], actor["actor_id"], event_id, room_id])
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(f"UPDATE chat_rooms SET {', '.join(updates)} WHERE event_id=%s AND room_id=%s", tuple(params))
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+    return jsonify({"ok": True})
+
+
+@chat_bp.get("/api/events/<int:event_id>/rooms/<room_id>/members")
+def api_room_members(event_id: int, room_id: str):
+    actor = get_chat_actor()
+    if not actor or not _can_manage_rooms(event_id, actor):
+        return jsonify({"ok": False}), 403
+    room = _get_room(event_id, room_id, allow_archived=True)
+    if not room:
+        return jsonify({"ok": False}), 404
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT m.actor_type, m.actor_id,
+                   COALESCE(u.nickname, m.actor_id) AS display_name
+              FROM chat_room_members m
+              LEFT JOIN external_login_user u
+                     ON m.actor_type='line' AND u.id = CAST(m.actor_id AS UNSIGNED)
+             WHERE m.room_id=%s
+            """,
+            (room_id,),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    members = [
+        {
+            "actor_key": f"{str(r.get('actor_type') or '')}:{str(r.get('actor_id') or '')}",
+            "display_name": str(r.get("display_name") or r.get("actor_id") or "")
+        }
+        for r in rows
+        if str(r.get("actor_type") or "") and str(r.get("actor_id") or "")
+    ]
+    return jsonify({"ok": True, "members": members})
+
+
+@chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/members/set")
+def api_rooms_members_set(event_id: int, room_id: str):
+    actor = get_chat_actor()
+    if not actor or not _can_manage_rooms(event_id, actor):
+        return jsonify({"ok": False}), 403
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    room = _get_room(event_id, room_id, allow_archived=True)
+    if not room or int(room.get("is_main") or 0) == 1:
+        return jsonify({"ok": False}), 404
+    target_members: set[tuple[str, str]] = set()
+    for raw in payload.get("member_actor_keys") or []:
+        parsed = _parse_actor_key(str(raw))
+        if parsed:
+            target_members.add(parsed)
+    target_members.add((str(actor["actor_type"]), str(actor["actor_id"])))
+    if not target_members:
+        return jsonify({"ok": False, "error": "最低1名必要です"}), 400
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT actor_type, actor_id FROM chat_room_members WHERE room_id=%s", (room_id,))
+        existing = {(str(r["actor_type"]), str(r["actor_id"])) for r in (cur.fetchall() or [])}
+        to_remove = existing - target_members
+        to_add = target_members - existing
+        for at, aid in to_remove:
+            cur.execute("DELETE FROM chat_room_members WHERE room_id=%s AND actor_type=%s AND actor_id=%s", (room_id, at, aid))
+        now = datetime.utcnow()
+        for at, aid in to_add:
+            cur.execute(
+                "INSERT IGNORE INTO chat_room_members (room_id,actor_type,actor_id,added_at,added_by_actor_type,added_by_actor_id) VALUES (%s,%s,%s,%s,%s,%s)",
+                (room_id, at, aid, now, actor["actor_type"], actor["actor_id"]),
+            )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+    return jsonify({"ok": True})
+
+
+@chat_bp.get("/api/events/<int:event_id>/room-member-candidates")
+def api_room_member_candidates(event_id: int):
+    actor = get_chat_actor()
+    if not actor or not _can_manage_rooms(event_id, actor):
+        return jsonify({"ok": False}), 403
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    candidates: dict[str, dict[str, str]] = {"admin:admin": {"actor_key": "admin:admin", "display_name": "admin", "role_hint": "admin"}}
+    try:
+        cur.execute(
+            """
+            SELECT u.id, u.nickname
+              FROM mfu_event_member m
+              JOIN external_login_user u ON u.id=m.user_id
+             WHERE m.event_id=%s
+            """,
+            (event_id,),
+        )
+        for row in cur.fetchall() or []:
+            key = f"line:{row['id']}"
+            candidates[key] = {"actor_key": key, "display_name": str(row.get("nickname") or f"LINE-{row['id']}") , "role_hint": "参加者"}
+        cur.execute("SELECT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+        for row in cur.fetchall() or []:
+            username = str(row.get("username") or "")
+            if not username:
+                continue
+            if username == "admin":
+                continue
+            key = f"acl:{username}"
+            candidates[key] = {"actor_key": key, "display_name": username, "role_hint": "ACL"}
+    finally:
+        cur.close()
+        db.close()
+    return jsonify({"ok": True, "candidates": sorted(candidates.values(), key=lambda x: x["display_name"])})
 
 
 @chat_bp.get("/api/push/bootstrap")
@@ -2342,7 +2981,7 @@ def broadcast_push(event_id: int):
                     "title": "イベント通知",
                     "body": msg,
                     "event_id": event_id,
-                    "url": f"/chat/events/{event_id}",
+                    "url": f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': effective_room_id})}",
                 },
             )
     finally:
@@ -2361,6 +3000,8 @@ def broadcast_push(event_id: int):
                 title="イベント通知",
                 body=msg,
                 event_id=event_id,
+                room_id=None,
+                room_name=None,
                 dedup_key=f"chat:broadcast:{event_id}:{digest}:{recipient}",
             )
     finally:
@@ -2403,15 +3044,21 @@ def chat_connect():
 
 @socketio.on("chat_join")
 def on_join(data):
+    _ensure_chat_rooms_schema()
+    _ensure_chat_room_members_schema()
+    _ensure_chat_messages_room_schema()
+    _ensure_chat_read_state_room_schema()
     actor = get_chat_actor()
     event_id = int((data or {}).get("event_id") or 0)
-    if not actor or not event_id or not _can_access_event(event_id, actor):
+    room_id = str((data or {}).get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor or {}) if actor else (False, None, None)
+    if not actor or not event_id or not allowed or not effective_room_id:
         current_app.logger.warning("chat join denied event=%s actor=%s", event_id, actor)
         disconnect()
         return
-    join_room(f"event:{event_id}")
-    emit("chat_joined", {"event_id": event_id})
-    emit("chat_read_snapshot", {"event_id": event_id, "read_states": _load_event_read_state_snapshot(event_id)})
+    join_room(f"event:{event_id}:room:{effective_room_id}")
+    emit("chat_joined", {"event_id": event_id, "room_id": effective_room_id})
+    emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_event_read_state_snapshot(event_id, effective_room_id)})
 
 
 @socketio.on("chat_seen")
@@ -2422,12 +3069,14 @@ def on_seen(data):
         return
 
     event_id = int((data or {}).get("event_id") or 0)
+    room_id = str((data or {}).get("room_id") or "").strip() or None
     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
-    if event_id <= 0 or last_seen_message_id <= 0 or not _can_access_event(event_id, actor):
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if event_id <= 0 or last_seen_message_id <= 0 or not allowed or not effective_room_id:
         disconnect()
         return
 
-    effective_last_read_id = _upsert_chat_read_state(event_id, actor, last_seen_message_id)
+    effective_last_read_id = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
     emit(
         "chat_read_update",
         {
@@ -2435,8 +3084,9 @@ def on_seen(data):
             "actor_id": actor["actor_id"],
             "display_name": actor["display_name"],
             "last_read_message_id": effective_last_read_id,
+            "room_id": effective_room_id,
         },
-        to=f"event:{event_id}",
+        to=f"event:{event_id}:room:{effective_room_id}",
     )
 
 
@@ -2444,6 +3094,7 @@ def on_seen(data):
 def on_send(data):
     actor = get_chat_actor()
     event_id = int((data or {}).get("event_id") or 0)
+    room_id = str((data or {}).get("room_id") or "").strip() or None
     raw_body = (data or {}).get("body") or ""
     raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
 
@@ -2458,7 +3109,8 @@ def on_send(data):
     if not actor:
         disconnect()
         return
-    if not event_id or not _can_access_event(event_id, actor):
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not event_id or not allowed or not effective_room_id:
         disconnect()
         return
     if not _ensure_chat_delete_schema():
@@ -2470,18 +3122,20 @@ def on_send(data):
 
     try:
         body = _validate_body(raw_body)
-        reply_to_message_id = _validate_reply_to_message_id(event_id, raw_reply_to_message_id)
+        reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, raw_reply_to_message_id)
     except ValueError as exc:
         emit("chat_error", {"error": str(exc)})
         return
 
-    message = _enrich_reply_fields(_save_message(event_id, actor, body, reply_to_message_id))
+    message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id))
     t1 = time.monotonic()
+    active_room = _get_room(event_id, effective_room_id, allow_archived=True)
+    active_room_name = str(active_room.get("room_name") or "") if active_room else None
     message_payload = _present_message(message, actor, avatar_cache={})
-    emit("chat_message", message_payload, to=f"event:{event_id}")
+    emit("chat_message", message_payload, to=f"event:{event_id}:room:{effective_room_id}")
 
     mention_names = _extract_mentions(body)
-    mention_targets = _lookup_mention_targets(event_id, mention_names)
+    mention_targets = _lookup_mention_targets(event_id, effective_room_id, mention_names)
     sent_count = 0
     for target in mention_targets:
         sent_count += _send_push_to_actor(
@@ -2491,7 +3145,8 @@ def on_send(data):
                 "title": f"{actor['display_name']}さんからメンション",
                 "body": body,
                 "event_id": event_id,
-                "url": f"/chat/events/{event_id}",
+                "room_id": effective_room_id,
+                "url": f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': effective_room_id})}",
             },
         )
         if target.get("actor_type") == "line":
@@ -2501,7 +3156,9 @@ def on_send(data):
                 title=f"{actor['display_name']}さんからメンション",
                 body=body,
                 event_id=event_id,
-                dedup_key=f"chat:mention:{event_id}:{message_payload['id']}:{target['actor_id']}",
+                room_id=effective_room_id,
+                room_name=active_room_name,
+                dedup_key=f"chat:mention:{event_id}:{effective_room_id}:{message_payload['id']}:{target['actor_id']}",
             )
     if mention_targets:
         _log_notification(event_id, "mention", {"names": mention_names, "message_id": message_payload["id"]}, sent_count)
@@ -2511,6 +3168,7 @@ def on_send(data):
     _submit_chat_message_push_async(
         app,
         event_id,
+        effective_room_id,
         actor,
         actor["display_name"],
         body,
@@ -2535,13 +3193,15 @@ def on_react(data):
 
     try:
         event_id = int((data or {}).get("event_id") or 0)
+        room_id = str((data or {}).get("room_id") or "").strip() or None
         message_id = int((data or {}).get("message_id") or 0)
     except (TypeError, ValueError):
         disconnect()
         return
 
     emoji = str((data or {}).get("emoji") or "")
-    if event_id <= 0 or message_id <= 0 or not _can_access_event(event_id, actor):
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if event_id <= 0 or message_id <= 0 or not allowed or not effective_room_id:
         disconnect()
         return
     if emoji not in CHAT_ALLOWED_REACTION_EMOJIS:
@@ -2552,7 +3212,7 @@ def on_react(data):
     cur = db.cursor(dictionary=True)
     changed_emoji: str | None = emoji
     try:
-        cur.execute("SELECT COALESCE(deleted_flag, 0) AS deleted_flag FROM chat_messages WHERE id=%s AND event_id=%s LIMIT 1", (message_id, event_id))
+        cur.execute("SELECT COALESCE(deleted_flag, 0) AS deleted_flag FROM chat_messages WHERE id=%s AND event_id=%s AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL)) LIMIT 1", (message_id, event_id, effective_room_id, effective_room_id))
         msg_row = cur.fetchone()
         if not msg_row:
             emit("chat_error", {"error": "対象メッセージが見つかりません"})
@@ -2618,6 +3278,7 @@ def on_react(data):
         "chat_reaction_update",
         {
             "event_id": event_id,
+            "room_id": effective_room_id,
             "message_id": message_id,
             "reactions": reactions,
             "changed": {
@@ -2626,7 +3287,7 @@ def on_react(data):
                 "emoji": changed_emoji,
             },
         },
-        to=f"event:{event_id}",
+        to=f"event:{event_id}:room:{effective_room_id}",
     )
 
 
@@ -2663,6 +3324,8 @@ def notify_dm(data):
             title="ダイレクト通知",
             body=str(dm_body),
             event_id=event_id,
+            room_id=None,
+            room_name=None,
             dedup_key=f"chat:dm:{event_id}:{dedup_suffix}:{target_actor_id}",
         )
     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)

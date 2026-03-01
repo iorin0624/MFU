@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from flask import abort, current_app, jsonify, render_template, request, session
 
@@ -12,6 +13,67 @@ from app.utils.db import get_db
 
 
 _READ_NOTIFICATIONS_KEEP_LIMIT = 30
+
+
+def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
+    target_url = str(row.get("target_url") or "").strip()
+    event_id = int(row.get("event_id") or 0) or None
+    if not target_url:
+        return event_id, None
+    try:
+        parsed = urlparse(target_url)
+        if not parsed.path.startswith("/chat/events/"):
+            return event_id, None
+        qs = parse_qs(parsed.query or "")
+        room_id = (qs.get("room_id") or [None])[0]
+        if room_id:
+            room_id = str(room_id)
+        if not event_id:
+            ev = (qs.get("event_id") or [None])[0]
+            if ev:
+                event_id = int(ev)
+        return event_id, room_id
+    except Exception:
+        return event_id, None
+
+
+def _is_notification_visible_for_external(cur, uid: int, row: dict[str, Any], room_cache: dict[str, tuple[int, str]]) -> tuple[bool, str | None]:
+    event_id, room_id = _parse_chat_room_context(row)
+    if not room_id:
+        return True, None
+
+    cache_key = f"{event_id}:{room_id}"
+    if cache_key in room_cache:
+        is_main, room_name = room_cache[cache_key]
+    else:
+        cur.execute(
+            "SELECT is_main, room_name FROM chat_rooms WHERE event_id=%s AND room_id=%s LIMIT 1",
+            (event_id, room_id),
+        )
+        room = cur.fetchone() or {}
+        if not room:
+            room_cache[cache_key] = (0, "")
+            return False, None
+        is_main = int(room.get("is_main") or 0)
+        room_name = str(room.get("room_name") or "")
+        room_cache[cache_key] = (is_main, room_name)
+
+    if is_main == 1:
+        return True, room_name or "メイン"
+
+    cur.execute(
+        """
+        SELECT 1
+          FROM chat_room_members
+         WHERE room_id=%s
+           AND actor_type='line'
+           AND actor_id=%s
+         LIMIT 1
+        """,
+        (room_id, str(uid)),
+    )
+    allowed = bool(cur.fetchone())
+    return allowed, (room_name if allowed else None)
 
 
 def _prune_old_read_notifications(cur, user_id: int) -> int:
@@ -165,9 +227,10 @@ def api_notifications_unread_count():
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        room_cache: dict[str, tuple[int, str]] = {}
         cur.execute(
             """
-            SELECT COUNT(*) AS cnt
+            SELECT id, target_url, event_id
               FROM mfu_notifications
              WHERE user_kind='external'
                AND user_id=%s
@@ -175,8 +238,12 @@ def api_notifications_unread_count():
             """,
             (uid,),
         )
-        row = cur.fetchone() or {}
-        count = int(row.get("cnt") or 0)
+        unread_rows = cur.fetchall() or []
+        count = 0
+        for row in unread_rows:
+            visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+            if visible:
+                count += 1
         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
         resp = jsonify({"count": count})
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -209,6 +276,7 @@ def api_notifications_list():
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        room_cache: dict[str, tuple[int, str]] = {}
         cur.execute(
             f"""
             SELECT id, kind, title, body, target_url, event_id, created_at, read_at
@@ -225,10 +293,13 @@ def api_notifications_list():
             f"SELECT COUNT(*) AS cnt FROM mfu_notifications WHERE {where_sql}",
             tuple(params),
         )
-        total = int((cur.fetchone() or {}).get("cnt") or 0)
+        _ = int((cur.fetchone() or {}).get("cnt") or 0)
 
         items = []
         for row in rows:
+            visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+            if not visible:
+                continue
             items.append(
                 {
                     "id": int(row["id"]),
@@ -237,10 +308,22 @@ def api_notifications_list():
                     "body": row.get("body") or "",
                     "target_url": row.get("target_url") or "/external-login/",
                     "event_id": row.get("event_id"),
+                    "room_name": room_name,
                     "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
                     "read_at": row.get("read_at").replace(tzinfo=timezone.utc).isoformat() if row.get("read_at") else None,
                 }
             )
+
+        cur.execute(
+            f"SELECT id, target_url, event_id FROM mfu_notifications WHERE {where_sql}",
+            tuple(params),
+        )
+        all_rows = cur.fetchall() or []
+        total = 0
+        for row in all_rows:
+            visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+            if visible:
+                total += 1
 
         latest_id = items[0]["id"] if items else None
         latest_created_at = items[0]["created_at"] if items else None
@@ -289,10 +372,11 @@ def api_notifications_updates():
     cur = db.cursor(dictionary=True)
     try:
         db.start_transaction()
+        room_cache: dict[str, tuple[int, str]] = {}
 
         cur.execute(
             """
-            SELECT id, title, body, target_url, created_at, read_at
+            SELECT id, title, body, target_url, event_id, created_at, read_at
               FROM mfu_notifications
              WHERE user_kind='external'
                AND user_id=%s
@@ -306,7 +390,7 @@ def api_notifications_updates():
 
         cur.execute(
             """
-            SELECT COUNT(*) AS cnt
+            SELECT id, target_url, event_id
               FROM mfu_notifications
              WHERE user_kind='external'
                AND user_id=%s
@@ -314,12 +398,20 @@ def api_notifications_updates():
             """,
             (uid,),
         )
-        unread_count = int((cur.fetchone() or {}).get("cnt") or 0)
+        unread_rows = cur.fetchall() or []
+        unread_count = 0
+        for row in unread_rows:
+            visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+            if visible:
+                unread_count += 1
         db.commit()
 
         items = []
         latest_id = since_id
         for row in rows:
+            visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+            if not visible:
+                continue
             item_id = int(row["id"])
             latest_id = max(latest_id, item_id)
             items.append(
@@ -328,6 +420,7 @@ def api_notifications_updates():
                     "title": row.get("title"),
                     "body": row.get("body") or "",
                     "target_url": row.get("target_url") or "/external-login/",
+                    "room_name": room_name,
                     "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
                     "read_at": row.get("read_at").replace(tzinfo=timezone.utc).isoformat() if row.get("read_at") else None,
                 }
