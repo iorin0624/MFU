@@ -17,6 +17,12 @@
       background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
       border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
 
+    .share-badge { position:absolute; top:8px; right:8px;
+      background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.35);
+      border-radius:999px; width:38px; height:38px; display:flex; align-items:center; justify-content:center;
+      font-size:17px; line-height:1; cursor:pointer; }
+    .share-badge:hover { background:rgba(0,0,0,.75); }
+
     /* 変換中バッジ */
     .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
       background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
@@ -66,9 +72,11 @@
 
         <div class="item"
              data-raw="{{ v.raw }}"
+             data-name="{{ v.name }}"
              data-web="{{ v.web }}"
              data-mime="{{ mime }}"
              data-converting="{{ 'true' if v.converting else 'false' }}">
+          <button type="button" class="share-badge" aria-label="動画を共有" title="共有">↗️</button>
           {% if v.poster %}
             <img src="{{ v.poster }}" class="poster" alt="poster" loading="lazy">
           {% endif %}
@@ -99,6 +107,60 @@
   </div>
 
   <script>
+    function toAbsoluteUrl(urlLike){
+      if (!urlLike) return '';
+      try { return new URL(urlLike, location.href).href; }
+      catch(_) { return ''; }
+    }
+
+    function safeFilename(nameHint='video.mp4', mimeType='video/mp4'){
+      const fallbackExt = (mimeType.split('/')[1] || 'mp4').replace(/[^a-z0-9]/gi,'') || 'mp4';
+      const base = `${nameHint || ''}`.split('/').pop().replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
+      const file = base || `video.${fallbackExt}`;
+      return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
+    }
+
+    function isShareCanceled(error){
+      const msg = `${error?.message || ''}`.toLowerCase();
+      return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
+    }
+
+    async function shareMovieByUrl(movieUrl, filenameHint='movie.mp4'){
+      const absoluteMovieUrl = toAbsoluteUrl(movieUrl);
+      if (!absoluteMovieUrl) {
+        alert('共有する動画URLを取得できませんでした');
+        return;
+      }
+      try {
+        if (navigator.share && navigator.canShare) {
+          try {
+            const response = await fetch(absoluteMovieUrl, { credentials:'include', cache:'no-store' });
+            if (response.ok) {
+              const blob = await response.blob();
+              const mimeType = blob.type || 'video/mp4';
+              const file = new File([blob], safeFilename(filenameHint, mimeType), { type: mimeType });
+              if (navigator.canShare({ files:[file] })) {
+                await navigator.share({ files:[file], title:'MFU' });
+                return;
+              }
+            }
+          } catch(_) { }
+        }
+        if (navigator.share) {
+          await navigator.share({ url:absoluteMovieUrl, title:'MFU' });
+          return;
+        }
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(absoluteMovieUrl);
+          alert('共有URLをクリップボードにコピーしました。');
+          return;
+        }
+        prompt('このURLをコピーして共有してください。', absoluteMovieUrl);
+      } catch (error) {
+        if (!isShareCanceled(error)) console.error('shareMovieByUrl failed:', error);
+      }
+    }
+
     function setVideoSrcIfEmpty(videoEl, raw, mime){
       if (!videoEl) return;
       if (videoEl.currentSrc) return;
@@ -137,6 +199,15 @@
 
       if (e.target.closest('.play-badge') || e.target.closest('img.poster')) {
         startPlayback(item);
+        return;
+      }
+
+      if (e.target.closest('.share-badge')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const movieUrl = item.dataset.raw;
+        const nameHint = item.dataset.name || 'movie.mp4';
+        shareMovieByUrl(movieUrl, nameHint);
       }
     }, true);
 

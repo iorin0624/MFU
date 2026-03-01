@@ -940,15 +940,17 @@
 
   <div id="typing-indicator" class="chat-typing-indicator"></div>
 
-  <form id="chat-form" class="d-flex gap-2 align-items-center chat-mention-wrap">
-    <input type="hidden" id="reply-to-id" value="">
-    <input type="hidden" id="edit-target-id" value="">
-    <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
-    <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
-    <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
-    <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
-  </form>
-  <div id="chat-mention-menu" class="chat-mention-menu d-none"></div>
+  <div class="chat-mention-wrap">
+    <form id="chat-form" class="d-flex gap-2 align-items-center">
+      <input type="hidden" id="reply-to-id" value="">
+      <input type="hidden" id="edit-target-id" value="">
+      <input type="file" id="chat-image-file" accept="image/*" class="d-none" multiple>
+      <button class="btn btn-outline-secondary" id="chat-image-btn" type="button" title="画像を送信">📷</button>
+      <textarea id="chat-body" class="form-control" maxlength="2000" placeholder="メッセージを入力" rows="1"></textarea>
+      <button class="btn btn-primary" id="chat-send-btn" type="submit" aria-label="送信" title="送信">✈️</button>
+    </form>
+    <div id="chat-mention-menu" class="chat-mention-menu d-none"></div>
+  </div>
 
   <div id="chatImageViewer" class="chat-image-viewer" aria-hidden="true">
     <button type="button" id="chatImageViewerShare" class="chat-image-viewer-share" aria-label="共有" title="共有">共有</button>
