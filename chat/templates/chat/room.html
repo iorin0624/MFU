@@ -3074,7 +3074,8 @@
         closeContextMenu();
         return;
       }
-      setEditState(messageId, row.dataset.bodyPlain || '');
+      const fullText = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
+      setEditState(messageId, fullText);
       closeContextMenu();
       return;
     }
