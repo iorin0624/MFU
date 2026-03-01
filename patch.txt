@@ -1,56 +1,355 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 08e604b8d8c31897555ebc7136de08bc0e09419a..23ac26a3702ef704be1cdc9fc1eb55d1ad5b9654 100644
+index f2de028d946d2737e3427f859ffd43a4e89d7ec1..70cf6852b6980910d311f7d91aee277f9c9ac77c 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -992,51 +992,50 @@
- </style>
+@@ -1518,51 +1518,55 @@
  
- {% macro render_reaction_box(message) -%}
-   <div class="chat-reaction-box"
-        data-reaction-box="1"
-        data-my-reaction="{{ message.my_reaction or '' }}"
-        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
-     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-     <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-     <div class="chat-reaction-panel d-none"></div>
-     <div class="chat-reaction-summary"></div>
-   </div>
- {%- endmacro %}
+   updateAutoGrow();
+   bodyInput?.addEventListener('input', () => {
+     updateAutoGrow();
+     queueTypingStart();
+     handleMentionInput();
+   });
+   bodyInput?.addEventListener('keydown', handleMentionKeydown);
  
- <div class="container py-3 chat-page"
-      data-event-id="{{ event.id }}"
-      data-room-id="{{ active_room.room_id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
-      data-display-name="{{ actor.display_name }}"
-      data-default-avatar="{{ default_avatar_url }}"
-      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
-   {% include "chat/_chat_nav.html" %}
-   <div class="chat-room-main">
--    <h3 class="mb-0">{{ event.title }} / Chat</h3>
-     <div class="small text-muted mb-2">{{ event.title }}/{{ active_room.room_name }}</div>
-     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
-       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
-       {% if can_manage_rooms %}
-       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
-       {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
-       {% endif %}
-     </div>
+   socket.on('chat_message', (msg) => {
+     const messageId = Number(msg?.id || 0);
+     const threadRootId = Number(msg?.thread_root_id || 0);
+     const isThreadReply = threadRootId > 0;
  
-     <div class="chat-body-layout">
-   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
-     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
-     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
-     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
-   </div>
-   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+     if (isThreadReply) {
+       bumpThreadReplyCount(threadRootId);
+       if (state.threadRootId && threadRootId === Number(state.threadRootId)) {
+         appendThreadMessage(msg);
+         sendSeenForMessageId(messageId);
+       }
+     } else {
+       renderMessage(msg);
+       if (state.threadRootId && messageId === Number(state.threadRootId)) {
+         appendThreadMessage(msg);
+       }
+-      keepBottomIfNeeded();
++      if (composerFocused) {
++        scrollForComposerFocus();
++      } else {
++        keepBottomIfNeeded();
++      }
+       sendSeenForMessageId(messageId);
+     }
+     setSendingState(false);
+     scheduleUnreadRefresh();
+   });
+   socket.on('chat_error', (d) => {
+     setSendingState(false);
+     alert(d.error || '送信失敗');
+   });
+   socket.on('chat_read_snapshot', (payload) => {
+     applyReadSnapshot(payload?.read_states || []);
+     refreshReadIndicators();
+     sendSeenForLatestMessage();
+   });
+   socket.on('chat_read_update', (payload) => {
+     applyReadUpdate(payload);
+     refreshReadIndicators();
+   });
+   socket.on('chat_reaction_update', (payload) => {
+     const messageId = Number(payload?.message_id || 0);
+     if (!messageId) return;
+     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+     if (row && Number(row.dataset.deletedFlag || 0) === 1) return;
+     const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
+     let myReaction = prev.myReaction || null;
+@@ -1827,69 +1831,135 @@
+     closeContextMenu();
+   }, { passive: true });
  
-   <div id="chatRoomPickerModal" class="chat-room-picker-modal d-none" aria-hidden="true">
-     <div class="backdrop" data-room-picker-close="1"></div>
-     <div class="panel">
-       <div class="d-flex justify-content-between align-items-center mb-2">
-         <h6 class="mb-0">サブルーム選択</h6>
-         <button type="button" class="btn btn-sm btn-light" data-room-picker-close="1">閉じる</button>
-       </div>
-       <div class="chat-room-picker-list">
+   function setVh() {
+     const vv = window.visualViewport;
+     const h = (vv && vv.height) ? vv.height : window.innerHeight;
+     const top = (vv && typeof vv.offsetTop === 'number') ? vv.offsetTop : 0;
+ 
+     document.documentElement.style.setProperty('--vh', `${h * 0.01}px`);
+     document.documentElement.style.setProperty('--vvh', `${h}px`);
+     document.documentElement.style.setProperty('--vvtop', `${top}px`);
+   }
+ 
+   function isNearBottom(el, thresholdPx = 120) {
+     if (!el) return true;
+     return (el.scrollHeight - el.scrollTop - el.clientHeight) <= thresholdPx;
+   }
+ 
+   // キーボードの開閉時は「直前に最下部付近にいた場合のみ」追従する
+   function keepBottomIfNeeded() {
+     if (!msgBox) return;
+     if (!isNearBottom(msgBox)) return;
+     msgBox.scrollTop = msgBox.scrollHeight;
+   }
+ 
++  let composerFocused = false;
++  let focusScrollTimer = null;
++
++  function getReplyTargetId() {
++    if (state.replyToId) return String(state.replyToId);
++    const hiddenValue = String(replyToInput?.value || '').trim();
++    if (hiddenValue) return hiddenValue;
++    const previewValue = String(replyPreview?.dataset?.replyId || replyPreview?.dataset?.replyTo || '').trim();
++    return previewValue || '';
++  }
++
++  function isReplying() {
++    return Boolean(getReplyTargetId());
++  }
++
++  function scrollToBottom() {
++    if (!msgBox) return;
++    msgBox.scrollTop = msgBox.scrollHeight;
++  }
++
++  function scrollToReplyTarget() {
++    const targetId = getReplyTargetId();
++    if (!targetId) return false;
++
++    const rowById = document.getElementById(`msg-${targetId}`);
++    const rowByData = (!rowById && typeof CSS !== 'undefined' && CSS.escape)
++      ? msgBox?.querySelector(`.chat-row[data-message-id="${CSS.escape(targetId)}"]`)
++      : null;
++    const target = rowById || rowByData;
++    if (!target) return false;
++
++    target.scrollIntoView({ block: 'end', inline: 'nearest' });
++    return true;
++  }
++
++  // 入力フォーカス中は、通常時は最下部へ／返信中は返信元へ追従する
++  function scrollForComposerFocus() {
++    if (!msgBox) return;
++    if (isReplying()) {
++      if (!scrollToReplyTarget()) scrollToBottom();
++      return;
++    }
++    scrollToBottom();
++  }
++
++  function scheduleFocusScroll() {
++    if (focusScrollTimer) window.clearTimeout(focusScrollTimer);
++    focusScrollTimer = window.setTimeout(() => {
++      focusScrollTimer = null;
++      if (!composerFocused) return;
++      scrollForComposerFocus();
++    }, 30);
++  }
++
++  function onViewportChangeWhileFocused() {
++    if (typeof setVh === 'function') setVh();
++    if (!composerFocused) return;
++    scheduleFocusScroll();
++  }
++
+   setVh();
+   window.addEventListener('resize', setVh);
+   window.addEventListener('orientationchange', setVh);
+   if (window.visualViewport) {
+-    window.visualViewport.addEventListener('resize', setVh);
+-    window.visualViewport.addEventListener('scroll', setVh);
++    window.visualViewport.addEventListener('resize', onViewportChangeWhileFocused);
++    window.visualViewport.addEventListener('scroll', onViewportChangeWhileFocused);
+   }
+   if (bodyInput) {
+     bodyInput.addEventListener('focus', () => {
+-      setTimeout(() => {
++      composerFocused = true;
++      window.setTimeout(() => {
++        if (!composerFocused) return;
+         setVh();
+-        keepBottomIfNeeded();
++        scrollForComposerFocus();
+       }, 50);
+     });
+ 
+     bodyInput.addEventListener('blur', () => {
+-      setTimeout(() => {
++      composerFocused = false;
++      if (focusScrollTimer) {
++        window.clearTimeout(focusScrollTimer);
++        focusScrollTimer = null;
++      }
++      window.setTimeout(() => {
+         setVh();
+-        keepBottomIfNeeded();
+       }, 50);
+     });
+   }
+   ctxMenu?.addEventListener('click', handleContextMenuClick);
+   document.addEventListener('pointerdown', (e) => {
+     if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
+     if (ctxPanel?.contains(e.target)) return;
+     closeContextMenu();
+   });
+   searchToggleBtn?.addEventListener('click', () => {
+     if (!searchRow) return;
+     const isHidden = searchRow.classList.contains('d-none');
+     if (isHidden) {
+       searchRow.classList.remove('d-none');
+       searchInput?.focus();
+     } else {
+       searchRow.classList.add('d-none');
+       hideSearchPanel();
+     }
+   });
+   searchBtn?.addEventListener('click', () => runRoomSearch());
+   searchCloseBtn?.addEventListener('click', () => {
+     hideSearchPanel();
+     if (searchInput) searchInput.value = '';
+     searchRow?.classList.add('d-none');
+@@ -2714,62 +2784,64 @@
+     const lastDivider = dividers.length ? dividers[dividers.length - 1] : null;
+     if (lastDivider?.dataset.dateLabel === dateLabel) return;
+ 
+     const divider = document.createElement('div');
+     divider.className = 'chat-date-divider';
+     divider.dataset.dateLabel = dateLabel;
+ 
+     const label = document.createElement('span');
+     label.textContent = dateLabel;
+     divider.appendChild(label);
+     msgBox.appendChild(divider);
+   }
+ 
+   function setReplyState(messageId, senderName, plainText, bubbleEl) {
+     clearEditState();
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+     }
+     state.replyToId = messageId;
+     replyToInput.value = messageId;
+     replySender.textContent = senderName;
+     replyText.textContent = makeExcerpt(plainText || '');
+     replyPreview.classList.remove('d-none');
+     state.selectedBubble = bubbleEl;
+     state.selectedBubble.classList.add('chat-selected-reply-target');
++    if (composerFocused) scheduleFocusScroll();
+   }
+ 
+   function clearReplyState() {
+     state.replyToId = null;
+     replyToInput.value = '';
+     replySender.textContent = '';
+     replyText.textContent = '';
+     replyPreview.classList.add('d-none');
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+       state.selectedBubble = null;
+     }
++    if (composerFocused) scheduleFocusScroll();
+   }
+ 
+   function jumpToMessage(messageId) {
+     if (!messageId) return;
+     const target = document.getElementById(`msg-${messageId}`);
+     if (!target) {
+       alert('元メッセージが見つかりません');
+       return;
+     }
+     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+     target.classList.add('chat-jump-highlight');
+     window.setTimeout(() => target.classList.remove('chat-jump-highlight'), 1200);
+   }
+ 
+   function makeExcerpt(value) {
+     const text = String(value || '').replace(/\s+/g, ' ').trim();
+     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+   }
+ 
+   function isMessageInOpenThread(messageId) {
+     if (!state.threadRootId || !messageId) return false;
+     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
+     if (!row) return false;
+     const rowId = Number(row.dataset.messageId || 0);
+     const rootId = Number(row.dataset.threadRootId || 0);
+@@ -3007,66 +3079,82 @@
+ 
+   function applyTypingUpdate(payload) {
+     const actorType = payload?.actor_type || '';
+     const actorId = String(payload?.actor_id || '');
+     if (!actorType || !actorId) return;
+     const key = `${actorType}:${actorId}`;
+     if (key === meId) return;
+ 
+     if (payload?.is_typing) {
+       state.typingMembers.set(key, payload?.display_name || key);
+     } else {
+       state.typingMembers.delete(key);
+     }
+     renderTypingIndicator();
+   }
+ 
+   function renderTypingIndicator() {
+     if (!typingIndicator) return;
+     if (typingIndicator.parentElement !== msgBox) {
+       msgBox?.appendChild(typingIndicator);
+     }
+     const names = Array.from(state.typingMembers.values());
+     if (!names.length) {
+       typingIndicator.textContent = '';
+       typingIndicator.classList.add('is-hidden');
+-      keepBottomIfNeeded();
++      if (composerFocused) {
++        scrollForComposerFocus();
++      } else {
++        keepBottomIfNeeded();
++      }
+       return;
+     }
+     typingIndicator.classList.remove('is-hidden');
+     if (names.length === 1) {
+       typingIndicator.textContent = `${names[0]}が入力中…`;
+-      keepBottomIfNeeded();
++      if (composerFocused) {
++        scrollForComposerFocus();
++      } else {
++        keepBottomIfNeeded();
++      }
+       return;
+     }
+     if (names.length <= 3) {
+       typingIndicator.textContent = `${names.join('、')}が入力中…`;
+-      keepBottomIfNeeded();
++      if (composerFocused) {
++        scrollForComposerFocus();
++      } else {
++        keepBottomIfNeeded();
++      }
+       return;
+     }
+     typingIndicator.textContent = `${names[0]}、${names[1]}、他${names.length - 2}人が入力中…`;
+-    keepBottomIfNeeded();
++    if (composerFocused) {
++      scrollForComposerFocus();
++    } else {
++      keepBottomIfNeeded();
++    }
+   }
+ 
+   async function runRoomSearch() {
+     const keyword = String(searchInput?.value || '').trim();
+     if (!keyword) {
+       alert('検索キーワードを入力してください');
+       return;
+     }
+     const u = new URL(`/chat/api/events/${eventId}/search`, window.location.origin);
+     u.searchParams.set('room_id', roomId);
+     u.searchParams.set('q', keyword);
+     u.searchParams.set('limit', '50');
+     try {
+       const res = await fetch(u.toString(), { method: 'GET' });
+       const data = await res.json().catch(() => ({}));
+       if (!res.ok || !data?.ok) {
+         throw new Error(data?.error || '検索に失敗しました');
+       }
+       renderSearchResults(data?.results || []);
+     } catch (err) {
+       alert(err?.message || '検索に失敗しました');
+     }
+   }
+ 
+   function renderSearchResults(results) {
