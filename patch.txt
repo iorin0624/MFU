@@ -1,104 +1,178 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index a1194b416cd0f6238ceb36bf8a8ce0720ca967e9..ce70583bc178e8e5e4413bc6018d82ba7965799d 100644
+index ce70583bc178e8e5e4413bc6018d82ba7965799d..682acdd1fe23cbb50fdc2249c45c6089fa0efb0d 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -877,93 +877,96 @@ def _ensure_chat_search_schema() -> bool:
-             CHAT_SEARCH_SCHEMA_READY = bool(cur.fetchone())
-             return CHAT_SEARCH_SCHEMA_READY
-         except Exception:
-             current_app.logger.warning("chat search schema ensure failed", exc_info=True)
-             CHAT_SEARCH_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
- 
- 
- def _ensure_chat_thread_schema() -> bool:
-     global CHAT_THREAD_SCHEMA_READY
-     if CHAT_THREAD_SCHEMA_READY is not None:
-         return CHAT_THREAD_SCHEMA_READY
- 
-     with CHAT_THREAD_SCHEMA_CHECK_LOCK:
-         if CHAT_THREAD_SCHEMA_READY is not None:
-             return CHAT_THREAD_SCHEMA_READY
- 
-         _ensure_chat_messages_room_schema()
-         db = get_db()
-         cur = db.cursor(dictionary=True)
-         try:
-             cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'thread_root_id'")
--            if not cur.fetchone():
-+            thread_column_rows = cur.fetchall() or []
-+            if not thread_column_rows:
-                 try:
-                     cur.execute("ALTER TABLE chat_messages ADD COLUMN thread_root_id BIGINT NULL AFTER reply_to_message_id")
-                     db.commit()
-                 except Exception:
-                     current_app.logger.warning("chat auto-migration: add thread_root_id failed", exc_info=True)
-                     CHAT_THREAD_SCHEMA_READY = False
-                     return False
- 
-             for idx_name, sql in (
-                 (
-                     "idx_chat_thread_root",
-                     "ALTER TABLE chat_messages ADD KEY idx_chat_thread_root (event_id, room_id, thread_root_id, id)",
-                 ),
-                 (
-                     "idx_chat_thread_room",
-                     "ALTER TABLE chat_messages ADD KEY idx_chat_thread_room (event_id, room_id, id)",
-                 ),
-             ):
-                 try:
-                     cur.execute(f"SHOW INDEX FROM chat_messages WHERE Key_name='{idx_name}'")
--                    if not cur.fetchone():
-+                    index_rows = cur.fetchall() or []
-+                    if not index_rows:
-                         cur.execute(sql)
-                         db.commit()
-                 except Exception:
-                     current_app.logger.warning("chat auto-migration: add %s failed", idx_name, exc_info=True)
- 
-             try:
-                 cur.execute(
-                     """
-                     UPDATE chat_messages child
-                     LEFT JOIN chat_messages parent ON parent.id = child.reply_to_message_id
-                     SET child.thread_root_id = COALESCE(parent.thread_root_id, child.reply_to_message_id)
-                     WHERE child.reply_to_message_id IS NOT NULL
-                       AND child.thread_root_id IS NULL
-                     """
-                 )
-                 db.commit()
-             except Exception:
-                 current_app.logger.warning("chat auto-migration: backfill thread_root_id failed", exc_info=True)
- 
-             cur.execute("SHOW COLUMNS FROM chat_messages LIKE 'thread_root_id'")
--            CHAT_THREAD_SCHEMA_READY = bool(cur.fetchone())
-+            verified_rows = cur.fetchall() or []
-+            CHAT_THREAD_SCHEMA_READY = bool(verified_rows)
-             return CHAT_THREAD_SCHEMA_READY
-         except Exception:
-             current_app.logger.warning("chat thread schema ensure failed", exc_info=True)
-             CHAT_THREAD_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
- 
- 
- def _ensure_chat_read_state_room_schema() -> bool:
-     if not _ensure_chat_read_state_schema() or not _ensure_chat_messages_room_schema():
-         return False
+@@ -1604,115 +1604,119 @@ def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100)
+     has_image_schema = _ensure_chat_image_schema()
+     has_delete_schema = _ensure_chat_delete_schema()
+     has_edit_schema = _ensure_chat_edit_schema()
+     has_thread_schema = _ensure_chat_thread_schema()
+     image_columns = (
+         "m.image_file, m.image_thumb_file, m.image_mime, m.image_size, m.image_width, m.image_height"
+         if has_image_schema
+         else "NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height"
+     )
+     delete_columns = (
+         "m.deleted_flag, m.deleted_at, m.deleted_by_actor_type, m.deleted_by_actor_id"
+         if has_delete_schema
+         else "0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id"
+     )
+     reply_delete_columns = (
+         "p.deleted_flag AS reply_to_deleted_flag, p.deleted_by_actor_type AS reply_to_deleted_by_actor_type"
+         if has_delete_schema
+         else "0 AS reply_to_deleted_flag, NULL AS reply_to_deleted_by_actor_type"
+     )
+     edit_columns = (
+         "m.edited_flag, m.edited_at"
+         if has_edit_schema
+         else "0 AS edited_flag, NULL AS edited_at"
+     )
+     thread_column = "m.thread_root_id" if has_thread_schema else "NULL AS thread_root_id"
++    timeline_thread_filter = "AND m.thread_root_id IS NULL" if has_thread_schema else ""
++    timeline_thread_filter_plain = "AND thread_root_id IS NULL" if has_thread_schema else ""
      db = get_db()
      cur = db.cursor(dictionary=True)
      try:
-         cur.execute("SHOW COLUMNS FROM chat_read_state LIKE 'room_id'")
-         if not cur.fetchone():
-             cur.execute("ALTER TABLE chat_read_state ADD COLUMN room_id VARCHAR(36) NULL AFTER event_id")
+         if has_reply_schema:
+             cur.execute(
+                 f"""
+                 SELECT m.id,
+                        m.event_id,
+                        m.sender_actor_type,
+                        m.sender_actor_id,
+                        m.sender_display_name,
+                        m.body,
+                        m.created_at,
+                        {image_columns},
+                        {delete_columns},
+                        {edit_columns},
+                        {thread_column},
+                        m.reply_to_message_id,
+                        p.sender_actor_type AS reply_to_sender_actor_type,
+                        p.sender_actor_id AS reply_to_sender_actor_id,
+                        p.sender_display_name AS reply_to_sender_display_name,
+                        p.body AS reply_to_body,
+                        {reply_delete_columns}
+                   FROM chat_messages m
+                   LEFT JOIN chat_messages p
+                          ON p.id = m.reply_to_message_id
+                         AND p.event_id = m.event_id
+                  WHERE m.event_id=%s
+                    AND (m.room_id=%s OR (m.room_id IS NULL AND %s IS NOT NULL))
++                   {timeline_thread_filter}
+                  ORDER BY m.created_at DESC
+                  LIMIT %s
+                 """,
+                 (event_id, effective_room_id, effective_room_id, limit),
+             )
+             rows = cur.fetchall() or []
+             if has_thread_schema:
+                 _apply_thread_reply_count(event_id, effective_room_id, rows)
+             for row in rows:
+                 if row.get("reply_to_message_id") and row.get("reply_to_sender_display_name"):
+                     if int(row.get("reply_to_deleted_flag") or 0) == 1:
+                         row["reply_to_body_plain_excerpt"] = (
+                             "管理者により削除"
+                             if str(row.get("reply_to_deleted_by_actor_type") or "") == "admin"
+                             else "削除されました"
+                         )
+                     else:
+                         row["reply_to_body_plain_excerpt"] = _build_plain_excerpt(row.get("reply_to_body") or "")
+                 elif row.get("reply_to_message_id"):
+                     row["reply_to_sender_display_name"] = "元メッセージ"
+                     row["reply_to_body_plain_excerpt"] = "元メッセージが見つかりません"
+                 else:
+                     row["reply_to_sender_display_name"] = None
+                     row["reply_to_body_plain_excerpt"] = None
+             return list(reversed(rows))
  
-         cur.execute("SELECT DISTINCT event_id FROM chat_read_state WHERE room_id IS NULL")
-         for row in cur.fetchall() or []:
-             event_id = int(row.get("event_id") or 0)
-             if event_id <= 0:
-                 continue
+         cur.execute(
+             f"""
+             SELECT id, event_id, sender_actor_type, sender_actor_id, sender_display_name, body, created_at,
+                    {'image_file, image_thumb_file, image_mime, image_size, image_width, image_height' if has_image_schema else 'NULL AS image_file, NULL AS image_thumb_file, NULL AS image_mime, NULL AS image_size, NULL AS image_width, NULL AS image_height'},
+                    {'deleted_flag, deleted_at, deleted_by_actor_type, deleted_by_actor_id' if has_delete_schema else '0 AS deleted_flag, NULL AS deleted_at, NULL AS deleted_by_actor_type, NULL AS deleted_by_actor_id'},
+                    {'edited_flag, edited_at' if has_edit_schema else '0 AS edited_flag, NULL AS edited_at'},
+                    {'thread_root_id' if has_thread_schema else 'NULL AS thread_root_id'}
+               FROM chat_messages
+              WHERE event_id=%s
+                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
++               {timeline_thread_filter_plain}
+              ORDER BY created_at DESC
+              LIMIT %s
+             """,
+             (event_id, effective_room_id, effective_room_id, limit),
+         )
+         rows = cur.fetchall() or []
+         if has_thread_schema:
+             _apply_thread_reply_count(event_id, effective_room_id, rows)
+         for row in rows:
+             row["reply_to_message_id"] = None
+             row["reply_to_sender_actor_type"] = None
+             row["reply_to_sender_actor_id"] = None
+             row["reply_to_sender_display_name"] = None
+             row["reply_to_body_plain_excerpt"] = None
+             row["reply_to_deleted_flag"] = 0
+             row["reply_to_deleted_by_actor_type"] = None
+         return list(reversed(rows))
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _save_message(
+     event_id: int,
+     room_id: str,
+@@ -2166,52 +2170,51 @@ def _apply_thread_reply_count(event_id: int, room_id: str, rows: list[dict[str,
+     cur = db.cursor(dictionary=True)
+     try:
+         placeholders = ", ".join(["%s"] * len(root_ids))
+         cur.execute(
+             f"""
+             SELECT thread_root_id, COUNT(*) AS cnt
+               FROM chat_messages
+              WHERE event_id=%s
+                AND (room_id=%s OR (room_id IS NULL AND %s IS NOT NULL))
+                AND COALESCE(deleted_flag, 0)=0
+                AND thread_root_id IN ({placeholders})
+              GROUP BY thread_root_id
+             """,
+             (event_id, room_id, room_id, *list(root_ids)),
+         )
+         counts = {int(row.get("thread_root_id") or 0): int(row.get("cnt") or 0) for row in (cur.fetchall() or [])}
+     except Exception:
+         current_app.logger.warning("chat thread count aggregation failed", exc_info=True)
+         counts = {}
+     finally:
+         cur.close()
+         db.close()
+ 
+     for row in rows:
+         row_id = int(row.get("id") or 0)
+-        thread_root_id = int(row.get("thread_root_id") or 0)
+-        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 and thread_root_id == row_id else 0
++        row["thread_reply_count"] = counts.get(row_id, 0) if row_id > 0 else 0
+ 
+ 
+ def _check_rate_limit(actor: dict[str, Any], *, route: str, event_id: int | None = None, room_id: str | None = None) -> bool:
+     actor_key = _actor_log_id(actor)
+     now_ts = time.time()
+     redis_client = _get_rate_limit_redis_client()
+ 
+     if redis_client is not None:
+         sec_key = f"chat:rl:sec:{actor_key}"
+         min_key = f"chat:rl:min:{actor_key}"
+         try:
+             sec_count = int(redis_client.incr(sec_key))
+             if sec_count == 1:
+                 redis_client.expire(sec_key, RATE_LIMIT_SECONDS)
+ 
+             min_count = int(redis_client.incr(min_key))
+             if min_count == 1:
+                 redis_client.expire(min_key, CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS)
+ 
+             allowed = sec_count <= RATE_LIMIT_PER_SECOND and min_count <= RATE_LIMIT_PER_MINUTE
+             if not allowed:
+                 _audit_log(
+                     "rate_limit",
+                     actor=actor_key,
+                     event_id=event_id,
