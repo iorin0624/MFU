@@ -11,6 +11,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections import deque
 from urllib.parse import urlencode
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -37,6 +38,11 @@ from requests.exceptions import Timeout as RequestsTimeout
 from app.chat.socketio_ext import socketio
 from app.utils.db import get_db
 
+try:
+    from redis import Redis
+except Exception:  # pragma: no cover
+    Redis = None
+
 
 HEIC_UNSUPPORTED_MESSAGE = "iPhoneのHEIC画像は未対応です。設定→カメラ→フォーマット→互換性優先(JPEG)にするか、JPEGで送ってください"
 HEIF_OPENER_AVAILABLE = False
@@ -58,6 +64,9 @@ chat_bp = Blueprint(
 
 MESSAGE_MAX_LEN = 2000
 RATE_LIMIT_SECONDS = 1
+RATE_LIMIT_PER_SECOND = 1
+RATE_LIMIT_PER_MINUTE = 30
+RATE_LIMIT_ERROR_MESSAGE = "送信が速すぎます。少し待ってください"
 JST = ZoneInfo("Asia/Tokyo")
 
 CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
@@ -84,6 +93,8 @@ CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
 CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_EDIT_SCHEMA_READY: bool | None = None
+CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_SEARCH_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -104,6 +115,80 @@ _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
 CHAT_TYPING_STATE_LOCK = threading.Lock()
 CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
 CHAT_TYPING_TTL_SECONDS = 3
+
+CHAT_RATE_LIMIT_LOCK = threading.Lock()
+CHAT_RATE_LIMIT_MEMORY: dict[str, deque[float]] = {}
+CHAT_RATE_LIMIT_MEMORY_MAX_KEYS = 5000
+CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS = 60
+CHAT_RATE_LIMIT_REDIS_CLIENT: Any | None = None
+CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED = False
+
+
+def _actor_log_id(actor: dict[str, Any] | None) -> str:
+    if not actor:
+        return "unknown"
+    return f"{actor.get('actor_type', 'unknown')}:{actor.get('actor_id', 'unknown')}"
+
+
+def _audit_log(action: str, **fields: Any) -> None:
+    normalized: list[str] = [f"action={action}"]
+    for key in sorted(fields.keys()):
+        value = fields.get(key)
+        if value is None:
+            continue
+        text = str(value).replace("\n", " ").replace("\r", " ").strip()
+        normalized.append(f"{key}={text}")
+    current_app.logger.info("chat_audit %s", " ".join(normalized))
+
+
+def _get_rate_limit_redis_client() -> Any | None:
+    global CHAT_RATE_LIMIT_REDIS_CLIENT, CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED
+    if CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED:
+        return CHAT_RATE_LIMIT_REDIS_CLIENT
+    CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED = True
+
+    redis_url = (os.getenv("CHAT_RATE_LIMIT_REDIS_URL") or "").strip()
+    if not redis_url or Redis is None:
+        return None
+    try:
+        client = Redis.from_url(redis_url, decode_responses=True)
+        client.ping()
+        CHAT_RATE_LIMIT_REDIS_CLIENT = client
+    except Exception:
+        current_app.logger.warning("chat rate-limit redis init failed", exc_info=True)
+        CHAT_RATE_LIMIT_REDIS_CLIENT = None
+    return CHAT_RATE_LIMIT_REDIS_CLIENT
+
+
+def _check_rate_limit_memory(actor_key: str, now_ts: float) -> bool:
+    with CHAT_RATE_LIMIT_LOCK:
+        history = CHAT_RATE_LIMIT_MEMORY.get(actor_key)
+        if history is None:
+            history = deque()
+            CHAT_RATE_LIMIT_MEMORY[actor_key] = history
+
+        threshold_minute = now_ts - CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS
+        while history and history[0] <= threshold_minute:
+            history.popleft()
+
+        second_count = 0
+        for ts in reversed(history):
+            if now_ts - ts < RATE_LIMIT_SECONDS:
+                second_count += 1
+            else:
+                break
+
+        if second_count >= RATE_LIMIT_PER_SECOND or len(history) >= RATE_LIMIT_PER_MINUTE:
+            return False
+
+        history.append(now_ts)
+
+        if len(CHAT_RATE_LIMIT_MEMORY) > CHAT_RATE_LIMIT_MEMORY_MAX_KEYS:
+            stale_before = now_ts - (CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS * 2)
+            stale_keys = [k for k, dq in CHAT_RATE_LIMIT_MEMORY.items() if not dq or dq[-1] < stale_before]
+            for stale_key in stale_keys[: max(1, len(CHAT_RATE_LIMIT_MEMORY) // 4)]:
+                CHAT_RATE_LIMIT_MEMORY.pop(stale_key, None)
+    return True
 
 
 def _default_avatar_url() -> str:
@@ -757,6 +842,41 @@ def _ensure_chat_messages_room_schema() -> bool:
         except Exception:
             _log_auto_migration_error("_ensure_chat_messages_room_schema", "chat_messages room migration")
             CHAT_MESSAGES_ROOM_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_search_schema() -> bool:
+    global CHAT_SEARCH_SCHEMA_READY
+    if CHAT_SEARCH_SCHEMA_READY is not None:
+        return CHAT_SEARCH_SCHEMA_READY
+
+    with CHAT_SEARCH_SCHEMA_CHECK_LOCK:
+        if CHAT_SEARCH_SCHEMA_READY is not None:
+            return CHAT_SEARCH_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute("SHOW INDEX FROM chat_messages WHERE Key_name='ft_chat_body'")
+            if cur.fetchone():
+                CHAT_SEARCH_SCHEMA_READY = True
+                return True
+
+            try:
+                cur.execute("ALTER TABLE chat_messages ADD FULLTEXT KEY ft_chat_body (body)")
+                db.commit()
+            except Exception:
+                current_app.logger.warning("chat search schema ensure fulltext failed", exc_info=True)
+
+            cur.execute("SHOW INDEX FROM chat_messages WHERE Key_name='ft_chat_body'")
+            CHAT_SEARCH_SCHEMA_READY = bool(cur.fetchone())
+            return CHAT_SEARCH_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("chat search schema ensure failed", exc_info=True)
+            CHAT_SEARCH_SCHEMA_READY = False
             return False
         finally:
             cur.close()
@@ -1728,6 +1848,12 @@ def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
     return mapping[fmt]
 
 
+def _looks_like_mpo_bytes(raw_bytes: bytes) -> bool:
+    if len(raw_bytes) < 64:
+        return False
+    return raw_bytes[:2] == b"\xff\xd8" and b"MPF\x00" in raw_bytes[:4096]
+
+
 def _looks_like_heif_bytes(raw_bytes: bytes) -> bool:
     if len(raw_bytes) < 12:
         return False
@@ -1757,6 +1883,10 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") ->
 
     lower_name = (filename or "").lower()
     looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif") or _looks_like_heif_bytes(raw_bytes)
+    looks_like_mpo = lower_name.endswith(".mpo") or _looks_like_mpo_bytes(raw_bytes)
+
+    if looks_like_heif and not HEIF_OPENER_AVAILABLE:
+        raise ValueError(HEIC_UNSUPPORTED_MESSAGE)
 
     try:
         with Image.open(io.BytesIO(raw_bytes)) as im:
@@ -1783,12 +1913,12 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") ->
     except UnidentifiedImageError as exc:
         if looks_like_heif:
             raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
-        raise ValueError("画像ファイルとして読み取れません") from exc
+        raise ValueError("画像ファイルとして読み取れません。Live Photo/連写画像やHEIC形式の可能性があります") from exc
     except OSError as exc:
         if looks_like_heif and not HEIF_OPENER_AVAILABLE:
             raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
-        if "MPO" in str(exc).upper():
-            raise ValueError("MPO画像の読み込みに失敗しました。iPhoneのLive/連写画像が原因の可能性があります") from exc
+        if looks_like_mpo or "MPO" in str(exc).upper():
+            raise ValueError("MPO画像の読み込みに失敗しました。Live Photo/連写画像の可能性があります。互換性優先で再撮影をお試しください") from exc
         raise ValueError("画像ファイルとして読み取れません") from exc
 
     if image_size > CHAT_UPLOAD_MAX_BYTES:
@@ -1905,19 +2035,48 @@ def _enrich_reply_fields(message: dict[str, Any]) -> dict[str, Any]:
     return message
 
 
-def _check_rate_limit(actor: dict[str, Any]) -> bool:
-    key = f"chat_last_post:{actor['actor_type']}:{actor['actor_id']}"
-    now = datetime.utcnow()
-    prev_iso = session.get(key)
-    if prev_iso:
+def _check_rate_limit(actor: dict[str, Any], *, route: str, event_id: int | None = None, room_id: str | None = None) -> bool:
+    actor_key = _actor_log_id(actor)
+    now_ts = time.time()
+    redis_client = _get_rate_limit_redis_client()
+
+    if redis_client is not None:
+        sec_key = f"chat:rl:sec:{actor_key}"
+        min_key = f"chat:rl:min:{actor_key}"
         try:
-            prev = datetime.fromisoformat(prev_iso)
-            if now - prev < timedelta(seconds=RATE_LIMIT_SECONDS):
-                return False
+            sec_count = int(redis_client.incr(sec_key))
+            if sec_count == 1:
+                redis_client.expire(sec_key, RATE_LIMIT_SECONDS)
+
+            min_count = int(redis_client.incr(min_key))
+            if min_count == 1:
+                redis_client.expire(min_key, CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS)
+
+            allowed = sec_count <= RATE_LIMIT_PER_SECOND and min_count <= RATE_LIMIT_PER_MINUTE
+            if not allowed:
+                _audit_log(
+                    "rate_limit",
+                    actor=actor_key,
+                    event_id=event_id,
+                    room_id=room_id,
+                    route=route,
+                    result="deny",
+                )
+            return allowed
         except Exception:
-            pass
-    session[key] = now.isoformat()
-    return True
+            current_app.logger.warning("chat rate-limit redis check failed", exc_info=True)
+
+    allowed = _check_rate_limit_memory(actor_key, now_ts)
+    if not allowed:
+        _audit_log(
+            "rate_limit",
+            actor=actor_key,
+            event_id=event_id,
+            room_id=room_id,
+            route=route,
+            result="deny",
+        )
+    return allowed
 
 
 def _extract_mentions(body: str) -> list[str]:
@@ -2387,6 +2546,7 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
             if not push_success:
                 continue
         db.commit()
+        _audit_log("push_notify", actor=f"{actor_type}:{actor_id}", event_id=payload.get("event_id"), room_id=payload.get("room_id"), result="ok", sent_count=sent)
         return sent
     finally:
         cur.close()
@@ -2399,7 +2559,7 @@ def _require_any_login():
         return None
     actor = get_chat_actor()
     if not actor:
-        abort(403)
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
     return None
 
 
@@ -2487,11 +2647,11 @@ def upload_image(event_id: int):
     _ensure_chat_edit_schema()
     actor = get_chat_actor()
     if not actor:
-        abort(403)
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
     room_id = (request.form.get("room_id") or request.args.get("room_id") or (request.get_json(silent=True) or {}).get("room_id") or "").strip() or None
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if not allowed or not effective_room_id:
-        abort(403)
+        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
     if not _ensure_chat_delete_schema():
         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
     if not _ensure_chat_image_schema():
@@ -2500,9 +2660,12 @@ def upload_image(event_id: int):
         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
 
     payload = request.get_json(silent=True) or {}
+    if not _check_rate_limit(actor, route="upload_image", event_id=event_id, room_id=effective_room_id):
+        return jsonify({"ok": False, "error": RATE_LIMIT_ERROR_MESSAGE}), 429
+
     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
     if token != session.get("chat_csrf"):
-        current_app.logger.warning(
+        current_app.logger.info(
             "chat upload-image csrf mismatch event_id=%s actor=%s:%s ua=%s",
             event_id,
             actor.get("actor_type"),
@@ -2642,6 +2805,7 @@ def upload_image(event_id: int):
         has_image=True,
     )
 
+    _audit_log("upload_image", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_payload.get("id"), result="ok")
     return jsonify({"ok": True, "message": message_payload, "room_id": effective_room_id})
 
 
@@ -2660,6 +2824,9 @@ def delete_message(event_id: int, message_id: int):
         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
 
     payload = request.get_json(silent=True) or {}
+    if not _check_rate_limit(actor, route="chat_delete", event_id=event_id, room_id=effective_room_id):
+        return jsonify({"ok": False, "error": RATE_LIMIT_ERROR_MESSAGE}), 429
+
     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
     if token != session.get("chat_csrf"):
         return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再試行してください"}), 400
@@ -2724,6 +2891,7 @@ def delete_message(event_id: int, message_id: int):
         cur.close()
         db.close()
 
+    _audit_log("chat_delete", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_id, result="ok")
     socketio.emit(
         "chat_delete_update",
         {
@@ -2755,7 +2923,11 @@ def edit_message(event_id: int, message_id: int):
     room_id = str(payload.get("room_id") or request.form.get("room_id") or request.args.get("room_id") or "").strip() or None
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if not allowed or not effective_room_id:
+        _audit_log("chat_edit", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_id, result="deny", error="room_denied")
         return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
+
+    if not _check_rate_limit(actor, route="chat_edit", event_id=event_id, room_id=effective_room_id):
+        return jsonify({"ok": False, "error": RATE_LIMIT_ERROR_MESSAGE}), 429
 
     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
     if token != session.get("chat_csrf"):
@@ -2812,18 +2984,40 @@ def edit_message(event_id: int, message_id: int):
         cur.close()
         db.close()
 
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT *
+              FROM chat_messages
+             WHERE id=%s AND event_id=%s AND room_id=%s
+             LIMIT 1
+            """,
+            (message_id, event_id, effective_room_id),
+        )
+        edited_message = cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+    if not edited_message:
+        _audit_log("chat_edit", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_id, result="error", error="reload_failed")
+        return jsonify({"ok": False, "error": "編集後メッセージの再取得に失敗しました"}), 500
+
+    edited_message = _enrich_reply_fields(edited_message)
+    edited_message["reactions_summary"] = _load_reactions_by_message_ids([message_id]).get(message_id, [])
+    edited_message["my_reaction"] = _load_my_reactions_by_message_ids([message_id], actor).get(message_id)
+    edited_message["images"] = _load_message_images_by_message_ids([message_id]).get(message_id) or _fallback_images_from_message(edited_message)
+    payload_message = _present_message(edited_message, actor, avatar_cache={})
+    payload_message["message_id"] = payload_message.get("id")
+
     socketio.emit(
         "chat_edit_update",
-        {
-            "event_id": event_id,
-            "room_id": effective_room_id,
-            "message_id": message_id,
-            "body_html": _linkify_escaped_text(body).replace("\n", "<br>"),
-            "body_plain_excerpt": _build_plain_excerpt(body),
-            "edited_flag": 1,
-        },
+        payload_message,
         room=f"event:{event_id}:room:{effective_room_id}",
     )
+    _audit_log("chat_edit", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_id, result="ok")
     return jsonify({"ok": True})
 
 
@@ -2831,6 +3025,7 @@ def edit_message(event_id: int, message_id: int):
 def search_messages(event_id: int):
     _ensure_chat_messages_room_schema()
     _ensure_chat_delete_schema()
+    _ensure_chat_search_schema()
     actor = get_chat_actor()
     if not actor:
         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
@@ -2857,24 +3052,47 @@ def search_messages(event_id: int):
 
     db = get_db()
     cur = db.cursor(dictionary=True)
+    rows = []
+    search_mode = "fulltext"
     try:
-        cur.execute(
-            """
-            SELECT id AS message_id,
-                   sender_display_name,
-                   body,
-                   created_at
-              FROM chat_messages
-             WHERE event_id=%s
-               AND room_id=%s
-               AND COALESCE(deleted_flag, 0)=0
-               AND body LIKE %s
-             ORDER BY id DESC
-             LIMIT %s
-            """,
-            (event_id, effective_room_id, f"%{q}%", limit),
-        )
-        rows = cur.fetchall() or []
+        try:
+            cur.execute(
+                """
+                SELECT id AS message_id,
+                       sender_display_name,
+                       body,
+                       created_at
+                  FROM chat_messages
+                 WHERE event_id=%s
+                   AND room_id=%s
+                   AND COALESCE(deleted_flag, 0)=0
+                   AND MATCH(body) AGAINST (%s IN NATURAL LANGUAGE MODE)
+                 ORDER BY id DESC
+                 LIMIT %s
+                """,
+                (event_id, effective_room_id, q, limit),
+            )
+            rows = cur.fetchall() or []
+        except Exception:
+            search_mode = "like_fallback"
+            current_app.logger.warning("chat search fulltext failed, fallback to LIKE", exc_info=True)
+            cur.execute(
+                """
+                SELECT id AS message_id,
+                       sender_display_name,
+                       body,
+                       created_at
+                  FROM chat_messages
+                 WHERE event_id=%s
+                   AND room_id=%s
+                   AND COALESCE(deleted_flag, 0)=0
+                   AND body LIKE %s
+                 ORDER BY id DESC
+                 LIMIT %s
+                """,
+                (event_id, effective_room_id, f"%{q}%", limit),
+            )
+            rows = cur.fetchall() or []
     finally:
         cur.close()
         db.close()
@@ -2891,6 +3109,7 @@ def search_messages(event_id: int):
             }
         )
 
+    _audit_log("search", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, result="ok", mode=search_mode, count=len(results))
     return jsonify({"ok": True, "results": results})
 
 
@@ -3309,9 +3528,9 @@ def sw():
 @socketio.on("connect")
 def chat_connect():
     actor = get_chat_actor()
-    current_app.logger.warning("chat socket connect actor=%s", actor)  # ★追加
+    _audit_log("room_join", actor=_actor_log_id(actor), result="connect")
     if not actor:
-        current_app.logger.warning("chat socket connect denied: no actor")
+        current_app.logger.info("chat socket connect denied: no actor")
         return False
     return True
 
@@ -3327,11 +3546,12 @@ def on_join(data):
     room_id = str((data or {}).get("room_id") or "").strip() or None
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor or {}) if actor else (False, None, None)
     if not actor or not event_id or not allowed or not effective_room_id:
-        current_app.logger.warning("chat join denied event=%s actor=%s", event_id, actor)
+        _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="deny")
         disconnect()
         return
     join_room(f"event:{event_id}:room:{effective_room_id}")
     emit("chat_joined", {"event_id": event_id, "room_id": effective_room_id})
+    _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, result="ok")
     emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_event_read_state_snapshot(event_id, effective_room_id)})
 
 
@@ -3351,6 +3571,7 @@ def on_seen(data):
         return
 
     effective_last_read_id = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
+    _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
     emit(
         "chat_read_update",
         {
@@ -3416,12 +3637,7 @@ def on_send(data):
     raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
 
     t0 = time.monotonic()
-    current_app.logger.warning(
-        "chat_send recv event_id=%s actor=%s body_len=%s",
-        event_id,
-        actor,
-        len(raw_body),
-    )
+    _audit_log("chat_send", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="recv", body_len=len(raw_body))
 
     if not actor:
         disconnect()
@@ -3436,8 +3652,8 @@ def on_send(data):
     if not _ensure_chat_edit_schema():
         emit("chat_error", {"error": "メッセージ編集機能の初期化に失敗しました"})
         return
-    if not _check_rate_limit(actor):
-        emit("chat_error", {"error": "送信間隔が短すぎます"})
+    if not _check_rate_limit(actor, route="chat_send", event_id=event_id, room_id=effective_room_id):
+        emit("chat_error", {"error": RATE_LIMIT_ERROR_MESSAGE})
         return
 
     try:
@@ -3459,6 +3675,7 @@ def on_send(data):
     active_room_name = str(active_room.get("room_name") or "") if active_room else None
     message_payload = _present_message(message, actor, avatar_cache={})
     emit("chat_message", message_payload, to=f"event:{event_id}:room:{effective_room_id}")
+    _audit_log("chat_send", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_payload.get("id"), result="ok")
 
     mention_names = _extract_mentions(body)
     mention_targets = _lookup_mention_targets(event_id, effective_room_id, mention_names)
@@ -3600,6 +3817,7 @@ def on_react(data):
         cur.close()
         db.close()
 
+    _audit_log("chat_react", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=message_id, result="ok", emoji=changed_emoji or "removed")
     emit(
         "chat_reaction_update",
         {
