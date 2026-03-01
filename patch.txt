@@ -1,114 +1,97 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 6436055778a9714c0f4a39ed79e05965559e923a..38faa0d3831fbb6f05079d7050f735eb3e021395 100644
+index 38faa0d3831fbb6f05079d7050f735eb3e021395..e4d45469337b8b79f08191b94777370d55bf7eb4 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1228,50 +1228,51 @@
-     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
-     : ['', ''];
+@@ -18,51 +18,51 @@
+ }
  
-   const state = {
-     replyToId: null,
-     selectedBubble: null,
-     readStateByActor: new Map(),
-     reactionByMessage: new Map(),
-     viewerImages: [],
-     viewerIndex: 0,
-     ctxMessageId: null,
-     longPressTimer: null,
-     longPressTriggered: false,
-     longPressRow: null,
-     touchPointerId: null,
-     swipe: {
-       row: null,
-       bubble: null,
-       startX: 0,
-       startY: 0,
-       dx: 0,
-       dy: 0,
-       active: false,
-       locked: false,
-     },
-+    swipeIgnoreClickUntil: 0,
-     ctxRow: null,
-     ctxBodyPlain: '',
-     editTargetMessageId: null,
-     typingMembers: new Map(),
-     typingDebounceTimer: null,
-     typingStopTimer: null,
-     typingSent: false,
-     threadRootId: null,
-     loadingOlder: false,
-     hasMoreOlder: true,
-     messageIds: new Set(),
-     unreadByRoomId: new Map(),
-     unreadRefreshTimer: null,
-     muteUntilByRoomId: new Map(),
-     mentionCandidates: [],
-     mentionActiveIndex: 0,
-     mentionRange: null,
-     mentionDebounceTimer: null,
-   };
+ .chat-date-divider span {
+   display: inline-block;
+   font-size: 0.78rem;
+   color: #556;
+   background: rgba(255, 255, 255, 0.95);
+   border-radius: 999px;
+   padding: 3px 12px;
+ }
  
-   if (ctxReactions && ctxReactions.childElementCount === 0) {
-     reactionEmojis.forEach((emoji) => {
-       const btn = document.createElement('button');
-       btn.type = 'button';
-       btn.className = 'chat-reaction-emoji';
-@@ -1353,50 +1354,53 @@
-     if (isMessageInOpenThread(messageId)) refreshOpenThread();
-   });
-   socket.on('chat_delete_update', (payload) => {
-     const messageId = Number(payload?.message_id || 0);
-     if (!messageId) return;
-     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
-     if (isMessageInOpenThread(messageId)) refreshOpenThread();
-   });
-   socket.on('chat_edit_update', (payload) => {
-     const messageId = Number(payload?.message_id || payload?.id || 0);
-     if (!messageId) return;
-     applyEditedState(messageId, payload);
-     if (isMessageInOpenThread(messageId)) refreshOpenThread();
-   });
-   socket.on('chat_typing_update', (payload) => {
-     applyTypingUpdate(payload || {});
-   });
+ .chat-row {
+   position: relative;
+   margin-bottom: 10px;
+   touch-action: pan-y;
+ }
  
  
+ /* ===== Swipe-to-reply animation ===== */
+ .chat-row .chat-bubble {
+   will-change: transform;
+ }
  
-   msgBox.addEventListener('click', (e) => {
-     if (state.longPressTriggered) {
-       state.longPressTriggered = false;
-       return;
-     }
-+    if (isMobile && state.swipeIgnoreClickUntil && Date.now() < state.swipeIgnoreClickUntil) {
-+      return;
-+    }
-     const rowForAction = e.target.closest('.chat-row');
-     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
-       if (e.target.closest('.chat-reply-quote')) {
-         jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
+ .chat-swipe-underlay {
+   position: absolute;
+-  right: 18px;
++  left: 18px;
+   top: 50%;
+   transform: translateY(-50%);
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   font-size: 18px;
+   opacity: 0;
+   pointer-events: none;
+   transition: opacity 120ms ease;
+ }
+ 
+ .chat-row.swiping .chat-bubble {
+   transition: none;
+ }
+ 
+ .chat-row.swiping .chat-swipe-underlay {
+   opacity: 1;
+ }
+ 
+ .chat-row.snapback .chat-bubble {
+   transition: transform 160ms ease;
+ }
+ 
+ .chat-row.commit .chat-bubble {
+   transition: transform 120ms ease;
+@@ -1535,80 +1535,80 @@
+ 
+   msgBox.addEventListener('pointermove', (e) => {
+     if (!isMobile) return;
+     if (e.pointerType === 'mouse') return;
+     if (!state.swipe.active || !state.swipe.row || !state.swipe.bubble) return;
+     if (state.touchPointerId !== e.pointerId) return;
+ 
+     const dx = e.clientX - state.swipe.startX;
+     const dy = e.clientY - state.swipe.startY;
+     state.swipe.dx = dx;
+     state.swipe.dy = dy;
+ 
+     if (!state.swipe.locked) {
+       if (Math.abs(dx) > SWIPE_LOCK && Math.abs(dx) > Math.abs(dy) * 1.2) {
+         state.swipe.locked = true;
+         clearLongPressTimer();
+       } else if (Math.abs(dy) > SWIPE_LOCK && Math.abs(dy) > Math.abs(dx) * 1.2) {
+         state.swipe.active = false;
+         clearLongPressTimer();
+         return;
+       } else {
+         return;
        }
+     }
+ 
+-    if (dx >= 0) {
++    if (dx <= 0) {
+       setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
        return;
      }
  
-     const imageLink = e.target.closest('.chat-image-link');
-     if (imageLink) {
-       e.preventDefault();
-       let imageList = [];
-       try {
-         imageList = JSON.parse(imageLink.dataset.imageList || '[]');
-       } catch (_) {
-         imageList = [];
-       }
-       const imageUrls = imageList.map((item) => item?.url).filter(Boolean);
-       const fallbackUrl = imageLink.dataset.fullImageUrl || imageLink.href || '';
-       if (!imageUrls.length && fallbackUrl) imageUrls.push(fallbackUrl);
-       openImageViewer(imageUrls, Number(imageLink.dataset.imageIndex || 0));
-       return;
-     }
+-    const x = clamp(dx, -SWIPE_MAX, 0);
++    const x = clamp(dx, 0, SWIPE_MAX);
+     setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
+   });
  
-     const readIndicator = e.target.closest('.chat-read-inline, .chat-read-indicator');
-@@ -1565,50 +1569,51 @@
    msgBox.addEventListener('pointerup', () => {
      if (!isMobile) return;
  
@@ -127,14 +110,16 @@ index 6436055778a9714c0f4a39ed79e05965559e923a..38faa0d3831fbb6f05079d7050f735eb
      if (!row || !bubble || !locked) return;
  
      const moved = Math.abs(dx);
-     if (dx < 0 && moved >= SWIPE_COMMIT) {
+-    if (dx < 0 && moved >= SWIPE_COMMIT) {
++    if (dx > 0 && moved >= SWIPE_COMMIT) {
        row.classList.add('commit');
-       bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
+-      bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
++      bubble.style.transform = `translateX(${SWIPE_MAX}px)`;
  
        if (navigator?.vibrate) navigator.vibrate(10);
  
        window.setTimeout(() => {
-+        state.swipeIgnoreClickUntil = Date.now() + 500;
+         state.swipeIgnoreClickUntil = Date.now() + 500;
          const messageId = row.dataset.messageId;
          const senderName = row.dataset.senderName || 'Unknown';
          const bodyPlain = row.dataset.bodyPlain || '';
@@ -155,8 +140,3 @@ index 6436055778a9714c0f4a39ed79e05965559e923a..38faa0d3831fbb6f05079d7050f735eb
      state.swipe.locked = false;
      state.swipe.row = null;
      state.swipe.bubble = null;
-     clearLongPressTimer();
-     if (row && bubble) resetSwipe(row, bubble);
-   });
- 
-   msgBox.addEventListener('touchcancel', () => {

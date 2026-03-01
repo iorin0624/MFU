@@ -40,7 +40,7 @@
 
 .chat-swipe-underlay {
   position: absolute;
-  right: 18px;
+  left: 18px;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -1557,12 +1557,12 @@
       }
     }
 
-    if (dx >= 0) {
+    if (dx <= 0) {
       setSwipeTransform(state.swipe.row, state.swipe.bubble, 0);
       return;
     }
 
-    const x = clamp(dx, -SWIPE_MAX, 0);
+    const x = clamp(dx, 0, SWIPE_MAX);
     setSwipeTransform(state.swipe.row, state.swipe.bubble, x);
   });
 
@@ -1584,9 +1584,9 @@
     if (!row || !bubble || !locked) return;
 
     const moved = Math.abs(dx);
-    if (dx < 0 && moved >= SWIPE_COMMIT) {
+    if (dx > 0 && moved >= SWIPE_COMMIT) {
       row.classList.add('commit');
-      bubble.style.transform = `translateX(${-SWIPE_MAX}px)`;
+      bubble.style.transform = `translateX(${SWIPE_MAX}px)`;
 
       if (navigator?.vibrate) navigator.vibrate(10);
 
