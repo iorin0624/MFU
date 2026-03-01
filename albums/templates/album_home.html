@@ -14,6 +14,9 @@
   </style>
 </head>
 <body class="container py-4">
+  {% if show_extlogin_nav %}
+    {% include "_extlogin_nav.html" %}
+  {% endif %}
 
   <div class="d-flex align-items-center justify-content-between mb-3">
     <h2 class="mb-0">📂 {{ meta.album_name }}</h2>

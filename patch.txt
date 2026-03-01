@@ -1,619 +1,545 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 3e3b0122c4f4d29399314d385437e098ea2dcc87..53687720e0627a4ce395070c7fbcc014d9d3bdd5 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -78,51 +78,52 @@ CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
- CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_READ_STATE_SCHEMA_READY: bool | None = None
- CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REACTION_SCHEMA_READY: bool | None = None
- CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_IMAGE_SCHEMA_READY: bool | None = None
- CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DELETE_SCHEMA_READY: bool | None = None
- CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOMS_SCHEMA_READY: bool | None = None
- CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
- CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
- CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_EDIT_SCHEMA_READY: bool | None = None
- CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_SEARCH_SCHEMA_READY: bool | None = None
- CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_THREAD_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
- CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
- CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
--CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", "10485760")), 1)
-+CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
-+CHAT_UPLOAD_MAX_FILES = 6
- PUSH_REQUEST_TIMEOUT_SECONDS = 6
- PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
- PUSH_LOG_SUPPRESSION_SECONDS = 300
- PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
- PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
- PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
- PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
- PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
- PUSH_ASYNC_INFLIGHT = 0
- _LINKIFY_RE = re.compile(
-     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
- )
- _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
- CHAT_TYPING_STATE_LOCK = threading.Lock()
- CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
- CHAT_TYPING_TTL_SECONDS = 3
+diff --git a/albums/routes.py b/albums/routes.py
+index 7ea4d9560fd3faa6e48b32563c199e4bbdb3ee0c..906ead5ea93d631c791bd4d25d2bb58c153dbf01 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -1181,50 +1181,52 @@ def album_access(album_id):
  
- CHAT_RATE_LIMIT_LOCK = threading.Lock()
- CHAT_RATE_LIMIT_MEMORY: dict[str, deque[float]] = {}
- CHAT_RATE_LIMIT_MEMORY_MAX_KEYS = 5000
- CHAT_RATE_LIMIT_MEMORY_WINDOW_SECONDS = 60
- CHAT_RATE_LIMIT_REDIS_CLIENT: Any | None = None
- CHAT_RATE_LIMIT_REDIS_INIT_ATTEMPTED = False
+     token = request.args.get('token')
+     if token and token == meta.get('access_token'):
+         session[f'auth_{album_id}'] = True
+         return redirect(url_for('album.album_home', album_id=album_id))
  
+     if request.method == 'POST':
+         return 'このアルバムはトークン式です', 403
  
-@@ -1959,148 +1960,241 @@ def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, A
-         return {}
-     if not _ensure_chat_reaction_schema():
-         return {}
+     return render_template('access.html', album_id=album_id)
  
-     placeholders = ", ".join(["%s"] * len(message_ids))
-     db = get_db()
-     cur = db.cursor(dictionary=True)
+ @album_bp.route('/<album_id>/')
+ def album_home(album_id):
+     meta = load_meta(album_id)
+     if not meta:
+         return 'アルバムが存在しません', 404
+ 
+     user = session.get('user')
+     is_admin = (user == 'admin')
+     is_owner = user and meta.get('owner') == user
+     is_authed = session.get(f'auth_{album_id}') is True
+     if not (is_admin or is_owner or is_authed):
+         return redirect(url_for('album.album_access', album_id=album_id))
+ 
+     ext_user_nickname = _get_ext_user_nickname()
++    album_meta = _fetch_album_meta(album_id)
++    show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
+ 
+     # ★追加：加工ロック一覧を取得
+     processing_list = []
      try:
-         params: tuple[Any, ...] = tuple(message_ids) + (actor["actor_type"], str(actor["actor_id"]))
-         cur.execute(
-             f"""
-             SELECT message_id, emoji
-               FROM chat_message_reactions
-              WHERE message_id IN ({placeholders})
-                AND actor_type=%s
-                AND actor_id=%s
-             """,
-             params,
-         )
-         return {int(row["message_id"]): str(row.get("emoji") or "") for row in (cur.fetchall() or [])}
-     finally:
+         conn = get_db()
+         cur = conn.cursor(dictionary=True)
+         cur.execute("""
+             SELECT child_id, username, expires_at
+               FROM album_locks
+              WHERE album_id=%s
+              ORDER BY expires_at DESC
+         """, (album_id,))
+         rows = cur.fetchall() or []
          cur.close()
-         db.close()
+         conn.close()
  
+         # child_id → 子アルバム名 に変換
+         child_map = {c["folder"]: c["name"] for c in meta.get("children", [])}
  
-+class ChatUploadImageError(ValueError):
-+    def __init__(self, code: str, message: str, status: int = 400, detail: dict[str, Any] | None = None):
-+        super().__init__(message)
-+        self.code = code
-+        self.message = message
-+        self.status = status
-+        self.detail = detail or {}
-+
-+
-+def _log_chat_upload_image_error(
-+    *,
-+    code: str,
-+    event_id: int,
-+    room_id: str | None,
-+    actor: dict[str, Any] | None,
-+    filename: str = "",
-+    size: int | None = None,
-+    mimetype: str = "",
-+    err: str = "",
-+) -> None:
-+    current_app.logger.warning(
-+        "action=chat_upload_image result=error code=%s event_id=%s room_id=%s actor=%s filename=%s size=%s mimetype=%s err=%s",
-+        code,
-+        event_id,
-+        room_id or "",
-+        _actor_log_id(actor),
-+        filename,
-+        size if size is not None else "",
-+        mimetype,
-+        err,
-+    )
-+
-+
-+def _upload_image_error_response(
-+    *,
-+    code: str,
-+    message: str,
-+    status: int,
-+    detail: dict[str, Any] | None = None,
-+):
-+    payload: dict[str, Any] = {"ok": False, "code": code, "error": message}
-+    if detail:
-+        payload["detail"] = detail
-+    return jsonify(payload), status
-+
-+
- def _validate_caption_optional(raw: str) -> str:
-     caption = (raw or "").strip()
-     if len(caption) > MESSAGE_MAX_LEN:
-         raise ValueError(f"メッセージは{MESSAGE_MAX_LEN}文字以内です")
-     return html.escape(caption)
+         for r in rows:
+             processing_list.append({
+                 "child_id": r["child_id"],
+                 "child_name": child_map.get(r["child_id"], "(不明)"),
+                 "username": r["username"],
+                 "expires_at": r["expires_at"].strftime("%H:%M")
+@@ -1245,50 +1247,51 @@ def album_home(album_id):
+             status_map = _fetch_album_process_status_map(album_id, child.get("folder"))
+             requested_ids = [
+                 ext_user_id
+                 for ext_user_id, status in status_map.items()
+                 if int(status.get("request_flag", 0)) == 1
+             ]
+             if requested_ids and all(
+                 int(status_map.get(ext_user_id, {}).get("complete_flag", 0)) == 1
+                 for ext_user_id in requested_ids
+             ):
+                 completed_process_children.add(child.get("folder"))
  
+     for child in meta.get("children", []):
+         mode = child.get("mode") or "normal"
+         child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
+         child["media_unit"] = "本" if mode == "movie" else "枚"
  
- def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
-     fmt = (image_format or "").upper()
-     mapping: dict[str, tuple[str, str, bool]] = {
-         "JPEG": ("jpg", "image/jpeg", False),
-         "PNG": ("png", "image/png", False),
-         "WEBP": ("webp", "image/webp", False),
--        "MPO": ("jpg", "image/jpeg", True),
-         "HEIF": ("jpg", "image/jpeg", True),
-         "HEIC": ("jpg", "image/jpeg", True),
-     }
-     if fmt not in mapping:
-         show_fmt = fmt or "unknown"
--        raise ValueError(f"未対応の画像形式({show_fmt})です。JPEG/PNG/WEBP/MPO/HEICのみ対応")
-+        raise ChatUploadImageError(
-+            "unsupported_format",
-+            f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: 不明（{show_fmt}）",
-+            detail={"detected": show_fmt},
-+        )
-     return mapping[fmt]
+     return render_template(
+         'album_home.html',
+         album_id=album_id, meta=meta,
+         is_admin=is_admin, is_owner=is_owner,
+         is_readonly=is_readonly,
+         processing_list=processing_list,   # ★追加
+         ext_user_nickname=ext_user_nickname,
+         completed_process_children=completed_process_children,
++        show_extlogin_nav=show_extlogin_nav,
+     )
  
+ @album_bp.route('/<album_id>/create_child', methods=['POST'])
+ def create_child(album_id):
+     meta = load_meta(album_id)
+     if not meta:
+         return redirect(url_for('album.album_access', album_id=album_id))
  
- def _looks_like_mpo_bytes(raw_bytes: bytes) -> bool:
-     if len(raw_bytes) < 64:
-         return False
-     return raw_bytes[:2] == b"\xff\xd8" and b"MPF\x00" in raw_bytes[:4096]
+     # ★HDD保管中は子作成を禁止（アーカイブ扱い）
+     if is_album_readonly(album_id):
+         flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
+         return redirect(url_for('album.album_home', album_id=album_id))
  
+     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+         return redirect(url_for('album.album_access', album_id=album_id))
  
- def _looks_like_heif_bytes(raw_bytes: bytes) -> bool:
-     if len(raw_bytes) < 12:
-         return False
-     if raw_bytes[4:8] != b"ftyp":
-         return False
-     heif_brands = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"hevm", b"hevs", b"mif1", b"msf1"}
-     major_brand = raw_bytes[8:12]
-     if major_brand in heif_brands:
-         return True
-     compatible = raw_bytes[16:64]
-     return any(brand in compatible for brand in heif_brands)
+     folder_name = (request.form.get('child_name') or '').strip()
+     selected_mode = (request.form.get('child_mode') or 'normal').strip().lower()
+     if selected_mode not in ('normal', 'process', 'movie'):
+         selected_mode = 'normal'
  
+     if not folder_name:
+         flash('子アルバム名を入力してください', 'danger')
+         return redirect(url_for('album.album_home', album_id=album_id))
  
--def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") -> dict[str, Any]:
-+def _save_upload_image_files(event_id: int, storage: Any, filename: str = "", mimetype: str = "") -> dict[str, Any]:
-     os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
-     event_dir = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
-     os.makedirs(event_dir, exist_ok=True)
+@@ -1833,50 +1836,52 @@ def upload_child(album_id, child_id):
+ # ビュー（画像/加工/動画）
+ # =============================================================================
+ @album_bp.route('/<album_id>/view/<child_id>', methods=['GET', 'POST'])
+ def view_child(album_id, child_id):
+     """
+     子アルバムビュー
+     - mode == 'movie' の場合:
+         * 変換済み encoded/*.web.mp4 を優先して再生URLに採用
+         * .web.mp4 が未生成なら converting=True を渡す（テンプレ側で「変換中…」表示）
+         * 一覧は「アップロード順（連番名）」で昇順ソート
+           期待ファイル名: {child_id}_YYYYMMDD_HHMM_NNNN.ext
+     - それ以外は静止画/加工。SSD/HDD 両方を探索して表示
+     """
+     import re
+     from datetime import datetime
  
-     raw_bytes = storage.read()
-     if not isinstance(raw_bytes, (bytes, bytearray)):
-         raw_bytes = bytes(raw_bytes or b"")
-     image_size = len(raw_bytes)
-+    detected = str(mimetype or "").strip()
-     if image_size <= 0:
--        raise ValueError("画像ファイルが空です")
-+        raise ChatUploadImageError(
-+            "empty_file",
-+            f"画像ファイルが空です。対象: {filename}（iPhoneの共有不具合で0バイトになることがあります。再選択して再送してください）",
-+            detail={"filename": filename, "size": image_size},
-+        )
-     if image_size > CHAT_UPLOAD_MAX_BYTES:
--        raise ValueError("画像サイズが上限を超えています")
-+        size_mb = image_size / (1024 * 1024)
-+        raise ChatUploadImageError(
-+            "file_too_large",
-+            f"画像サイズが大きすぎます（最大20MB）。対象: {filename}（{size_mb:.2f}MB）",
-+            status=413,
-+            detail={"filename": filename, "size": image_size, "max_bytes": CHAT_UPLOAD_MAX_BYTES},
-+        )
+     meta = load_meta(album_id)
+     if not meta:
+         return 'アルバムが存在しません', 404
  
-     lower_name = (filename or "").lower()
-     looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif") or _looks_like_heif_bytes(raw_bytes)
-     looks_like_mpo = lower_name.endswith(".mpo") or _looks_like_mpo_bytes(raw_bytes)
+     child_meta = next((c for c in meta.get("children", []) if c.get("folder") == child_id), None)
+     if not child_meta:
+         return '子アルバムが存在しません', 404
  
-     if looks_like_heif and not HEIF_OPENER_AVAILABLE:
--        raise ValueError(HEIC_UNSUPPORTED_MESSAGE)
-+        raise ChatUploadImageError(
-+            "convert_failed",
-+            f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
-+            detail={"filename": filename, "detected": "HEIC"},
-+        )
+     mode = child_meta.get("mode", "normal")
++    album_meta = _fetch_album_meta(album_id)
++    show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
  
+     # ★HDD保管中フラグ（テンプレ側で作成/追加UIをブロックするために渡す）
      try:
-         with Image.open(io.BytesIO(raw_bytes)) as im:
-             image_format = (im.format or "").upper()
--            if image_format == "MPO":
--                try:
--                    im.seek(0)
--                except Exception:
--                    pass
--            ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
-+            detected = image_format or detected or "unknown"
-+            if image_format == "MPO" or looks_like_mpo:
-+                raise ChatUploadImageError(
-+                    "unsupported_format",
-+                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（MPO） iPhoneのLive Photo/連写の可能性があります。Live Photoをオフにして撮影してください。",
-+                    detail={"filename": filename, "detected": "MPO"},
-+                )
-+
-+            try:
-+                ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
-+            except ChatUploadImageError as exc:
-+                detected_fmt = str(exc.detail.get("detected") or detected or "unknown")
-+                raise ChatUploadImageError(
-+                    "unsupported_format",
-+                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（{detected_fmt}）",
-+                    detail={"filename": filename, "detected": detected_fmt},
-+                ) from exc
-+
-             normalized = ImageOps.exif_transpose(im)
-             width, height = normalized.size
+         storage, _ = _get_album_storage(album_id)  # 'ssd' or 'hdd'
+     except Exception:
+         storage = None
+     is_readonly = (storage == 'hdd')
  
-             if convert_original_to_jpeg:
--                rgb = normalized.convert("RGB")
--                original_buffer = io.BytesIO()
--                rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
--                original_bytes = original_buffer.getvalue()
--                image_size = len(original_bytes)
-+                try:
-+                    rgb = normalized.convert("RGB")
-+                    original_buffer = io.BytesIO()
-+                    rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
-+                    original_bytes = original_buffer.getvalue()
-+                    image_size = len(original_bytes)
-+                except Exception as exc:
-+                    raise ChatUploadImageError(
-+                        "convert_failed",
-+                        f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
-+                        detail={"filename": filename, "detected": image_format or "HEIC"},
-+                    ) from exc
-             else:
-                 original_bytes = bytes(raw_bytes)
+     # SSD/HDD のどちらか実体がある方を優先
+     child_path = _prefer_existing_child_dir(album_id, child_id, mode)
+     os.makedirs(child_path, exist_ok=True)
  
-             thumb_image = normalized.convert("RGBA")
-+    except ChatUploadImageError:
-+        raise
-     except UnidentifiedImageError as exc:
--        if looks_like_heif:
--            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
--        raise ValueError("画像ファイルとして読み取れません。Live Photo/連写画像やHEIC形式の可能性があります") from exc
-+        raise ChatUploadImageError(
-+            "decode_failed",
-+            f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}",
-+            detail={"filename": filename, "detected": detected or "unknown"},
-+        ) from exc
-     except OSError as exc:
--        if looks_like_heif and not HEIF_OPENER_AVAILABLE:
--            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
--        if looks_like_mpo or "MPO" in str(exc).upper():
--            raise ValueError("MPO画像の読み込みに失敗しました。Live Photo/連写画像の可能性があります。互換性優先で再撮影をお試しください") from exc
--        raise ValueError("画像ファイルとして読み取れません") from exc
-+        raise ChatUploadImageError(
-+            "decode_failed",
-+            f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}",
-+            detail={"filename": filename, "detected": detected or "unknown"},
-+        ) from exc
- 
-     if image_size > CHAT_UPLOAD_MAX_BYTES:
--        raise ValueError("画像サイズが上限を超えています")
-+        size_mb = image_size / (1024 * 1024)
-+        raise ChatUploadImageError(
-+            "file_too_large",
-+            f"画像サイズが大きすぎます（最大20MB）。対象: {filename}（{size_mb:.2f}MB）",
-+            status=413,
-+            detail={"filename": filename, "size": image_size, "max_bytes": CHAT_UPLOAD_MAX_BYTES},
-+        )
- 
-     base_name = secrets.token_urlsafe(18)
-     image_file = f"{base_name}.{ext}"
-     image_thumb_file = f"{base_name}_thumb.jpg"
-     image_path = os.path.join(event_dir, image_file)
-     thumb_path = os.path.join(event_dir, image_thumb_file)
- 
-     with open(image_path, "wb") as fp:
-         fp.write(original_bytes)
- 
-     thumb_image.thumbnail((480, 480))
-     bg = Image.new("RGB", thumb_image.size, (255, 255, 255))
-     bg.paste(thumb_image, mask=thumb_image.split()[3] if thumb_image.mode == "RGBA" else None)
-     bg.save(thumb_path, format="JPEG", quality=85, optimize=True)
- 
-     return {
-         "image_file": image_file,
-         "image_thumb_file": image_thumb_file,
-         "image_mime": image_mime,
-         "image_size": image_size,
-         "image_width": width,
-         "image_height": height,
-     }
- 
- 
-@@ -2852,141 +2946,157 @@ def room(event_id: int):
- def chat_image(event_id: int, name: str):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-     if "/" in name or "\\" in name or name.startswith("."):
-         abort(404)
-     directory = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
-     return send_from_directory(directory, name)
- 
- 
- @chat_bp.post("/api/events/<int:event_id>/upload-image")
- def upload_image(event_id: int):
-     _ensure_chat_rooms_schema()
-     _ensure_chat_room_members_schema()
-     _ensure_chat_messages_room_schema()
-     _ensure_chat_thread_schema()
-     _ensure_chat_edit_schema()
-     actor = get_chat_actor()
-     if not actor:
-         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
-     room_id = (request.form.get("room_id") or request.args.get("room_id") or (request.get_json(silent=True) or {}).get("room_id") or "").strip() or None
-     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-     if not allowed or not effective_room_id:
--        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
-+        _log_chat_upload_image_error(code="forbidden", event_id=event_id, room_id=effective_room_id or room_id, actor=actor, err="room_forbidden")
-+        return _upload_image_error_response(code="forbidden", message="このルームには画像を送信できません", status=403)
-     if not _ensure_chat_delete_schema():
-         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
-     if not _ensure_chat_image_schema():
-         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
-     if not _ensure_chat_message_images_schema():
-         return jsonify({"ok": False, "error": "画像機能の初期化に失敗しました"}), 500
- 
-     payload = request.get_json(silent=True) or {}
-     if not _check_rate_limit(actor, route="upload_image", event_id=event_id, room_id=effective_room_id):
-         return jsonify({"ok": False, "error": RATE_LIMIT_ERROR_MESSAGE}), 429
- 
-     token = (request.form.get("csrf_token") or payload.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         current_app.logger.info(
-             "chat upload-image csrf mismatch event_id=%s actor=%s:%s ua=%s",
-             event_id,
-             actor.get("actor_type"),
-             actor.get("actor_id"),
-             request.headers.get("User-Agent", ""),
-         )
-         return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再送してください"}), 400
- 
--    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
--        return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
-+    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * CHAT_UPLOAD_MAX_FILES:
-+        return _upload_image_error_response(code="file_too_large", message="画像サイズが大きすぎます（最大20MB）。対象ファイルを見直してください", status=413)
- 
-     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
-     if not raw_upload_files:
-         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
--    if len(raw_upload_files) > 6:
--        return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
-+    if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:
-+        return _upload_image_error_response(code="too_many_files", message=f"画像は最大6枚まで送れます（現在: {len(raw_upload_files)}枚）", status=400, detail={"count": len(raw_upload_files), "max": CHAT_UPLOAD_MAX_FILES})
- 
-     def _fallback_filename(file_idx: int, upload_file: Any) -> str:
-         original_name = (getattr(upload_file, "filename", "") or "").strip()
-         if original_name:
-             return original_name
-         mimetype = str(getattr(upload_file, "mimetype", "") or "").lower()
-         if mimetype in {"image/jpeg", "image/jpg", "image/heic", "image/heif"}:
-             ext = "jpg"
-         elif mimetype == "image/png":
-             ext = "png"
-         elif mimetype == "image/webp":
-             ext = "webp"
-         else:
-             ext = "bin"
-         return f"upload_{file_idx}.{ext}"
- 
-     upload_files: list[dict[str, Any]] = []
-     for idx, upload_file in enumerate(raw_upload_files, start=1):
-         normalized_name = _fallback_filename(idx, upload_file)
-         mimetype = str(getattr(upload_file, "mimetype", "") or "")
-         if mimetype and not mimetype.lower().startswith("image/"):
--            return jsonify({"ok": False, "error": f"画像以外が混ざっています: {normalized_name}/{mimetype}"}), 400
-+            msg = f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {normalized_name}（{mimetype}）"
-+            _log_chat_upload_image_error(code="unsupported_format", event_id=event_id, room_id=effective_room_id, actor=actor, filename=normalized_name, mimetype=mimetype, err="mimetype_not_image")
-+            return _upload_image_error_response(code="unsupported_format", message=msg, status=400, detail={"filename": normalized_name, "detected": mimetype})
-         upload_files.append({"idx": idx, "file": upload_file, "name": normalized_name, "mimetype": mimetype})
- 
-     try:
-         body = _validate_caption_optional(request.form.get("body") or "")
-         reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, request.form.get("reply_to_message_id"))
-         thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
-     except ValueError as exc:
-         status = 413 if "上限" in str(exc) else 400
-         return jsonify({"ok": False, "error": str(exc)}), status
- 
-     image_metas: list[dict[str, Any]] = []
-     for upload in upload_files:
-         idx = int(upload["idx"])
-         upload_file = upload["file"]
-         filename = str(upload["name"])
-         mimetype = str(upload.get("mimetype") or "")
-         current_app.logger.info(
-             "chat upload-image processing event_id=%s idx=%s filename=%s mimetype=%s size=%s",
-             event_id,
-             idx,
-             filename,
-             mimetype,
-             getattr(upload_file, "content_length", None),
-         )
+     # 加工ロック（静止画側で使用）
+     lock_path = os.path.join(child_path, 'lock.json')
+     lock = None
+     lock_expired = False
+     if os.path.exists(lock_path):
          try:
--            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename))
-+            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename, mimetype=mimetype))
-+        except ChatUploadImageError as exc:
-+            size = exc.detail.get("size") if isinstance(exc.detail, dict) else None
-+            _log_chat_upload_image_error(
-+                code=exc.code,
-+                event_id=event_id,
-+                room_id=effective_room_id,
-+                actor=actor,
-+                filename=filename,
-+                size=int(size) if isinstance(size, (int, float)) else getattr(upload_file, "content_length", None),
-+                mimetype=mimetype,
-+                err=exc.message,
-+            )
-+            return _upload_image_error_response(code=exc.code, message=exc.message, status=exc.status, detail=exc.detail)
-         except ValueError as exc:
--            current_app.logger.warning(
--                "chat upload-image invalid file event_id=%s idx=%s filename=%s mimetype=%s size=%s error=%s",
--                event_id,
--                idx,
--                filename,
--                mimetype,
--                getattr(upload_file, "content_length", None),
--                str(exc),
-+            _log_chat_upload_image_error(
-+                code="decode_failed",
-+                event_id=event_id,
-+                room_id=effective_room_id,
-+                actor=actor,
-+                filename=filename,
-+                size=getattr(upload_file, "content_length", None),
-+                mimetype=mimetype,
-+                err=str(exc),
-             )
--            status = 413 if "上限" in str(exc) else 400
--            return jsonify({"ok": False, "error": f"{idx}枚目({filename}): {str(exc)}"}), status
-+            return _upload_image_error_response(code="decode_failed", message=f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}", status=400, detail={"filename": filename})
+             with open(lock_path, 'r') as f:
+                 lock = json.load(f)
+             lock_expired = (time.time() - lock.get('timestamp', 0)) > LOCK_TTL_SEC
+         except Exception:
+             lock = None
  
-     message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id, thread_root_id, image_meta=image_metas[0]))
-     message_id = int(message.get("id") or 0)
+     username = session.get("user")
+@@ -1982,51 +1987,52 @@ def view_child(album_id, child_id):
+                     poster_url = url_for('album.movie_poster', album_id=album_id, child_id=child_id, filename=poster)
+                     break
  
-     db = get_db()
-     cur = db.cursor()
-     try:
-         now = datetime.utcnow()
-         for idx, image_meta in enumerate(image_metas, start=1):
-             cur.execute(
-                 """
-                 INSERT INTO chat_message_images (
-                     event_id, message_id, seq,
-                     image_file, image_thumb_file, image_mime,
-                     image_size, image_width, image_height, created_at
-                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                 """,
-                 (
-                     event_id,
-                     message_id,
-                     idx,
-                     image_meta.get("image_file"),
-                     image_meta.get("image_thumb_file"),
-                     image_meta.get("image_mime"),
-                     image_meta.get("image_size"),
-
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 4229354c8d10bb9bd87bc31bc8c633bb57c4f1a4..db0050a9896eee3a11fd1b9476b0577779adb3f8 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -976,50 +976,51 @@
-       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
-       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
-     </form>
-     {% endif %}
+             # 再生URLは、変換済みがあればそれ（encoded/）、無ければ原本（original/）
+             use_name = web_name if web_exists else f
+ 
+             videos.append({
+                 "name": f,
+                 "poster": poster_url,
+                 "raw": url_for('album.movie_raw', album_id=album_id, child_id=child_id, filename=use_name),
+                 "web": url_for('album.movie_raw', album_id=album_id, child_id=child_id, filename=web_name),
+                 "converting": (not web_exists)
+             })
+ 
+         return render_template(
+             "view_child_movie.html",
+             album_id=album_id,
+             child_id=child_id,
+             meta=meta,
+             videos=videos,
+             mode=mode,
+             session=session,
+             is_admin=is_admin,
+             is_owner=is_owner,
+             # ★追加：HDD保管中フラグをテンプレへ渡す
+-            is_readonly=is_readonly
++            is_readonly=is_readonly,
++            show_extlogin_nav=show_extlogin_nav,
+         )
+ 
+     else:
+         # 通常モード（静止画）: 両ルートをマージ
+         seen = set()
+         merged = []
+         roots = _get_roots_for_album(album_id)  # ← 1回だけ取得して使い回す
+         for root in roots:
+             p = os.path.join(root, album_id, child_id)
+             if not os.path.isdir(p):
+                 continue
+             for f in os.listdir(p):
+                 full = os.path.join(p, f)
+                 if not os.path.isfile(full):
+                     continue
+                 if not allowed_file(f) or f.startswith("latest."):
+                     continue
+                 if f in seen:
+                     continue
+                 seen.add(f)
+                 # resolve_thumb_url を大量呼び出ししない（roots を使い回す）
+                 merged.append({"name": f, "thumb": _thumb_with_cached_roots(album_id, child_id, f, roots)})
+         files = sorted(merged, key=lambda x: x["name"])
+ 
+     zip_token = session.pop('zip_token', None)
+@@ -2074,50 +2080,51 @@ def view_child(album_id, child_id):
+     else:
+         template_name = "view_child_process.html" if mode == "process" else "view_child.html"
+     return render_template(
+         template_name,
+         album_id=album_id,
+         child_id=child_id,
+         files=files,
+         videos=videos,
+         image_count=len(files),
+         meta=meta,
+         mode=mode,
+         lock=lock,
+         lock_expired=lock_expired,
+         zip_token=zip_token,
+         is_admin=is_admin,
+         is_owner=is_owner,
+         session=session,
+         history_list=history_list,
+         # ★追加：HDD保管中フラグをテンプレへ渡す
+         is_readonly=is_readonly,
+         ext_user_nickname=_get_ext_user_nickname(),
+         is_event_login=is_event_login,
+         event_process_members=event_process_members,
+         current_ext_user_id=current_ext_user_id,
+         current_user_process_status=current_user_process_status,
++        show_extlogin_nav=show_extlogin_nav,
+     )
+ 
+ # =============================================================================
+ # サーブ（画像/動画/ポスター/ダウンロード）
+ # =============================================================================
+ @album_bp.route('/<album_id>/thumb/<child_id>/<filename>')
+ def album_thumb(album_id, child_id, filename):
+     if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
+         return redirect(url_for('album.album_access', album_id=album_id))
+     # 両ルートを探索して実体から返す
+     for root in _get_roots_for_album(album_id):
+         p = os.path.join(root, album_id, child_id, 'thumbs', filename)
+         if os.path.isfile(p):
+             return send_file(p, conditional=True)
+     abort(404)
+ 
+ @album_bp.route('/<album_id>/<child_id>/process_status', methods=['POST'])
+ def update_process_status(album_id, child_id):
+     meta = load_meta(album_id)
+     if not meta:
+         return jsonify({"ok": False, "error": "album_not_found"}), 404
+ 
+     is_authed = session.get(f'auth_{album_id}') is True
+     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+diff --git a/albums/templates/album_home.html b/albums/templates/album_home.html
+index 0370a492a741434a0f2b8d28af4d42c1edf3bbfb..c3f089a6662ffadb4c0cc9cf1b0b3d0a15b24b6e 100644
+--- a/albums/templates/album_home.html
++++ b/albums/templates/album_home.html
+@@ -1,41 +1,44 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <title>子アルバム一覧</title>
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+   <style>
+     .child-actions{ gap:.5rem; }
+     .badge-mode{ font-weight:700; }
+     .badge-normal{ background:#e9f7ef; color:#0f5132; }
+     .badge-movie{ background:#e7f1ff; color:#084298; }
+     .badge-process{ background:#fff3cd; color:#664d03; }
+   </style>
+ </head>
+ <body class="container py-4">
++  {% if show_extlogin_nav %}
++    {% include "_extlogin_nav.html" %}
++  {% endif %}
+ 
+   <div class="d-flex align-items-center justify-content-between mb-3">
+     <h2 class="mb-0">📂 {{ meta.album_name }}</h2>
    </div>
- </div>
  
- <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
- (() => {
-   const root = document.querySelector('[data-event-id]');
-   if (!root) return;
+   {% if is_admin %}
+     <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
+   {% elif is_owner %}
+     <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
+   {% endif %}
  
-   const eventId = Number(root.dataset.eventId);
-   const roomId = root.dataset.roomId || "";
-   const csrfToken = root.dataset.csrf;
-   const vapidKey = root.dataset.vapid;
-   const meId = root.dataset.me || '';
-   const myDisplayName = root.dataset.displayName || '';
-   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
-   const isAdmin = root.dataset.isAdmin === '1';
-   const isMobile = window.matchMedia('(hover: none)').matches;
-   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
-   const maxUploadImages = 6;
-+  const maxUploadImageBytes = 20 * 1024 * 1024;
+   {# ★HDD保管中（読み取り専用）向けの注意喚起。is_readonly はビュー側で True を渡す #}
+   {% if is_readonly %}
+     <div class="alert alert-warning text-center mb-3">
+       このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、子アルバムの新規作成はできません。
+     </div>
+   {% endif %}
  
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
-   const maxInputLines = 6;
-   const pushBtn = document.getElementById('enable-push');
-   const roomSwitch = document.getElementById('chat-room-switch');
-   const roomCreateBtn = document.getElementById('chat-room-create-btn');
-   const roomMembersBtn = document.getElementById('chat-room-members-btn');
-   const roomCreateModal = document.getElementById('roomCreateModal');
-   const roomMembersModal = document.getElementById('roomMembersModal');
-   const threadModal = document.getElementById('threadModal');
-   const threadModalCloseBtn = document.getElementById('thread-modal-close');
-   const threadRootContainer = document.getElementById('thread-root');
-   const threadRepliesContainer = document.getElementById('thread-replies');
-   const threadForm = document.getElementById('thread-form');
-   const threadBodyInput = document.getElementById('thread-body');
-   const reactionDetailModal = document.getElementById('reactionDetailModal');
-   const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
-   const reactionDetailBody = document.getElementById('reaction-detail-body');
-   const imageInput = document.getElementById('chat-image-file');
-   const imageBtn = document.getElementById('chat-image-btn');
-   const sendBtn = document.getElementById('chat-send-btn');
-   const replyPreview = document.getElementById('reply-preview');
-   const replySender = document.getElementById('reply-sender');
-@@ -1355,51 +1356,59 @@
-   }, { passive: true });
-   window.addEventListener('scroll', () => {
-     clearLongPressTimer();
-     closeContextMenu();
-   }, { passive: true });
-   ctxMenu?.addEventListener('click', handleContextMenuClick);
-   document.addEventListener('pointerdown', (e) => {
-     if (!ctxMenu || ctxMenu.classList.contains('d-none')) return;
-     if (ctxPanel?.contains(e.target)) return;
-     closeContextMenu();
-   });
-   searchBtn?.addEventListener('click', () => runRoomSearch());
-   searchCloseBtn?.addEventListener('click', hideSearchPanel);
-   searchInput?.addEventListener('keydown', (e) => {
-     if (e.key !== 'Enter') return;
-     e.preventDefault();
-     runRoomSearch();
-   });
-   window.addEventListener('beforeunload', () => sendTypingStop());
+   {% if processing_list %}
+   <div class="alert alert-warning mt-3">
+     <div class="fw-bold">⏳ 現在加工中の子アルバム：</div>
+     <ul class="mb-0">
+       {% for p in processing_list %}
+         <li>
+           <b>{{ p.child_name }}</b>
+diff --git a/albums/templates/view_child.html b/albums/templates/view_child.html
+index 8c4aa7739b6f433996f5e7bc942fb8340fafc307..2532dcc140e38c969b9d5552ee6aba67c550d72e 100644
+--- a/albums/templates/view_child.html
++++ b/albums/templates/view_child.html
+@@ -60,50 +60,54 @@
+     .btn-busy::after{
+       content:""; display:inline-block; width:1em; height:1em;
+       border:2px solid currentColor; border-right-color:transparent; border-radius:50%;
+       margin-left:.5em; vertical-align:-2px; animation:zipspin .7s linear infinite;
+     }
+     @keyframes zipspin{ to{ transform:rotate(360deg); } }
  
-   imageBtn?.addEventListener('click', () => imageInput?.click());
-   imageInput?.addEventListener('change', async () => {
-     const files = Array.from(imageInput.files || []);
-     if (!files.length) return;
-     if (files.length > maxUploadImages) {
--      alert('画像は最大6枚までです');
-+      alert(`画像は最大6枚まで送れます（現在: ${files.length}枚）`);
-+      imageInput.value = '';
-+      return;
-+    }
-+
-+    const tooLarge = files.find((file) => Number(file?.size || 0) > maxUploadImageBytes);
-+    if (tooLarge) {
-+      const sizeMb = (Number(tooLarge.size || 0) / (1024 * 1024)).toFixed(2);
-+      alert(`画像サイズが大きすぎます（最大20MB）。対象: ${tooLarge.name || '名称不明'}（${sizeMb}MB）`);
-       imageInput.value = '';
-       return;
+     @media (max-width:480px){
+       .zip-toolbar{ gap:.5em; padding:.5em .6em; border-radius:8px; }
+       .zip-progress .bar{ height:8px; }
+       .zip-progress .txt{ font-size:.8rem; }
+       .sel-count{ font-size:.9rem; padding:.3em .6em; }
      }
  
-     setSendingState(true);
-     sendTypingStop();
-     try {
-       const fd = new FormData();
-       fd.append('csrf_token', csrfToken);
-       files.forEach((file) => fd.append('file', file));
-       fd.append('body', bodyInput.value || '');
-       if (state.replyToId) fd.append('reply_to_message_id', String(state.replyToId));
-       const res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
-       const data = await res.json().catch(() => ({}));
-       if (!res.ok || !data.ok) {
-         throw new Error(data.error || '画像送信に失敗しました');
-       }
-       bodyInput.value = '';
-       updateAutoGrow();
-       clearReplyState();
-     } catch (err) {
-       alert(err?.message || '画像送信に失敗しました');
-     } finally {
-       imageInput.value = '';
-       setSendingState(false);
+     #bb-share{
+       position:absolute; top:12px; right:60px; z-index:10000;
+       width:40px; height:40px; border-radius:999px;
+       border:1px solid rgba(255,255,255,.5); background:rgba(0,0,0,.55); color:#fff;
+       display:flex; align-items:center; justify-content:center;
+       font-size:18px; line-height:1; cursor:pointer;
+     }
+     #bb-share:hover{ background:rgba(0,0,0,.72); }
+   </style>
+ </head>
+ <body class="container py-4">
++{% if show_extlogin_nav %}
++  {% include "_extlogin_nav.html" %}
++{% endif %}
++
+ 
+ <h2 class="mb-3">
+   📂 {{ meta.album_name }} /
+   {% for child in meta.children %}
+     {% if child.folder == child_id %}
+       {{ child.name }}
+       <small class="text-muted ms-2">（{{ image_count }}枚）</small>
+     {% endif %}
+   {% endfor %}
+ </h2>
+ 
+ {% if lock and not lock_expired %}
+   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
+     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
+     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
+       <button class="btn btn-outline-danger btn-sm" type="submit"
+               onclick="return confirm('本当にロックを解除しますか？');">
+         🔓 ロックを解除
+       </button>
+     </form>
+   </div>
+ {% endif %}
+ 
+ {% if is_admin %}
+   <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
+diff --git a/albums/templates/view_child_movie.html b/albums/templates/view_child_movie.html
+index 5906e017ea456ceb5c90b7ebc6253101aae1c9dd..e104e8d2dfbcf5d3fb0fbf543a4cb2e6953ca152 100644
+--- a/albums/templates/view_child_movie.html
++++ b/albums/templates/view_child_movie.html
+@@ -4,50 +4,54 @@
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <title>{{ meta.album_name }}</title>
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+   <style>
+     .gallery { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
+     .gallery .item { position:relative; display:inline-block; text-align:center; }
+     .caption { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ 
+     .poster { width: 220px; aspect-ratio: 16/9; border-radius: 8px; background:#000; object-fit: cover; cursor: pointer; display:block; }
+     video.thumb { width: 220px; max-height: 160px; border-radius: 8px; background:#000; display:none; }
+ 
+     .play-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
+       background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
+       border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
+ 
+     /* 変換中バッジ */
+     .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
+       background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
+       border:1px solid rgba(255,255,255,.5); user-select:none; }
+ 
+     @media (pointer:coarse){ .poster, video.thumb { width: 260px; } }
+   </style>
+ </head>
+ <body class="container py-4">
++{% if show_extlogin_nav %}
++  {% include "_extlogin_nav.html" %}
++{% endif %}
++
+ 
+   <h2 class="mb-3">
+     📂 {{ meta.album_name }} /
+     {% for child in meta.children %}
+       {% if child.folder == child_id %}
+         🎥 {{ child.name }}
+         <small class="text-muted ms-2">（{{ videos|length }}本）</small>
+       {% endif %}
+     {% endfor %}
+   </h2>
+ 
+   <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
+   <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-secondary mb-3 ms-2">⬆️ 動画を追加</a>
+ 
+   {% set any_converting = videos|selectattr('converting')|list|length > 0 %}
+   {% if any_converting %}
+     <div class="alert alert-info py-2">⏳ 一部の動画をブラウザ互換に変換中です。準備でき次第、自動で再生可能になります。</div>
+   {% endif %}
+ 
+   <div class="gallery">
+     {% if videos %}
+       {% for v in videos %}
+         {# 再生URLの拡張子からMIME推定（typeは必須ではないが、正しければ付与） #}
+         {% set raw_url = v.raw|lower %}
+         {% if raw_url.endswith('.webm') %}
+diff --git a/albums/templates/view_child_process.html b/albums/templates/view_child_process.html
+index df74a77bf9ef237142e0e6a0d9a22fd754fb116b..9ef5348f4e184c5c965bab18d3cd941ac9883cb3 100644
+--- a/albums/templates/view_child_process.html
++++ b/albums/templates/view_child_process.html
+@@ -1,42 +1,46 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <title>{{ meta.album_name }}</title>
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
+   <style>
+     .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+     .gallery .item { position: relative; display: inline-block; text-align: center; }
+     img.thumb { width: 100px; height: auto; border-radius: 6px; }
+ 
+     @media (pointer:coarse){ img.thumb{ width:120px; } }
+   </style>
+ </head>
+ <body class="container py-4">
++{% if show_extlogin_nav %}
++  {% include "_extlogin_nav.html" %}
++{% endif %}
++
+ 
+ <h2 class="mb-3">
+   📂 {{ meta.album_name }} /
+   {% for child in meta.children %}
+     {% if child.folder == child_id %}
+       {{ child.name }}
+       <small class="text-muted ms-2">（{{ image_count }}枚）</small>
+     {% endif %}
+   {% endfor %}
+ </h2>
+ 
+ {% if lock and not lock_expired %}
+   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
+     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
+     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
+       <button class="btn btn-outline-danger btn-sm" type="submit"
+               onclick="return confirm('本当にロックを解除しますか？');">
+         🔓 ロックを解除
+       </button>
+     </form>
+   </div>
+ {% endif %}
+ 
+ {% if is_admin %}
+   <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
+diff --git a/albums/templates/view_child_process_event.html b/albums/templates/view_child_process_event.html
+index aa4b790fb8e221ca28945ee631ee8ad02475c319..b1dde7aca90fd2c16e6056b7c97b734677e83852 100644
+--- a/albums/templates/view_child_process_event.html
++++ b/albums/templates/view_child_process_event.html
+@@ -74,50 +74,54 @@
+     img.thumb { width: 110px; height: auto; border-radius: 10px; }
+ 
+     .member-chip {
+       display: inline-flex; align-items: center; gap: 8px;
+       background: #fff3cd; color: #664d03; border-radius: 999px; padding: 6px 12px; font-size: 0.9rem;
+       border: 1px solid #ffeeba; margin: 4px;
+     }
+ 
+     .btn-lg { padding: 0.9rem 1.4rem; font-size: 1rem; }
+ 
+     .upload-panel { border-radius: 16px; border: 1px dashed #cdd6e3; background: #fdfdff; padding: 16px; }
+     .upload-dropzone {
+       border: 2px dashed #a9b4c2; border-radius: 12px; padding: 20px; text-align: center;
+       color: #6c757d; background: #fff; transition: background-color .2s, border-color .2s, color .2s;
+     }
+     .upload-dropzone.dragover { background: #e9f5ff; border-color: #0d6efd; color: #0d6efd; }
+     .upload-preview img {
+       width: 110px; height: 110px; object-fit: contain;
+       background: #f8f9fa; border-radius: 10px; margin: 4px; border: 1px solid #dfe4ea;
+     }
+ 
+     @media (pointer:coarse){ img.thumb{ width:130px; } }
+   </style>
+ </head>
+ <body class="container py-4">
++{% if show_extlogin_nav %}
++  {% include "_extlogin_nav.html" %}
++{% endif %}
++
+ 
+ {% set ns = namespace(has_requested=false) %}
+ {% if event_process_members %}
+   {% for member in event_process_members %}
+     {% if member.request_flag|default(0)|int == 1 %}
+       {% set ns.has_requested = true %}
+     {% endif %}
+   {% endfor %}
+ {% endif %}
+ {% set has_image = files and (files|length > 0) %}
+ {% set current_step = 1 %}
+ {% if has_image %}{% set current_step = 2 %}{% endif %}
+ {% if ns.has_requested %}{% set current_step = 3 %}{% endif %}
+ {% if lock and not lock_expired %}{% set current_step = 4 %}{% endif %}
+ {% if history_list and not lock and ns.has_requested %}{% set current_step = 5 %}{% endif %}
+ {% set can_upload = (not is_readonly) and (not has_image or (lock and not lock_expired)) %}
+ {% set ext_user_id = session.get('ext_user_id') %}
+ 
+ <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+   <div>
+     <h1 class="page-title fw-bold mb-1">📂 {{ meta.album_name }} /
+       {% for child in meta.children %}
+         {% if child.folder == child_id %}
+           {{ child.name }}
+           <small class="text-muted ms-2">（{{ image_count }}枚）</small>
