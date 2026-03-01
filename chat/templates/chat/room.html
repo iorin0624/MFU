@@ -885,6 +885,7 @@
            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
            data-body-plain="{{ m.body_plain_excerpt }}"
            data-body-plain-full="{{ m.body_plain or m.body_plain_excerpt }}"
+           data-body-plain-full-json='{{ (m.body_plain or m.body_plain_excerpt or "")|tojson }}'
            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
            data-thread-root-id="{{ m.thread_root_id or '' }}"
            data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
@@ -1868,7 +1869,9 @@
     row.dataset.senderName = msg.sender_display_name || 'Unknown';
     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
-    row.dataset.bodyPlainFull = msg.body_plain || msg.body_plain_excerpt || msg.body || '';
+    const fullPlain = msg.body_plain || msg.body || '';
+    row.dataset.bodyPlainFull = fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || '');
+    row.dataset.bodyPlainFullJson = JSON.stringify(fullPlain || '');
     row.dataset.replyToId = msg.reply_to_message_id || '';
     row.dataset.threadRootId = msg.thread_root_id || '';
     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
@@ -2896,6 +2899,21 @@
     return '（画像）';
   }
 
+  function getFullPlainText(row) {
+    if (!row) return '';
+    const json = row.dataset.bodyPlainFullJson;
+    if (json) {
+      try {
+        return JSON.parse(json) || '';
+      } catch (_err) {}
+    }
+    const attr = row.dataset.bodyPlainFull;
+    if (attr) return attr;
+    const bodyEl = row.querySelector('.chat-body');
+    if (bodyEl) return (bodyEl.innerText || bodyEl.textContent || '');
+    return row.dataset.bodyPlain || '';
+  }
+
   function openFulltextModal(row) {
     const modalEl = document.getElementById('chat-fulltext-modal');
     const metaEl = document.getElementById('chat-fulltext-meta');
@@ -3074,7 +3092,7 @@
         closeContextMenu();
         return;
       }
-      const fullText = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
+      const fullText = getFullPlainText(row);
       setEditState(messageId, fullText);
       closeContextMenu();
       return;

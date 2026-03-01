@@ -1,8 +1,181 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index bfd201843cbdc618ac3638bfdeef17b348ef1116..b41f3720882a966cb36a18ccd153403a2b757d54 100644
+index b41f3720882a966cb36a18ccd153403a2b757d54..8bbeada6a335e8ec5955e8af1ee43b23d95e0a99 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -3052,51 +3052,52 @@
+@@ -863,50 +863,51 @@
+ 
+   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
+     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
+     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
+     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
+   </div>
+   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+ 
+   <div id="messages" class="chat-messages border rounded p-3 mb-3">
+     {% set ns = namespace(last_date=None) %}
+     {% for m in messages %}
+       {% set d = m.created_at_jst_date_label %}
+       {% if loop.first or d != ns.last_date %}
+         <div class="chat-date-divider" data-date-label="{{ d }}"><span>{{ d }}</span></div>
+         {% set ns.last_date = d %}
+       {% endif %}
+ 
+       <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
+            id="msg-{{ m.id }}"
+            data-message-id="{{ m.id }}"
+            data-sender-id="{{ m.sender_id }}"
+            data-sender-name="{{ m.sender_display_name }}"
+            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
+            data-body-plain="{{ m.body_plain_excerpt }}"
+            data-body-plain-full="{{ m.body_plain or m.body_plain_excerpt }}"
++           data-body-plain-full-json='{{ (m.body_plain or m.body_plain_excerpt or "")|tojson }}'
+            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
+            data-thread-root-id="{{ m.thread_root_id or '' }}"
+            data-thread-reply-count="{{ m.thread_reply_count or 0 }}"
+            data-reply-to-sender-name="{{ m.reply_to_sender_display_name or '' }}"
+            data-reply-to-body-plain="{{ m.reply_to_body_plain_excerpt or '' }}"
+            data-reply-to-sender-avatar-url="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
+            data-created-at-iso="{{ m.created_at_iso }}"
+            data-deleted-flag="{{ m.deleted_flag or 0 }}"
+            data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
+            data-can-delete="{{ 1 if m.can_delete else 0 }}"
+            data-can-edit="{{ 1 if m.can_edit else 0 }}"
+            data-edited-flag="{{ m.edited_flag or 0 }}"
+            data-my-reaction="{{ m.my_reaction or '' }}"
+            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
+         <div class="chat-line">
+           {% if not m.is_me %}
+             <img class="chat-avatar"
+                  src="{{ m.sender_avatar_url or default_avatar_url }}"
+                  alt=""
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
+           {% endif %}
+ 
+           <div class="chat-main">
+@@ -1846,51 +1847,53 @@
+   function isMyMessage(msg) {
+     return (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+   }
+ 
+   function renderMessage(msg) {
+     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+     const dateLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_date_label || '')
+       : formatDateLabel(createdAt);
+     const timeLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_time_hm || '')
+       : formatTimeLabel(createdAt);
+ 
+     appendDateDividerIfNeeded(dateLabel);
+ 
+     const isMe = isMyMessage(msg);
+ 
+     const row = document.createElement('div');
+     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
+     row.id = `msg-${msg.id}`;
+     row.dataset.messageId = msg.id;
+     row.dataset.senderName = msg.sender_display_name || 'Unknown';
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+     row.dataset.bodyPlain = msg.body_plain_excerpt || makeExcerpt(msg.body || '');
+-    row.dataset.bodyPlainFull = msg.body_plain || msg.body_plain_excerpt || msg.body || '';
++    const fullPlain = msg.body_plain || msg.body || '';
++    row.dataset.bodyPlainFull = fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || '');
++    row.dataset.bodyPlainFullJson = JSON.stringify(fullPlain || '');
+     row.dataset.replyToId = msg.reply_to_message_id || '';
+     row.dataset.threadRootId = msg.thread_root_id || '';
+     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
+     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
+     row.dataset.replyToBodyPlain = msg.reply_to_body_plain_excerpt || '';
+     row.dataset.replyToSenderAvatarUrl = msg.reply_to_sender_avatar_url || defaultAvatarUrl;
+     row.dataset.createdAtIso = msg.created_at_iso || '';
+     row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
+     row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
+     row.dataset.canDelete = canDeleteMessage(msg, isMe) ? '1' : '0';
+     row.dataset.canEdit = canEditMessage(msg, isMe) ? '1' : '0';
+     row.dataset.editedFlag = String(Number(msg.edited_flag || 0));
+     row.dataset.myReaction = msg.my_reaction || '';
+     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
+     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
+ 
+     const line = document.createElement('div');
+     line.className = 'chat-line';
+ 
+     if (!isMe) {
+       line.appendChild(makeAvatar(msg.sender_avatar_url));
+     }
+ 
+     const main = document.createElement('div');
+     main.className = 'chat-main';
+@@ -2874,50 +2877,65 @@
+ 
+     ctxReactions?.classList.add('d-none');
+     ctxMenu.classList.remove('d-none');
+     ctxMenu.classList.add('is-open');
+   }
+ 
+   function closeContextMenu() {
+     clearMessageSelection();
+     if (!ctxMenu) return;
+     ctxMenu.classList.add('d-none');
+     ctxMenu.classList.remove('is-open');
+     ctxMenu.dataset.messageId = '';
+     state.ctxMessageId = null;
+     state.ctxRow = null;
+     state.ctxBodyPlain = '';
+     ctxReactions?.classList.add('d-none');
+   }
+ 
+   function makeContextPreviewText(row, bodyPlain) {
+     if (Number(row?.dataset?.deletedFlag || 0) === 1) return '（削除済みメッセージ）';
+     const normalized = String(bodyPlain || '').replace(/\s+/g, ' ').trim();
+     if (normalized) return normalized;
+     return '（画像）';
+   }
+ 
++  function getFullPlainText(row) {
++    if (!row) return '';
++    const json = row.dataset.bodyPlainFullJson;
++    if (json) {
++      try {
++        return JSON.parse(json) || '';
++      } catch (_err) {}
++    }
++    const attr = row.dataset.bodyPlainFull;
++    if (attr) return attr;
++    const bodyEl = row.querySelector('.chat-body');
++    if (bodyEl) return (bodyEl.innerText || bodyEl.textContent || '');
++    return row.dataset.bodyPlain || '';
++  }
++
+   function openFulltextModal(row) {
+     const modalEl = document.getElementById('chat-fulltext-modal');
+     const metaEl = document.getElementById('chat-fulltext-meta');
+     const bodyEl = document.getElementById('chat-fulltext-body');
+     if (!modalEl || !metaEl || !bodyEl || !row) return;
+ 
+     const sender = row.dataset.senderName || '';
+     const createdIso = row.dataset.createdAtIso || '';
+     const full = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
+ 
+     metaEl.textContent = `${sender}${createdIso ? ` / ${createdIso}` : ''}`;
+     bodyEl.textContent = full;
+ 
+     const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+     bsModal.show();
+   }
+ 
+ 
+   async function copyTextWithFallback(text) {
+     if (!text) return;
+     if (navigator.clipboard?.writeText) {
+       await navigator.clipboard.writeText(text);
+       return;
+     }
+     const temp = document.createElement('textarea');
+@@ -3052,51 +3070,51 @@
      if (action === 'react') {
        ctxReactions?.classList.toggle('d-none');
        return;
@@ -28,9 +201,9 @@ index bfd201843cbdc618ac3638bfdeef17b348ef1116..b41f3720882a966cb36a18ccd153403a
          closeContextMenu();
          return;
        }
--      setEditState(messageId, row.dataset.bodyPlain || '');
-+      const fullText = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
-+      setEditState(messageId, fullText);
+-      const fullText = row.dataset.bodyPlainFull || row.dataset.bodyPlain || '';
++      const fullText = getFullPlainText(row);
+       setEditState(messageId, fullText);
        closeContextMenu();
        return;
      }
@@ -55,4 +228,3 @@ index bfd201843cbdc618ac3638bfdeef17b348ef1116..b41f3720882a966cb36a18ccd153403a
        bodyInput.value = plainText || '';
        updateAutoGrow();
        bodyInput.focus();
-     }
