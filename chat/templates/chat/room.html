@@ -259,19 +259,6 @@
   transition: box-shadow 0.25s ease;
 }
 
-.chat-delete-btn {
-  border: 1px solid #d6d9e8;
-  background: #fff;
-  color: #60708f;
-  border-radius: 999px;
-  font-size: 0.72rem;
-  padding: 2px 8px;
-}
-
-.chat-delete-btn:disabled {
-  opacity: 0.6;
-}
-
 .chat-deleted-text {
   color: #6b748b;
   font-style: italic;
@@ -318,8 +305,73 @@
 
 @media (hover: none) {
   .chat-message .react-open-btn {
-    opacity: 1;
-    pointer-events: auto;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+.chat-ctx-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+}
+
+.chat-ctx-menu.d-none {
+  display: none;
+}
+
+.chat-ctx-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.chat-ctx-panel {
+  position: absolute;
+  min-width: 180px;
+  max-width: min(92vw, 280px);
+  background: #fff;
+  border: 1px solid #dbe1f4;
+  border-radius: 14px;
+  box-shadow: 0 8px 30px rgba(35, 46, 83, 0.24);
+  padding: 8px;
+}
+
+.chat-ctx-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #26324f;
+}
+
+.chat-ctx-item:hover {
+  background: #eef3ff;
+}
+
+.chat-ctx-item-delete {
+  color: #b42318;
+}
+
+.chat-ctx-reactions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 4px 2px;
+}
+
+@media (hover: none) {
+  .chat-ctx-panel {
+    left: 50% !important;
+    right: auto !important;
+    top: auto !important;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    width: min(92vw, 420px);
+    max-width: min(92vw, 420px);
+    border-radius: 16px;
   }
 }
 
@@ -522,6 +574,7 @@
            data-created-at-iso="{{ m.created_at_iso }}"
            data-deleted-flag="{{ m.deleted_flag or 0 }}"
            data-deleted-by-actor-type="{{ m.deleted_by_actor_type or '' }}"
+           data-can-delete="{{ 1 if m.can_delete else 0 }}"
            data-my-reaction="{{ m.my_reaction or '' }}"
            data-reactions-summary='{{ (m.reactions_summary or [])|tojson }}'>
         <div class="chat-line">
@@ -586,9 +639,6 @@
                 {% endif %}
               </div>
               <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-              {% if m.can_delete %}
-                <button type="button" class="chat-delete-btn" data-delete-btn="1">削除</button>
-              {% endif %}
             </div>
             {% if m.is_me %}
               <div class="chat-read-indicator d-none"></div>
@@ -632,6 +682,17 @@
       <button type="button" id="chatImageViewerPrev" class="chat-image-viewer-nav" aria-label="前の画像">‹</button>
       <img id="chatImageViewerImg" src="" alt="拡大画像">
       <button type="button" id="chatImageViewerNext" class="chat-image-viewer-nav" aria-label="次の画像">›</button>
+    </div>
+  </div>
+
+  <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
+    <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
+    <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
+      <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
+      <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
+      <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
     </div>
   </div>
 
@@ -679,6 +740,9 @@
   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
+  const ctxMenu = document.getElementById('chatCtxMenu');
+  const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
+  const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
 
   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
     timeZone: 'Asia/Tokyo',
@@ -705,7 +769,21 @@
     reactionByMessage: new Map(),
     viewerImages: [],
     viewerIndex: 0,
+    ctxMessageId: null,
+    longPressTimer: null,
+    longPressTriggered: false,
   };
+
+  if (ctxReactions && ctxReactions.childElementCount === 0) {
+    reactionEmojis.forEach((emoji) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chat-reaction-emoji';
+      btn.dataset.emoji = emoji;
+      btn.textContent = emoji;
+      ctxReactions.appendChild(btn);
+    });
+  }
 
   const socket = io({ transports: ['websocket', 'polling'] });
   socket.emit('chat_join', { event_id: eventId });
@@ -759,20 +837,15 @@
 
 
   msgBox.addEventListener('click', (e) => {
+    if (state.longPressTriggered) {
+      state.longPressTriggered = false;
+      return;
+    }
     const rowForAction = e.target.closest('.chat-row');
     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
       if (e.target.closest('.chat-reply-quote')) {
         jumpToMessage(e.target.closest('.chat-reply-quote').dataset.jumpToId);
       }
-      return;
-    }
-
-    const deleteBtn = e.target.closest('[data-delete-btn]');
-    if (deleteBtn) {
-      const row = deleteBtn.closest('.chat-row');
-      const messageId = Number(row?.dataset.messageId || 0);
-      if (!messageId) return;
-      handleDeleteMessage(row, messageId, deleteBtn);
       return;
     }
 
@@ -846,6 +919,29 @@
     setReplyState(messageId, senderName, bodyPlain, bubble);
   });
 
+  msgBox.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('.chat-row[data-message-id]');
+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+    e.preventDefault();
+    openContextMenu(row, { x: e.clientX, y: e.clientY });
+  });
+
+  msgBox.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    const row = e.target.closest('.chat-row[data-message-id]');
+    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
+    if (e.target.closest('a, button, input, textarea, .chat-reaction-panel')) return;
+    clearLongPressTimer();
+    state.longPressTriggered = false;
+    state.longPressTimer = window.setTimeout(() => {
+      state.longPressTriggered = true;
+      openContextMenu(row, { x: e.clientX, y: e.clientY, forceSheet: true });
+    }, 500);
+  });
+  msgBox.addEventListener('pointerup', clearLongPressTimer);
+  msgBox.addEventListener('pointercancel', clearLongPressTimer);
+  msgBox.addEventListener('pointermove', clearLongPressTimer);
+
   replyCancelBtn?.addEventListener('click', clearReplyState);
   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
@@ -855,9 +951,13 @@
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeImageViewer();
+    if (e.key === 'Escape') closeContextMenu();
     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
     if (e.key === 'ArrowRight') moveViewerIndex(1);
   });
+  msgBox.addEventListener('scroll', closeContextMenu, { passive: true });
+  window.addEventListener('scroll', closeContextMenu, { passive: true });
+  ctxMenu?.addEventListener('click', handleContextMenuClick);
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
   imageInput?.addEventListener('change', async () => {
@@ -1029,6 +1129,7 @@
     row.dataset.createdAtIso = msg.created_at_iso || '';
     row.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
     row.dataset.deletedByActorType = msg.deleted_by_actor_type || '';
+    row.dataset.canDelete = canDeleteMessage(msg, isMe) ? '1' : '0';
     row.dataset.myReaction = msg.my_reaction || '';
     row.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
     if (msg.sender_id) row.dataset.senderId = msg.sender_id;
@@ -1132,14 +1233,6 @@
     wrap.appendChild(bubble);
     wrap.appendChild(time);
 
-    if (canDeleteMessage(msg, isMe)) {
-      const deleteBtn = document.createElement('button');
-      deleteBtn.type = 'button';
-      deleteBtn.className = 'chat-delete-btn';
-      deleteBtn.dataset.deleteBtn = '1';
-      deleteBtn.textContent = '削除';
-      wrap.appendChild(deleteBtn);
-    }
     main.appendChild(wrap);
 
     if (isMe) {
@@ -1171,6 +1264,7 @@
 
   function canDeleteMessage(msg, isMe) {
     if (Number(msg?.deleted_flag || 0) === 1) return false;
+    if (typeof msg?.can_delete !== 'undefined') return Boolean(msg.can_delete);
     if (isAdmin) return true;
     if (!isMe) return false;
     const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
@@ -1179,9 +1273,8 @@
     return Date.now() <= expires;
   }
 
-  async function handleDeleteMessage(row, messageId, buttonEl) {
+  async function handleDeleteMessage(row, messageId) {
     if (!confirm('このメッセージを削除しますか？')) return;
-    if (buttonEl) buttonEl.disabled = true;
     try {
       const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
         method: 'POST',
@@ -1195,7 +1288,6 @@
       applyDeletedState(messageId, data?.deleted_by_actor_type || row?.dataset?.deletedByActorType || '');
     } catch (err) {
       alert(err?.message || '削除に失敗しました');
-      if (buttonEl) buttonEl.disabled = false;
     }
   }
 
@@ -1222,8 +1314,7 @@
     const reactionBox = row.querySelector('.chat-reaction-box');
     if (reactionBox) reactionBox.remove();
 
-    const deleteBtn = row.querySelector('[data-delete-btn]');
-    if (deleteBtn) deleteBtn.remove();
+    row.dataset.canDelete = '0';
 
     const myReactionKey = String(messageId);
     state.reactionByMessage.set(myReactionKey, { reactionsSummary: [], myReaction: null });
@@ -1522,6 +1613,123 @@
   function makeExcerpt(value) {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+  }
+
+  function clearLongPressTimer() {
+    if (!state.longPressTimer) return;
+    window.clearTimeout(state.longPressTimer);
+    state.longPressTimer = null;
+  }
+
+  function openContextMenu(row, { x = 0, y = 0, forceSheet = false } = {}) {
+    if (!ctxMenu || !ctxPanel) return;
+    const messageId = Number(row?.dataset?.messageId || 0);
+    if (!messageId) return;
+
+    state.ctxMessageId = messageId;
+    ctxMenu.dataset.messageId = String(messageId);
+    const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
+    deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
+    ctxReactions?.classList.add('d-none');
+    ctxMenu.classList.remove('d-none');
+
+    const isTouchLike = forceSheet || window.matchMedia('(hover: none)').matches;
+    if (isTouchLike) {
+      ctxPanel.style.left = '50%';
+      ctxPanel.style.top = 'auto';
+      return;
+    }
+
+    const panelWidth = ctxPanel.offsetWidth || 220;
+    const panelHeight = ctxPanel.offsetHeight || 240;
+    const margin = 8;
+    const left = Math.min(Math.max(margin, x), window.innerWidth - panelWidth - margin);
+    const top = Math.min(Math.max(margin, y), window.innerHeight - panelHeight - margin);
+    ctxPanel.style.left = `${left}px`;
+    ctxPanel.style.top = `${top}px`;
+  }
+
+  function closeContextMenu() {
+    if (!ctxMenu) return;
+    ctxMenu.classList.add('d-none');
+    ctxMenu.dataset.messageId = '';
+    state.ctxMessageId = null;
+    ctxReactions?.classList.add('d-none');
+  }
+
+  async function copyTextWithFallback(text) {
+    if (!text) return;
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const temp = document.createElement('textarea');
+    temp.value = text;
+    temp.setAttribute('readonly', 'readonly');
+    temp.style.position = 'fixed';
+    temp.style.left = '-9999px';
+    document.body.appendChild(temp);
+    temp.select();
+    document.execCommand('copy');
+    document.body.removeChild(temp);
+  }
+
+  async function handleContextMenuClick(e) {
+    if (!ctxMenu) return;
+    if (e.target.closest('[data-ctx-close="1"]')) {
+      closeContextMenu();
+      return;
+    }
+
+    const actionEl = e.target.closest('[data-ctx-action], .chat-reaction-emoji');
+    if (!actionEl) return;
+
+    const row = document.querySelector(`.chat-row[data-message-id="${ctxMenu.dataset.messageId}"]`);
+    const messageId = Number(row?.dataset?.messageId || 0);
+    if (!row || !messageId) {
+      closeContextMenu();
+      return;
+    }
+
+    if (actionEl.classList.contains('chat-reaction-emoji')) {
+      const emoji = actionEl.dataset.emoji || '';
+      if (reactionEmojis.includes(emoji)) {
+        socket.emit('chat_react', { event_id: eventId, message_id: messageId, emoji });
+      }
+      closeContextMenu();
+      return;
+    }
+
+    const action = actionEl.dataset.ctxAction;
+    if (action === 'reply') {
+      const bubble = row.querySelector('.chat-bubble');
+      if (bubble) {
+        setReplyState(messageId, row.dataset.senderName || 'Unknown', row.dataset.bodyPlain || '', bubble);
+      }
+      closeContextMenu();
+      return;
+    }
+    if (action === 'react') {
+      ctxReactions?.classList.toggle('d-none');
+      return;
+    }
+    if (action === 'copy') {
+      try {
+        await copyTextWithFallback(row.dataset.bodyPlain || '');
+      } catch (_err) {
+        alert('コピーに失敗しました');
+      }
+      closeContextMenu();
+      return;
+    }
+    if (action === 'delete') {
+      if (row.dataset.canDelete !== '1') {
+        closeContextMenu();
+        return;
+      }
+      closeContextMenu();
+      await handleDeleteMessage(row, messageId);
+    }
   }
 
   function formatDateLabel(date) {
