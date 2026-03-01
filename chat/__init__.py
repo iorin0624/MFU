@@ -100,7 +100,8 @@ CHAT_THREAD_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
-CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", "10485760")), 1)
+CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
+CHAT_UPLOAD_MAX_FILES = 6
 PUSH_REQUEST_TIMEOUT_SECONDS = 6
 PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
 PUSH_LOG_SUPPRESSION_SECONDS = 300
@@ -1155,6 +1156,67 @@ def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
     return participants
 
 
+def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str]]) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    line_ids = sorted({str(actor_id) for actor_type, actor_id in actor_pairs if str(actor_type) == "line" and str(actor_id)})
+    acl_ids = sorted({str(actor_id) for actor_type, actor_id in actor_pairs if str(actor_type) == "acl" and str(actor_id)})
+    admin_keys = {f"{actor_type}:{actor_id}" for actor_type, actor_id in actor_pairs if str(actor_type) == "admin"}
+
+    for key in admin_keys:
+        resolved[key] = "admin"
+
+    if not line_ids and not acl_ids:
+        for actor_type, actor_id in actor_pairs:
+            key = f"{actor_type}:{actor_id}"
+            if key not in resolved:
+                resolved[key] = str(actor_id)
+        return resolved
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        if line_ids:
+            placeholders = ",".join(["%s"] * len(line_ids))
+            cur.execute(
+                f"SELECT id, nickname FROM external_login_user WHERE id IN ({placeholders})",
+                tuple(line_ids),
+            )
+            for row in cur.fetchall() or []:
+                actor_id = str(row.get("id") or "")
+                if not actor_id:
+                    continue
+                resolved[f"line:{actor_id}"] = str(row.get("nickname") or f"LINE-{actor_id}")
+
+        if acl_ids:
+            placeholders = ",".join(["%s"] * len(acl_ids))
+            cur.execute(
+                f"SELECT username FROM users WHERE username IN ({placeholders})",
+                tuple(acl_ids),
+            )
+            for row in cur.fetchall() or []:
+                username = str(row.get("username") or "")
+                if not username:
+                    continue
+                resolved[f"acl:{username}"] = username
+    except Exception:
+        current_app.logger.warning("chat actor display names resolve failed event=%s", event_id, exc_info=True)
+    finally:
+        cur.close()
+        db.close()
+
+    for actor_type, actor_id in actor_pairs:
+        key = f"{actor_type}:{actor_id}"
+        if key in resolved:
+            continue
+        if str(actor_type) == "admin":
+            resolved[key] = "admin"
+        elif str(actor_type) == "line":
+            resolved[key] = f"LINE-{actor_id}"
+        else:
+            resolved[key] = str(actor_id)
+    return resolved
+
+
 def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
     if not _ensure_chat_read_state_room_schema():
         return []
@@ -1920,6 +1982,52 @@ def _load_my_reactions_by_message_ids(message_ids: list[int], actor: dict[str, A
         db.close()
 
 
+class ChatUploadImageError(ValueError):
+    def __init__(self, code: str, message: str, status: int = 400, detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+        self.detail = detail or {}
+
+
+def _log_chat_upload_image_error(
+    *,
+    code: str,
+    event_id: int,
+    room_id: str | None,
+    actor: dict[str, Any] | None,
+    filename: str = "",
+    size: int | None = None,
+    mimetype: str = "",
+    err: str = "",
+) -> None:
+    current_app.logger.warning(
+        "action=chat_upload_image result=error code=%s event_id=%s room_id=%s actor=%s filename=%s size=%s mimetype=%s err=%s",
+        code,
+        event_id,
+        room_id or "",
+        _actor_log_id(actor),
+        filename,
+        size if size is not None else "",
+        mimetype,
+        err,
+    )
+
+
+def _upload_image_error_response(
+    *,
+    code: str,
+    message: str,
+    status: int,
+    detail: dict[str, Any] | None = None,
+):
+    payload: dict[str, Any] = {"ok": False, "code": code, "error": message}
+    if detail:
+        payload["detail"] = detail
+    return jsonify(payload), status
+
+
 def _validate_caption_optional(raw: str) -> str:
     caption = (raw or "").strip()
     if len(caption) > MESSAGE_MAX_LEN:
@@ -1933,13 +2041,16 @@ def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
         "JPEG": ("jpg", "image/jpeg", False),
         "PNG": ("png", "image/png", False),
         "WEBP": ("webp", "image/webp", False),
-        "MPO": ("jpg", "image/jpeg", True),
         "HEIF": ("jpg", "image/jpeg", True),
         "HEIC": ("jpg", "image/jpeg", True),
     }
     if fmt not in mapping:
         show_fmt = fmt or "unknown"
-        raise ValueError(f"未対応の画像形式({show_fmt})です。JPEG/PNG/WEBP/MPO/HEICのみ対応")
+        raise ChatUploadImageError(
+            "unsupported_format",
+            f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: 不明（{show_fmt}）",
+            detail={"detected": show_fmt},
+        )
     return mapping[fmt]
 
 
@@ -1962,7 +2073,7 @@ def _looks_like_heif_bytes(raw_bytes: bytes) -> bool:
     return any(brand in compatible for brand in heif_brands)
 
 
-def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") -> dict[str, Any]:
+def _save_upload_image_files(event_id: int, storage: Any, filename: str = "", mimetype: str = "") -> dict[str, Any]:
     os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
     event_dir = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
     os.makedirs(event_dir, exist_ok=True)
@@ -1971,53 +2082,97 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "") ->
     if not isinstance(raw_bytes, (bytes, bytearray)):
         raw_bytes = bytes(raw_bytes or b"")
     image_size = len(raw_bytes)
+    detected = str(mimetype or "").strip()
     if image_size <= 0:
-        raise ValueError("画像ファイルが空です")
+        raise ChatUploadImageError(
+            "empty_file",
+            f"画像ファイルが空です。対象: {filename}（iPhoneの共有不具合で0バイトになることがあります。再選択して再送してください）",
+            detail={"filename": filename, "size": image_size},
+        )
     if image_size > CHAT_UPLOAD_MAX_BYTES:
-        raise ValueError("画像サイズが上限を超えています")
+        size_mb = image_size / (1024 * 1024)
+        raise ChatUploadImageError(
+            "file_too_large",
+            f"画像サイズが大きすぎます（最大20MB）。対象: {filename}（{size_mb:.2f}MB）",
+            status=413,
+            detail={"filename": filename, "size": image_size, "max_bytes": CHAT_UPLOAD_MAX_BYTES},
+        )
 
     lower_name = (filename or "").lower()
     looks_like_heif = lower_name.endswith(".heic") or lower_name.endswith(".heif") or _looks_like_heif_bytes(raw_bytes)
     looks_like_mpo = lower_name.endswith(".mpo") or _looks_like_mpo_bytes(raw_bytes)
 
     if looks_like_heif and not HEIF_OPENER_AVAILABLE:
-        raise ValueError(HEIC_UNSUPPORTED_MESSAGE)
+        raise ChatUploadImageError(
+            "convert_failed",
+            f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
+            detail={"filename": filename, "detected": "HEIC"},
+        )
 
     try:
         with Image.open(io.BytesIO(raw_bytes)) as im:
             image_format = (im.format or "").upper()
-            if image_format == "MPO":
-                try:
-                    im.seek(0)
-                except Exception:
-                    pass
-            ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
+            detected = image_format or detected or "unknown"
+            if image_format == "MPO" or looks_like_mpo:
+                raise ChatUploadImageError(
+                    "unsupported_format",
+                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（MPO） iPhoneのLive Photo/連写の可能性があります。Live Photoをオフにして撮影してください。",
+                    detail={"filename": filename, "detected": "MPO"},
+                )
+
+            try:
+                ext, image_mime, convert_original_to_jpeg = _image_extension_and_mime(image_format)
+            except ChatUploadImageError as exc:
+                detected_fmt = str(exc.detail.get("detected") or detected or "unknown")
+                raise ChatUploadImageError(
+                    "unsupported_format",
+                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（{detected_fmt}）",
+                    detail={"filename": filename, "detected": detected_fmt},
+                ) from exc
+
             normalized = ImageOps.exif_transpose(im)
             width, height = normalized.size
 
             if convert_original_to_jpeg:
-                rgb = normalized.convert("RGB")
-                original_buffer = io.BytesIO()
-                rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
-                original_bytes = original_buffer.getvalue()
-                image_size = len(original_bytes)
+                try:
+                    rgb = normalized.convert("RGB")
+                    original_buffer = io.BytesIO()
+                    rgb.save(original_buffer, format="JPEG", quality=92, optimize=True)
+                    original_bytes = original_buffer.getvalue()
+                    image_size = len(original_bytes)
+                except Exception as exc:
+                    raise ChatUploadImageError(
+                        "convert_failed",
+                        f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
+                        detail={"filename": filename, "detected": image_format or "HEIC"},
+                    ) from exc
             else:
                 original_bytes = bytes(raw_bytes)
 
             thumb_image = normalized.convert("RGBA")
+    except ChatUploadImageError:
+        raise
     except UnidentifiedImageError as exc:
-        if looks_like_heif:
-            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
-        raise ValueError("画像ファイルとして読み取れません。Live Photo/連写画像やHEIC形式の可能性があります") from exc
+        raise ChatUploadImageError(
+            "decode_failed",
+            f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}",
+            detail={"filename": filename, "detected": detected or "unknown"},
+        ) from exc
     except OSError as exc:
-        if looks_like_heif and not HEIF_OPENER_AVAILABLE:
-            raise ValueError(HEIC_UNSUPPORTED_MESSAGE) from exc
-        if looks_like_mpo or "MPO" in str(exc).upper():
-            raise ValueError("MPO画像の読み込みに失敗しました。Live Photo/連写画像の可能性があります。互換性優先で再撮影をお試しください") from exc
-        raise ValueError("画像ファイルとして読み取れません") from exc
+        raise ChatUploadImageError(
+            "decode_failed",
+            f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}",
+            detail={"filename": filename, "detected": detected or "unknown"},
+        ) from exc
 
     if image_size > CHAT_UPLOAD_MAX_BYTES:
-        raise ValueError("画像サイズが上限を超えています")
+        size_mb = image_size / (1024 * 1024)
+        raise ChatUploadImageError(
+            "file_too_large",
+            f"画像サイズが大きすぎます（最大20MB）。対象: {filename}（{size_mb:.2f}MB）",
+            status=413,
+            detail={"filename": filename, "size": image_size, "max_bytes": CHAT_UPLOAD_MAX_BYTES},
+        )
 
     base_name = secrets.token_urlsafe(18)
     image_file = f"{base_name}.{ext}"
@@ -2813,7 +2968,8 @@ def upload_image(event_id: int):
     room_id = (request.form.get("room_id") or request.args.get("room_id") or (request.get_json(silent=True) or {}).get("room_id") or "").strip() or None
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if not allowed or not effective_room_id:
-        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
+        _log_chat_upload_image_error(code="forbidden", event_id=event_id, room_id=effective_room_id or room_id, actor=actor, err="room_forbidden")
+        return _upload_image_error_response(code="forbidden", message="このルームには画像を送信できません", status=403)
     if not _ensure_chat_delete_schema():
         return jsonify({"ok": False, "error": "メッセージ削除機能の初期化に失敗しました"}), 500
     if not _ensure_chat_image_schema():
@@ -2836,14 +2992,14 @@ def upload_image(event_id: int):
         )
         return jsonify({"ok": False, "error": "セッションが切れました。ページを更新して再送してください"}), 400
 
-    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * 6:
-        return jsonify({"ok": False, "error": "画像サイズが上限を超えています"}), 413
+    if request.content_length and request.content_length > CHAT_UPLOAD_MAX_BYTES * CHAT_UPLOAD_MAX_FILES:
+        return _upload_image_error_response(code="file_too_large", message="画像サイズが大きすぎます（最大20MB）。対象ファイルを見直してください", status=413)
 
     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
     if not raw_upload_files:
         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
-    if len(raw_upload_files) > 6:
-        return jsonify({"ok": False, "error": "画像は最大6枚までです"}), 400
+    if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:
+        return _upload_image_error_response(code="too_many_files", message=f"画像は最大6枚まで送れます（現在: {len(raw_upload_files)}枚）", status=400, detail={"count": len(raw_upload_files), "max": CHAT_UPLOAD_MAX_FILES})
 
     def _fallback_filename(file_idx: int, upload_file: Any) -> str:
         original_name = (getattr(upload_file, "filename", "") or "").strip()
@@ -2865,7 +3021,9 @@ def upload_image(event_id: int):
         normalized_name = _fallback_filename(idx, upload_file)
         mimetype = str(getattr(upload_file, "mimetype", "") or "")
         if mimetype and not mimetype.lower().startswith("image/"):
-            return jsonify({"ok": False, "error": f"画像以外が混ざっています: {normalized_name}/{mimetype}"}), 400
+            msg = f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {normalized_name}（{mimetype}）"
+            _log_chat_upload_image_error(code="unsupported_format", event_id=event_id, room_id=effective_room_id, actor=actor, filename=normalized_name, mimetype=mimetype, err="mimetype_not_image")
+            return _upload_image_error_response(code="unsupported_format", message=msg, status=400, detail={"filename": normalized_name, "detected": mimetype})
         upload_files.append({"idx": idx, "file": upload_file, "name": normalized_name, "mimetype": mimetype})
 
     try:
@@ -2891,19 +3049,32 @@ def upload_image(event_id: int):
             getattr(upload_file, "content_length", None),
         )
         try:
-            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename))
-        except ValueError as exc:
-            current_app.logger.warning(
-                "chat upload-image invalid file event_id=%s idx=%s filename=%s mimetype=%s size=%s error=%s",
-                event_id,
-                idx,
-                filename,
-                mimetype,
-                getattr(upload_file, "content_length", None),
-                str(exc),
+            image_metas.append(_save_upload_image_files(event_id, upload_file.stream, filename=filename, mimetype=mimetype))
+        except ChatUploadImageError as exc:
+            size = exc.detail.get("size") if isinstance(exc.detail, dict) else None
+            _log_chat_upload_image_error(
+                code=exc.code,
+                event_id=event_id,
+                room_id=effective_room_id,
+                actor=actor,
+                filename=filename,
+                size=int(size) if isinstance(size, (int, float)) else getattr(upload_file, "content_length", None),
+                mimetype=mimetype,
+                err=exc.message,
             )
-            status = 413 if "上限" in str(exc) else 400
-            return jsonify({"ok": False, "error": f"{idx}枚目({filename}): {str(exc)}"}), status
+            return _upload_image_error_response(code=exc.code, message=exc.message, status=exc.status, detail=exc.detail)
+        except ValueError as exc:
+            _log_chat_upload_image_error(
+                code="decode_failed",
+                event_id=event_id,
+                room_id=effective_room_id,
+                actor=actor,
+                filename=filename,
+                size=getattr(upload_file, "content_length", None),
+                mimetype=mimetype,
+                err=str(exc),
+            )
+            return _upload_image_error_response(code="decode_failed", message=f"画像を読み取れませんでした（ファイルが破損している可能性があります）。対象: {filename}", status=400, detail={"filename": filename})
 
     message = _enrich_reply_fields(_save_message(event_id, effective_room_id, actor, body, reply_to_message_id, thread_root_id, image_meta=image_metas[0]))
     message_id = int(message.get("id") or 0)
@@ -3303,6 +3474,73 @@ def get_thread_messages(event_id: int, root_message_id: int):
     root_payload = _present_message(root_row, actor, avatar_cache=avatar_cache)
     replies_payload = [_present_message(r, actor, avatar_cache=avatar_cache) for r in replies]
     return jsonify({"ok": True, "root": root_payload, "replies": replies_payload})
+
+
+@chat_bp.get("/api/events/<int:event_id>/messages/<int:message_id>/reactions")
+def get_message_reaction_details(event_id: int, message_id: int):
+    _ensure_chat_messages_room_schema()
+    if not _ensure_chat_reaction_schema():
+        return jsonify({"ok": False, "error": "リアクション機能の初期化に失敗しました"}), 500
+
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "ログインが必要です"}), 403
+
+    room_id = str(request.args.get("room_id") or "").strip() or None
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "このルームにはアクセスできません"}), 403
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id FROM chat_messages WHERE id=%s AND event_id=%s AND room_id=%s LIMIT 1",
+            (message_id, event_id, effective_room_id),
+        )
+        msg = cur.fetchone()
+        if not msg:
+            return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
+
+        cur.execute(
+            """
+            SELECT emoji, actor_type, actor_id, created_at
+              FROM chat_message_reactions
+             WHERE event_id=%s
+               AND message_id=%s
+             ORDER BY created_at ASC
+            """,
+            (event_id, message_id),
+        )
+        reaction_rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    actor_pairs = [(str(row.get("actor_type") or ""), str(row.get("actor_id") or "")) for row in reaction_rows]
+    actor_name_map = _resolve_actor_display_names(event_id, actor_pairs)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in reaction_rows:
+        emoji = str(row.get("emoji") or "").strip()
+        if not emoji:
+            continue
+        if emoji not in grouped:
+            grouped[emoji] = {"emoji": emoji, "count": 0, "actors": []}
+            order.append(emoji)
+        actor_type = str(row.get("actor_type") or "")
+        actor_id = str(row.get("actor_id") or "")
+        actor_key = f"{actor_type}:{actor_id}"
+        grouped[emoji]["count"] += 1
+        grouped[emoji]["actors"].append({
+            "actor_key": actor_key,
+            "display_name": actor_name_map.get(actor_key) or actor_id or "Unknown",
+        })
+
+    groups = [grouped[k] for k in order]
+    groups.sort(key=lambda x: (-int(x.get("count") or 0), str(x.get("emoji") or "")))
+    return jsonify({"ok": True, "groups": groups})
 
 
 @chat_bp.get("/api/events/<int:event_id>/search")

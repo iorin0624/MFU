@@ -368,6 +368,10 @@
   pointer-events: auto;
 }
 
+.chat-row.me .react-open-btn {
+  display: none !important;
+}
+
 @media (hover: none) {
   .chat-message .react-open-btn {
     opacity: 0;
@@ -657,6 +661,26 @@
   padding-bottom: 8px;
 }
 
+.reaction-detail-empty {
+  color: #6b748b;
+}
+
+.reaction-detail-group + .reaction-detail-group {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f7;
+}
+
+.reaction-detail-emoji {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.reaction-detail-actors {
+  margin: 0;
+  padding-left: 18px;
+}
+
 @media (max-width: 576px) {
   .chat-messages {
     height: 70dvh;
@@ -894,6 +918,18 @@
     </div>
   </div>
 
+
+  <div id="reactionDetailModal" class="room-member-modal" aria-hidden="true">
+    <div class="backdrop" data-close="1"></div>
+    <div class="panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">リアクション</h5>
+        <button type="button" id="reaction-detail-close" class="btn btn-sm btn-light">閉じる</button>
+      </div>
+      <div id="reaction-detail-body"></div>
+    </div>
+  </div>
+
   <div id="roomCreateModal" class="room-member-modal" aria-hidden="true">
     <div class="backdrop" data-close="1"></div>
     <div class="panel">
@@ -962,6 +998,7 @@
   const isMobile = window.matchMedia('(hover: none)').matches;
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const maxUploadImages = 6;
+  const maxUploadImageBytes = 20 * 1024 * 1024;
 
   const msgBox = document.getElementById('messages');
   const form = document.getElementById('chat-form');
@@ -979,6 +1016,9 @@
   const threadRepliesContainer = document.getElementById('thread-replies');
   const threadForm = document.getElementById('thread-form');
   const threadBodyInput = document.getElementById('thread-body');
+  const reactionDetailModal = document.getElementById('reactionDetailModal');
+  const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
+  const reactionDetailBody = document.getElementById('reaction-detail-body');
   const imageInput = document.getElementById('chat-image-file');
   const imageBtn = document.getElementById('chat-image-btn');
   const sendBtn = document.getElementById('chat-send-btn');
@@ -1203,6 +1243,17 @@
       return;
     }
 
+    const reactionChip = e.target.closest('.chat-reaction-chip');
+    if (reactionChip) {
+      const row = reactionChip.closest('.chat-row');
+      const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
+      if (messageId) {
+        openReactionDetailModal(messageId);
+      }
+      return;
+    }
+
+
     const contentLink = e.target.closest('a.chat-link');
     if (contentLink) {
       return;
@@ -1231,6 +1282,16 @@
     if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
     e.preventDefault();
     openContextMenu(row);
+  });
+
+  threadModal?.addEventListener('click', (e) => {
+    const reactionChip = e.target.closest('.chat-reaction-chip');
+    if (!reactionChip) return;
+    const row = reactionChip.closest('.chat-row');
+    const messageId = Number(row?.dataset.messageId || row?.dataset.threadMessageId || 0);
+    if (!messageId) return;
+    e.preventDefault();
+    openReactionDetailModal(messageId);
   });
 
   msgBox.addEventListener('pointerdown', (e) => {
@@ -1267,6 +1328,8 @@
   replyCancelBtn?.addEventListener('click', clearReplyState);
   threadModalCloseBtn?.addEventListener('click', closeThreadModal);
   threadModal?.querySelector('[data-close="1"]')?.addEventListener('click', closeThreadModal);
+  reactionDetailCloseBtn?.addEventListener('click', () => closeModal(reactionDetailModal));
+  reactionDetailModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(reactionDetailModal));
   threadForm?.addEventListener('submit', (e) => {
     e.preventDefault();
     submitThreadMessage();
@@ -1315,7 +1378,15 @@
     const files = Array.from(imageInput.files || []);
     if (!files.length) return;
     if (files.length > maxUploadImages) {
-      alert('画像は最大6枚までです');
+      alert(`画像は最大6枚まで送れます（現在: ${files.length}枚）`);
+      imageInput.value = '';
+      return;
+    }
+
+    const tooLarge = files.find((file) => Number(file?.size || 0) > maxUploadImageBytes);
+    if (tooLarge) {
+      const sizeMb = (Number(tooLarge.size || 0) / (1024 * 1024)).toFixed(2);
+      alert(`画像サイズが大きすぎます（最大20MB）。対象: ${tooLarge.name || '名称不明'}（${sizeMb}MB）`);
       imageInput.value = '';
       return;
     }
@@ -1513,6 +1584,11 @@
     if (imageBtn) imageBtn.disabled = isSending;
   }
 
+  function isMyMessage(msg) {
+    return (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+      || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+  }
+
   function renderMessage(msg) {
     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
     const dateLabel = Number.isNaN(createdAt.getTime())
@@ -1524,8 +1600,7 @@
 
     appendDateDividerIfNeeded(dateLabel);
 
-    const isMe = (msg.sender_id && meId && String(msg.sender_id) === String(meId))
-      || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+    const isMe = isMyMessage(msg);
 
     const row = document.createElement('div');
     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
@@ -1989,16 +2064,18 @@
     };
     state.reactionByMessage.set(key, next);
 
-    const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
-    if (!row || Number(row.dataset.deletedFlag || 0) === 1) return;
-    row.dataset.reactionsSummary = JSON.stringify(next.reactionsSummary);
-    row.dataset.myReaction = next.myReaction || '';
-    const box = ensureReactionBox(row);
-    if (box) {
-      box.dataset.reactionsSummary = row.dataset.reactionsSummary;
-      box.dataset.myReaction = row.dataset.myReaction;
-      applyReactionUi(box, next.reactionsSummary, next.myReaction);
-    }
+    const rows = document.querySelectorAll(`.chat-row[data-message-id="${messageId}"]`);
+    rows.forEach((row) => {
+      if (Number(row.dataset.deletedFlag || 0) === 1) return;
+      row.dataset.reactionsSummary = JSON.stringify(next.reactionsSummary);
+      row.dataset.myReaction = next.myReaction || '';
+      const box = ensureReactionBox(row);
+      if (box) {
+        box.dataset.reactionsSummary = row.dataset.reactionsSummary;
+        box.dataset.myReaction = row.dataset.myReaction;
+        applyReactionUi(box, next.reactionsSummary, next.myReaction);
+      }
+    });
   }
 
   function applyReactionUi(box, reactionsSummary, myReaction) {
@@ -2006,8 +2083,10 @@
     if (summaryEl) {
       summaryEl.innerHTML = '';
       for (const item of reactionsSummary) {
-        const chip = document.createElement('span');
+        const chip = document.createElement('button');
+        chip.type = 'button';
         chip.className = 'chat-reaction-chip';
+        chip.dataset.emoji = item.emoji || '';
         chip.textContent = `${item.emoji} ${item.count}`;
         summaryEl.appendChild(chip);
       }
@@ -2145,6 +2224,47 @@
     closeModal(threadModal);
   }
 
+  async function openReactionDetailModal(messageId) {
+    if (!reactionDetailModal || !reactionDetailBody || !messageId) return;
+    reactionDetailBody.innerHTML = '<div class="text-muted">読み込み中...</div>';
+    openModal(reactionDetailModal);
+    try {
+      const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/reactions?room_id=${encodeURIComponent(roomId)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'リアクション詳細の取得に失敗しました');
+      }
+      renderReactionDetailGroups(data.groups || []);
+    } catch (err) {
+      reactionDetailBody.innerHTML = `<div class="text-danger">${escapeHtml(err?.message || 'リアクション詳細の取得に失敗しました')}</div>`;
+    }
+  }
+
+  function renderReactionDetailGroups(groups) {
+    if (!reactionDetailBody) return;
+    const normalized = Array.isArray(groups) ? groups : [];
+    if (!normalized.length) {
+      reactionDetailBody.innerHTML = '<div class="reaction-detail-empty">リアクションはありません</div>';
+      return;
+    }
+
+    const fragments = normalized.map((group) => {
+      const emoji = escapeHtml(String(group?.emoji || ''));
+      const count = Number(group?.count || 0);
+      const actors = Array.isArray(group?.actors) ? group.actors : [];
+      const actorItems = actors.length
+        ? actors.map((actor) => `<li>${escapeHtml(String(actor?.display_name || actor?.actor_key || 'Unknown'))}</li>`).join('')
+        : '<li>不明</li>';
+      return `
+        <div class="reaction-detail-group">
+          <div class="reaction-detail-emoji">${emoji} (${count})</div>
+          <ul class="reaction-detail-actors">${actorItems}</ul>
+        </div>
+      `;
+    });
+    reactionDetailBody.innerHTML = fragments.join('');
+  }
+
   async function refreshOpenThread() {
     if (!state.threadRootId) return;
     try {
@@ -2206,17 +2326,58 @@
   }
 
   function buildThreadItem(msg) {
+    const isMe = isMyMessage(msg);
+
     const item = document.createElement('div');
-    item.className = 'chat-row other mb-2';
+    item.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
     item.dataset.threadMessageId = String(msg.id || '');
-    const sender = document.createElement('div');
-    sender.className = 'small text-muted';
-    sender.textContent = `${msg.sender_display_name || 'Unknown'}  ${msg.created_at_jst_time_hm || ''}`;
+    item.dataset.messageId = String(msg.id || '');
+    item.dataset.deletedFlag = String(Number(msg.deleted_flag || 0));
+    item.dataset.reactionsSummary = JSON.stringify(msg.reactions_summary || []);
+    item.dataset.myReaction = msg.my_reaction || '';
+
+    const line = document.createElement('div');
+    line.className = 'chat-line';
+
+    if (!isMe) {
+      line.appendChild(makeAvatar(msg.sender_avatar_url));
+    }
+
+    const main = document.createElement('div');
+    main.className = 'chat-main';
+
+    if (!isMe) {
+      const sender = document.createElement('div');
+      sender.className = 'chat-sender';
+      sender.textContent = msg.sender_display_name || 'Unknown';
+      main.appendChild(sender);
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-bubble-wrap';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+
     const body = document.createElement('div');
-    body.className = 'chat-bubble';
+    body.className = 'chat-body';
     body.innerHTML = (msg.body_html || '').trim() || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
-    item.appendChild(sender);
-    item.appendChild(body);
+    bubble.appendChild(body);
+
+    const time = document.createElement('div');
+    time.className = 'chat-time';
+    time.textContent = msg.created_at_jst_time_hm || '';
+
+    wrap.appendChild(bubble);
+    wrap.appendChild(time);
+    main.appendChild(wrap);
+
+    if (Number(msg.deleted_flag || 0) !== 1) {
+      main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+    }
+
+    line.appendChild(main);
+    item.appendChild(line);
     return item;
   }
 
