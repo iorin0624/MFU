@@ -267,14 +267,8 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
         cur.close(); db.close()
         return True, "no change", new_status
 
-    # 更新
-    cur.execute("""
-        UPDATE mfu_event_member
-           SET status=%s
-         WHERE event_id=%s AND user_id=%s
-         LIMIT 1
-    """, (new_status, event_id, user_id))
-    db.commit()
+    # 更新（承認遷移時の System 自動投稿は共通関数で処理）
+    update_event_member_status(event_id=event_id, user_id=user_id, new_status=new_status)
 
     # メール通知（宛先・UUIDがあれば）→ send_mail に統一
     if to_email and ev_uuid_str:
