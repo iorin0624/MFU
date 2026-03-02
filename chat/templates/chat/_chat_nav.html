@@ -36,6 +36,13 @@
       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
       <span class="chat-nav-label">検索</span>
     </button>
+
+    {% if actor and actor.actor_type == 'admin' %}
+      <a class="chat-nav-link" href="{{ url_for('chat.admin_system_template_join_approved_get') }}" aria-label="Systemテンプレ">
+        <span class="chat-nav-icon" aria-hidden="true">⚙️</span>
+        <span class="chat-nav-label">Systemテンプレ</span>
+      </a>
+    {% endif %}
   </div>
 </div>
 

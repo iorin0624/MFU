@@ -50,6 +50,7 @@ from .utils import (
     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
     _event_by_uuid_str, _membership_status,
+    update_event_member_status,
     avatar_url_for,  # ← 追加
     QR_TRADEMARK_NOTICE,
     remember_session_map_value,
@@ -1930,24 +1931,30 @@ def join_event(event_uuid: str):
         new_status = "approved" if (auto_hit or already_approved) else "pending"
         should_notify = not (already_approved and auto_hit_by_lecture)
 
-        # upsert
-        if m:
-            cur.execute("""
-                UPDATE mfu_event_member
-                   SET status=%s,
-                       participant_role=%s,
-                       costume_label=%s,
-                       process=%s,
-                       joined_at=COALESCE(joined_at, NOW())
-                 WHERE id=%s AND event_id=%s
-                 LIMIT 1
-            """, (new_status, role, costume, process_flag, m["id"], ev["id"]))
-        else:
-            cur.execute("""
-                INSERT INTO mfu_event_member
-                  (event_id, user_id, status, participant_role, costume_label, process, joined_at)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
-            """, (ev["id"], ext_uid, new_status, role, costume, process_flag))
+        update_event_member_status(
+            ev["id"],
+            ext_uid,
+            new_status,
+            extra_update_fields={
+                "participant_role": role,
+                "costume_label": costume,
+                "process": process_flag,
+            },
+            extra_insert_fields={
+                "participant_role": role,
+                "costume_label": costume,
+                "process": process_flag,
+            },
+        )
+        cur.execute(
+            """
+            UPDATE mfu_event_member
+               SET joined_at=COALESCE(joined_at, NOW())
+             WHERE event_id=%s AND user_id=%s
+             LIMIT 1
+            """,
+            (ev["id"], ext_uid),
+        )
         db.commit()
         _recalc_event_fee_if_auto(ev["id"])
         if auto_hit_by_lecture and new_status == "approved" and not already_approved:

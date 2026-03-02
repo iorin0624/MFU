@@ -6,7 +6,7 @@ set "HOST=192.168.103.16"
 set "USER=root"
 
 REM ===== ローカル（日本語OK） =====
-set "SRC=Y:\01マイドキュメント\GitHub\MFU"
+set "SRC=Y:\01マイドキュメント\GitHub\MFU.2"
 
 REM ===== リモート =====
 set "DEST=/mnt/mfu/app"

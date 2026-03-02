@@ -23,7 +23,9 @@ from flask import (
     Blueprint,
     abort,
     current_app,
+    flash,
     jsonify,
+    redirect,
     render_template,
     request,
     send_from_directory,
@@ -118,6 +120,15 @@ _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
 CHAT_TYPING_STATE_LOCK = threading.Lock()
 CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
 CHAT_TYPING_TTL_SECONDS = 3
+SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
+SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
+
+SYSTEM_TEMPLATE_DEFAULTS: dict[str, str] = {
+    "join_approved": "{nickname}さんが参加しました！",
+}
+SYSTEM_TEMPLATE_ALLOWED_PLACEHOLDERS: dict[str, set[str]] = {
+    "join_approved": {"nickname"},
+}
 
 CHAT_RATE_LIMIT_LOCK = threading.Lock()
 CHAT_RATE_LIMIT_MEMORY: dict[str, deque[float]] = {}
@@ -372,6 +383,133 @@ def _ensure_chat_push_schema() -> bool:
         finally:
             cur.close()
             db.close()
+
+
+def _ensure_chat_system_template_schema() -> bool:
+    global SYSTEM_TEMPLATE_SCHEMA_READY
+    if SYSTEM_TEMPLATE_SCHEMA_READY is not None:
+        return bool(SYSTEM_TEMPLATE_SCHEMA_READY)
+
+    with SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK:
+        if SYSTEM_TEMPLATE_SCHEMA_READY is not None:
+            return bool(SYSTEM_TEMPLATE_SCHEMA_READY)
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_system_templates (
+                  id BIGINT NOT NULL AUTO_INCREMENT,
+                  template_key VARCHAR(64) NOT NULL,
+                  body_template TEXT NOT NULL,
+                  updated_at DATETIME NOT NULL,
+                  updated_by VARCHAR(64) NULL,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uq_chat_system_templates_template_key (template_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            db.commit()
+            SYSTEM_TEMPLATE_SCHEMA_READY = True
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            current_app.logger.warning("chat auto-migration: ensure chat_system_templates failed", exc_info=True)
+            SYSTEM_TEMPLATE_SCHEMA_READY = False
+        finally:
+            cur.close()
+            db.close()
+
+    return bool(SYSTEM_TEMPLATE_SCHEMA_READY)
+
+
+def get_external_user_display_name(external_user_id: int) -> str:
+    actor_id = str(external_user_id)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id, nickname FROM external_login_user WHERE id=%s LIMIT 1", (external_user_id,))
+        row = cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+    if not row:
+        return f"LINE-{actor_id}"
+    resolved_id = str(row.get("id") or actor_id)
+    return str(row.get("nickname") or f"LINE-{resolved_id}")
+
+
+def get_system_template(template_key: str) -> str:
+    default = SYSTEM_TEMPLATE_DEFAULTS.get(template_key, "")
+    if not _ensure_chat_system_template_schema():
+        return default
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT body_template FROM chat_system_templates WHERE template_key=%s LIMIT 1", (template_key,))
+        row = cur.fetchone()
+        if not row:
+            return default
+        return str(row.get("body_template") or default)
+    except Exception:
+        current_app.logger.warning("chat system template load failed key=%s", template_key, exc_info=True)
+        return default
+    finally:
+        cur.close()
+        db.close()
+
+
+def render_system_template(template_str: str, *, nickname: str) -> str:
+    return str(template_str or "").replace("{nickname}", nickname)
+
+
+def _validate_system_template(template_key: str, body_template: str) -> str | None:
+    allowed = SYSTEM_TEMPLATE_ALLOWED_PLACEHOLDERS.get(template_key, set())
+    placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", str(body_template or "")))
+    unknown = sorted(placeholders - allowed)
+    if unknown:
+        return f"未対応のプレースホルダです: {', '.join(unknown)}"
+    return None
+
+
+def post_system_message_to_event_main_room(event_id: int, *, template_key: str, nickname: str) -> int | None:
+    _ensure_chat_rooms_schema()
+    _ensure_chat_room_members_schema()
+    _ensure_chat_messages_room_schema()
+    _ensure_chat_delete_schema()
+    _ensure_chat_edit_schema()
+    _ensure_chat_thread_schema()
+
+    room_id = _ensure_main_room(event_id)
+    if not room_id:
+        return None
+
+    actor = {"actor_type": "system", "actor_id": "system", "display_name": "System"}
+    template = get_system_template(template_key)
+    body = render_system_template(template, nickname=nickname)
+    message = _enrich_reply_fields(_save_message(event_id, room_id, actor, body))
+    message_payload = _present_message(message, actor, avatar_cache={})
+    socketio.emit("chat_message", message_payload, to=f"event:{event_id}:room:{room_id}")
+
+    app = current_app._get_current_object()
+    now = time.monotonic()
+    _submit_chat_message_push_async(
+        app,
+        event_id,
+        room_id,
+        actor,
+        actor["display_name"],
+        body,
+        int(message_payload["id"]),
+        {"t0": now, "t1": now, "t2": now},
+        has_image=False,
+    )
+    return int(message_payload["id"])
 
 
 def _ensure_chat_notification_log_schema() -> bool:
@@ -1225,9 +1363,12 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
     line_ids = sorted({str(actor_id) for actor_type, actor_id in actor_pairs if str(actor_type) == "line" and str(actor_id)})
     acl_ids = sorted({str(actor_id) for actor_type, actor_id in actor_pairs if str(actor_type) == "acl" and str(actor_id)})
     admin_keys = {f"{actor_type}:{actor_id}" for actor_type, actor_id in actor_pairs if str(actor_type) == "admin"}
+    system_keys = {f"{actor_type}:{actor_id}" for actor_type, actor_id in actor_pairs if str(actor_type) == "system"}
 
     for key in admin_keys:
         resolved[key] = "admin"
+    for key in system_keys:
+        resolved[key] = "System"
 
     if not line_ids and not acl_ids:
         for actor_type, actor_id in actor_pairs:
@@ -1274,6 +1415,8 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
             continue
         if str(actor_type) == "admin":
             resolved[key] = "admin"
+        elif str(actor_type) == "system":
+            resolved[key] = "System"
         elif str(actor_type) == "line":
             resolved[key] = f"LINE-{actor_id}"
         else:
@@ -1620,6 +1763,7 @@ def get_chat_actor() -> dict[str, Any] | None:
 
     ext_user_id = session.get("ext_user_id")
     if ext_user_id:
+        display_name = get_external_user_display_name(int(ext_user_id))
         db = get_db()
         cur = db.cursor(dictionary=True)
         try:
@@ -1637,7 +1781,7 @@ def get_chat_actor() -> dict[str, Any] | None:
         return {
             "actor_type": "line",
             "actor_id": str(row["id"]),
-            "display_name": row.get("nickname") or f"LINE-{row['id']}",
+            "display_name": display_name,
             "email": row.get("email"),
         }
 
@@ -3029,6 +3173,67 @@ def index():
         abort(403)
     events = _accessible_events(actor)
     return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf(), nav_mode="chat")
+
+
+@chat_bp.get("/admin/system-templates/join-approved")
+def admin_system_template_join_approved_get():
+    actor = get_chat_actor()
+    if not actor:
+        abort(403)
+    if actor.get("actor_type") != "admin":
+        abort(403)
+
+    return render_template(
+        "chat/admin_system_template_join_approved.html",
+        actor=actor,
+        csrf_token=_chat_csrf(),
+        body_template=get_system_template("join_approved"),
+        nav_mode="chat",
+    )
+
+
+@chat_bp.post("/admin/system-templates/join-approved")
+def admin_system_template_join_approved_post():
+    actor = get_chat_actor()
+    if not actor:
+        abort(403)
+    if actor.get("actor_type") != "admin":
+        abort(403)
+
+    token = (request.form.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        abort(400, "invalid csrf token")
+
+    body_template = str(request.form.get("body_template") or "").strip()
+    validation_error = _validate_system_template("join_approved", body_template)
+    if validation_error:
+        return jsonify({"ok": False, "error": validation_error}), 400
+
+    if not _ensure_chat_system_template_schema():
+        abort(500)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            INSERT INTO chat_system_templates (template_key, body_template, updated_at, updated_by)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                body_template=VALUES(body_template),
+                updated_at=VALUES(updated_at),
+                updated_by=VALUES(updated_by)
+            """,
+            ("join_approved", body_template, now, str(actor.get("actor_id") or "admin")),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    flash("保存しました。", "success")
+    return redirect(url_for("chat.admin_system_template_join_approved_get"))
 
 
 @chat_bp.route("/events/<int:event_id>")
