@@ -9,8 +9,7 @@
       <span class="chat-nav-label">ルーム</span>
     </button>
     <a class="chat-nav-link chat-notification-link" href="{{ chat_notifications_url|default('/external-login/notifications') }}" aria-label="通知履歴">
-      <span class="chat-nav-icon" aria-hidden="true">🔔</span>
-      <span id="chat-notification-badge" class="chat-notification-badge d-none" aria-live="polite"></span>
+      <span id="chat-notification-badge" class="chat-notification-badge no-unread" aria-live="polite">🔔</span>
       <span class="chat-nav-label">通知履歴</span>
     </a>
     <div class="chat-mute-wrap">
