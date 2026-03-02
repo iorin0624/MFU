@@ -1,83 +1,647 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 251db5d865e194320ea16635fd6997db669b6ebd..6aeb3a198f8e406bc37097f76b830e3b8b9982bc 100644
+index 6aeb3a198f8e406bc37097f76b830e3b8b9982bc..8377d97de833d433dea4cd51a6ee226226c2c206 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1203,76 +1203,76 @@
-        data-my-reaction="{{ message.my_reaction or '' }}"
-        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
-     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-     <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-     <div class="chat-reaction-panel d-none"></div>
-     <div class="chat-reaction-summary"></div>
-   </div>
- {%- endmacro %}
+@@ -63,74 +63,75 @@
+   align-items: flex-start;
+ }
  
- <div class="container py-3 chat-page"
-      data-event-id="{{ event.id }}"
-      data-room-id="{{ active_room.room_id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
-      data-display-name="{{ actor.display_name }}"
-      data-default-avatar="{{ default_avatar_url }}"
-      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
-   {% include "chat/_chat_nav.html" %}
-   <div class="chat-room-main">
-     <div class="chat-room-title">{{ event.title }}/{{ active_room.room_name }}</div>
-     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
-       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
-       {% if can_manage_rooms %}
-       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
--      {% if not active_room.is_main %}
-+      {% if active_room.is_main|int != 1 %}
-       <button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>
-       <button type="button" id="chat-room-delete-btn" class="btn btn-sm btn-outline-danger">サブルーム削除</button>
-       {% endif %}
-       {% endif %}
-     </div>
+ .chat-sender {
+   font-size: 0.76rem;
+   color: #667;
+   margin: 0 8px 4px;
+ }
  
-     <div class="chat-body-layout">
-   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
-     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
-     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
-     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
-   </div>
-   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+ .chat-bubble-wrap {
+   display: flex;
+   align-items: flex-end;
+   gap: 6px;
+   min-width: 0;
+   flex: 0 1 auto;
+   position: relative;
+ }
  
-   <div id="chatRoomPickerModal" class="chat-room-picker-modal d-none" aria-hidden="true">
-     <div class="backdrop" data-room-picker-close="1"></div>
-     <div class="panel">
-       <div class="d-flex justify-content-between align-items-center mb-2">
-         <h6 class="mb-0">サブルーム選択</h6>
-         <button type="button" class="btn btn-sm btn-light" data-room-picker-close="1">閉じる</button>
-       </div>
-       <div class="chat-room-picker-list">
-         {% for r in accessible_rooms %}
-           <button type="button" class="chat-room-picker-item {% if r.room_id == active_room.room_id %}is-active{% endif %}" data-room-pick-id="{{ r.room_id }}">
--            {{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}
-+            {{ r.room_name }}{% if r.is_main|int == 1 %}（メイン）{% endif %}
-           </button>
-         {% endfor %}
-       </div>
-     </div>
-   </div>
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+   gap: 12px;
+ }
  
-   <div id="messages" class="chat-messages border rounded p-3 mb-3">
-     {% set ns = namespace(last_date=None) %}
-     {% for m in messages %}
-       {% set d = m.created_at_jst_date_label %}
-       {% if loop.first or d != ns.last_date %}
-         <div class="chat-date-divider" data-date-label="{{ d }}"><span>{{ d }}</span></div>
-         {% set ns.last_date = d %}
-       {% endif %}
+ .chat-bubble {
+   display: inline-block;
+-  max-width: min(100%, 28rem);
++  max-width: 100%;
+   padding: 8px 12px;
+   border-radius: 16px;
+   line-height: 1.4;
+   white-space: normal;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+   min-width: 0;
+   flex: 0 1 auto;
+   position: relative;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
+   -webkit-user-select: none;
+   user-select: none;
+   -webkit-touch-callout: none;
+   touch-action: manipulation;
+   -webkit-tap-highlight-color: transparent;
+ }
  
-       <div class="chat-row chat-message {{ 'me' if m.is_me else 'other' }}"
-            id="msg-{{ m.id }}"
-            data-message-id="{{ m.id }}"
-            data-sender-id="{{ m.sender_id }}"
-            data-sender-name="{{ m.sender_display_name }}"
-            data-sender-avatar-url="{{ m.sender_avatar_url or default_avatar_url }}"
-            data-body-plain='{{ (m.body_plain_excerpt or "")|tojson }}'
-            data-body-plain-full='{{ (m.body_plain or m.body_plain_excerpt or "")|tojson }}'
-            data-reply-to-id="{{ m.reply_to_message_id or '' }}"
-            data-thread-root-id="{{ m.thread_root_id or '' }}"
+ .chat-body {
+   min-width: 0;
+   overflow-wrap: anywhere;
+   word-break: break-word;
++  overflow-x: hidden;
+ }
+ 
+ /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
+ .chat-bubble .chat-body,
+ .chat-bubble .chat-body * {
+   -webkit-user-select: text;
+   user-select: text;
+   -webkit-touch-callout: default;
+ }
+ 
+ /* リンクはタップできる */
+ .chat-bubble .chat-body a {
+   -webkit-user-select: auto;
+   user-select: auto;
+   -webkit-touch-callout: default;
+ }
+ 
+ .chat-body img {
+   max-width: 100%;
+   height: auto;
+ }
+ 
+ .chat-body .chat-link {
+   text-decoration: underline;
+   color: #1f57d6;
+@@ -577,57 +578,50 @@
+   aspect-ratio: 1 / 1;
+   overflow: hidden;
+   border-radius: 10px;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: #fff;
+ }
+ 
+ .chat-image-cell img {
+   width: 100%;
+   height: 100%;
+   object-fit: cover;
+   object-position: center;
+   display: block;
+ }
+ 
+ .chat-image-thumb {
+   display: block;
+   max-width: min(320px, 70vw);
+   width: 100%;
+   height: auto;
+   border-radius: 10px;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: #fff;
+ }
+ 
+-.chat-bubble {
+-  max-width: 100%;
+-}
+-
+-.chat-body {
+-  overflow-x: hidden;
+-}
+ 
+ #chat-body {
+   resize: none;
+   overflow-y: auto;
+ }
+ 
+ .chat-image-viewer {
+   position: fixed;
+   inset: 0;
+   z-index: 1080;
+   display: none;
+   align-items: center;
+   justify-content: center;
+   background: rgba(0, 0, 0, 0.78);
+   padding: 20px;
+ }
+ 
+ .chat-image-viewer.is-open {
+   display: flex;
+ }
+ 
+ .chat-image-viewer-close {
+   position: absolute;
+   top: 10px;
+   right: 14px;
+@@ -1686,52 +1680,64 @@ window.addEventListener('DOMContentLoaded', () => {
+       lastTapY: 0,
+       lastTapMessageId: null,
+     },
+     ctxRow: null,
+     ctxBodyPlain: '',
+     editTargetMessageId: null,
+     typingMembers: new Map(),
+     typingDebounceTimer: null,
+     typingStopTimer: null,
+     typingSent: false,
+     threadRootId: null,
+     loadingOlder: false,
+     hasMoreOlder: true,
+     messageIds: new Set(),
+     unreadByRoomId: new Map(),
+     unreadRefreshTimer: null,
+     notificationPollTimer: null,
+     muteUntilByRoomId: new Map(),
+     mentionCandidates: [],
+     mentionActiveIndex: 0,
+     mentionRange: null,
+     mentionDebounceTimer: null,
+     uploadPreviewFiles: [],
+     uploadPreviewUrls: [],
+     dragOverlayDepth: 0,
++    lastDateDividerLabel: '',
++    lastDateDividerEl: null,
++    lastMessageId: 0,
+   };
+ 
++  // TOP5-2,3
++  const existingDividers = msgBox ? Array.from(msgBox.querySelectorAll('.chat-date-divider[data-date-label]')) : [];
++  const initialLastDivider = existingDividers.length ? existingDividers[existingDividers.length - 1] : null;
++  state.lastDateDividerEl = initialLastDivider;
++  state.lastDateDividerLabel = initialLastDivider?.dataset.dateLabel || '';
++  const existingRows = msgBox ? Array.from(msgBox.querySelectorAll('.chat-row[data-message-id]')) : [];
++  const initialLastMessageRow = existingRows.length ? existingRows[existingRows.length - 1] : null;
++  state.lastMessageId = Number(initialLastMessageRow?.dataset.messageId || 0);
++
+   if (ctxReactions && ctxReactions.childElementCount === 0) {
+     reactionEmojis.forEach((emoji) => {
+       const btn = document.createElement('button');
+       btn.type = 'button';
+       btn.className = 'chat-reaction-emoji';
+       btn.dataset.emoji = emoji;
+       btn.textContent = emoji;
+       ctxReactions.appendChild(btn);
+     });
+   }
+ 
+   const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+   socket.emit('chat_join', { event_id: eventId, room_id: roomId });
+ 
+   initReactionUis();
+   syncExistingMessageIds();
+   scheduleUnreadRefresh();
+   refreshNotificationBadge();
+   startNotificationBadgePolling();
+   refreshMuteButton();
+   scrollToLatestMessage();
+   refreshReadIndicators();
+   window.addEventListener('load', () => {
+     scrollToLatestMessage();
+     sendSeenForLatestMessage();
+@@ -2002,61 +2008,64 @@ window.addEventListener('DOMContentLoaded', () => {
+       touch.clientY - state.touchDoubleTap.lastTapY,
+     );
+     const isSameSpot = movedFromLastTap <= DOUBLE_TAP_MAX_DISTANCE;
+     const isSameMessage = String(state.touchDoubleTap.lastTapMessageId || '') === String(messageId || '');
+ 
+     if (isWithinTime && isSameSpot && isSameMessage) {
+       e.preventDefault();
+       startReplyFromRow(row, bubble);
+       resetTouchDoubleTap();
+       return;
+     }
+ 
+     state.touchDoubleTap.lastTapAt = now;
+     state.touchDoubleTap.lastTapX = touch.clientX;
+     state.touchDoubleTap.lastTapY = touch.clientY;
+     state.touchDoubleTap.lastTapMessageId = messageId || null;
+     state.touchDoubleTap.row = null;
+     state.touchDoubleTap.bubble = null;
+   }, { passive: false });
+ 
+   msgBox.addEventListener('touchcancel', () => {
+     if (!isMobile) return;
+     resetTouchDoubleTap();
+   });
+ 
+-  replyCancelBtn?.addEventListener('click', clearReplyState);
++  replyCancelBtn?.addEventListener('click', () => {
++    // TOP5-1
++    clearReplyState();
++    clearEditState();
++  });
+   threadModalCloseBtn?.addEventListener('click', closeThreadModal);
+   threadModal?.querySelector('[data-close="1"]')?.addEventListener('click', closeThreadModal);
+   reactionDetailCloseBtn?.addEventListener('click', () => closeModal(reactionDetailModal));
+   reactionDetailModal?.querySelector('[data-close="1"]')?.addEventListener('click', () => closeModal(reactionDetailModal));
+   threadForm?.addEventListener('submit', (e) => {
+     e.preventDefault();
+     submitThreadMessage();
+   });
+   threadBodyInput?.addEventListener('input', () => updateAutoGrow(threadBodyInput));
+-  replyCancelBtn?.addEventListener('click', clearEditState);
+   imageViewerCloseBtn?.addEventListener('click', closeImageViewer);
+   imageViewerShareBtn?.addEventListener('click', shareCurrentViewerImage);
+   imageViewerPrevBtn?.addEventListener('click', () => moveViewerIndex(-1));
+   imageViewerNextBtn?.addEventListener('click', () => moveViewerIndex(1));
+   imageViewer?.addEventListener('click', (e) => {
+     if (e.target === imageViewer) closeImageViewer();
+   });
+   document.addEventListener('keydown', (e) => {
+     if (e.key === 'Escape') closeImageViewer();
+     if (e.key === 'Escape') closeContextMenu();
+     if (e.key === 'Escape') closeThreadModal();
+     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
+     if (e.key === 'ArrowRight') moveViewerIndex(1);
+   });
+   msgBox.addEventListener('scroll', () => {
+     closeContextMenu();
+     if (msgBox.scrollTop <= 80) loadOlderMessages();
+     if (isNearBottom(msgBox)) {
+       hideJumpBtn();
+     } else {
+       showJumpBtn();
+     }
+   }, { passive: true });
+   bottomJumpBtn?.addEventListener('click', () => {
+     scrollToBottom();
+@@ -2539,51 +2548,52 @@ window.addEventListener('DOMContentLoaded', () => {
+ 
+   async function disablePush(registration, subscription) {
+     await subscription.unsubscribe();
+     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+     if (endpoint) {
+       await fetch('/chat/api/push/unsubscribe', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+       });
+     }
+     const nextSubscription = await registration.pushManager.getSubscription();
+     updatePushButton(Boolean(nextSubscription));
+   }
+ 
+   function setSendingState(isSending) {
+     if (sendBtn) sendBtn.disabled = isSending;
+     if (imageBtn) imageBtn.disabled = isSending;
+   }
+ 
+   function isMyMessage(msg) {
+     return (msg.sender_id && meId && String(msg.sender_id) === String(meId))
+       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+   }
+ 
+-  function renderMessage(msg) {
++  function renderMessage(msg, options = {}) {
++    const trackAsLatest = options.trackAsLatest !== false;
+     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+     const dateLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_date_label || '')
+       : formatDateLabel(createdAt);
+     const timeLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_time_hm || '')
+       : formatTimeLabel(createdAt);
+ 
+     appendDateDividerIfNeeded(dateLabel);
+ 
+     const isMe = isMyMessage(msg);
+ 
+     const row = document.createElement('div');
+     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
+     row.id = `msg-${msg.id}`;
+     row.dataset.messageId = msg.id;
+     row.dataset.senderName = msg.sender_display_name || 'Unknown';
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+     const fullPlain = msg.body_plain || msg.body || '';
+     row.dataset.bodyPlain = JSON.stringify(msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
+     row.dataset.bodyPlainFull = JSON.stringify(fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
+     row.dataset.replyToId = msg.reply_to_message_id || '';
+     row.dataset.threadRootId = msg.thread_root_id || '';
+     row.dataset.threadReplyCount = String(Number(msg.thread_reply_count || 0));
+     row.dataset.replyToSenderName = msg.reply_to_sender_display_name || '';
+@@ -2724,67 +2734,70 @@ window.addEventListener('DOMContentLoaded', () => {
+     }
+ 
+     const threadReplyCount = Number(msg.thread_reply_count || 0);
+     if (threadReplyCount > 0) {
+       const threadLink = document.createElement('button');
+       threadLink.type = 'button';
+       threadLink.className = 'thread-summary-link';
+       threadLink.dataset.threadOpen = String(msg.id || '');
+       threadLink.textContent = `返信 ${threadReplyCount}`;
+       main.appendChild(threadLink);
+     }
+ 
+     if (Number(msg.deleted_flag || 0) !== 1) {
+       main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
+     }
+ 
+     line.appendChild(main);
+ 
+     if (isMe) {
+       line.appendChild(makeAvatar(msg.sender_avatar_url));
+     }
+ 
+     row.appendChild(line);
+     // typing indicator を常に最下部に固定するため、新規メッセージはその直前へ挿入
+     appendMessageRow(row);
++    if (trackAsLatest) {
++      state.lastMessageId = Number(msg?.id || 0);
++    }
+     hydrateMessageReactionData(row);
+     refreshReadIndicatorForRow(row);
+   }
+ 
+   function appendMessageRow(row) {
+     if (!msgBox || !row) return;
+     if (typingIndicator && typingIndicator.parentElement === msgBox) {
+       msgBox.insertBefore(row, typingIndicator);
+       return;
+     }
+     msgBox.appendChild(row);
+   }
+ 
+ 
+ 
+   function buildMessageNodes(msg) {
+-    renderMessage(msg);
++    renderMessage(msg, { trackAsLatest: false });
+     const row = document.getElementById(`msg-${msg.id}`);
+     if (!row) return [];
+     const nodes = [];
+     const prev = row.previousElementSibling;
+     if (prev && prev.classList.contains('chat-date-divider')) {
+       const next = prev.nextElementSibling;
+       if (next === row) {
+         nodes.push(prev);
+       }
+     }
+     nodes.push(row);
+     nodes.forEach((node) => node.parentElement?.removeChild(node));
+     return nodes;
+   }
+ 
+   function canDeleteMessage(msg, isMe) {
+     if (Number(msg?.deleted_flag || 0) === 1) return false;
+     if (typeof msg?.can_delete !== 'undefined') return Boolean(msg.can_delete);
+     if (isAdmin) return true;
+     if (!isMe) return false;
+     const createdAt = msg?.created_at_iso ? new Date(msg.created_at_iso) : null;
+     if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+     const expires = createdAt.getTime() + (12 * 60 * 60 * 1000);
+     return Date.now() <= expires;
+   }
+@@ -3129,66 +3142,66 @@ window.addEventListener('DOMContentLoaded', () => {
+     text.className = 'rq-text';
+     text.textContent = excerpt;
+ 
+     body.appendChild(name);
+     body.appendChild(text);
+     quote.appendChild(body);
+     return quote;
+   }
+ 
+   function makeAvatar(src, small = false) {
+     const img = document.createElement('img');
+     img.className = small ? 'chat-avatar-sm' : 'chat-avatar';
+     img.alt = '';
+     img.loading = 'lazy';
+     img.referrerPolicy = 'no-referrer';
+     img.src = src || defaultAvatarUrl;
+     img.onerror = () => {
+       img.onerror = null;
+       img.src = defaultAvatarUrl;
+     };
+     return img;
+   }
+ 
+   function appendDateDividerIfNeeded(dateLabel) {
+     if (!dateLabel) return;
+-    const dividers = msgBox.querySelectorAll('.chat-date-divider[data-date-label]');
+-    const lastDivider = dividers.length ? dividers[dividers.length - 1] : null;
+-    if (lastDivider?.dataset.dateLabel === dateLabel) return;
++    if (state.lastDateDividerLabel === dateLabel) return;
+ 
+     const divider = document.createElement('div');
+     divider.className = 'chat-date-divider';
+     divider.dataset.dateLabel = dateLabel;
+ 
+     const label = document.createElement('span');
+     label.textContent = dateLabel;
+     divider.appendChild(label);
+     if (typingIndicator && typingIndicator.parentElement === msgBox) {
+       msgBox.insertBefore(divider, typingIndicator);
+     } else {
+       msgBox.appendChild(divider);
+     }
++    state.lastDateDividerLabel = dateLabel;
++    state.lastDateDividerEl = divider;
+   }
+ 
+   function setReplyState(messageId, senderName, plainText, bubbleEl) {
+     clearEditState();
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+     }
+     state.replyToId = messageId;
+     replyToInput.value = messageId;
+     replySender.textContent = senderName;
+     replyText.textContent = makeExcerpt(plainText || '');
+     replyPreview.classList.remove('d-none');
+     state.selectedBubble = bubbleEl;
+     state.selectedBubble.classList.add('chat-selected-reply-target');
+     if (composerFocused) scheduleFocusScroll();
+   }
+ 
+   function clearReplyState() {
+     state.replyToId = null;
+     replyToInput.value = '';
+     replySender.textContent = '';
+     replyText.textContent = '';
+     replyPreview.classList.add('d-none');
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+@@ -3949,54 +3962,53 @@ function openFulltextModal(row) {
+       if (senderId && actorKey === senderId) continue;
+       readers.push(entry.display_name || actorKey);
+     }
+     readers.sort((a, b) => a.localeCompare(b, 'ja'));
+ 
+     if (readers.length === 0) {
+       indicator.classList.add('d-none');
+       indicator.textContent = '';
+       list.classList.add('d-none');
+       list.innerHTML = '';
+       return;
+     }
+ 
+     indicator.classList.remove('d-none');
+     indicator.textContent = `既読 ${readers.length}`;
+     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
+   }
+ 
+   function toggleReadList(chatMain) {
+     const list = chatMain?.querySelector('.chat-read-list');
+     if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
+     list.classList.toggle('d-none');
+   }
+ 
+   function sendSeenForLatestMessage() {
+-    const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
+-    const lastRow = rows.length ? rows[rows.length - 1] : null;
+-    if (!lastRow) return;
+-    sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
++    const lastMessageId = Number(state.lastMessageId || 0);
++    if (lastMessageId <= 0) return;
++    sendSeenForMessageId(lastMessageId);
+   }
+ 
+   function sendSeenForMessageId(messageId) {
+     if (!Number.isFinite(messageId) || messageId <= 0) return;
+     socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
+   }
+ 
+   function escapeHtml(value) {
+     return String(value || '')
+       .replace(/&/g, '&amp;')
+       .replace(/</g, '&lt;')
+       .replace(/>/g, '&gt;')
+       .replace(/"/g, '&quot;')
+       .replace(/'/g, '&#39;');
+   }
+ 
+   function urlBase64ToUint8Array(base64String) {
+     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+     const rawData = window.atob(base64);
+     return Uint8Array.from([...rawData].map((c) => c.charCodeAt(0)));
+   }
+ 
+   function scrollToLatestMessage() {
+     if (!msgBox) return;
+@@ -4258,55 +4270,50 @@ function openFulltextModal(row) {
+       closeMentionMenu();
+     }
+   }
+ 
+   function applyMentionCandidate(index) {
+     const candidate = state.mentionCandidates[index];
+     if (!candidate || !state.mentionRange || !bodyInput) return;
+     const text = bodyInput.value || '';
+     const before = text.slice(0, state.mentionRange.start);
+     const after = text.slice(state.mentionRange.end);
+     const mentionText = `@${candidate.display_name} `;
+     bodyInput.value = `${before}${mentionText}${after}`;
+     const nextCaret = before.length + mentionText.length;
+     bodyInput.setSelectionRange(nextCaret, nextCaret);
+     closeMentionMenu();
+     updateAutoGrow();
+   }
+ 
+   mentionMenu?.addEventListener('mousedown', (e) => {
+     const item = e.target.closest('[data-mention-index]');
+     if (!item) return;
+     e.preventDefault();
+     applyMentionCandidate(Number(item.dataset.mentionIndex || 0));
+   });
+ 
+-  document.addEventListener('click', (e) => {
+-    if (!mentionMenu || mentionMenu.classList.contains('d-none')) return;
+-    if (mentionMenu.contains(e.target) || bodyInput?.contains(e.target)) return;
+-    closeMentionMenu();
+-  });
+ 
+   function moveToRoom(nextRoomId) {
+     if (!nextRoomId || nextRoomId === roomId) return;
+     const u = new URL(window.location.href);
+     u.searchParams.set('room_id', nextRoomId);
+     window.location.href = u.toString();
+   }
+ 
+   function openRoomPicker() {
+     roomPickerModal?.classList.remove('d-none');
+   }
+ 
+   function closeRoomPicker() {
+     roomPickerModal?.classList.add('d-none');
+   }
+ 
+   roomSwitch?.addEventListener('change', () => {
+     moveToRoom(roomSwitch.value || '');
+   });
+ 
+   roomPickerToggle?.addEventListener('click', (e) => {
+     e.preventDefault();
+     openRoomPicker();
+   });
+ 
+@@ -4324,54 +4331,62 @@ function openFulltextModal(row) {
+   });
+ 
+   unreadJumpBtn?.addEventListener('click', async () => {
+     const info = state.unreadByRoomId.get(roomId) || {};
+     const firstUnreadId = Number(info.first_unread_id || 0);
+     if (!firstUnreadId) return;
+     await jumpToFirstUnread(firstUnreadId);
+   });
+ 
+   muteBtn?.addEventListener('click', (e) => {
+     e.preventDefault();
+     muteMenu?.classList.toggle('d-none');
+   });
+   muteMenu?.addEventListener('click', async (e) => {
+     const btn = e.target.closest('button');
+     if (!btn) return;
+     let mutedUntil = null;
+     if (!btn.dataset.muteClear) {
+       const hours = Number(btn.dataset.muteHours || 0);
+       if (!hours) return;
+       mutedUntil = new Date(Date.now() + (hours * 60 * 60 * 1000)).toISOString();
+     }
+     await postRoomMute(mutedUntil);
+     muteMenu?.classList.add('d-none');
+   });
++  // TOP5-5
+   document.addEventListener('click', (e) => {
+-    if (!muteMenu || muteMenu.classList.contains('d-none')) return;
+-    if (muteMenu.contains(e.target) || muteBtn?.contains(e.target)) return;
+-    muteMenu.classList.add('d-none');
++    if (mentionMenu && !mentionMenu.classList.contains('d-none')) {
++      if (!mentionMenu.contains(e.target) && !bodyInput?.contains(e.target)) {
++        closeMentionMenu();
++      }
++    }
++    if (muteMenu && !muteMenu.classList.contains('d-none')) {
++      if (!muteMenu.contains(e.target) && !muteBtn?.contains(e.target)) {
++        muteMenu.classList.add('d-none');
++      }
++    }
+   });
+ 
+   const roomUi = {
+     candidates: [],
+     createSelected: new Set(),
+     editSelected: new Set(),
+   };
+ 
+   async function fetchCandidates() {
+     const res = await fetch(`/chat/api/events/${eventId}/room-member-candidates`, { credentials: 'same-origin' });
+     const data = await res.json().catch(() => ({}));
+     if (res.status === 401 || res.status === 403) {
+       alert('権限がありません');
+       closeModal(roomCreateModal);
+       closeModal(roomMembersModal);
+       return null;
+     }
+     if (!data.ok) {
+       alert(data.error || '候補取得に失敗しました');
+       return null;
+     }
+     roomUi.candidates = data.candidates || [];
+     return roomUi.candidates;
+   }
+ 
