@@ -39,18 +39,14 @@
   </div>
 </div>
 
-<script src="/socket.io/socket.io.js"></script>
-<script>
-  if (!window.io) {
-    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
-  }
-</script>
+<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     const badge = document.getElementById('chatNavNotifBadge');
     if (!badge) return;
 
     let pollTimer = null;
+    let pollingDisabled = false;
 
     const applyCount = (rawCount) => {
       const count = Number(rawCount ?? 0);
@@ -64,8 +60,15 @@
     };
 
     const updateBadge = async () => {
+      if (pollingDisabled) return;
       try {
         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
+        if (res.status === 401) {
+          pollingDisabled = true;
+          stopPolling();
+          applyCount(0);
+          return;
+        }
         if (!res.ok) {
           applyCount(0);
           return;
@@ -89,7 +92,7 @@
     };
 
     if (window.io) {
-      const socket = window.io();
+      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
       socket.on('connect', () => {
         stopPolling();
         updateBadge();

@@ -91,7 +91,7 @@ def _require_ext_login():
             pass
         return "/external-login/"
 
-    local_next = _to_local_next(raw_next)
+    local_next = _to_local_next(raw_next)[:512]
     session["ext_after_login_next"] = local_next
     return redirect(url_for("external_login_user.line_login", next=local_next))
 

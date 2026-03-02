@@ -275,11 +275,14 @@ def notifications_page():
 
 @bp.get("/api/notifications/unread-count")
 def api_notifications_unread_count():
-    guard = _require_ext_login()
-    if guard:
-        return guard
-
     uid = int(session.get("ext_user_id") or 0)
+    if uid <= 0:
+        resp = jsonify({"ok": False, "reason": "login_required"})
+        resp.status_code = 401
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        resp.headers["Pragma"] = "no-cache"
+        return resp
+
     try:
         count = _compute_unread_count_external(uid)
         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
