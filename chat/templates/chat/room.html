@@ -1225,7 +1225,10 @@
       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
       {% if can_manage_rooms %}
       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
-      {% if not active_room.is_main %}<button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>{% endif %}
+      {% if active_room.is_main|int != 1 %}
+      <button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>
+      <button type="button" id="chat-room-delete-btn" class="btn btn-sm btn-outline-danger">サブルーム削除</button>
+      {% endif %}
       {% endif %}
     </div>
 
@@ -1247,7 +1250,7 @@
       <div class="chat-room-picker-list">
         {% for r in accessible_rooms %}
           <button type="button" class="chat-room-picker-item {% if r.room_id == active_room.room_id %}is-active{% endif %}" data-room-pick-id="{{ r.room_id }}">
-            {{ r.room_name }}{% if r.is_main %}（メイン）{% endif %}
+            {{ r.room_name }}{% if r.is_main|int == 1 %}（メイン）{% endif %}
           </button>
         {% endfor %}
       </div>
@@ -1596,6 +1599,7 @@ window.addEventListener('DOMContentLoaded', () => {
   const notificationBadge = document.getElementById('chat-notification-badge');
   const roomCreateBtn = document.getElementById('chat-room-create-btn');
   const roomMembersBtn = document.getElementById('chat-room-members-btn');
+  const roomDeleteBtn = document.getElementById('chat-room-delete-btn');
   const unreadJumpBtn = document.getElementById('chat-unread-jump-btn');
   const muteBtn = document.getElementById('chat-mute-btn');
   const muteMenu = document.getElementById('chat-mute-menu');
@@ -4468,6 +4472,29 @@ function openFulltextModal(row) {
     (data.members || []).forEach((m) => { if (m?.actor_key) roomUi.editSelected.add(m.actor_key); });
     renderCandidateList('room-members-candidates', roomUi.editSelected, '');
     openModal(roomMembersModal);
+  });
+
+  roomDeleteBtn?.addEventListener('click', async () => {
+    if (!roomId) return;
+    if (!confirm('このサブルームを削除しますか？（削除後は復元できません）')) return;
+
+    try {
+      const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ csrf_token: csrfToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401 || res.status === 403) { alert('権限がありません'); return; }
+      if (!res.ok || !data.ok) throw new Error(data.error || '削除に失敗しました');
+
+      const u = new URL(window.location.href);
+      u.searchParams.delete('room_id');
+      window.location.href = u.toString();
+    } catch (err) {
+      alert(err?.message || '削除に失敗しました');
+    }
   });
 
   document.getElementById('room-members-submit')?.addEventListener('click', async (e) => {
