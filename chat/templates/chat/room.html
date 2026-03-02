@@ -80,6 +80,7 @@
 
 .chat-row.me .chat-bubble-wrap {
   flex-direction: row-reverse;
+  gap: 12px;
 }
 
 .chat-bubble {
@@ -110,12 +111,12 @@
   word-break: break-word;
 }
 
-/* 通常画面：本文は選択禁止（OSのコピー/選択UIを出さない） */
+/* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
 .chat-bubble .chat-body,
 .chat-bubble .chat-body * {
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-touch-callout: none;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 
 /* リンクはタップできる */
@@ -161,7 +162,11 @@
   align-items: flex-end;
   justify-content: flex-end;
   gap: 2px;
-  min-width: 48px;
+  min-width: 56px;
+}
+
+.chat-row.me .chat-meta-col {
+  margin-right: 8px;
 }
 
 .chat-time {
@@ -415,7 +420,7 @@
 }
 
 .chat-row.me .chat-menu-open-btn {
-  left: 6px;
+  left: -10px;
   right: auto;
 }
 
@@ -1066,6 +1071,130 @@
   z-index: 2990;
 }
 
+/* ===== Upload Preview Modal / Drag&Drop ===== */
+.chat-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2500;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.25);
+  backdrop-filter: blur(2px);
+}
+
+.chat-drop-overlay.is-open { display: flex; }
+
+.chat-drop-overlay .panel {
+  background: rgba(255,255,255,0.95);
+  border: 2px dashed rgba(74,141,255,0.9);
+  border-radius: 16px;
+  padding: 18px 20px;
+  width: min(92vw, 520px);
+  text-align: center;
+  box-shadow: 0 18px 42px rgba(0,0,0,0.22);
+}
+
+.chat-upload-preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: none;
+  padding: 16px;
+}
+
+.chat-upload-preview-modal.is-open { display: block; }
+
+.chat-upload-preview-modal .backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+}
+
+.chat-upload-preview-modal .panel {
+  position: relative;
+  z-index: 1;
+  margin: 8vh auto 0;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.28);
+  width: min(96vw, 820px);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-upload-preview-modal .head {
+  padding: 12px 14px;
+  border-bottom: 1px solid #e6e9f4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-upload-preview-modal .body {
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.chat-upload-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.chat-upload-preview-item {
+  border: 1px solid rgba(0,0,0,0.10);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  position: relative;
+}
+
+.chat-upload-preview-item img {
+  width: 100%;
+  height: 130px;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-upload-preview-item .meta {
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  color: #556;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-upload-preview-item .remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: 0;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  line-height: 1;
+}
+
+.chat-upload-preview-modal .foot {
+  padding: 12px 14px;
+  border-top: 1px solid #e6e9f4;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chat-upload-hint {
+  font-size: 0.82rem;
+  color: #667;
+}
+
 </style>
 
 {% macro render_reaction_box(message) -%}
@@ -1285,16 +1414,45 @@
     </div>
   </div>
 
+  <div id="chatDropOverlay" class="chat-drop-overlay" aria-hidden="true">
+    <div class="panel">
+      <div style="font-size:1.05rem; font-weight:700; color:#2f3f75;">画像をドロップして送信</div>
+      <div class="chat-upload-hint mt-2">ドロップ後にプレビューが出ます（最大6枚 / 20MBまで）</div>
+    </div>
+  </div>
+
+  <div id="chatUploadPreviewModal" class="chat-upload-preview-modal" aria-hidden="true">
+    <div class="backdrop" data-upload-preview-close="1"></div>
+    <div class="panel" role="dialog" aria-label="画像送信プレビュー">
+      <div class="head">
+        <div>
+          <div style="font-weight:700;">画像送信プレビュー</div>
+          <div class="chat-upload-hint" id="chatUploadPreviewHint">確認して「送信」を押してください。</div>
+        </div>
+        <button type="button" class="btn btn-sm btn-light" data-upload-preview-close="1">閉じる</button>
+      </div>
+      <div class="body">
+        <div class="mb-2 small text-muted">
+          送信時に本文も一緒に送ります（本文はこの画面では編集しません）
+        </div>
+        <div class="chat-upload-preview-grid" id="chatUploadPreviewGrid"></div>
+      </div>
+      <div class="foot">
+        <button type="button" class="btn btn-sm btn-secondary" data-upload-preview-close="1">キャンセル</button>
+        <button type="button" class="btn btn-sm btn-primary" id="chatUploadPreviewSendBtn">送信</button>
+      </div>
+    </div>
+  </div>
+
   <div id="chatCtxMenu" class="chat-ctx-menu d-none" data-message-id="">
     <div class="chat-ctx-backdrop" data-ctx-close="1"></div>
     <div class="chat-ctx-panel" role="menu" aria-label="メッセージメニュー">
       <div class="chat-ctx-preview" data-ctx-preview>メッセージ…</div>
       <hr class="chat-ctx-sep">
       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
-      <button type="button" class="chat-ctx-item" data-ctx-action="fulltext">全文表示</button>
-      <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッドを開く</button>
-      <button type="button" class="chat-ctx-item" data-ctx-action="copy">コピー</button>
-      <button type="button" class="chat-ctx-item chat-ctx-item-edit d-none" data-ctx-action="edit">編集</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッド</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="fulltext">選択コピー</button>
+      <button type="button" class="chat-ctx-item" data-ctx-action="copy">全文コピー</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
       <div class="chat-ctx-reactions d-none" data-ctx-reactions="1"></div>
       <button type="button" class="chat-ctx-item chat-ctx-item-delete d-none" data-ctx-action="delete">削除</button>
@@ -1476,6 +1634,11 @@ window.addEventListener('DOMContentLoaded', () => {
   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
+  const dropOverlay = document.getElementById('chatDropOverlay');
+  const uploadPreviewModal = document.getElementById('chatUploadPreviewModal');
+  const uploadPreviewGrid = document.getElementById('chatUploadPreviewGrid');
+  const uploadPreviewHint = document.getElementById('chatUploadPreviewHint');
+  const uploadPreviewSendBtn = document.getElementById('chatUploadPreviewSendBtn');
   const ctxMenu = document.getElementById('chatCtxMenu');
   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
@@ -1538,6 +1701,9 @@ window.addEventListener('DOMContentLoaded', () => {
     mentionActiveIndex: 0,
     mentionRange: null,
     mentionDebounceTimer: null,
+    uploadPreviewFiles: [],
+    uploadPreviewUrls: [],
+    dragOverlayDepth: 0,
   };
 
   if (ctxReactions && ctxReactions.childElementCount === 0) {
@@ -2065,29 +2231,99 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
-  imageInput?.addEventListener('change', async () => {
+  imageInput?.addEventListener('change', () => {
     const files = Array.from(imageInput.files || []);
-    if (!files.length) return;
-    if (files.length > maxUploadImages) {
-      alert(`画像は最大6枚まで送れます（現在: ${files.length}枚）`);
-      imageInput.value = '';
+    if (files.length) openUploadPreview(files, { source: 'picker' });
+    imageInput.value = '';
+  });
+
+  function isImageDataTransfer(dataTransfer) {
+    if (!dataTransfer) return false;
+    const items = Array.from(dataTransfer.items || []);
+    if (items.some((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))) return true;
+    const files = Array.from(dataTransfer.files || []);
+    return files.some((file) => String(file?.type || '').startsWith('image/'));
+  }
+
+  function extractImageFiles(rawFiles) {
+    return Array.from(rawFiles || []).filter((file) => String(file?.type || '').startsWith('image/'));
+  }
+
+  function clearUploadPreviewUrls() {
+    state.uploadPreviewUrls.forEach((url) => {
+      try { URL.revokeObjectURL(url); } catch (_) {}
+    });
+    state.uploadPreviewUrls = [];
+  }
+
+  function setDropOverlayOpen(open) {
+    if (!dropOverlay) return;
+    dropOverlay.classList.toggle('is-open', open);
+    dropOverlay.setAttribute('aria-hidden', open ? 'false' : 'true');
+  }
+
+  function closeUploadPreview() {
+    clearUploadPreviewUrls();
+    state.uploadPreviewFiles = [];
+    uploadPreviewModal?.classList.remove('is-open');
+    uploadPreviewModal?.setAttribute('aria-hidden', 'true');
+    if (uploadPreviewGrid) uploadPreviewGrid.innerHTML = '';
+  }
+
+  function renderUploadPreview() {
+    if (!uploadPreviewGrid || !uploadPreviewHint) return;
+    uploadPreviewGrid.innerHTML = '';
+    clearUploadPreviewUrls();
+    if (!state.uploadPreviewFiles.length) {
+      closeUploadPreview();
       return;
     }
+    uploadPreviewHint.textContent = `${state.uploadPreviewFiles.length}枚を送信します。確認して「送信」を押してください。`;
+    state.uploadPreviewFiles.forEach((file, index) => {
+      const item = document.createElement('div');
+      item.className = 'chat-upload-preview-item';
+      const url = URL.createObjectURL(file);
+      state.uploadPreviewUrls.push(url);
+      item.innerHTML = `
+        <button type="button" class="remove" data-upload-preview-remove="${index}" aria-label="削除">×</button>
+        <img src="${url}" alt="${escapeHtml(file.name || `image-${index + 1}`)}">
+        <div class="meta" title="${escapeHtml(file.name || '')}">${escapeHtml(file.name || `image-${index + 1}`)}</div>
+      `;
+      uploadPreviewGrid.appendChild(item);
+    });
+  }
 
-    const tooLarge = files.find((file) => Number(file?.size || 0) > maxUploadImageBytes);
+  function openUploadPreview(files, { source = 'picker' } = {}) {
+    const imageFiles = extractImageFiles(files);
+    if (!imageFiles.length) {
+      if (source === 'drop') alert('画像ファイルのみドロップできます。');
+      return;
+    }
+    if (imageFiles.length > maxUploadImages) {
+      alert(`画像は最大6枚まで送れます（現在: ${imageFiles.length}枚）`);
+      return;
+    }
+    const tooLarge = imageFiles.find((file) => Number(file?.size || 0) > maxUploadImageBytes);
     if (tooLarge) {
       const sizeMb = (Number(tooLarge.size || 0) / (1024 * 1024)).toFixed(2);
       alert(`画像サイズが大きすぎます（最大20MB）。対象: ${tooLarge.name || '名称不明'}（${sizeMb}MB）`);
-      imageInput.value = '';
       return;
     }
+    state.uploadPreviewFiles = imageFiles;
+    uploadPreviewModal?.classList.add('is-open');
+    uploadPreviewModal?.setAttribute('aria-hidden', 'false');
+    renderUploadPreview();
+  }
 
+  async function submitUploadPreview() {
+    if (!state.uploadPreviewFiles.length) return;
     setSendingState(true);
     sendTypingStop();
+    uploadPreviewSendBtn && (uploadPreviewSendBtn.disabled = true);
     try {
       const fd = new FormData();
       fd.append('csrf_token', csrfToken);
-      files.forEach((file) => fd.append('file', file));
+      state.uploadPreviewFiles.forEach((file) => fd.append('file', file));
       fd.append('body', bodyInput.value || '');
       if (state.replyToId) fd.append('reply_to_message_id', String(state.replyToId));
       const res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
@@ -2098,13 +2334,55 @@ window.addEventListener('DOMContentLoaded', () => {
       bodyInput.value = '';
       updateAutoGrow();
       clearReplyState();
+      closeUploadPreview();
     } catch (err) {
       alert(err?.message || '画像送信に失敗しました');
     } finally {
-      imageInput.value = '';
+      uploadPreviewSendBtn && (uploadPreviewSendBtn.disabled = false);
       setSendingState(false);
     }
+  }
+
+  document.addEventListener('dragenter', (e) => {
+    if (!isImageDataTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    state.dragOverlayDepth += 1;
+    setDropOverlayOpen(true);
   });
+  document.addEventListener('dragover', (e) => {
+    if (!isImageDataTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    setDropOverlayOpen(true);
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!isImageDataTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    state.dragOverlayDepth = Math.max(0, state.dragOverlayDepth - 1);
+    if (state.dragOverlayDepth === 0) setDropOverlayOpen(false);
+  });
+  document.addEventListener('drop', (e) => {
+    if (!isImageDataTransfer(e.dataTransfer)) return;
+    e.preventDefault();
+    state.dragOverlayDepth = 0;
+    setDropOverlayOpen(false);
+    const files = extractImageFiles(e.dataTransfer?.files || []);
+    if (files.length) openUploadPreview(files, { source: 'drop' });
+  });
+
+  uploadPreviewModal?.addEventListener('click', (e) => {
+    const closeBtn = e.target.closest('[data-upload-preview-close="1"]');
+    if (closeBtn) {
+      closeUploadPreview();
+      return;
+    }
+    const removeBtn = e.target.closest('[data-upload-preview-remove]');
+    if (!removeBtn) return;
+    const idx = Number(removeBtn.dataset.uploadPreviewRemove);
+    if (!Number.isFinite(idx)) return;
+    state.uploadPreviewFiles.splice(idx, 1);
+    renderUploadPreview();
+  });
+  uploadPreviewSendBtn?.addEventListener('click', () => submitUploadPreview());
 
   function updateAutoGrow(targetInput = bodyInput) {
     if (!targetInput) return;
@@ -3339,9 +3617,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
-    const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
-    editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
-
     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
     if (ctxPreview) ctxPreview.textContent = previewText;
 
@@ -3575,16 +3850,6 @@ function openFulltextModal(row) {
       } catch (_err) {
         alert('コピーに失敗しました');
       }
-      closeContextMenu();
-      return;
-    }
-    if (action === 'edit') {
-      if (row.dataset.canEdit !== '1') {
-        closeContextMenu();
-        return;
-      }
-      const fullText = getFullPlainText(row);
-      setEditState(messageId, fullText);
       closeContextMenu();
       return;
     }

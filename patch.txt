@@ -1,131 +1,69 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 65b9ed5b325a61045ca39360c8f957446f3e1987..a676a474d55c1643560e351b169a22e9448e3712 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -3787,96 +3787,108 @@ def search_messages(event_id: int):
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 7a24678377760a2d0b9815b40644b56e0c860fa6..4e5f9056cc7d047517eec90430248994b63ceb98 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -3807,63 +3807,52 @@ function openFulltextModal(row) {
+     const messageId = Number(row?.dataset?.messageId || 0);
+     if (!row || !messageId) {
+       closeContextMenu();
+       return;
+     }
  
- def _parse_actor_key(value: str) -> tuple[str, str] | None:
-     raw = (value or "").strip()
-     if ":" not in raw:
-         return None
-     actor_type, actor_id = raw.split(":", 1)
-     actor_type = actor_type.strip()
-     actor_id = actor_id.strip()
-     if not actor_type or not actor_id:
-         return None
-     return actor_type, actor_id
+     if (actionEl.classList.contains('chat-reaction-emoji')) {
+       const emoji = actionEl.dataset.emoji || '';
+       if (reactionEmojis.includes(emoji)) {
+         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+       }
+       closeContextMenu();
+       return;
+     }
  
- 
- @chat_bp.get("/api/events/<int:event_id>/rooms")
- def api_rooms(event_id: int):
-     actor = get_chat_actor()
-     if not actor or not _can_access_event(event_id, actor):
-         return jsonify({"ok": False}), 403
-     _ensure_chat_rooms_schema()
-     _ensure_chat_room_members_schema()
-     _ensure_chat_messages_room_schema()
-     rooms = _list_accessible_rooms(event_id, actor)
-     return jsonify({"ok": True, "rooms": rooms})
- 
- 
-+def _allocate_subroom_is_main_value(cur: Any, event_id: int) -> int:
-+    """Legacy UNIQUE(event_id, is_main) が残っていてもサブルームを作れる値を割り当てる。"""
-+    cur.execute("SELECT is_main FROM chat_rooms WHERE event_id=%s", (event_id,))
-+    used = {int((row[0] if isinstance(row, tuple) else row.get("is_main")) or 0) for row in (cur.fetchall() or [])}
-+
-+    # 互換性のためまず 0 を優先し、埋まっていれば TINYINT 範囲で空きを探す
-+    candidates = [0] + [v for v in range(-128, 128) if v not in {0, 1}]
-+    for value in candidates:
-+        if value not in used:
-+            return value
-+    raise ValueError("サブルーム作成上限に達しました")
-+
-+
- @chat_bp.post("/api/events/<int:event_id>/rooms/create")
- def api_rooms_create(event_id: int):
-     global CHAT_ROOMS_SCHEMA_READY
-     actor = get_chat_actor()
-     if not actor or not _can_manage_rooms(event_id, actor):
-         return jsonify({"ok": False}), 403
-     payload = request.get_json(silent=True) or {}
-     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
-         return jsonify({"ok": False, "error": "csrf"}), 400
-     room_name = str(payload.get("room_name") or "").strip()
-     if not (1 <= len(room_name) <= 80):
-         return jsonify({"ok": False, "error": "room_nameは1〜80文字です"}), 400
-     _ensure_chat_rooms_schema()
-     _ensure_chat_room_members_schema()
-     room_id = str(uuid.uuid4())
-     now = datetime.utcnow()
-     actor_keys = set(payload.get("member_actor_keys") or [])
-     actor_keys.add(f"{actor['actor_type']}:{actor['actor_id']}")
-     db = get_db()
-     cur = db.cursor()
-     try:
--        try:
--            cur.execute(
--                """
--                INSERT INTO chat_rooms (
--                  room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
--                ) VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s)
--                """,
--                (room_id, event_id, room_name, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
--            )
--        except Exception as exc:
--            message = str(exc)
--            if "uq_chat_rooms_event_main" in message or "Duplicate entry" in message:
--                db.rollback()
--                CHAT_ROOMS_SCHEMA_READY = None
--                _ensure_chat_rooms_schema()
-+        subroom_is_main = 0
-+        for attempt in range(3):
-+            try:
-                 cur.execute(
-                     """
-                     INSERT INTO chat_rooms (
-                       room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
--                    ) VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s)
-+                    ) VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s)
-                     """,
--                    (room_id, event_id, room_name, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
-+                    (room_id, event_id, room_name, subroom_is_main, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
-                 )
--            else:
-+                break
-+            except Exception as exc:
-+                message = str(exc)
-+                if "uq_chat_rooms_event_main" in message or "Duplicate entry" in message:
-+                    db.rollback()
-+                    CHAT_ROOMS_SCHEMA_READY = None
-+                    _ensure_chat_rooms_schema()
-+                    subroom_is_main = _allocate_subroom_is_main_value(cur, event_id)
-+                    continue
-                 raise
-+        else:
-+            return jsonify({"ok": False, "error": "サブルーム作成に失敗しました"}), 500
-+
-         for key in actor_keys:
-             parsed = _parse_actor_key(str(key))
-             if not parsed:
-                 continue
-             at, aid = parsed
-             cur.execute(
-                 """
-                 INSERT IGNORE INTO chat_room_members (room_id,actor_type,actor_id,added_at,added_by_actor_type,added_by_actor_id)
-                 VALUES (%s,%s,%s,%s,%s,%s)
-                 """,
-                 (room_id, at, aid, now, actor["actor_type"], actor["actor_id"]),
-             )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
-     return jsonify({"ok": True, "room_id": room_id})
- 
- 
- @chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/update")
- def api_rooms_update(event_id: int, room_id: str):
-     actor = get_chat_actor()
-     if not actor or not _can_manage_rooms(event_id, actor):
-         return jsonify({"ok": False}), 403
-     payload = request.get_json(silent=True) or {}
+     const action = actionEl.dataset.ctxAction;
+     if (action === 'reply') {
+       const bubble = row.querySelector('.chat-bubble');
+       if (bubble) {
+         setReplyState(messageId, row.dataset.senderName || 'Unknown', getPlainTextFromDataset(row.dataset.bodyPlain), bubble);
+       }
+       closeContextMenu();
+       return;
+     }
+     if (action === 'fulltext') {
+-      const selectedText = String(window.getSelection?.()?.toString?.() || '').trim();
+-      if (!selectedText) {
+-        alert('選択中のテキストがありません');
+-        closeContextMenu();
+-        return;
+-      }
+-      try {
+-        await copyTextWithFallback(selectedText);
+-        alert('選択テキストをコピーしました');
+-      } catch (_err) {
+-        alert('コピーに失敗しました');
+-      }
+       closeContextMenu();
++      openFulltextModal(row);
+       return;
+     }
+     if (action === 'react') {
+       ctxReactions?.classList.toggle('d-none');
+       return;
+     }
+     if (action === 'open-thread') {
+       const rootId = Number(row.dataset.threadRootId || row.dataset.messageId || 0);
+       closeContextMenu();
+       openThreadModal(rootId);
+       return;
+     }
+     if (action === 'copy') {
+       try {
+         await copyTextWithFallback(state.ctxBodyPlain || getPlainTextFromDataset(row.dataset.bodyPlain));
+         alert('コピーしました');
+       } catch (_err) {
+         alert('コピーに失敗しました');
+       }
+       closeContextMenu();
+       return;
+     }
+     if (action === 'delete') {
+       if (row.dataset.canDelete !== '1') {
+         closeContextMenu();
