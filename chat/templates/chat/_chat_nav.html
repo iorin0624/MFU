@@ -8,10 +8,17 @@
       <span class="chat-nav-icon" aria-hidden="true">💬</span>
       <span class="chat-nav-label">ルーム</span>
     </button>
-    <a class="chat-nav-link chat-notification-link" href="{{ chat_notifications_url|default('/external-login/notifications') }}" aria-label="通知履歴">
+
+    <a class="chat-nav-link chat-notification-link position-relative p-2"
+       href="{{ chat_notifications_url|default('/external-login/notifications') }}"
+       aria-label="通知履歴"
+       id="chatNavNotifBell">
       <span id="chat-notification-badge" class="chat-notification-badge no-unread" aria-live="polite">🔔</span>
+      <span id="chatNavNotifBadge"
+            class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
       <span class="chat-nav-label">通知履歴</span>
     </a>
+
     <div class="chat-mute-wrap">
       <button type="button" id="chat-mute-btn" class="chat-nav-link chat-nav-button" aria-label="ミュート">
         <span class="chat-nav-icon" aria-hidden="true">🔕</span>
@@ -24,9 +31,49 @@
         <button type="button" data-mute-clear="1">解除</button>
       </div>
     </div>
+
     <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
       <span class="chat-nav-label">検索</span>
     </button>
   </div>
 </div>
+
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const badge = document.getElementById('chatNavNotifBadge');
+    if (!badge) return;
+
+    const hideBadge = () => {
+      badge.textContent = '0';
+      badge.classList.add('d-none');
+    };
+
+    const updateBadge = async () => {
+      try {
+        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
+        if (!res.ok) {
+          hideBadge();
+          return;
+        }
+        const data = await res.json();
+        const count = Number(data?.count ?? 0);
+        if (Number.isFinite(count) && count > 0) {
+          badge.textContent = String(Math.min(Math.floor(count), 99));
+          badge.classList.remove('d-none');
+          return;
+        }
+      } catch (_e) {
+        // noop
+      }
+      hideBadge();
+    };
+
+    updateBadge();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) updateBadge();
+    });
+    window.addEventListener('pageshow', updateBadge);
+    window.setInterval(updateBadge, 30000);
+  });
+</script>
