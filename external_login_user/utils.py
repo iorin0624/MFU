@@ -218,6 +218,86 @@ def _member_payment_status(event_id: int, ext_user_id: int) -> str:
     if not row: return "unpaid"
     return row[0] if isinstance(row, tuple) else row["payment_status"]
 
+
+def update_event_member_status(
+    event_id: int,
+    user_id: int,
+    new_status: str,
+    *,
+    extra_update_fields: dict[str, Any] | None = None,
+    extra_insert_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    mfu_event_member.status の更新を共通化し、
+    未承認→承認済み遷移時だけチャットへSystem投稿する。
+    """
+    if new_status not in {"approved", "pending", "rejected"}:
+        raise ValueError("invalid status")
+
+    extra_update_fields = dict(extra_update_fields or {})
+    extra_insert_fields = dict(extra_insert_fields or {})
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    before_status: str | None = None
+    created = False
+    try:
+        cur.execute(
+            "SELECT id, status FROM mfu_event_member WHERE event_id=%s AND user_id=%s LIMIT 1",
+            (event_id, user_id),
+        )
+        row = cur.fetchone()
+        if row:
+            before_status = (row.get("status") or "").strip().lower() or None
+            set_parts = ["status=%s"]
+            values: list[Any] = [new_status]
+            for field_name, field_value in extra_update_fields.items():
+                set_parts.append(f"{field_name}=%s")
+                values.append(field_value)
+            values.extend([event_id, user_id])
+            cur.execute(
+                f"UPDATE mfu_event_member SET {', '.join(set_parts)} WHERE event_id=%s AND user_id=%s LIMIT 1",
+                tuple(values),
+            )
+        else:
+            created = True
+            insert_fields = {"event_id": event_id, "user_id": user_id, "status": new_status}
+            for key, value in extra_insert_fields.items():
+                insert_fields[key] = value
+            cols = list(insert_fields.keys())
+            vals = [insert_fields[col] for col in cols]
+            placeholders = ", ".join(["%s"] * len(cols))
+            cur.execute(
+                f"INSERT INTO mfu_event_member ({', '.join(cols)}) VALUES ({placeholders})",
+                tuple(vals),
+            )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    approved_transition = before_status != "approved" and new_status == "approved"
+    if approved_transition:
+        try:
+            from app.chat import get_external_user_display_name, post_system_message_to_event_main_room
+
+            nickname = get_external_user_display_name(user_id)
+            post_system_message_to_event_main_room(event_id, template_key="join_approved", nickname=nickname)
+        except Exception:
+            current_app.logger.exception(
+                "join-approved system message failed event_id=%s user_id=%s",
+                event_id,
+                user_id,
+            )
+
+    return {
+        "before_status": before_status,
+        "after_status": new_status,
+        "changed": before_status != new_status,
+        "created": created,
+        "approved_transition": approved_transition,
+    }
+
 def _event_by_uuid_str(u: str) -> Optional[dict]:
     """
     mfu_event を UUID(文字列) で1件取得。

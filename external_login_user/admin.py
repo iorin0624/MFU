@@ -24,7 +24,7 @@ from io import StringIO
 from flask import request, session, redirect, url_for, render_template, abort, flash, make_response
 from . import bp
 from .utils import (
-    _require_mfu_login_redirect, _admin_csrf_token, _uuid_bytes_to_str,_event_admin_can_view,
+    _require_mfu_login_redirect, _admin_csrf_token, _uuid_bytes_to_str, _event_admin_can_view, update_event_member_status,
 )
 from .albums import create_event_album
 from .payments import _ensure_payment_uuid_for_event
@@ -1385,11 +1385,7 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
 
         # 変化があるときのみ更新＆通知
         if old_status != new_status:
-            cur.execute(
-                "UPDATE mfu_event_member SET status=%s WHERE event_id=%s AND user_id=%s LIMIT 1",
-                (new_status, event_id, user_id),
-            )
-            db.commit()
+            update_event_member_status(event_id, user_id, new_status)
 
             if to_email and ev_uuid_str:
                 try:
@@ -2533,15 +2529,17 @@ def admin_member_update_status(event_id: int, member_id: int):
         if not row:
             abort(404, "参加者が見つかりません。")
 
-        old_status = (row.get("old_status") or "") if row.get("old_status") is not None else ""
+        old_status = ((row.get("old_status") or "") if row.get("old_status") is not None else "").strip().lower()
+        target_user_id = int(row.get("user_id") or 0)
+        if target_user_id <= 0:
+            abort(404, "参加者が見つかりません。")
         if old_status == new_status:
             # ステータスが変わらない場合は更新せず完了
             flash("ステータスに変更はありません（メール送信なし）。", "info")
             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
 
-        # ステータス更新
-        cur.execute("UPDATE mfu_event_member SET status=%s WHERE id=%s LIMIT 1", (new_status, member_id))
-        db.commit()
+        # ステータス更新（承認遷移時のSystem自動投稿を含む共通処理）
+        update_event_member_status(event_id=event_id, user_id=target_user_id, new_status=new_status)
     finally:
         try: cur.close()
         except Exception: pass
