@@ -2149,6 +2149,7 @@ def _image_extension_and_mime(image_format: str) -> tuple[str, str, bool]:
         "WEBP": ("webp", "image/webp", False),
         "HEIF": ("jpg", "image/jpeg", True),
         "HEIC": ("jpg", "image/jpeg", True),
+        "MPO": ("jpg", "image/jpeg", True),
     }
     if fmt not in mapping:
         show_fmt = fmt or "unknown"
@@ -2219,11 +2220,17 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "", mi
         with Image.open(io.BytesIO(raw_bytes)) as im:
             image_format = (im.format or "").upper()
             detected = image_format or detected or "unknown"
-            if image_format == "MPO" or looks_like_mpo:
-                raise ChatUploadImageError(
-                    "unsupported_format",
-                    f"未対応の画像形式です（JPEG/PNG/WEBP/HEICのみ対応）。対象: {filename}（MPO） iPhoneのLive Photo/連写の可能性があります。Live Photoをオフにして撮影してください。",
-                    detail={"filename": filename, "detected": "MPO"},
+            if image_format == "MPO":
+                current_app.logger.info(
+                    "action=chat_upload_image result=mpo_detected_convert filename=%s mimetype=%s",
+                    filename,
+                    mimetype,
+                )
+            if looks_like_mpo and image_format == "JPEG":
+                current_app.logger.info(
+                    "action=chat_upload_image result=mpf_jpeg_fallback filename=%s mimetype=%s",
+                    filename,
+                    mimetype,
                 )
 
             try:
@@ -2249,8 +2256,8 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "", mi
                 except Exception as exc:
                     raise ChatUploadImageError(
                         "convert_failed",
-                        f"画像の変換に失敗しました。対象: {filename}（HEIC変換）",
-                        detail={"filename": filename, "detected": image_format or "HEIC"},
+                        f"画像の変換に失敗しました。対象: {filename}（{image_format or 'unknown'}変換）",
+                        detail={"filename": filename, "detected": image_format or "unknown"},
                     ) from exc
             else:
                 original_bytes = bytes(raw_bytes)
