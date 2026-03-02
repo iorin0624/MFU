@@ -41,6 +41,11 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
+  if (!window.io) {
+    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
+  }
+</script>
+<script>
   document.addEventListener('DOMContentLoaded', () => {
     const badge = document.getElementById('chatNavNotifBadge');
     if (!badge) return;

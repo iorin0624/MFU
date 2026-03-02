@@ -29,6 +29,24 @@ def _load_local_env():
 
 _load_local_env()
 
+
+def _remember_session_map_value(map_key: str, item_key: str, value, *, max_items: int = 8, max_value_len: int = 128):
+    """__init__ から utils を import しないための軽量ヘルパ。"""
+    key = str(item_key or "").strip()
+    if not key:
+        return
+    stored = session.get(map_key)
+    data = dict(stored) if isinstance(stored, dict) else {}
+    data.pop(key, None)
+    item = value[:max_value_len] if isinstance(value, str) else value
+    data[key] = item
+    while len(data) > max_items:
+        oldest = next(iter(data), None)
+        if oldest is None:
+            break
+        data.pop(oldest, None)
+    session[map_key] = data
+
 # --- Blueprint（テンプレートは従来どおり template/） ---
 bp = Blueprint("external_login_user", __name__, template_folder="template")
 
@@ -139,9 +157,7 @@ def _enforce_lecture_prepaid_on_join():
 
     iv = (request.args.get("iv") or "").strip()
     if iv:
-        store = session.get("lecture_invite_tokens") or {}
-        store[event_uuid] = iv
-        session["lecture_invite_tokens"] = store
+        _remember_session_map_value("lecture_invite_tokens", event_uuid, iv)
 
     # 未ログインならスルー（join本体に任せる）
     if not session.get("ext_user_social_id"):

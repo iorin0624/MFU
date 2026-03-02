@@ -186,6 +186,44 @@ def admin_required(func):
     return wrapper
 
 
+VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
+VIEW_AUTH_MAX_ITEMS = 50
+
+
+def _cleanup_legacy_view_auth_keys(current_uuid=None):
+    """旧形式の session['view_auth_<uuid>'] を削除してクッキー肥大化を防ぐ。"""
+    for key in list(session.keys()):
+        if not key.startswith("view_auth_"):
+            continue
+        if current_uuid and key == f"view_auth_{current_uuid}":
+            continue
+        session.pop(key, None)
+
+
+def _grant_view_auth(uuid):
+    """閲覧許可を単一キー配下のUUID配列で管理する。"""
+    _cleanup_legacy_view_auth_keys(current_uuid=uuid)
+    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
+    if uuid in allowed:
+        return
+    allowed = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
+    session[VIEW_AUTH_SESSION_KEY] = allowed
+
+
+def _has_view_auth(uuid):
+    """新旧のセッション形式を読み、必要なら新形式へ移行する。"""
+    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
+    if uuid in allowed:
+        return True
+
+    legacy_key = f"view_auth_{uuid}"
+    if session.get(legacy_key):
+        _grant_view_auth(uuid)
+        session.pop(legacy_key, None)
+        return True
+    return False
+
+
 def _save_stream(file_storage, dest_path):
     """アップロードストリームを保存（最小実装）"""
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
@@ -921,7 +959,7 @@ def view_upload(uuid):
 
     # アップロード者 or 管理者は常時閲覧可
     if "user" in session and (session["user"] == "admin" or session["user"] == upload["username"]):
-        session[f"view_auth_{uuid}"] = True
+        _grant_view_auth(uuid)
 
     # モード情報取得（パス要否 & サムネ生成要否）
     cursor.execute(
@@ -934,17 +972,17 @@ def view_upload(uuid):
 
     # パス不要 or 空パスなら自動許可
     if (not require_password) or (not upload.get("password")):
-        session[f"view_auth_{uuid}"] = True
+        _grant_view_auth(uuid)
 
     # パス未認証ならパス画面へ
-    if request.method == "POST" and not session.get(f"view_auth_{uuid}"):
+    if request.method == "POST" and not _has_view_auth(uuid):
         input_pass = request.form.get("password", "")
         if input_pass != (upload.get("password") or ""):
             db.close()
             return render_template("view_password.html", uuid=uuid, error="パスワードが違います")
-        session[f"view_auth_{uuid}"] = True
+        _grant_view_auth(uuid)
 
-    if not session.get(f"view_auth_{uuid}"):
+    if not _has_view_auth(uuid):
         db.close()
         return render_template("view_password.html", uuid=uuid)
 
@@ -1023,7 +1061,7 @@ def uploaded_file(subpath: str):
 @app.route("/view/<uuid>/zip", methods=["GET"])
 def download_zip_for_upload(uuid):
     # 認可チェック
-    if not session.get(f"view_auth_{uuid}"):
+    if not _has_view_auth(uuid):
         # 未認証なら /view へ戻す（パスまたは権限で認証）
         return redirect(url_for("view_upload", uuid=uuid))
 

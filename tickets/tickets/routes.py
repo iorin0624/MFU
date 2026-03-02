@@ -86,7 +86,7 @@ def _new_form_token() -> str:
     used = session.get('tickets_admin_used_tokens', set())
     if isinstance(used, list):
         used = set(used)
-    session['tickets_admin_used_tokens'] = list(used)
+    session['tickets_admin_used_tokens'] = list(used)[-20:]
     return token
 
 def _consume_form_token(token: str) -> bool:
@@ -97,7 +97,7 @@ def _consume_form_token(token: str) -> bool:
     if token in used:
         return False
     used.add(token)
-    session['tickets_admin_used_tokens'] = list(used)
+    session['tickets_admin_used_tokens'] = list(used)[-20:]
     # 直後の再送信を防ぐため、新しいトークンに更新
     session['tickets_admin_token'] = secrets.token_urlsafe(16)
     return True

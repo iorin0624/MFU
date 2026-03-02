@@ -9,7 +9,7 @@ set "USER=root"
 set "REMOTE_DIR=/mnt/mfu/app"
 
 REM Git作業フォルダ（ここがGitリポジトリであること）
-set "DEST=Y:\01マイドキュメント\GitHub\MFU"
+set "DEST=Y:\01マイドキュメント\GitHub\MFU.2"
 
 REM scp一時作業（ASCIIのみ）
 set "TMP=C:\mfu_tmp_dl"
