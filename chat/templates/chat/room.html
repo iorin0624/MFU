@@ -1058,6 +1058,14 @@
   }
 }
 
+/* Bootstrap modal が transform 配下で backdrop に負けて操作不能になる対策 */
+#chat-fulltext-modal.chat-fulltext-modal.modal {
+  z-index: 3000;
+}
+.modal-backdrop.show {
+  z-index: 2990;
+}
+
 </style>
 
 {% macro render_reaction_box(message) -%}
@@ -3389,23 +3397,27 @@
     return '';
   }
 
-  function openFulltextModal(row) {
-    const modalEl = document.getElementById('chat-fulltext-modal');
-    const metaEl = document.getElementById('chat-fulltext-meta');
-    const bodyEl = document.getElementById('chat-fulltext-body');
-    if (!modalEl || !metaEl || !bodyEl || !row) return;
+function openFulltextModal(row) {
+  const modalEl = document.getElementById('chat-fulltext-modal');
+  const metaEl = document.getElementById('chat-fulltext-meta');
+  const bodyEl = document.getElementById('chat-fulltext-body');
+  if (!modalEl || !metaEl || !bodyEl || !row) return;
 
-    const sender = row.dataset.senderName || '';
-    const createdIso = row.dataset.createdAtIso || '';
-    const full = getFullPlainText(row);
-
-    metaEl.textContent = `${sender}${createdIso ? ` / ${createdIso}` : ''}`;
-    bodyEl.textContent = full;
-
-    const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
-    bsModal.show();
+  // ✅ 重要：transform配下だとbackdropが前面になりがちなので、body直下へ逃がす
+  if (modalEl.parentElement !== document.body) {
+    document.body.appendChild(modalEl);
   }
 
+  const sender = row.dataset.senderName || '';
+  const createdIso = row.dataset.createdAtIso || '';
+  const full = getFullPlainText(row);
+
+  metaEl.textContent = `${sender}${createdIso ? ` / ${createdIso}` : ''}`;
+  bodyEl.textContent = full;
+
+  const bsModal = bootstrap.Modal.getOrCreateInstance(modalEl);
+  bsModal.show();
+}
 
   async function copyTextWithFallback(text) {
     if (!text) return;

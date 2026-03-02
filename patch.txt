@@ -1,176 +1,400 @@
-diff --git a/chat/templates/chat/_chat_nav.html b/chat/templates/chat/_chat_nav.html
-index 38bca96b041134d54eb0712c97a20be8a6af3d05..d8aac3b0187d4870d3e4e2cddbe803e683abd8cd 100644
---- a/chat/templates/chat/_chat_nav.html
-+++ b/chat/templates/chat/_chat_nav.html
-@@ -1,33 +1,32 @@
- <div class="chat-nav">
-   <a class="chat-nav-link chat-nav-link-top" href="{{ chat_top_url|default('/external-login/') }}">
-     <span class="chat-nav-icon" aria-hidden="true">←</span>
-     <span class="chat-nav-label">イベントTOP</span>
-   </a>
-   <div class="chat-nav-actions" role="navigation" aria-label="チャットナビ">
-     <button type="button" id="chat-room-picker-toggle" class="chat-nav-link chat-nav-button" aria-label="サブルーム選択" title="サブルーム">
-       <span class="chat-nav-icon" aria-hidden="true">💬</span>
-       <span class="chat-nav-label">ルーム</span>
-     </button>
-     <a class="chat-nav-link chat-notification-link" href="{{ chat_notifications_url|default('/external-login/notifications') }}" aria-label="通知履歴">
--      <span class="chat-nav-icon" aria-hidden="true">🔔</span>
--      <span id="chat-notification-badge" class="chat-notification-badge d-none" aria-live="polite"></span>
-+      <span id="chat-notification-badge" class="chat-notification-badge no-unread" aria-live="polite">🔔</span>
-       <span class="chat-nav-label">通知履歴</span>
-     </a>
-     <div class="chat-mute-wrap">
-       <button type="button" id="chat-mute-btn" class="chat-nav-link chat-nav-button" aria-label="ミュート">
-         <span class="chat-nav-icon" aria-hidden="true">🔕</span>
-         <span class="chat-nav-label">ミュート</span>
-       </button>
-       <div id="chat-mute-menu" class="chat-mute-menu d-none">
-         <button type="button" data-mute-hours="1">1時間</button>
-         <button type="button" data-mute-hours="8">8時間</button>
-         <button type="button" data-mute-hours="24">24時間</button>
-         <button type="button" data-mute-clear="1">解除</button>
-       </div>
-     </div>
-     <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
-       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
-       <span class="chat-nav-label">検索</span>
-     </button>
-   </div>
- </div>
-
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index e39cb51b3146047a1d2d95b72b0076d79d1a965c..d1c1a3aa76965c4a4c5f72ff70517c404770d324 100644
+index d1c1a3aa76965c4a4c5f72ff70517c404770d324..972e33501d43d9064e82e06039d78dc2b6103f2e 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -905,59 +905,69 @@
-   align-items: center;
-   gap: .25rem;
-   border: 1px solid #ced5ec;
-   border-radius: 999px;
-   padding: .2rem .55rem;
-   background: #fff;
-   color: #2f3f75;
-   text-decoration: none;
-   font-size: .85rem;
-   white-space: nowrap;
- }
+@@ -828,60 +828,61 @@
  
- .chat-nav-button {
-   cursor: pointer;
- }
- 
- 
- .chat-notification-link {
-   position: relative;
- }
- 
- .chat-notification-badge {
-   min-width: 1.1rem;
-   height: 1.1rem;
-   border-radius: 999px;
--  background: #dc3545;
--  color: #fff;
-   font-size: .72rem;
-   display: inline-flex;
-   align-items: center;
-   justify-content: center;
-   padding: 0 .3rem;
- }
- 
-+.chat-notification-badge.has-unread {
-+  background: #dc3545;
-+  color: #fff;
-+}
-+
-+.chat-notification-badge.no-unread {
-+  background: transparent;
-+  color: inherit;
-+  padding: 0;
-+  min-width: auto;
-+}
-+
- .chat-room-picker-modal {
-   position: fixed;
-   inset: 0;
-   z-index: 1200;
- }
- 
- .chat-room-picker-modal .backdrop {
-   position: absolute;
-   inset: 0;
-   background: rgba(0, 0, 0, .35);
- }
- 
- .chat-room-picker-modal .panel {
-   position: relative;
-   width: min(92vw, 420px);
-   margin: 12vh auto 0;
-   background: #fff;
-   border-radius: 12px;
-   padding: .75rem;
-   box-shadow: 0 16px 36px rgba(0,0,0,.2);
- }
- 
- .chat-room-picker-list {
+ .chat-page {
    display: flex;
    flex-direction: column;
-@@ -3784,54 +3794,56 @@
-     });
-     updateRoomOptionUnreadBadges();
-     updateUnreadJumpButton();
+   gap: .5rem;
+ }
+ 
+ .chat-room-main {
+   display: flex;
+   flex-direction: column;
+   gap: .5rem;
+ }
+ 
+ .chat-room-title {
+   text-align: center;
+   font-size: 0.95rem;
+   color: #667;
+   margin: 0;
+   padding: 2px 0 4px;
+   white-space: nowrap;
+   overflow: hidden;
+   text-overflow: ellipsis;
+ }
+ 
+ .chat-body-layout {
++  --chat-composer-height: 76px;
+   position: relative;
+   display: flex;
+   flex-direction: column;
+   min-height: 0;
+ }
+ 
+ .chat-bottom-jump-btn {
+   position: absolute;
+   right: 10px;
+-  bottom: 86px;
++  bottom: calc(var(--chat-composer-height) + 10px);
+   z-index: 1400;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: rgba(255, 255, 255, 0.96);
+   border-radius: 999px;
+   padding: 8px 12px;
+   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+   font-size: 0.95rem;
+   line-height: 1;
+ }
+ 
+ .chat-bottom-jump-btn:active {
+   transform: translateY(1px);
+ }
+ 
+ .chat-composer {
+   background: #fff;
+   padding-bottom: .25rem;
+ }
+ 
+ .chat-nav {
+   position: sticky;
+   top: 0;
+   z-index: 1000;
+   display: flex;
+   align-items: center;
+@@ -1032,51 +1033,51 @@
+     overscroll-behavior: contain;
    }
  
-   function updateRoomOptionUnreadBadges() {
-     if (!roomSwitch) return;
-     Array.from(roomSwitch.options).forEach((opt) => {
-       const baseLabel = String(opt.textContent || '').replace(/\s*\(未読\d+\)$/u, '');
-       const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
-       opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
-     });
+   #messages.chat-messages {
+     padding: .6rem !important;
    }
  
+   .chat-nav-label {
+     display: none;
+   }
  
+   .chat-nav-link {
+     padding: .3rem .45rem;
+   }
  
-   async function refreshNotificationBadge() {
-     try {
-       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-       const data = await res.json().catch(() => ({}));
-       if (!res.ok || !data.ok) return;
-       const unread = Number(data.unread_count || 0);
-       if (!notificationBadge) return;
-       if (unread > 0) {
-         notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
--        notificationBadge.classList.remove('d-none');
-+        notificationBadge.classList.remove('no-unread');
-+        notificationBadge.classList.add('has-unread');
-       } else {
--        notificationBadge.textContent = '';
--        notificationBadge.classList.add('d-none');
-+        notificationBadge.textContent = '🔔';
-+        notificationBadge.classList.remove('has-unread');
-+        notificationBadge.classList.add('no-unread');
+   #chat-search-input {
+     font-size: 16px;
+   }
+ 
+   .chat-nav-link-top .chat-nav-label {
+     display: inline;
+   }
+ 
+   .chat-bottom-jump-btn {
+     right: 8px;
+-    bottom: calc(78px + env(safe-area-inset-bottom));
++    bottom: calc(var(--chat-composer-height) + env(safe-area-inset-bottom) + 8px);
+   }
+ }
+ 
+ </style>
+ 
+ {% macro render_reaction_box(message) -%}
+   <div class="chat-reaction-box"
+        data-reaction-box="1"
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+     <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
+ 
+ <div class="container py-3 chat-page"
+      data-event-id="{{ event.id }}"
+      data-room-id="{{ active_room.room_id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}"
+@@ -1430,50 +1431,52 @@
+   const muteBtn = document.getElementById('chat-mute-btn');
+   const muteMenu = document.getElementById('chat-mute-menu');
+   const mentionMenu = document.getElementById('chat-mention-menu');
+   const roomCreateModal = document.getElementById('roomCreateModal');
+   const roomMembersModal = document.getElementById('roomMembersModal');
+   const threadModal = document.getElementById('threadModal');
+   const threadModalCloseBtn = document.getElementById('thread-modal-close');
+   const threadRootContainer = document.getElementById('thread-root');
+   const threadRepliesContainer = document.getElementById('thread-replies');
+   const threadForm = document.getElementById('thread-form');
+   const threadBodyInput = document.getElementById('thread-body');
+   const reactionDetailModal = document.getElementById('reactionDetailModal');
+   const reactionDetailCloseBtn = document.getElementById('reaction-detail-close');
+   const reactionDetailBody = document.getElementById('reaction-detail-body');
+   const imageInput = document.getElementById('chat-image-file');
+   const imageBtn = document.getElementById('chat-image-btn');
+   const sendBtn = document.getElementById('chat-send-btn');
+   const replyPreview = document.getElementById('reply-preview');
+   const replySender = document.getElementById('reply-sender');
+   const replyText = document.getElementById('reply-text');
+   const replyToInput = document.getElementById('reply-to-id');
+   const editTargetInput = document.getElementById('edit-target-id');
+   const replyCancelBtn = document.getElementById('reply-cancel');
+   const typingIndicator = document.getElementById('typing-indicator');
+   const bottomJumpBtn = document.getElementById('chat-bottom-jump-btn');
++  const bodyLayout = document.querySelector('.chat-body-layout');
++  const composer = document.querySelector('.chat-composer');
+   const searchInput = document.getElementById('chat-search-input');
+   const searchToggleBtn = document.getElementById('chat-search-toggle');
+   const searchRow = document.getElementById('chat-search-row');
+   const searchBtn = document.getElementById('chat-search-btn');
+   const searchCloseBtn = document.getElementById('chat-search-close');
+   const searchPanel = document.getElementById('chat-search-panel');
+   const imageViewer = document.getElementById('chatImageViewer');
+   const imageViewerImg = document.getElementById('chatImageViewerImg');
+   const imageViewerShareBtn = document.getElementById('chatImageViewerShare');
+   const imageViewerCloseBtn = document.getElementById('chatImageViewerClose');
+   const imageViewerPrevBtn = document.getElementById('chatImageViewerPrev');
+   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
+   const ctxMenu = document.getElementById('chatCtxMenu');
+   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
+   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
+   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
+ 
+   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     year: 'numeric',
+     month: 'numeric',
+     day: 'numeric',
+     weekday: 'short',
+   });
+   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+@@ -1861,50 +1864,52 @@
+     if (e.target === imageViewer) closeImageViewer();
+   });
+   document.addEventListener('keydown', (e) => {
+     if (e.key === 'Escape') closeImageViewer();
+     if (e.key === 'Escape') closeContextMenu();
+     if (e.key === 'Escape') closeThreadModal();
+     if (e.key === 'ArrowLeft') moveViewerIndex(-1);
+     if (e.key === 'ArrowRight') moveViewerIndex(1);
+   });
+   msgBox.addEventListener('scroll', () => {
+     closeContextMenu();
+     if (msgBox.scrollTop <= 80) loadOlderMessages();
+     if (isNearBottom(msgBox)) {
+       hideJumpBtn();
+     } else {
+       showJumpBtn();
+     }
+   }, { passive: true });
+   bottomJumpBtn?.addEventListener('click', () => {
+     scrollToBottom();
+     hideJumpBtn();
+   });
+   window.addEventListener('scroll', () => {
+     closeContextMenu();
+   }, { passive: true });
++  window.addEventListener('resize', updateBottomJumpOffset, { passive: true });
++  window.visualViewport?.addEventListener('resize', updateBottomJumpOffset, { passive: true });
+ 
+   function setVh() {
+     const vv = window.visualViewport;
+     const h = (vv && vv.height) ? vv.height : window.innerHeight;
+     const top = (vv && typeof vv.offsetTop === 'number') ? vv.offsetTop : 0;
+ 
+     document.documentElement.style.setProperty('--vh', `${h * 0.01}px`);
+     document.documentElement.style.setProperty('--vvh', `${h}px`);
+     document.documentElement.style.setProperty('--vvtop', `${top}px`);
+   }
+ 
+   function isNearBottom(el, thresholdPx = 120) {
+     if (!el) return true;
+     return (el.scrollHeight - el.scrollTop - el.clientHeight) <= thresholdPx;
+   }
+ 
+   // キーボードの開閉時は「直前に最下部付近にいた場合のみ」追従する
+   function keepBottomIfNeeded() {
+     if (!msgBox) return;
+     if (!isNearBottom(msgBox)) return;
+     msgBox.scrollTop = msgBox.scrollHeight;
+   }
+ 
+   let composerFocused = false;
+   let focusScrollTimer = null;
+@@ -2083,50 +2088,57 @@
+       if (!res.ok || !data.ok) {
+         throw new Error(data.error || '画像送信に失敗しました');
        }
-     } catch (_e) {
-       // noop
+       bodyInput.value = '';
+       updateAutoGrow();
+       clearReplyState();
+     } catch (err) {
+       alert(err?.message || '画像送信に失敗しました');
+     } finally {
+       imageInput.value = '';
+       setSendingState(false);
+     }
+   });
+ 
+   function updateAutoGrow(targetInput = bodyInput) {
+     if (!targetInput) return;
+     const cs = window.getComputedStyle(targetInput);
+     const lineHeight = parseFloat(cs.lineHeight) || 20;
+     const padding = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+     const maxHeightPx = lineHeight * maxInputLines + padding;
+ 
+     targetInput.style.height = 'auto';
+     const nextHeight = Math.min(targetInput.scrollHeight, maxHeightPx);
+     targetInput.style.height = `${nextHeight}px`;
+     targetInput.style.overflowY = targetInput.scrollHeight > maxHeightPx ? 'auto' : 'hidden';
++    updateBottomJumpOffset();
++  }
++
++  function updateBottomJumpOffset() {
++    if (!bodyLayout || !composer) return;
++    const composerHeight = Math.ceil(composer.getBoundingClientRect().height || 0);
++    bodyLayout.style.setProperty('--chat-composer-height', `${Math.max(composerHeight, 76)}px`);
+   }
+ 
+   bodyInput?.addEventListener('keydown', (e) => {
+     if (isMobile) return;
+     if (e.key === 'Enter' && e.altKey === true) {
+       e.preventDefault();
+       submitChatMessage();
+     }
+   });
+ 
+   form?.addEventListener('submit', (e) => {
+     e.preventDefault();
+     submitChatMessage();
+   });
+ 
+   function submitChatMessage() {
+     if (!bodyInput || !sendBtn || sendBtn.disabled) return;
+     if (state.editTargetMessageId) {
+       submitEditMessage();
+       return;
+     }
+     setSendingState(true);
+     sendTypingStop();
+     socket.emit('chat_send', {
+       event_id: eventId,
+@@ -2863,61 +2875,63 @@
+ 
+     const divider = document.createElement('div');
+     divider.className = 'chat-date-divider';
+     divider.dataset.dateLabel = dateLabel;
+ 
+     const label = document.createElement('span');
+     label.textContent = dateLabel;
+     divider.appendChild(label);
+     if (typingIndicator && typingIndicator.parentElement === msgBox) {
+       msgBox.insertBefore(divider, typingIndicator);
+     } else {
+       msgBox.appendChild(divider);
      }
    }
  
-   function startNotificationBadgePolling() {
-     if (state.notificationPollTimer) return;
-     state.notificationPollTimer = setInterval(() => {
-       refreshNotificationBadge();
-     }, 15000);
+   function setReplyState(messageId, senderName, plainText, bubbleEl) {
+     clearEditState();
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+     }
+     state.replyToId = messageId;
+     replyToInput.value = messageId;
+     replySender.textContent = senderName;
+     replyText.textContent = makeExcerpt(plainText || '');
+     replyPreview.classList.remove('d-none');
++    updateBottomJumpOffset();
+     state.selectedBubble = bubbleEl;
+     state.selectedBubble.classList.add('chat-selected-reply-target');
+     if (composerFocused) scheduleFocusScroll();
    }
  
-   function stopNotificationBadgePolling() {
-     if (!state.notificationPollTimer) return;
-     clearInterval(state.notificationPollTimer);
-     state.notificationPollTimer = null;
+   function clearReplyState() {
+     state.replyToId = null;
+     replyToInput.value = '';
+     replySender.textContent = '';
+     replyText.textContent = '';
+     replyPreview.classList.add('d-none');
++    updateBottomJumpOffset();
+     if (state.selectedBubble) {
+       state.selectedBubble.classList.remove('chat-selected-reply-target');
+       state.selectedBubble = null;
+     }
+     if (composerFocused) scheduleFocusScroll();
    }
  
-   function updateUnreadJumpButton() {
-     const info = state.unreadByRoomId.get(roomId) || {};
-     const firstUnreadId = Number(info.first_unread_id || 0);
-     if (!unreadJumpBtn) return;
-     if (!firstUnreadId) {
-       unreadJumpBtn.classList.add('d-none');
+   function jumpToMessage(messageId) {
+     if (!messageId) return;
+     const target = document.getElementById(`msg-${messageId}`);
+     if (!target) {
+       alert('元メッセージが見つかりません');
+       return;
+     }
+     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+     target.classList.add('chat-jump-highlight');
+     window.setTimeout(() => target.classList.remove('chat-jump-highlight'), 1200);
+   }
+ 
+   function makeExcerpt(value) {
+     const text = String(value || '').replace(/\s+/g, ' ').trim();
+     return text.length > 80 ? `${text.slice(0, 79)}…` : text;
+   }
+ 
+   function isMessageInOpenThread(messageId) {
+@@ -3581,50 +3595,51 @@
+       await handleDeleteMessage(row, messageId);
+     }
+   }
+ 
+   function setEditState(messageId, plainText) {
+     clearReplyState();
+     state.editTargetMessageId = messageId;
+     editTargetInput.value = String(messageId);
+     if (replySender) replySender.textContent = '編集中';
+     if (replyText) replyText.textContent = makeExcerpt(plainText || '');
+     replyPreview.classList.remove('d-none');
+     if (bodyInput) {
+       bodyInput.value = plainText || '';
+       updateAutoGrow();
+       bodyInput.focus();
+     }
+   }
+ 
+   function clearEditState() {
+     state.editTargetMessageId = null;
+     editTargetInput.value = '';
+     if (replySender?.textContent === '編集中') {
+       replySender.textContent = '';
+       replyText.textContent = '';
+       replyPreview.classList.add('d-none');
++      updateBottomJumpOffset();
+     }
+   }
+ 
+   function formatDateLabel(date) {
+     const parts = fmtDate.formatToParts(date);
+     const get = (type) => parts.find((p) => p.type === type)?.value || '';
+     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
+   }
+ 
+   function formatTimeLabel(date) {
+     return fmtTime.format(date);
+   }
+ 
+   function formatDateTimeLabel(isoText) {
+     if (!isoText) return '';
+     const date = new Date(isoText);
+     if (Number.isNaN(date.getTime())) return '';
+     return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
+   }
+ 
+   function applyReadSnapshot(states) {
+     state.readStateByActor.clear();
+     for (const readState of states || []) {
+       applyReadUpdate(readState);
+     }

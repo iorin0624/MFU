@@ -24,12 +24,21 @@
   </div>
 </nav>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     const badge = document.getElementById('navNotifBadge');
     if (!badge) return;
 
-    const hideBadge = () => {
+    let pollTimer = null;
+
+    const applyCount = (rawCount) => {
+      const count = Number(rawCount ?? 0);
+      if (Number.isFinite(count) && count > 0) {
+        badge.textContent = String(Math.min(Math.floor(count), 99));
+        badge.classList.remove('d-none');
+        return;
+      }
       badge.textContent = '0';
       badge.classList.add('d-none');
     };
@@ -38,27 +47,47 @@
       try {
         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
         if (!res.ok) {
-          hideBadge();
+          applyCount(0);
           return;
         }
         const data = await res.json();
-        const count = Number(data?.count ?? 0);
-        if (Number.isFinite(count) && count > 0) {
-          badge.textContent = String(Math.min(Math.floor(count), 99));
-          badge.classList.remove('d-none');
-          return;
-        }
+        applyCount(data?.count ?? 0);
       } catch (_e) {
-        // noop
+        applyCount(0);
       }
-      hideBadge();
     };
+
+    const startPolling = () => {
+      if (pollTimer !== null) return;
+      pollTimer = window.setInterval(updateBadge, 30000);
+    };
+
+    const stopPolling = () => {
+      if (pollTimer === null) return;
+      window.clearInterval(pollTimer);
+      pollTimer = null;
+    };
+
+    if (window.io) {
+      const socket = window.io();
+      socket.on('connect', () => {
+        stopPolling();
+        updateBadge();
+      });
+      socket.on('disconnect', () => {
+        startPolling();
+      });
+      socket.on('notif_unread', (data) => {
+        applyCount(data?.count ?? 0);
+      });
+    } else {
+      startPolling();
+    }
 
     updateBadge();
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) updateBadge();
     });
     window.addEventListener('pageshow', updateBadge);
-    window.setInterval(updateBadge, 30000);
   });
 </script>
