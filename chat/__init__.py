@@ -703,11 +703,30 @@ def _ensure_chat_rooms_schema() -> bool:
               updated_at DATETIME NOT NULL,
               updated_by_actor_type VARCHAR(16) NOT NULL,
               updated_by_actor_id VARCHAR(64) NOT NULL,
-              UNIQUE KEY uq_chat_rooms_event_main (event_id, is_main),
+              KEY idx_chat_rooms_event_main (event_id, is_main),
               KEY idx_chat_rooms_event (event_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
             cur.execute(sql)
+
+            # 旧スキーマの UNIQUE(event_id, is_main) はサブルーム作成を阻害するため通常INDEXへ置換する
+            cur.execute("SHOW INDEX FROM chat_rooms WHERE Key_name='uq_chat_rooms_event_main'")
+            legacy_unique_indexes = [row for row in (cur.fetchall() or []) if int(row[1] or 1) == 0]
+            if legacy_unique_indexes:
+                migrate_sql = "ALTER TABLE chat_rooms DROP INDEX uq_chat_rooms_event_main"
+                try:
+                    cur.execute(migrate_sql)
+                except Exception:
+                    _log_auto_migration_error("_ensure_chat_rooms_schema", migrate_sql)
+
+            cur.execute("SHOW INDEX FROM chat_rooms WHERE Key_name='idx_chat_rooms_event_main'")
+            if not (cur.fetchall() or []):
+                migrate_sql = "ALTER TABLE chat_rooms ADD KEY idx_chat_rooms_event_main (event_id, is_main)"
+                try:
+                    cur.execute(migrate_sql)
+                except Exception:
+                    _log_auto_migration_error("_ensure_chat_rooms_schema", migrate_sql)
+
             db.commit()
             CHAT_ROOMS_SCHEMA_READY = True
             return True
@@ -1712,9 +1731,43 @@ def _get_event(event_id: int) -> dict[str, Any] | None:
         db.close()
 
 
+
+
+def _normalize_legacy_image_thread_replies(event_id: int, room_id: str) -> None:
+    """旧実装で誤って thread_root_id が立った画像リプライを通常返信へ補正する。"""
+    if not _ensure_chat_thread_schema() or not _ensure_chat_image_schema():
+        return
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE chat_messages
+               SET thread_root_id = NULL
+             WHERE event_id = %s
+               AND room_id = %s
+               AND thread_root_id IS NOT NULL
+               AND reply_to_message_id IS NOT NULL
+               AND COALESCE(image_file, '') <> ''
+            """,
+            (event_id, room_id),
+        )
+        if cur.rowcount:
+            db.commit()
+            current_app.logger.info(
+                "chat legacy normalize: reset thread_root_id for image replies event_id=%s room_id=%s count=%s",
+                event_id,
+                room_id,
+                cur.rowcount,
+            )
+    finally:
+        cur.close()
+        db.close()
 def _load_messages(event_id: int, room_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     _ensure_chat_messages_room_schema()
     effective_room_id = room_id or _ensure_main_room(event_id)
+    _normalize_legacy_image_thread_replies(event_id, effective_room_id)
     has_reply_schema = _ensure_chat_reply_schema()
     has_image_schema = _ensure_chat_image_schema()
     has_delete_schema = _ensure_chat_delete_schema()
@@ -3114,7 +3167,19 @@ def upload_image(event_id: int):
     try:
         body = _validate_caption_optional(request.form.get("body") or "")
         reply_to_message_id = _validate_reply_to_message_id(event_id, effective_room_id, request.form.get("reply_to_message_id"))
-        thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
+        thread_root_id = None
+        raw_thread_root_id = request.form.get("thread_root_id")
+        if raw_thread_root_id not in (None, "", 0, "0"):
+            requested_thread_root_id = int(raw_thread_root_id)
+            if requested_thread_root_id <= 0:
+                raise ValueError("不正なスレッドIDです")
+            if not reply_to_message_id:
+                raise ValueError("スレッド返信には返信先が必要です")
+
+            resolved_thread_root_id = _resolve_thread_root_id(event_id, effective_room_id, reply_to_message_id)
+            if resolved_thread_root_id != requested_thread_root_id:
+                raise ValueError("スレッドIDが一致しません")
+            thread_root_id = requested_thread_root_id
     except ValueError as exc:
         status = 413 if "上限" in str(exc) else 400
         return jsonify({"ok": False, "error": str(exc)}), status
@@ -3744,8 +3809,22 @@ def api_rooms(event_id: int):
     return jsonify({"ok": True, "rooms": rooms})
 
 
+def _allocate_subroom_is_main_value(cur: Any, event_id: int) -> int:
+    """Legacy UNIQUE(event_id, is_main) が残っていてもサブルームを作れる値を割り当てる。"""
+    cur.execute("SELECT is_main FROM chat_rooms WHERE event_id=%s", (event_id,))
+    used = {int((row[0] if isinstance(row, tuple) else row.get("is_main")) or 0) for row in (cur.fetchall() or [])}
+
+    # 互換性のためまず 0 を優先し、埋まっていれば TINYINT 範囲で空きを探す
+    candidates = [0] + [v for v in range(-128, 128) if v not in {0, 1}]
+    for value in candidates:
+        if value not in used:
+            return value
+    raise ValueError("サブルーム作成上限に達しました")
+
+
 @chat_bp.post("/api/events/<int:event_id>/rooms/create")
 def api_rooms_create(event_id: int):
+    global CHAT_ROOMS_SCHEMA_READY
     actor = get_chat_actor()
     if not actor or not _can_manage_rooms(event_id, actor):
         return jsonify({"ok": False}), 403
@@ -3764,14 +3843,30 @@ def api_rooms_create(event_id: int):
     db = get_db()
     cur = db.cursor()
     try:
-        cur.execute(
-            """
-            INSERT INTO chat_rooms (
-              room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
-            ) VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s)
-            """,
-            (room_id, event_id, room_name, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
-        )
+        subroom_is_main = 0
+        for attempt in range(3):
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO chat_rooms (
+                      room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
+                    ) VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s)
+                    """,
+                    (room_id, event_id, room_name, subroom_is_main, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
+                )
+                break
+            except Exception as exc:
+                message = str(exc)
+                if "uq_chat_rooms_event_main" in message or "Duplicate entry" in message:
+                    db.rollback()
+                    CHAT_ROOMS_SCHEMA_READY = None
+                    _ensure_chat_rooms_schema()
+                    subroom_is_main = _allocate_subroom_is_main_value(cur, event_id)
+                    continue
+                raise
+        else:
+            return jsonify({"ok": False, "error": "サブルーム作成に失敗しました"}), 500
+
         for key in actor_keys:
             parsed = _parse_actor_key(str(key))
             if not parsed:
@@ -3950,6 +4045,8 @@ def api_older_messages(event_id: int):
     allowed, effective_room_id, _ = _can_access_room(event_id, room_id, actor)
     if not allowed or not effective_room_id:
         return jsonify({"ok": False}), 403
+
+    _normalize_legacy_image_thread_replies(event_id, effective_room_id)
 
     before_id = int(request.args.get("before_id") or 0)
     if before_id <= 0:

@@ -1,743 +1,131 @@
-diff --git a/chat/templates/chat/_chat_nav.html b/chat/templates/chat/_chat_nav.html
-index f825c221bc8daf90e33e4b3e39574ad527a3071e..4e7a2442ba3e9efe073739848d750e983243d5be 100644
---- a/chat/templates/chat/_chat_nav.html
-+++ b/chat/templates/chat/_chat_nav.html
-@@ -17,97 +17,100 @@
-       <span id="chatNavNotifBadge"
-             class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-       <span class="chat-nav-label">通知履歴</span>
-     </a>
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 65b9ed5b325a61045ca39360c8f957446f3e1987..a676a474d55c1643560e351b169a22e9448e3712 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -3787,96 +3787,108 @@ def search_messages(event_id: int):
  
-     <div class="chat-mute-wrap">
-       <button type="button" id="chat-mute-btn" class="chat-nav-link chat-nav-button" aria-label="ミュート">
-         <span class="chat-nav-icon" aria-hidden="true">🔕</span>
-         <span class="chat-nav-label">ミュート</span>
-       </button>
-       <div id="chat-mute-menu" class="chat-mute-menu d-none">
-         <button type="button" data-mute-hours="1">1時間</button>
-         <button type="button" data-mute-hours="8">8時間</button>
-         <button type="button" data-mute-hours="24">24時間</button>
-         <button type="button" data-mute-clear="1">解除</button>
-       </div>
-     </div>
+ def _parse_actor_key(value: str) -> tuple[str, str] | None:
+     raw = (value or "").strip()
+     if ":" not in raw:
+         return None
+     actor_type, actor_id = raw.split(":", 1)
+     actor_type = actor_type.strip()
+     actor_id = actor_id.strip()
+     if not actor_type or not actor_id:
+         return None
+     return actor_type, actor_id
  
-     <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
-       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
-       <span class="chat-nav-label">検索</span>
-     </button>
-   </div>
- </div>
  
--<script src="/socket.io/socket.io.js"></script>
--<script>
--  if (!window.io) {
--    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
--  }
--</script>
-+<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
-   document.addEventListener('DOMContentLoaded', () => {
-     const badge = document.getElementById('chatNavNotifBadge');
-     if (!badge) return;
+ @chat_bp.get("/api/events/<int:event_id>/rooms")
+ def api_rooms(event_id: int):
+     actor = get_chat_actor()
+     if not actor or not _can_access_event(event_id, actor):
+         return jsonify({"ok": False}), 403
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     rooms = _list_accessible_rooms(event_id, actor)
+     return jsonify({"ok": True, "rooms": rooms})
  
-     let pollTimer = null;
-+    let pollingDisabled = false;
  
-     const applyCount = (rawCount) => {
-       const count = Number(rawCount ?? 0);
-       if (Number.isFinite(count) && count > 0) {
-         badge.textContent = String(Math.min(Math.floor(count), 99));
-         badge.classList.remove('d-none');
-         return;
-       }
-       badge.textContent = '0';
-       badge.classList.add('d-none');
-     };
- 
-     const updateBadge = async () => {
-+      if (pollingDisabled) return;
-       try {
-         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
-+        if (res.status === 401) {
-+          pollingDisabled = true;
-+          stopPolling();
-+          applyCount(0);
-+          return;
-+        }
-         if (!res.ok) {
-           applyCount(0);
-           return;
-         }
-         const data = await res.json();
-         applyCount(data?.count ?? 0);
-       } catch (_e) {
-         applyCount(0);
-       }
-     };
- 
-     const startPolling = () => {
-       if (pollTimer !== null) return;
-       pollTimer = window.setInterval(updateBadge, 30000);
-     };
- 
-     const stopPolling = () => {
-       if (pollTimer === null) return;
-       window.clearInterval(pollTimer);
-       pollTimer = null;
-     };
- 
-     if (window.io) {
--      const socket = window.io();
-+      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-       socket.on('connect', () => {
-         stopPolling();
-         updateBadge();
-       });
-       socket.on('disconnect', () => {
-         startPolling();
-       });
-       socket.on('notif_unread', (data) => {
-         applyCount(data?.count ?? 0);
-       });
-     } else {
-       startPolling();
-     }
- 
-     updateBadge();
-     document.addEventListener('visibilitychange', () => {
-       if (!document.hidden) updateBadge();
-     });
-     window.addEventListener('pageshow', updateBadge);
-   });
- </script>
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 69860437beb0263d1be153dd12b415fc3a7fd3bb..595d9379943691df1263da0ae40482ab7ed05c21 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -1379,61 +1379,60 @@
-       <div class="d-flex gap-2 mb-2">
-         <input id="room-members-search" type="text" class="form-control form-control-sm" placeholder="候補検索（名前 / actor_key）">
-         <button type="button" id="room-members-select-all" class="btn btn-sm btn-outline-secondary">全選択</button>
-         <button type="button" id="room-members-unselect-all" class="btn btn-sm btn-outline-secondary">全解除</button>
-       </div>
-       <div class="small mb-1">選択中 <span id="room-members-count">0</span>名</div>
-       <div id="room-members-candidates" class="room-member-candidate-list"></div>
-       <div class="d-flex justify-content-end gap-2 mt-3">
-         <button type="button" id="room-members-cancel" class="btn btn-sm btn-light">キャンセル</button>
-         <button type="button" id="room-members-submit" class="btn btn-sm btn-primary">保存</button>
-       </div>
-     </div>
-   </div>
- 
-   <div class="mt-3 d-flex gap-2 align-items-center">
-     {% if can_broadcast %}
-     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
-       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
-       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
-     </form>
-     {% endif %}
-   </div>
- </div>
- 
--<script src="/socket.io/socket.io.js"></script>
-+<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
--  if (!window.io) {
--    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
--  }
--</script>
--<script>
--(() => {
-+window.addEventListener('DOMContentLoaded', () => {
-   const root = document.querySelector('[data-event-id]');
-   if (!root) return;
- 
-+  if (!window.io) {
-+    return;
-+  }
++def _allocate_subroom_is_main_value(cur: Any, event_id: int) -> int:
++    """Legacy UNIQUE(event_id, is_main) が残っていてもサブルームを作れる値を割り当てる。"""
++    cur.execute("SELECT is_main FROM chat_rooms WHERE event_id=%s", (event_id,))
++    used = {int((row[0] if isinstance(row, tuple) else row.get("is_main")) or 0) for row in (cur.fetchall() or [])}
 +
-   const eventId = Number(root.dataset.eventId);
-   const roomId = root.dataset.roomId || "";
-   const csrfToken = root.dataset.csrf;
-   const vapidKey = root.dataset.vapid;
-   const meId = root.dataset.me || '';
-   const myDisplayName = root.dataset.displayName || '';
-   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
-   const isAdmin = root.dataset.isAdmin === '1';
-   const isMobile = window.matchMedia('(hover: none)').matches;
-   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
-   const maxUploadImages = 6;
-   const maxUploadImageBytes = 20 * 1024 * 1024;
-   const DOUBLE_TAP_INTERVAL_MS = 280;
-   const DOUBLE_TAP_MAX_DISTANCE = 12;
-   const DOUBLE_TAP_MOVE_CANCEL = 8;
- 
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
-   const maxInputLines = 6;
-   const pushBtn = document.getElementById('enable-push');
-   const roomSwitch = document.getElementById('chat-room-switch');
-   const roomPickerToggle = document.getElementById('chat-room-picker-toggle');
-   const roomPickerModal = document.getElementById('chatRoomPickerModal');
-   const notificationBadge = document.getElementById('chat-notification-badge');
-@@ -1530,51 +1529,51 @@
-     threadRootId: null,
-     loadingOlder: false,
-     hasMoreOlder: true,
-     messageIds: new Set(),
-     unreadByRoomId: new Map(),
-     unreadRefreshTimer: null,
-     notificationPollTimer: null,
-     muteUntilByRoomId: new Map(),
-     mentionCandidates: [],
-     mentionActiveIndex: 0,
-     mentionRange: null,
-     mentionDebounceTimer: null,
-   };
- 
-   if (ctxReactions && ctxReactions.childElementCount === 0) {
-     reactionEmojis.forEach((emoji) => {
-       const btn = document.createElement('button');
-       btn.type = 'button';
-       btn.className = 'chat-reaction-emoji';
-       btn.dataset.emoji = emoji;
-       btn.textContent = emoji;
-       ctxReactions.appendChild(btn);
-     });
-   }
- 
--  const socket = io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-+  const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-   socket.emit('chat_join', { event_id: eventId, room_id: roomId });
- 
-   initReactionUis();
-   syncExistingMessageIds();
-   scheduleUnreadRefresh();
-   refreshNotificationBadge();
-   startNotificationBadgePolling();
-   refreshMuteButton();
-   scrollToLatestMessage();
-   refreshReadIndicators();
-   window.addEventListener('load', () => {
-     scrollToLatestMessage();
-     sendSeenForLatestMessage();
-   }, { once: true });
- 
-   updateAutoGrow();
-   bodyInput?.addEventListener('input', () => {
-     updateAutoGrow();
-     queueTypingStart();
-     handleMentionInput();
-   });
-   bodyInput?.addEventListener('keydown', handleMentionKeydown);
- 
-   socket.on('chat_message', (msg) => {
-     const wasNearBottom = isNearBottom(msgBox);
-@@ -3805,53 +3804,62 @@ function openFulltextModal(row) {
-     const data = await res.json().catch(() => ({}));
-     if (!res.ok || !data.ok) return;
-     state.unreadByRoomId.clear();
-     (data.rooms || []).forEach((item) => {
-       if (!item?.room_id) return;
-       state.unreadByRoomId.set(String(item.room_id), item);
-     });
-     updateRoomOptionUnreadBadges();
-     updateUnreadJumpButton();
-   }
- 
-   function updateRoomOptionUnreadBadges() {
-     if (!roomSwitch) return;
-     Array.from(roomSwitch.options).forEach((opt) => {
-       const baseLabel = String(opt.textContent || '').replace(/\s*\(未読\d+\)$/u, '');
-       const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
-       opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
-     });
-   }
- 
- 
- 
-   async function refreshNotificationBadge() {
-     try {
-       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-+      if (res.status === 401) {
-+        stopNotificationBadgePolling();
-+        if (notificationBadge) {
-+          notificationBadge.textContent = '🔔';
-+          notificationBadge.classList.remove('has-unread');
-+          notificationBadge.classList.add('no-unread');
-+        }
-+        return;
-+      }
-       const data = await res.json().catch(() => ({}));
--      if (!res.ok || !data.ok) return;
--      const unread = Number(data.unread_count || 0);
-+      if (!res.ok) return;
-+      const unread = Number(data.count || 0);
-       if (!notificationBadge) return;
-       if (unread > 0) {
-         notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
-         notificationBadge.classList.remove('no-unread');
-         notificationBadge.classList.add('has-unread');
-       } else {
-         notificationBadge.textContent = '🔔';
-         notificationBadge.classList.remove('has-unread');
-         notificationBadge.classList.add('no-unread');
-       }
-     } catch (_e) {
-       // noop
-     }
-   }
- 
-   function startNotificationBadgePolling() {
-     if (state.notificationPollTimer) return;
-     state.notificationPollTimer = setInterval(() => {
-       refreshNotificationBadge();
-     }, 15000);
-   }
- 
-   function stopNotificationBadgePolling() {
-     if (!state.notificationPollTimer) return;
-     clearInterval(state.notificationPollTimer);
-@@ -4190,28 +4198,28 @@ function openFulltextModal(row) {
-     const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members`, { credentials: 'same-origin' });
-     const data = await res.json().catch(() => ({}));
-     if (res.status === 401 || res.status === 403) { alert('権限がありません'); return; }
-     if (!data.ok) { alert(data.error || '現在メンバー取得に失敗しました'); return; }
-     roomUi.editSelected.clear();
-     (data.members || []).forEach((m) => { if (m?.actor_key) roomUi.editSelected.add(m.actor_key); });
-     renderCandidateList('room-members-candidates', roomUi.editSelected, '');
-     openModal(roomMembersModal);
-   });
- 
-   document.getElementById('room-members-submit')?.addEventListener('click', async (e) => {
-     const btn = e.currentTarget;
-     btn.disabled = true;
-     const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members/set`, {
-       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-       body: JSON.stringify({ csrf_token: csrfToken, member_actor_keys: Array.from(roomUi.editSelected) }),
-     });
-     const data = await res.json().catch(() => ({}));
-     btn.disabled = false;
-     if (res.status === 401 || res.status === 403) { alert('権限がありません'); closeModal(roomMembersModal); return; }
-     if (!data.ok) { alert(data.error || 'メンバー更新に失敗しました'); return; }
-     closeModal(roomMembersModal);
-     alert('メンバーを更新しました');
-   });
- 
--})();
-+});
- </script>
- {% endblock %}
-diff --git a/docs/chat_apache_socketio.conf b/docs/chat_apache_socketio.conf
-index f3b7206957a7b48fc3850c4c421ed6bd0061e276..e695c0a30c5cc69938cf79560b5129bbec958713 100644
---- a/docs/chat_apache_socketio.conf
-+++ b/docs/chat_apache_socketio.conf
-@@ -1,18 +1,20 @@
- # 必要モジュール
- # a2enmod proxy proxy_http proxy_wstunnel rewrite headers
- 
- # 既存 VirtualHost(*:443) の ProxyPass 群より前段で Socket.IO を優先ルーティング
- ProxyPreserveHost On
- RequestHeader set X-Forwarded-Proto "https"
- 
--# Socket.IO (WebSocket)
--ProxyPass        /socket.io/  ws://127.0.0.1:8000/socket.io/
--ProxyPassReverse /socket.io/  ws://127.0.0.1:8000/socket.io/
-+# Socket.IO (WebSocket Upgrade を優先)
-+RewriteEngine On
-+RewriteCond %{REQUEST_URI} ^/socket\.io/ [NC]
-+RewriteCond %{HTTP:Upgrade} =websocket [NC]
-+RewriteRule ^/socket\.io/(.*)$ ws://127.0.0.1:8080/socket.io/$1 [P,L]
- 
--# Socket.IO fallback polling
--ProxyPass        /socket.io/  http://127.0.0.1:8000/socket.io/
--ProxyPassReverse /socket.io/  http://127.0.0.1:8000/socket.io/
-+# Socket.IO fallback polling (HTTP)
-+ProxyPass        /socket.io/  http://127.0.0.1:8080/socket.io/
-+ProxyPassReverse /socket.io/  http://127.0.0.1:8080/socket.io/
- 
- # Flask 本体
--ProxyPass        /  http://127.0.0.1:8000/
--ProxyPassReverse /  http://127.0.0.1:8000/
-+ProxyPass        /  http://127.0.0.1:8080/
-+ProxyPassReverse /  http://127.0.0.1:8080/
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 022e213a8f4469cb6f6c90db333bc90b55d9cbc6..7fe331b96afa537f4513428c4e8fb380d4c04459 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -253,55 +253,58 @@ def create_notification_external(
-             (kind or "").strip() or "general",
-             dedup,
-             inserted,
-             existing["id"] if existing else None,
-             deleted_old_read,
-         )
-         return inserted
-     except Exception:
-         current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
-         return False
++    # 互換性のためまず 0 を優先し、埋まっていれば TINYINT 範囲で空きを探す
++    candidates = [0] + [v for v in range(-128, 128) if v not in {0, 1}]
++    for value in candidates:
++        if value not in used:
++            return value
++    raise ValueError("サブルーム作成上限に達しました")
++
++
+ @chat_bp.post("/api/events/<int:event_id>/rooms/create")
+ def api_rooms_create(event_id: int):
+     global CHAT_ROOMS_SCHEMA_READY
+     actor = get_chat_actor()
+     if not actor or not _can_manage_rooms(event_id, actor):
+         return jsonify({"ok": False}), 403
+     payload = request.get_json(silent=True) or {}
+     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+     room_name = str(payload.get("room_name") or "").strip()
+     if not (1 <= len(room_name) <= 80):
+         return jsonify({"ok": False, "error": "room_nameは1〜80文字です"}), 400
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     room_id = str(uuid.uuid4())
+     now = datetime.utcnow()
+     actor_keys = set(payload.get("member_actor_keys") or [])
+     actor_keys.add(f"{actor['actor_type']}:{actor['actor_id']}")
+     db = get_db()
+     cur = db.cursor()
+     try:
+-        try:
+-            cur.execute(
+-                """
+-                INSERT INTO chat_rooms (
+-                  room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
+-                ) VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s)
+-                """,
+-                (room_id, event_id, room_name, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
+-            )
+-        except Exception as exc:
+-            message = str(exc)
+-            if "uq_chat_rooms_event_main" in message or "Duplicate entry" in message:
+-                db.rollback()
+-                CHAT_ROOMS_SCHEMA_READY = None
+-                _ensure_chat_rooms_schema()
++        subroom_is_main = 0
++        for attempt in range(3):
++            try:
+                 cur.execute(
+                     """
+                     INSERT INTO chat_rooms (
+                       room_id,event_id,room_name,is_main,is_archived,created_at,created_by_actor_type,created_by_actor_id,updated_at,updated_by_actor_type,updated_by_actor_id
+-                    ) VALUES (%s,%s,%s,0,0,%s,%s,%s,%s,%s,%s)
++                    ) VALUES (%s,%s,%s,%s,0,%s,%s,%s,%s,%s,%s)
+                     """,
+-                    (room_id, event_id, room_name, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
++                    (room_id, event_id, room_name, subroom_is_main, now, actor["actor_type"], actor["actor_id"], now, actor["actor_type"], actor["actor_id"]),
+                 )
+-            else:
++                break
++            except Exception as exc:
++                message = str(exc)
++                if "uq_chat_rooms_event_main" in message or "Duplicate entry" in message:
++                    db.rollback()
++                    CHAT_ROOMS_SCHEMA_READY = None
++                    _ensure_chat_rooms_schema()
++                    subroom_is_main = _allocate_subroom_is_main_value(cur, event_id)
++                    continue
+                 raise
++        else:
++            return jsonify({"ok": False, "error": "サブルーム作成に失敗しました"}), 500
++
+         for key in actor_keys:
+             parsed = _parse_actor_key(str(key))
+             if not parsed:
+                 continue
+             at, aid = parsed
+             cur.execute(
+                 """
+                 INSERT IGNORE INTO chat_room_members (room_id,actor_type,actor_id,added_at,added_by_actor_type,added_by_actor_id)
+                 VALUES (%s,%s,%s,%s,%s,%s)
+                 """,
+                 (room_id, at, aid, now, actor["actor_type"], actor["actor_id"]),
+             )
+         db.commit()
      finally:
          cur.close()
          db.close()
+     return jsonify({"ok": True, "room_id": room_id})
  
  
- @bp.get("/notifications")
- def notifications_page():
-     guard = _require_ext_login()
-     if guard:
-         return guard
-     return render_template("notifications.html")
- 
- 
- @bp.get("/api/notifications/unread-count")
- def api_notifications_unread_count():
--    guard = _require_ext_login()
--    if guard:
--        return guard
--
-     uid = int(session.get("ext_user_id") or 0)
-+    if uid <= 0:
-+        resp = jsonify({"ok": False, "reason": "login_required"})
-+        resp.status_code = 401
-+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-+        resp.headers["Pragma"] = "no-cache"
-+        return resp
-+
-     try:
-         count = _compute_unread_count_external(uid)
-         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
-         resp = jsonify({"count": count})
-         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-         resp.headers["Pragma"] = "no-cache"
-         return resp
-     except Exception:
-         current_app.logger.warning("notifications unread-count failed user_id=%s", uid, exc_info=True)
-         raise
- 
- 
- @bp.get("/api/notifications")
- def api_notifications_list():
-     guard = _require_ext_login()
-     if guard:
-         return guard
- 
-     uid = int(session.get("ext_user_id") or 0)
-     unread_arg = (request.args.get("unread") or "").strip().lower()
-     unread_only = unread_arg not in {"0", "false", "no", "off"}
-     page = max(int(request.args.get("page") or 1), 1)
-     per_page = 20
-     offset = (page - 1) * per_page
- 
-diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index bc57970d8c0c4a89017cee5c5b3c679317f82fef..89583a8a74559999c09adf57bb205085068295ac 100644
---- a/external_login_user/template/_extlogin_nav.html
-+++ b/external_login_user/template/_extlogin_nav.html
-@@ -2,92 +2,100 @@
-   <div class="container-fluid">
-     <a class="navbar-brand" href="/external-login/">MFU</a>
- 
-     <div class="d-flex align-items-center gap-2 ms-auto">
-       <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
-         <span class="fs-5">🔔</span>
-         <span id="navNotifBadge"
-               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-       </a>
- 
-       <button class="navbar-toggler" type="button"
-               data-bs-toggle="collapse" data-bs-target="#extNavCollapse"
-               aria-controls="extNavCollapse" aria-expanded="false" aria-label="メニュー">
-         <span class="navbar-toggler-icon"></span>
-       </button>
-     </div>
- 
-     <div class="collapse navbar-collapse" id="extNavCollapse">
-       <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-         <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
-       </ul>
-     </div>
-   </div>
- </nav>
- 
--<script src="/socket.io/socket.io.js"></script>
-+<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
-   document.addEventListener('DOMContentLoaded', () => {
-     const badge = document.getElementById('navNotifBadge');
-     if (!badge) return;
- 
-     let pollTimer = null;
-+    let pollingDisabled = false;
- 
-     const applyCount = (rawCount) => {
-       const count = Number(rawCount ?? 0);
-       if (Number.isFinite(count) && count > 0) {
-         badge.textContent = String(Math.min(Math.floor(count), 99));
-         badge.classList.remove('d-none');
-         return;
-       }
-       badge.textContent = '0';
-       badge.classList.add('d-none');
-     };
- 
-     const updateBadge = async () => {
-+      if (pollingDisabled) return;
-       try {
-         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
-+        if (res.status === 401) {
-+          pollingDisabled = true;
-+          stopPolling();
-+          applyCount(0);
-+          return;
-+        }
-         if (!res.ok) {
-           applyCount(0);
-           return;
-         }
-         const data = await res.json();
-         applyCount(data?.count ?? 0);
-       } catch (_e) {
-         applyCount(0);
-       }
-     };
- 
-     const startPolling = () => {
-       if (pollTimer !== null) return;
-       pollTimer = window.setInterval(updateBadge, 30000);
-     };
- 
-     const stopPolling = () => {
-       if (pollTimer === null) return;
-       window.clearInterval(pollTimer);
-       pollTimer = null;
-     };
- 
-     if (window.io) {
--      const socket = window.io();
-+      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-       socket.on('connect', () => {
-         stopPolling();
-         updateBadge();
-       });
-       socket.on('disconnect', () => {
-         startPolling();
-       });
-       socket.on('notif_unread', (data) => {
-         applyCount(data?.count ?? 0);
-       });
-     } else {
-       startPolling();
-     }
- 
-     updateBadge();
-     document.addEventListener('visibilitychange', () => {
-       if (!document.hidden) updateBadge();
-     });
-     window.addEventListener('pageshow', updateBadge);
-   });
- </script>
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index e5e213796b7705f82a34c7ff45107e21dfc06b52..d87ccf666defe5402f1171ddf3a682a49f1b1174 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -934,129 +934,141 @@ def _client_ip_prefix(addr: str) -> str:
-         return ""
- 
- def _sanitize_next(candidate: str) -> str:
-     # 絶対URLは禁止、/external-login 配下のみ許可
-     if not isinstance(candidate, str):
-         return url_for(".index")
-     if candidate.startswith(("http://", "https://")):
-         return url_for(".index")
-     if not candidate.startswith("/external-login"):
-         return url_for(".index")
-     return candidate
- 
- def _now_ts() -> int:
-     return int(time.time())
- 
- # ---（任意）リプレイ防止の簡易フック：使うならDB or メモリにJTIを記録して検出 ---
- def _is_jti_used(jti: str) -> bool:
-     # TODO: DBに oauth_used_jti(jti, used_at) を持てば確実
-     return False
- 
- def _mark_jti_used(jti: str):
-     # TODO: DBへ INSERT しておく
-     pass
- 
- 
-+def _trim_line_oauth_state_session(max_items: int = 2) -> None:
-+    """Authlib が session に保持する LINE OAuth state を少数に制限して Cookie肥大化を防ぐ。"""
-+    state_keys = [k for k in session.keys() if isinstance(k, str) and k.startswith("_state_line_")]
-+    if len(state_keys) <= max_items:
-+        return
-+    for key in sorted(state_keys)[:-max_items]:
-+        session.pop(key, None)
-+
-+
- @bp.route("/line/login")
- def line_login():
-     # 1) next を安全化
-     raw_next = (request.args.get("next") or session.get("ext_after_login_next") or request.referrer or "").strip()
- 
-     def _to_local_next(u: str) -> str | None:
-         if not u:
-             return None
-         if u.startswith("/") and not u.startswith("//"):
-             return u
-         try:
-             p = urlparse(u)
-             if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
-                 return p.path + (("?" + p.query) if p.query else "")
-         except Exception:
-             pass
-         return None
- 
--    local_next = _to_local_next(raw_next) or "/external-login/"
-+    local_next = (_to_local_next(raw_next) or "/external-login/")[:512]
-     session["ext_after_login_next"] = local_next  # ← セッションにも保持
- 
-     # 2) 署名付き state を作って callback で検証できるようにする
-     state_payload = {
-         "n": local_next,                               # next（相対URL）
-         "ip": _client_ip_prefix(request.remote_addr or ""),
-         "ua": _ua_sha256(request.headers.get("User-Agent", "")),
-         "t": int(time.time()),                         # 発行時刻
-         "jti": secrets.token_urlsafe(12),              # リプレイ対策の一意ID（任意）
-     }
-     state_token = _state_signer().dumps(state_payload)
- 
-     # 3) LINE 認可ページへ（state を必ず付ける）
-     redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
-+    _trim_line_oauth_state_session(max_items=1)
-     return oauth.line.authorize_redirect(redirect_uri=redirect_uri, state=state_token)  # type: ignore[arg-type]
- 
- @bp.route("/line/callback")
- def line_callback():
-+    _trim_line_oauth_state_session(max_items=1)
-     # ---- state 検証 ----
-     state_token = request.args.get("state")
-     if not state_token:
-         flash("LINEログインに失敗しました。（stateなし）", "error")
-         return redirect(url_for("external_login_user.index"))
- 
-     try:
-         payload = _state_signer().loads(state_token)
-     except BadSignature:
-         flash("LINEログインに失敗しました。（state改ざん）", "error")
-         return redirect(url_for("external_login_user.index"))
- 
-     next_path = _sanitize_next(payload.get("n"))
-     ip_expected = payload.get("ip", "")
-     ua_expected = payload.get("ua", "")
-     issued_at = int(payload.get("t", 0) or 0)
-     jti = payload.get("jti", "")
- 
-     if _now_ts() - issued_at > 15 * 60:
-         next_path = url_for(".index")
-     if jti and _is_jti_used(jti):
-         next_path = url_for(".index")
-     else:
-         _mark_jti_used(jti or "")
- 
-     if ip_expected and _client_ip_prefix(request.remote_addr or "") != ip_expected:
-         next_path = url_for(".index")
-     if ua_expected and _ua_sha256(request.headers.get("User-Agent", "")) != ua_expected:
-         next_path = url_for(".index")
- 
-     # ---- トークン交換 & プロフィール取得 ----
-     code = request.args.get("code")
-     if not code:
-         flash("LINEログインに失敗しました。（codeなし）", "error")
-         return redirect(url_for("external_login_user.index"))
- 
-     try:
-         redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
-         token = oauth.line.fetch_access_token(grant_type="authorization_code", code=code, redirect_uri=redirect_uri)
-         if isinstance(token, dict):
-             token.pop("id_token", None)
-         prof = oauth.line.get("https://api.line.me/v2/profile", token=token).json()
-+        _trim_line_oauth_state_session(max_items=0)
-     except Exception:
-         current_app.logger.exception("LINE token/profile error")
-         flash("LINEログインに失敗しました。", "error")
-         return redirect(url_for("external_login_user.index"))
- 
-     sub = (prof or {}).get("userId")
-     if not sub:
-         flash("LINEユーザーIDを取得できませんでした。", "error")
-         return redirect(url_for("external_login_user.index"))
- 
-     session["ext_user_social_id"] = sub
- 
-     # ---- 画像ダウンロード→サーバー保存（5MBまで / GIFはそのまま、他は最大辺1024px）----
-     def _download_and_save_avatar(url: str, *, timeout: int = 8) -> str | None:
-         if not url or not isinstance(url, str):
-             return None
-         try:
-             r = requests.get(url, timeout=timeout, stream=True, headers={"User-Agent": "MFU/1.0"})
-             r.raise_for_status()
-             ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-             # 5MB上限
-             max_bytes = 5 * 1024 * 1024
-             data = b""
-             for chunk in r.iter_content(256 * 1024):
-                 if not chunk:
-diff --git a/external_login_user/utils.py b/external_login_user/utils.py
-index 9951d7c3c5cdbd129a32a3c58cc890c5d42d21b8..e6ac12e94fa7b4c0ac96ba5589fc43466ae6f073 100644
---- a/external_login_user/utils.py
-+++ b/external_login_user/utils.py
-@@ -69,51 +69,51 @@ def _to_local_next(u: str) -> str:
-     return "/external-login/"
- 
- 
- def _require_ext_login():
-     """未ログインなら安全化した next を保持して LINE ログインへ"""
-     if session.get("ext_user_id"):
-         return None
- 
-     raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
- 
-     # 絶対URLや外部ドメインを排除し、/external-login/ 配下の相対URLだけ許可
-     from urllib.parse import urlparse
-     def _to_local_next(u: str) -> str:
-         if not u:
-             return "/external-login/"
-         if u.startswith("/") and not u.startswith("//"):
-             return u
-         try:
-             p = urlparse(u)
-             if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
-                 return p.path + (("?" + p.query) if p.query else "")
-         except Exception:
-             pass
-         return "/external-login/"
- 
--    local_next = _to_local_next(raw_next)
-+    local_next = _to_local_next(raw_next)[:512]
-     session["ext_after_login_next"] = local_next
-     return redirect(url_for("external_login_user.line_login", next=local_next))
- 
- def _is_mfu_logged_in() -> bool:
-     return bool(session.get("user"))
- 
- 
- def remember_session_map_value(map_key: str, item_key: str, value: Any, *, max_items: int = SESSION_MAP_MAX_ITEMS):
-     """cookie session の肥大化防止のため、少数件だけ保持する。"""
-     key = str(item_key or "").strip()
-     if not key:
-         return
- 
-     stored = session.get(map_key)
-     data = dict(stored) if isinstance(stored, dict) else {}
-     data.pop(key, None)
- 
-     item = value
-     if isinstance(item, str):
-         item = item[:SESSION_VALUE_MAX_LEN]
-     data[key] = item
- 
-     while len(data) > max_items:
-         oldest = next(iter(data), None)
-         if oldest is None:
+ @chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/update")
+ def api_rooms_update(event_id: int, room_id: str):
+     actor = get_chat_actor()
+     if not actor or not _can_manage_rooms(event_id, actor):
+         return jsonify({"ok": False}), 403
+     payload = request.get_json(silent=True) or {}
