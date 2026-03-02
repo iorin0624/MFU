@@ -4393,6 +4393,12 @@ def chat_connect():
     if not actor:
         current_app.logger.info("chat socket connect denied: no actor")
         return False
+    ext_user_id = session.get("ext_user_id")
+    if ext_user_id:
+        try:
+            join_room(f"external_user:{int(ext_user_id)}")
+        except Exception:
+            current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
     return True
 
 @socketio.on("chat_join")

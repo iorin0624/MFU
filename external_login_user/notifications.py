@@ -11,6 +11,11 @@ from . import bp
 from .utils import _require_ext_login
 from app.utils.db import get_db
 
+try:
+    from app.chat.socketio_ext import socketio
+except Exception:  # pragma: no cover
+    socketio = None
+
 
 _READ_NOTIFICATIONS_KEEP_LIMIT = 30
 
@@ -106,6 +111,53 @@ def _prune_old_read_notifications(cur, user_id: int) -> int:
     return int(cur.rowcount or 0)
 
 
+def _compute_unread_count_external(uid: int) -> int:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        room_cache: dict[str, tuple[int, str]] = {}
+        cur.execute(
+            """
+            SELECT id, target_url, event_id
+              FROM mfu_notifications
+             WHERE user_kind='external'
+               AND user_id=%s
+               AND read_at IS NULL
+            """,
+            (int(uid),),
+        )
+        unread_rows = cur.fetchall() or []
+        count = 0
+        for row in unread_rows:
+            visible, _room_name = _is_notification_visible_for_external(cur, int(uid), row, room_cache)
+            if visible:
+                count += 1
+        return count
+    finally:
+        cur.close()
+        db.close()
+
+
+def _emit_notif_unread(uid: int, reason: str = "sync", latest_id: int | None = None) -> None:
+    if socketio is None:
+        return
+    try:
+        count = _compute_unread_count_external(int(uid))
+        socketio.emit(
+            "notif_unread",
+            {"count": count, "latest_id": latest_id, "reason": reason},
+            room=f"external_user:{int(uid)}",
+        )
+    except Exception:
+        current_app.logger.warning(
+            "notifications emit failed user_id=%s reason=%s latest_id=%s",
+            int(uid),
+            reason,
+            latest_id,
+            exc_info=True,
+        )
+
+
 _NOTIFICATION_DDL = """
 CREATE TABLE IF NOT EXISTS mfu_notifications (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -189,18 +241,22 @@ def create_notification_external(
             ),
         )
         deleted_old_read = _prune_old_read_notifications(cur, int(user_id))
+        inserted = cur.rowcount == 1
+        latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
         db.commit()
+        if inserted:
+            _emit_notif_unread(int(user_id), reason="created", latest_id=latest_id)
         current_app.logger.info(
             "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
             int(user_id),
             int(event_id) if event_id else None,
             (kind or "").strip() or "general",
             dedup,
-            cur.rowcount == 1,
+            inserted,
             existing["id"] if existing else None,
             deleted_old_read,
         )
-        return cur.rowcount == 1
+        return inserted
     except Exception:
         current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
         return False
@@ -224,34 +280,16 @@ def api_notifications_unread_count():
         return guard
 
     uid = int(session.get("ext_user_id") or 0)
-    db = get_db()
-    cur = db.cursor(dictionary=True)
     try:
-        room_cache: dict[str, tuple[int, str]] = {}
-        cur.execute(
-            """
-            SELECT id, target_url, event_id
-              FROM mfu_notifications
-             WHERE user_kind='external'
-               AND user_id=%s
-               AND read_at IS NULL
-            """,
-            (uid,),
-        )
-        unread_rows = cur.fetchall() or []
-        count = 0
-        for row in unread_rows:
-            visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
-            if visible:
-                count += 1
+        count = _compute_unread_count_external(uid)
         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
         resp = jsonify({"count": count})
         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         resp.headers["Pragma"] = "no-cache"
         return resp
-    finally:
-        cur.close()
-        db.close()
+    except Exception:
+        current_app.logger.warning("notifications unread-count failed user_id=%s", uid, exc_info=True)
+        raise
 
 
 @bp.get("/api/notifications")
@@ -476,6 +514,7 @@ def api_notifications_mark_read(notification_id: int):
         db.commit()
         if cur.rowcount == 0:
             abort(404)
+        _emit_notif_unread(uid, reason="read")
         return jsonify({"ok": True})
     finally:
         cur.close()
@@ -504,6 +543,7 @@ def api_notifications_mark_all_read():
         )
         updated = int(cur.rowcount or 0)
         db.commit()
+        _emit_notif_unread(uid, reason="read_all")
         return jsonify({"ok": True, "updated": updated})
     finally:
         cur.close()
