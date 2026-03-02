@@ -927,13 +927,23 @@
   min-width: 1.1rem;
   height: 1.1rem;
   border-radius: 999px;
-  background: #dc3545;
-  color: #fff;
   font-size: .72rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0 .3rem;
+}
+
+.chat-notification-badge.has-unread {
+  background: #dc3545;
+  color: #fff;
+}
+
+.chat-notification-badge.no-unread {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  min-width: auto;
 }
 
 .chat-room-picker-modal {
@@ -1510,6 +1520,7 @@
     messageIds: new Set(),
     unreadByRoomId: new Map(),
     unreadRefreshTimer: null,
+    notificationPollTimer: null,
     muteUntilByRoomId: new Map(),
     mentionCandidates: [],
     mentionActiveIndex: 0,
@@ -1534,6 +1545,8 @@
   initReactionUis();
   syncExistingMessageIds();
   scheduleUnreadRefresh();
+  refreshNotificationBadge();
+  startNotificationBadgePolling();
   refreshMuteButton();
   scrollToLatestMessage();
   refreshReadIndicators();
@@ -1895,6 +1908,15 @@
 
   let composerFocused = false;
   let focusScrollTimer = null;
+  let notifRefreshDebounce = null;
+
+  function scheduleNotifRefreshSoon() {
+    if (notifRefreshDebounce) clearTimeout(notifRefreshDebounce);
+    notifRefreshDebounce = setTimeout(() => {
+      notifRefreshDebounce = null;
+      refreshNotificationBadge();
+    }, 200);
+  }
 
   function getReplyTargetId() {
     if (state.replyToId) return String(state.replyToId);
@@ -2017,9 +2039,17 @@
     e.preventDefault();
     runRoomSearch();
   });
-  window.addEventListener('beforeunload', () => sendTypingStop());
+  window.addEventListener('beforeunload', () => {
+    sendTypingStop();
+    stopNotificationBadgePolling();
+  });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') refreshNotificationBadge();
+    if (document.visibilityState === 'visible') scheduleNotifRefreshSoon();
+  });
+  window.addEventListener('focus', () => scheduleNotifRefreshSoon());
+  const notifLink = document.querySelector('.chat-notification-link');
+  notifLink?.addEventListener('click', () => {
+    setTimeout(() => refreshNotificationBadge(), 1000);
   });
 
   imageBtn?.addEventListener('click', () => imageInput?.click());
@@ -3786,14 +3816,29 @@
       if (!notificationBadge) return;
       if (unread > 0) {
         notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
-        notificationBadge.classList.remove('d-none');
+        notificationBadge.classList.remove('no-unread');
+        notificationBadge.classList.add('has-unread');
       } else {
-        notificationBadge.textContent = '';
-        notificationBadge.classList.add('d-none');
+        notificationBadge.textContent = '🔔';
+        notificationBadge.classList.remove('has-unread');
+        notificationBadge.classList.add('no-unread');
       }
     } catch (_e) {
       // noop
     }
+  }
+
+  function startNotificationBadgePolling() {
+    if (state.notificationPollTimer) return;
+    state.notificationPollTimer = setInterval(() => {
+      refreshNotificationBadge();
+    }, 15000);
+  }
+
+  function stopNotificationBadgePolling() {
+    if (!state.notificationPollTimer) return;
+    clearInterval(state.notificationPollTimer);
+    state.notificationPollTimer = null;
   }
 
   function updateUnreadJumpButton() {
