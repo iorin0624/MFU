@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, re, uuid, base64, secrets
-from typing import Optional
+from typing import Optional, Any
 from urllib.parse import quote_plus
 from flask import current_app, request, session, redirect, url_for, abort, flash
 
@@ -9,6 +9,8 @@ from . import bp, oauth  # oauth は None の可能性あり
 from app.utils.db import get_db
 
 QR_TRADEMARK_NOTICE = "QRコードは株式会社デンソーウェーブの登録商標です。"
+SESSION_MAP_MAX_ITEMS = 8
+SESSION_VALUE_MAX_LEN = 128
 
 # ---- 環境値 → 関数 ----
 def LINE_CLIENT_ID() -> str:
@@ -95,6 +97,43 @@ def _require_ext_login():
 
 def _is_mfu_logged_in() -> bool:
     return bool(session.get("user"))
+
+
+def remember_session_map_value(map_key: str, item_key: str, value: Any, *, max_items: int = SESSION_MAP_MAX_ITEMS):
+    """cookie session の肥大化防止のため、少数件だけ保持する。"""
+    key = str(item_key or "").strip()
+    if not key:
+        return
+
+    stored = session.get(map_key)
+    data = dict(stored) if isinstance(stored, dict) else {}
+    data.pop(key, None)
+
+    item = value
+    if isinstance(item, str):
+        item = item[:SESSION_VALUE_MAX_LEN]
+    data[key] = item
+
+    while len(data) > max_items:
+        oldest = next(iter(data), None)
+        if oldest is None:
+            break
+        data.pop(oldest, None)
+    session[map_key] = data
+
+
+def set_compact_pay_ctx(*, event_id: int, event_uuid: str | None, ext_user_id: int, expected_amount_yen: int | None, payment_token: str, invite_token: str | None = None):
+    """セッションには識別に必要な最小情報のみを保存する。"""
+    ctx = {
+        "mfu_event_id": int(event_id),
+        "mfu_event_uuid": (event_uuid or "")[:64],
+        "ext_user_id": int(ext_user_id),
+        "expected_amount_yen": int(expected_amount_yen) if expected_amount_yen is not None else None,
+        "payment_token": (payment_token or "")[:128],
+    }
+    if invite_token:
+        ctx["invite_token"] = invite_token[:SESSION_VALUE_MAX_LEN]
+    session["pay_ctx"] = ctx
 
 # ---- ID/DB ヘルパ ----
 def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:

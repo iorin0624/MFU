@@ -52,6 +52,7 @@ from .utils import (
     _event_by_uuid_str, _membership_status,
     avatar_url_for,  # ← 追加
     QR_TRADEMARK_NOTICE,
+    remember_session_map_value,
 )
 from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
@@ -1679,9 +1680,7 @@ def _mark_lecture_auto_approve_by_iv(
     if not iv_token:
         return False
     try:
-        store = session.get("lecture_auto_approve_by_iv") or {}
-        store[event_uuid] = True
-        session["lecture_auto_approve_by_iv"] = store
+        remember_session_map_value("lecture_auto_approve_by_iv", event_uuid, True)
     except Exception:
         pass
 
@@ -1842,9 +1841,7 @@ def join_event(event_uuid: str):
     iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
     is_lecture = _is_lecture_event_from_event(ev)
     if iv_param and is_lecture:
-        store = session.get("lecture_invite_tokens") or {}
-        store[event_uuid] = iv_param
-        session["lecture_invite_tokens"] = store
+        remember_session_map_value("lecture_invite_tokens", event_uuid, iv_param)
         _mark_lecture_auto_approve_by_iv(
             event_id=ev["id"],
             event_uuid=event_uuid,

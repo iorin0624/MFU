@@ -14,7 +14,7 @@ from . import bp
 from .utils import (
     _require_ext_login, _get_ext_user_by_social, _event_by_uuid_str,
     _membership_status, _member_payment_status, _get_member_require_payment,
-    PAYMENT_ENTRY_BASE, _uuid_bytes_to_str,
+    PAYMENT_ENTRY_BASE, _uuid_bytes_to_str, remember_session_map_value, set_compact_pay_ctx,
 )
 from app.utils.db import get_db
 from app.utils.mail import send_mail
@@ -304,18 +304,13 @@ def tip_start():
     )
 
     return_url = url_for("external_login_user.index", tip="done", event_id=event_id, _external=True)
-    session["pay_ctx"] = {
-        "mfu_event_id": event_id,
-        "mfu_event_uuid": event_uuid_str,
-        "ext_user_id": me["id"],
-        "nickname": me.get("nickname"),
-        "x_id": me.get("x_id"),
-        "instagram_id": me.get("instagram_id"),
-        "email": me.get("email"),
-        "expected_amount_yen": int(amount_yen),
-        "return_url": return_url,
-        "payment_token": payment_token,
-    }
+    set_compact_pay_ctx(
+        event_id=event_id,
+        event_uuid=event_uuid_str,
+        ext_user_id=me["id"],
+        expected_amount_yen=int(amount_yen),
+        payment_token=payment_token,
+    )
 
     dest = (
         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
@@ -755,9 +750,7 @@ def pay_start(event_uuid: str):
     if not iv:
         iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     if iv:
-        store = session.get("lecture_invite_tokens") or {}
-        store[event_uuid] = iv
-        session["lecture_invite_tokens"] = store
+        remember_session_map_value("lecture_invite_tokens", event_uuid, iv)
     auto_approve_hit = bool(
         lecture
         and int(ev.get("auto_approve_by_invite") or 0) == 1
@@ -766,9 +759,7 @@ def pay_start(event_uuid: str):
         and iv == ev.get("invite_token")
     )
     if auto_approve_hit:
-        store = session.get("lecture_auto_approve_by_iv") or {}
-        store[event_uuid] = True
-        session["lecture_auto_approve_by_iv"] = store
+        remember_session_map_value("lecture_auto_approve_by_iv", event_uuid, True)
     if lecture and (auto_approve_hit or _lecture_auto_approve_from_iv_session(event_uuid)):
         lecture_auto_approve = True
 
@@ -796,24 +787,14 @@ def pay_start(event_uuid: str):
             )  # type: ignore
             if lecture_auto_approve:
                 _clear_lecture_auto_approve_iv_session(event_uuid)
-            session["pay_ctx"] = {
-                "mfu_event_id": ev["id"],
-                "mfu_event_uuid": event_uuid,
-                "ext_user_id": me["id"],
-                "nickname": me.get("nickname"),
-                "x_id": me.get("x_id"),
-                "instagram_id": me.get("instagram_id"),
-                "email": me.get("email"),
-                "expected_amount_yen": int(fee) if fee else None,
-                "return_url": url_for(
-                    "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
-                    event_uuid=event_uuid,
-                    payment_token=payment_token,
-                    iv=iv or None,
-                    _external=True,
-                ),
-                "payment_token": payment_token,
-            }
+            set_compact_pay_ctx(
+                event_id=ev["id"],
+                event_uuid=event_uuid,
+                ext_user_id=me["id"],
+                expected_amount_yen=int(fee) if fee else None,
+                payment_token=payment_token,
+                invite_token=iv or None,
+            )
             return_url = url_for(
                 "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
                 event_uuid=event_uuid,
@@ -868,24 +849,14 @@ def pay_start(event_uuid: str):
     )  # type: ignore
     if lecture_auto_approve:
         _clear_lecture_auto_approve_iv_session(event_uuid)
-    session["pay_ctx"] = {
-        "mfu_event_id": ev["id"],
-        "mfu_event_uuid": event_uuid,
-        "ext_user_id": me["id"],
-        "nickname": me.get("nickname"),
-        "x_id": me.get("x_id"),
-        "instagram_id": me.get("instagram_id"),
-        "email": me.get("email"),
-        "expected_amount_yen": int(fee) if fee else None,
-        "return_url": url_for(
-            "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
-            event_uuid=event_uuid,
-            payment_token=payment_token,
-            iv=iv or None,
-            _external=True,
-        ),
-        "payment_token": payment_token,
-    }
+    set_compact_pay_ctx(
+        event_id=ev["id"],
+        event_uuid=event_uuid,
+        ext_user_id=me["id"],
+        expected_amount_yen=int(fee) if fee else None,
+        payment_token=payment_token,
+        invite_token=iv or None,
+    )
     return_url = url_for(
         "external_login_user.lecture_return" if lecture else "external_login_user.pay_return",
         event_uuid=event_uuid,
@@ -1138,9 +1109,7 @@ def pay_options(event_uuid: str):
 
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if iv and is_lecture:
-        store = session.get("lecture_invite_tokens") or {}
-        store[event_uuid] = iv
-        session["lecture_invite_tokens"] = store
+        remember_session_map_value("lecture_invite_tokens", event_uuid, iv)
 
     if is_lecture and enabled == ["card"]:
         return redirect(url_for("external_login_user.lecture_pay_start", event_uuid=event_uuid, iv=iv or None))
@@ -1501,9 +1470,7 @@ def lecture_start(event_uuid: str):
 
     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
     if iv:
-        store = session.get("lecture_invite_tokens") or {}
-        store[event_uuid] = iv
-        session["lecture_invite_tokens"] = store
+        remember_session_map_value("lecture_invite_tokens", event_uuid, iv)
 
     # 未ログインなら、講座用支払ページを next にしてLINEログインへ
     if not session.get("ext_user_social_id"):
@@ -1539,9 +1506,7 @@ def lecture_pay_start(event_uuid: str):
     if not iv:
         iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
     if iv:
-        store = session.get("lecture_invite_tokens") or {}
-        store[event_uuid] = iv
-        session["lecture_invite_tokens"] = store
+        remember_session_map_value("lecture_invite_tokens", event_uuid, iv)
     auto_approve_hit = bool(
         int(ev.get("auto_approve_by_invite") or 0) == 1
         and ev.get("invite_token")
@@ -1627,25 +1592,14 @@ def lecture_pay_start(event_uuid: str):
             )  # type: ignore
             if auto_approve_hit:
                 _clear_lecture_auto_approve_iv_session(event_uuid)
-            session["pay_ctx"] = {
-                "mfu_event_id": ev["id"],
-                "mfu_event_uuid": event_uuid,
-                "ext_user_id": me["id"],
-                "nickname": me.get("nickname"),
-                "x_id": me.get("x_id"),
-                "instagram_id": me.get("instagram_id"),
-                "email": me.get("email"),
-                "expected_amount_yen": fee,
-                "return_url": url_for(
-                    "external_login_user.lecture_return",
-                    event_uuid=event_uuid,
-                    payment_token=payment_token,
-                    iv=iv or None,
-                    _external=True,
-                ),
-                "payment_token": payment_token,
-                "invite_token": iv or None,
-            }
+            set_compact_pay_ctx(
+                event_id=ev["id"],
+                event_uuid=event_uuid,
+                ext_user_id=me["id"],
+                expected_amount_yen=int(fee) if fee is not None else None,
+                payment_token=payment_token,
+                invite_token=iv or None,
+            )
             return_url = url_for(
                 "external_login_user.lecture_return",
                 event_uuid=event_uuid,
@@ -1703,25 +1657,14 @@ def lecture_pay_start(event_uuid: str):
     )  # type: ignore
     if auto_approve_hit:
         _clear_lecture_auto_approve_iv_session(event_uuid)
-    session["pay_ctx"] = {
-        "mfu_event_id": ev["id"],
-        "mfu_event_uuid": event_uuid,
-        "ext_user_id": me["id"],
-        "nickname": me.get("nickname"),
-        "x_id": me.get("x_id"),
-        "instagram_id": me.get("instagram_id"),
-        "email": me.get("email"),
-        "expected_amount_yen": fee,
-        "return_url": url_for(
-            "external_login_user.lecture_return",
-            event_uuid=event_uuid,
-            payment_token=payment_token,
-            iv=iv or None,
-            _external=True,
-        ),
-        "payment_token": payment_token,
-        "invite_token": iv or None,
-    }
+    set_compact_pay_ctx(
+        event_id=ev["id"],
+        event_uuid=event_uuid,
+        ext_user_id=me["id"],
+        expected_amount_yen=int(fee) if fee is not None else None,
+        payment_token=payment_token,
+        invite_token=iv or None,
+    )
     return_url = url_for(
         "external_login_user.lecture_return",
         event_uuid=event_uuid,
@@ -1854,9 +1797,7 @@ def lecture_return(event_uuid: str):
         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
 
         if iv:
-            store = session.get("lecture_invite_tokens") or {}
-            store[event_uuid] = iv
-            session["lecture_invite_tokens"] = store
+            remember_session_map_value("lecture_invite_tokens", event_uuid, iv)
 
         # セッションのフォールバック情報はクリア
         try:
