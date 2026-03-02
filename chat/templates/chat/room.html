@@ -1401,16 +1401,15 @@
   </div>
 </div>
 
-<script src="/socket.io/socket.io.js"></script>
+<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-  if (!window.io) {
-    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
-  }
-</script>
-<script>
-(() => {
+window.addEventListener('DOMContentLoaded', () => {
   const root = document.querySelector('[data-event-id]');
   if (!root) return;
+
+  if (!window.io) {
+    return;
+  }
 
   const eventId = Number(root.dataset.eventId);
   const roomId = root.dataset.roomId || "";
@@ -1552,7 +1551,7 @@
     });
   }
 
-  const socket = io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+  const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
   socket.emit('chat_join', { event_id: eventId, room_id: roomId });
 
   initReactionUis();
@@ -3827,9 +3826,18 @@ function openFulltextModal(row) {
   async function refreshNotificationBadge() {
     try {
       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
+      if (res.status === 401) {
+        stopNotificationBadgePolling();
+        if (notificationBadge) {
+          notificationBadge.textContent = '🔔';
+          notificationBadge.classList.remove('has-unread');
+          notificationBadge.classList.add('no-unread');
+        }
+        return;
+      }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) return;
-      const unread = Number(data.unread_count || 0);
+      if (!res.ok) return;
+      const unread = Number(data.count || 0);
       if (!notificationBadge) return;
       if (unread > 0) {
         notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
@@ -4212,6 +4220,6 @@ function openFulltextModal(row) {
     alert('メンバーを更新しました');
   });
 
-})();
+});
 </script>
 {% endblock %}

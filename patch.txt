@@ -1,611 +1,743 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index 906ead5ea93d631c791bd4d25d2bb58c153dbf01..b4c9d8eda7d6c1438336a4965caab457c42d728d 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -19,50 +19,84 @@ from werkzeug.utils import secure_filename
- import os
- import re
- import time
- import shutil
- import uuid
- import json
- import secrets
- from functools import wraps
- from datetime import datetime
- import subprocess
- import shlex
+diff --git a/chat/templates/chat/_chat_nav.html b/chat/templates/chat/_chat_nav.html
+index f825c221bc8daf90e33e4b3e39574ad527a3071e..4e7a2442ba3e9efe073739848d750e983243d5be 100644
+--- a/chat/templates/chat/_chat_nav.html
++++ b/chat/templates/chat/_chat_nav.html
+@@ -17,97 +17,100 @@
+       <span id="chatNavNotifBadge"
+             class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
+       <span class="chat-nav-label">通知履歴</span>
+     </a>
  
- from mysql.connector import errors as MySQLErrors
- from app.utils.db import get_db  #
- from flask import g  # 追加
+     <div class="chat-mute-wrap">
+       <button type="button" id="chat-mute-btn" class="chat-nav-link chat-nav-button" aria-label="ミュート">
+         <span class="chat-nav-icon" aria-hidden="true">🔕</span>
+         <span class="chat-nav-label">ミュート</span>
+       </button>
+       <div id="chat-mute-menu" class="chat-mute-menu d-none">
+         <button type="button" data-mute-hours="1">1時間</button>
+         <button type="button" data-mute-hours="8">8時間</button>
+         <button type="button" data-mute-hours="24">24時間</button>
+         <button type="button" data-mute-clear="1">解除</button>
+       </div>
+     </div>
  
- # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
- from app.albums.photo_namer import get_datetime_from_image
- from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
- from app.external_login_user.utils import _get_ext_user_by_social
+     <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
+       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
+       <span class="chat-nav-label">検索</span>
+     </button>
+   </div>
+ </div>
  
- album_bp = Blueprint('album', __name__, template_folder='templates')
- print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
+-<script src="/socket.io/socket.io.js"></script>
+-<script>
+-  if (!window.io) {
+-    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
+-  }
+-</script>
++<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+   document.addEventListener('DOMContentLoaded', () => {
+     const badge = document.getElementById('chatNavNotifBadge');
+     if (!badge) return;
  
+     let pollTimer = null;
++    let pollingDisabled = false;
  
-+ALBUM_AUTH_SESSION_KEY = "album_auth_ids"
-+ALBUM_AUTH_MAX_ITEMS = 120
+     const applyCount = (rawCount) => {
+       const count = Number(rawCount ?? 0);
+       if (Number.isFinite(count) && count > 0) {
+         badge.textContent = String(Math.min(Math.floor(count), 99));
+         badge.classList.remove('d-none');
+         return;
+       }
+       badge.textContent = '0';
+       badge.classList.add('d-none');
+     };
+ 
+     const updateBadge = async () => {
++      if (pollingDisabled) return;
+       try {
+         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
++        if (res.status === 401) {
++          pollingDisabled = true;
++          stopPolling();
++          applyCount(0);
++          return;
++        }
+         if (!res.ok) {
+           applyCount(0);
+           return;
+         }
+         const data = await res.json();
+         applyCount(data?.count ?? 0);
+       } catch (_e) {
+         applyCount(0);
+       }
+     };
+ 
+     const startPolling = () => {
+       if (pollTimer !== null) return;
+       pollTimer = window.setInterval(updateBadge, 30000);
+     };
+ 
+     const stopPolling = () => {
+       if (pollTimer === null) return;
+       window.clearInterval(pollTimer);
+       pollTimer = null;
+     };
+ 
+     if (window.io) {
+-      const socket = window.io();
++      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+       socket.on('connect', () => {
+         stopPolling();
+         updateBadge();
+       });
+       socket.on('disconnect', () => {
+         startPolling();
+       });
+       socket.on('notif_unread', (data) => {
+         applyCount(data?.count ?? 0);
+       });
+     } else {
+       startPolling();
+     }
+ 
+     updateBadge();
+     document.addEventListener('visibilitychange', () => {
+       if (!document.hidden) updateBadge();
+     });
+     window.addEventListener('pageshow', updateBadge);
+   });
+ </script>
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 69860437beb0263d1be153dd12b415fc3a7fd3bb..595d9379943691df1263da0ae40482ab7ed05c21 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -1379,61 +1379,60 @@
+       <div class="d-flex gap-2 mb-2">
+         <input id="room-members-search" type="text" class="form-control form-control-sm" placeholder="候補検索（名前 / actor_key）">
+         <button type="button" id="room-members-select-all" class="btn btn-sm btn-outline-secondary">全選択</button>
+         <button type="button" id="room-members-unselect-all" class="btn btn-sm btn-outline-secondary">全解除</button>
+       </div>
+       <div class="small mb-1">選択中 <span id="room-members-count">0</span>名</div>
+       <div id="room-members-candidates" class="room-member-candidate-list"></div>
+       <div class="d-flex justify-content-end gap-2 mt-3">
+         <button type="button" id="room-members-cancel" class="btn btn-sm btn-light">キャンセル</button>
+         <button type="button" id="room-members-submit" class="btn btn-sm btn-primary">保存</button>
+       </div>
+     </div>
+   </div>
+ 
+   <div class="mt-3 d-flex gap-2 align-items-center">
+     {% if can_broadcast %}
+     <form method="post" action="{{ url_for('chat.broadcast_push', event_id=event.id) }}" class="d-flex gap-2">
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+       <input name="body" class="form-control form-control-sm" placeholder="一斉通知メッセージ">
+       <button class="btn btn-warning btn-sm" type="submit">運営一斉通知</button>
+     </form>
+     {% endif %}
+   </div>
+ </div>
+ 
+-<script src="/socket.io/socket.io.js"></script>
++<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+-  if (!window.io) {
+-    document.write('<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"><\/script>');
+-  }
+-</script>
+-<script>
+-(() => {
++window.addEventListener('DOMContentLoaded', () => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
+ 
++  if (!window.io) {
++    return;
++  }
 +
+   const eventId = Number(root.dataset.eventId);
+   const roomId = root.dataset.roomId || "";
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
+   const meId = root.dataset.me || '';
+   const myDisplayName = root.dataset.displayName || '';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const isAdmin = root.dataset.isAdmin === '1';
+   const isMobile = window.matchMedia('(hover: none)').matches;
+   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+   const maxUploadImages = 6;
+   const maxUploadImageBytes = 20 * 1024 * 1024;
+   const DOUBLE_TAP_INTERVAL_MS = 280;
+   const DOUBLE_TAP_MAX_DISTANCE = 12;
+   const DOUBLE_TAP_MOVE_CANCEL = 8;
+ 
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const maxInputLines = 6;
+   const pushBtn = document.getElementById('enable-push');
+   const roomSwitch = document.getElementById('chat-room-switch');
+   const roomPickerToggle = document.getElementById('chat-room-picker-toggle');
+   const roomPickerModal = document.getElementById('chatRoomPickerModal');
+   const notificationBadge = document.getElementById('chat-notification-badge');
+@@ -1530,51 +1529,51 @@
+     threadRootId: null,
+     loadingOlder: false,
+     hasMoreOlder: true,
+     messageIds: new Set(),
+     unreadByRoomId: new Map(),
+     unreadRefreshTimer: null,
+     notificationPollTimer: null,
+     muteUntilByRoomId: new Map(),
+     mentionCandidates: [],
+     mentionActiveIndex: 0,
+     mentionRange: null,
+     mentionDebounceTimer: null,
+   };
+ 
+   if (ctxReactions && ctxReactions.childElementCount === 0) {
+     reactionEmojis.forEach((emoji) => {
+       const btn = document.createElement('button');
+       btn.type = 'button';
+       btn.className = 'chat-reaction-emoji';
+       btn.dataset.emoji = emoji;
+       btn.textContent = emoji;
+       ctxReactions.appendChild(btn);
+     });
+   }
+ 
+-  const socket = io({ path: '/socket.io', transports: ['websocket', 'polling'] });
++  const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+   socket.emit('chat_join', { event_id: eventId, room_id: roomId });
+ 
+   initReactionUis();
+   syncExistingMessageIds();
+   scheduleUnreadRefresh();
+   refreshNotificationBadge();
+   startNotificationBadgePolling();
+   refreshMuteButton();
+   scrollToLatestMessage();
+   refreshReadIndicators();
+   window.addEventListener('load', () => {
+     scrollToLatestMessage();
+     sendSeenForLatestMessage();
+   }, { once: true });
+ 
+   updateAutoGrow();
+   bodyInput?.addEventListener('input', () => {
+     updateAutoGrow();
+     queueTypingStart();
+     handleMentionInput();
+   });
+   bodyInput?.addEventListener('keydown', handleMentionKeydown);
+ 
+   socket.on('chat_message', (msg) => {
+     const wasNearBottom = isNearBottom(msgBox);
+@@ -3805,53 +3804,62 @@ function openFulltextModal(row) {
+     const data = await res.json().catch(() => ({}));
+     if (!res.ok || !data.ok) return;
+     state.unreadByRoomId.clear();
+     (data.rooms || []).forEach((item) => {
+       if (!item?.room_id) return;
+       state.unreadByRoomId.set(String(item.room_id), item);
+     });
+     updateRoomOptionUnreadBadges();
+     updateUnreadJumpButton();
+   }
+ 
+   function updateRoomOptionUnreadBadges() {
+     if (!roomSwitch) return;
+     Array.from(roomSwitch.options).forEach((opt) => {
+       const baseLabel = String(opt.textContent || '').replace(/\s*\(未読\d+\)$/u, '');
+       const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
+       opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
+     });
+   }
+ 
+ 
+ 
+   async function refreshNotificationBadge() {
+     try {
+       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
++      if (res.status === 401) {
++        stopNotificationBadgePolling();
++        if (notificationBadge) {
++          notificationBadge.textContent = '🔔';
++          notificationBadge.classList.remove('has-unread');
++          notificationBadge.classList.add('no-unread');
++        }
++        return;
++      }
+       const data = await res.json().catch(() => ({}));
+-      if (!res.ok || !data.ok) return;
+-      const unread = Number(data.unread_count || 0);
++      if (!res.ok) return;
++      const unread = Number(data.count || 0);
+       if (!notificationBadge) return;
+       if (unread > 0) {
+         notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
+         notificationBadge.classList.remove('no-unread');
+         notificationBadge.classList.add('has-unread');
+       } else {
+         notificationBadge.textContent = '🔔';
+         notificationBadge.classList.remove('has-unread');
+         notificationBadge.classList.add('no-unread');
+       }
+     } catch (_e) {
+       // noop
+     }
+   }
+ 
+   function startNotificationBadgePolling() {
+     if (state.notificationPollTimer) return;
+     state.notificationPollTimer = setInterval(() => {
+       refreshNotificationBadge();
+     }, 15000);
+   }
+ 
+   function stopNotificationBadgePolling() {
+     if (!state.notificationPollTimer) return;
+     clearInterval(state.notificationPollTimer);
+@@ -4190,28 +4198,28 @@ function openFulltextModal(row) {
+     const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members`, { credentials: 'same-origin' });
+     const data = await res.json().catch(() => ({}));
+     if (res.status === 401 || res.status === 403) { alert('権限がありません'); return; }
+     if (!data.ok) { alert(data.error || '現在メンバー取得に失敗しました'); return; }
+     roomUi.editSelected.clear();
+     (data.members || []).forEach((m) => { if (m?.actor_key) roomUi.editSelected.add(m.actor_key); });
+     renderCandidateList('room-members-candidates', roomUi.editSelected, '');
+     openModal(roomMembersModal);
+   });
+ 
+   document.getElementById('room-members-submit')?.addEventListener('click', async (e) => {
+     const btn = e.currentTarget;
+     btn.disabled = true;
+     const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members/set`, {
+       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+       body: JSON.stringify({ csrf_token: csrfToken, member_actor_keys: Array.from(roomUi.editSelected) }),
+     });
+     const data = await res.json().catch(() => ({}));
+     btn.disabled = false;
+     if (res.status === 401 || res.status === 403) { alert('権限がありません'); closeModal(roomMembersModal); return; }
+     if (!data.ok) { alert(data.error || 'メンバー更新に失敗しました'); return; }
+     closeModal(roomMembersModal);
+     alert('メンバーを更新しました');
+   });
+ 
+-})();
++});
+ </script>
+ {% endblock %}
+diff --git a/docs/chat_apache_socketio.conf b/docs/chat_apache_socketio.conf
+index f3b7206957a7b48fc3850c4c421ed6bd0061e276..e695c0a30c5cc69938cf79560b5129bbec958713 100644
+--- a/docs/chat_apache_socketio.conf
++++ b/docs/chat_apache_socketio.conf
+@@ -1,18 +1,20 @@
+ # 必要モジュール
+ # a2enmod proxy proxy_http proxy_wstunnel rewrite headers
+ 
+ # 既存 VirtualHost(*:443) の ProxyPass 群より前段で Socket.IO を優先ルーティング
+ ProxyPreserveHost On
+ RequestHeader set X-Forwarded-Proto "https"
+ 
+-# Socket.IO (WebSocket)
+-ProxyPass        /socket.io/  ws://127.0.0.1:8000/socket.io/
+-ProxyPassReverse /socket.io/  ws://127.0.0.1:8000/socket.io/
++# Socket.IO (WebSocket Upgrade を優先)
++RewriteEngine On
++RewriteCond %{REQUEST_URI} ^/socket\.io/ [NC]
++RewriteCond %{HTTP:Upgrade} =websocket [NC]
++RewriteRule ^/socket\.io/(.*)$ ws://127.0.0.1:8080/socket.io/$1 [P,L]
+ 
+-# Socket.IO fallback polling
+-ProxyPass        /socket.io/  http://127.0.0.1:8000/socket.io/
+-ProxyPassReverse /socket.io/  http://127.0.0.1:8000/socket.io/
++# Socket.IO fallback polling (HTTP)
++ProxyPass        /socket.io/  http://127.0.0.1:8080/socket.io/
++ProxyPassReverse /socket.io/  http://127.0.0.1:8080/socket.io/
+ 
+ # Flask 本体
+-ProxyPass        /  http://127.0.0.1:8000/
+-ProxyPassReverse /  http://127.0.0.1:8000/
++ProxyPass        /  http://127.0.0.1:8080/
++ProxyPassReverse /  http://127.0.0.1:8080/
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index 022e213a8f4469cb6f6c90db333bc90b55d9cbc6..7fe331b96afa537f4513428c4e8fb380d4c04459 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -253,55 +253,58 @@ def create_notification_external(
+             (kind or "").strip() or "general",
+             dedup,
+             inserted,
+             existing["id"] if existing else None,
+             deleted_old_read,
+         )
+         return inserted
+     except Exception:
+         current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
+         return False
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @bp.get("/notifications")
+ def notifications_page():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+     return render_template("notifications.html")
+ 
+ 
+ @bp.get("/api/notifications/unread-count")
+ def api_notifications_unread_count():
+-    guard = _require_ext_login()
+-    if guard:
+-        return guard
+-
+     uid = int(session.get("ext_user_id") or 0)
++    if uid <= 0:
++        resp = jsonify({"ok": False, "reason": "login_required"})
++        resp.status_code = 401
++        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
++        resp.headers["Pragma"] = "no-cache"
++        return resp
 +
-+def _grant_album_auth(album_id: str) -> None:
-+    _cleanup_legacy_album_auth_keys(current_album_id=album_id)
-+    allowed = session.get(ALBUM_AUTH_SESSION_KEY) or []
-+    if album_id in allowed:
+     try:
+         count = _compute_unread_count_external(uid)
+         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
+         resp = jsonify({"count": count})
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
+     except Exception:
+         current_app.logger.warning("notifications unread-count failed user_id=%s", uid, exc_info=True)
+         raise
+ 
+ 
+ @bp.get("/api/notifications")
+ def api_notifications_list():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     uid = int(session.get("ext_user_id") or 0)
+     unread_arg = (request.args.get("unread") or "").strip().lower()
+     unread_only = unread_arg not in {"0", "false", "no", "off"}
+     page = max(int(request.args.get("page") or 1), 1)
+     per_page = 20
+     offset = (page - 1) * per_page
+ 
+diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
+index bc57970d8c0c4a89017cee5c5b3c679317f82fef..89583a8a74559999c09adf57bb205085068295ac 100644
+--- a/external_login_user/template/_extlogin_nav.html
++++ b/external_login_user/template/_extlogin_nav.html
+@@ -2,92 +2,100 @@
+   <div class="container-fluid">
+     <a class="navbar-brand" href="/external-login/">MFU</a>
+ 
+     <div class="d-flex align-items-center gap-2 ms-auto">
+       <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
+         <span class="fs-5">🔔</span>
+         <span id="navNotifBadge"
+               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
+       </a>
+ 
+       <button class="navbar-toggler" type="button"
+               data-bs-toggle="collapse" data-bs-target="#extNavCollapse"
+               aria-controls="extNavCollapse" aria-expanded="false" aria-label="メニュー">
+         <span class="navbar-toggler-icon"></span>
+       </button>
+     </div>
+ 
+     <div class="collapse navbar-collapse" id="extNavCollapse">
+       <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
+         <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
+       </ul>
+     </div>
+   </div>
+ </nav>
+ 
+-<script src="/socket.io/socket.io.js"></script>
++<script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+   document.addEventListener('DOMContentLoaded', () => {
+     const badge = document.getElementById('navNotifBadge');
+     if (!badge) return;
+ 
+     let pollTimer = null;
++    let pollingDisabled = false;
+ 
+     const applyCount = (rawCount) => {
+       const count = Number(rawCount ?? 0);
+       if (Number.isFinite(count) && count > 0) {
+         badge.textContent = String(Math.min(Math.floor(count), 99));
+         badge.classList.remove('d-none');
+         return;
+       }
+       badge.textContent = '0';
+       badge.classList.add('d-none');
+     };
+ 
+     const updateBadge = async () => {
++      if (pollingDisabled) return;
+       try {
+         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
++        if (res.status === 401) {
++          pollingDisabled = true;
++          stopPolling();
++          applyCount(0);
++          return;
++        }
+         if (!res.ok) {
+           applyCount(0);
+           return;
+         }
+         const data = await res.json();
+         applyCount(data?.count ?? 0);
+       } catch (_e) {
+         applyCount(0);
+       }
+     };
+ 
+     const startPolling = () => {
+       if (pollTimer !== null) return;
+       pollTimer = window.setInterval(updateBadge, 30000);
+     };
+ 
+     const stopPolling = () => {
+       if (pollTimer === null) return;
+       window.clearInterval(pollTimer);
+       pollTimer = null;
+     };
+ 
+     if (window.io) {
+-      const socket = window.io();
++      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+       socket.on('connect', () => {
+         stopPolling();
+         updateBadge();
+       });
+       socket.on('disconnect', () => {
+         startPolling();
+       });
+       socket.on('notif_unread', (data) => {
+         applyCount(data?.count ?? 0);
+       });
+     } else {
+       startPolling();
+     }
+ 
+     updateBadge();
+     document.addEventListener('visibilitychange', () => {
+       if (!document.hidden) updateBadge();
+     });
+     window.addEventListener('pageshow', updateBadge);
+   });
+ </script>
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index e5e213796b7705f82a34c7ff45107e21dfc06b52..d87ccf666defe5402f1171ddf3a682a49f1b1174 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -934,129 +934,141 @@ def _client_ip_prefix(addr: str) -> str:
+         return ""
+ 
+ def _sanitize_next(candidate: str) -> str:
+     # 絶対URLは禁止、/external-login 配下のみ許可
+     if not isinstance(candidate, str):
+         return url_for(".index")
+     if candidate.startswith(("http://", "https://")):
+         return url_for(".index")
+     if not candidate.startswith("/external-login"):
+         return url_for(".index")
+     return candidate
+ 
+ def _now_ts() -> int:
+     return int(time.time())
+ 
+ # ---（任意）リプレイ防止の簡易フック：使うならDB or メモリにJTIを記録して検出 ---
+ def _is_jti_used(jti: str) -> bool:
+     # TODO: DBに oauth_used_jti(jti, used_at) を持てば確実
+     return False
+ 
+ def _mark_jti_used(jti: str):
+     # TODO: DBへ INSERT しておく
+     pass
+ 
+ 
++def _trim_line_oauth_state_session(max_items: int = 2) -> None:
++    """Authlib が session に保持する LINE OAuth state を少数に制限して Cookie肥大化を防ぐ。"""
++    state_keys = [k for k in session.keys() if isinstance(k, str) and k.startswith("_state_line_")]
++    if len(state_keys) <= max_items:
 +        return
-+    allowed = (allowed + [album_id])[-ALBUM_AUTH_MAX_ITEMS:]
-+    session[ALBUM_AUTH_SESSION_KEY] = allowed
-+
-+
-+def _has_album_auth(album_id: str) -> bool:
-+    allowed = session.get(ALBUM_AUTH_SESSION_KEY) or []
-+    if album_id in allowed:
-+        return True
-+    legacy_key = f"auth_{album_id}"
-+    if session.get(legacy_key):
-+        _grant_album_auth(album_id)
-+        session.pop(legacy_key, None)
-+        return True
-+    return False
-+
-+
-+def _cleanup_legacy_album_auth_keys(current_album_id: str | None = None) -> None:
-+    for key in list(session.keys()):
-+        if not key.startswith("auth_"):
-+            continue
-+        if current_album_id and key == f"auth_{current_album_id}":
-+            continue
++    for key in sorted(state_keys)[:-max_items]:
 +        session.pop(key, None)
 +
 +
- def _get_ext_user_nickname() -> str | None:
-     ext_social_id = session.get("ext_user_social_id")
-     if not ext_social_id:
-         return None
-     try:
-         ext_user = _get_ext_user_by_social(ext_social_id)
-     except Exception:
-         return None
-     if not ext_user:
-         return None
-     nickname = (ext_user.get("nickname") or "").strip()
-     return nickname or None
+ @bp.route("/line/login")
+ def line_login():
+     # 1) next を安全化
+     raw_next = (request.args.get("next") or session.get("ext_after_login_next") or request.referrer or "").strip()
  
- def _is_ext_logged_in() -> bool:
-     return bool(session.get("ext_user_social_id"))
- 
- def _fetch_event_process_members(event_id: int) -> list[dict]:
-     """イベント参加者一覧を取得（process フラグ含む）"""
-     rows: list[dict] = []
-     try:
-         conn = get_db()
+     def _to_local_next(u: str) -> str | None:
+         if not u:
+             return None
+         if u.startswith("/") and not u.startswith("//"):
+             return u
          try:
-             cur = conn.cursor(dictionary=True)
+             p = urlparse(u)
+             if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+                 return p.path + (("?" + p.query) if p.query else "")
          except Exception:
-             cur = conn.cursor()
-@@ -929,57 +963,57 @@ def _event_join_url(event_id: int) -> str | None:
- def _is_event_member_approved(event_id: int) -> bool:
-     sid = session.get("ext_user_social_id")
-     if not sid:
-         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
-         return False
-     u = db_get_one("SELECT id FROM external_login_user WHERE social_id=%s", (sid,))
-     if not u:
-         session["ext_user_onboarding"] = True
-         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
-         return False
-     ext_user_id = int(u["id"])
-     mem = db_get_one("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
-     return bool(mem and mem.get("status") == "approved")
+             pass
+         return None
  
- def event_gate(view_func):
-     """イベント連携アルバム用ゲート（access_mode='event' だけ処理）。他はスルー"""
-     @wraps(view_func)
-     def _wrapped(album_id, *args, **kwargs):
-         session["_gate_album_id"] = album_id  # ログイン後の戻り先
-         meta = _fetch_album_meta(album_id)
-         if not meta:
-             return "アルバムが存在しません", 404
+-    local_next = _to_local_next(raw_next) or "/external-login/"
++    local_next = (_to_local_next(raw_next) or "/external-login/")[:512]
+     session["ext_after_login_next"] = local_next  # ← セッションにも保持
  
-         # 管理者/オーナーは常に通す
-         if session.get('user') == 'admin' or (session.get('user') and session.get('user') == meta.get('owner')):
--            session[f'auth_{album_id}'] = True
-+            _grant_album_auth(album_id)
-             return redirect(url_for('album.album_home', album_id=album_id))
+     # 2) 署名付き state を作って callback で検証できるようにする
+     state_payload = {
+         "n": local_next,                               # next（相対URL）
+         "ip": _client_ip_prefix(request.remote_addr or ""),
+         "ua": _ua_sha256(request.headers.get("User-Agent", "")),
+         "t": int(time.time()),                         # 発行時刻
+         "jti": secrets.token_urlsafe(12),              # リプレイ対策の一意ID（任意）
+     }
+     state_token = _state_signer().dumps(state_payload)
  
-         # イベントモード：承認済みのみ
-         if meta.get("access_mode") == "event" and meta.get("event_id"):
-             if _is_event_member_approved(int(meta["event_id"])):  # 承認済み
--                session[f'auth_{album_id}'] = True
-+                _grant_album_auth(album_id)
-                 return redirect(url_for('album.album_home', album_id=album_id))
-             flash('このアルバムはイベント参加者専用です。まずは参加申請/承認を受けてください。', 'warning')
-             join_url = _event_join_url(int(meta["event_id"]))
-             return redirect(join_url) if join_url else ("イベントが見つかりません", 404)
+     # 3) LINE 認可ページへ（state を必ず付ける）
+     redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
++    _trim_line_oauth_state_session(max_items=1)
+     return oauth.line.authorize_redirect(redirect_uri=redirect_uri, state=state_token)  # type: ignore[arg-type]
  
-         # tokenモードは既存処理へ
-         return view_func(album_id, *args, **kwargs)
-     return _wrapped
- 
- # =============================================================================
- # 移動進捗トラッキング（JSON）＋ 非同期移動API
- # =============================================================================
- import threading
- 
- def _move_progress_dir() -> str:
-     d = os.path.join('/mnt/mfu/tmp', 'mfu-move-progress')  # zip_stream と同じ領域系でOK
-     os.makedirs(d, exist_ok=True)
-     return d
- 
- def _move_progress_path(album_id: str) -> str:
-     return os.path.join(_move_progress_dir(), f"{album_id}.json")
- 
- def _move_progress_write(album_id: str, data: dict):
-     p = _move_progress_path(album_id)
-     tmp = p + ".tmp"
-@@ -1154,73 +1188,73 @@ _move_threads: dict[str, threading.Thread] = {}
- # =============================================================================
- @album_bp.route('/<album_id>/regenerate_token', methods=['POST'])
- def regenerate_token(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     user = session.get('user')
-     if not (user == 'admin' or user == meta.get('owner')):
-         return '再発行権限がありません', 403
- 
-     regenerate_access_token(album_id)
-     flash('アクセストークンを再発行しました', 'success')
- 
-     redirect_target = 'album.admin_create_album' if user == 'admin' else 'album.create_album'
-     return redirect(url_for(redirect_target))
- 
- @album_bp.route('/access/<album_id>', methods=['GET', 'POST'])
- @event_gate
- def album_access(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     if session.get('user') == 'admin' or session.get('user') == meta.get('owner'):
--        session[f'auth_{album_id}'] = True
-+        _grant_album_auth(album_id)
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
-     token = request.args.get('token')
-     if token and token == meta.get('access_token'):
--        session[f'auth_{album_id}'] = True
-+        _grant_album_auth(album_id)
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
-     if request.method == 'POST':
-         return 'このアルバムはトークン式です', 403
- 
-     return render_template('access.html', album_id=album_id)
- 
- @album_bp.route('/<album_id>/')
- def album_home(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     user = session.get('user')
-     is_admin = (user == 'admin')
-     is_owner = user and meta.get('owner') == user
--    is_authed = session.get(f'auth_{album_id}') is True
-+    is_authed = _has_album_auth(album_id)
-     if not (is_admin or is_owner or is_authed):
-         return redirect(url_for('album.album_access', album_id=album_id))
- 
-     ext_user_nickname = _get_ext_user_nickname()
-     album_meta = _fetch_album_meta(album_id)
-     show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
- 
-     # ★追加：加工ロック一覧を取得
-     processing_list = []
-     try:
-         conn = get_db()
-         cur = conn.cursor(dictionary=True)
-         cur.execute("""
-             SELECT child_id, username, expires_at
-               FROM album_locks
-              WHERE album_id=%s
-              ORDER BY expires_at DESC
-         """, (album_id,))
-         rows = cur.fetchall() or []
-         cur.close()
-         conn.close()
- 
-         # child_id → 子アルバム名 に変換
-         child_map = {c["folder"]: c["name"] for c in meta.get("children", [])}
- 
-@@ -1261,51 +1295,51 @@ def album_home(album_id):
-         child["media_count"] = _count_child_media_items(album_id, child.get("folder"), mode)
-         child["media_unit"] = "本" if mode == "movie" else "枚"
- 
-     return render_template(
-         'album_home.html',
-         album_id=album_id, meta=meta,
-         is_admin=is_admin, is_owner=is_owner,
-         is_readonly=is_readonly,
-         processing_list=processing_list,   # ★追加
-         ext_user_nickname=ext_user_nickname,
-         completed_process_children=completed_process_children,
-         show_extlogin_nav=show_extlogin_nav,
-     )
- 
- @album_bp.route('/<album_id>/create_child', methods=['POST'])
- def create_child(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return redirect(url_for('album.album_access', album_id=album_id))
- 
-     # ★HDD保管中は子作成を禁止（アーカイブ扱い）
-     if is_album_readonly(album_id):
-         flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
--    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-+    if not _has_album_auth(album_id) and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
- 
-     folder_name = (request.form.get('child_name') or '').strip()
-     selected_mode = (request.form.get('child_mode') or 'normal').strip().lower()
-     if selected_mode not in ('normal', 'process', 'movie'):
-         selected_mode = 'normal'
- 
-     if not folder_name:
-         flash('子アルバム名を入力してください', 'danger')
-         return redirect(url_for('album.album_home', album_id=album_id))
- 
-     for child in meta.get('children', []):
-         if child.get('name') == folder_name:
-             flash('既に存在します', 'danger')
-             return redirect(url_for('album.album_home', album_id=album_id))
- 
-     child_uuid = add_child_row(album_id, folder_name, selected_mode)
-     os.makedirs(storage_child_dir(album_id, child_uuid, selected_mode), exist_ok=True)
- 
-     flash('子アルバムを作成しました', 'success')
-     return redirect(url_for('album.album_home', album_id=album_id))
- 
- # =============================================================================
- # アップロード（画像/加工/動画）
- # =============================================================================
-@@ -2088,66 +2122,66 @@ def view_child(album_id, child_id):
-         image_count=len(files),
-         meta=meta,
-         mode=mode,
-         lock=lock,
-         lock_expired=lock_expired,
-         zip_token=zip_token,
-         is_admin=is_admin,
-         is_owner=is_owner,
-         session=session,
-         history_list=history_list,
-         # ★追加：HDD保管中フラグをテンプレへ渡す
-         is_readonly=is_readonly,
-         ext_user_nickname=_get_ext_user_nickname(),
-         is_event_login=is_event_login,
-         event_process_members=event_process_members,
-         current_ext_user_id=current_ext_user_id,
-         current_user_process_status=current_user_process_status,
-         show_extlogin_nav=show_extlogin_nav,
-     )
- 
- # =============================================================================
- # サーブ（画像/動画/ポスター/ダウンロード）
- # =============================================================================
- @album_bp.route('/<album_id>/thumb/<child_id>/<filename>')
- def album_thumb(album_id, child_id, filename):
--    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-+    if not _has_album_auth(album_id) and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     # 両ルートを探索して実体から返す
-     for root in _get_roots_for_album(album_id):
-         p = os.path.join(root, album_id, child_id, 'thumbs', filename)
-         if os.path.isfile(p):
-             return send_file(p, conditional=True)
-     abort(404)
- 
- @album_bp.route('/<album_id>/<child_id>/process_status', methods=['POST'])
- def update_process_status(album_id, child_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return jsonify({"ok": False, "error": "album_not_found"}), 404
- 
--    is_authed = session.get(f'auth_{album_id}') is True
-+    is_authed = _has_album_auth(album_id)
-     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
- 
-     data = request.get_json(silent=True) or {}
-     try:
-         ext_user_id = int(data.get("ext_user_id"))
-     except (TypeError, ValueError):
-         return jsonify({"ok": False, "error": "invalid ext_user_id"}), 400
- 
-     request_flag = 1 if data.get("request_flag") else 0
-     complete_flag = 1 if data.get("complete_flag") else 0
-     prev_complete_flag = None
-     requester_id = None
-     if _is_ext_logged_in():
-         requester_id = session.get("ext_user_id")
-         if not requester_id:
-             ext_social_id = session.get("ext_user_social_id")
-             if ext_social_id:
-                 ext_user = _get_ext_user_by_social(ext_social_id)
-                 if ext_user:
-                     requester_id = ext_user.get("id")
-     if requester_id is not None:
-         try:
-             requester_id = int(requester_id)
-         except (TypeError, ValueError):
-@@ -2222,51 +2256,51 @@ def update_process_status(album_id, child_id):
-             request_row = db_get_one(
-                 """
-                 SELECT request_by
-                   FROM album_process
-                  WHERE ext_user_id=%s AND album_id=%s AND child_id=%s
-                 """,
-                 (ext_user_id, album_id, child_id),
-             )
-             request_by_id = None
-             if request_row:
-                 try:
-                     request_by_id = int(request_row.get("request_by"))
-                 except (TypeError, ValueError):
-                     request_by_id = None
-             _notify_requester_process_completion(album_id, child_id, request_by_id, meta, event_meta)
-     except Exception as e:
-         current_app.logger.warning("process completion notify failed: %s", e)
-     return jsonify({"ok": True})
- 
- @album_bp.route('/<album_id>/<child_id>/process_request', methods=['POST'])
- def request_process(album_id, child_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return jsonify({"ok": False, "error": "album_not_found"}), 404
- 
--    is_authed = session.get(f'auth_{album_id}') is True
-+    is_authed = _has_album_auth(album_id)
-     if not (is_authed or session.get('user') == 'admin' or _is_ext_logged_in()):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
- 
-     data = request.get_json(silent=True) or {}
-     members = data.get("members") or []
-     if not isinstance(members, list):
-         return jsonify({"ok": False, "error": "invalid_members"}), 400
- 
-     event_meta = _fetch_album_meta(album_id)
-     if not event_meta or not event_meta.get("event_id"):
-         return jsonify({"ok": False, "error": "event_not_found"}), 404
- 
-     event_id = int(event_meta["event_id"])
-     event_members = _fetch_event_process_members(event_id)
-     valid_user_ids = {int(m.get("user_id")) for m in event_members}
- 
-     _ensure_album_process_table()
- 
-     requester_id = None
-     if _is_ext_logged_in():
-         requester_id = session.get("ext_user_id")
-         if not requester_id:
-             ext_social_id = session.get("ext_user_social_id")
-             if ext_social_id:
-                 ext_user = _get_ext_user_by_social(ext_social_id)
-@@ -2335,81 +2369,81 @@ def request_process(album_id, child_id):
-                 request_by_email = (requester or {}).get("email")
-             current_app.logger.info(
-                 "notify: pre_send kind=process_request album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
-                 album_id,
-                 child_id,
-                 request_by_email,
-                 len(recipients),
-                 recipients,
-                 "request_flag=1 AND complete_flag=0",
-             )
-             for c in contacts:
-                 if not c.get("email"):
-                     continue
-                 if int(c.get("notify_album_process", 1)) != 1:
-                     continue
-                 try:
-                     send_mail(c["email"], subject, body)
-                     sent_count += 1
-                 except Exception as e:
-                     current_app.logger.warning("process request mail failed to %s: %s", c.get("email"), e)
- 
-     return jsonify({"ok": True, "sent": sent_count})
- 
- @album_bp.route('/<album_id>/image/<child_id>/<filename>')
- def image(album_id, child_id, filename):
--    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-+    if not _has_album_auth(album_id) and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     abs_path = _open_path_anyroot(album_id, child_id, filename, mode='normal')
-     if not abs_path:
-         abort(404)
-     return send_file(abs_path, conditional=True)
- 
- # 置き換え：動画本体
- @album_bp.route('/<album_id>/movie/raw/<child_id>/<path:filename>')
- def movie_raw(album_id, child_id, filename):
--    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-+    if not _has_album_auth(album_id) and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     abs_path = _movie_find_abs(album_id, child_id, filename)
-     if not abs_path:
-         abort(404)
-     return send_file(abs_path, conditional=True)
- 
- # 置き換え：ポスター
- @album_bp.route('/<album_id>/movie/poster/<child_id>/<path:filename>')
- def movie_poster(album_id, child_id, filename):
--    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-+    if not _has_album_auth(album_id) and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     abs_path = _movie_find_abs(album_id, child_id, filename)
-     if not abs_path:
-         abort(404)
-     return send_file(abs_path, conditional=True)
- 
- # 置き換え：ダウンロード
- @album_bp.route('/<album_id>/movie/download/<child_id>/<path:filename>')
- def movie_download(album_id, child_id, filename):
--    if not session.get(f'auth_{album_id}') and session.get('user') != 'admin':
-+    if not _has_album_auth(album_id) and session.get('user') != 'admin':
-         return redirect(url_for('album.album_access', album_id=album_id))
-     abs_path = _movie_find_abs(album_id, child_id, filename)
-     if not abs_path:
-         abort(404)
-     return send_file(abs_path, as_attachment=True,
-                      download_name=os.path.basename(abs_path),
-                      conditional=True)
- 
- # =============================================================================
- # アルバム作成・管理・削除
- # =============================================================================
- @album_bp.route('/create_album', methods=['GET', 'POST'])
- def create_album():
-     return redirect(url_for('album.admin_create_album'))
- 
- @album_bp.route('/<album_id>/delete_album', methods=['POST'])
- def delete_album(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     if session.get('user') != 'admin' and session.get('user') != meta.get('owner'):
-         return '削除権限がありません', 403
- 
-     # 写真はSSD/HDDのどちらにも存在し得る。動画は固定。
-@@ -2548,51 +2582,51 @@ def download_latest(album_id, child_id):
-         return "加工者名は必須です。", 400
- 
-     ok, msg = try_acquire_lock_db(album_id, child_id, username, ttl_sec=LOCK_TTL_SEC)
-     if not ok:
-         return msg, 409
- 
-     # lock.json は表示側の child_path（片側）に作る
-     lock_path = os.path.join(_prefer_existing_child_dir(album_id, child_id, mode), 'lock.json')
-     try:
-         with open(lock_path, 'w') as f:
-             json.dump({"user": username, "timestamp": int(time.time())}, f, ensure_ascii=False)
-     except Exception:
-         pass
- 
-     return send_file(latest_path, as_attachment=True, download_name=latest)
- 
- @album_bp.route('/<album_id>/unlock/<child_id>', methods=['POST'])
- def unlock_any(album_id, child_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     user = session.get('user')
-     is_admin = (user == 'admin')
-     is_owner = (user == meta.get('owner'))
--    is_authed = session.get(f'auth_{album_id}') is True
-+    is_authed = _has_album_auth(album_id)
-     if not (is_admin or is_owner or is_authed):
-         return redirect(url_for('album.album_access', album_id=album_id))
+ @bp.route("/line/callback")
+ def line_callback():
++    _trim_line_oauth_state_session(max_items=1)
+     # ---- state 検証 ----
+     state_token = request.args.get("state")
+     if not state_token:
+         flash("LINEログインに失敗しました。（stateなし）", "error")
+         return redirect(url_for("external_login_user.index"))
  
      try:
-         release_lock_db(album_id, child_id, username=user or None, force=False)
-     except Exception:
-         pass
+         payload = _state_signer().loads(state_token)
+     except BadSignature:
+         flash("LINEログインに失敗しました。（state改ざん）", "error")
+         return redirect(url_for("external_login_user.index"))
  
-     child_meta = next((c for c in meta.get("children", []) if c.get("folder") == child_id), None)
-     mode = child_meta.get("mode", "normal") if child_meta else "normal"
-     child_path = _prefer_existing_child_dir(album_id, child_id, mode)
+     next_path = _sanitize_next(payload.get("n"))
+     ip_expected = payload.get("ip", "")
+     ua_expected = payload.get("ua", "")
+     issued_at = int(payload.get("t", 0) or 0)
+     jti = payload.get("jti", "")
  
-     lock_path = os.path.join(child_path, 'lock.json')
-     if os.path.exists(lock_path):
-         try:
-             os.remove(lock_path)
-             flash('🔓 ロックを解除しました', 'success')
-         except Exception as e:
-             flash(f'解除に失敗しました: {e}', 'danger')
+     if _now_ts() - issued_at > 15 * 60:
+         next_path = url_for(".index")
+     if jti and _is_jti_used(jti):
+         next_path = url_for(".index")
      else:
-         flash('ロックは存在しません', 'info')
+         _mark_jti_used(jti or "")
  
-     return redirect(url_for('album.view_child', album_id=album_id, child_id=child_id))
+     if ip_expected and _client_ip_prefix(request.remote_addr or "") != ip_expected:
+         next_path = url_for(".index")
+     if ua_expected and _ua_sha256(request.headers.get("User-Agent", "")) != ua_expected:
+         next_path = url_for(".index")
  
- @album_bp.route('/<album_id>/force_unlock/<child_id>', methods=['POST'])
-
-
-diff --git a/tickets/tickets/routes.py b/tickets/tickets/routes.py
-index 022fe8bdfa288999e458243f9f05ef3aca818317..b717d5292ae2508395b2c955d808fa5f428acd38 100644
---- a/tickets/tickets/routes.py
-+++ b/tickets/tickets/routes.py
-@@ -64,62 +64,62 @@ def enqueue_thumbnail_job_for_batch(batch_id: int):
-     """
+     # ---- トークン交換 & プロフィール取得 ----
+     code = request.args.get("code")
+     if not code:
+         flash("LINEログインに失敗しました。（codeなし）", "error")
+         return redirect(url_for("external_login_user.index"))
+ 
      try:
-         os.makedirs(THUMB_QUEUE_DIR, exist_ok=True)
-         job = {
-             "mode": "tickets",
-             "album_id": str(batch_id),
-             "child_id": "-"  # 未使用
-         }
-         name = f"tickets_{batch_id}_{uuid4().hex}.json"
-         path = os.path.join(THUMB_QUEUE_DIR, name)
-         with open(path, "w", encoding="utf-8") as f:
-             json.dump(job, f, ensure_ascii=False)
-         current_app.logger.info(f"[THUMB-QUEUE] enqueued {path}")
-         return True
+         redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
+         token = oauth.line.fetch_access_token(grant_type="authorization_code", code=code, redirect_uri=redirect_uri)
+         if isinstance(token, dict):
+             token.pop("id_token", None)
+         prof = oauth.line.get("https://api.line.me/v2/profile", token=token).json()
++        _trim_line_oauth_state_session(max_items=0)
      except Exception:
-         current_app.logger.exception("enqueue_thumbnail_job_for_batch failed")
-         return False
+         current_app.logger.exception("LINE token/profile error")
+         flash("LINEログインに失敗しました。", "error")
+         return redirect(url_for("external_login_user.index"))
  
- def _new_form_token() -> str:
-     token = secrets.token_urlsafe(16)
-     session['tickets_admin_token'] = token
-     # 既に使ったトークンセットを保持（セッション内）
-     used = session.get('tickets_admin_used_tokens', set())
-     if isinstance(used, list):
-         used = set(used)
--    session['tickets_admin_used_tokens'] = list(used)
-+    session['tickets_admin_used_tokens'] = list(used)[-20:]
-     return token
+     sub = (prof or {}).get("userId")
+     if not sub:
+         flash("LINEユーザーIDを取得できませんでした。", "error")
+         return redirect(url_for("external_login_user.index"))
  
- def _consume_form_token(token: str) -> bool:
-     saved = session.get('tickets_admin_token')
-     if not token or token != saved:
-         return False
-     used = set(session.get('tickets_admin_used_tokens', []))
-     if token in used:
-         return False
-     used.add(token)
--    session['tickets_admin_used_tokens'] = list(used)
-+    session['tickets_admin_used_tokens'] = list(used)[-20:]
-     # 直後の再送信を防ぐため、新しいトークンに更新
-     session['tickets_admin_token'] = secrets.token_urlsafe(16)
-     return True
+     session["ext_user_social_id"] = sub
  
- def _gen_short_code(batch_id: int, existing: set[str] | None = None) -> str:
-     """
-     短縮コード生成: <batch_id>-<8桁16進(小文字)>
-     バッチ内での重複を避けるため existing セットを考慮して再生成。
-     """
-     existing = existing or set()
-     while True:
-         token8 = secrets.token_hex(4)  # 8桁16進（小文字）
-         code = f"{batch_id}-{token8}"
-         if code not in existing:
-             return code
+     # ---- 画像ダウンロード→サーバー保存（5MBまで / GIFはそのまま、他は最大辺1024px）----
+     def _download_and_save_avatar(url: str, *, timeout: int = 8) -> str | None:
+         if not url or not isinstance(url, str):
+             return None
+         try:
+             r = requests.get(url, timeout=timeout, stream=True, headers={"User-Agent": "MFU/1.0"})
+             r.raise_for_status()
+             ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+             # 5MB上限
+             max_bytes = 5 * 1024 * 1024
+             data = b""
+             for chunk in r.iter_content(256 * 1024):
+                 if not chunk:
+diff --git a/external_login_user/utils.py b/external_login_user/utils.py
+index 9951d7c3c5cdbd129a32a3c58cc890c5d42d21b8..e6ac12e94fa7b4c0ac96ba5589fc43466ae6f073 100644
+--- a/external_login_user/utils.py
++++ b/external_login_user/utils.py
+@@ -69,51 +69,51 @@ def _to_local_next(u: str) -> str:
+     return "/external-login/"
  
- # =========================
- # ✅ 追加：この BluePrint はログイン済みユーザーのみ許可
- # =========================
- @tickets_bp.before_request
- def _tickets_login_required():
-     """
-     管理系のみログイン必須にする。
-     公開系（/t/, /s/, /tickets/public, /tickets/api, /tickets/thumb, /tickets/preview, /tickets/dl）は除外。
-     """
+ 
+ def _require_ext_login():
+     """未ログインなら安全化した next を保持して LINE ログインへ"""
+     if session.get("ext_user_id"):
+         return None
+ 
+     raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
+ 
+     # 絶対URLや外部ドメインを排除し、/external-login/ 配下の相対URLだけ許可
+     from urllib.parse import urlparse
+     def _to_local_next(u: str) -> str:
+         if not u:
+             return "/external-login/"
+         if u.startswith("/") and not u.startswith("//"):
+             return u
+         try:
+             p = urlparse(u)
+             if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+                 return p.path + (("?" + p.query) if p.query else "")
+         except Exception:
+             pass
+         return "/external-login/"
+ 
+-    local_next = _to_local_next(raw_next)
++    local_next = _to_local_next(raw_next)[:512]
+     session["ext_after_login_next"] = local_next
+     return redirect(url_for("external_login_user.line_login", next=local_next))
+ 
+ def _is_mfu_logged_in() -> bool:
+     return bool(session.get("user"))
+ 
+ 
+ def remember_session_map_value(map_key: str, item_key: str, value: Any, *, max_items: int = SESSION_MAP_MAX_ITEMS):
+     """cookie session の肥大化防止のため、少数件だけ保持する。"""
+     key = str(item_key or "").strip()
+     if not key:
+         return
+ 
+     stored = session.get(map_key)
+     data = dict(stored) if isinstance(stored, dict) else {}
+     data.pop(key, None)
+ 
+     item = value
+     if isinstance(item, str):
+         item = item[:SESSION_VALUE_MAX_LEN]
+     data[key] = item
+ 
+     while len(data) > max_items:
+         oldest = next(iter(data), None)
+         if oldest is None:

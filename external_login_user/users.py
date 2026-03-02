@@ -956,6 +956,15 @@ def _mark_jti_used(jti: str):
     pass
 
 
+def _trim_line_oauth_state_session(max_items: int = 2) -> None:
+    """Authlib が session に保持する LINE OAuth state を少数に制限して Cookie肥大化を防ぐ。"""
+    state_keys = [k for k in session.keys() if isinstance(k, str) and k.startswith("_state_line_")]
+    if len(state_keys) <= max_items:
+        return
+    for key in sorted(state_keys)[:-max_items]:
+        session.pop(key, None)
+
+
 @bp.route("/line/login")
 def line_login():
     # 1) next を安全化
@@ -974,7 +983,7 @@ def line_login():
             pass
         return None
 
-    local_next = _to_local_next(raw_next) or "/external-login/"
+    local_next = (_to_local_next(raw_next) or "/external-login/")[:512]
     session["ext_after_login_next"] = local_next  # ← セッションにも保持
 
     # 2) 署名付き state を作って callback で検証できるようにする
@@ -989,10 +998,12 @@ def line_login():
 
     # 3) LINE 認可ページへ（state を必ず付ける）
     redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
+    _trim_line_oauth_state_session(max_items=1)
     return oauth.line.authorize_redirect(redirect_uri=redirect_uri, state=state_token)  # type: ignore[arg-type]
 
 @bp.route("/line/callback")
 def line_callback():
+    _trim_line_oauth_state_session(max_items=1)
     # ---- state 検証 ----
     state_token = request.args.get("state")
     if not state_token:
@@ -1035,6 +1046,7 @@ def line_callback():
         if isinstance(token, dict):
             token.pop("id_token", None)
         prof = oauth.line.get("https://api.line.me/v2/profile", token=token).json()
+        _trim_line_oauth_state_session(max_items=0)
     except Exception:
         current_app.logger.exception("LINE token/profile error")
         flash("LINEログインに失敗しました。", "error")
