@@ -3930,6 +3930,39 @@ def api_rooms_update(event_id: int, room_id: str):
     return jsonify({"ok": True})
 
 
+@chat_bp.post("/api/events/<int:event_id>/rooms/<room_id>/delete")
+def api_rooms_delete(event_id: int, room_id: str):
+    actor = get_chat_actor()
+    if not actor or not _can_manage_rooms(event_id, actor):
+        return jsonify({"ok": False}), 403
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    room = _get_room(event_id, room_id, allow_archived=True)
+    if not room or int(room.get("is_main") or 0) == 1:
+        return jsonify({"ok": False}), 404
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE chat_rooms
+               SET is_archived=1,
+                   updated_at=%s,
+                   updated_by_actor_type=%s,
+                   updated_by_actor_id=%s
+             WHERE event_id=%s AND room_id=%s
+            """,
+            (datetime.utcnow(), actor["actor_type"], actor["actor_id"], event_id, room_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+    return jsonify({"ok": True})
+
+
 @chat_bp.get("/api/events/<int:event_id>/rooms/<room_id>/members")
 def api_room_members(event_id: int, room_id: str):
     actor = get_chat_actor()
