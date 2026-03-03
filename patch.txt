@@ -1,130 +1,56 @@
-diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index 913f9279826e3386001f0f8a8eaa5af2061bf7fa..19f786a895896f7517a42ff4245ba88c52aa531f 100644
---- a/external_login_user/admin.py
-+++ b/external_login_user/admin.py
-@@ -123,58 +123,52 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
-     ev_uuid_b = ev_row[1] if isinstance(ev_row, tuple) else ev_row["event_uuid"]
-     ev_uuid_str = _uuid_bytes_to_str(ev_uuid_b) or ""
-     view_url = f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}"
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 3ade00590f1e67f5b4c5ec556934371fc08e6342..e4ce830716e52423094e4349e97af2f61cc29cef 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -70,51 +70,50 @@
+ }
  
-     # 対象メンバーの現状
-     cur.execute("""
-         SELECT m.status, u.email, u.nickname
-           FROM mfu_event_member m
-           JOIN external_login_user u ON u.id=m.user_id
-          WHERE m.event_id=%s AND m.user_id=%s
-          LIMIT 1
-     """, (event_id, user_id))
-     row = cur.fetchone()
-     if not row:
-         cur.close(); db.close()
-         return False, "member not found", new_status
-     old_status = row[0] if isinstance(row, tuple) else row["status"]
-     to_email   = row[1] if isinstance(row, tuple) else row["email"]
-     nickname   = row[2] if isinstance(row, tuple) else row["nickname"]
+ .chat-bubble-wrap {
+   display: flex;
+   align-items: flex-end;
+   gap: 6px;
+   min-width: 0;
+   flex: 0 0 auto;
+   position: relative;
+ }
  
-     # 変化なしならそのままOK
-     if old_status == new_status:
-         cur.close(); db.close()
-         return True, "no change", new_status
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+   gap: 12px;
+ }
  
--    # 更新
--    cur.execute("""
--        UPDATE mfu_event_member
--           SET status=%s
--         WHERE event_id=%s AND user_id=%s
--         LIMIT 1
--    """, (new_status, event_id, user_id))
--    db.commit()
-+    # 更新（承認遷移時の System 自動投稿は共通関数で処理）
-+    update_event_member_status(event_id=event_id, user_id=user_id, new_status=new_status)
+ .chat-bubble {
+   display: inline-block;
+   max-width: min(calc(100% - 64px), 28rem);
+   padding: 8px 12px;
+   border-radius: 16px;
+   line-height: 1.4;
+   white-space: normal;
+   overflow-wrap: break-word;
+   word-break: normal;
+-  min-width: min(8ch, 100%);
+   flex: 0 0 auto;
+   position: relative;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
+   -webkit-user-select: none;
+   user-select: none;
+   -webkit-touch-callout: none;
+   touch-action: manipulation;
+   -webkit-tap-highlight-color: transparent;
+ }
  
-     # メール通知（宛先・UUIDがあれば）→ send_mail 統一
-     if to_email and ev_uuid_str:
-         try:
-             from flask import current_app
-             # ★ 日本語ラベルへの変換
-             STATUS_JA = {"approved": "承認", "rejected": "拒否", "pending": "保留"}
-             old_j = STATUS_JA.get(old_status, old_status)
-             new_j = STATUS_JA.get(new_status, new_status)
+ .chat-body {
+   min-width: 0;
+   overflow-wrap: break-word;
+   word-break: normal;
+ }
  
-             subject = f"【{ev_title}】参加ステータスが更新されました"
-             body = (
-                 f"{nickname or '参加者'} 様\n\n"
-                 f"イベント「{ev_title}」の参加ステータスが「{old_j}」から「{new_j}」に更新されました。\n"
-                 f"詳細は以下のページをご確認ください。\n{view_url}\n"
-             )
- 
-             send_mail(
-                 to=to_email,
-                 subject=subject,
-                 body=body,
-                 event_uuid=ev_uuid_str,  # From: <UUID@mail.iori0624.jp>
-             )
-         except Exception as e:
-             current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 0b85a35062b0c03e1cf7718736e7d016b236b90a..f726cbabc56c388de57b43eb222ab4d286babf82 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -245,58 +245,52 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
-     ev_uuid_b = ev_row[1] if isinstance(ev_row, tuple) else ev_row["event_uuid"]
-     ev_uuid_str = _uuid_bytes_to_str(ev_uuid_b) or ""
-     view_url = f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}"
- 
-     # 対象メンバーの現状
-     cur.execute("""
-         SELECT m.status, u.email, u.nickname
-           FROM mfu_event_member m
-           JOIN external_login_user u ON u.id = m.user_id
-          WHERE m.event_id=%s AND m.user_id=%s
-          LIMIT 1
-     """, (event_id, user_id))
-     row = cur.fetchone()
-     if not row:
-         cur.close(); db.close()
-         return False, "member not found", new_status
-     old_status = row[0] if isinstance(row, tuple) else row["status"]
-     to_email   = row[1] if isinstance(row, tuple) else row["email"]
-     nickname   = row[2] if isinstance(row, tuple) else row["nickname"]
- 
-     # 変化なしならそのままOK
-     if old_status == new_status:
-         cur.close(); db.close()
-         return True, "no change", new_status
- 
--    # 更新
--    cur.execute("""
--        UPDATE mfu_event_member
--           SET status=%s
--         WHERE event_id=%s AND user_id=%s
--         LIMIT 1
--    """, (new_status, event_id, user_id))
--    db.commit()
-+    # 更新（承認遷移時の System 自動投稿は共通関数で処理）
-+    update_event_member_status(event_id=event_id, user_id=user_id, new_status=new_status)
- 
-     # メール通知（宛先・UUIDがあれば）→ send_mail に統一
-     if to_email and ev_uuid_str:
-         try:
-             subject = f"【{ev_title}】参加ステータスが更新されました"
-             body = (
-                 f"{nickname or '参加者'} 様\n\n"
-                 f"イベント「{ev_title}」の参加ステータスが「{old_status}」→「{new_status}」に更新されました。\n"
-                 f"詳細は以下のページをご確認ください。\n{view_url}\n"
-             )
-             send_mail(
-                 to=to_email,
-                 subject=subject,
-                 body=body,
-                 event_uuid=ev_uuid_str,
-             )
-         except Exception as e:
-             current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
- 
-     cur.close(); db.close()
-     return True, "ok", new_status
- 
- 
- def _get_acl_admin_emails(event_id: int) -> list[str]:
-     """
+ /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
+ .chat-bubble .chat-body,
+ .chat-bubble .chat-body * {
+   -webkit-user-select: text;
+   user-select: text;
+   -webkit-touch-callout: default;
+ }
