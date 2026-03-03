@@ -235,6 +235,13 @@
   text-decoration: underline;
 }
 
+.chat-read-time {
+  display: block;
+  font-size: 0.72rem;
+  color: #7a7a7a;
+  line-height: 1.1;
+}
+
 .chat-read-list {
   margin-top: 2px;
   padding: 6px 8px;
@@ -3960,6 +3967,22 @@ function openFulltextModal(row) {
     }
   }
 
+  function normalizeActorKeyForCompare(actorType, actorId) {
+    const t = String(actorType || '');
+    const i = String(actorId || '');
+    if (t === 'admin') return 'admin';
+    return `${t}:${i}`;
+  }
+
+  function isSameActorByKey(actorType, actorId, targetKey) {
+    const normTarget = String(targetKey || '');
+    if (!normTarget) return false;
+    const normActor = normalizeActorKeyForCompare(actorType, actorId);
+    if (normActor === normTarget) return true;
+    if (normActor === 'admin' && (normTarget === 'admin:1' || normTarget === 'admin:admin' || normTarget === 'admin')) return true;
+    return false;
+  }
+
   function applyReadUpdate(readState) {
     if (!readState?.actor_type || !readState?.actor_id) return;
     const key = `${readState.actor_type}:${readState.actor_id}`;
@@ -3990,9 +4013,9 @@ function openFulltextModal(row) {
     const readers = [];
     for (const entry of state.readStateByActor.values()) {
       if (Number(entry.last_read_message_id || 0) < messageId) continue;
-      const actorKey = `${entry.actor_type}:${entry.actor_id}`;
-      if (senderId && actorKey === senderId) continue;
-      readers.push(entry.display_name || actorKey);
+      if (senderId && isSameActorByKey(entry.actor_type, entry.actor_id, senderId)) continue;
+      if (meId && isSameActorByKey(entry.actor_type, entry.actor_id, meId)) continue;
+      readers.push(entry.display_name || `${entry.actor_type}:${entry.actor_id}`);
     }
     readers.sort((a, b) => a.localeCompare(b, 'ja'));
 
@@ -4004,8 +4027,10 @@ function openFulltextModal(row) {
       return;
     }
 
+    const timeText = (row.querySelector('.chat-time')?.textContent || '').trim();
+    const readLabel = dmMode ? '既読' : `既読 ${readers.length}`;
     indicator.classList.remove('d-none');
-    indicator.textContent = `既読 ${readers.length}`;
+    indicator.innerHTML = `${escapeHtml(readLabel)}${timeText ? `<span class="chat-read-time">${escapeHtml(timeText)}</span>` : ''}`;
     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
   }
 
