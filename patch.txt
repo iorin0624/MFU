@@ -1,294 +1,72 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 966aecc0909e75522e5dae8a0e3a04418d54758d..4db9b87177529af87329209f57341291e73e08ba 100644
+index dd79bb88cfe14901a9317890bebe3ee43d40303e..8e64c448817537337209d2c564fd968f01ea6123 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1500,55 +1500,62 @@ def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any],
+@@ -3383,57 +3383,64 @@ def _log_notification(event_id: int, kind: str, payload: dict[str, Any], sent_co
+         current_app.logger.warning("chat notification log insert failed", exc_info=True)
      finally:
          cur.close()
          db.close()
  
  
- def _actor_sender_id(actor_type: str, actor_id: str) -> str:
-     return f"{actor_type}:{actor_id}"
+ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any], metrics: dict[str, Any] | None = None) -> int:
+     if not _ensure_chat_push_schema():
+         return 0
  
- 
- def _to_utc_datetime(value: Any) -> datetime:
-     if isinstance(value, datetime):
-         dt = value
-     else:
-         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=ZoneInfo("UTC"))
-     return dt.astimezone(ZoneInfo("UTC"))
- 
- 
- 
- 
- def _to_jst(value: Any) -> datetime:
-     dt_utc = _to_utc_datetime(value)
-     return dt_utc.astimezone(JST)
- 
-+
-+def _format_jst_time_hm(dt_jst: datetime) -> str:
-+    try:
-+        return dt_jst.strftime("%-H:%M")
-+    except ValueError:
-+        return dt_jst.strftime("%H:%M").lstrip("0") or "0:00"
-+
- def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     dt_utc = _to_utc_datetime(created_at)
-     dt_jst = dt_utc.astimezone(JST)
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
--    time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
-+    time_label = _format_jst_time_hm(dt_jst)
-     return dt_utc.isoformat(), date_label, time_label
- 
- 
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-     avatar_cache: dict[str, str] | None = None,
- ) -> dict[str, Any]:
-     sender_actor_type = str(msg["sender_actor_type"])
-     sender_actor_id = str(msg["sender_actor_id"])
-     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
-     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
-     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
-     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
- 
-     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-     reply_to_sender_avatar_url = None
-     if reply_to_sender_actor_type and reply_to_sender_actor_id:
-         reply_to_sender_avatar_url = _resolve_sender_avatar_url(
-             str(reply_to_sender_actor_type),
-             str(reply_to_sender_actor_id),
-             avatar_cache=avatar_cache,
-         )
-@@ -3424,160 +3431,133 @@ def _get_dm_conversation_by_uuid(dm_uuid: str) -> dict[str, Any] | None:
- 
- 
- def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
-     conv = _get_dm_conversation_by_uuid(conversation_uuid)
-     if not conv:
-         return False
-     if str(conv.get("dm_type") or "") == "user_user" and not _chat_dm_enable_user_user():
-         return False
-     db = get_db()
-     cur = db.cursor(dictionary=True)
      try:
-         cur.execute(
-             """
-             SELECT 1 FROM chat_dm_participants
-             WHERE conversation_id=%s AND actor_key=%s
-             LIMIT 1
-             """,
-             (conv["id"], actor_key),
-         )
-         return bool(cur.fetchone())
-     finally:
-         cur.close()
-         db.close()
+         from pywebpush import webpush, WebPushException
+     except ImportError:
+         return 0
  
- 
--def _load_dm_messages(conversation_id: int, actor_key: str, limit: int = 200) -> list[dict[str, Any]]:
-+def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", limit: int = 200) -> list[dict[str, Any]]:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT id, sender_actor_key, body_text, created_at
-             FROM chat_dm_messages
-             WHERE conversation_id=%s
-             ORDER BY id DESC
-             LIMIT %s
-             """,
-             (conversation_id, max(1, min(int(limit), 200))),
-         )
-         rows = list(reversed(cur.fetchall() or []))
-     finally:
-         cur.close()
-         db.close()
- 
-     messages: list[dict[str, Any]] = []
-     for row in rows:
--        sender_key = str(row.get("sender_actor_key") or "")
--        created_at = row.get("created_at")
--        sender_name = _actor_key_to_display_name(sender_key)
--        sender_type, _, sender_id = sender_key.partition(":")
--        sender_id = sender_id or sender_key
--        msg = {
--            "id": int(row.get("id") or 0),
--            "sender_id": _actor_sender_id(sender_type, sender_id),
--            "sender_display_name": sender_name,
--            "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
--            "body": _linkify_text(str(row.get("body_text") or "")),
--            "body_plain": str(row.get("body_text") or ""),
--            "body_plain_excerpt": _build_plain_excerpt(str(row.get("body_text") or "")),
--            "created_at_iso": created_at.isoformat() if created_at else "",
--            "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
--            "created_at_jst_hhmm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
--            "created_at_jst_date_label": _to_jst(created_at).strftime("%Y/%m/%d") if created_at else "",
--            "is_me": sender_key == actor_key,
--            "reply_to_message_id": None,
--            "thread_root_id": None,
--            "thread_reply_count": 0,
--            "reply_to_sender_display_name": None,
--            "reply_to_body_plain_excerpt": None,
--            "reply_to_sender_avatar_url": None,
--            "deleted_flag": 0,
--            "deleted_by_actor_type": None,
--            "can_delete": False,
--            "can_edit": False,
--            "edited_flag": 0,
--            "my_reaction": None,
--            "reactions_summary": [],
--            "images": [],
--        }
--        messages.append(msg)
-+        row["dm_uuid"] = dm_uuid
-+        messages.append(_dm_message_to_payload(row, actor_key))
-     return messages
- 
- 
- def _save_dm_message(conversation: dict[str, Any], sender_actor_key: str, body: str) -> dict[str, Any]:
-     now = datetime.utcnow()
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             INSERT INTO chat_dm_messages (conversation_id, sender_actor_key, body_type, body_text, created_at)
-             VALUES (%s, %s, 'text', %s, %s)
-             """,
-             (conversation["id"], sender_actor_key, body, now),
-         )
-         message_id = int(cur.lastrowid)
-         cur.execute(
-             """
-             UPDATE chat_dm_conversations
-             SET last_message_id=%s, last_message_at=%s
-             WHERE id=%s
-             """,
-             (message_id, now, conversation["id"]),
-         )
-         db.commit()
-         return {"id": message_id, "conversation_id": conversation["id"], "sender_actor_key": sender_actor_key, "body_text": body, "created_at": now}
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> dict[str, Any]:
-     sender_key = str(message.get("sender_actor_key") or "")
-     sender_type, _, sender_id = sender_key.partition(":")
-     sender_id = sender_id or sender_key
-     created_at = message.get("created_at")
-+    created_at_iso = ""
-+    created_at_jst_date_label = ""
-+    created_at_jst_time_hm = ""
-+    if created_at:
-+        created_at_iso, created_at_jst_date_label, created_at_jst_time_hm = _format_jst_labels(created_at)
-     dm_uuid = str(message.get("dm_uuid") or "")
-     body_text = str(message.get("body_text") or "")
-     return {
-         "id": int(message.get("id") or 0),
-         "dm_uuid": dm_uuid,
-         "room_id": f"dm:{dm_uuid}",
-         "sender_id": _actor_sender_id(sender_type, sender_id),
-         "sender_display_name": _actor_key_to_display_name(sender_key),
-         "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
-         "body": body_text,
-         "body_text": body_text,
-         "body_html": _plain_to_body_html(body_text),
-         "body_plain": body_text,
-         "body_plain_excerpt": _build_plain_excerpt(body_text),
--        "created_at_iso": created_at.isoformat() if created_at else "",
-+        "created_at_iso": created_at_iso,
-         "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
--        "created_at_jst_hhmm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
--        "created_at_jst_time_hm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
--        "created_at_jst_date_label": _to_jst(created_at).strftime("%Y/%m/%d") if created_at else "",
-+        "created_at_jst_hhmm": created_at_jst_time_hm,
-+        "created_at_jst_time_hm": created_at_jst_time_hm,
-+        "created_at_jst_date_label": created_at_jst_date_label,
-         "is_me": sender_key == current_actor_key,
-         "reply_to_message_id": None,
-         "thread_root_id": None,
-         "thread_reply_count": 0,
-         "deleted_flag": 0,
-         "edited_flag": 0,
-         "reactions_summary": [],
-         "my_reaction": None,
-         "images": [],
-     }
- 
- 
- 
- def _split_actor_key(actor_key: str) -> tuple[str, str]:
-     value = str(actor_key or "")
-     if ":" not in value:
-         return value, value
-     actor_type, actor_id = value.split(":", 1)
-     if actor_type == "admin":
-         return "admin", "admin"
-     return actor_type, actor_id
- 
- 
- def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
-     db = get_db()
-@@ -3750,51 +3730,51 @@ def dm_inbox():
- @chat_bp.get("/dm/room/<uuid>")
- def dm_room(uuid: str):
-     actor = get_chat_actor()
-     actor_key = get_chat_actor_key(actor)
-     if not actor or not actor_key:
-         abort(403)
-     if not can_access_dm(uuid, actor_key):
-         abort(403)
- 
-     conversation = _get_dm_conversation_by_uuid(uuid)
-     if not conversation:
-         abort(404)
+     public = os.getenv("CHAT_VAPID_PUBLIC_KEY")
+     private = os.getenv("CHAT_VAPID_PRIVATE_KEY")
+     subject = os.getenv("CHAT_VAPID_SUBJECT", "mailto:admin@example.com")
+     if not private or not public:
+         return 0
  
      db = get_db()
      cur = db.cursor(dictionary=True)
+     sent = 0
      try:
++        actor_ids = [str(actor_id)]
++        if str(actor_type) == "admin":
++            # DM側のactor_keyは admin:1 を使うが、push購読は admin ユーザー名で保存される。
++            # どちらで来ても同一管理者として購読を引けるようにする。
++            actor_ids.extend(["admin", "1"])
++        actor_ids = list(dict.fromkeys([x for x in actor_ids if x]))
++        placeholders = ",".join(["%s"] * len(actor_ids))
          cur.execute(
-             "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
-             (conversation["id"], actor_key),
+-            """
++            f"""
+             SELECT id, endpoint, p256dh, auth
+               FROM chat_push_subscriptions
+-             WHERE actor_type=%s AND actor_id=%s
++             WHERE actor_type=%s AND actor_id IN ({placeholders})
+             """,
+-            (actor_type, actor_id),
++            (actor_type, *actor_ids),
          )
-         peer = cur.fetchone() or {}
-     finally:
-         cur.close()
-         db.close()
+         subs = cur.fetchall() or []
+         if metrics is not None:
+             metrics["subscription_count"] = int(metrics.get("subscription_count", 0)) + len(subs)
  
--    messages = _load_dm_messages(int(conversation["id"]), actor_key)
-+    messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
-     peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
-     return render_template(
-         "chat/room.html",
-         actor=actor,
-         current_user_id=get_chat_actor_key(actor),
-         event={"id": 0, "title": "DM"},
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-         csrf_token=_chat_csrf(),
-         can_broadcast=False,
-         can_manage_rooms=False,
-         accessible_rooms=[],
-         active_room={"room_id": f"dm:{uuid}", "room_name": peer_name, "is_main": 1},
-         default_avatar_url=_default_avatar_url(),
-         nav_mode="chat",
-         dm_mode=True,
-         dm_uuid=uuid,
-         dm_room_id=f"dm:{uuid}",
-         peer_display_name=peer_name,
-     )
- 
- 
- @chat_bp.post("/dm/api/send")
- def dm_api_send():
-     actor = get_chat_actor()
+         for sub in subs:
+             endpoint = str(sub.get("endpoint") or "")
+             push_success = False
+             for attempt in range(len(PUSH_RETRY_BACKOFF_SECONDS) + 1):
+                 try:
+                     req_started = time.monotonic()
+                     if metrics is not None and not metrics.get("http_start"):
+                         metrics["http_start"] = req_started
+                     webpush(
+                         subscription_info={
+                             "endpoint": endpoint,
+                             "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+                         },
+                         data=json.dumps(payload, ensure_ascii=False),
+                         vapid_private_key=private,
+                         vapid_claims={"sub": subject},
+                         timeout=PUSH_REQUEST_TIMEOUT_SECONDS,
+                     )
+                     sent += 1
+                     push_success = True

@@ -101,6 +101,14 @@ CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_THREAD_SCHEMA_READY: bool | None = None
 CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_DM_SCHEMA_READY: bool | None = None
+CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
+CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
+CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
+CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -1952,6 +1960,16 @@ def _ensure_chat_dm_schema() -> bool:
             cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ENABLE_USER_USER', '0' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ENABLE_USER_USER')")
             cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ADMIN_ACTOR_KEY', 'admin:1' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY')")
             db.commit()
+
+            if not _ensure_chat_dm_delete_schema():
+                raise RuntimeError("chat dm delete schema ensure failed")
+            if not _ensure_chat_dm_message_images_schema():
+                raise RuntimeError("chat dm image schema ensure failed")
+            if not _ensure_chat_dm_reaction_schema():
+                raise RuntimeError("chat dm reaction schema ensure failed")
+            if not _ensure_chat_dm_edit_schema():
+                raise RuntimeError("chat dm edit schema ensure failed")
+
             CHAT_DM_SCHEMA_READY = True
         except Exception:
             current_app.logger.warning("chat dm schema ensure failed", exc_info=True)
@@ -1961,6 +1979,169 @@ def _ensure_chat_dm_schema() -> bool:
             db.close()
 
     return bool(CHAT_DM_SCHEMA_READY)
+
+
+def _ensure_chat_dm_delete_schema() -> bool:
+    global CHAT_DM_DELETE_SCHEMA_READY
+    if CHAT_DM_DELETE_SCHEMA_READY is not None:
+        return CHAT_DM_DELETE_SCHEMA_READY
+
+    with CHAT_DM_DELETE_SCHEMA_CHECK_LOCK:
+        if CHAT_DM_DELETE_SCHEMA_READY is not None:
+            return CHAT_DM_DELETE_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            definitions = {
+                "deleted_flag": "ALTER TABLE chat_dm_messages ADD COLUMN deleted_flag TINYINT NOT NULL DEFAULT 0 AFTER created_at",
+                "deleted_at": "ALTER TABLE chat_dm_messages ADD COLUMN deleted_at DATETIME NULL AFTER deleted_flag",
+                "deleted_by_actor_key": "ALTER TABLE chat_dm_messages ADD COLUMN deleted_by_actor_key VARCHAR(128) NULL AFTER deleted_at",
+            }
+            for column_name, ddl in definitions.items():
+                cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
+                if cur.fetchone():
+                    continue
+                cur.execute(ddl)
+
+            db.commit()
+            missing_columns: list[str] = []
+            for column_name in definitions:
+                cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
+                if not cur.fetchone():
+                    missing_columns.append(column_name)
+            CHAT_DM_DELETE_SCHEMA_READY = len(missing_columns) == 0
+            return CHAT_DM_DELETE_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("chat dm delete schema ensure failed", exc_info=True)
+            CHAT_DM_DELETE_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_dm_message_images_schema() -> bool:
+    global CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY
+    if CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY is not None:
+        return CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY
+
+    with CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK:
+        if CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY is not None:
+            return CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_dm_message_images (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  conversation_id BIGINT UNSIGNED NOT NULL,
+                  message_id BIGINT UNSIGNED NOT NULL,
+                  seq INT NOT NULL,
+                  image_file VARCHAR(255) NOT NULL,
+                  image_thumb_file VARCHAR(255) NOT NULL,
+                  image_mime VARCHAR(64) NOT NULL,
+                  image_size BIGINT NOT NULL,
+                  image_width INT NOT NULL,
+                  image_height INT NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_dm_message_images_message_seq (message_id, seq),
+                  KEY idx_chat_dm_message_images_conv_message (conversation_id, message_id),
+                  KEY idx_chat_dm_message_images_message (message_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            db.commit()
+            CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat dm message images schema ensure failed", exc_info=True)
+            CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_dm_reaction_schema() -> bool:
+    global CHAT_DM_REACTION_SCHEMA_READY
+    if CHAT_DM_REACTION_SCHEMA_READY is not None:
+        return CHAT_DM_REACTION_SCHEMA_READY
+
+    with CHAT_DM_REACTION_SCHEMA_CHECK_LOCK:
+        if CHAT_DM_REACTION_SCHEMA_READY is not None:
+            return CHAT_DM_REACTION_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_dm_message_reactions (
+                  conversation_id BIGINT UNSIGNED NOT NULL,
+                  message_id BIGINT UNSIGNED NOT NULL,
+                  actor_key VARCHAR(128) NOT NULL,
+                  emoji VARCHAR(16) NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  updated_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_dm_message_reactions_message_actor (message_id, actor_key),
+                  KEY idx_chat_dm_message_reactions_conv_message (conversation_id, message_id),
+                  KEY idx_chat_dm_message_reactions_message (message_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            db.commit()
+            CHAT_DM_REACTION_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat dm reaction schema ensure failed", exc_info=True)
+            CHAT_DM_REACTION_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _ensure_chat_dm_edit_schema() -> bool:
+    global CHAT_DM_EDIT_SCHEMA_READY
+    if CHAT_DM_EDIT_SCHEMA_READY is not None:
+        return CHAT_DM_EDIT_SCHEMA_READY
+
+    with CHAT_DM_EDIT_SCHEMA_CHECK_LOCK:
+        if CHAT_DM_EDIT_SCHEMA_READY is not None:
+            return CHAT_DM_EDIT_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            definitions = {
+                "edited_flag": "ALTER TABLE chat_dm_messages ADD COLUMN edited_flag TINYINT NOT NULL DEFAULT 0 AFTER body_text",
+                "edited_at": "ALTER TABLE chat_dm_messages ADD COLUMN edited_at DATETIME NULL AFTER edited_flag",
+                "edited_by_actor_key": "ALTER TABLE chat_dm_messages ADD COLUMN edited_by_actor_key VARCHAR(128) NULL AFTER edited_at",
+            }
+            for column_name, ddl in definitions.items():
+                cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
+                if cur.fetchone():
+                    continue
+                cur.execute(ddl)
+
+            db.commit()
+            missing_columns: list[str] = []
+            for column_name in definitions:
+                cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
+                if not cur.fetchone():
+                    missing_columns.append(column_name)
+            CHAT_DM_EDIT_SCHEMA_READY = len(missing_columns) == 0
+            return CHAT_DM_EDIT_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("chat dm edit schema ensure failed", exc_info=True)
+            CHAT_DM_EDIT_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
 
 
 def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
@@ -2630,6 +2811,23 @@ def _save_upload_image_files(event_id: int, storage: Any, filename: str = "", mi
     }
 
 
+def _save_upload_image_files_dm(dm_uuid: str, storage: Any, filename: str = "", mimetype: str = "") -> dict[str, Any]:
+    os.makedirs(CHAT_UPLOAD_DIR, exist_ok=True)
+    dm_dir = os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid)
+    os.makedirs(dm_dir, exist_ok=True)
+    meta = _save_upload_image_files(0, storage, filename=filename, mimetype=mimetype)
+
+    src_image = os.path.join(CHAT_UPLOAD_DIR, "0", str(meta.get("image_file") or ""))
+    src_thumb = os.path.join(CHAT_UPLOAD_DIR, "0", str(meta.get("image_thumb_file") or ""))
+    dst_image = os.path.join(dm_dir, str(meta.get("image_file") or ""))
+    dst_thumb = os.path.join(dm_dir, str(meta.get("image_thumb_file") or ""))
+    if os.path.exists(src_image):
+        os.replace(src_image, dst_image)
+    if os.path.exists(src_thumb):
+        os.replace(src_thumb, dst_thumb)
+    return meta
+
+
 def _validate_body(raw: str) -> str:
     body = (raw or "").strip()
     if not body:
@@ -3207,13 +3405,20 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
     cur = db.cursor(dictionary=True)
     sent = 0
     try:
+        actor_ids = [str(actor_id)]
+        if str(actor_type) == "admin":
+            # DM側のactor_keyは admin:1 を使うが、push購読は admin ユーザー名で保存される。
+            # どちらで来ても同一管理者として購読を引けるようにする。
+            actor_ids.extend(["admin", "1"])
+        actor_ids = list(dict.fromkeys([x for x in actor_ids if x]))
+        placeholders = ",".join(["%s"] * len(actor_ids))
         cur.execute(
-            """
+            f"""
             SELECT id, endpoint, p256dh, auth
               FROM chat_push_subscriptions
-             WHERE actor_type=%s AND actor_id=%s
+             WHERE actor_type=%s AND actor_id IN ({placeholders})
             """,
-            (actor_type, actor_id),
+            (actor_type, *actor_ids),
         )
         subs = cur.fetchall() or []
         if metrics is not None:
@@ -3459,7 +3664,13 @@ def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", l
     try:
         cur.execute(
             """
-            SELECT id, sender_actor_key, body_text, created_at
+            SELECT id, sender_actor_key, body_type, body_text, created_at,
+                   COALESCE(deleted_flag, 0) AS deleted_flag,
+                   deleted_at,
+                   deleted_by_actor_key,
+                   COALESCE(edited_flag, 0) AS edited_flag,
+                   edited_at,
+                   edited_by_actor_key
             FROM chat_dm_messages
             WHERE conversation_id=%s
             ORDER BY id DESC
@@ -3472,11 +3683,140 @@ def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", l
         cur.close()
         db.close()
 
+    message_ids = [int(row.get("id") or 0) for row in rows if int(row.get("id") or 0) > 0]
+    images_by_message: dict[int, list[dict[str, Any]]] = {}
+    reactions_summary_by_message: dict[int, list[dict[str, Any]]] = {}
+    my_reaction_by_message: dict[int, str] = {}
+
+    if message_ids:
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            placeholders = ",".join(["%s"] * len(message_ids))
+            cur.execute(
+                f"""
+                SELECT message_id, seq, image_file, image_thumb_file, image_mime, image_size, image_width, image_height
+                FROM chat_dm_message_images
+                WHERE conversation_id=%s AND message_id IN ({placeholders})
+                ORDER BY message_id ASC, seq ASC
+                """,
+                (conversation_id, *message_ids),
+            )
+            for row in cur.fetchall() or []:
+                message_id = int(row.get("message_id") or 0)
+                if message_id <= 0:
+                    continue
+                images_by_message.setdefault(message_id, []).append(dict(row))
+
+            cur.execute(
+                f"""
+                SELECT message_id, emoji, COUNT(*) AS cnt
+                FROM chat_dm_message_reactions
+                WHERE conversation_id=%s AND message_id IN ({placeholders})
+                GROUP BY message_id, emoji
+                """,
+                (conversation_id, *message_ids),
+            )
+            for row in cur.fetchall() or []:
+                message_id = int(row.get("message_id") or 0)
+                if message_id <= 0:
+                    continue
+                reactions_summary_by_message.setdefault(message_id, []).append(
+                    {"emoji": str(row.get("emoji") or ""), "count": int(row.get("cnt") or 0)}
+                )
+
+            cur.execute(
+                f"""
+                SELECT message_id, emoji
+                FROM chat_dm_message_reactions
+                WHERE conversation_id=%s AND actor_key=%s AND message_id IN ({placeholders})
+                """,
+                (conversation_id, actor_key, *message_ids),
+            )
+            for row in cur.fetchall() or []:
+                message_id = int(row.get("message_id") or 0)
+                if message_id <= 0:
+                    continue
+                my_reaction_by_message[message_id] = str(row.get("emoji") or "")
+        finally:
+            cur.close()
+            db.close()
+
     messages: list[dict[str, Any]] = []
     for row in rows:
+        message_id = int(row.get("id") or 0)
         row["dm_uuid"] = dm_uuid
+        row["images"] = images_by_message.get(message_id, [])
+        row["reactions_summary"] = reactions_summary_by_message.get(message_id, [])
+        row["my_reaction"] = my_reaction_by_message.get(message_id)
         messages.append(_dm_message_to_payload(row, actor_key))
     return messages
+
+
+def _load_single_dm_message_payload(conversation: dict[str, Any], message_id: int, actor_key: str, dm_uuid: str) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, sender_actor_key, body_type, body_text, created_at,
+                   COALESCE(deleted_flag, 0) AS deleted_flag,
+                   deleted_at,
+                   deleted_by_actor_key,
+                   COALESCE(edited_flag, 0) AS edited_flag,
+                   edited_at,
+                   edited_by_actor_key
+            FROM chat_dm_messages
+            WHERE id=%s AND conversation_id=%s
+            LIMIT 1
+            """,
+            (message_id, conversation["id"]),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        cur.execute(
+            """
+            SELECT message_id, seq, image_file, image_thumb_file, image_mime, image_size, image_width, image_height
+            FROM chat_dm_message_images
+            WHERE conversation_id=%s AND message_id=%s
+            ORDER BY seq ASC
+            """,
+            (conversation["id"], message_id),
+        )
+        row["images"] = cur.fetchall() or []
+
+        cur.execute(
+            """
+            SELECT emoji, COUNT(*) AS cnt
+            FROM chat_dm_message_reactions
+            WHERE conversation_id=%s AND message_id=%s
+            GROUP BY emoji
+            """,
+            (conversation["id"], message_id),
+        )
+        row["reactions_summary"] = [
+            {"emoji": str(x.get("emoji") or ""), "count": int(x.get("cnt") or 0)}
+            for x in (cur.fetchall() or [])
+        ]
+
+        cur.execute(
+            """
+            SELECT emoji
+            FROM chat_dm_message_reactions
+            WHERE conversation_id=%s AND message_id=%s AND actor_key=%s
+            LIMIT 1
+            """,
+            (conversation["id"], message_id, actor_key),
+        )
+        my_row = cur.fetchone() or {}
+        row["my_reaction"] = str(my_row.get("emoji") or "") or None
+        row["dm_uuid"] = dm_uuid
+        return _dm_message_to_payload(row, actor_key)
+    finally:
+        cur.close()
+        db.close()
 
 
 def _save_dm_message(conversation: dict[str, Any], sender_actor_key: str, body: str) -> dict[str, Any]:
@@ -3518,7 +3858,40 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
     if created_at:
         created_at_iso, created_at_jst_date_label, created_at_jst_time_hm = _format_jst_labels(created_at)
     dm_uuid = str(message.get("dm_uuid") or "")
-    body_text = str(message.get("body_text") or "")
+    deleted_flag = int(message.get("deleted_flag") or 0) == 1
+    deleted_by_actor_key = str(message.get("deleted_by_actor_key") or "")
+    deleted_by_actor_type, deleted_by_actor_id = _split_actor_key(deleted_by_actor_key)
+    deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+    body_text = "" if deleted_flag else str(message.get("body_text") or "")
+    raw_images = [] if deleted_flag else (message.get("images") or [])
+    images: list[dict[str, Any]] = []
+    for image in raw_images:
+        image_file = str(image.get("image_file") or "")
+        image_thumb_file = str(image.get("image_thumb_file") or "")
+        if not image_file or not image_thumb_file:
+            continue
+        images.append(
+            {
+                "seq": int(image.get("seq") or (len(images) + 1)),
+                "url": url_for("chat.chat_dm_image", dm_uuid=dm_uuid, name=image_file),
+                "thumb_url": url_for("chat.chat_dm_image", dm_uuid=dm_uuid, name=image_thumb_file),
+                "mime": image.get("image_mime"),
+                "size": image.get("image_size"),
+                "width": image.get("image_width"),
+                "height": image.get("image_height"),
+            }
+        )
+    sender_is_me = sender_key == current_actor_key
+    can_delete = False
+    can_edit = False
+    if not deleted_flag:
+        if current_actor_key.startswith("admin:"):
+            can_delete = True
+        elif sender_is_me and isinstance(created_at, datetime):
+            can_delete = created_at + timedelta(hours=12) >= datetime.utcnow()
+        if sender_is_me and isinstance(created_at, datetime):
+            can_edit = created_at + timedelta(hours=12) >= datetime.utcnow()
+
     return {
         "id": int(message.get("id") or 0),
         "dm_uuid": dm_uuid,
@@ -3528,23 +3901,39 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
         "body": body_text,
         "body_text": body_text,
-        "body_html": _plain_to_body_html(body_text),
-        "body_plain": body_text,
-        "body_plain_excerpt": _build_plain_excerpt(body_text),
+        "body_html": deleted_text if deleted_flag else _plain_to_body_html(body_text),
+        "body_plain": deleted_text if deleted_flag else body_text,
+        "body_plain_excerpt": deleted_text if deleted_flag else _build_plain_excerpt(body_text),
         "created_at_iso": created_at_iso,
         "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
         "created_at_jst_hhmm": created_at_jst_time_hm,
         "created_at_jst_time_hm": created_at_jst_time_hm,
         "created_at_jst_date_label": created_at_jst_date_label,
-        "is_me": sender_key == current_actor_key,
+        "is_me": sender_is_me,
         "reply_to_message_id": None,
         "thread_root_id": None,
         "thread_reply_count": 0,
-        "deleted_flag": 0,
-        "edited_flag": 0,
-        "reactions_summary": [],
-        "my_reaction": None,
-        "images": [],
+        "deleted_flag": 1 if deleted_flag else 0,
+        "deleted_at": message.get("deleted_at").isoformat() if message.get("deleted_at") else None,
+        "deleted_by_actor_type": deleted_by_actor_type,
+        "deleted_by_actor_id": deleted_by_actor_id,
+        "deleted_text": deleted_text,
+        "edited_flag": 1 if int(message.get("edited_flag") or 0) == 1 else 0,
+        "edited_at": message.get("edited_at").isoformat() if message.get("edited_at") else None,
+        "edited_by_actor_type": _split_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
+        "edited_by_actor_id": _split_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
+        "reactions_summary": [] if deleted_flag else (message.get("reactions_summary") or []),
+        "my_reaction": None if deleted_flag else message.get("my_reaction"),
+        "images": images,
+        "has_image": bool(images),
+        "image_url": images[0].get("url") if images else None,
+        "image_thumb_url": images[0].get("thumb_url") if images else None,
+        "image_mime": images[0].get("mime") if images else None,
+        "image_size": images[0].get("size") if images else None,
+        "image_width": images[0].get("width") if images else None,
+        "image_height": images[0].get("height") if images else None,
+        "can_delete": can_delete,
+        "can_edit": can_edit,
     }
 
 
@@ -3625,6 +4014,73 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
     _log_notification(0, "dm", {"dm_uuid": dm_uuid, "link": f"/chat/dm/room/{dm_uuid}"}, sent_count)
 
 
+def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT c.id, c.uuid, c.dm_type, c.last_message_at,
+                   p.last_read_message_id,
+                   (SELECT body_text FROM chat_dm_messages m WHERE m.id = c.last_message_id LIMIT 1) AS last_message,
+                   (SELECT COUNT(*) FROM chat_dm_messages m
+                     WHERE m.conversation_id=c.id
+                       AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count,
+                   (SELECT actor_key FROM chat_dm_participants pp
+                     WHERE pp.conversation_id=c.id AND pp.actor_key<>%s
+                     LIMIT 1) AS peer_actor_key
+            FROM chat_dm_conversations c
+            JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
+            ORDER BY (unread_count > 0) DESC, unread_count DESC, c.last_message_at DESC
+            """,
+            (actor_key, actor_key),
+        )
+        rows = cur.fetchall() or []
+
+        cur.execute("SELECT id, nickname FROM external_login_user ORDER BY COALESCE(nickname, ''), id")
+        ext_users = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    rows_by_peer: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        peer_actor_key = str(row.get("peer_actor_key") or "")
+        if not peer_actor_key:
+            continue
+        row["peer_actor_key"] = peer_actor_key
+        row["peer_display_name"] = _actor_key_to_display_name(peer_actor_key)
+        rows_by_peer[peer_actor_key] = row
+
+    for user in ext_users:
+        peer_actor_key = f"line:{int(user.get('id') or 0)}"
+        if peer_actor_key in rows_by_peer:
+            continue
+        nickname = str(user.get("nickname") or "").strip() or peer_actor_key
+        rows_by_peer[peer_actor_key] = {
+            "id": None,
+            "uuid": None,
+            "dm_type": "admin_user",
+            "last_message_at": None,
+            "last_read_message_id": None,
+            "last_message": "",
+            "unread_count": 0,
+            "peer_actor_key": peer_actor_key,
+            "peer_display_name": nickname,
+        }
+
+    items = list(rows_by_peer.values())
+    items.sort(
+        key=lambda row: (
+            0 if int(row.get("unread_count") or 0) > 0 else 1,
+            -int(row.get("unread_count") or 0),
+            -(int(row["last_message_at"].timestamp()) if isinstance(row.get("last_message_at"), datetime) else 0),
+            str(row.get("peer_display_name") or ""),
+        )
+    )
+    return items
+
+
 @chat_bp.before_request
 def _require_any_login():
     if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
@@ -3644,32 +4100,17 @@ def index():
     dm_inbox_items: list[dict[str, Any]] = []
     if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
         actor_key = get_chat_actor_key(actor) or "admin:1"
-        db = get_db()
-        cur = db.cursor(dictionary=True)
-        try:
-            cur.execute(
-                """
-                SELECT c.id, c.uuid, c.last_message_at,
-                       (SELECT body_text FROM chat_dm_messages m WHERE m.id=c.last_message_id LIMIT 1) AS last_message,
-                       (SELECT COUNT(*) FROM chat_dm_messages m
-                         WHERE m.conversation_id=c.id
-                           AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count
-                  FROM chat_dm_conversations c
-                  JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
-                 ORDER BY (unread_count > 0) DESC, c.last_message_at DESC
-                 LIMIT 100
-                """,
-                (actor_key,),
-            )
-            dm_inbox_items = cur.fetchall() or []
-            for row in dm_inbox_items:
-                cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1", (row["id"], actor_key))
-                peer = cur.fetchone() or {}
-                row["peer_display_name"] = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
-        finally:
-            cur.close()
-            db.close()
-    return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf(), nav_mode="chat", dm_inbox_items=dm_inbox_items, dm_user_user_enabled=_chat_dm_enable_user_user())
+        dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
+    return render_template(
+        "chat/index.html",
+        actor=actor,
+        events=events,
+        csrf_token=_chat_csrf(),
+        nav_mode="chat",
+        dm_inbox_items=dm_inbox_items,
+        dm_user_user_enabled=_chat_dm_enable_user_user(),
+        vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+    )
 
 
 @chat_bp.route("/dm")
@@ -3694,37 +4135,21 @@ def dm_inbox():
     if not _ensure_chat_dm_schema():
         abort(500)
 
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    try:
-        cur.execute(
-            """
-            SELECT c.id, c.uuid, c.dm_type, c.last_message_at,
-                   p.last_read_message_id,
-                   (SELECT body_text FROM chat_dm_messages m WHERE m.id = c.last_message_id LIMIT 1) AS last_message,
-                   (SELECT COUNT(*) FROM chat_dm_messages m
-                     WHERE m.conversation_id=c.id
-                       AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count
-            FROM chat_dm_conversations c
-            JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
-            ORDER BY (unread_count > 0) DESC, c.last_message_at DESC
-            LIMIT 100
-            """,
-            (actor_key,),
-        )
-        rows = cur.fetchall() or []
-        for row in rows:
-            cur.execute(
-                "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
-                (row["id"], actor_key),
-            )
-            peer = cur.fetchone() or {}
-            row["peer_display_name"] = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
-    finally:
-        cur.close()
-        db.close()
+    rows = _build_admin_dm_inbox_items(actor_key)
 
     return render_template("chat/dm_inbox.html", actor=actor, items=rows, csrf_token=_chat_csrf(), nav_mode="chat")
+
+
+@chat_bp.get("/dm/open/line/<int:line_user_id>")
+def dm_open_line(line_user_id: int):
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key or actor.get("actor_type") != "admin":
+        abort(403)
+    if line_user_id <= 0:
+        abort(404)
+    conversation = get_or_create_dm_conversation(actor_key, f"line:{line_user_id}", "admin_user")
+    return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
 
 
 @chat_bp.get("/dm/room/<uuid>")
@@ -3800,6 +4225,295 @@ def dm_api_send():
     socketio.emit("chat_message", msg_payload, to=f"dm:{dm_uuid}")
     _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
     return jsonify({"ok": True, "message": msg_payload})
+
+
+@chat_bp.get("/dm/images/<uuid:dm_uuid>/<path:name>")
+def chat_dm_image(dm_uuid: str, name: str):
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    dm_uuid_str = str(dm_uuid)
+    if not actor or not actor_key:
+        abort(403)
+    if not can_access_dm(dm_uuid_str, actor_key):
+        abort(403)
+    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+        abort(404)
+    return send_from_directory(os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid_str), name)
+
+
+@chat_bp.post("/dm/api/upload-image")
+def dm_upload_image():
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_message_images_schema():
+        return jsonify({"ok": False, "error": "DM画像機能の初期化に失敗しました"}), 500
+
+    token = (request.form.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    dm_uuid = str(request.form.get("dm_uuid") or "").strip()
+    if not dm_uuid:
+        return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+    if not can_access_dm(dm_uuid, actor_key):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
+    if not raw_upload_files:
+        return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
+    if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:
+        return _upload_image_error_response(code="too_many_files", message=f"画像は最大6枚まで送れます（現在: {len(raw_upload_files)}枚）", status=400)
+
+    caption = _validate_caption_optional(request.form.get("body") or "")
+    image_metas: list[dict[str, Any]] = []
+    for idx, upload_file in enumerate(raw_upload_files, start=1):
+        filename = (getattr(upload_file, "filename", "") or f"upload_{idx}.jpg").strip()
+        mimetype = str(getattr(upload_file, "mimetype", "") or "")
+        try:
+            image_metas.append(_save_upload_image_files_dm(dm_uuid, upload_file.stream, filename=filename, mimetype=mimetype))
+        except ChatUploadImageError as exc:
+            return _upload_image_error_response(code=exc.code, message=exc.message, status=exc.status, detail=exc.detail)
+
+    now = datetime.utcnow()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            INSERT INTO chat_dm_messages (conversation_id, sender_actor_key, body_type, body_text, created_at)
+            VALUES (%s, %s, 'image', %s, %s)
+            """,
+            (conversation["id"], actor_key, caption, now),
+        )
+        message_id = int(cur.lastrowid)
+        for seq, image_meta in enumerate(image_metas, start=1):
+            cur.execute(
+                """
+                INSERT INTO chat_dm_message_images (
+                    conversation_id, message_id, seq,
+                    image_file, image_thumb_file, image_mime,
+                    image_size, image_width, image_height, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    conversation["id"],
+                    message_id,
+                    seq,
+                    image_meta.get("image_file"),
+                    image_meta.get("image_thumb_file"),
+                    image_meta.get("image_mime"),
+                    image_meta.get("image_size"),
+                    image_meta.get("image_width"),
+                    image_meta.get("image_height"),
+                    now,
+                ),
+            )
+        cur.execute(
+            """
+            UPDATE chat_dm_conversations
+            SET last_message_id=%s, last_message_at=%s
+            WHERE id=%s
+            """,
+            (message_id, now, conversation["id"]),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    saved = {
+        "id": message_id,
+        "conversation_id": conversation["id"],
+        "sender_actor_key": actor_key,
+        "body_text": caption,
+        "created_at": now,
+        "deleted_flag": 0,
+        "deleted_at": None,
+        "deleted_by_actor_key": None,
+        "dm_uuid": dm_uuid,
+        "images": [
+            {
+                "seq": idx,
+                "image_file": image_meta.get("image_file"),
+                "image_thumb_file": image_meta.get("image_thumb_file"),
+                "image_mime": image_meta.get("image_mime"),
+                "image_size": image_meta.get("image_size"),
+                "image_width": image_meta.get("image_width"),
+                "image_height": image_meta.get("image_height"),
+            }
+            for idx, image_meta in enumerate(image_metas, start=1)
+        ],
+        "reactions_summary": [],
+        "my_reaction": None,
+    }
+    payload = _dm_message_to_payload(saved, actor_key)
+    socketio.emit("chat_message", payload, to=f"dm:{dm_uuid}")
+    _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), "📷 画像")
+    return jsonify({"ok": True, "message": payload})
+
+
+@chat_bp.post("/dm/api/messages/<int:message_id>/delete")
+def dm_delete_message(message_id: int):
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    if not _ensure_chat_dm_delete_schema():
+        return jsonify({"ok": False, "error": "DM削除機能の初期化に失敗しました"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    dm_uuid = str(payload.get("dm_uuid") or "").strip()
+    if not dm_uuid:
+        return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+    if not can_access_dm(dm_uuid, actor_key):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, sender_actor_key, created_at, COALESCE(deleted_flag, 0) AS deleted_flag
+            FROM chat_dm_messages
+            WHERE id=%s AND conversation_id=%s
+            LIMIT 1
+            """,
+            (message_id, conversation["id"]),
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        if int(row.get("deleted_flag") or 0) == 1:
+            return jsonify({"ok": True, "message_id": message_id})
+
+        can_delete = False
+        if actor.get("actor_type") == "admin":
+            can_delete = True
+        elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
+            can_delete = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+        if not can_delete:
+            return jsonify({"ok": False, "error": "削除権限がありません"}), 403
+
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            UPDATE chat_dm_messages
+            SET deleted_flag=1, deleted_at=%s, deleted_by_actor_key=%s
+            WHERE id=%s AND conversation_id=%s
+            """,
+            (now, actor_key, message_id, conversation["id"]),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    deleted_by_actor_type, _deleted_by_actor_id = _split_actor_key(actor_key)
+    socketio.emit(
+        "chat_delete_update",
+        {
+            "dm_uuid": dm_uuid,
+            "room_id": f"dm:{dm_uuid}",
+            "message_id": message_id,
+            "deleted_flag": 1,
+            "deleted_by_actor_type": deleted_by_actor_type,
+        },
+        to=f"dm:{dm_uuid}",
+    )
+    return jsonify({"ok": True, "message_id": message_id, "deleted_by_actor_type": deleted_by_actor_type})
+
+
+@chat_bp.post("/dm/api/messages/<int:message_id>/edit")
+def dm_edit_message(message_id: int):
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_edit_schema():
+        return jsonify({"ok": False, "error": "DM編集機能の初期化に失敗しました"}), 500
+
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    dm_uuid = str(payload.get("dm_uuid") or "").strip()
+    if not dm_uuid:
+        return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+    if not can_access_dm(dm_uuid, actor_key):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    try:
+        body_text = _validate_body(str(payload.get("body_text") or ""))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, sender_actor_key, created_at, COALESCE(deleted_flag, 0) AS deleted_flag
+            FROM chat_dm_messages
+            WHERE id=%s AND conversation_id=%s
+            LIMIT 1
+            """,
+            (message_id, conversation["id"]),
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
+        if int(row.get("deleted_flag") or 0) == 1:
+            return jsonify({"ok": False, "error": "削除済みメッセージは編集できません"}), 403
+
+        can_edit = False
+        if actor.get("actor_type") == "admin":
+            can_edit = True
+        elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
+            can_edit = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+        if not can_edit:
+            return jsonify({"ok": False, "error": "このメッセージを編集する権限がありません"}), 403
+
+        cur.execute(
+            """
+            UPDATE chat_dm_messages
+            SET body_text=%s,
+                edited_flag=1,
+                edited_at=NOW(),
+                edited_by_actor_key=%s
+            WHERE id=%s AND conversation_id=%s
+            """,
+            (body_text, actor_key, message_id, conversation["id"]),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    message_payload = _load_single_dm_message_payload(conversation, message_id, actor_key, dm_uuid)
+    if not message_payload:
+        return jsonify({"ok": False, "error": "編集後メッセージの再取得に失敗しました"}), 500
+
+    socketio.emit(
+        "chat_edit_update",
+        {
+            **message_payload,
+            "room_id": f"dm:{dm_uuid}",
+            "message_id": message_id,
+        },
+        to=f"dm:{dm_uuid}",
+    )
+    return jsonify({"ok": True, "message": message_payload})
 
 
 @chat_bp.post("/dm/api/seen")
@@ -5871,6 +6585,101 @@ def on_react(data):
             },
         },
         to=f"event:{event_id}:room:{effective_room_id}",
+    )
+
+
+@socketio.on("dm_react")
+def on_dm_react(data):
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        disconnect()
+        return
+    if not _ensure_chat_dm_reaction_schema() or not _ensure_chat_dm_delete_schema():
+        emit("chat_error", {"error": "DMリアクション機能の初期化に失敗しました"})
+        return
+
+    dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+    message_id = int((data or {}).get("message_id") or 0)
+    emoji = str((data or {}).get("emoji") or "")
+    if not dm_uuid or message_id <= 0:
+        emit("chat_error", {"error": "bad_request"})
+        return
+    if emoji not in CHAT_ALLOWED_REACTION_EMOJIS:
+        emit("chat_error", {"error": "利用できないリアクションです"})
+        return
+    if not can_access_dm(dm_uuid, actor_key):
+        emit("chat_error", {"error": "forbidden"})
+        return
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        emit("chat_error", {"error": "not_found"})
+        return
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    changed_emoji: str | None = emoji
+    try:
+        cur.execute(
+            "SELECT COALESCE(deleted_flag, 0) AS deleted_flag FROM chat_dm_messages WHERE id=%s AND conversation_id=%s LIMIT 1",
+            (message_id, conversation["id"]),
+        )
+        row = cur.fetchone()
+        if not row:
+            emit("chat_error", {"error": "対象メッセージが見つかりません"})
+            return
+        if int(row.get("deleted_flag") or 0) == 1:
+            emit("chat_error", {"error": "削除済みメッセージにはリアクションできません"})
+            return
+
+        cur.execute(
+            "SELECT emoji FROM chat_dm_message_reactions WHERE message_id=%s AND actor_key=%s LIMIT 1",
+            (message_id, actor_key),
+        )
+        existing = cur.fetchone()
+        now = datetime.utcnow()
+        if existing and (existing.get("emoji") or "") == emoji:
+            cur.execute("DELETE FROM chat_dm_message_reactions WHERE message_id=%s AND actor_key=%s", (message_id, actor_key))
+            changed_emoji = None
+        else:
+            cur.execute(
+                """
+                INSERT INTO chat_dm_message_reactions (
+                    conversation_id, message_id, actor_key, emoji, created_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    emoji=VALUES(emoji),
+                    updated_at=VALUES(updated_at)
+                """,
+                (conversation["id"], message_id, actor_key, emoji, now, now),
+            )
+
+        cur.execute(
+            "SELECT emoji, COUNT(*) AS cnt FROM chat_dm_message_reactions WHERE message_id=%s GROUP BY emoji",
+            (message_id,),
+        )
+        reactions = [{"emoji": x.get("emoji") or "", "count": int(x.get("cnt") or 0)} for x in (cur.fetchall() or [])]
+        reactions.sort(key=lambda item: CHAT_ALLOWED_REACTION_EMOJIS.index(item["emoji"]) if item["emoji"] in CHAT_ALLOWED_REACTION_EMOJIS else 999)
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+    actor_type, actor_id = _split_actor_key(actor_key)
+    socketio.emit(
+        "chat_reaction_update",
+        {
+            "dm_uuid": dm_uuid,
+            "room_id": f"dm:{dm_uuid}",
+            "message_id": message_id,
+            "reactions": reactions,
+            "changed": {
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "emoji": changed_emoji,
+            },
+        },
+        to=f"dm:{dm_uuid}",
     )
 
 
