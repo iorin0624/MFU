@@ -36,4 +36,10 @@ CREATE TABLE IF NOT EXISTS chat_dm_messages (
   KEY idx_chat_dm_messages_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-REPLACE INTO settings (`key`, `value`) VALUES ('CHAT_DM_ENABLE_USER_USER', '0');
+INSERT INTO settings (`key`, `value`)
+SELECT 'CHAT_DM_ENABLE_USER_USER', '0'
+WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ENABLE_USER_USER');
+
+INSERT INTO settings (`key`, `value`)
+SELECT 'CHAT_DM_ADMIN_ACTOR_KEY', 'admin:1'
+WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY');

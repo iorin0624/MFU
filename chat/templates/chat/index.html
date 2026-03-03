@@ -14,5 +14,27 @@
       <li class="list-group-item">入室可能なイベントがありません。</li>
     {% endfor %}
   </ul>
+
+  {% if actor.actor_type == 'admin' %}
+  <div class="card mt-4">
+    <div class="card-body">
+      <h5 class="card-title">参加者DM一覧（未読順）</h5>
+      <div class="mb-2"><a href="{{ url_for('chat.dm_settings_get') }}">参加者同士DM設定</a>（現在: {{ 'ON' if dm_user_user_enabled else 'OFF' }}）</div>
+      <ul class="list-group list-group-flush">
+        {% for it in dm_inbox_items %}
+        <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+          <span>{{ it.peer_display_name }} / {{ it.last_message or '' }}</span>
+          <span>
+            {% if it.unread_count|int > 0 %}<span class="badge bg-danger">{{ it.unread_count }}</span>{% endif %}
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.dm_room', uuid=it.uuid) }}">開く</a>
+          </span>
+        </li>
+        {% else %}
+        <li class="list-group-item px-0">DMはありません。</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}

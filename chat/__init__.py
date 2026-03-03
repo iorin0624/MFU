@@ -99,6 +99,8 @@ CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_SEARCH_SCHEMA_READY: bool | None = None
 CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_THREAD_SCHEMA_READY: bool | None = None
+CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_DM_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -1514,6 +1516,12 @@ def _to_utc_datetime(value: Any) -> datetime:
     return dt.astimezone(ZoneInfo("UTC"))
 
 
+
+
+def _to_jst(value: Any) -> datetime:
+    dt_utc = _to_utc_datetime(value)
+    return dt_utc.astimezone(JST)
+
 def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
     dt_utc = _to_utc_datetime(created_at)
     dt_jst = dt_utc.astimezone(JST)
@@ -1663,12 +1671,28 @@ def _linkify_escaped_text(text: str) -> str:
     return _LINKIFY_RE.sub(_replace, value)
 
 
+def _linkify_text(text: str) -> str:
+    """
+    Plain text -> HTML-safe (escaped) -> linkified HTML.
+    DM側が _linkify_text を参照しているが未定義のため、互換用に追加する。
+    """
+    try:
+        return _linkify_escaped_text(html.escape(text or ""))
+    except Exception:
+        return html.escape(text or "")
+
+
 def _build_plain_excerpt(value: str, max_len: int = 80) -> str:
     text = re.sub(r"<[^>]+>", "", value or "")
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= max_len:
         return text
     return f"{text[:max_len - 1]}…"
+
+
+def _plain_to_body_html(value: str) -> str:
+    return _linkify_text(str(value or "")).replace("\n", "<br>")
+
 
 
 def _chat_csrf() -> str:
@@ -1786,6 +1810,150 @@ def get_chat_actor() -> dict[str, Any] | None:
         }
 
     return None
+
+
+def get_chat_actor_key(actor: dict[str, Any] | None) -> str | None:
+    if not actor:
+        return None
+    actor_type = str(actor.get("actor_type") or "")
+    actor_id = str(actor.get("actor_id") or "")
+    if actor_type == "admin":
+        return "admin:1"
+    if actor_type == "line":
+        return f"line:{actor_id}"
+    if actor_type and actor_id:
+        return f"{actor_type}:{actor_id}"
+    return None
+
+
+
+
+def _ensure_settings_table() -> None:
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+              `key` VARCHAR(128) NOT NULL,
+              `value` TEXT NULL,
+              PRIMARY KEY (`key`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def _get_setting_value(key: str, default: str = "") -> str:
+    _ensure_settings_table()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT value FROM settings WHERE `key`=%s LIMIT 1", (key,))
+        row = cur.fetchone()
+        if not row:
+            return default
+        return str(row.get("value") or default)
+    finally:
+        cur.close()
+        db.close()
+
+
+def _set_setting_value(key: str, value: str) -> None:
+    _ensure_settings_table()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("REPLACE INTO settings (`key`, `value`) VALUES (%s, %s)", (key, value))
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def _chat_dm_enable_user_user() -> bool:
+    return _get_setting_value("CHAT_DM_ENABLE_USER_USER", "0").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _chat_dm_admin_actor_key() -> str:
+    return (_get_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", "admin:1") or "admin:1").strip() or "admin:1"
+
+
+def _ensure_chat_dm_schema() -> bool:
+    global CHAT_DM_SCHEMA_READY
+    if CHAT_DM_SCHEMA_READY is not None:
+        return CHAT_DM_SCHEMA_READY
+
+    with CHAT_DM_SCHEMA_CHECK_LOCK:
+        if CHAT_DM_SCHEMA_READY is not None:
+            return CHAT_DM_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            _ensure_settings_table()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_dm_conversations (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                  uuid CHAR(36) NOT NULL,
+                  dm_type VARCHAR(32) NOT NULL,
+                  pair_key VARCHAR(255) NOT NULL,
+                  last_message_id BIGINT UNSIGNED NULL,
+                  last_message_at DATETIME NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uq_chat_dm_conversations_uuid (uuid),
+                  UNIQUE KEY uq_chat_dm_conversations_pair_key (pair_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_dm_participants (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                  conversation_id BIGINT UNSIGNED NOT NULL,
+                  actor_key VARCHAR(128) NOT NULL,
+                  display_name_cache VARCHAR(255) NULL,
+                  last_read_message_id BIGINT UNSIGNED NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  UNIQUE KEY uq_chat_dm_participants (conversation_id, actor_key),
+                  KEY idx_chat_dm_participants_actor_key (actor_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_dm_messages (
+                  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                  conversation_id BIGINT UNSIGNED NOT NULL,
+                  sender_actor_key VARCHAR(128) NOT NULL,
+                  body_type VARCHAR(32) NOT NULL DEFAULT 'text',
+                  body_text TEXT NULL,
+                  body_json JSON NULL,
+                  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                  PRIMARY KEY (id),
+                  KEY idx_chat_dm_messages_conv_id (conversation_id, id),
+                  KEY idx_chat_dm_messages_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+            )
+            cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ENABLE_USER_USER', '0' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ENABLE_USER_USER')")
+            cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ADMIN_ACTOR_KEY', 'admin:1' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY')")
+            db.commit()
+            CHAT_DM_SCHEMA_READY = True
+        except Exception:
+            current_app.logger.warning("chat dm schema ensure failed", exc_info=True)
+            CHAT_DM_SCHEMA_READY = False
+        finally:
+            cur.close()
+            db.close()
+
+    return bool(CHAT_DM_SCHEMA_READY)
 
 
 def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
@@ -3156,6 +3324,277 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
         db.close()
 
 
+
+
+def _actor_key_to_display_name(actor_key: str) -> str:
+    actor_key = str(actor_key or "")
+    if actor_key == "admin:1":
+        return "admin"
+    if actor_key.startswith("line:"):
+        try:
+            return get_external_user_display_name(int(actor_key.split(":", 1)[1]))
+        except Exception:
+            return f"LINE-{actor_key.split(':', 1)[1]}"
+    return actor_key
+
+
+def _pair_key(actor_a: str, actor_b: str) -> str:
+    a, b = sorted([str(actor_a), str(actor_b)])
+    return f"{a}|{b}"
+
+
+def get_or_create_dm_conversation(actor_a: str, actor_b: str, dm_type: str) -> dict[str, Any]:
+    if not _ensure_chat_dm_schema():
+        raise RuntimeError("dm schema")
+    pair_key = _pair_key(actor_a, actor_b)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM chat_dm_conversations WHERE pair_key=%s LIMIT 1", (pair_key,))
+        row = cur.fetchone()
+        if row:
+            return row
+
+        dm_uuid = str(uuid.uuid4())
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            INSERT INTO chat_dm_conversations (uuid, dm_type, pair_key, created_at)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (dm_uuid, dm_type, pair_key, now),
+        )
+        conversation_id = int(cur.lastrowid)
+        cur.execute(
+            """
+            INSERT IGNORE INTO chat_dm_participants (conversation_id, actor_key, display_name_cache, created_at)
+            VALUES (%s, %s, %s, %s), (%s, %s, %s, %s)
+            """,
+            (
+                conversation_id,
+                actor_a,
+                _actor_key_to_display_name(actor_a),
+                now,
+                conversation_id,
+                actor_b,
+                _actor_key_to_display_name(actor_b),
+                now,
+            ),
+        )
+        db.commit()
+        return {
+            "id": conversation_id,
+            "uuid": dm_uuid,
+            "dm_type": dm_type,
+            "pair_key": pair_key,
+            "last_message_id": None,
+            "last_message_at": None,
+            "created_at": now,
+        }
+    except Exception:
+        db.rollback()
+        cur.execute("SELECT * FROM chat_dm_conversations WHERE pair_key=%s LIMIT 1", (pair_key,))
+        row = cur.fetchone()
+        if row:
+            return row
+        raise
+    finally:
+        cur.close()
+        db.close()
+
+
+def _get_dm_conversation_by_uuid(dm_uuid: str) -> dict[str, Any] | None:
+    if not _ensure_chat_dm_schema():
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM chat_dm_conversations WHERE uuid=%s LIMIT 1", (dm_uuid,))
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
+    conv = _get_dm_conversation_by_uuid(conversation_uuid)
+    if not conv:
+        return False
+    if str(conv.get("dm_type") or "") == "user_user" and not _chat_dm_enable_user_user():
+        return False
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT 1 FROM chat_dm_participants
+            WHERE conversation_id=%s AND actor_key=%s
+            LIMIT 1
+            """,
+            (conv["id"], actor_key),
+        )
+        return bool(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def _load_dm_messages(conversation_id: int, actor_key: str, limit: int = 200) -> list[dict[str, Any]]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, sender_actor_key, body_text, created_at
+            FROM chat_dm_messages
+            WHERE conversation_id=%s
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (conversation_id, max(1, min(int(limit), 200))),
+        )
+        rows = list(reversed(cur.fetchall() or []))
+    finally:
+        cur.close()
+        db.close()
+
+    messages: list[dict[str, Any]] = []
+    for row in rows:
+        sender_key = str(row.get("sender_actor_key") or "")
+        created_at = row.get("created_at")
+        sender_name = _actor_key_to_display_name(sender_key)
+        sender_type, _, sender_id = sender_key.partition(":")
+        sender_id = sender_id or sender_key
+        msg = {
+            "id": int(row.get("id") or 0),
+            "sender_id": _actor_sender_id(sender_type, sender_id),
+            "sender_display_name": sender_name,
+            "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
+            "body": _linkify_text(str(row.get("body_text") or "")),
+            "body_plain": str(row.get("body_text") or ""),
+            "body_plain_excerpt": _build_plain_excerpt(str(row.get("body_text") or "")),
+            "created_at_iso": created_at.isoformat() if created_at else "",
+            "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
+            "created_at_jst_hhmm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
+            "created_at_jst_date_label": _to_jst(created_at).strftime("%Y/%m/%d") if created_at else "",
+            "is_me": sender_key == actor_key,
+            "reply_to_message_id": None,
+            "thread_root_id": None,
+            "thread_reply_count": 0,
+            "reply_to_sender_display_name": None,
+            "reply_to_body_plain_excerpt": None,
+            "reply_to_sender_avatar_url": None,
+            "deleted_flag": 0,
+            "deleted_by_actor_type": None,
+            "can_delete": False,
+            "can_edit": False,
+            "edited_flag": 0,
+            "my_reaction": None,
+            "reactions_summary": [],
+            "images": [],
+        }
+        messages.append(msg)
+    return messages
+
+
+def _save_dm_message(conversation: dict[str, Any], sender_actor_key: str, body: str) -> dict[str, Any]:
+    now = datetime.utcnow()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            INSERT INTO chat_dm_messages (conversation_id, sender_actor_key, body_type, body_text, created_at)
+            VALUES (%s, %s, 'text', %s, %s)
+            """,
+            (conversation["id"], sender_actor_key, body, now),
+        )
+        message_id = int(cur.lastrowid)
+        cur.execute(
+            """
+            UPDATE chat_dm_conversations
+            SET last_message_id=%s, last_message_at=%s
+            WHERE id=%s
+            """,
+            (message_id, now, conversation["id"]),
+        )
+        db.commit()
+        return {"id": message_id, "conversation_id": conversation["id"], "sender_actor_key": sender_actor_key, "body_text": body, "created_at": now}
+    finally:
+        cur.close()
+        db.close()
+
+
+def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> dict[str, Any]:
+    sender_key = str(message.get("sender_actor_key") or "")
+    sender_type, _, sender_id = sender_key.partition(":")
+    sender_id = sender_id or sender_key
+    created_at = message.get("created_at")
+    dm_uuid = str(message.get("dm_uuid") or "")
+    body_text = str(message.get("body_text") or "")
+    return {
+        "id": int(message.get("id") or 0),
+        "dm_uuid": dm_uuid,
+        "room_id": f"dm:{dm_uuid}",
+        "sender_id": _actor_sender_id(sender_type, sender_id),
+        "sender_display_name": _actor_key_to_display_name(sender_key),
+        "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
+        "body": body_text,
+        "body_text": body_text,
+        "body_html": _plain_to_body_html(body_text),
+        "body_plain": body_text,
+        "body_plain_excerpt": _build_plain_excerpt(body_text),
+        "created_at_iso": created_at.isoformat() if created_at else "",
+        "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
+        "created_at_jst_hhmm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
+        "created_at_jst_time_hm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
+        "created_at_jst_date_label": _to_jst(created_at).strftime("%Y/%m/%d") if created_at else "",
+        "is_me": sender_key == current_actor_key,
+        "reply_to_message_id": None,
+        "thread_root_id": None,
+        "thread_reply_count": 0,
+        "deleted_flag": 0,
+        "edited_flag": 0,
+        "reactions_summary": [],
+        "my_reaction": None,
+        "images": [],
+    }
+
+def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sender_display_name: str, body: str) -> None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    sent_count = 0
+    try:
+        cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s", (conversation_id, sender_actor_key))
+        targets = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    for t in targets:
+        actor_key = str(t.get("actor_key") or "")
+        a_type, _, a_id = actor_key.partition(":")
+        if not a_type or not a_id:
+            continue
+        sent_count += _send_push_to_actor(
+            a_type,
+            a_id,
+            {"title": f"{sender_display_name}さんからDM", "body": body, "event_id": 0, "room_id": f"dm:{dm_uuid}", "url": f"/chat/dm/room/{dm_uuid}"},
+        )
+        if a_type == "line":
+            _create_external_chat_notification(
+                recipient_user_id=int(a_id),
+                kind="dm",
+                title=f"{sender_display_name}さんからDM",
+                body=body,
+                event_id=0,
+                room_id=f"dm:{dm_uuid}",
+                room_name="DM",
+                dedup_key=f"chat:dm:{dm_uuid}:{int(time.time())}:{a_id}",
+            )
+    _log_notification(0, "dm", {"dm_uuid": dm_uuid, "link": f"/chat/dm/room/{dm_uuid}"}, sent_count)
+
+
 @chat_bp.before_request
 def _require_any_login():
     if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
@@ -3172,7 +3611,235 @@ def index():
     if not actor:
         abort(403)
     events = _accessible_events(actor)
-    return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf(), nav_mode="chat")
+    dm_inbox_items: list[dict[str, Any]] = []
+    if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
+        actor_key = get_chat_actor_key(actor) or "admin:1"
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT c.id, c.uuid, c.last_message_at,
+                       (SELECT body_text FROM chat_dm_messages m WHERE m.id=c.last_message_id LIMIT 1) AS last_message,
+                       (SELECT COUNT(*) FROM chat_dm_messages m
+                         WHERE m.conversation_id=c.id
+                           AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count
+                  FROM chat_dm_conversations c
+                  JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
+                 ORDER BY (unread_count > 0) DESC, c.last_message_at DESC
+                 LIMIT 100
+                """,
+                (actor_key,),
+            )
+            dm_inbox_items = cur.fetchall() or []
+            for row in dm_inbox_items:
+                cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1", (row["id"], actor_key))
+                peer = cur.fetchone() or {}
+                row["peer_display_name"] = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
+        finally:
+            cur.close()
+            db.close()
+    return render_template("chat/index.html", actor=actor, events=events, csrf_token=_chat_csrf(), nav_mode="chat", dm_inbox_items=dm_inbox_items, dm_user_user_enabled=_chat_dm_enable_user_user())
+
+
+@chat_bp.route("/dm")
+def dm_entry():
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        abort(403)
+    if actor_key == "admin:1":
+        return redirect(url_for("chat.dm_inbox"))
+    admin_actor_key = _chat_dm_admin_actor_key()
+    conversation = get_or_create_dm_conversation(actor_key, admin_actor_key, "admin_user")
+    return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
+
+
+@chat_bp.route("/dm/inbox")
+def dm_inbox():
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key or actor.get("actor_type") != "admin":
+        abort(403)
+    if not _ensure_chat_dm_schema():
+        abort(500)
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT c.id, c.uuid, c.dm_type, c.last_message_at,
+                   p.last_read_message_id,
+                   (SELECT body_text FROM chat_dm_messages m WHERE m.id = c.last_message_id LIMIT 1) AS last_message,
+                   (SELECT COUNT(*) FROM chat_dm_messages m
+                     WHERE m.conversation_id=c.id
+                       AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count
+            FROM chat_dm_conversations c
+            JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
+            ORDER BY (unread_count > 0) DESC, c.last_message_at DESC
+            LIMIT 100
+            """,
+            (actor_key,),
+        )
+        rows = cur.fetchall() or []
+        for row in rows:
+            cur.execute(
+                "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
+                (row["id"], actor_key),
+            )
+            peer = cur.fetchone() or {}
+            row["peer_display_name"] = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
+    finally:
+        cur.close()
+        db.close()
+
+    return render_template("chat/dm_inbox.html", actor=actor, items=rows, csrf_token=_chat_csrf(), nav_mode="chat")
+
+
+@chat_bp.get("/dm/room/<uuid>")
+def dm_room(uuid: str):
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        abort(403)
+    if not can_access_dm(uuid, actor_key):
+        abort(403)
+
+    conversation = _get_dm_conversation_by_uuid(uuid)
+    if not conversation:
+        abort(404)
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
+            (conversation["id"], actor_key),
+        )
+        peer = cur.fetchone() or {}
+    finally:
+        cur.close()
+        db.close()
+
+    messages = _load_dm_messages(int(conversation["id"]), actor_key)
+    peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
+    return render_template(
+        "chat/room.html",
+        actor=actor,
+        current_user_id=get_chat_actor_key(actor),
+        event={"id": 0, "title": "DM"},
+        messages=messages,
+        vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+        csrf_token=_chat_csrf(),
+        can_broadcast=False,
+        can_manage_rooms=False,
+        accessible_rooms=[],
+        active_room={"room_id": f"dm:{uuid}", "room_name": peer_name, "is_main": 1},
+        default_avatar_url=_default_avatar_url(),
+        nav_mode="chat",
+        dm_mode=True,
+        dm_uuid=uuid,
+        dm_room_id=f"dm:{uuid}",
+        peer_display_name=peer_name,
+    )
+
+
+@chat_bp.post("/dm/api/send")
+def dm_api_send():
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    dm_uuid = str(payload.get("dm_uuid") or "").strip()
+    if not dm_uuid:
+        return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+    if not can_access_dm(dm_uuid, actor_key):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    body = _validate_body(payload.get("body") or "")
+    saved = _save_dm_message(conversation, actor_key, body)
+    saved["dm_uuid"] = dm_uuid
+    msg_payload = _dm_message_to_payload(saved, actor_key)
+    socketio.emit("chat_message", msg_payload, to=f"dm:{dm_uuid}")
+    _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
+    return jsonify({"ok": True, "message": msg_payload})
+
+
+@chat_bp.post("/dm/api/seen")
+def dm_api_seen():
+    actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
+    if not actor or not actor_key:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    payload = request.get_json(silent=True) or {}
+    if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+    dm_uuid = str(payload.get("dm_uuid") or "").strip()
+    last_seen_message_id = int(payload.get("last_seen_message_id") or 0)
+    if not dm_uuid:
+        return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+    if last_seen_message_id <= 0:
+        return jsonify({"ok": True, "last_read_message_id": 0})
+    if not can_access_dm(dm_uuid, actor_key):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE chat_dm_participants
+            SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
+            WHERE conversation_id=%s AND actor_key=%s
+            """,
+            (last_seen_message_id, conversation["id"], actor_key),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+    return jsonify({"ok": True, "last_read_message_id": last_seen_message_id})
+
+
+@chat_bp.get("/dm/settings")
+def dm_settings_get():
+    actor = get_chat_actor()
+    if not actor or actor.get("actor_type") != "admin":
+        abort(403)
+    return render_template(
+        "chat/dm_settings.html",
+        actor=actor,
+        csrf_token=_chat_csrf(),
+        enable_user_user=_chat_dm_enable_user_user(),
+        admin_actor_key=_chat_dm_admin_actor_key(),
+        nav_mode="chat",
+    )
+
+
+@chat_bp.post("/dm/settings")
+def dm_settings_post():
+    actor = get_chat_actor()
+    if not actor or actor.get("actor_type") != "admin":
+        abort(403)
+    token = (request.form.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        abort(400, "invalid csrf token")
+    enabled = "1" if (request.form.get("enable_user_user") or "") in {"1", "on", "true"} else "0"
+    admin_actor_key = (request.form.get("admin_actor_key") or "admin:1").strip() or "admin:1"
+    _set_setting_value("CHAT_DM_ENABLE_USER_USER", enabled)
+    _set_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", admin_actor_key)
+    flash("DM設定を更新しました", "success")
+    return redirect(url_for("chat.dm_settings_get"))
 
 
 @chat_bp.get("/admin/system-templates/join-approved")
@@ -3289,6 +3956,10 @@ def room(event_id: int):
         active_room=active_room,
         default_avatar_url=_default_avatar_url(),
         nav_mode="chat",
+        dm_mode=False,
+        dm_uuid="",
+        dm_room_id="",
+        peer_display_name="",
     )
 
 
@@ -4751,8 +5422,26 @@ def on_join(data):
     _ensure_chat_read_state_room_schema()
     _ensure_chat_edit_schema()
     actor = get_chat_actor()
-    event_id = int((data or {}).get("event_id") or 0)
+    actor_key = get_chat_actor_key(actor)
+    dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
     room_id = str((data or {}).get("room_id") or "").strip() or None
+
+    if dm_uuid:
+        if not actor or not actor_key:
+            emit("chat_error", {"error": "forbidden"})
+            return
+        if not can_access_dm(dm_uuid, actor_key):
+            emit("chat_error", {"error": "forbidden"})
+            return
+        join_room(f"dm:{dm_uuid}")
+        emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
+        return
+
+    if (room_id or "").startswith("dm:"):
+        emit("chat_error", {"error": "dm_uuid_required"})
+        return
+
+    event_id = int((data or {}).get("event_id") or 0)
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor or {}) if actor else (False, None, None)
     if not actor or not event_id or not allowed or not effective_room_id:
         _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="deny")
@@ -4767,13 +5456,48 @@ def on_join(data):
 @socketio.on("chat_seen")
 def on_seen(data):
     actor = get_chat_actor()
+    actor_key = get_chat_actor_key(actor)
     if not actor:
         disconnect()
         return
 
-    event_id = int((data or {}).get("event_id") or 0)
+    dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
     room_id = str((data or {}).get("room_id") or "").strip() or None
     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
+
+    if dm_uuid:
+        if not actor_key or last_seen_message_id <= 0:
+            return
+        if not can_access_dm(dm_uuid, actor_key):
+            emit("chat_error", {"error": "forbidden"})
+            return
+        conversation = _get_dm_conversation_by_uuid(dm_uuid)
+        if not conversation:
+            emit("chat_error", {"error": "not_found"})
+            return
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE chat_dm_participants
+                SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
+                WHERE conversation_id=%s AND actor_key=%s
+                """,
+                (last_seen_message_id, conversation["id"], actor_key),
+            )
+            db.commit()
+        finally:
+            cur.close()
+            db.close()
+        emit("chat_read_update", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}", "actor_key": actor_key, "last_read_message_id": last_seen_message_id}, to=f"dm:{dm_uuid}")
+        return
+
+    if (room_id or "").startswith("dm:"):
+        emit("chat_error", {"error": "dm_uuid_required"})
+        return
+
+    event_id = int((data or {}).get("event_id") or 0)
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if event_id <= 0 or last_seen_message_id <= 0 or not allowed or not effective_room_id:
         disconnect()
@@ -4809,6 +5533,10 @@ def on_typing(data):
         return
     is_typing = bool((data or {}).get("is_typing"))
 
+    if (room_id or "").startswith("dm:"):
+        emit("chat_error", {"error": "dm_typing_unsupported"})
+        return
+
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if event_id <= 0 or not allowed or not effective_room_id:
         disconnect()
@@ -4840,8 +5568,38 @@ def on_typing(data):
 @socketio.on("chat_send")
 def on_send(data):
     actor = get_chat_actor()
-    event_id = int((data or {}).get("event_id") or 0)
+    actor_key = get_chat_actor_key(actor)
     room_id = str((data or {}).get("room_id") or "").strip() or None
+    dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+
+    if dm_uuid:
+        if not actor or not actor_key:
+            emit("chat_error", {"error": "forbidden"})
+            return
+        if not can_access_dm(dm_uuid, actor_key):
+            emit("chat_error", {"error": "forbidden"})
+            return
+        try:
+            body = _validate_body((data or {}).get("body") or "")
+        except ValueError as exc:
+            emit("chat_error", {"error": str(exc)})
+            return
+        conversation = _get_dm_conversation_by_uuid(dm_uuid)
+        if not conversation:
+            emit("chat_error", {"error": "not_found"})
+            return
+        saved = _save_dm_message(conversation, actor_key, body)
+        saved["dm_uuid"] = dm_uuid
+        payload = _dm_message_to_payload(saved, actor_key)
+        emit("chat_message", payload, to=f"dm:{dm_uuid}")
+        _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
+        return
+
+    if (room_id or "").startswith("dm:"):
+        emit("chat_error", {"error": "dm_uuid_required"})
+        return
+
+    event_id = int((data or {}).get("event_id") or 0)
     raw_body = (data or {}).get("body") or ""
     raw_reply_to_message_id = (data or {}).get("reply_to_message_id")
     raw_thread_root_id = (data or {}).get("thread_root_id")
@@ -4969,6 +5727,9 @@ def on_react(data):
         return
 
     emoji = str((data or {}).get("emoji") or "")
+    if (room_id or "").startswith("dm:"):
+        emit("chat_error", {"error": "dm_reaction_unsupported"})
+        return
     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
     if event_id <= 0 or message_id <= 0 or not allowed or not effective_room_id:
         disconnect()
