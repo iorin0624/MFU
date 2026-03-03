@@ -1,0 +1,14 @@
+{% extends "chat/base_chat.html" %}
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+  <h3>参加者同士DM設定</h3>
+  <form method="post" class="card card-body">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-check form-switch mb-3">
+      <input class="form-check-input" type="checkbox" id="enable_user_user" name="enable_user_user" value="1" {% if enabled %}checked{% endif %}>
+      <label class="form-check-label" for="enable_user_user">参加者同士DMを有効化</label>
+    </div>
+    <button class="btn btn-primary" type="submit">保存</button>
+  </form>
+</div>
+{% endblock %}
