@@ -1216,10 +1216,13 @@
      data-me="{{ current_user_id or me_user_id or '' }}"
      data-display-name="{{ actor.display_name }}"
      data-default-avatar="{{ default_avatar_url }}"
-     data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}">
+     data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}"
+     data-dm-mode="{{ 1 if dm_mode else 0 }}"
+     data-dm-uuid="{{ dm_uuid or '' }}"
+     data-dm-room-id="{{ dm_room_id or '' }}">
   {% include "chat/_chat_nav.html" %}
   <div class="chat-room-main">
-    <div class="chat-room-title">{{ event.title }}/{{ active_room.room_name }}</div>
+    <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
       {% if can_manage_rooms %}
@@ -1579,6 +1582,16 @@ window.addEventListener('DOMContentLoaded', () => {
   const myDisplayName = root.dataset.displayName || '';
   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
   const isAdmin = root.dataset.isAdmin === '1';
+  const sendBtn = document.getElementById('chat-send-btn');
+  const dmMode = root.dataset.dmMode === '1';
+  const dmUuid = root.dataset.dmUuid || "";
+  const dmRoomId = root.dataset.dmRoomId || "";
+  const effectiveDmRoomId = dmRoomId || (dmUuid ? `dm:${dmUuid}` : "");
+  if (dmMode && (!dmUuid || !effectiveDmRoomId)) {
+    if (sendBtn) sendBtn.disabled = true;
+    alert('DM UUIDが取得できないため送信できません。');
+    return;
+  }
   const isMobile = window.matchMedia('(hover: none)').matches;
   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
   const maxUploadImages = 6;
@@ -1606,6 +1619,10 @@ window.addEventListener('DOMContentLoaded', () => {
   const roomCreateModal = document.getElementById('roomCreateModal');
   const roomMembersModal = document.getElementById('roomMembersModal');
   const threadModal = document.getElementById('threadModal');
+  if (dmMode) {
+    document.querySelectorAll('[data-ctx-action="open-thread"], .thread-summary-link').forEach((el) => { el.style.display = 'none'; });
+    if (threadModal) threadModal.style.display = 'none';
+  }
   const threadModalCloseBtn = document.getElementById('thread-modal-close');
   const threadRootContainer = document.getElementById('thread-root');
   const threadRepliesContainer = document.getElementById('thread-replies');
@@ -1616,7 +1633,6 @@ window.addEventListener('DOMContentLoaded', () => {
   const reactionDetailBody = document.getElementById('reaction-detail-body');
   const imageInput = document.getElementById('chat-image-file');
   const imageBtn = document.getElementById('chat-image-btn');
-  const sendBtn = document.getElementById('chat-send-btn');
   const replyPreview = document.getElementById('reply-preview');
   const replySender = document.getElementById('reply-sender');
   const replyText = document.getElementById('reply-text');
@@ -1664,6 +1680,13 @@ window.addEventListener('DOMContentLoaded', () => {
   const [myActorType, myActorId] = meId.includes(':')
     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
     : ['', ''];
+
+  function buildSafeBodyHtml(msg) {
+    const rawHtml = (msg?.body_html || '').trim();
+    if (rawHtml) return rawHtml;
+    const rawText = String(msg?.body_text ?? msg?.body ?? '');
+    return escapeHtml(rawText).replace(/\n/g, '<br>');
+  }
 
   const state = {
     replyToId: null,
@@ -1721,9 +1744,15 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-  socket.emit('chat_join', { event_id: eventId, room_id: roomId });
+  if (dmMode) {
+    socket.emit('chat_join', { dm_uuid: dmUuid, room_id: effectiveDmRoomId });
+  } else {
+    socket.emit('chat_join', { event_id: eventId, room_id: roomId });
+  }
 
-  initReactionUis();
+  if (!dmMode) {
+    initReactionUis();
+  }
   syncExistingMessageIds();
   scheduleUnreadRefresh();
   refreshNotificationBadge();
@@ -1815,6 +1844,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (isMessageInOpenThread(messageId)) refreshOpenThread();
   });
   socket.on('chat_typing_update', (payload) => {
+    if (dmMode) return;
     applyTypingUpdate(payload || {});
   });
 
@@ -1885,6 +1915,9 @@ window.addEventListener('DOMContentLoaded', () => {
       const row = reactionBtn.closest('.chat-row');
       const messageId = Number(row?.dataset.messageId || 0);
       const emoji = reactionBtn.dataset.emoji || '';
+      if (dmMode) {
+        return;
+      }
       if (messageId && reactionEmojis.includes(emoji)) {
         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
       }
@@ -2421,12 +2454,16 @@ window.addEventListener('DOMContentLoaded', () => {
     }
     setSendingState(true);
     sendTypingStop();
-    socket.emit('chat_send', {
-      event_id: eventId,
-      room_id: roomId,
-      body: bodyInput.value,
-      reply_to_message_id: state.replyToId,
-    });
+    if (dmMode) {
+      socket.emit('chat_send', { dm_uuid: dmUuid, room_id: effectiveDmRoomId, body: bodyInput.value });
+    } else {
+      socket.emit('chat_send', {
+        event_id: eventId,
+        room_id: roomId,
+        body: bodyInput.value,
+        reply_to_message_id: state.replyToId,
+      });
+    }
     bodyInput.value = '';
     updateAutoGrow();
     clearReplyState();
@@ -2682,7 +2719,7 @@ window.addEventListener('DOMContentLoaded', () => {
       bubble.appendChild(grid);
     }
 
-    const rawBody = (msg.body_html || msg.body || '').trim();
+    const rawBody = buildSafeBodyHtml(msg);
     if (rawBody) {
       const body = document.createElement('div');
       body.className = Number(msg.deleted_flag || 0) === 1 ? 'chat-body chat-deleted-text' : 'chat-body';
@@ -2866,7 +2903,7 @@ window.addEventListener('DOMContentLoaded', () => {
     const bubble = row.querySelector('.chat-bubble');
     if (!bubble) return;
 
-    const bodyHtml = payload?.body_html || '';
+    const bodyHtml = buildSafeBodyHtml(payload);
     const bodyPlainExcerpt = payload?.body_plain_excerpt || '';
     const editedFlag = Number(payload?.edited_flag || 0) === 1;
 
@@ -3378,7 +3415,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
     const body = document.createElement('div');
     body.className = 'chat-body';
-    body.innerHTML = (msg.body_html || '').trim() || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
+    body.innerHTML = buildSafeBodyHtml(msg) || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
     bubble.appendChild(body);
 
     const time = document.createElement('div');
@@ -3399,6 +3436,7 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   function submitThreadMessage() {
+    if (dmMode) return;
     if (!threadBodyInput || !state.threadRootId) return;
     const body = threadBodyInput.value || '';
     if (!body.trim()) return;
@@ -3427,6 +3465,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (state.typingDebounceTimer) {
       window.clearTimeout(state.typingDebounceTimer);
     }
+    if (dmMode) return;
     state.typingDebounceTimer = window.setTimeout(() => {
       socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: true });
       state.typingSent = true;
@@ -3447,7 +3486,9 @@ window.addEventListener('DOMContentLoaded', () => {
       state.typingStopTimer = null;
     }
     if (!state.typingSent) return;
-    socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: false });
+    if (!dmMode) {
+      socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: false });
+    }
     state.typingSent = false;
   }
 
@@ -3815,6 +3856,10 @@ function openFulltextModal(row) {
 
     if (actionEl.classList.contains('chat-reaction-emoji')) {
       const emoji = actionEl.dataset.emoji || '';
+      if (dmMode) {
+        closeContextMenu();
+        return;
+      }
       if (reactionEmojis.includes(emoji)) {
         socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
       }
@@ -3840,6 +3885,7 @@ function openFulltextModal(row) {
       ctxReactions?.classList.toggle('d-none');
       return;
     }
+    if (dmMode && action === 'open-thread') { return; }
     if (action === 'open-thread') {
       const rootId = Number(row.dataset.threadRootId || row.dataset.messageId || 0);
       closeContextMenu();
@@ -3978,7 +4024,11 @@ function openFulltextModal(row) {
 
   function sendSeenForMessageId(messageId) {
     if (!Number.isFinite(messageId) || messageId <= 0) return;
-    socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
+    if (dmMode) {
+      socket.emit('chat_seen', { dm_uuid: dmUuid, room_id: effectiveDmRoomId, last_seen_message_id: messageId });
+    } else {
+      socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
+    }
   }
 
   function escapeHtml(value) {

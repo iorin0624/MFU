@@ -1,0 +1,61 @@
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 6e6838989b6838239bb8b06780310ddfd8e7d1ad..09a095cb5b0455ee41cdb75b3e8272ddef2cb225 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -1494,50 +1494,56 @@ def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any],
+             """,
+             (event_id, room_id, actor["actor_type"], actor["actor_id"]),
+         )
+         row = cur.fetchone() or {}
+         db.commit()
+         return int(row.get("last_read_message_id") or 0)
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _actor_sender_id(actor_type: str, actor_id: str) -> str:
+     return f"{actor_type}:{actor_id}"
+ 
+ 
+ def _to_utc_datetime(value: Any) -> datetime:
+     if isinstance(value, datetime):
+         dt = value
+     else:
+         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+     if dt.tzinfo is None:
+         return dt.replace(tzinfo=ZoneInfo("UTC"))
+     return dt.astimezone(ZoneInfo("UTC"))
+ 
+ 
++
++
++def _to_jst(value: Any) -> datetime:
++    dt_utc = _to_utc_datetime(value)
++    return dt_utc.astimezone(JST)
++
+ def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
+     dt_utc = _to_utc_datetime(created_at)
+     dt_jst = dt_utc.astimezone(JST)
+     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
+     time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
+     return dt_utc.isoformat(), date_label, time_label
+ 
+ 
+ def _present_message(
+     msg: dict[str, Any],
+     current_actor: dict[str, Any],
+     avatar_cache: dict[str, str] | None = None,
+ ) -> dict[str, Any]:
+     sender_actor_type = str(msg["sender_actor_type"])
+     sender_actor_id = str(msg["sender_actor_id"])
+     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
+     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
+     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
+     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
+     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+ 
+     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
+     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
+     reply_to_sender_avatar_url = None
+     if reply_to_sender_actor_type and reply_to_sender_actor_id:

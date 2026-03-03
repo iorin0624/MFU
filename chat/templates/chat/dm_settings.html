@@ -1,14 +1,21 @@
 {% extends "chat/base_chat.html" %}
 {% block content %}
-<div class="container py-4" style="max-width: 720px;">
-  <h3>参加者同士DM設定</h3>
+<div class="container py-4" style="max-width:720px;">
+  <h2>参加者同士DM設定</h2>
   <form method="post" class="card card-body">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="form-check form-switch mb-3">
-      <input class="form-check-input" type="checkbox" id="enable_user_user" name="enable_user_user" value="1" {% if enabled %}checked{% endif %}>
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="checkbox" id="enable_user_user" name="enable_user_user" value="1" {% if enable_user_user %}checked{% endif %}>
       <label class="form-check-label" for="enable_user_user">参加者同士DMを有効化</label>
     </div>
-    <button class="btn btn-primary" type="submit">保存</button>
+    <div class="mb-3">
+      <label class="form-label" for="admin_actor_key">管理者actor_key</label>
+      <input class="form-control" id="admin_actor_key" name="admin_actor_key" value="{{ admin_actor_key }}" required>
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-primary" type="submit">保存</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('chat.index') }}">戻る</a>
+    </div>
   </form>
 </div>
 {% endblock %}

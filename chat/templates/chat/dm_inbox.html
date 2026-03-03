@@ -1,0 +1,22 @@
+{% extends "chat/base_chat.html" %}
+{% block content %}
+<div class="container py-4">
+  <h2>参加者DM一覧（未読順）</h2>
+  <ul class="list-group">
+    {% for it in items %}
+    <li class="list-group-item d-flex justify-content-between align-items-center">
+      <div>
+        <div>{{ it.peer_display_name }}</div>
+        <small class="text-muted">{{ it.last_message or '' }}</small>
+      </div>
+      <div class="text-end">
+        {% if it.unread_count|int > 0 %}<span class="badge bg-danger">{{ it.unread_count }}</span>{% endif %}
+        <a class="btn btn-sm btn-primary ms-2" href="{{ url_for('chat.dm_room', uuid=it.uuid) }}">開く</a>
+      </div>
+    </li>
+    {% else %}
+    <li class="list-group-item">DMはありません。</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}
