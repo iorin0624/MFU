@@ -1522,11 +1522,18 @@ def _to_jst(value: Any) -> datetime:
     dt_utc = _to_utc_datetime(value)
     return dt_utc.astimezone(JST)
 
+
+def _format_jst_time_hm(dt_jst: datetime) -> str:
+    try:
+        return dt_jst.strftime("%-H:%M")
+    except ValueError:
+        return dt_jst.strftime("%H:%M").lstrip("0") or "0:00"
+
 def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
     dt_utc = _to_utc_datetime(created_at)
     dt_jst = dt_utc.astimezone(JST)
     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-    time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
+    time_label = _format_jst_time_hm(dt_jst)
     return dt_utc.isoformat(), date_label, time_label
 
 
@@ -3446,7 +3453,7 @@ def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
         db.close()
 
 
-def _load_dm_messages(conversation_id: int, actor_key: str, limit: int = 200) -> list[dict[str, Any]]:
+def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", limit: int = 200) -> list[dict[str, Any]]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -3467,40 +3474,8 @@ def _load_dm_messages(conversation_id: int, actor_key: str, limit: int = 200) ->
 
     messages: list[dict[str, Any]] = []
     for row in rows:
-        sender_key = str(row.get("sender_actor_key") or "")
-        created_at = row.get("created_at")
-        sender_name = _actor_key_to_display_name(sender_key)
-        sender_type, _, sender_id = sender_key.partition(":")
-        sender_id = sender_id or sender_key
-        msg = {
-            "id": int(row.get("id") or 0),
-            "sender_id": _actor_sender_id(sender_type, sender_id),
-            "sender_display_name": sender_name,
-            "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
-            "body": _linkify_text(str(row.get("body_text") or "")),
-            "body_plain": str(row.get("body_text") or ""),
-            "body_plain_excerpt": _build_plain_excerpt(str(row.get("body_text") or "")),
-            "created_at_iso": created_at.isoformat() if created_at else "",
-            "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
-            "created_at_jst_hhmm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
-            "created_at_jst_date_label": _to_jst(created_at).strftime("%Y/%m/%d") if created_at else "",
-            "is_me": sender_key == actor_key,
-            "reply_to_message_id": None,
-            "thread_root_id": None,
-            "thread_reply_count": 0,
-            "reply_to_sender_display_name": None,
-            "reply_to_body_plain_excerpt": None,
-            "reply_to_sender_avatar_url": None,
-            "deleted_flag": 0,
-            "deleted_by_actor_type": None,
-            "can_delete": False,
-            "can_edit": False,
-            "edited_flag": 0,
-            "my_reaction": None,
-            "reactions_summary": [],
-            "images": [],
-        }
-        messages.append(msg)
+        row["dm_uuid"] = dm_uuid
+        messages.append(_dm_message_to_payload(row, actor_key))
     return messages
 
 
@@ -3537,6 +3512,11 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
     sender_type, _, sender_id = sender_key.partition(":")
     sender_id = sender_id or sender_key
     created_at = message.get("created_at")
+    created_at_iso = ""
+    created_at_jst_date_label = ""
+    created_at_jst_time_hm = ""
+    if created_at:
+        created_at_iso, created_at_jst_date_label, created_at_jst_time_hm = _format_jst_labels(created_at)
     dm_uuid = str(message.get("dm_uuid") or "")
     body_text = str(message.get("body_text") or "")
     return {
@@ -3551,11 +3531,11 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "body_html": _plain_to_body_html(body_text),
         "body_plain": body_text,
         "body_plain_excerpt": _build_plain_excerpt(body_text),
-        "created_at_iso": created_at.isoformat() if created_at else "",
+        "created_at_iso": created_at_iso,
         "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
-        "created_at_jst_hhmm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
-        "created_at_jst_time_hm": _to_jst(created_at).strftime("%H:%M") if created_at else "",
-        "created_at_jst_date_label": _to_jst(created_at).strftime("%Y/%m/%d") if created_at else "",
+        "created_at_jst_hhmm": created_at_jst_time_hm,
+        "created_at_jst_time_hm": created_at_jst_time_hm,
+        "created_at_jst_date_label": created_at_jst_date_label,
         "is_me": sender_key == current_actor_key,
         "reply_to_message_id": None,
         "thread_root_id": None,
@@ -3772,7 +3752,7 @@ def dm_room(uuid: str):
         cur.close()
         db.close()
 
-    messages = _load_dm_messages(int(conversation["id"]), actor_key)
+    messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
     peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
     return render_template(
         "chat/room.html",
