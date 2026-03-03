@@ -1,61 +1,118 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 6e6838989b6838239bb8b06780310ddfd8e7d1ad..09a095cb5b0455ee41cdb75b3e8272ddef2cb225 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -1494,50 +1494,56 @@ def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any],
-             """,
-             (event_id, room_id, actor["actor_type"], actor["actor_id"]),
-         )
-         row = cur.fetchone() or {}
-         db.commit()
-         return int(row.get("last_read_message_id") or 0)
-     finally:
-         cur.close()
-         db.close()
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 756dfa71daf70b219ed1ee0e68a23db72caf3ed8..87a30ad800effd9bff19eba3a746de44c2d2c983 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -213,50 +213,57 @@
+   border: none;
+   background: #f7f9ff;
+   border-radius: 8px;
+   padding: 8px;
+   text-align: left;
+   margin-bottom: 6px;
+ }
  
+ .chat-search-item:last-child {
+   margin-bottom: 0;
+ }
  
- def _actor_sender_id(actor_type: str, actor_id: str) -> str:
-     return f"{actor_type}:{actor_id}"
+ .chat-read-inline {
+   font-size: 0.72rem;
+   color: #4d5c8f;
+   cursor: pointer;
+   user-select: none;
+   white-space: nowrap;
+   line-height: 1.1;
+ }
  
+ .chat-read-inline:hover {
+   text-decoration: underline;
+ }
  
- def _to_utc_datetime(value: Any) -> datetime:
-     if isinstance(value, datetime):
-         dt = value
-     else:
-         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=ZoneInfo("UTC"))
-     return dt.astimezone(ZoneInfo("UTC"))
- 
- 
++.chat-read-time {
++  display: block;
++  font-size: 0.72rem;
++  color: #7a7a7a;
++  line-height: 1.1;
++}
 +
-+
-+def _to_jst(value: Any) -> datetime:
-+    dt_utc = _to_utc_datetime(value)
-+    return dt_utc.astimezone(JST)
-+
- def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     dt_utc = _to_utc_datetime(created_at)
-     dt_jst = dt_utc.astimezone(JST)
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-     time_label = f"{dt_jst.hour}:{dt_jst.minute:02d}"
-     return dt_utc.isoformat(), date_label, time_label
+ .chat-read-list {
+   margin-top: 2px;
+   padding: 6px 8px;
+   border-radius: 8px;
+   background: rgba(255, 255, 255, 0.82);
+   color: #334;
+   font-size: 0.76rem;
+   min-width: 120px;
+ }
  
+ .chat-read-list ul {
+   margin: 0;
+   padding-left: 1rem;
+ }
  
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-     avatar_cache: dict[str, str] | None = None,
- ) -> dict[str, Any]:
-     sender_actor_type = str(msg["sender_actor_type"])
-     sender_actor_id = str(msg["sender_actor_id"])
-     sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
-     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
-     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
-     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+ .chat-avatar {
+   width: 32px;
+   height: 32px;
+   border-radius: 50%;
+   object-fit: cover;
+   flex: 0 0 auto;
+   background: #fff;
+   border: 1px solid rgba(0, 0, 0, 0.08);
+ }
  
-     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-     reply_to_sender_avatar_url = None
-     if reply_to_sender_actor_type and reply_to_sender_actor_id:
+@@ -3998,52 +4005,54 @@ function openFulltextModal(row) {
+   function refreshReadIndicatorForRow(row) {
+     if (!row?.classList.contains('me')) return;
+     const messageId = Number(row.dataset.messageId || 0);
+     const senderId = row.dataset.senderId || '';
+     const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
+     const list = row.querySelector('.chat-read-list');
+     if (!messageId || !indicator || !list) return;
+ 
+     const readers = [];
+     for (const entry of state.readStateByActor.values()) {
+       if (Number(entry.last_read_message_id || 0) < messageId) continue;
+       if (senderId && isSameActorByKey(entry.actor_type, entry.actor_id, senderId)) continue;
+       if (meId && isSameActorByKey(entry.actor_type, entry.actor_id, meId)) continue;
+       readers.push(entry.display_name || `${entry.actor_type}:${entry.actor_id}`);
+     }
+     readers.sort((a, b) => a.localeCompare(b, 'ja'));
+ 
+     if (readers.length === 0) {
+       indicator.classList.add('d-none');
+       indicator.textContent = '';
+       list.classList.add('d-none');
+       list.innerHTML = '';
+       return;
+     }
+ 
++    const timeText = (row.querySelector('.chat-time')?.textContent || '').trim();
++    const readLabel = dmMode ? '既読' : `既読 ${readers.length}`;
+     indicator.classList.remove('d-none');
+-    indicator.textContent = dmMode ? '既読' : `既読 ${readers.length}`;
++    indicator.innerHTML = `${escapeHtml(readLabel)}${timeText ? `<span class="chat-read-time">${escapeHtml(timeText)}</span>` : ''}`;
+     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
+   }
+ 
+   function toggleReadList(chatMain) {
+     const list = chatMain?.querySelector('.chat-read-list');
+     if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
+     list.classList.toggle('d-none');
+   }
+ 
+   function sendSeenForLatestMessage() {
+     const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
+     const lastRow = rows.length ? rows[rows.length - 1] : null;
+     if (!lastRow) return;
+     sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
+   }
+ 
+   function sendSeenForMessageId(messageId) {
+     if (!Number.isFinite(messageId) || messageId <= 0) return;
+     if (dmMode) {
+       socket.emit('chat_seen', { dm_uuid: dmUuid, room_id: effectiveDmRoomId, last_seen_message_id: messageId });
+     } else {
+       socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
+     }
+   }
+ 

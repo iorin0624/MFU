@@ -2948,10 +2948,17 @@ def _create_external_chat_notification(
         return
     from app.external_login_user.notifications import create_notification_external
 
-    params = {"event_id": event_id}
-    if room_id:
-        params["room_id"] = room_id
-    target_url = f"/chat/events/{event_id}?{urlencode(params)}"
+    if kind == "dm" and room_id and room_id.startswith("dm:"):
+        dm_uuid = room_id.split(":", 1)[1]
+        target_url = f"/chat/dm/room/{dm_uuid}"
+    elif int(event_id or 0) <= 0 and room_id and room_id.startswith("dm:"):
+        dm_uuid = room_id.split(":", 1)[1]
+        target_url = f"/chat/dm/room/{dm_uuid}"
+    else:
+        params = {"event_id": event_id}
+        if room_id:
+            params["room_id"] = room_id
+        target_url = f"/chat/events/{event_id}?{urlencode(params)}"
     title_text = title
     if room_name:
         title_text = f"[{room_name}] {title}"
@@ -3559,6 +3566,49 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "my_reaction": None,
         "images": [],
     }
+
+
+
+def _split_actor_key(actor_key: str) -> tuple[str, str]:
+    value = str(actor_key or "")
+    if ":" not in value:
+        return value, value
+    actor_type, actor_id = value.split(":", 1)
+    if actor_type == "admin":
+        return "admin", "admin"
+    return actor_type, actor_id
+
+
+def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_key, last_read_message_id
+            FROM chat_dm_participants
+            WHERE conversation_id=%s
+            """,
+            (conversation_id,),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    snapshot: list[dict[str, Any]] = []
+    for row in rows:
+        actor_key = str(row.get("actor_key") or "")
+        actor_type, actor_id = _split_actor_key(actor_key)
+        snapshot.append(
+            {
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "display_name": _actor_key_to_display_name(actor_key),
+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+            }
+        )
+    return snapshot
 
 def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sender_display_name: str, body: str) -> None:
     db = get_db()
@@ -5435,6 +5485,16 @@ def on_join(data):
             return
         join_room(f"dm:{dm_uuid}")
         emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
+        conversation = _get_dm_conversation_by_uuid(dm_uuid)
+        if conversation:
+            emit(
+                "chat_read_snapshot",
+                {
+                    "dm_uuid": dm_uuid,
+                    "room_id": f"dm:{dm_uuid}",
+                    "read_states": _load_dm_read_state_snapshot(int(conversation["id"])),
+                },
+            )
         return
 
     if (room_id or "").startswith("dm:"):
@@ -5490,7 +5550,19 @@ def on_seen(data):
         finally:
             cur.close()
             db.close()
-        emit("chat_read_update", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}", "actor_key": actor_key, "last_read_message_id": last_seen_message_id}, to=f"dm:{dm_uuid}")
+        actor_type, actor_id = _split_actor_key(actor_key)
+        emit(
+            "chat_read_update",
+            {
+                "dm_uuid": dm_uuid,
+                "room_id": f"dm:{dm_uuid}",
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "display_name": _actor_key_to_display_name(actor_key),
+                "last_read_message_id": last_seen_message_id,
+            },
+            to=f"dm:{dm_uuid}",
+        )
         return
 
     if (room_id or "").startswith("dm:"):
