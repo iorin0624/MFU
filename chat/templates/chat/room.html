@@ -4030,7 +4030,7 @@ function openFulltextModal(row) {
     const timeText = (row.querySelector('.chat-time')?.textContent || '').trim();
     const readLabel = dmMode ? '既読' : `既読 ${readers.length}`;
     indicator.classList.remove('d-none');
-    indicator.innerHTML = `${escapeHtml(readLabel)}${timeText ? `<span class="chat-read-time">${escapeHtml(timeText)}</span>` : ''}`;
+    indicator.textContent = readLabel;
     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
   }
 
