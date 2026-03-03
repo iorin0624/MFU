@@ -3,6 +3,12 @@
 <div class="container py-4">
   <h2>イベントチャット</h2>
   <p class="text-muted">ログインユーザー: {{ actor.display_name }} ({{ actor.actor_type }})</p>
+  {% if actor.actor_type in ['admin', 'acl'] %}
+  <div class="mb-3">
+    <button type="button" id="chat-index-enable-push" class="btn btn-sm btn-outline-secondary">Push通知を有効化</button>
+    <small class="text-muted ms-2">個別DM通知にも利用されます</small>
+  </div>
+  {% endif %}
   <div class="alert alert-info">参加者/運営のみチャット入室できます（adminは例外で入室可能）。</div>
   <ul class="list-group">
     {% for ev in events %}
@@ -19,14 +25,19 @@
   <div class="card mt-4">
     <div class="card-body">
       <h5 class="card-title">参加者DM一覧（未読順）</h5>
+      <div class="mb-2"><input id="dmInboxSearchInputTop" type="text" class="form-control form-control-sm" placeholder="名前で検索"></div>
       <div class="mb-2"><a href="{{ url_for('chat.dm_settings_get') }}">参加者同士DM設定</a>（現在: {{ 'ON' if dm_user_user_enabled else 'OFF' }}）</div>
       <ul class="list-group list-group-flush">
         {% for it in dm_inbox_items %}
-        <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+        <li class="list-group-item d-flex justify-content-between align-items-center px-0" data-dm-peer-name="{{ (it.peer_display_name or '')|lower }}">
           <span>{{ it.peer_display_name }} / {{ it.last_message or '' }}</span>
           <span>
             {% if it.unread_count|int > 0 %}<span class="badge bg-danger">{{ it.unread_count }}</span>{% endif %}
+            {% if it.uuid %}
             <a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.dm_room', uuid=it.uuid) }}">開く</a>
+            {% else %}
+            <a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.dm_open_line', line_user_id=(it.peer_actor_key or '').replace('line:', '')|int) }}">送信</a>
+            {% endif %}
           </span>
         </li>
         {% else %}
@@ -37,4 +48,119 @@
   </div>
   {% endif %}
 </div>
+{% if actor.actor_type == 'admin' %}
+<script>
+(() => {
+  const input = document.getElementById('dmInboxSearchInputTop');
+  if (!input) return;
+  const rows = Array.from(document.querySelectorAll('[data-dm-peer-name]'));
+  const filter = () => {
+    const q = String(input.value || '').trim().toLowerCase();
+    rows.forEach((row) => {
+      const name = row.dataset.dmPeerName || '';
+      row.style.display = !q || name.includes(q) ? '' : 'none';
+    });
+  };
+  input.addEventListener('input', filter);
+})();
+</script>
+{% endif %}
+
+{% if actor.actor_type in ['admin', 'acl'] %}
+<script>
+(() => {
+  const pushBtn = document.getElementById('chat-index-enable-push');
+  if (!pushBtn) return;
+  const csrfToken = {{ csrf_token|tojson }};
+  const vapidKey = {{ vapid_public_key|tojson }};
+
+  function updatePushButton(enabled) {
+    pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
+    pushBtn.classList.toggle('btn-outline-danger', enabled);
+    pushBtn.classList.toggle('btn-outline-secondary', !enabled);
+  }
+
+  function urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+    return outputArray;
+  }
+
+  async function getPushState() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      return { supported: false, registration: null, subscription: null };
+    }
+    const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    const subscription = await registration.pushManager.getSubscription();
+    return { supported: true, registration, subscription };
+  }
+
+  async function enablePush(registration) {
+    if (!vapidKey) {
+      alert('VAPID公開鍵が未設定のため通知を有効化できません');
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      alert('通知の許可が必要です');
+      return;
+    }
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+    });
+    const res = await fetch('/chat/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ csrf_token: csrfToken, sw_scope: new URL(registration.scope).pathname || '/', ...subscription.toJSON() }),
+    });
+    if (!res.ok) {
+      alert('購読登録に失敗しました');
+      return;
+    }
+    updatePushButton(true);
+  }
+
+  async function disablePush(registration, subscription) {
+    await subscription.unsubscribe();
+    const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+    if (endpoint) {
+      await fetch('/chat/api/push/unsubscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+      });
+    }
+    const nextSubscription = await registration.pushManager.getSubscription();
+    updatePushButton(Boolean(nextSubscription));
+  }
+
+  (async () => {
+    const pushState = await getPushState();
+    if (!pushState.supported) {
+      pushBtn.disabled = true;
+      pushBtn.textContent = 'Push通知は非対応です';
+      return;
+    }
+    updatePushButton(Boolean(pushState.subscription));
+  })();
+
+  pushBtn.addEventListener('click', async () => {
+    const pushState = await getPushState();
+    if (!pushState.supported) {
+      alert('この端末はPush通知に非対応です');
+      return;
+    }
+    if (pushState.subscription) {
+      await disablePush(pushState.registration, pushState.subscription);
+      return;
+    }
+    await enablePush(pushState.registration);
+  });
+})();
+</script>
+{% endif %}
 {% endblock %}

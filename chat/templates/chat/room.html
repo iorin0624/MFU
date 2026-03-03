@@ -1463,6 +1463,7 @@
       <hr class="chat-ctx-sep">
       <button type="button" class="chat-ctx-item" data-ctx-action="reply">返信</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="open-thread">スレッド</button>
+      <button type="button" class="chat-ctx-item d-none" data-ctx-action="edit">編集</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="fulltext">選択コピー</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="copy">全文コピー</button>
       <button type="button" class="chat-ctx-item" data-ctx-action="react">リアクション</button>
@@ -1757,9 +1758,7 @@ window.addEventListener('DOMContentLoaded', () => {
     socket.emit('chat_join', { event_id: eventId, room_id: roomId });
   }
 
-  if (!dmMode) {
-    initReactionUis();
-  }
+  initReactionUis();
   syncExistingMessageIds();
   scheduleUnreadRefresh();
   refreshNotificationBadge();
@@ -1922,11 +1921,12 @@ window.addEventListener('DOMContentLoaded', () => {
       const row = reactionBtn.closest('.chat-row');
       const messageId = Number(row?.dataset.messageId || 0);
       const emoji = reactionBtn.dataset.emoji || '';
-      if (dmMode) {
-        return;
-      }
       if (messageId && reactionEmojis.includes(emoji)) {
-        socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+        if (dmMode) {
+          socket.emit('dm_react', { dm_uuid: dmUuid, message_id: messageId, emoji });
+        } else {
+          socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+        }
       }
       return;
     }
@@ -2369,7 +2369,13 @@ window.addEventListener('DOMContentLoaded', () => {
       state.uploadPreviewFiles.forEach((file) => fd.append('file', file));
       fd.append('body', bodyInput.value || '');
       if (state.replyToId) fd.append('reply_to_message_id', String(state.replyToId));
-      const res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
+      let res;
+      if (dmMode) {
+        fd.append('dm_uuid', dmUuid);
+        res = await fetch('/chat/dm/api/upload-image', { method: 'POST', body: fd });
+      } else {
+        res = await fetch(`/chat/api/events/${eventId}/upload-image?room_id=${encodeURIComponent(roomId)}`, { method: 'POST', body: fd });
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(data.error || '画像送信に失敗しました');
@@ -2482,11 +2488,20 @@ window.addEventListener('DOMContentLoaded', () => {
     setSendingState(true);
     sendTypingStop();
     try {
-      const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/edit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csrf_token: csrfToken, room_id: roomId, body: bodyInput.value || '' }),
-      });
+      let res;
+      if (dmMode) {
+        res = await fetch(`/chat/dm/api/messages/${messageId}/edit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csrf_token: csrfToken, dm_uuid: dmUuid, body_text: bodyInput.value || '' }),
+        });
+      } else {
+        res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/edit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csrf_token: csrfToken, room_id: roomId, body: bodyInput.value || '' }),
+        });
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(data?.error || '編集に失敗しました');
@@ -2845,11 +2860,20 @@ window.addEventListener('DOMContentLoaded', () => {
   async function handleDeleteMessage(row, messageId) {
     if (!confirm('このメッセージを削除しますか？')) return;
     try {
-      const res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ csrf_token: csrfToken, room_id: roomId }),
-      });
+      let res;
+      if (dmMode) {
+        res = await fetch(`/chat/dm/api/messages/${messageId}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csrf_token: csrfToken, dm_uuid: dmUuid }),
+        });
+      } else {
+        res = await fetch(`/chat/api/events/${eventId}/messages/${messageId}/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csrf_token: csrfToken, room_id: roomId }),
+        });
+      }
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(data?.error || '削除に失敗しました');
@@ -3666,6 +3690,8 @@ window.addEventListener('DOMContentLoaded', () => {
     state.ctxBodyPlain = getPlainTextFromDataset(row.dataset.bodyPlain);
     ctxMenu.dataset.messageId = String(messageId);
 
+    const editItem = ctxMenu.querySelector('[data-ctx-action="edit"]');
+    editItem?.classList.toggle('d-none', row.dataset.canEdit !== '1');
     const deleteItem = ctxMenu.querySelector('[data-ctx-action="delete"]');
     deleteItem?.classList.toggle('d-none', row.dataset.canDelete !== '1');
     const previewText = makeContextPreviewText(row, state.ctxBodyPlain);
@@ -3863,12 +3889,12 @@ function openFulltextModal(row) {
 
     if (actionEl.classList.contains('chat-reaction-emoji')) {
       const emoji = actionEl.dataset.emoji || '';
-      if (dmMode) {
-        closeContextMenu();
-        return;
-      }
       if (reactionEmojis.includes(emoji)) {
-        socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+        if (dmMode) {
+          socket.emit('dm_react', { dm_uuid: dmUuid, message_id: messageId, emoji });
+        } else {
+          socket.emit('chat_react', { event_id: eventId, room_id: roomId, message_id: messageId, emoji });
+        }
       }
       closeContextMenu();
       return;
@@ -3907,6 +3933,16 @@ function openFulltextModal(row) {
         alert('コピーに失敗しました');
       }
       closeContextMenu();
+      return;
+    }
+    if (action === 'edit') {
+      if (row.dataset.canEdit !== '1') {
+        closeContextMenu();
+        return;
+      }
+      const plain = getFullPlainText(row) || state.ctxBodyPlain || getPlainTextFromDataset(row.dataset.bodyPlain);
+      closeContextMenu();
+      setEditState(messageId, plain);
       return;
     }
     if (action === 'delete') {
