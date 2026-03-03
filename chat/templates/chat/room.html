@@ -74,7 +74,7 @@
   align-items: flex-end;
   gap: 6px;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   position: relative;
 }
 
@@ -85,15 +85,14 @@
 
 .chat-bubble {
   display: inline-block;
-  max-width: min(100%, 28rem);
+  max-width: min(calc(100% - 64px), 28rem);
   padding: 8px 12px;
   border-radius: 16px;
   line-height: 1.4;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  min-width: 0;
-  flex: 0 1 auto;
+  overflow-wrap: break-word;
+  word-break: normal;
+  flex: 0 0 auto;
   position: relative;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
@@ -107,8 +106,8 @@
 
 .chat-body {
   min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
@@ -134,8 +133,8 @@
 .chat-body .chat-link {
   text-decoration: underline;
   color: #1f57d6;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .chat-body p,
