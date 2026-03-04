@@ -97,13 +97,6 @@ app = Flask(
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 
-@app.get("/sw.js")
-def root_sw():
-    resp = send_from_directory(app.static_folder, "sw.js", mimetype="application/javascript")
-    resp.headers["Cache-Control"] = "no-cache"
-    return resp
-
-
 @app.get("/manifest.webmanifest")
 def root_manifest():
     resp = jsonify(
@@ -3345,9 +3338,11 @@ app.register_blueprint(records_api_bp)
 from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
 
 from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
+from app.external_login_user.sw_blueprint import sw_bp
 init_line_oauth(app)
 app.register_blueprint(ext_login_bp, url_prefix="/external-login")
 app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
+app.register_blueprint(sw_bp)
 
 from app.s_u_calendar.routes import s_u_calendar_bp
 app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")

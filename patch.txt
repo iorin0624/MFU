@@ -1,0 +1,212 @@
+diff --git a/__init__.py b/__init__.py
+index e6b19c42150594e55a2b679c8b9a53ce7c4cc611..f03b2e892df859a60af91d261b35743276ed9233 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -75,57 +75,50 @@ from app.utils.mail import send_mail
+ from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
+ from app.chat.socketio_ext import socketio
+ 
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+ 
+ # =====================================
+ # 🚀 Flask アプリ構成
+ # =====================================
+ app = Flask(
+     __name__,
+     template_folder=os.path.join(APP_DIR, "templates"),
+     static_folder=STATIC_DIR,
+     static_url_path="/static",
+ )
+ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+ 
+ 
+-@app.get("/sw.js")
+-def root_sw():
+-    resp = send_from_directory(app.static_folder, "sw.js", mimetype="application/javascript")
+-    resp.headers["Cache-Control"] = "no-cache"
+-    return resp
+-
+-
+ @app.get("/manifest.webmanifest")
+ def root_manifest():
+     resp = jsonify(
+         {
+             "name": "MFU",
+             "short_name": "MFU",
+             "start_url": "/external-login/",
+             "scope": "/",
+             "display": "standalone",
+             "background_color": "#ffffff",
+             "theme_color": "#0d6efd",
+             "icons": [],
+         }
+     )
+     resp.mimetype = "application/manifest+json"
+     resp.headers["Cache-Control"] = "no-cache"
+     return resp
+ 
+ def create_app():
+     return app
+ 
+ load_dotenv()
+ app.secret_key = os.environ.get("SECRET_KEY")
+ 
+ 
+@@ -3323,37 +3316,39 @@ from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
+ 
+ from app.utils.zip_stream import zip_api
+ app.register_blueprint(zip_api)
+ 
+ from .utils.service_logs import bp_service_logs
+ app.register_blueprint(bp_service_logs)
+ 
+ from app.routes.webauthn_routes import webauthn_bp
+ app.register_blueprint(webauthn_bp)
+ 
+ from app.tickets import tickets_bp
+ app.register_blueprint(tickets_bp)
+ 
+ from .payment import bp as payment_bp
+ app.register_blueprint(payment_bp)
+ 
+ app.register_blueprint(receipts_bp)
+ 
+ from app.records import records_api_bp, records_bp
+ app.register_blueprint(records_bp, url_prefix="/records")
+ app.register_blueprint(records_api_bp)
+ 
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
+ 
+ from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
++from app.external_login_user.sw_blueprint import sw_bp
+ init_line_oauth(app)
+ app.register_blueprint(ext_login_bp, url_prefix="/external-login")
+ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
++app.register_blueprint(sw_bp)
+ 
+ from app.s_u_calendar.routes import s_u_calendar_bp
+ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+ 
+ from app.chat import chat_bp
+ app.register_blueprint(chat_bp)
+ 
+ from app.bank_account import register_bank_account
+ register_bank_account(app)
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 8e64c448817537337209d2c564fd968f01ea6123..e9f832f1b9db7f5fc95d56b493377ce782c5756c 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -6114,56 +6114,50 @@ def broadcast_push(event_id: int):
+                 room_name=None,
+                 dedup_key=f"chat:broadcast:{event_id}:{digest}:{recipient}",
+             )
+     finally:
+         cur.close()
+         db.close()
+     _log_notification(event_id, "broadcast", {"body": msg}, sent_count)
+     return jsonify({"ok": True, "sent_count": sent_count})
+ 
+ 
+ @chat_bp.get("/manifest.json")
+ def manifest():
+     return jsonify(
+         {
+             "name": "MFU Event Chat",
+             "short_name": "MFU Chat",
+             "start_url": "/chat/",
+             "display": "standalone",
+             "background_color": "#ffffff",
+             "theme_color": "#0d6efd",
+             "icons": [],
+         }
+     )
+ 
+ 
+-@chat_bp.get("/sw.js")
+-def sw():
+-    resp = send_from_directory(current_app.static_folder, "sw.js", mimetype="application/javascript")
+-    resp.headers["Cache-Control"] = "no-cache"
+-    return resp
+-
+ 
+ @socketio.on("connect")
+ def chat_connect():
+     actor = get_chat_actor()
+     _audit_log("room_join", actor=_actor_log_id(actor), result="connect")
+     if not actor:
+         current_app.logger.info("chat socket connect denied: no actor")
+         return False
+     ext_user_id = session.get("ext_user_id")
+     if ext_user_id:
+         try:
+             join_room(f"external_user:{int(ext_user_id)}")
+         except Exception:
+             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
+     return True
+ 
+ @socketio.on("chat_join")
+ def on_join(data):
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     _ensure_chat_read_state_room_schema()
+     _ensure_chat_edit_schema()
+     actor = get_chat_actor()
+     actor_key = get_chat_actor_key(actor)
+diff --git a/external_login_user/sw_blueprint.py b/external_login_user/sw_blueprint.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5b82bb1a6f7a94280634c24de724784707b9cea
+--- /dev/null
++++ b/external_login_user/sw_blueprint.py
+@@ -0,0 +1,11 @@
++from flask import Blueprint, current_app, send_from_directory
++
++sw_bp = Blueprint("sw_root", __name__, url_prefix="")
++
++
++@sw_bp.get("/sw.js")
++def root_sw():
++    resp = send_from_directory(current_app.static_folder, "sw.js", mimetype="application/javascript")
++    resp.headers["Cache-Control"] = "no-store"
++    resp.headers["Content-Type"] = "application/javascript"
++    return resp
+diff --git a/static/sw.js b/static/sw.js
+index e9b797efbbb35f16c0ac13bba4272fd875cb1539..8becdbf6fe642da25b80ec9bcf6dc5fa625a92d6 100644
+--- a/static/sw.js
++++ b/static/sw.js
+@@ -1,25 +1,27 @@
++const SW_VERSION = '2026-03-04-01';
++
+ self.addEventListener('install', () => {
+   self.skipWaiting();
+ });
+ 
+ self.addEventListener('activate', (event) => {
+   event.waitUntil(clients.claim());
+ });
+ 
+ function normalizeTargetUrl(rawUrl, eventId) {
+   const fallbackPath = eventId ? `/chat/events/${eventId}` : '/';
+   const candidate = typeof rawUrl === 'string' && rawUrl.trim() ? rawUrl.trim() : fallbackPath;
+ 
+   if (candidate.startsWith('//')) {
+     return `${self.location.origin}/`;
+   }
+ 
+   try {
+     const url = new URL(candidate, self.location.origin);
+     if (url.origin !== self.location.origin) {
+       return `${self.location.origin}/`;
+     }
+     return url.toString();
+   } catch (_e) {
+     return `${self.location.origin}/`;
+   }
