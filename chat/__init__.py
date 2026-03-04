@@ -6136,12 +6136,6 @@ def manifest():
     )
 
 
-@chat_bp.get("/sw.js")
-def sw():
-    resp = send_from_directory(current_app.static_folder, "sw.js", mimetype="application/javascript")
-    resp.headers["Cache-Control"] = "no-cache"
-    return resp
-
 
 @socketio.on("connect")
 def chat_connect():
