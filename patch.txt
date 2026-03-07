@@ -1,16 +1,8 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index cbaaeff65197839cf553274d28373dbcfb021f0d..4f18547c5fd429b6ffab02593436300ca0332413 100644
+index 4f18547c5fd429b6ffab02593436300ca0332413..4bacc229a5ba792fd2e822c5a3d0bc243f517366 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1676,86 +1676,133 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
-                 username = str(row.get("username") or "")
-                 if not username:
-                     continue
-                 resolved[f"acl:{username}"] = username
-     except Exception:
-         current_app.logger.warning("chat actor display names resolve failed event=%s", event_id, exc_info=True)
-     finally:
-         cur.close()
+@@ -1684,160 +1684,187 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
          db.close()
  
      for actor_type, actor_id in actor_pairs:
@@ -28,12 +20,23 @@ index cbaaeff65197839cf553274d28373dbcfb021f0d..4f18547c5fd429b6ffab02593436300c
      return resolved
  
  
-+def _normalize_event_actor_pair(actor_type: str, actor_id: str) -> tuple[str, str]:
-+    normalized_type = str(actor_type or "")
-+    normalized_id = str(actor_id or "")
-+    if normalized_type == "admin":
-+        return "admin", "admin"
-+    return normalized_type, normalized_id
+ def _normalize_event_actor_pair(actor_type: str, actor_id: str) -> tuple[str, str]:
+     normalized_type = str(actor_type or "")
+     normalized_id = str(actor_id or "")
+     if normalized_type == "admin":
+         return "admin", "admin"
+     return normalized_type, normalized_id
+ 
+ 
++def _canonical_event_actor(actor_type: str, actor_id: str, display_name: str = "") -> dict[str, str]:
++    canonical_type, canonical_id = _normalize_event_actor_pair(actor_type, actor_id)
++    canonical_key = _actor_sender_id(canonical_type, canonical_id) if canonical_type and canonical_id else ""
++    return {
++        "actor_type": canonical_type,
++        "actor_id": canonical_id,
++        "actor_key": canonical_key,
++        "display_name": str(display_name or canonical_id),
++    }
 +
 +
  def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
@@ -57,76 +60,89 @@ index cbaaeff65197839cf553274d28373dbcfb021f0d..4f18547c5fd429b6ffab02593436300c
          cur.close()
          db.close()
  
--    snapshot: list[dict[str, Any]] = []
-+    participant_by_normalized_key: dict[str, dict[str, str]] = {}
-+    for participant in participants.values():
-+        participant_actor_type, participant_actor_id = _normalize_event_actor_pair(
-+            str(participant.get("actor_type") or ""),
-+            str(participant.get("actor_id") or ""),
-+        )
-+        normalized_key = f"{participant_actor_type}:{participant_actor_id}"
-+        if not participant_actor_type or not participant_actor_id:
-+            continue
-+        participant_by_normalized_key[normalized_key] = {
-+            "actor_type": participant_actor_type,
-+            "actor_id": participant_actor_id,
-+            "display_name": str(participant.get("display_name") or normalized_key),
-+        }
-+
-+    snapshot_by_actor: dict[str, dict[str, Any]] = {}
+     participant_by_normalized_key: dict[str, dict[str, str]] = {}
+     for participant in participants.values():
+-        participant_actor_type, participant_actor_id = _normalize_event_actor_pair(
++        canonical_participant = _canonical_event_actor(
+             str(participant.get("actor_type") or ""),
+             str(participant.get("actor_id") or ""),
++            str(participant.get("display_name") or ""),
+         )
+-        normalized_key = f"{participant_actor_type}:{participant_actor_id}"
+-        if not participant_actor_type or not participant_actor_id:
++        normalized_key = canonical_participant["actor_key"]
++        if not normalized_key:
+             continue
+         participant_by_normalized_key[normalized_key] = {
+-            "actor_type": participant_actor_type,
+-            "actor_id": participant_actor_id,
+-            "display_name": str(participant.get("display_name") or normalized_key),
++            "actor_type": canonical_participant["actor_type"],
++            "actor_id": canonical_participant["actor_id"],
++            "display_name": canonical_participant["display_name"],
+         }
+ 
+     snapshot_by_actor: dict[str, dict[str, Any]] = {}
      for row in rows:
--        actor_type = str(row.get("actor_type") or "")
--        actor_id = str(row.get("actor_id") or "")
-+        actor_type, actor_id = _normalize_event_actor_pair(
-+            str(row.get("actor_type") or ""),
-+            str(row.get("actor_id") or ""),
-+        )
-         key = f"{actor_type}:{actor_id}"
--        participant = participants.get(key)
-+        participant = participant_by_normalized_key.get(key)
+-        actor_type, actor_id = _normalize_event_actor_pair(
++        canonical_actor = _canonical_event_actor(
+             str(row.get("actor_type") or ""),
+             str(row.get("actor_id") or ""),
+         )
+-        key = f"{actor_type}:{actor_id}"
++        key = canonical_actor["actor_key"]
+         participant = participant_by_normalized_key.get(key)
          if not participant:
              continue
--        snapshot.append(
--            {
-+
-+        next_read_id = int(row.get("last_read_message_id") or 0)
-+        updated_at = row.get("updated_at")
-+        prev = snapshot_by_actor.get(key)
-+        if not prev:
-+            snapshot_by_actor[key] = {
-                 "actor_type": actor_type,
-                 "actor_id": actor_id,
+ 
+         next_read_id = int(row.get("last_read_message_id") or 0)
+         updated_at = row.get("updated_at")
+         prev = snapshot_by_actor.get(key)
+         if not prev:
+             snapshot_by_actor[key] = {
+-                "actor_type": actor_type,
+-                "actor_id": actor_id,
++                "actor_type": canonical_actor["actor_type"],
++                "actor_id": canonical_actor["actor_id"],
                  "display_name": participant["display_name"],
--                "last_read_message_id": int(row.get("last_read_message_id") or 0),
--                "updated_at_iso": row.get("updated_at").isoformat() if row.get("updated_at") else None,
-+                "last_read_message_id": next_read_id,
-+                "updated_at": updated_at,
-+            }
-+            continue
-+
-+        prev_read_id = int(prev.get("last_read_message_id") or 0)
-+        prev_updated = prev.get("updated_at")
-+        prev["last_read_message_id"] = max(prev_read_id, next_read_id)
-+        if updated_at and (not prev_updated or updated_at > prev_updated):
-+            prev["updated_at"] = updated_at
-+
-+    snapshot: list[dict[str, Any]] = []
-+    for entry in snapshot_by_actor.values():
-+        snapshot.append(
-+            {
-+                "actor_type": str(entry.get("actor_type") or ""),
-+                "actor_id": str(entry.get("actor_id") or ""),
-+                "display_name": str(entry.get("display_name") or ""),
-+                "last_read_message_id": int(entry.get("last_read_message_id") or 0),
-+                "updated_at_iso": entry.get("updated_at").isoformat() if entry.get("updated_at") else None,
+                 "last_read_message_id": next_read_id,
+                 "updated_at": updated_at,
+             }
+             continue
+ 
+         prev_read_id = int(prev.get("last_read_message_id") or 0)
+         prev_updated = prev.get("updated_at")
+         prev["last_read_message_id"] = max(prev_read_id, next_read_id)
+         if updated_at and (not prev_updated or updated_at > prev_updated):
+             prev["updated_at"] = updated_at
+ 
+     snapshot: list[dict[str, Any]] = []
+     for entry in snapshot_by_actor.values():
+         snapshot.append(
+             {
+                 "actor_type": str(entry.get("actor_type") or ""),
+                 "actor_id": str(entry.get("actor_id") or ""),
+                 "display_name": str(entry.get("display_name") or ""),
+                 "last_read_message_id": int(entry.get("last_read_message_id") or 0),
+                 "updated_at_iso": entry.get("updated_at").isoformat() if entry.get("updated_at") else None,
              }
          )
      return snapshot
  
  
- def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> int:
+-def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> int:
++def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> tuple[int, dict[str, str]]:
      if not _ensure_chat_read_state_room_schema():
-         return 0
+-        return 0
++        return 0, _canonical_event_actor("", "")
++
++    canonical_actor = _canonical_event_actor(
++        str(actor.get("actor_type") or ""),
++        str(actor.get("actor_id") or ""),
++        str(actor.get("display_name") or ""),
++    )
++    if not canonical_actor["actor_type"] or not canonical_actor["actor_id"]:
++        return 0, canonical_actor
  
      now = datetime.utcnow()
      db = get_db()
@@ -140,7 +156,224 @@ index cbaaeff65197839cf553274d28373dbcfb021f0d..4f18547c5fd429b6ffab02593436300c
                last_read_message_id = GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
                updated_at = VALUES(updated_at)
              """,
-             (event_id, room_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
+-            (event_id, room_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
++            (
++                event_id,
++                room_id,
++                canonical_actor["actor_type"],
++                canonical_actor["actor_id"],
++                last_seen_message_id,
++                now,
++            ),
          )
          cur.execute(
              """
+             SELECT last_read_message_id
+               FROM chat_read_state
+              WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
+              LIMIT 1
+             """,
+-            (event_id, room_id, actor["actor_type"], actor["actor_id"]),
++            (event_id, room_id, canonical_actor["actor_type"], canonical_actor["actor_id"]),
+         )
+         row = cur.fetchone() or {}
+         db.commit()
+-        return int(row.get("last_read_message_id") or 0)
++        return int(row.get("last_read_message_id") or 0), canonical_actor
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _actor_sender_id(actor_type: str, actor_id: str) -> str:
+     return f"{actor_type}:{actor_id}"
+ 
+ 
+ def _to_utc_datetime(value: Any) -> datetime:
+     if isinstance(value, datetime):
+         dt = value
+     else:
+         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+     if dt.tzinfo is None:
+         return dt.replace(tzinfo=ZoneInfo("UTC"))
+     return dt.astimezone(ZoneInfo("UTC"))
+ 
+ 
+ 
+ 
+ def _to_jst(value: Any) -> datetime:
+     dt_utc = _to_utc_datetime(value)
+     return dt_utc.astimezone(JST)
+ 
+@@ -6730,58 +6757,58 @@ def on_seen(data):
+         actor_type, actor_id = _split_actor_key(actor_key)
+         emit(
+             "chat_read_update",
+             {
+                 "dm_uuid": dm_uuid,
+                 "room_id": f"dm:{dm_uuid}",
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "display_name": _actor_key_to_display_name(actor_key),
+                 "last_read_message_id": last_seen_message_id,
+             },
+             to=f"dm:{dm_uuid}",
+         )
+         return
+ 
+     if (room_id or "").startswith("dm:"):
+         emit("chat_error", {"error": "dm_uuid_required"})
+         return
+ 
+     event_id = int((data or {}).get("event_id") or 0)
+     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+     if event_id <= 0 or last_seen_message_id <= 0 or not allowed or not effective_room_id:
+         disconnect()
+         return
+ 
+-    effective_last_read_id = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
++    effective_last_read_id, canonical_actor = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
+     _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
+     emit(
+         "chat_read_update",
+         {
+-            "actor_type": actor["actor_type"],
+-            "actor_id": actor["actor_id"],
+-            "display_name": actor["display_name"],
++            "actor_type": canonical_actor["actor_type"],
++            "actor_id": canonical_actor["actor_id"],
++            "display_name": canonical_actor["display_name"],
+             "last_read_message_id": effective_last_read_id,
+             "room_id": effective_room_id,
+         },
+         to=f"event:{event_id}:room:{effective_room_id}",
+     )
+ 
+ 
+ @socketio.on("chat_typing")
+ def on_typing(data):
+     actor = get_chat_actor()
+     if not actor:
+         disconnect()
+         return
+ 
+     try:
+         event_id = int((data or {}).get("event_id") or 0)
+         room_id = str((data or {}).get("room_id") or "").strip() or None
+     except (TypeError, ValueError):
+         disconnect()
+         return
+     is_typing = bool((data or {}).get("is_typing"))
+ 
+     if (room_id or "").startswith("dm:"):
+         emit("chat_error", {"error": "dm_typing_unsupported"})
+         return
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 73d72a5d46f025762c4b156fafa6589cea54bb89..670c678222271566b0a77692960610d66695d8a7 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -3991,77 +3991,96 @@ function openFulltextModal(row) {
+ 
+   function formatDateLabel(date) {
+     const parts = fmtDate.formatToParts(date);
+     const get = (type) => parts.find((p) => p.type === type)?.value || '';
+     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
+   }
+ 
+   function formatTimeLabel(date) {
+     return fmtTime.format(date);
+   }
+ 
+   function formatDateTimeLabel(isoText) {
+     if (!isoText) return '';
+     const date = new Date(isoText);
+     if (Number.isNaN(date.getTime())) return '';
+     return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
+   }
+ 
+   function applyReadSnapshot(states) {
+     state.readStateByActor.clear();
+     for (const readState of states || []) {
+       applyReadUpdate(readState);
+     }
+   }
+ 
+-  function normalizeActorKeyForCompare(actorType, actorId) {
++  function canonicalEventActorKey(actorType, actorId) {
+     const t = String(actorType || '');
+     const i = String(actorId || '');
+-    if (t === 'admin') return 'admin';
++    if (!t || !i) return '';
++    if (t === 'admin') return 'admin:admin';
+     return `${t}:${i}`;
+   }
+ 
++  function normalizeActorKeyForCompare(actorType, actorId) {
++    const canonicalKey = canonicalEventActorKey(actorType, actorId);
++    if (!canonicalKey) return '';
++    if (canonicalKey === 'admin:admin') return 'admin';
++    return canonicalKey;
++  }
++
+   function isSameActorByKey(actorType, actorId, targetKey) {
+-    const normTarget = String(targetKey || '');
++    const normTarget = normalizeActorKeyForCompare(...splitActorKey(targetKey));
+     if (!normTarget) return false;
+     const normActor = normalizeActorKeyForCompare(actorType, actorId);
+     if (normActor === normTarget) return true;
+-    if (normActor === 'admin' && (normTarget === 'admin:1' || normTarget === 'admin:admin' || normTarget === 'admin')) return true;
+     return false;
+   }
+ 
++  function splitActorKey(actorKey) {
++    const key = String(actorKey || '');
++    const sepIndex = key.indexOf(':');
++    if (sepIndex < 0) {
++      if (key === 'admin') return ['admin', 'admin'];
++      return ['', ''];
++    }
++    return [key.slice(0, sepIndex), key.slice(sepIndex + 1)];
++  }
++
+   function applyReadUpdate(readState) {
+     if (!readState?.actor_type || !readState?.actor_id) return;
+-    const key = `${readState.actor_type}:${readState.actor_id}`;
++    const key = canonicalEventActorKey(readState.actor_type, readState.actor_id);
++    if (!key) return;
++    const [canonicalActorType, canonicalActorId] = splitActorKey(key);
+     const prev = state.readStateByActor.get(key);
+     const nextReadId = Number(readState.last_read_message_id || 0);
+     const prevReadId = Number(prev?.last_read_message_id || 0);
+     if (prev && prevReadId > nextReadId) return;
+     state.readStateByActor.set(key, {
+-      actor_type: readState.actor_type,
+-      actor_id: String(readState.actor_id),
+-      display_name: readState.display_name || prev?.display_name || readState.actor_id,
++      actor_type: canonicalActorType,
++      actor_id: String(canonicalActorId),
++      display_name: readState.display_name || prev?.display_name || canonicalActorId,
+       last_read_message_id: Math.max(prevReadId, nextReadId),
+     });
+   }
+ 
+   function refreshReadIndicators() {
+     msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
+   }
+ 
+   function refreshReadIndicatorForRow(row) {
+     if (!row?.classList.contains('me')) return;
+     const messageId = Number(row.dataset.messageId || 0);
+     const senderId = row.dataset.senderId || '';
+     const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
+     const list = row.querySelector('.chat-read-list');
+     if (!messageId || !indicator || !list) return;
+ 
+     const readers = [];
+     for (const entry of state.readStateByActor.values()) {
+       if (Number(entry.last_read_message_id || 0) < messageId) continue;
+       if (senderId && isSameActorByKey(entry.actor_type, entry.actor_id, senderId)) continue;
+       if (meId && isSameActorByKey(entry.actor_type, entry.actor_id, meId)) continue;
+       readers.push(entry.display_name || `${entry.actor_type}:${entry.actor_id}`);
+     }
+     readers.sort((a, b) => a.localeCompare(b, 'ja'));
+ 
