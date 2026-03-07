@@ -1201,6 +1201,76 @@
   color: #667;
 }
 
+
+.chat-read-front-debug-toggle.is-on {
+  background: #dff3ff;
+  border-color: #8ec8ff;
+  color: #1d4d87;
+}
+
+.chat-read-front-debug {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(226, 236, 245, 0.95);
+  border: 1px solid rgba(68, 98, 128, 0.25);
+  font-size: 0.72rem;
+  color: #2f3f55;
+}
+
+.chat-read-front-debug-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.chat-read-front-debug-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.chat-read-front-debug-badge.ok { background: #e8f8ec; color: #1f6b35; border-color: #a8dbb8; }
+.chat-read-front-debug-badge.warning { background: #fff4da; color: #7b5600; border-color: #f0ce7d; }
+.chat-read-front-debug-badge.hidden { background: #ffe8e8; color: #8e2222; border-color: #f0b3b3; }
+
+.chat-read-front-debug-panel {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  width: min(420px, 92vw);
+  max-height: 52vh;
+  overflow: auto;
+  z-index: 1080;
+  background: rgba(23, 28, 38, 0.92);
+  color: #d9e7ff;
+  border-radius: 10px;
+  border: 1px solid rgba(127, 166, 230, 0.35);
+  padding: 10px;
+  font-size: 0.72rem;
+}
+
+.chat-read-front-debug-log {
+  margin-top: 8px;
+  max-height: 220px;
+  overflow: auto;
+  border-top: 1px solid rgba(127, 166, 230, 0.25);
+  padding-top: 6px;
+}
+
+.chat-read-front-debug-json {
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 6px;
+  margin-top: 4px;
+}
+
 </style>
 
 {% macro render_reaction_box(message) -%}
@@ -1226,7 +1296,9 @@
      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}"
      data-dm-mode="{{ 1 if dm_mode else 0 }}"
      data-dm-uuid="{{ dm_uuid or '' }}"
-     data-dm-room-id="{{ dm_room_id or '' }}">
+     data-dm-room-id="{{ dm_room_id or '' }}"
+     data-read-front-debug-enabled="{{ 1 if chat_read_front_debug_enabled else 0 }}"
+     data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}">
   {% include "chat/_chat_nav.html" %}
   <div class="chat-room-main">
     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
@@ -1234,6 +1306,7 @@
       {% if actor.actor_type == 'admin' %}
       <a class="btn btn-sm btn-outline-dark" target="_blank" rel="noopener" href="{% if dm_mode %}{{ url_for('chat.debug_read_v2', dm_uuid=dm_uuid) }}{% else %}{{ url_for('chat.debug_read_v2', event_id=event.id, room_id=active_room.room_id) }}{% endif %}">既読デバッグ</a>
       {% endif %}
+      <button type="button" id="chat-read-front-debug-toggle" class="btn btn-sm btn-outline-secondary chat-read-front-debug-toggle d-none" aria-pressed="false">既読UIデバッグ OFF</button>
       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
       {% if can_manage_rooms %}
       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
@@ -1593,6 +1666,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   const myDisplayName = root.dataset.displayName || '';
   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
   const isAdmin = root.dataset.isAdmin === '1';
+  const canReadFrontDebug = root.dataset.readFrontDebugEnabled === '1';
+  const roomDebugKey = root.dataset.roomDebugKey || '';
+  const readFrontDebugStorageKey = 'chat.readFrontDebug.enabled';
   const sendBtn = document.getElementById('chat-send-btn');
   const dmMode = root.dataset.dmMode === '1';
   const dmUuid = root.dataset.dmUuid || "";
@@ -1624,6 +1700,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const roomMembersBtn = document.getElementById('chat-room-members-btn');
   const roomDeleteBtn = document.getElementById('chat-room-delete-btn');
   const unreadJumpBtn = document.getElementById('chat-unread-jump-btn');
+  const readFrontDebugToggleBtn = document.getElementById('chat-read-front-debug-toggle');
   const muteBtn = document.getElementById('chat-mute-btn');
   const muteMenu = document.getElementById('chat-mute-menu');
   const mentionMenu = document.getElementById('chat-mention-menu');
@@ -1741,6 +1818,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     uploadPreviewFiles: [],
     uploadPreviewUrls: [],
     dragOverlayDepth: 0,
+    readFrontDebugEnabled: false,
+    readFrontDebugLog: [],
+    readFrontDebugSeq: 0,
+    latestReadSnapshotCount: 0,
+    latestReadUpdate: null,
+    latestSendSeenMessageId: null,
+    latestMyMessageChecks: [],
+    readFrontDebugSelectedMessageId: null,
   };
 
   if (ctxReactions && ctxReactions.childElementCount === 0) {
@@ -1769,6 +1854,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   startNotificationBadgePolling();
   refreshMuteButton();
   scrollToLatestMessage();
+  initializeReadFrontDebug();
   refreshReadIndicators();
   window.addEventListener('load', () => {
     scrollToLatestMessage();
@@ -1819,11 +1905,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     alert(d.error || '送信失敗');
   });
   socket.on('chat_read_snapshot', (payload) => {
+    state.latestReadSnapshotCount = Array.isArray(payload?.read_states) ? payload.read_states.length : 0;
+    pushReadFrontDebugLog('socket_snapshot', { room: getDebugRoomContext(), count: state.latestReadSnapshotCount });
     applyReadSnapshot(payload?.read_states || []);
     refreshReadIndicators();
     sendSeenForLatestMessage();
   });
   socket.on('chat_read_update', (payload) => {
+    state.latestReadUpdate = payload || null;
+    pushReadFrontDebugLog('socket_update', { room: getDebugRoomContext(), actor_key: payload?.actor_key || `${payload?.actor_type || ''}:${payload?.actor_id || ''}`, message_id: Number(payload?.last_read_message_id || 0) });
     applyReadUpdate(payload);
     refreshReadIndicators();
   });
@@ -1861,6 +1951,11 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 
   msgBox.addEventListener('click', (e) => {
+    const selectedRow = e.target.closest('.chat-row[data-message-id]');
+    if (selectedRow && isReadFrontDebugEnabled()) {
+      state.readFrontDebugSelectedMessageId = Number(selectedRow.dataset.messageId || 0) || null;
+      renderReadFrontDebugPanel();
+    }
     const rowForAction = e.target.closest('.chat-row');
     if (rowForAction && Number(rowForAction.dataset.deletedFlag || 0) === 1) {
       if (e.target.closest('.chat-reply-quote')) {
@@ -2626,9 +2721,25 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   function isMyMessage(msg) {
-    const senderKey = canonicalReadActorKeyFromKey(msg.sender_id || '');
-    return (senderKey && canonicalMeId && senderKey === canonicalMeId)
-      || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+    const senderRaw = String(msg?.sender_id || '');
+    const senderCanonical = canonicalReadActorKeyFromKey(senderRaw);
+    const byCanonical = senderCanonical && canonicalMeId && senderCanonical === canonicalMeId;
+    const byName = (!senderRaw && msg?.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+    const result = Boolean(byCanonical || byName);
+    if (canReadFrontDebug) {
+      const check = {
+        sender_id_raw: senderRaw,
+        sender_id_canonical: senderCanonical,
+        canonicalMeId,
+        sender_display_name: msg?.sender_display_name || '',
+        myDisplayName,
+        result,
+      };
+      state.latestMyMessageChecks.push(check);
+      if (state.latestMyMessageChecks.length > 50) state.latestMyMessageChecks.shift();
+      pushReadFrontDebugLog('is_my_message', check);
+    }
+    return result;
   }
 
   function renderMessage(msg) {
@@ -4048,9 +4159,170 @@ function openFulltextModal(row) {
     return key;
   }
 
+  function getDebugRoomContext() {
+    return { roomDebugKey, dmMode, eventId, roomId, dmUuid, effectiveDmRoomId };
+  }
+
+  function escapeDebugJson(value) {
+    try {
+      return escapeHtml(JSON.stringify(value, null, 2));
+    } catch (_) {
+      return escapeHtml(String(value));
+    }
+  }
+
+  function isReadFrontDebugEnabled() {
+    return Boolean(canReadFrontDebug && state.readFrontDebugEnabled);
+  }
+
+  function setReadFrontDebugEnabled(enabled) {
+    const next = Boolean(enabled && canReadFrontDebug);
+    state.readFrontDebugEnabled = next;
+    if (canReadFrontDebug) {
+      try { localStorage.setItem(readFrontDebugStorageKey, next ? '1' : '0'); } catch (_) {}
+    }
+    if (readFrontDebugToggleBtn) {
+      readFrontDebugToggleBtn.classList.toggle('is-on', next);
+      readFrontDebugToggleBtn.textContent = `既読UIデバッグ ${next ? 'ON' : 'OFF'}`;
+      readFrontDebugToggleBtn.setAttribute('aria-pressed', next ? 'true' : 'false');
+    }
+    refreshAllReadFrontDebug();
+    renderReadFrontDebugPanel();
+  }
+
+  function pushReadFrontDebugLog(type, payload) {
+    state.readFrontDebugSeq += 1;
+    state.readFrontDebugLog.push({ seq: state.readFrontDebugSeq, at: new Date().toISOString(), type, payload });
+    if (state.readFrontDebugLog.length > 100) state.readFrontDebugLog.shift();
+    if (isReadFrontDebugEnabled()) renderReadFrontDebugPanel();
+  }
+
+  function computeReadIndicatorState(row) {
+    const messageId = Number(row?.dataset?.messageId || 0);
+    const senderIdRaw = String(row?.dataset?.senderId || '');
+    const senderKey = canonicalReadActorKeyFromKey(senderIdRaw);
+    const selfKey = canonicalMeId;
+    const indicator = row?.querySelector('.chat-read-inline, .chat-read-indicator');
+    const list = row?.querySelector('.chat-read-list');
+    const isMeRow = row?.classList?.contains('me') || false;
+    const readerEntries = [];
+    const readers = [];
+
+    for (const entry of state.readStateByActor.values()) {
+      const canonicalKey = canonicalReadActorKeyFromKey(entry.actor_key || '');
+      const passesMessageThreshold = Number(entry.last_read_message_id || 0) >= messageId;
+      const excludedBySender = canonicalKey && canonicalKey === senderKey;
+      const excludedBySelf = canonicalKey && canonicalKey === selfKey;
+      const excludedBySystem = canonicalKey === 'system:system';
+      readerEntries.push({
+        actor_key: entry.actor_key || '',
+        display_name: entry.display_name || readDisplayNameFallback(canonicalKey),
+        last_read_message_id: Number(entry.last_read_message_id || 0),
+        canonical_key: canonicalKey,
+        passesMessageThreshold,
+        excludedBySender,
+        excludedBySelf,
+        excludedBySystem,
+      });
+      if (canonicalKey && passesMessageThreshold && !excludedBySender && !excludedBySelf && !excludedBySystem) {
+        readers.push(entry.display_name || readDisplayNameFallback(canonicalKey));
+      }
+    }
+    readers.sort((a, b) => a.localeCompare(b, 'ja'));
+
+    let hiddenReason = 'visible';
+    if (!isMeRow) hiddenReason = 'row_not_me';
+    else if (!messageId) hiddenReason = 'message_id_missing';
+    else if (!indicator) hiddenReason = 'indicator_missing';
+    else if (!list) hiddenReason = 'list_missing';
+    else if (!readers.length) hiddenReason = 'no_readers';
+
+    return { messageId, senderIdRaw, senderKey, selfKey, indicator, list, isMeRow, readers, readerEntries, hiddenReason };
+  }
+
+  function getRowReadDebugInfo(row) {
+    const c = computeReadIndicatorState(row);
+    return {
+      messageId: c.messageId,
+      senderIdRaw: c.senderIdRaw,
+      senderKey: c.senderKey,
+      selfKey: c.selfKey,
+      isMeRow: c.isMeRow,
+      indicatorExists: Boolean(c.indicator),
+      listExists: Boolean(c.list),
+      readers: c.readers,
+      readerEntries: c.readerEntries,
+      hiddenReason: c.hiddenReason,
+      dataset: {
+        messageId: row?.dataset?.messageId || '',
+        senderId: row?.dataset?.senderId || '',
+        senderName: row?.dataset?.senderName || '',
+        deletedFlag: row?.dataset?.deletedFlag || '',
+        className: row?.className || '',
+      },
+    };
+  }
+
+  function renderReadFrontDebugForRow(row) {
+    if (!row) return;
+    const existing = row.querySelector('.chat-read-front-debug');
+    if (!isReadFrontDebugEnabled()) {
+      if (existing) existing.remove();
+      return;
+    }
+    const info = getRowReadDebugInfo(row);
+    const panel = existing || document.createElement('div');
+    panel.className = 'chat-read-front-debug';
+    const badgeClass = info.hiddenReason === 'visible' ? 'ok' : (info.hiddenReason === 'no_readers' ? 'warning' : 'hidden');
+    const readerRows = info.readerEntries.map((entry) => `<li>${escapeHtml(entry.display_name || '')} / ${escapeHtml(entry.actor_key || '')} / last=${entry.last_read_message_id}</li>`).join('');
+    panel.innerHTML = `<div class="chat-read-front-debug-row"><span>msg:${info.messageId || '(none)'}</span><span>sender(raw):${escapeHtml(info.senderIdRaw || '(none)')}</span><span>senderKey:${escapeHtml(info.senderKey || '(none)')}</span><span>selfKey:${escapeHtml(info.selfKey || '(none)')}</span><span>row:${info.isMeRow ? 'me' : 'other'}</span><span>readers:${info.readers.length}</span><span class="chat-read-front-debug-badge ${badgeClass}">${escapeHtml(info.hiddenReason)}</span></div><div>dataset: messageId=${escapeHtml(info.dataset.messageId)} / senderId=${escapeHtml(info.dataset.senderId)} / senderName=${escapeHtml(info.dataset.senderName)} / deleted=${escapeHtml(info.dataset.deletedFlag)} / class=${escapeHtml(info.dataset.className)}</div><div>readers: ${info.readers.length ? escapeHtml(info.readers.join(', ')) : '(none)'}</div><details><summary>影響entry(${info.readerEntries.length})</summary><ul>${readerRows || '<li>(none)</li>'}</ul></details>`;
+    (row.querySelector('.chat-main') || row).appendChild(panel);
+  }
+
+  function refreshAllReadFrontDebug() {
+    msgBox.querySelectorAll('.chat-row[data-message-id]').forEach((row) => renderReadFrontDebugForRow(row));
+  }
+
+  function renderReadFrontDebugPanel() {
+    let panel = document.getElementById('chat-read-front-debug-panel');
+    if (!isReadFrontDebugEnabled()) {
+      if (panel) panel.remove();
+      return;
+    }
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'chat-read-front-debug-panel';
+      panel.className = 'chat-read-front-debug-panel';
+      document.body.appendChild(panel);
+    }
+    const latestLogs = state.readFrontDebugLog.slice(-20).reverse();
+    const latestRow = [...msgBox.querySelectorAll('.chat-row[data-message-id]')].pop() || null;
+    const latestInfo = latestRow ? getRowReadDebugInfo(latestRow) : null;
+    const selectedRow = state.readFrontDebugSelectedMessageId ? msgBox.querySelector(`.chat-row[data-message-id="${state.readFrontDebugSelectedMessageId}"]`) : null;
+    const selectedInfo = selectedRow ? getRowReadDebugInfo(selectedRow) : null;
+    panel.innerHTML = `<div class="d-flex justify-content-between align-items-center"><strong>既読フロントデバッグ</strong><button type="button" class="btn btn-sm btn-light" data-debug-close="1">閉じる</button></div><div>canonicalMeId: <code>${escapeHtml(canonicalMeId || '(none)')}</code></div><div>dmMode: ${dmMode ? '1' : '0'} / eventId:${eventId} / roomId:${escapeHtml(roomId)} / dmUuid:${escapeHtml(dmUuid)}</div><div>readStateByActor件数: ${state.readStateByActor.size}</div><div>latest snapshot count: ${state.latestReadSnapshotCount} / latest sendSeen: ${state.latestSendSeenMessageId || '(none)'}</div><div>latest update: <pre class="chat-read-front-debug-json">${escapeDebugJson(state.latestReadUpdate || {})}</pre></div><details><summary>readStateByActor JSON</summary><pre class="chat-read-front-debug-json">${escapeDebugJson(Object.fromEntries(state.readStateByActor))}</pre></details><details open><summary>最新row debug</summary><pre class="chat-read-front-debug-json">${escapeDebugJson(latestInfo || {})}</pre></details><details><summary>選択row debug</summary><pre class="chat-read-front-debug-json">${escapeDebugJson(selectedInfo || {})}</pre></details><div class="chat-read-front-debug-log">${latestLogs.map((log) => `<div><strong>#${log.seq}</strong> ${escapeHtml(log.type)} <small>${escapeHtml(log.at)}</small><div class="chat-read-front-debug-json">${escapeDebugJson(log.payload)}</div></div>`).join('')}</div>`;
+    panel.querySelector('[data-debug-close="1"]')?.addEventListener('click', () => setReadFrontDebugEnabled(false), { once: true });
+  }
+
+  function initializeReadFrontDebug() {
+    if (!canReadFrontDebug) {
+      state.readFrontDebugEnabled = false;
+      if (readFrontDebugToggleBtn) readFrontDebugToggleBtn.classList.add('d-none');
+      return;
+    }
+    if (readFrontDebugToggleBtn) {
+      readFrontDebugToggleBtn.classList.remove('d-none');
+      readFrontDebugToggleBtn.addEventListener('click', () => setReadFrontDebugEnabled(!state.readFrontDebugEnabled));
+    }
+    let initial = false;
+    try { initial = localStorage.getItem(readFrontDebugStorageKey) === '1'; } catch (_) {}
+    setReadFrontDebugEnabled(initial);
+  }
+
   function applyReadUpdate(readState) {
     const legacyKey = `${readState?.actor_type || ''}:${readState?.actor_id || ''}`;
     const key = canonicalReadActorKeyFromKey(readState?.actor_key || legacyKey);
+    pushReadFrontDebugLog('apply_read_update', { room: getDebugRoomContext(), actor_key: key || readState?.actor_key || legacyKey, message_id: Number(readState?.last_read_message_id || 0), readStateSize: state.readStateByActor.size });
     if (!key) return;
     const prev = state.readStateByActor.get(key);
     const nextReadId = Number(readState?.last_read_message_id || 0);
@@ -4063,6 +4335,7 @@ function openFulltextModal(row) {
   }
 
   function applyReadSnapshot(states) {
+    pushReadFrontDebugLog('apply_read_snapshot', { room: getDebugRoomContext(), count: Array.isArray(states) ? states.length : 0 });
     state.readStateByActor.clear();
     for (const readState of states || []) {
       applyReadUpdate(readState);
@@ -4070,42 +4343,34 @@ function openFulltextModal(row) {
   }
 
   function refreshReadIndicatorForRow(row) {
-    if (!row?.classList.contains('me')) return;
-    const messageId = Number(row.dataset.messageId || 0);
-    const senderKey = canonicalReadActorKeyFromKey(row.dataset.senderId || '');
-    const selfKey = canonicalMeId;
-    const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
-    const list = row.querySelector('.chat-read-list');
-    if (!messageId || !indicator || !list) return;
-
-    const readers = [];
-    for (const entry of state.readStateByActor.values()) {
-      const entryKey = canonicalReadActorKeyFromKey(entry.actor_key || '');
-      if (!entryKey) continue;
-      if (Number(entry.last_read_message_id || 0) < messageId) continue;
-      if (entryKey === senderKey) continue;
-      if (entryKey === selfKey) continue;
-      if (entryKey === 'system:system') continue;
-      readers.push(entry.display_name || readDisplayNameFallback(entryKey));
-    }
-    readers.sort((a, b) => a.localeCompare(b, 'ja'));
-
-    if (readers.length === 0) {
-      indicator.classList.add('d-none');
-      indicator.textContent = '';
-      list.classList.add('d-none');
-      list.innerHTML = '';
+    const c = computeReadIndicatorState(row);
+    const { indicator, list, readers, hiddenReason } = c;
+    pushReadFrontDebugLog('refresh_read_row', { message_id: c.messageId, hiddenReason, readers: readers.length });
+    if (hiddenReason !== 'visible') {
+      if (indicator) {
+        indicator.classList.add('d-none');
+        indicator.textContent = '';
+      }
+      if (list) {
+        list.classList.add('d-none');
+        list.innerHTML = '';
+      }
+      renderReadFrontDebugForRow(row);
       return;
     }
-
     const readLabel = dmMode ? '既読' : `既読 ${readers.length}`;
     indicator.classList.remove('d-none');
     indicator.textContent = readLabel;
     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
+    renderReadFrontDebugForRow(row);
   }
 
   function refreshReadIndicators() {
-    msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
+    const rows = msgBox.querySelectorAll('.chat-row.me');
+    rows.forEach((row) => refreshReadIndicatorForRow(row));
+    pushReadFrontDebugLog('refresh_read_indicators', { room: getDebugRoomContext(), rowCount: rows.length, readStateSize: state.readStateByActor.size });
+    refreshAllReadFrontDebug();
+    renderReadFrontDebugPanel();
   }
 
   function toggleReadList(chatMain) {
@@ -4117,11 +4382,15 @@ function openFulltextModal(row) {
   function sendSeenForLatestMessage() {
     const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
     const lastRow = rows.length ? rows[rows.length - 1] : null;
+    const messageId = Number(lastRow?.dataset?.messageId || 0);
+    pushReadFrontDebugLog('send_seen_latest', { room: getDebugRoomContext(), message_id: messageId, rowCount: rows.length });
     if (!lastRow) return;
-    sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
+    sendSeenForMessageId(messageId);
   }
 
   function sendSeenForMessageId(messageId) {
+    state.latestSendSeenMessageId = Number(messageId || 0) || null;
+    pushReadFrontDebugLog('send_seen_message', { room: getDebugRoomContext(), message_id: Number(messageId || 0), readStateSize: state.readStateByActor.size });
     if (!Number.isFinite(messageId) || messageId <= 0) return;
     if (dmMode) {
       socket.emit('chat_seen', { dm_uuid: dmUuid, room_id: effectiveDmRoomId, last_seen_message_id: messageId });

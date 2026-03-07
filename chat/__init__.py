@@ -5610,6 +5610,7 @@ def dm_room(uuid: str):
     return render_template(
         "chat/room.html",
         actor=actor,
+        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
         current_user_id=_canonical_read_actor_key_from_actor(actor),
         event={"id": 0, "title": "DM"},
         messages=messages,
@@ -6109,6 +6110,7 @@ def room(event_id: int):
     return render_template(
         "chat/room.html",
         actor=actor,
+        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
         current_user_id=current_user_id,
         event=event,
         messages=messages,
