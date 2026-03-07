@@ -21,8 +21,13 @@ _READ_NOTIFICATIONS_KEEP_LIMIT = 30
 
 
 def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
+    chat_room_id = str(row.get("chat_room_id") or "").strip()
+    chat_event_id = int(row.get("chat_event_id") or 0) or None
+    if chat_room_id:
+        return chat_event_id, chat_room_id
+
     target_url = str(row.get("target_url") or "").strip()
-    event_id = int(row.get("event_id") or 0) or None
+    event_id = int(row.get("event_id") or 0) or chat_event_id
     if not target_url:
         return event_id, None
     try:
@@ -119,6 +124,7 @@ def _compute_unread_count_external(uid: int) -> int:
         cur.execute(
             """
             SELECT id, target_url, event_id
+                 , chat_event_id, chat_room_id
               FROM mfu_notifications
              WHERE user_kind='external'
                AND user_id=%s
@@ -168,31 +174,95 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
   body TEXT NULL,
   target_url VARCHAR(512) NOT NULL,
   event_id BIGINT UNSIGNED NULL,
+  chat_event_id BIGINT UNSIGNED NULL,
+  chat_room_id VARCHAR(64) NULL,
   created_at DATETIME NOT NULL,
   read_at DATETIME NULL,
   dedup_key VARCHAR(191) NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_mfu_notifications_dedup (user_kind, user_id, dedup_key),
   KEY idx_mfu_notifications_unread (user_kind, user_id, read_at, created_at),
-  KEY idx_mfu_notifications_created (user_kind, user_id, created_at)
+  KEY idx_mfu_notifications_created (user_kind, user_id, created_at),
+  KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at),
+  KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
+
+
+def _ensure_notification_schema() -> None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(_NOTIFICATION_DDL)
+
+        cur.execute("SHOW COLUMNS FROM mfu_notifications")
+        existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
+
+        if "chat_event_id" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_event_id BIGINT UNSIGNED NULL AFTER event_id")
+        if "chat_room_id" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_room_id VARCHAR(64) NULL AFTER chat_event_id")
+
+        index_map = {
+            "idx_mfu_notifications_chat_room_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at)",
+            "idx_mfu_notifications_unread_kind": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)",
+        }
+        cur.execute("SHOW INDEX FROM mfu_notifications")
+        existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
+        for key_name, ddl in index_map.items():
+            if key_name not in existing_indexes:
+                cur.execute(ddl)
+
+        while True:
+            cur.execute(
+                """
+                SELECT id, target_url, event_id
+                  FROM mfu_notifications
+                 WHERE kind='chat_message'
+                   AND (chat_room_id IS NULL OR chat_room_id='')
+                 ORDER BY id ASC
+                 LIMIT 200
+                """
+            )
+            rows = cur.fetchall() or []
+            if not rows:
+                break
+
+            updated_in_batch = 0
+            for row in rows:
+                event_id, room_id = _parse_chat_room_context(row)
+                if not room_id:
+                    continue
+                cur.execute(
+                    """
+                    UPDATE mfu_notifications
+                       SET chat_event_id=COALESCE(chat_event_id, %s),
+                           chat_room_id=COALESCE(chat_room_id, %s)
+                     WHERE id=%s
+                    """,
+                    (int(event_id) if event_id else None, str(room_id), int(row["id"])),
+                )
+                updated_in_batch += int(cur.rowcount or 0)
+            if updated_in_batch <= 0:
+                break
+        db.commit()
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("ensure mfu_notifications schema migration failed")
+        raise
+    finally:
+        cur.close()
+        db.close()
 
 
 @bp.record_once
 def _ensure_notification_table(state) -> None:
     app = state.app
     with app.app_context():
-        db = get_db()
-        cur = db.cursor()
         try:
-            cur.execute(_NOTIFICATION_DDL)
-            db.commit()
+            _ensure_notification_schema()
         except Exception:
             app.logger.exception("ensure mfu_notifications failed")
-        finally:
-            cur.close()
-            db.close()
 
 
 def create_notification_external(
@@ -203,7 +273,10 @@ def create_notification_external(
     target_url: str,
     dedup_key: str,
     event_id: int | None = None,
+    chat_event_id: int | None = None,
+    chat_room_id: str | None = None,
 ) -> bool:
+    _ensure_notification_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -223,9 +296,9 @@ def create_notification_external(
             """
             INSERT INTO mfu_notifications (
               user_kind, user_id, kind, title, body, target_url,
-              event_id, dedup_key, created_at, read_at
+              event_id, chat_event_id, chat_room_id, dedup_key, created_at, read_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
             ON DUPLICATE KEY UPDATE id=id
             """,
             (
@@ -236,6 +309,8 @@ def create_notification_external(
                 (body or "").strip(),
                 (target_url or "").strip() or "/external-login/",
                 int(event_id) if event_id else None,
+                int(chat_event_id) if chat_event_id else None,
+                str(chat_room_id).strip() if chat_room_id else None,
                 dedup,
                 datetime.utcnow(),
             ),
@@ -275,6 +350,7 @@ def notifications_page():
 
 @bp.get("/api/notifications/unread-count")
 def api_notifications_unread_count():
+    _ensure_notification_schema()
     uid = int(session.get("ext_user_id") or 0)
     if uid <= 0:
         resp = jsonify({"ok": False, "reason": "login_required"})
@@ -302,6 +378,7 @@ def api_notifications_list():
         return guard
 
     uid = int(session.get("ext_user_id") or 0)
+    _ensure_notification_schema()
     unread_arg = (request.args.get("unread") or "").strip().lower()
     unread_only = unread_arg not in {"0", "false", "no", "off"}
     page = max(int(request.args.get("page") or 1), 1)
@@ -321,6 +398,7 @@ def api_notifications_list():
         cur.execute(
             f"""
             SELECT id, kind, title, body, target_url, event_id, created_at, read_at
+                 , chat_event_id, chat_room_id
               FROM mfu_notifications
              WHERE {where_sql}
              ORDER BY created_at DESC, id DESC
@@ -356,7 +434,7 @@ def api_notifications_list():
             )
 
         cur.execute(
-            f"SELECT id, target_url, event_id FROM mfu_notifications WHERE {where_sql}",
+            f"SELECT id, target_url, event_id, chat_event_id, chat_room_id FROM mfu_notifications WHERE {where_sql}",
             tuple(params),
         )
         all_rows = cur.fetchall() or []
@@ -405,6 +483,7 @@ def api_notifications_updates():
         return guard
 
     uid = int(session.get("ext_user_id") or 0)
+    _ensure_notification_schema()
     since_id = max(int(request.args.get("since_id") or 0), 0)
     limit = min(max(int(request.args.get("limit") or 20), 1), 100)
 
@@ -418,6 +497,7 @@ def api_notifications_updates():
         cur.execute(
             """
             SELECT id, title, body, target_url, event_id, created_at, read_at
+                 , chat_event_id, chat_room_id
               FROM mfu_notifications
              WHERE user_kind='external'
                AND user_id=%s
@@ -432,6 +512,7 @@ def api_notifications_updates():
         cur.execute(
             """
             SELECT id, target_url, event_id
+                 , chat_event_id, chat_room_id
               FROM mfu_notifications
              WHERE user_kind='external'
                AND user_id=%s
@@ -501,6 +582,7 @@ def api_notifications_mark_read(notification_id: int):
         return guard
 
     uid = int(session.get("ext_user_id") or 0)
+    _ensure_notification_schema()
     db = get_db()
     cur = db.cursor()
     try:
@@ -531,6 +613,7 @@ def api_notifications_mark_all_read():
         return guard
 
     uid = int(session.get("ext_user_id") or 0)
+    _ensure_notification_schema()
     db = get_db()
     cur = db.cursor()
     try:
@@ -548,6 +631,75 @@ def api_notifications_mark_all_read():
         db.commit()
         _emit_notif_unread(uid, reason="read_all")
         return jsonify({"ok": True, "updated": updated})
+    finally:
+        cur.close()
+        db.close()
+
+
+@bp.post("/api/notifications/read-by-room")
+def api_notifications_mark_read_by_room():
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    uid = int(session.get("ext_user_id") or 0)
+    payload = request.get_json(silent=True) or {}
+    event_id_raw = payload.get("event_id")
+    room_id = str(payload.get("room_id") or "").strip()
+    if not room_id:
+        resp = jsonify({"ok": False, "reason": "room_id_required"})
+        resp.status_code = 400
+        return resp
+
+    try:
+        event_id = int(event_id_raw)
+    except Exception:
+        resp = jsonify({"ok": False, "reason": "event_id_required"})
+        resp.status_code = 400
+        return resp
+
+    _ensure_notification_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            UPDATE mfu_notifications
+               SET read_at=%s
+             WHERE user_kind='external'
+               AND user_id=%s
+               AND kind='chat_message'
+               AND chat_event_id=%s
+               AND chat_room_id=%s
+               AND read_at IS NULL
+            """,
+            (now, uid, event_id, room_id),
+        )
+        updated_count = int(cur.rowcount or 0)
+        db.commit()
+
+        unread_count = _compute_unread_count_external(uid)
+        cur.execute(
+            """
+            SELECT MAX(id) AS latest_id
+              FROM mfu_notifications
+             WHERE user_kind='external'
+               AND user_id=%s
+            """,
+            (uid,),
+        )
+        latest_id = int((cur.fetchone() or {}).get("latest_id") or 0)
+        _emit_notif_unread(uid, reason="room_read", latest_id=latest_id)
+
+        return jsonify(
+            {
+                "ok": True,
+                "updated_count": updated_count,
+                "unread_count": unread_count,
+                "latest_id": latest_id,
+            }
+        )
     finally:
         cur.close()
         db.close()
