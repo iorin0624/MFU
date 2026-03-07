@@ -1826,6 +1826,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     latestSendSeenMessageId: null,
     latestMyMessageChecks: [],
     readFrontDebugSelectedMessageId: null,
+    initialReadSnapshotApplied: false,
+    initialJoinEmitted: false,
+    initialReadSnapshotTimer: null,
   };
 
   if (ctxReactions && ctxReactions.childElementCount === 0) {
@@ -1840,35 +1843,6 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-  if (dmMode) {
-    socket.emit('chat_join', { dm_uuid: dmUuid, room_id: effectiveDmRoomId });
-  } else {
-    socket.emit('chat_join', { event_id: eventId, room_id: roomId });
-  }
-
-  initReactionUis();
-  syncExistingMessageIds();
-  await initializeNotificationState();
-  startPresenceHeartbeat();
-  scheduleUnreadRefresh();
-  startNotificationBadgePolling();
-  refreshMuteButton();
-  scrollToLatestMessage();
-  initializeReadFrontDebug();
-  refreshReadIndicators();
-  window.addEventListener('load', () => {
-    scrollToLatestMessage();
-    sendSeenForLatestMessage();
-  }, { once: true });
-
-  updateAutoGrow();
-  bodyInput?.addEventListener('input', () => {
-    updateAutoGrow();
-    queueTypingStart();
-    handleMentionInput();
-  });
-  bodyInput?.addEventListener('keydown', handleMentionKeydown);
-
   socket.on('chat_message', (msg) => {
     const wasNearBottom = isNearBottom(msgBox);
     const messageId = Number(msg?.id || 0);
@@ -1905,15 +1879,53 @@ window.addEventListener('DOMContentLoaded', async () => {
     alert(d.error || '送信失敗');
   });
   socket.on('chat_read_snapshot', (payload) => {
+    const readStates = Array.isArray(payload?.read_states) ? payload.read_states : [];
+    const debugPayload = {
+      dmMode,
+      eventId,
+      roomId,
+      dmUuid,
+      payload_event_id: payload?.event_id ?? null,
+      payload_room_id: payload?.room_id ?? null,
+      payload_dm_uuid: payload?.dm_uuid ?? null,
+      read_states_length: readStates.length,
+      readStateSize: state.readStateByActor.size,
+    };
+    pushReadFrontDebugLog('socket_snapshot_received', debugPayload);
+    if (!isReadSnapshotForCurrentRoom(payload)) {
+      pushReadFrontDebugLog('socket_snapshot_ignored_room_mismatch', debugPayload);
+      return;
+    }
     state.latestReadSnapshotCount = Array.isArray(payload?.read_states) ? payload.read_states.length : 0;
-    pushReadFrontDebugLog('socket_snapshot', { room: getDebugRoomContext(), count: state.latestReadSnapshotCount });
-    applyReadSnapshot(payload?.read_states || []);
+    applyReadSnapshot(readStates);
+    state.initialReadSnapshotApplied = true;
+    if (state.initialReadSnapshotTimer) {
+      clearTimeout(state.initialReadSnapshotTimer);
+      state.initialReadSnapshotTimer = null;
+    }
     refreshReadIndicators();
+    refreshAllReadFrontDebug?.();
+    pushReadFrontDebugLog('socket_snapshot_applied', {
+      ...debugPayload,
+      readStateSize: state.readStateByActor.size,
+    });
     sendSeenForLatestMessage();
   });
   socket.on('chat_read_update', (payload) => {
     state.latestReadUpdate = payload || null;
-    pushReadFrontDebugLog('socket_update', { room: getDebugRoomContext(), actor_key: payload?.actor_key || `${payload?.actor_type || ''}:${payload?.actor_id || ''}`, message_id: Number(payload?.last_read_message_id || 0) });
+    pushReadFrontDebugLog('socket_update_received', {
+      dmMode,
+      eventId,
+      roomId,
+      dmUuid,
+      payload_event_id: payload?.event_id ?? null,
+      payload_room_id: payload?.room_id ?? null,
+      payload_dm_uuid: payload?.dm_uuid ?? null,
+      read_states_length: 0,
+      readStateSize: state.readStateByActor.size,
+      actor_key: payload?.actor_key || `${payload?.actor_type || ''}:${payload?.actor_id || ''}`,
+      message_id: Number(payload?.last_read_message_id || 0),
+    });
     applyReadUpdate(payload);
     refreshReadIndicators();
   });
@@ -1947,6 +1959,30 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (dmMode) return;
     applyTypingUpdate(payload || {});
   });
+
+  initializeReadFrontDebug();
+  initReactionUis();
+  syncExistingMessageIds();
+  refreshReadIndicators();
+  emitInitialChatJoin();
+  await initializeNotificationState();
+  startPresenceHeartbeat();
+  scheduleUnreadRefresh();
+  startNotificationBadgePolling();
+  refreshMuteButton();
+  scrollToLatestMessage();
+  window.addEventListener('load', () => {
+    scrollToLatestMessage();
+    sendSeenForLatestMessage();
+  }, { once: true });
+
+  updateAutoGrow();
+  bodyInput?.addEventListener('input', () => {
+    updateAutoGrow();
+    queueTypingStart();
+    handleMentionInput();
+  });
+  bodyInput?.addEventListener('keydown', handleMentionKeydown);
 
 
 
@@ -4334,12 +4370,83 @@ function openFulltextModal(row) {
     });
   }
 
+  function emitInitialChatJoin() {
+    if (!socket) return;
+    if (state.initialReadSnapshotTimer) {
+      clearTimeout(state.initialReadSnapshotTimer);
+      state.initialReadSnapshotTimer = null;
+    }
+    state.initialJoinEmitted = true;
+    const payload = dmMode
+      ? { dm_uuid: dmUuid, room_id: effectiveDmRoomId }
+      : { event_id: eventId, room_id: roomId };
+    pushReadFrontDebugLog('initial_join_emit', {
+      dmMode,
+      eventId,
+      roomId,
+      dmUuid,
+      payload_event_id: payload?.event_id ?? null,
+      payload_room_id: payload?.room_id ?? null,
+      payload_dm_uuid: payload?.dm_uuid ?? null,
+      read_states_length: 0,
+      readStateSize: state.readStateByActor.size,
+    });
+    socket.emit('chat_join', payload);
+    state.initialReadSnapshotTimer = window.setTimeout(() => {
+      if (state.initialReadSnapshotApplied) return;
+      pushReadFrontDebugLog('initial_snapshot_timeout_warning', {
+        dmMode,
+        eventId,
+        roomId,
+        dmUuid,
+        payload_event_id: null,
+        payload_room_id: null,
+        payload_dm_uuid: null,
+        read_states_length: 0,
+        readStateSize: state.readStateByActor.size,
+        initialJoinEmitted: state.initialJoinEmitted,
+      });
+    }, 1200);
+  }
+
+  function isReadSnapshotForCurrentRoom(payload) {
+    const payloadDmUuid = String(payload?.dm_uuid || '');
+    const payloadRoomId = String(payload?.room_id || '');
+    const payloadEventId = Number(payload?.event_id || 0);
+    const hasReadStates = Array.isArray(payload?.read_states) && payload.read_states.length >= 0;
+
+    if (dmMode) {
+      if (payloadDmUuid && payloadDmUuid === String(dmUuid || '')) return true;
+      if (payloadRoomId && payloadRoomId === `dm:${dmUuid}`) return true;
+      if (payloadRoomId && payloadRoomId === String(effectiveDmRoomId || '')) return true;
+      if (!payloadDmUuid && !payloadRoomId && hasReadStates) return true;
+      return false;
+    }
+
+    const eventMatches = payloadEventId > 0 && payloadEventId === Number(eventId || 0);
+    if (!eventMatches) return false;
+    if (!payloadRoomId) return true;
+    return payloadRoomId === String(roomId || '');
+  }
+
   function applyReadSnapshot(states) {
-    pushReadFrontDebugLog('apply_read_snapshot', { room: getDebugRoomContext(), count: Array.isArray(states) ? states.length : 0 });
+    const beforeSize = state.readStateByActor.size;
+    const incomingCount = Array.isArray(states) ? states.length : 0;
+    pushReadFrontDebugLog('apply_read_snapshot', {
+      room: getDebugRoomContext(),
+      before_size: beforeSize,
+      incoming_count: incomingCount,
+    });
     state.readStateByActor.clear();
     for (const readState of states || []) {
       applyReadUpdate(readState);
     }
+    pushReadFrontDebugLog('apply_read_snapshot_result', {
+      room: getDebugRoomContext(),
+      before_size: beforeSize,
+      incoming_count: incomingCount,
+      after_size: state.readStateByActor.size,
+    });
   }
 
   function refreshReadIndicatorForRow(row) {
@@ -4368,7 +4475,18 @@ function openFulltextModal(row) {
   function refreshReadIndicators() {
     const rows = msgBox.querySelectorAll('.chat-row.me');
     rows.forEach((row) => refreshReadIndicatorForRow(row));
-    pushReadFrontDebugLog('refresh_read_indicators', { room: getDebugRoomContext(), rowCount: rows.length, readStateSize: state.readStateByActor.size });
+    pushReadFrontDebugLog('refresh_read_indicators', {
+      dmMode,
+      eventId,
+      roomId,
+      dmUuid,
+      payload_event_id: null,
+      payload_room_id: null,
+      payload_dm_uuid: null,
+      read_states_length: state.latestReadSnapshotCount,
+      rowCount: rows.length,
+      readStateSize: state.readStateByActor.size,
+    });
     refreshAllReadFrontDebug();
     renderReadFrontDebugPanel();
   }
