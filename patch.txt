@@ -1,8 +1,8 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 4f18547c5fd429b6ffab02593436300ca0332413..4bacc229a5ba792fd2e822c5a3d0bc243f517366 100644
+index 4bacc229a5ba792fd2e822c5a3d0bc243f517366..9fb267ca94bc321d5ca91a70ff5162d1661ca043 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1684,160 +1684,187 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
+@@ -1684,53 +1684,60 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
          db.close()
  
      for actor_type, actor_id in actor_pairs:
@@ -28,17 +28,25 @@ index 4f18547c5fd429b6ffab02593436300ca0332413..4bacc229a5ba792fd2e822c5a3d0bc24
      return normalized_type, normalized_id
  
  
-+def _canonical_event_actor(actor_type: str, actor_id: str, display_name: str = "") -> dict[str, str]:
++def _canonical_event_actor_key(actor_type: str, actor_id: str) -> str:
 +    canonical_type, canonical_id = _normalize_event_actor_pair(actor_type, actor_id)
-+    canonical_key = _actor_sender_id(canonical_type, canonical_id) if canonical_type and canonical_id else ""
-+    return {
-+        "actor_type": canonical_type,
-+        "actor_id": canonical_id,
-+        "actor_key": canonical_key,
-+        "display_name": str(display_name or canonical_id),
-+    }
++    if not canonical_type or not canonical_id:
++        return ""
++    return f"{canonical_type}:{canonical_id}"
 +
 +
+ def _canonical_event_actor(actor_type: str, actor_id: str, display_name: str = "") -> dict[str, str]:
+     canonical_type, canonical_id = _normalize_event_actor_pair(actor_type, actor_id)
+-    canonical_key = _actor_sender_id(canonical_type, canonical_id) if canonical_type and canonical_id else ""
++    canonical_key = _canonical_event_actor_key(canonical_type, canonical_id)
+     return {
+         "actor_type": canonical_type,
+         "actor_id": canonical_id,
+         "actor_key": canonical_key,
+         "display_name": str(display_name or canonical_id),
+     }
+ 
+ 
  def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
      if not _ensure_chat_read_state_room_schema():
          return []
@@ -56,169 +64,56 @@ index 4f18547c5fd429b6ffab02593436300ca0332413..4bacc229a5ba792fd2e822c5a3d0bc24
              (event_id, room_id),
          )
          rows = cur.fetchall() or []
-     finally:
-         cur.close()
-         db.close()
+@@ -6654,104 +6661,104 @@ def chat_connect():
+         current_app.logger.info("chat socket connect denied: no actor")
+         return False
+     ext_user_id = session.get("ext_user_id")
+     if ext_user_id:
+         try:
+             join_room(f"external_user:{int(ext_user_id)}")
+         except Exception:
+             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
  
-     participant_by_normalized_key: dict[str, dict[str, str]] = {}
-     for participant in participants.values():
--        participant_actor_type, participant_actor_id = _normalize_event_actor_pair(
-+        canonical_participant = _canonical_event_actor(
-             str(participant.get("actor_type") or ""),
-             str(participant.get("actor_id") or ""),
-+            str(participant.get("display_name") or ""),
-         )
--        normalized_key = f"{participant_actor_type}:{participant_actor_id}"
--        if not participant_actor_type or not participant_actor_id:
-+        normalized_key = canonical_participant["actor_key"]
-+        if not normalized_key:
-             continue
-         participant_by_normalized_key[normalized_key] = {
--            "actor_type": participant_actor_type,
--            "actor_id": participant_actor_id,
--            "display_name": str(participant.get("display_name") or normalized_key),
-+            "actor_type": canonical_participant["actor_type"],
-+            "actor_id": canonical_participant["actor_id"],
-+            "display_name": canonical_participant["display_name"],
-         }
+     mfu_username = str(session.get("user") or "").strip()
+     if mfu_username:
+         try:
+             join_room(f"mfu_user:{mfu_username}")
+         except Exception:
+             current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
+     return True
  
-     snapshot_by_actor: dict[str, dict[str, Any]] = {}
-     for row in rows:
--        actor_type, actor_id = _normalize_event_actor_pair(
-+        canonical_actor = _canonical_event_actor(
-             str(row.get("actor_type") or ""),
-             str(row.get("actor_id") or ""),
-         )
--        key = f"{actor_type}:{actor_id}"
-+        key = canonical_actor["actor_key"]
-         participant = participant_by_normalized_key.get(key)
-         if not participant:
-             continue
+ @socketio.on("chat_join")
+ def on_join(data):
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     _ensure_chat_read_state_room_schema()
+     _ensure_chat_edit_schema()
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
+     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+     room_id = str((data or {}).get("room_id") or "").strip() or None
  
-         next_read_id = int(row.get("last_read_message_id") or 0)
-         updated_at = row.get("updated_at")
-         prev = snapshot_by_actor.get(key)
-         if not prev:
-             snapshot_by_actor[key] = {
--                "actor_type": actor_type,
--                "actor_id": actor_id,
-+                "actor_type": canonical_actor["actor_type"],
-+                "actor_id": canonical_actor["actor_id"],
-                 "display_name": participant["display_name"],
-                 "last_read_message_id": next_read_id,
-                 "updated_at": updated_at,
-             }
-             continue
- 
-         prev_read_id = int(prev.get("last_read_message_id") or 0)
-         prev_updated = prev.get("updated_at")
-         prev["last_read_message_id"] = max(prev_read_id, next_read_id)
-         if updated_at and (not prev_updated or updated_at > prev_updated):
-             prev["updated_at"] = updated_at
- 
-     snapshot: list[dict[str, Any]] = []
-     for entry in snapshot_by_actor.values():
-         snapshot.append(
-             {
-                 "actor_type": str(entry.get("actor_type") or ""),
-                 "actor_id": str(entry.get("actor_id") or ""),
-                 "display_name": str(entry.get("display_name") or ""),
-                 "last_read_message_id": int(entry.get("last_read_message_id") or 0),
-                 "updated_at_iso": entry.get("updated_at").isoformat() if entry.get("updated_at") else None,
-             }
-         )
-     return snapshot
- 
- 
--def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> int:
-+def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> tuple[int, dict[str, str]]:
-     if not _ensure_chat_read_state_room_schema():
--        return 0
-+        return 0, _canonical_event_actor("", "")
-+
-+    canonical_actor = _canonical_event_actor(
-+        str(actor.get("actor_type") or ""),
-+        str(actor.get("actor_id") or ""),
-+        str(actor.get("display_name") or ""),
-+    )
-+    if not canonical_actor["actor_type"] or not canonical_actor["actor_id"]:
-+        return 0, canonical_actor
- 
-     now = datetime.utcnow()
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             INSERT INTO chat_read_state (event_id, room_id, actor_type, actor_id, last_read_message_id, updated_at)
-             VALUES (%s, %s, %s, %s, %s, %s)
-             ON DUPLICATE KEY UPDATE
-               last_read_message_id = GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
-               updated_at = VALUES(updated_at)
-             """,
--            (event_id, room_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
-+            (
-+                event_id,
-+                room_id,
-+                canonical_actor["actor_type"],
-+                canonical_actor["actor_id"],
-+                last_seen_message_id,
-+                now,
-+            ),
-         )
-         cur.execute(
-             """
-             SELECT last_read_message_id
-               FROM chat_read_state
-              WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
-              LIMIT 1
-             """,
--            (event_id, room_id, actor["actor_type"], actor["actor_id"]),
-+            (event_id, room_id, canonical_actor["actor_type"], canonical_actor["actor_id"]),
-         )
-         row = cur.fetchone() or {}
-         db.commit()
--        return int(row.get("last_read_message_id") or 0)
-+        return int(row.get("last_read_message_id") or 0), canonical_actor
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _actor_sender_id(actor_type: str, actor_id: str) -> str:
-     return f"{actor_type}:{actor_id}"
- 
- 
- def _to_utc_datetime(value: Any) -> datetime:
-     if isinstance(value, datetime):
-         dt = value
-     else:
-         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=ZoneInfo("UTC"))
-     return dt.astimezone(ZoneInfo("UTC"))
- 
- 
- 
- 
- def _to_jst(value: Any) -> datetime:
-     dt_utc = _to_utc_datetime(value)
-     return dt_utc.astimezone(JST)
- 
-@@ -6730,58 +6757,58 @@ def on_seen(data):
-         actor_type, actor_id = _split_actor_key(actor_key)
-         emit(
-             "chat_read_update",
-             {
-                 "dm_uuid": dm_uuid,
-                 "room_id": f"dm:{dm_uuid}",
-                 "actor_type": actor_type,
-                 "actor_id": actor_id,
-                 "display_name": _actor_key_to_display_name(actor_key),
-                 "last_read_message_id": last_seen_message_id,
-             },
-             to=f"dm:{dm_uuid}",
-         )
+     if dm_uuid:
++        actor_key = get_chat_actor_key(actor)
+         if not actor or not actor_key:
+             emit("chat_error", {"error": "forbidden"})
+             return
+         if not can_access_dm(dm_uuid, actor_key):
+             emit("chat_error", {"error": "forbidden"})
+             return
+         join_room(f"dm:{dm_uuid}")
+         emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
+         conversation = _get_dm_conversation_by_uuid(dm_uuid)
+         if conversation:
+             emit(
+                 "chat_read_snapshot",
+                 {
+                     "dm_uuid": dm_uuid,
+                     "room_id": f"dm:{dm_uuid}",
+                     "read_states": _load_dm_read_state_snapshot(int(conversation["id"])),
+                 },
+             )
          return
  
      if (room_id or "").startswith("dm:"):
@@ -226,132 +121,189 @@ index 4f18547c5fd429b6ffab02593436300ca0332413..4bacc229a5ba792fd2e822c5a3d0bc24
          return
  
      event_id = int((data or {}).get("event_id") or 0)
-     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-     if event_id <= 0 or last_seen_message_id <= 0 or not allowed or not effective_room_id:
+     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor or {}) if actor else (False, None, None)
+     if not actor or not event_id or not allowed or not effective_room_id:
+         _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="deny")
          disconnect()
          return
- 
--    effective_last_read_id = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
-+    effective_last_read_id, canonical_actor = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
-     _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
-     emit(
-         "chat_read_update",
-         {
--            "actor_type": actor["actor_type"],
--            "actor_id": actor["actor_id"],
--            "display_name": actor["display_name"],
-+            "actor_type": canonical_actor["actor_type"],
-+            "actor_id": canonical_actor["actor_id"],
-+            "display_name": canonical_actor["display_name"],
-             "last_read_message_id": effective_last_read_id,
-             "room_id": effective_room_id,
-         },
-         to=f"event:{event_id}:room:{effective_room_id}",
-     )
+     join_room(f"event:{event_id}:room:{effective_room_id}")
+     emit("chat_joined", {"event_id": event_id, "room_id": effective_room_id})
+     _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, result="ok")
+     emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_event_read_state_snapshot(event_id, effective_room_id)})
  
  
- @socketio.on("chat_typing")
- def on_typing(data):
+ @socketio.on("chat_seen")
+ def on_seen(data):
      actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
      if not actor:
          disconnect()
          return
  
-     try:
-         event_id = int((data or {}).get("event_id") or 0)
-         room_id = str((data or {}).get("room_id") or "").strip() or None
-     except (TypeError, ValueError):
-         disconnect()
-         return
-     is_typing = bool((data or {}).get("is_typing"))
+     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+     room_id = str((data or {}).get("room_id") or "").strip() or None
+     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
  
-     if (room_id or "").startswith("dm:"):
-         emit("chat_error", {"error": "dm_typing_unsupported"})
-         return
+     if dm_uuid:
++        actor_key = get_chat_actor_key(actor)
+         if not actor_key or last_seen_message_id <= 0:
+             return
+         if not can_access_dm(dm_uuid, actor_key):
+             emit("chat_error", {"error": "forbidden"})
+             return
+         conversation = _get_dm_conversation_by_uuid(dm_uuid)
+         if not conversation:
+             emit("chat_error", {"error": "not_found"})
+             return
+         db = get_db()
+         cur = db.cursor()
+         try:
+             cur.execute(
+                 """
+                 UPDATE chat_dm_participants
+                 SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
+                 WHERE conversation_id=%s AND actor_key=%s
+                 """,
+                 (last_seen_message_id, conversation["id"], actor_key),
+             )
+             db.commit()
+         finally:
+             cur.close()
+             db.close()
+         actor_type, actor_id = _split_actor_key(actor_key)
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 73d72a5d46f025762c4b156fafa6589cea54bb89..670c678222271566b0a77692960610d66695d8a7 100644
+index 670c678222271566b0a77692960610d66695d8a7..67a5a46e7a49030e776ef323c874d729aeecd6d4 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -3991,77 +3991,96 @@ function openFulltextModal(row) {
+@@ -1666,50 +1666,57 @@ window.addEventListener('DOMContentLoaded', async () => {
+   const uploadPreviewGrid = document.getElementById('chatUploadPreviewGrid');
+   const uploadPreviewHint = document.getElementById('chatUploadPreviewHint');
+   const uploadPreviewSendBtn = document.getElementById('chatUploadPreviewSendBtn');
+   const ctxMenu = document.getElementById('chatCtxMenu');
+   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
+   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
+   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
  
-   function formatDateLabel(date) {
-     const parts = fmtDate.formatToParts(date);
-     const get = (type) => parts.find((p) => p.type === type)?.value || '';
-     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
+   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     year: 'numeric',
+     month: 'numeric',
+     day: 'numeric',
+     weekday: 'short',
+   });
+   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
+     timeZone: 'Asia/Tokyo',
+     hour: 'numeric',
+     minute: '2-digit',
+     hour12: false,
+   });
+ 
+   const [myActorType, myActorId] = meId.includes(':')
+     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+     : ['', ''];
++  const canonicalMeId = (() => {
++    if (dmMode) return meId;
++    const [actorType, actorId] = meId.includes(':')
++      ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
++      : ['', ''];
++    return canonicalEventActorKey(actorType, actorId) || meId;
++  })();
+ 
+   function buildSafeBodyHtml(msg) {
+     const rawHtml = (msg?.body_html || '').trim();
+     if (rawHtml) return rawHtml;
+     const rawText = String(msg?.body_text ?? msg?.body ?? '');
+     return escapeHtml(rawText).replace(/\n/g, '<br>');
    }
  
-   function formatTimeLabel(date) {
-     return fmtTime.format(date);
+   const state = {
+     replyToId: null,
+     selectedBubble: null,
+     selectedRowEl: null,
+     readStateByActor: new Map(),
+     reactionByMessage: new Map(),
+     viewerImages: [],
+     viewerIndex: 0,
+     ctxMessageId: null,
+     touchDoubleTap: {
+       startX: 0,
+       startY: 0,
+       moved: false,
+       row: null,
+       bubble: null,
+       lastTapAt: 0,
+       lastTapX: 0,
+@@ -3515,52 +3522,53 @@ window.addEventListener('DOMContentLoaded', async () => {
+     state.typingStopTimer = window.setTimeout(() => {
+       sendTypingStop();
+     }, 2000);
    }
  
-   function formatDateTimeLabel(isoText) {
-     if (!isoText) return '';
-     const date = new Date(isoText);
-     if (Number.isNaN(date.getTime())) return '';
-     return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
-   }
- 
-   function applyReadSnapshot(states) {
-     state.readStateByActor.clear();
-     for (const readState of states || []) {
-       applyReadUpdate(readState);
+   function sendTypingStop() {
+     if (state.typingDebounceTimer) {
+       window.clearTimeout(state.typingDebounceTimer);
+       state.typingDebounceTimer = null;
      }
+     if (state.typingStopTimer) {
+       window.clearTimeout(state.typingStopTimer);
+       state.typingStopTimer = null;
+     }
+     if (!state.typingSent) return;
+     if (!dmMode) {
+       socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: false });
+     }
+     state.typingSent = false;
    }
  
--  function normalizeActorKeyForCompare(actorType, actorId) {
-+  function canonicalEventActorKey(actorType, actorId) {
-     const t = String(actorType || '');
-     const i = String(actorId || '');
--    if (t === 'admin') return 'admin';
-+    if (!t || !i) return '';
-+    if (t === 'admin') return 'admin:admin';
-     return `${t}:${i}`;
+   function applyTypingUpdate(payload) {
+     const actorType = payload?.actor_type || '';
+     const actorId = String(payload?.actor_id || '');
+     if (!actorType || !actorId) return;
+-    const key = `${actorType}:${actorId}`;
+-    if (key === meId) return;
++    const key = dmMode ? `${actorType}:${actorId}` : canonicalEventActorKey(actorType, actorId);
++    if (!key) return;
++    if (key === canonicalMeId) return;
+ 
+     if (payload?.is_typing) {
+       state.typingMembers.set(key, payload?.display_name || key);
+     } else {
+       state.typingMembers.delete(key);
+     }
+     renderTypingIndicator();
    }
  
-+  function normalizeActorKeyForCompare(actorType, actorId) {
-+    const canonicalKey = canonicalEventActorKey(actorType, actorId);
-+    if (!canonicalKey) return '';
-+    if (canonicalKey === 'admin:admin') return 'admin';
-+    return canonicalKey;
-+  }
-+
-   function isSameActorByKey(actorType, actorId, targetKey) {
--    const normTarget = String(targetKey || '');
-+    const normTarget = normalizeActorKeyForCompare(...splitActorKey(targetKey));
-     if (!normTarget) return false;
-     const normActor = normalizeActorKeyForCompare(actorType, actorId);
-     if (normActor === normTarget) return true;
--    if (normActor === 'admin' && (normTarget === 'admin:1' || normTarget === 'admin:admin' || normTarget === 'admin')) return true;
-     return false;
-   }
+   function renderTypingIndicator() {
+     if (!typingIndicator) return;
+     if (typingIndicator.parentElement !== msgBox) {
+       msgBox?.appendChild(typingIndicator);
+     }
+     const names = Array.from(state.typingMembers.values());
+     if (!names.length) {
+       typingIndicator.textContent = '';
+       typingIndicator.classList.add('is-hidden');
+       if (composerFocused) {
+         scrollForComposerFocus();
+       } else {
+         keepBottomIfNeeded();
+       }
+       return;
+     }
+@@ -4048,60 +4056,62 @@ function openFulltextModal(row) {
  
-+  function splitActorKey(actorKey) {
-+    const key = String(actorKey || '');
-+    const sepIndex = key.indexOf(':');
-+    if (sepIndex < 0) {
-+      if (key === 'admin') return ['admin', 'admin'];
-+      return ['', ''];
-+    }
-+    return [key.slice(0, sepIndex), key.slice(sepIndex + 1)];
-+  }
-+
    function applyReadUpdate(readState) {
      if (!readState?.actor_type || !readState?.actor_id) return;
--    const key = `${readState.actor_type}:${readState.actor_id}`;
-+    const key = canonicalEventActorKey(readState.actor_type, readState.actor_id);
-+    if (!key) return;
-+    const [canonicalActorType, canonicalActorId] = splitActorKey(key);
+     const key = canonicalEventActorKey(readState.actor_type, readState.actor_id);
+     if (!key) return;
+     const [canonicalActorType, canonicalActorId] = splitActorKey(key);
      const prev = state.readStateByActor.get(key);
      const nextReadId = Number(readState.last_read_message_id || 0);
      const prevReadId = Number(prev?.last_read_message_id || 0);
      if (prev && prevReadId > nextReadId) return;
      state.readStateByActor.set(key, {
--      actor_type: readState.actor_type,
--      actor_id: String(readState.actor_id),
--      display_name: readState.display_name || prev?.display_name || readState.actor_id,
-+      actor_type: canonicalActorType,
-+      actor_id: String(canonicalActorId),
-+      display_name: readState.display_name || prev?.display_name || canonicalActorId,
+       actor_type: canonicalActorType,
+       actor_id: String(canonicalActorId),
+       display_name: readState.display_name || prev?.display_name || canonicalActorId,
        last_read_message_id: Math.max(prevReadId, nextReadId),
      });
    }
@@ -363,7 +315,10 @@ index 73d72a5d46f025762c4b156fafa6589cea54bb89..670c678222271566b0a77692960610d6
    function refreshReadIndicatorForRow(row) {
      if (!row?.classList.contains('me')) return;
      const messageId = Number(row.dataset.messageId || 0);
-     const senderId = row.dataset.senderId || '';
+-    const senderId = row.dataset.senderId || '';
++    const senderId = dmMode
++      ? (row.dataset.senderId || '')
++      : (canonicalEventActorKey(...splitActorKey(row.dataset.senderId || '')) || row.dataset.senderId || '');
      const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
      const list = row.querySelector('.chat-read-list');
      if (!messageId || !indicator || !list) return;
@@ -372,8 +327,30 @@ index 73d72a5d46f025762c4b156fafa6589cea54bb89..670c678222271566b0a77692960610d6
      for (const entry of state.readStateByActor.values()) {
        if (Number(entry.last_read_message_id || 0) < messageId) continue;
        if (senderId && isSameActorByKey(entry.actor_type, entry.actor_id, senderId)) continue;
-       if (meId && isSameActorByKey(entry.actor_type, entry.actor_id, meId)) continue;
+-      if (meId && isSameActorByKey(entry.actor_type, entry.actor_id, meId)) continue;
++      if (canonicalMeId && isSameActorByKey(entry.actor_type, entry.actor_id, canonicalMeId)) continue;
        readers.push(entry.display_name || `${entry.actor_type}:${entry.actor_id}`);
      }
      readers.sort((a, b) => a.localeCompare(b, 'ja'));
+ 
+     if (readers.length === 0) {
+       indicator.classList.add('d-none');
+       indicator.textContent = '';
+       list.classList.add('d-none');
+       list.innerHTML = '';
+       return;
+     }
+ 
+     const timeText = (row.querySelector('.chat-time')?.textContent || '').trim();
+     const readLabel = dmMode ? '既読' : `既読 ${readers.length}`;
+     indicator.classList.remove('d-none');
+     indicator.textContent = readLabel;
+     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
+   }
+ 
+   function toggleReadList(chatMain) {
+     const list = chatMain?.querySelector('.chat-read-list');
+     if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
+     list.classList.toggle('d-none');
+   }
  
