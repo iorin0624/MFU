@@ -5126,13 +5126,14 @@ def room(event_id: int):
         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     accessible_rooms = _list_accessible_rooms(event_id, actor)
+    current_user_id = (
+        _canonical_event_actor_key(actor["actor_type"], str(actor["actor_id"]))
+        or _actor_sender_id(actor["actor_type"], str(actor["actor_id"]))
+    )
     return render_template(
         "chat/room.html",
         actor=actor,
-        current_user_id=(
-            _canonical_event_actor_key(actor["actor_type"], str(actor["actor_id"]))
-            or _actor_sender_id(actor["actor_type"], str(actor["actor_id"]))
-        ),
+        current_user_id=current_user_id,
         event=event,
         messages=messages,
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),

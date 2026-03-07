@@ -1,76 +1,61 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 72b2a99eef4b32c70340b0d453102a94fc26ef87..26e2e09b4370d2555f4967df2e2f18daf7c1da73 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -1875,55 +1875,66 @@ def _to_jst(value: Any) -> datetime:
-     dt_utc = _to_utc_datetime(value)
-     return dt_utc.astimezone(JST)
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index d18d19cdc3598343b838c5eba064010c3247b1eb..78d4c65880ac84dc35fba44128dc3b558294f1ae 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -2610,53 +2610,54 @@ window.addEventListener('DOMContentLoaded', async () => {
+       return;
+     }
+     updatePushButton(true);
+   }
  
+   async function disablePush(registration, subscription) {
+     await subscription.unsubscribe();
+     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+     if (endpoint) {
+       await fetch('/chat/api/push/unsubscribe', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+       });
+     }
+     const nextSubscription = await registration.pushManager.getSubscription();
+     updatePushButton(Boolean(nextSubscription));
+   }
  
- def _format_jst_time_hm(dt_jst: datetime) -> str:
-     try:
-         return dt_jst.strftime("%-H:%M")
-     except ValueError:
-         return dt_jst.strftime("%H:%M").lstrip("0") or "0:00"
+   function setSendingState(isSending) {
+     if (sendBtn) sendBtn.disabled = isSending;
+     if (imageBtn) imageBtn.disabled = isSending;
+   }
  
- def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     dt_utc = _to_utc_datetime(created_at)
-     dt_jst = dt_utc.astimezone(JST)
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-     time_label = _format_jst_time_hm(dt_jst)
-     return dt_utc.isoformat(), date_label, time_label
+   function isMyMessage(msg) {
++    const senderRawKey = String(msg.sender_id || '');
+     const senderKey = dmMode
+-      ? String(msg.sender_id || '')
+-      : (canonicalEventActorKey(...splitActorKey(msg.sender_id || '')) || String(msg.sender_id || ''));
++      ? senderRawKey
++      : (canonicalEventActorKey(...splitActorKey(senderRawKey)) || senderRawKey);
+     const selfKey = dmMode ? meId : canonicalMeId;
+     return (senderKey && selfKey && String(senderKey) === String(selfKey))
+       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
+   }
  
+   function renderMessage(msg) {
+     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
+     const dateLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_date_label || '')
+       : formatDateLabel(createdAt);
+     const timeLabel = Number.isNaN(createdAt.getTime())
+       ? (msg.created_at_jst_time_hm || '')
+       : formatTimeLabel(createdAt);
  
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-     avatar_cache: dict[str, str] | None = None,
- ) -> dict[str, Any]:
-     sender_actor_type = str(msg["sender_actor_type"])
-     sender_actor_id = str(msg["sender_actor_id"])
--    sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id)
--    current_actor_id = _canonical_event_actor_key(
--        str(current_actor.get("actor_type") or ""),
--        str(current_actor.get("actor_id") or ""),
--    )
-+    current_actor_type = str(current_actor.get("actor_type") or "")
-+    current_actor_raw_id = str(current_actor.get("actor_id") or "")
-+    is_event_chat_message = int(msg.get("event_id") or 0) > 0
-+
-+    if is_event_chat_message:
-+        sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id) or _actor_sender_id(
-+            sender_actor_type,
-+            sender_actor_id,
-+        )
-+        current_actor_id = _canonical_event_actor_key(current_actor_type, current_actor_raw_id) or _actor_sender_id(
-+            current_actor_type,
-+            current_actor_raw_id,
-+        )
-+    else:
-+        sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-+        current_actor_id = _actor_sender_id(current_actor_type, current_actor_raw_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
-     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
-     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
-     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+     appendDateDividerIfNeeded(dateLabel);
  
-     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-     reply_to_sender_avatar_url = None
-     if reply_to_sender_actor_type and reply_to_sender_actor_id:
-         reply_to_sender_avatar_url = _resolve_sender_avatar_url(
-             str(reply_to_sender_actor_type),
-             str(reply_to_sender_actor_id),
-             avatar_cache=avatar_cache,
-         )
+     const isMe = isMyMessage(msg);
  
-     raw_images = [] if deleted_flag else (msg.get("images") or _fallback_images_from_message(msg))
-     images: list[dict[str, Any]] = []
-     for image in raw_images:
-         image_file = str(image.get("image_file") or "").strip()
-         image_thumb_file = str(image.get("image_thumb_file") or "").strip()
-         if not image_file or not image_thumb_file:
-             continue
-         images.append(
-             {
-                 "seq": int(image.get("seq") or (len(images) + 1)),
+     const row = document.createElement('div');
+     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
+     row.id = `msg-${msg.id}`;
+     row.dataset.messageId = msg.id;
+     row.dataset.senderName = msg.sender_display_name || 'Unknown';
+     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
+     const fullPlain = msg.body_plain || msg.body || '';
