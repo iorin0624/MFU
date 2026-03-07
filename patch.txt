@@ -1,412 +1,48 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 209c27c68b04daf1694dfe0d4582dbda210475a2..fbc5ef9ba09f510903f11adf2b29d16f121d45d1 100644
+index fbc5ef9ba09f510903f11adf2b29d16f121d45d1..1c8eba2cf1b344af129be8c4407b2b10af56c42e 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -59,50 +59,52 @@ except Exception:
- chat_bp = Blueprint(
-     "chat",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
-     url_prefix="/chat",
- )
- 
- MESSAGE_MAX_LEN = 2000
- RATE_LIMIT_SECONDS = 1
- RATE_LIMIT_PER_SECOND = 1
- RATE_LIMIT_PER_MINUTE = 30
- RATE_LIMIT_ERROR_MESSAGE = "送信が速すぎます。少し待ってください"
- JST = ZoneInfo("Asia/Tokyo")
- 
- CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REPLY_SCHEMA_READY: bool | None = None
- CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_PUSH_SCHEMA_READY: bool | None = None
- CHAT_ACTIVE_VIEW_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ACTIVE_VIEW_SCHEMA_READY: bool | None = None
- CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
- CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_READ_STATE_SCHEMA_READY: bool | None = None
-+CHAT_READ_STATE_V2_SCHEMA_CHECK_LOCK = threading.Lock()
-+CHAT_READ_STATE_V2_SCHEMA_READY: bool | None = None
- CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REACTION_SCHEMA_READY: bool | None = None
- CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_IMAGE_SCHEMA_READY: bool | None = None
- CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DELETE_SCHEMA_READY: bool | None = None
- CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOMS_SCHEMA_READY: bool | None = None
- CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
- CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
- CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_EDIT_SCHEMA_READY: bool | None = None
- CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_SEARCH_SCHEMA_READY: bool | None = None
- CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_THREAD_SCHEMA_READY: bool | None = None
- CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_SCHEMA_READY: bool | None = None
- CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
-@@ -506,93 +508,75 @@ def _upsert_room_presence(
-             exc_info=True,
-         )
-         return False
+@@ -1289,50 +1289,322 @@ def _load_chat_read_state_v2_snapshot(room_key: str) -> list[dict[str, Any]]:
      finally:
          cur.close()
          db.close()
  
+     merged: dict[str, int] = {}
+     for row in rows:
+         canonical_key = _canonical_read_actor_key(str(row.get("actor_key") or ""))
+         if not canonical_key:
+             continue
+         read_id = int(row.get("last_read_message_id") or 0)
+         merged[canonical_key] = max(merged.get(canonical_key, 0), read_id)
  
- def _update_room_presence_ping(
-     actor_type: str,
-     actor_id: str,
-     event_id: int,
-     room_id: str,
-     client_id: str,
-     is_visible: bool,
- ) -> bool:
-     if not _ensure_chat_active_view_schema():
-         return False
- 
-     now = datetime.utcnow()
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
--            UPDATE chat_active_views
--               SET event_id=%s,
--                   room_id=%s,
--                   is_visible=%s,
--                   last_ping_at=%s,
--                   updated_at=%s
--             WHERE actor_type=%s
--               AND actor_id=%s
--               AND client_id=%s
-+            INSERT INTO chat_active_views (
-+              actor_type, actor_id, event_id, room_id, client_id,
-+              is_visible, entered_at, last_ping_at, created_at, updated_at
-+            )
-+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+            ON DUPLICATE KEY UPDATE
-+              event_id=VALUES(event_id),
-+              room_id=VALUES(room_id),
-+              is_visible=VALUES(is_visible),
-+              last_ping_at=VALUES(last_ping_at),
-+              updated_at=VALUES(updated_at)
-             """,
-             (
-+                str(actor_type),
-+                str(actor_id),
-                 int(event_id),
-                 str(room_id),
-+                str(client_id),
-                 1 if is_visible else 0,
-                 now,
-                 now,
--                str(actor_type),
--                str(actor_id),
--                str(client_id),
-+                now,
-+                now,
-             ),
+     snapshot: list[dict[str, Any]] = []
+     for actor_key, last_read in merged.items():
+         actor_type, actor_id = _split_read_actor_key(actor_key)
+         snapshot.append(
+             {
+                 "actor_key": actor_key,
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "display_name": _actor_key_to_display_name(actor_key),
+                 "last_read_message_id": int(last_read),
+             }
          )
--        if int(cur.rowcount or 0) == 0:
--            cur.execute(
--                """
--                INSERT INTO chat_active_views (
--                  actor_type, actor_id, event_id, room_id, client_id,
--                  is_visible, entered_at, last_ping_at, created_at, updated_at
--                )
--                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
--                """,
--                (
--                    str(actor_type),
--                    str(actor_id),
--                    int(event_id),
--                    str(room_id),
--                    str(client_id),
--                    1 if is_visible else 0,
--                    now,
--                    now,
--                    now,
--                    now,
--                ),
--            )
-         db.commit()
-         return True
-     except Exception:
-         db.rollback()
-         current_app.logger.warning(
-             "room presence ping failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
-             actor_type,
-             actor_id,
-             event_id,
-             room_id,
-             client_id,
-             exc_info=True,
-         )
-         return False
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _clear_room_presence(actor_type: str, actor_id: str, event_id: int, room_id: str, client_id: str) -> None:
-     if not _ensure_chat_active_view_schema():
-         return
- 
-     db = get_db()
-     cur = db.cursor()
-@@ -1060,50 +1044,295 @@ def _ensure_chat_read_state_schema() -> bool:
-                 """
-                 CREATE TABLE IF NOT EXISTS chat_read_state (
-                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
-                   event_id BIGINT NOT NULL,
-                   actor_type VARCHAR(16) NOT NULL,
-                   actor_id VARCHAR(64) NOT NULL,
-                   last_read_message_id BIGINT NOT NULL DEFAULT 0,
-                   updated_at DATETIME NOT NULL,
-                   UNIQUE KEY uq_chat_read_state_actor (event_id, actor_type, actor_id),
-                   KEY idx_chat_read_state_event_message (event_id, last_read_message_id)
-                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                 """
-             )
-             db.commit()
-             CHAT_READ_STATE_SCHEMA_READY = True
-             return True
-         except Exception:
-             current_app.logger.warning("chat read_state schema ensure failed", exc_info=True)
-             CHAT_READ_STATE_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
- 
- 
+     return snapshot
 +
 +
-+def _canonical_read_actor_key(actor_key: str | None) -> str:
-+    value = str(actor_key or "").strip()
-+    if not value:
-+        return ""
-+    if value == "admin" or value.startswith("admin:"):
-+        return "admin:admin"
-+    if value == "system" or value.startswith("system:"):
-+        return "system:system"
-+    actor_type, sep, actor_id = value.partition(":")
-+    actor_type = actor_type.strip()
-+    actor_id = actor_id.strip()
-+    if actor_type in {"line", "acl"} and actor_id:
-+        return f"{actor_type}:{actor_id}"
-+    return ""
-+
-+
-+def _canonical_read_actor_key_from_actor(actor: dict[str, Any] | None) -> str:
-+    if not actor:
-+        return ""
-+    actor_type = str(actor.get("actor_type") or "").strip()
-+    actor_id = str(actor.get("actor_id") or "").strip()
-+    if actor_type == "admin":
-+        return "admin:admin"
-+    if actor_type == "system":
-+        return "system:system"
-+    if actor_type in {"line", "acl"} and actor_id:
-+        return f"{actor_type}:{actor_id}"
-+    return ""
-+
-+
-+def _split_read_actor_key(actor_key: str) -> tuple[str, str]:
-+    canonical_key = _canonical_read_actor_key(actor_key)
-+    if not canonical_key:
-+        return "", ""
-+    actor_type, sep, actor_id = canonical_key.partition(":")
-+    if not sep or not actor_type or not actor_id:
-+        return "", ""
-+    return actor_type, actor_id
-+
-+
-+def _read_actor_key_aliases(actor_key: str) -> list[str]:
-+    canonical_key = _canonical_read_actor_key(actor_key)
-+    if not canonical_key:
-+        return []
-+    aliases: list[str]
-+    if canonical_key == "admin:admin":
-+        aliases = ["admin:admin", "admin:1", "admin"]
-+    elif canonical_key == "system:system":
-+        aliases = ["system:system", "system"]
-+    else:
-+        aliases = [canonical_key]
-+    deduped: list[str] = []
-+    for alias in aliases:
-+        if alias and alias not in deduped:
-+            deduped.append(alias)
-+    return deduped
-+
-+
-+def _build_read_room_key(event_id: int | None = None, room_id: str | None = None, dm_uuid: str | None = None) -> str:
-+    dm_value = str(dm_uuid or "").strip()
-+    if dm_value:
-+        return f"dm:{dm_value}"
-+    if event_id is None or int(event_id) <= 0:
-+        return ""
-+    room_value = str(room_id or "").strip()
-+    if not room_value:
-+        return ""
-+    return f"event:{int(event_id)}:room:{room_value}"
-+
-+
-+def _ensure_chat_read_state_v2_schema() -> bool:
-+    global CHAT_READ_STATE_V2_SCHEMA_READY
-+    if CHAT_READ_STATE_V2_SCHEMA_READY is not None:
-+        return CHAT_READ_STATE_V2_SCHEMA_READY
-+
-+    with CHAT_READ_STATE_V2_SCHEMA_CHECK_LOCK:
-+        if CHAT_READ_STATE_V2_SCHEMA_READY is not None:
-+            return CHAT_READ_STATE_V2_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor(dictionary=True)
-+        now = datetime.utcnow()
-+        try:
-+            cur.execute(
-+                """
-+                CREATE TABLE IF NOT EXISTS chat_read_state_v2 (
-+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+                  room_key VARCHAR(191) NOT NULL,
-+                  actor_key VARCHAR(64) NOT NULL,
-+                  last_read_message_id BIGINT NOT NULL DEFAULT 0,
-+                  created_at DATETIME NOT NULL,
-+                  updated_at DATETIME NOT NULL,
-+                  UNIQUE KEY uq_chat_read_state_v2_room_actor (room_key, actor_key),
-+                  KEY idx_chat_read_state_v2_room_last (room_key, last_read_message_id),
-+                  KEY idx_chat_read_state_v2_actor (actor_key)
-+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+                """
-+            )
-+
-+            if _ensure_chat_read_state_room_schema():
-+                cur.execute(
-+                    """
-+                    SELECT event_id, room_id, actor_type, actor_id, last_read_message_id
-+                      FROM chat_read_state
-+                     WHERE IFNULL(last_read_message_id, 0) > 0
-+                    """
-+                )
-+                for row in cur.fetchall() or []:
-+                    room_key = _build_read_room_key(event_id=int(row.get("event_id") or 0), room_id=str(row.get("room_id") or ""))
-+                    actor_key = _canonical_read_actor_key(f"{str(row.get('actor_type') or '')}:{str(row.get('actor_id') or '')}")
-+                    last_read_message_id = int(row.get("last_read_message_id") or 0)
-+                    if not room_key or not actor_key or last_read_message_id <= 0:
-+                        continue
-+                    cur.execute(
-+                        """
-+                        INSERT INTO chat_read_state_v2 (room_key, actor_key, last_read_message_id, created_at, updated_at)
-+                        VALUES (%s, %s, %s, %s, %s)
-+                        ON DUPLICATE KEY UPDATE
-+                          last_read_message_id=GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
-+                          updated_at=VALUES(updated_at)
-+                        """,
-+                        (room_key, actor_key, last_read_message_id, now, now),
-+                    )
-+
-+            if _ensure_chat_dm_schema():
-+                cur.execute(
-+                    """
-+                    SELECT c.uuid AS dm_uuid, p.actor_key, p.last_read_message_id
-+                      FROM chat_dm_participants p
-+                      JOIN chat_dm_conversations c ON c.id = p.conversation_id
-+                     WHERE IFNULL(p.last_read_message_id, 0) > 0
-+                    """
-+                )
-+                for row in cur.fetchall() or []:
-+                    room_key = _build_read_room_key(dm_uuid=str(row.get("dm_uuid") or ""))
-+                    actor_key = _canonical_read_actor_key(str(row.get("actor_key") or ""))
-+                    last_read_message_id = int(row.get("last_read_message_id") or 0)
-+                    if not room_key or not actor_key or last_read_message_id <= 0:
-+                        continue
-+                    cur.execute(
-+                        """
-+                        INSERT INTO chat_read_state_v2 (room_key, actor_key, last_read_message_id, created_at, updated_at)
-+                        VALUES (%s, %s, %s, %s, %s)
-+                        ON DUPLICATE KEY UPDATE
-+                          last_read_message_id=GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
-+                          updated_at=VALUES(updated_at)
-+                        """,
-+                        (room_key, actor_key, last_read_message_id, now, now),
-+                    )
-+
-+            db.commit()
-+            CHAT_READ_STATE_V2_SCHEMA_READY = True
-+            return True
-+        except Exception:
-+            db.rollback()
-+            current_app.logger.warning("chat read_state_v2 schema ensure failed", exc_info=True)
-+            CHAT_READ_STATE_V2_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
-+def _upsert_chat_read_state_v2(room_key: str, actor_key: str, last_read_message_id: int) -> int:
-+    room_key = str(room_key or "").strip()
-+    actor_key = _canonical_read_actor_key(actor_key)
-+    next_id = int(last_read_message_id or 0)
-+    if not _ensure_chat_read_state_v2_schema() or not room_key or not actor_key or next_id <= 0:
-+        return 0
-+
-+    now = datetime.utcnow()
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            INSERT INTO chat_read_state_v2 (room_key, actor_key, last_read_message_id, created_at, updated_at)
-+            VALUES (%s, %s, %s, %s, %s)
-+            ON DUPLICATE KEY UPDATE
-+              last_read_message_id=GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
-+              updated_at=VALUES(updated_at)
-+            """,
-+            (room_key, actor_key, next_id, now, now),
-+        )
-+        cur.execute(
-+            """
-+            SELECT last_read_message_id
-+              FROM chat_read_state_v2
-+             WHERE room_key=%s AND actor_key=%s
-+             LIMIT 1
-+            """,
-+            (room_key, actor_key),
-+        )
-+        row = cur.fetchone() or {}
-+        db.commit()
-+        return int(row.get("last_read_message_id") or 0)
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _load_chat_read_state_v2_snapshot(room_key: str) -> list[dict[str, Any]]:
++def _debug_fetch_chat_read_state_v2_rows(room_key: str) -> list[dict[str, Any]]:
 +    room_key = str(room_key or "").strip()
 +    if not room_key or not _ensure_chat_read_state_v2_schema():
 +        return []
-+
 +    db = get_db()
 +    cur = db.cursor(dictionary=True)
 +    try:
 +        cur.execute(
 +            """
-+            SELECT actor_key, last_read_message_id
++            SELECT actor_key, last_read_message_id, updated_at
 +              FROM chat_read_state_v2
 +             WHERE room_key=%s
++             ORDER BY updated_at DESC, actor_key ASC
 +            """,
 +            (room_key,),
 +        )
@@ -415,27 +51,255 @@ index 209c27c68b04daf1694dfe0d4582dbda210475a2..fbc5ef9ba09f510903f11adf2b29d16f
 +        cur.close()
 +        db.close()
 +
-+    merged: dict[str, int] = {}
++    normalized: list[dict[str, Any]] = []
 +    for row in rows:
-+        canonical_key = _canonical_read_actor_key(str(row.get("actor_key") or ""))
-+        if not canonical_key:
-+            continue
-+        read_id = int(row.get("last_read_message_id") or 0)
-+        merged[canonical_key] = max(merged.get(canonical_key, 0), read_id)
-+
-+    snapshot: list[dict[str, Any]] = []
-+    for actor_key, last_read in merged.items():
-+        actor_type, actor_id = _split_read_actor_key(actor_key)
-+        snapshot.append(
++        raw_actor_key = str(row.get("actor_key") or "").strip()
++        canonical_actor_key = _canonical_read_actor_key(raw_actor_key)
++        actor_type, actor_id = _split_read_actor_key(raw_actor_key)
++        normalized.append(
 +            {
-+                "actor_key": actor_key,
++                "actor_key": raw_actor_key,
++                "canonical_actor_key": canonical_actor_key,
 +                "actor_type": actor_type,
 +                "actor_id": actor_id,
-+                "display_name": _actor_key_to_display_name(actor_key),
-+                "last_read_message_id": int(last_read),
++                "last_read_message_id": int(row.get("last_read_message_id") or 0),
++                "updated_at": row.get("updated_at"),
 +            }
 +        )
-+    return snapshot
++    return normalized
++
++
++def _debug_fetch_legacy_event_read_rows(event_id: int | None, room_id: str | None) -> list[dict[str, Any]]:
++    if not event_id or int(event_id) <= 0 or not str(room_id or "").strip() or not _ensure_chat_read_state_room_schema():
++        return []
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT actor_type, actor_id, last_read_message_id, updated_at
++              FROM chat_read_state
++             WHERE event_id=%s AND room_id=%s
++             ORDER BY updated_at DESC, actor_type ASC, actor_id ASC
++            """,
++            (int(event_id), str(room_id).strip()),
++        )
++        rows = cur.fetchall() or []
++    finally:
++        cur.close()
++        db.close()
++
++    result: list[dict[str, Any]] = []
++    for row in rows:
++        actor_type = str(row.get("actor_type") or "").strip()
++        actor_id = str(row.get("actor_id") or "").strip()
++        legacy_actor_key = f"{actor_type}:{actor_id}" if actor_type and actor_id else ""
++        result.append(
++            {
++                "actor_type": actor_type,
++                "actor_id": actor_id,
++                "legacy_actor_key": legacy_actor_key,
++                "canonical_legacy_actor_key": _canonical_read_actor_key(legacy_actor_key),
++                "last_read_message_id": int(row.get("last_read_message_id") or 0),
++                "updated_at": row.get("updated_at"),
++            }
++        )
++    return result
++
++
++def _debug_fetch_legacy_dm_read_rows(dm_uuid: str | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++    uuid_value = str(dm_uuid or "").strip()
++    if not uuid_value or not _ensure_chat_dm_schema():
++        return [], {}
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("SELECT id, uuid FROM chat_dm_conversations WHERE uuid=%s LIMIT 1", (uuid_value,))
++        conversation = cur.fetchone() or {}
++        conversation_id = int(conversation.get("id") or 0)
++        if conversation_id <= 0:
++            return [], {}
++        cur.execute(
++            """
++            SELECT actor_key, last_read_message_id, updated_at
++              FROM chat_dm_participants
++             WHERE conversation_id=%s
++             ORDER BY updated_at DESC, actor_key ASC
++            """,
++            (conversation_id,),
++        )
++        participant_rows = cur.fetchall() or []
++    finally:
++        cur.close()
++        db.close()
++
++    rows: list[dict[str, Any]] = []
++    for row in participant_rows:
++        actor_key = str(row.get("actor_key") or "").strip()
++        rows.append(
++            {
++                "actor_key": actor_key,
++                "canonical_actor_key": _canonical_read_actor_key(actor_key),
++                "last_read_message_id": int(row.get("last_read_message_id") or 0),
++                "updated_at": row.get("updated_at"),
++            }
++        )
++    return rows, {"id": int(conversation.get("id") or 0), "uuid": str(conversation.get("uuid") or "")}
++
++
++def _debug_fetch_presence_rows(actor_key: str, room_key: str) -> list[dict[str, Any]]:
++    actor_type, actor_id = _split_read_actor_key(actor_key)
++    room_key = str(room_key or "").strip()
++    if not actor_type or not actor_id or not room_key or not _ensure_chat_active_view_schema():
++        return []
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT actor_type, actor_id, room_id, client_id, is_visible,
++                   entered_at, last_ping_at, updated_at
++              FROM chat_active_views
++             WHERE actor_type=%s AND actor_id=%s AND room_id=%s
++             ORDER BY updated_at DESC
++            """,
++            (actor_type, actor_id, room_key),
++        )
++        return cur.fetchall() or []
++    finally:
++        cur.close()
++        db.close()
++
++
++def _debug_build_read_v2_checks(ctx: dict[str, Any]) -> list[dict[str, str]]:
++    checks: list[dict[str, str]] = []
++    room_key = str(ctx.get("room_key") or "")
++    effective_actor_key = str(ctx.get("effective_actor_key") or "")
++    aliases = [str(v) for v in (ctx.get("aliases") or []) if str(v)]
++    alias_canonical_set = {_canonical_read_actor_key(value) for value in aliases if _canonical_read_actor_key(value)}
++    v2_rows = list(ctx.get("v2_rows") or [])
++    snapshot_rows = list(ctx.get("snapshot_rows") or [])
++    legacy_rows = list(ctx.get("legacy_rows") or [])
++
++    if not room_key:
++        checks.append({"level": "error", "message": "room_key が空です。"})
++    if not effective_actor_key:
++        checks.append({"level": "error", "message": "effective_actor_key が空です。"})
++
++    if not v2_rows:
++        checks.append({"level": "warning", "message": "V2 に room_key 対象行がありません。"})
++
++    v2_alias_rows = [
++        row
++        for row in v2_rows
++        if _canonical_read_actor_key(str(row.get("actor_key") or "")) in alias_canonical_set
++    ]
++    if effective_actor_key and not v2_alias_rows:
++        checks.append({"level": "warning", "message": "effective_actor_key の alias に一致する V2 行がありません。"})
++
++    snapshot_effective_rows = [
++        row
++        for row in snapshot_rows
++        if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key
++    ]
++    if v2_alias_rows and effective_actor_key and not snapshot_effective_rows:
++        checks.append({"level": "warning", "message": "V2 にはあるが snapshot には effective_actor_key がありません。"})
++
++    snapshot_mismatch_rows = [
++        row
++        for row in snapshot_rows
++        if str(row.get("actor_key") or "")
++        and _canonical_read_actor_key(str(row.get("actor_key") or "")) != str(row.get("actor_key") or "")
++    ]
++    if snapshot_mismatch_rows:
++        checks.append({"level": "warning", "message": "snapshot に canonical 後の actor_key がズレている行があります。"})
++
++    legacy_effective_rows = [
++        row
++        for row in legacy_rows
++        if _canonical_read_actor_key(str(row.get("canonical_legacy_actor_key") or row.get("canonical_actor_key") or "")) == effective_actor_key
++    ]
++    if legacy_effective_rows and not v2_alias_rows:
++        checks.append({"level": "warning", "message": "旧テーブルにはあるが V2 に存在しません。"})
++
++    if legacy_effective_rows and v2_alias_rows:
++        legacy_max = max(int(row.get("last_read_message_id") or 0) for row in legacy_effective_rows)
++        v2_max = max(int(row.get("last_read_message_id") or 0) for row in v2_alias_rows)
++        if legacy_max != v2_max:
++            checks.append({"level": "warning", "message": f"旧テーブル({legacy_max}) と V2({v2_max}) の last_read_message_id が不一致です。"})
++        if v2_max < legacy_max:
++            checks.append({"level": "warning", "message": f"V2 の last_read_message_id ({v2_max}) が期待値 ({legacy_max}) より小さいです。"})
++
++    if snapshot_effective_rows and v2_alias_rows:
++        snapshot_max = max(int(row.get("last_read_message_id") or 0) for row in snapshot_effective_rows)
++        v2_max = max(int(row.get("last_read_message_id") or 0) for row in v2_alias_rows)
++        if snapshot_max < v2_max:
++            checks.append({"level": "warning", "message": f"snapshot の last_read_message_id ({snapshot_max}) が V2 ({v2_max}) より小さいです。"})
++
++    if not checks:
++        checks.append({"level": "ok", "message": "目立った不整合は検出されませんでした。"})
++    return checks
++
++
++def _debug_collect_read_v2_context(
++    event_id: int | None = None,
++    room_id: str | None = None,
++    dm_uuid: str | None = None,
++    actor_key: str | None = None,
++) -> dict[str, Any]:
++    actor = get_chat_actor()
++    dm_uuid_value = str(dm_uuid or "").strip()
++    mode = "dm" if dm_uuid_value else "event"
++    parsed_event_id = int(event_id or 0) if mode == "event" else None
++    room_id_value = str(room_id or "").strip() if mode == "event" else ""
++    requested_actor_key = str(actor_key or "").strip()
++
++    effective_actor_key = _canonical_read_actor_key(requested_actor_key) if requested_actor_key else _canonical_read_actor_key_from_actor(actor)
++    room_key = _build_read_room_key(
++        event_id=parsed_event_id if mode == "event" else None,
++        room_id=room_id_value if mode == "event" else None,
++        dm_uuid=dm_uuid_value if mode == "dm" else None,
++    )
++    aliases = _read_actor_key_aliases(effective_actor_key)
++    split_type, split_id = _split_read_actor_key(effective_actor_key)
++
++    v2_rows = _debug_fetch_chat_read_state_v2_rows(room_key)
++    snapshot_rows = _load_chat_read_state_v2_snapshot(room_key)
++    conversation_meta: dict[str, Any] = {}
++    if mode == "dm":
++        legacy_rows, conversation_meta = _debug_fetch_legacy_dm_read_rows(dm_uuid_value)
++    else:
++        legacy_rows = _debug_fetch_legacy_event_read_rows(parsed_event_id, room_id_value)
++    presence_rows = _debug_fetch_presence_rows(effective_actor_key, room_key)
++
++    ctx: dict[str, Any] = {
++        "mode": mode,
++        "event_id": parsed_event_id,
++        "room_id": room_id_value,
++        "dm_uuid": dm_uuid_value,
++        "room_key": room_key,
++        "requested_actor_key": requested_actor_key,
++        "raw_actor": actor,
++        "effective_actor_key": effective_actor_key,
++        "effective_actor_type": split_type,
++        "effective_actor_id": split_id,
++        "split_actor_key": {"actor_type": split_type, "actor_id": split_id},
++        "aliases": aliases,
++        "v2_rows": v2_rows,
++        "v2_effective_rows": [row for row in v2_rows if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key],
++        "snapshot_rows": snapshot_rows,
++        "snapshot_effective_rows": [
++            row for row in snapshot_rows if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key
++        ],
++        "legacy_rows": legacy_rows,
++        "conversation_meta": conversation_meta,
++        "presence_rows": presence_rows,
++    }
++    ctx["checks"] = _debug_build_read_v2_checks(ctx)
++    return ctx
++
++
  def _log_auto_migration_error(name: str, sql: str, event_id: int | None = None) -> None:
      current_app.logger.warning(
          "chat auto-migration failed name=%s event_id=%s sql=%s",
@@ -461,367 +325,126 @@ index 209c27c68b04daf1694dfe0d4582dbda210475a2..fbc5ef9ba09f510903f11adf2b29d16f
                room_id VARCHAR(36) PRIMARY KEY,
                event_id BIGINT NOT NULL,
                room_name VARCHAR(80) NOT NULL,
-@@ -1888,61 +2117,61 @@ def _format_jst_time_hm(dt_jst: datetime) -> str:
-     try:
-         return dt_jst.strftime("%-H:%M")
-     except ValueError:
-         return dt_jst.strftime("%H:%M").lstrip("0") or "0:00"
+@@ -4921,60 +5193,141 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
+         nickname = str(user.get("nickname") or "").strip() or peer_actor_key
+         rows_by_peer[peer_actor_key] = {
+             "id": None,
+             "uuid": None,
+             "dm_type": "admin_user",
+             "last_message_at": None,
+             "last_read_message_id": None,
+             "last_message": "",
+             "unread_count": 0,
+             "peer_actor_key": peer_actor_key,
+             "peer_display_name": nickname,
+         }
  
- def _format_jst_labels(created_at: Any) -> tuple[str, str, str]:
-     dt_utc = _to_utc_datetime(created_at)
-     dt_jst = dt_utc.astimezone(JST)
-     date_label = f"{dt_jst.year}/{dt_jst.month}/{dt_jst.day}({['月', '火', '水', '木', '金', '土', '日'][dt_jst.weekday()]})"
-     time_label = _format_jst_time_hm(dt_jst)
-     return dt_utc.isoformat(), date_label, time_label
- 
- 
- def _present_message(
-     msg: dict[str, Any],
-     current_actor: dict[str, Any],
-     avatar_cache: dict[str, str] | None = None,
- ) -> dict[str, Any]:
-     sender_actor_type = str(msg["sender_actor_type"])
-     sender_actor_id = str(msg["sender_actor_id"])
-     current_actor_type = str(current_actor.get("actor_type") or "")
-     current_actor_raw_id = str(current_actor.get("actor_id") or "")
-     is_event_chat_message = int(msg.get("event_id") or 0) > 0
- 
-     if is_event_chat_message:
--        sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id) or _actor_sender_id(
-+        sender_id = _canonical_read_actor_key(f"{sender_actor_type}:{sender_actor_id}") or _actor_sender_id(
-             sender_actor_type,
-             sender_actor_id,
+     items = list(rows_by_peer.values())
+     items.sort(
+         key=lambda row: (
+             0 if int(row.get("unread_count") or 0) > 0 else 1,
+             -int(row.get("unread_count") or 0),
+             -(int(row["last_message_at"].timestamp()) if isinstance(row.get("last_message_at"), datetime) else 0),
+             str(row.get("peer_display_name") or ""),
          )
--        current_actor_id = _canonical_event_actor_key(current_actor_type, current_actor_raw_id) or _actor_sender_id(
-+        current_actor_id = _canonical_read_actor_key_from_actor(current_actor) or _actor_sender_id(
-             current_actor_type,
-             current_actor_raw_id,
-         )
-     else:
--        sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
--        current_actor_id = _actor_sender_id(current_actor_type, current_actor_raw_id)
-+        sender_id = _canonical_read_actor_key(f"{sender_actor_type}:{sender_actor_id}") or _actor_sender_id(sender_actor_type, sender_actor_id)
-+        current_actor_id = _canonical_read_actor_key_from_actor(current_actor) or _actor_sender_id(current_actor_type, current_actor_raw_id)
-     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
-     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
-     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
-     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
+     )
+     return items
  
-     reply_to_sender_actor_type = msg.get("reply_to_sender_actor_type")
-     reply_to_sender_actor_id = msg.get("reply_to_sender_actor_id")
-     reply_to_sender_avatar_url = None
-     if reply_to_sender_actor_type and reply_to_sender_actor_id:
-         reply_to_sender_avatar_url = _resolve_sender_avatar_url(
-             str(reply_to_sender_actor_type),
-             str(reply_to_sender_actor_id),
-             avatar_cache=avatar_cache,
-         )
  
-     raw_images = [] if deleted_flag else (msg.get("images") or _fallback_images_from_message(msg))
-     images: list[dict[str, Any]] = []
-     for image in raw_images:
-         image_file = str(image.get("image_file") or "").strip()
-         image_thumb_file = str(image.get("image_thumb_file") or "").strip()
-         if not image_file or not image_thumb_file:
-             continue
-         images.append(
-             {
-                 "seq": int(image.get("seq") or (len(images) + 1)),
-@@ -2206,56 +2435,51 @@ def get_chat_actor_key(actor: dict[str, Any] | None) -> str | None:
-         return f"line:{actor_id}"
-     if actor_type and actor_id:
-         return f"{actor_type}:{actor_id}"
++def _parse_debug_int(value: Any) -> int | None:
++    text = str(value or "").strip()
++    if not text:
++        return None
++    try:
++        parsed = int(text)
++    except Exception:
++        return None
++    return parsed if parsed > 0 else None
++
++
+ @chat_bp.before_request
+ def _require_any_login():
+     if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
+         return None
+     actor = get_chat_actor()
+     if not actor:
+         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
      return None
  
  
- def _canonical_dm_actor_key(actor_key: str) -> str:
-     value = str(actor_key or "").strip()
-     if not value:
-         return ""
-     if value == "admin":
-         return "admin:1"
-     actor_type, sep, actor_id = value.partition(":")
-     if not sep:
-         return value
-     actor_type = actor_type.strip()
-     actor_id = actor_id.strip()
-     if actor_type == "admin":
-         return "admin:1"
-     if actor_type and actor_id:
-         return f"{actor_type}:{actor_id}"
-     return ""
- 
- 
- def _dm_actor_key_aliases(actor_key: str) -> list[str]:
--    canonical_key = _canonical_dm_actor_key(actor_key)
--    if not canonical_key:
--        return []
--    if canonical_key == "admin:1":
--        return ["admin:1", "admin:admin", "admin"]
--    return [canonical_key]
-+    return _read_actor_key_aliases(actor_key)
- 
- 
- def _get_dm_actor_key(actor: dict[str, Any] | None) -> str | None:
-     if not actor:
-         return None
-     actor_type = str(actor.get("actor_type") or "")
-     actor_id = str(actor.get("actor_id") or "")
-     if not actor_type or not actor_id:
-         return None
-     if actor_type == "admin":
-         return "admin:1"
-     return _canonical_dm_actor_key(f"{actor_type}:{actor_id}") or None
- 
- 
- 
- 
- def _ensure_settings_table() -> None:
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             CREATE TABLE IF NOT EXISTS settings (
-               `key` VARCHAR(128) NOT NULL,
-               `value` TEXT NULL,
-@@ -4080,58 +4304,62 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
-                         metrics["http_end"] = time.monotonic()
-                     _log_push_endpoint_warning(
-                         endpoint,
-                         "chat push unexpected failure actor=%s:%s error=%s",
-                         actor_type,
-                         actor_id,
-                         type(exc).__name__,
-                     )
-                     if current_app.debug:
-                         current_app.logger.exception("chat push unexpected traceback endpoint_hash logging")
-                     break
- 
-             if not push_success:
-                 continue
-         db.commit()
-         _audit_log("push_notify", actor=f"{actor_type}:{actor_id}", event_id=payload.get("event_id"), room_id=payload.get("room_id"), result="ok", sent_count=sent)
-         return sent
-     finally:
-         cur.close()
-         db.close()
- 
- 
- 
- 
- def _actor_key_to_display_name(actor_key: str) -> str:
--    actor_key = _canonical_dm_actor_key(actor_key)
--    if actor_key == "admin:1":
-+    actor_key = _canonical_read_actor_key(actor_key)
-+    if actor_key == "admin:admin":
-         return "admin"
-+    if actor_key == "system:system":
-+        return "System"
-     if actor_key.startswith("line:"):
-         try:
-             return get_external_user_display_name(int(actor_key.split(":", 1)[1]))
-         except Exception:
-             return f"LINE-{actor_key.split(':', 1)[1]}"
-+    if actor_key.startswith("acl:"):
-+        return actor_key.split(":", 1)[1]
-     return actor_key
- 
- 
- def _pair_key(actor_a: str, actor_b: str) -> str:
-     a, b = sorted([str(actor_a), str(actor_b)])
-     return f"{a}|{b}"
- 
- 
- def get_or_create_dm_conversation(actor_a: str, actor_b: str, dm_type: str) -> dict[str, Any]:
-     if not _ensure_chat_dm_schema():
-         raise RuntimeError("dm schema")
-     actor_a = _canonical_dm_actor_key(actor_a)
-     actor_b = _canonical_dm_actor_key(actor_b)
-     if not actor_a or not actor_b:
-         raise RuntimeError("invalid dm actor")
-     pair_key = _pair_key(actor_a, actor_b)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT * FROM chat_dm_conversations WHERE pair_key=%s LIMIT 1", (pair_key,))
-         row = cur.fetchone()
-         if row:
-             return row
- 
-         dm_uuid = str(uuid.uuid4())
-@@ -4417,160 +4645,152 @@ def _save_dm_message(conversation: dict[str, Any], sender_actor_key: str, body:
-     try:
-         cur.execute(
-             """
-             INSERT INTO chat_dm_messages (conversation_id, sender_actor_key, body_type, body_text, created_at)
-             VALUES (%s, %s, 'text', %s, %s)
-             """,
-             (conversation["id"], sender_actor_key, body, now),
-         )
-         message_id = int(cur.lastrowid)
-         cur.execute(
-             """
-             UPDATE chat_dm_conversations
-             SET last_message_id=%s, last_message_at=%s
-             WHERE id=%s
-             """,
-             (message_id, now, conversation["id"]),
-         )
-         db.commit()
-         return {"id": message_id, "conversation_id": conversation["id"], "sender_actor_key": sender_actor_key, "body_text": body, "created_at": now}
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> dict[str, Any]:
--    sender_key = _canonical_dm_actor_key(str(message.get("sender_actor_key") or ""))
--    current_actor_key = _canonical_dm_actor_key(current_actor_key)
--    sender_type, sender_id = _split_dm_actor_key(sender_key)
-+    sender_key = _canonical_read_actor_key(str(message.get("sender_actor_key") or ""))
-+    current_key = _canonical_read_actor_key(current_actor_key)
-+    sender_type, sender_id = _split_read_actor_key(sender_key)
-     created_at = message.get("created_at")
-     created_at_iso = ""
-     created_at_jst_date_label = ""
-     created_at_jst_time_hm = ""
-     if created_at:
-         created_at_iso, created_at_jst_date_label, created_at_jst_time_hm = _format_jst_labels(created_at)
-     dm_uuid = str(message.get("dm_uuid") or "")
-     deleted_flag = int(message.get("deleted_flag") or 0) == 1
--    deleted_by_actor_key = _canonical_dm_actor_key(str(message.get("deleted_by_actor_key") or ""))
--    deleted_by_actor_type, deleted_by_actor_id = _split_dm_actor_key(deleted_by_actor_key)
-+    deleted_by_actor_key = _canonical_read_actor_key(str(message.get("deleted_by_actor_key") or ""))
-+    deleted_by_actor_type, deleted_by_actor_id = _split_read_actor_key(deleted_by_actor_key)
-     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
-     body_text = "" if deleted_flag else str(message.get("body_text") or "")
-     raw_images = [] if deleted_flag else (message.get("images") or [])
-     images: list[dict[str, Any]] = []
-     for image in raw_images:
-         image_file = str(image.get("image_file") or "")
-         image_thumb_file = str(image.get("image_thumb_file") or "")
-         if not image_file or not image_thumb_file:
-             continue
-         images.append(
-             {
-                 "seq": int(image.get("seq") or (len(images) + 1)),
-                 "url": url_for("chat.chat_dm_image", dm_uuid=dm_uuid, name=image_file),
-                 "thumb_url": url_for("chat.chat_dm_image", dm_uuid=dm_uuid, name=image_thumb_file),
-                 "mime": image.get("image_mime"),
-                 "size": image.get("image_size"),
-                 "width": image.get("image_width"),
-                 "height": image.get("image_height"),
-             }
-         )
--    sender_is_me = sender_key == current_actor_key
-+    sender_is_me = sender_key == current_key
-     can_delete = False
-     can_edit = False
-     if not deleted_flag:
--        if current_actor_key.startswith("admin:"):
-+        if current_key.startswith("admin:"):
-             can_delete = True
-         elif sender_is_me and isinstance(created_at, datetime):
-             can_delete = created_at + timedelta(hours=12) >= datetime.utcnow()
-         if sender_is_me and isinstance(created_at, datetime):
-             can_edit = created_at + timedelta(hours=12) >= datetime.utcnow()
- 
-     return {
-         "id": int(message.get("id") or 0),
-         "dm_uuid": dm_uuid,
-         "room_id": f"dm:{dm_uuid}",
-         "sender_id": sender_key,
-         "sender_display_name": _actor_key_to_display_name(sender_key),
-         "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
-         "body": body_text,
-         "body_text": body_text,
-         "body_html": deleted_text if deleted_flag else _plain_to_body_html(body_text),
-         "body_plain": deleted_text if deleted_flag else body_text,
-         "body_plain_excerpt": deleted_text if deleted_flag else _build_plain_excerpt(body_text),
-         "created_at_iso": created_at_iso,
-         "created_at_jst": _to_jst(created_at).strftime("%Y-%m-%d %H:%M") if created_at else "",
-         "created_at_jst_hhmm": created_at_jst_time_hm,
-         "created_at_jst_time_hm": created_at_jst_time_hm,
-         "created_at_jst_date_label": created_at_jst_date_label,
-         "is_me": sender_is_me,
-         "reply_to_message_id": None,
-         "thread_root_id": None,
-         "thread_reply_count": 0,
-         "deleted_flag": 1 if deleted_flag else 0,
-         "deleted_at": message.get("deleted_at").isoformat() if message.get("deleted_at") else None,
-         "deleted_by_actor_type": deleted_by_actor_type,
-         "deleted_by_actor_id": deleted_by_actor_id,
-         "deleted_text": deleted_text,
-         "edited_flag": 1 if int(message.get("edited_flag") or 0) == 1 else 0,
-         "edited_at": message.get("edited_at").isoformat() if message.get("edited_at") else None,
--        "edited_by_actor_type": _split_dm_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
--        "edited_by_actor_id": _split_dm_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
-+        "edited_by_actor_type": _split_read_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
-+        "edited_by_actor_id": _split_read_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
-         "reactions_summary": [] if deleted_flag else (message.get("reactions_summary") or []),
-         "my_reaction": None if deleted_flag else message.get("my_reaction"),
-         "images": images,
-         "has_image": bool(images),
-         "image_url": images[0].get("url") if images else None,
-         "image_thumb_url": images[0].get("thumb_url") if images else None,
-         "image_mime": images[0].get("mime") if images else None,
-         "image_size": images[0].get("size") if images else None,
-         "image_width": images[0].get("width") if images else None,
-         "image_height": images[0].get("height") if images else None,
-         "can_delete": can_delete,
-         "can_edit": can_edit,
-     }
- 
- 
- 
- def _split_actor_key(actor_key: str) -> tuple[str, str]:
-     value = str(actor_key or "")
-     if ":" not in value:
-         return value, value
-     actor_type, actor_id = value.split(":", 1)
-     if actor_type == "admin":
-         return "admin", "admin"
-     return actor_type, actor_id
- 
- 
- def _split_dm_actor_key(actor_key: str) -> tuple[str, str]:
--    canonical_key = _canonical_dm_actor_key(actor_key)
--    if not canonical_key:
--        return "", ""
--    actor_type, sep, actor_id = canonical_key.partition(":")
--    if actor_type == "admin":
--        return "admin", "1"
--    if not sep or not actor_type or not actor_id:
--        return "", ""
--    return actor_type, actor_id
-+    return _split_read_actor_key(actor_key)
- 
- 
- def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT actor_key, last_read_message_id
-             FROM chat_dm_participants
-             WHERE conversation_id=%s
-             """,
-             (conversation_id,),
-         )
-         rows = cur.fetchall() or []
-     finally:
-         cur.close()
-         db.close()
- 
-     merged_by_actor_key: dict[str, dict[str, Any]] = {}
-     for row in rows:
-         actor_key = _canonical_dm_actor_key(str(row.get("actor_key") or ""))
-         if not actor_key:
-             continue
-         next_read_id = int(row.get("last_read_message_id") or 0)
-@@ -4739,50 +4959,51 @@ def index():
++@chat_bp.get("/debug/read-v2")
++def debug_read_v2():
++    actor = get_chat_actor()
++    if not _is_admin_actor(actor):
++        abort(403)
++
++    event_id = _parse_debug_int(request.args.get("event_id"))
++    room_id = (request.args.get("room_id") or "").strip()
++    dm_uuid = (request.args.get("dm_uuid") or "").strip()
++    requested_actor_key = (request.args.get("actor_key") or "").strip()
++
++    ctx = _debug_collect_read_v2_context(
++        event_id=event_id,
++        room_id=room_id,
++        dm_uuid=dm_uuid,
++        actor_key=requested_actor_key,
++    )
++    return render_template(
++        "chat/debug_read_v2.html",
++        actor=actor,
++        ctx=ctx,
++        mode=ctx.get("mode"),
++        event_id=ctx.get("event_id") or "",
++        room_id=ctx.get("room_id") or "",
++        dm_uuid=ctx.get("dm_uuid") or "",
++        requested_actor_key=ctx.get("requested_actor_key") or "",
++        test_message_id=(request.args.get("test_message_id") or "").strip(),
++    )
++
++
++@chat_bp.post("/debug/read-v2/upsert")
++def debug_read_v2_upsert():
++    actor = get_chat_actor()
++    if not _is_admin_actor(actor):
++        abort(403)
++
++    event_id = _parse_debug_int(request.form.get("event_id"))
++    room_id = (request.form.get("room_id") or "").strip()
++    dm_uuid = (request.form.get("dm_uuid") or "").strip()
++    message_id = _parse_debug_int(request.form.get("message_id"))
++    raw_actor_key = (request.form.get("actor_key") or "").strip()
++
++    effective_actor_key = _canonical_read_actor_key(raw_actor_key) if raw_actor_key else _canonical_read_actor_key_from_actor(actor)
++    room_key = _build_read_room_key(
++        event_id=event_id if not dm_uuid else None,
++        room_id=room_id if not dm_uuid else None,
++        dm_uuid=dm_uuid or None,
++    )
++
++    saved_value = 0
++    if room_key and effective_actor_key and message_id:
++        saved_value = _upsert_chat_read_state_v2(room_key, effective_actor_key, int(message_id))
++        if saved_value > 0:
++            flash(f"V2へ保存テストを実行しました。saved={saved_value}", "success")
++        else:
++            flash("V2へ保存テストを実行しましたが保存値を取得できませんでした。", "warning")
++    else:
++        flash("入力が不足しています（room_key / actor_key / message_id）。", "danger")
++
++    params = {
++        "event_id": event_id or "",
++        "room_id": room_id,
++        "dm_uuid": dm_uuid,
++        "actor_key": effective_actor_key,
++        "test_message_id": message_id or "",
++        "saved_value": saved_value,
++    }
++    return redirect(url_for("chat.debug_read_v2", **params))
++
++
+ @chat_bp.route("/")
+ def index():
+     actor = get_chat_actor()
      if not actor:
          abort(403)
      events = _accessible_events(actor)
@@ -844,913 +467,200 @@ index 209c27c68b04daf1694dfe0d4582dbda210475a2..fbc5ef9ba09f510903f11adf2b29d16f
  @chat_bp.route("/dm")
  def dm_entry():
      actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key:
-         abort(403)
-+    _ensure_chat_read_state_v2_schema()
-     if actor_key == "admin:1":
-         return redirect(url_for("chat.dm_inbox"))
-     admin_actor_key = _chat_dm_admin_actor_key()
-     conversation = get_or_create_dm_conversation(actor_key, admin_actor_key, "admin_user")
-     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
- 
- 
- @chat_bp.route("/dm/inbox")
- def dm_inbox():
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key or actor.get("actor_type") != "admin":
-         abort(403)
-     if not _ensure_chat_dm_schema():
-         abort(500)
- 
-     rows = _build_admin_dm_inbox_items(actor_key)
- 
-     return render_template("chat/dm_inbox.html", actor=actor, items=rows, csrf_token=_chat_csrf(), nav_mode="chat")
- 
- 
- @chat_bp.get("/dm/open/line/<int:line_user_id>")
- def dm_open_line(line_user_id: int):
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-@@ -4802,51 +5023,51 @@ def dm_room(uuid: str):
-         abort(403)
-     if not can_access_dm(uuid, actor_key):
-         abort(403)
- 
-     conversation = _get_dm_conversation_by_uuid(uuid)
-     if not conversation:
-         abort(404)
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
-             (conversation["id"], actor_key),
-         )
-         peer = cur.fetchone() or {}
-     finally:
-         cur.close()
-         db.close()
- 
-     messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
-     peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
-     return render_template(
-         "chat/room.html",
-         actor=actor,
--        current_user_id=_get_dm_actor_key(actor),
-+        current_user_id=_canonical_read_actor_key_from_actor(actor),
-         event={"id": 0, "title": "DM"},
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-         csrf_token=_chat_csrf(),
-         can_broadcast=False,
-         can_manage_rooms=False,
-         accessible_rooms=[],
-         active_room={"room_id": f"dm:{uuid}", "room_name": peer_name, "is_main": 1},
-         default_avatar_url=_default_avatar_url(),
-         nav_mode="chat",
-         dm_mode=True,
-         dm_uuid=uuid,
-         dm_room_id=f"dm:{uuid}",
-         peer_display_name=peer_name,
-     )
- 
- 
- @chat_bp.post("/dm/api/send")
- def dm_api_send():
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key:
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     payload = request.get_json(silent=True) or {}
-     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
-@@ -5157,83 +5378,56 @@ def dm_edit_message(message_id: int):
-     )
-     return jsonify({"ok": True, "message": message_payload})
- 
- 
- @chat_bp.post("/dm/api/seen")
- def dm_api_seen():
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key:
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     payload = request.get_json(silent=True) or {}
-     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
-         return jsonify({"ok": False, "error": "csrf"}), 400
-     dm_uuid = str(payload.get("dm_uuid") or "").strip()
-     last_seen_message_id = int(payload.get("last_seen_message_id") or 0)
-     if not dm_uuid:
-         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
-     if last_seen_message_id <= 0:
-         return jsonify({"ok": True, "last_read_message_id": 0})
-     if not can_access_dm(dm_uuid, actor_key):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     conversation = _get_dm_conversation_by_uuid(dm_uuid)
-     if not conversation:
-         return jsonify({"ok": False, "error": "not_found"}), 404
- 
--    aliases = _dm_actor_key_aliases(actor_key or "")
--    if not aliases:
--        return jsonify({"ok": False, "error": "participant_not_found"}), 409
--
--    db = get_db()
--    cur = db.cursor(dictionary=True)
--    try:
--        cur.execute(
--            """
--            UPDATE chat_dm_participants
--            SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
--            WHERE conversation_id=%s AND actor_key=%s
--            """,
--            (last_seen_message_id, conversation["id"], actor_key),
--        )
--        placeholders = ",".join(["%s"] * len(aliases))
--        cur.execute(
--            f"""
--            SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
--            FROM chat_dm_participants
--            WHERE conversation_id=%s AND actor_key IN ({placeholders})
--            """,
--            (conversation["id"], *aliases),
--        )
--        row = cur.fetchone() or {}
--        db.commit()
--    finally:
--        cur.close()
--        db.close()
--    actual_last_read_id = int(row.get("last_read_message_id") or 0)
-+    actor_key = _canonical_read_actor_key_from_actor(actor)
-+    room_key = _build_read_room_key(dm_uuid=dm_uuid)
-+    actual_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
-     if actual_last_read_id <= 0:
-         return jsonify({"ok": False, "error": "participant_not_found"}), 409
--    return jsonify({"ok": True, "last_read_message_id": actual_last_read_id})
-+    return jsonify({"ok": True, "actor_key": actor_key, "actual_last_read_id": actual_last_read_id, "last_read_message_id": actual_last_read_id})
- 
- 
- @chat_bp.get("/dm/settings")
- def dm_settings_get():
-     actor = get_chat_actor()
-     if not actor or actor.get("actor_type") != "admin":
-         abort(403)
-     return render_template(
-         "chat/dm_settings.html",
-         actor=actor,
-         csrf_token=_chat_csrf(),
-         enable_user_user=_chat_dm_enable_user_user(),
-         admin_actor_key=_chat_dm_admin_actor_key(),
-         nav_mode="chat",
-     )
- 
- 
- @chat_bp.post("/dm/settings")
- def dm_settings_post():
-     actor = get_chat_actor()
-     if not actor or actor.get("actor_type") != "admin":
-         abort(403)
-     token = (request.form.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400, "invalid csrf token")
-@@ -5297,80 +5491,78 @@ def admin_system_template_join_approved_post():
-             """,
-             ("join_approved", body_template, now, str(actor.get("actor_id") or "admin")),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
-     flash("保存しました。", "success")
-     return redirect(url_for("chat.admin_system_template_join_approved_get"))
- 
- 
- @chat_bp.route("/events/<int:event_id>")
- def room(event_id: int):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
- 
-     _ensure_chat_rooms_schema()
-     _ensure_chat_room_members_schema()
-     _ensure_chat_messages_room_schema()
-     _ensure_chat_thread_schema()
-     _ensure_chat_read_state_room_schema()
-+    _ensure_chat_read_state_v2_schema()
-     _ensure_chat_delete_schema()
-     _ensure_chat_edit_schema()
- 
-     requested_room_id = (request.args.get("room_id") or "").strip() or None
-     allowed, effective_room_id, active_room = _can_access_room(event_id, requested_room_id, actor)
-     if not allowed or not effective_room_id or not active_room:
-         abort(403)
- 
-     event = _get_event(event_id)
-     if not event:
-         abort(404)
-     avatar_cache: dict[str, str] = {}
-     raw_messages = _load_messages(event_id, effective_room_id)
-     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
-     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
-     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
-     images_by_message = _load_message_images_by_message_ids(message_ids)
-     messages = []
-     for message in raw_messages:
-         message_id = int(message.get("id") or 0)
-         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
-         message["my_reaction"] = my_reaction_by_message.get(message_id)
-         message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
-         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
-     can_broadcast = actor["actor_type"] in {"admin", "acl"}
-     accessible_rooms = _list_accessible_rooms(event_id, actor)
--    current_user_id = (
--        _canonical_event_actor_key(actor["actor_type"], str(actor["actor_id"]))
--        or _actor_sender_id(actor["actor_type"], str(actor["actor_id"]))
--    )
-+    current_user_id = _canonical_read_actor_key_from_actor(actor)
-     return render_template(
-         "chat/room.html",
-         actor=actor,
-         current_user_id=current_user_id,
-         event=event,
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-         csrf_token=_chat_csrf(),
-         can_broadcast=can_broadcast,
-         can_manage_rooms=_can_manage_rooms(event_id, actor),
-         accessible_rooms=accessible_rooms,
-         active_room=active_room,
-         default_avatar_url=_default_avatar_url(),
-         nav_mode="chat",
-         dm_mode=False,
-         dm_uuid="",
-         dm_room_id="",
-         peer_display_name="",
-     )
- 
- 
- @chat_bp.get("/events/<int:event_id>/images/<path:name>")
- def chat_image(event_id: int, name: str):
-     actor = get_chat_actor()
-     if not actor:
-@@ -6897,183 +7089,163 @@ def chat_connect():
-     _audit_log("room_join", actor=_actor_log_id(actor), result="connect")
-     if not actor:
-         current_app.logger.info("chat socket connect denied: no actor")
-         return False
-     ext_user_id = session.get("ext_user_id")
-     if ext_user_id:
-         try:
-             join_room(f"external_user:{int(ext_user_id)}")
-         except Exception:
-             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
- 
-     mfu_username = str(session.get("user") or "").strip()
-     if mfu_username:
-         try:
-             join_room(f"mfu_user:{mfu_username}")
-         except Exception:
-             current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
-     return True
- 
- @socketio.on("chat_join")
- def on_join(data):
-     _ensure_chat_rooms_schema()
-     _ensure_chat_room_members_schema()
-     _ensure_chat_messages_room_schema()
-     _ensure_chat_read_state_room_schema()
-+    _ensure_chat_read_state_v2_schema()
-     _ensure_chat_edit_schema()
-     actor = get_chat_actor()
-     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
-     room_id = str((data or {}).get("room_id") or "").strip() or None
- 
-     if dm_uuid:
-         actor_key = _get_dm_actor_key(actor)
-         if not actor or not actor_key:
-             emit("chat_error", {"error": "forbidden"})
-             return
-         if not can_access_dm(dm_uuid, actor_key):
-             emit("chat_error", {"error": "forbidden"})
-             return
-         join_room(f"dm:{dm_uuid}")
-         emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
--        conversation = _get_dm_conversation_by_uuid(dm_uuid)
--        if conversation:
--            emit(
--                "chat_read_snapshot",
--                {
--                    "dm_uuid": dm_uuid,
--                    "room_id": f"dm:{dm_uuid}",
--                    "read_states": _load_dm_read_state_snapshot(int(conversation["id"])),
--                },
--            )
-+        room_key = _build_read_room_key(dm_uuid=dm_uuid)
-+        emit(
-+            "chat_read_snapshot",
-+            {
-+                "dm_uuid": dm_uuid,
-+                "room_id": f"dm:{dm_uuid}",
-+                "read_states": _load_chat_read_state_v2_snapshot(room_key),
-+            },
-+        )
-         return
- 
-     if (room_id or "").startswith("dm:"):
-         emit("chat_error", {"error": "dm_uuid_required"})
-         return
- 
-     event_id = int((data or {}).get("event_id") or 0)
-     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor or {}) if actor else (False, None, None)
-     if not actor or not event_id or not allowed or not effective_room_id:
-         _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="deny")
-         disconnect()
-         return
-     join_room(f"event:{event_id}:room:{effective_room_id}")
-     emit("chat_joined", {"event_id": event_id, "room_id": effective_room_id})
-     _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, result="ok")
--    emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_event_read_state_snapshot(event_id, effective_room_id)})
-+    room_key = _build_read_room_key(event_id=event_id, room_id=effective_room_id)
-+    emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_chat_read_state_v2_snapshot(room_key)})
- 
- 
- @socketio.on("chat_seen")
- def on_seen(data):
-     actor = get_chat_actor()
-     if not actor:
-         disconnect()
-         return
- 
-     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
-     room_id = str((data or {}).get("room_id") or "").strip() or None
-     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
- 
-     if dm_uuid:
-         actor_key = _get_dm_actor_key(actor)
-         if not actor_key or last_seen_message_id <= 0:
-             return
-         if not can_access_dm(dm_uuid, actor_key):
-             emit("chat_error", {"error": "forbidden"})
-             return
-         conversation = _get_dm_conversation_by_uuid(dm_uuid)
-         if not conversation:
-             emit("chat_error", {"error": "not_found"})
-             return
--        db = get_db()
--        cur = db.cursor(dictionary=True)
--        try:
--            cur.execute(
--                """
--                UPDATE chat_dm_participants
--                SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
--                WHERE conversation_id=%s AND actor_key=%s
--                """,
--                (last_seen_message_id, conversation["id"], actor_key),
--            )
--            aliases = _dm_actor_key_aliases(actor_key)
--            if not aliases:
--                emit("chat_error", {"error": "participant_not_found"})
--                return
--            placeholders = ",".join(["%s"] * len(aliases))
--            cur.execute(
--                f"""
--                SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
--                FROM chat_dm_participants
--                WHERE conversation_id=%s AND actor_key IN ({placeholders})
--                """,
--                (conversation["id"], *aliases),
--            )
--            row = cur.fetchone() or {}
--            db.commit()
--        finally:
--            cur.close()
--            db.close()
--        actual_last_read_id = int(row.get("last_read_message_id") or 0)
-+        actor_key = _canonical_read_actor_key_from_actor(actor)
-+        room_key = _build_read_room_key(dm_uuid=dm_uuid)
-+        actual_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
-         if actual_last_read_id <= 0:
-             emit("chat_error", {"error": "participant_not_found"})
-             return
--        actor_type, actor_id = _split_dm_actor_key(actor_key)
-+        actor_type, actor_id = _split_read_actor_key(actor_key)
-         emit(
-             "chat_read_update",
-             {
-                 "dm_uuid": dm_uuid,
-                 "room_id": f"dm:{dm_uuid}",
-+                "actor_key": actor_key,
-                 "actor_type": actor_type,
-                 "actor_id": actor_id,
-                 "display_name": _actor_key_to_display_name(actor_key),
-                 "last_read_message_id": actual_last_read_id,
-             },
-             to=f"dm:{dm_uuid}",
-         )
-         return
- 
-     if (room_id or "").startswith("dm:"):
-         emit("chat_error", {"error": "dm_uuid_required"})
-         return
- 
-     event_id = int((data or {}).get("event_id") or 0)
-     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-     if event_id <= 0 or last_seen_message_id <= 0 or not allowed or not effective_room_id:
-         disconnect()
-         return
- 
--    effective_last_read_id, canonical_actor = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
-+    actor_key = _canonical_read_actor_key_from_actor(actor)
-+    room_key = _build_read_room_key(event_id=event_id, room_id=effective_room_id)
-+    effective_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
-+    actor_type, actor_id = _split_read_actor_key(actor_key)
-     _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
-     emit(
-         "chat_read_update",
-         {
--            "actor_type": canonical_actor["actor_type"],
--            "actor_id": canonical_actor["actor_id"],
--            "display_name": canonical_actor["display_name"],
--            "last_read_message_id": effective_last_read_id,
-+            "event_id": event_id,
-             "room_id": effective_room_id,
-+            "actor_key": actor_key,
-+            "actor_type": actor_type,
-+            "actor_id": actor_id,
-+            "display_name": _actor_key_to_display_name(actor_key),
-+            "last_read_message_id": effective_last_read_id,
-         },
-         to=f"event:{event_id}:room:{effective_room_id}",
-     )
- 
- 
- @socketio.on("chat_typing")
- def on_typing(data):
-     actor = get_chat_actor()
-     if not actor:
-         disconnect()
-         return
- 
-     try:
-         event_id = int((data or {}).get("event_id") or 0)
-         room_id = str((data or {}).get("room_id") or "").strip() or None
-     except (TypeError, ValueError):
-         disconnect()
-         return
-     is_typing = bool((data or {}).get("is_typing"))
- 
-     if (room_id or "").startswith("dm:"):
-         emit("chat_error", {"error": "dm_typing_unsupported"})
-         return
- 
-     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index ffe181dee00ab19deb4da0370ab39fec937e220b..a298e214e6d9056e30446abeb52cd9042a9bc907 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -1663,54 +1663,51 @@ window.addEventListener('DOMContentLoaded', async () => {
-   const imageViewerNextBtn = document.getElementById('chatImageViewerNext');
-   const dropOverlay = document.getElementById('chatDropOverlay');
-   const uploadPreviewModal = document.getElementById('chatUploadPreviewModal');
-   const uploadPreviewGrid = document.getElementById('chatUploadPreviewGrid');
-   const uploadPreviewHint = document.getElementById('chatUploadPreviewHint');
-   const uploadPreviewSendBtn = document.getElementById('chatUploadPreviewSendBtn');
-   const ctxMenu = document.getElementById('chatCtxMenu');
-   const ctxPanel = ctxMenu?.querySelector('.chat-ctx-panel');
-   const ctxPreview = ctxMenu?.querySelector('[data-ctx-preview]');
-   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
- 
-   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     year: 'numeric',
-     month: 'numeric',
-     day: 'numeric',
-     weekday: 'short',
-   });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-     hour12: false,
-   });
- 
--  const [myActorType, myActorId] = meId.includes(':')
--    ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
--    : ['', ''];
--  const canonicalMeId = (() => canonicalReadTargetKey(meId))();
-+  const canonicalMeId = canonicalReadActorKeyFromKey(meId);
- 
-   function buildSafeBodyHtml(msg) {
-     const rawHtml = (msg?.body_html || '').trim();
-     if (rawHtml) return rawHtml;
-     const rawText = String(msg?.body_text ?? msg?.body ?? '');
-     return escapeHtml(rawText).replace(/\n/g, '<br>');
-   }
- 
-   const state = {
-     replyToId: null,
-     selectedBubble: null,
-     selectedRowEl: null,
-     readStateByActor: new Map(),
-     reactionByMessage: new Map(),
-     viewerImages: [],
-     viewerIndex: 0,
-     ctxMessageId: null,
-     touchDoubleTap: {
-       startX: 0,
-       startY: 0,
-       moved: false,
-       row: null,
-       bubble: null,
-       lastTapAt: 0,
-       lastTapX: 0,
-@@ -1813,51 +1810,51 @@ window.addEventListener('DOMContentLoaded', async () => {
-     }
-     setSendingState(false);
-     scheduleUnreadRefresh();
-   });
-   socket.on('chat_error', (d) => {
-     setSendingState(false);
-     alert(d.error || '送信失敗');
-   });
-   socket.on('chat_read_snapshot', (payload) => {
-     applyReadSnapshot(payload?.read_states || []);
-     refreshReadIndicators();
-     sendSeenForLatestMessage();
-   });
-   socket.on('chat_read_update', (payload) => {
-     applyReadUpdate(payload);
-     refreshReadIndicators();
-   });
-   socket.on('chat_reaction_update', (payload) => {
-     const messageId = Number(payload?.message_id || 0);
-     if (!messageId) return;
-     const row = document.querySelector(`.chat-row[data-message-id="${messageId}"]`);
-     if (row && Number(row.dataset.deletedFlag || 0) === 1) return;
-     const prev = state.reactionByMessage.get(String(messageId)) || { reactionsSummary: [], myReaction: null };
-     let myReaction = prev.myReaction || null;
-     const changed = payload?.changed || {};
--    if (changed.actor_type === myActorType && String(changed.actor_id || '') === String(myActorId || '')) {
-+    if (canonicalReadActorKeyFromKey(changed.actor_key || `${changed.actor_type || ""}:${changed.actor_id || ""}`) === canonicalMeId) {
-       myReaction = changed.emoji || null;
-     }
-     setReactionState(messageId, payload?.reactions || [], myReaction);
-     if (isMessageInOpenThread(messageId)) refreshOpenThread();
-   });
-   socket.on('chat_delete_update', (payload) => {
-     const messageId = Number(payload?.message_id || 0);
-     if (!messageId) return;
-     applyDeletedState(messageId, payload?.deleted_by_actor_type || '');
-     if (isMessageInOpenThread(messageId)) refreshOpenThread();
-   });
-   socket.on('chat_edit_update', (payload) => {
-     const messageId = Number(payload?.message_id || payload?.id || 0);
-     if (!messageId) return;
-     applyEditedState(messageId, payload);
-     if (isMessageInOpenThread(messageId)) refreshOpenThread();
-   });
-   socket.on('chat_typing_update', (payload) => {
-     if (dmMode) return;
-     applyTypingUpdate(payload || {});
-   });
- 
- 
- 
-   msgBox.addEventListener('click', (e) => {
-@@ -2604,54 +2601,52 @@ window.addEventListener('DOMContentLoaded', async () => {
-       return;
-     }
-     updatePushButton(true);
-   }
- 
-   async function disablePush(registration, subscription) {
-     await subscription.unsubscribe();
-     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
-     if (endpoint) {
-       await fetch('/chat/api/push/unsubscribe', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
-       });
-     }
-     const nextSubscription = await registration.pushManager.getSubscription();
-     updatePushButton(Boolean(nextSubscription));
-   }
- 
-   function setSendingState(isSending) {
-     if (sendBtn) sendBtn.disabled = isSending;
-     if (imageBtn) imageBtn.disabled = isSending;
-   }
- 
-   function isMyMessage(msg) {
--    const senderRawKey = String(msg.sender_id || '');
--    const senderKey = canonicalReadTargetKey(senderRawKey);
--    const selfKey = canonicalMeId;
--    return (senderKey && selfKey && senderKey === selfKey)
-+    const senderKey = canonicalReadActorKeyFromKey(msg.sender_id || '');
-+    return (senderKey && canonicalMeId && senderKey === canonicalMeId)
-       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
-   }
- 
-   function renderMessage(msg) {
-     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
-     const dateLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_date_label || '')
-       : formatDateLabel(createdAt);
-     const timeLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_time_hm || '')
-       : formatTimeLabel(createdAt);
- 
-     appendDateDividerIfNeeded(dateLabel);
- 
-     const isMe = isMyMessage(msg);
- 
-     const row = document.createElement('div');
-     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
-     row.id = `msg-${msg.id}`;
-     row.dataset.messageId = msg.id;
-     row.dataset.senderName = msg.sender_display_name || 'Unknown';
-     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-     const fullPlain = msg.body_plain || msg.body || '';
-     row.dataset.bodyPlain = JSON.stringify(msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
-     row.dataset.bodyPlainFull = JSON.stringify(fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
-@@ -3519,51 +3514,51 @@ window.addEventListener('DOMContentLoaded', async () => {
-     state.typingStopTimer = window.setTimeout(() => {
-       sendTypingStop();
-     }, 2000);
-   }
- 
-   function sendTypingStop() {
-     if (state.typingDebounceTimer) {
-       window.clearTimeout(state.typingDebounceTimer);
-       state.typingDebounceTimer = null;
-     }
-     if (state.typingStopTimer) {
-       window.clearTimeout(state.typingStopTimer);
-       state.typingStopTimer = null;
-     }
-     if (!state.typingSent) return;
-     if (!dmMode) {
-       socket.emit('chat_typing', { event_id: eventId, room_id: roomId, is_typing: false });
-     }
-     state.typingSent = false;
-   }
- 
-   function applyTypingUpdate(payload) {
-     const actorType = payload?.actor_type || '';
-     const actorId = String(payload?.actor_id || '');
-     if (!actorType || !actorId) return;
--    const key = canonicalReadActorKey(actorType, actorId);
-+    const key = canonicalReadActorKeyFromKey(`${actorType}:${actorId}`);
-     if (!key) return;
-     if (key === canonicalMeId) return;
- 
-     if (payload?.is_typing) {
-       state.typingMembers.set(key, payload?.display_name || key);
-     } else {
-       state.typingMembers.delete(key);
-     }
-     renderTypingIndicator();
-   }
- 
-   function renderTypingIndicator() {
-     if (!typingIndicator) return;
-     if (typingIndicator.parentElement !== msgBox) {
-       msgBox?.appendChild(typingIndicator);
-     }
-     const names = Array.from(state.typingMembers.values());
-     if (!names.length) {
-       typingIndicator.textContent = '';
-       typingIndicator.classList.add('is-hidden');
-       if (composerFocused) {
-         scrollForComposerFocus();
-       } else {
-         keepBottomIfNeeded();
-       }
-@@ -3989,178 +3984,149 @@ function openFulltextModal(row) {
-     editTargetInput.value = '';
-     if (replySender?.textContent === '編集中') {
-       replySender.textContent = '';
-       replyText.textContent = '';
-       replyPreview.classList.add('d-none');
-     }
-   }
- 
-   function formatDateLabel(date) {
-     const parts = fmtDate.formatToParts(date);
-     const get = (type) => parts.find((p) => p.type === type)?.value || '';
-     return `${get('year')}/${get('month')}/${get('day')}(${get('weekday')})`;
-   }
- 
-   function formatTimeLabel(date) {
-     return fmtTime.format(date);
-   }
- 
-   function formatDateTimeLabel(isoText) {
-     if (!isoText) return '';
-     const date = new Date(isoText);
-     if (Number.isNaN(date.getTime())) return '';
-     return `${formatDateLabel(date)} ${formatTimeLabel(date)}`;
-   }
- 
--  function applyReadSnapshot(states) {
--    state.readStateByActor.clear();
--    for (const readState of states || []) {
--      applyReadUpdate(readState);
--    }
--  }
--
-   function canonicalEventActorKey(actorType, actorId) {
-     const t = String(actorType || '');
-     const i = String(actorId || '');
-     if (!t || !i) return '';
-     if (t === 'admin') return 'admin:admin';
-     return `${t}:${i}`;
-   }
- 
--  function canonicalDmActorKey(actorType, actorId) {
--    const t = String(actorType || '');
--    const i = String(actorId || '');
--    if (!t) return '';
--    if (t === 'admin') return 'admin:1';
--    if (!i) return '';
--    return `${t}:${i}`;
--  }
--
--  function canonicalDmActorKeyFromKey(actorKey) {
--    const key = String(actorKey || '').trim();
--    if (!key) return '';
--    if (key === 'admin' || key.startsWith('admin:')) return 'admin:1';
--    if (key.includes(':')) {
--      const [t, i] = splitActorKey(key);
--      return canonicalDmActorKey(t, i);
--    }
--    const [t, i] = splitActorKey(key);
--    return canonicalDmActorKey(t, i);
--  }
--
--  function canonicalReadActorKey(actorType, actorId) {
--    if (dmMode) return canonicalDmActorKey(actorType, actorId);
--    return canonicalEventActorKey(actorType, actorId);
--  }
--
--  function canonicalReadTargetKey(actorKey) {
--    const key = String(actorKey || '');
--    if (dmMode) return canonicalDmActorKeyFromKey(key);
--    return canonicalEventActorKey(...splitActorKey(key)) || key || '';
--  }
--
--  function normalizeActorKeyForCompare(actorType, actorId) {
--    const canonicalKey = canonicalReadActorKey(actorType, actorId);
--    if (!canonicalKey) return '';
--    if (!dmMode && canonicalKey === 'admin:admin') return 'admin';
--    return canonicalKey;
--  }
--
--  function isSameActorByKey(actorType, actorId, targetKey) {
--    const normTarget = normalizeActorKeyForCompare(...splitActorKey(canonicalReadTargetKey(targetKey)));
--    if (!normTarget) return false;
--    const normActor = normalizeActorKeyForCompare(actorType, actorId);
--    if (normActor === normTarget) return true;
--    return false;
--  }
--
-   function splitActorKey(actorKey) {
--    const key = String(actorKey || '');
-+    const key = String(actorKey || '').trim();
-     const sepIndex = key.indexOf(':');
-     if (sepIndex < 0) {
-       if (key === 'admin') return ['admin', 'admin'];
-+      if (key === 'system') return ['system', 'system'];
-       return ['', ''];
-     }
-     return [key.slice(0, sepIndex), key.slice(sepIndex + 1)];
-   }
- 
-+  function canonicalReadActorKeyFromKey(actorKey) {
-+    const key = String(actorKey || '').trim();
-+    if (!key) return '';
-+    if (key === 'admin' || key.startsWith('admin:')) return 'admin:admin';
-+    if (key === 'system' || key.startsWith('system:')) return 'system:system';
-+    const [type, id] = splitActorKey(key);
-+    if ((type === 'line' || type === 'acl') && id) return `${type}:${id}`;
-+    return '';
-+  }
+diff --git a/chat/templates/chat/debug_read_v2.html b/chat/templates/chat/debug_read_v2.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..ccaf8e7be554f1108ac07abaec0944829491f48b
+--- /dev/null
++++ b/chat/templates/chat/debug_read_v2.html
+@@ -0,0 +1,191 @@
++{% extends "chat/base_chat.html" %}
++{% block content %}
++<div class="container py-4">
++  <h1 class="mb-3">既読V2 デバッグ</h1>
 +
-+  function readDisplayNameFallback(actorKey) {
-+    const key = canonicalReadActorKeyFromKey(actorKey);
-+    if (!key) return '';
-+    if (key === 'admin:admin') return 'admin';
-+    if (key === 'system:system') return 'System';
-+    if (key.startsWith('acl:')) return key.slice(4);
-+    if (key.startsWith('line:')) return `LINE-${key.slice(5)}`;
-+    return key;
-+  }
++  <div class="card mb-4 border-2">
++    <div class="card-body">
++      <div class="row g-3">
++        <div class="col-md-4">
++          <div class="text-muted">mode</div>
++          <div class="fs-5 fw-bold">{{ ctx.mode }}</div>
++        </div>
++        <div class="col-md-4">
++          <div class="text-muted">room_key</div>
++          <div class="fs-5 fw-bold text-break">{{ ctx.room_key or '-' }}</div>
++        </div>
++        <div class="col-md-4">
++          <div class="text-muted">effective actor_key</div>
++          <div class="fs-5 fw-bold text-break">{{ ctx.effective_actor_key or '-' }}</div>
++        </div>
++      </div>
++      {% if request.args.get('saved_value') %}
++      <div class="alert alert-success mt-3 mb-0">actual saved value: {{ request.args.get('saved_value') }}</div>
++      {% endif %}
++    </div>
++  </div>
 +
-   function applyReadUpdate(readState) {
--    if (!readState?.actor_type || !readState?.actor_id) return;
--    const key = canonicalReadActorKey(readState.actor_type, readState.actor_id);
-+    const legacyKey = `${readState?.actor_type || ''}:${readState?.actor_id || ''}`;
-+    const key = canonicalReadActorKeyFromKey(readState?.actor_key || legacyKey);
-     if (!key) return;
--    const [canonicalActorType, canonicalActorId] = key.includes(':')
--      ? [key.split(':')[0], key.slice(key.indexOf(':') + 1)]
--      : ['', ''];
--    if (!canonicalActorType || !canonicalActorId) return;
-     const prev = state.readStateByActor.get(key);
--    const nextReadId = Number(readState.last_read_message_id || 0);
-+    const nextReadId = Number(readState?.last_read_message_id || 0);
-     const prevReadId = Number(prev?.last_read_message_id || 0);
--    if (prev && prevReadId > nextReadId) return;
-     state.readStateByActor.set(key, {
--      actor_type: canonicalActorType,
--      actor_id: String(canonicalActorId),
--      display_name: readState.display_name || prev?.display_name || canonicalActorId,
-+      actor_key: key,
-+      display_name: readState?.display_name || prev?.display_name || readDisplayNameFallback(key),
-       last_read_message_id: Math.max(prevReadId, nextReadId),
-     });
-   }
- 
--  function refreshReadIndicators() {
--    msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
-+  function applyReadSnapshot(states) {
-+    state.readStateByActor.clear();
-+    for (const readState of states || []) {
-+      applyReadUpdate(readState);
-+    }
-   }
- 
-   function refreshReadIndicatorForRow(row) {
-     if (!row?.classList.contains('me')) return;
-     const messageId = Number(row.dataset.messageId || 0);
--    const senderId = canonicalReadTargetKey(row.dataset.senderId || '');
-+    const senderKey = canonicalReadActorKeyFromKey(row.dataset.senderId || '');
-+    const selfKey = canonicalMeId;
-     const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
-     const list = row.querySelector('.chat-read-list');
-     if (!messageId || !indicator || !list) return;
- 
-     const readers = [];
-     for (const entry of state.readStateByActor.values()) {
-+      const entryKey = canonicalReadActorKeyFromKey(entry.actor_key || '');
-+      if (!entryKey) continue;
-       if (Number(entry.last_read_message_id || 0) < messageId) continue;
--      if (senderId && isSameActorByKey(entry.actor_type, entry.actor_id, senderId)) continue;
--      if (canonicalMeId && isSameActorByKey(entry.actor_type, entry.actor_id, canonicalMeId)) continue;
--      readers.push(entry.display_name || `${entry.actor_type}:${entry.actor_id}`);
-+      if (entryKey === senderKey) continue;
-+      if (entryKey === selfKey) continue;
-+      if (entryKey === 'system:system') continue;
-+      readers.push(entry.display_name || readDisplayNameFallback(entryKey));
-     }
-     readers.sort((a, b) => a.localeCompare(b, 'ja'));
- 
-     if (readers.length === 0) {
-       indicator.classList.add('d-none');
-       indicator.textContent = '';
-       list.classList.add('d-none');
-       list.innerHTML = '';
-       return;
-     }
- 
--    const timeText = (row.querySelector('.chat-time')?.textContent || '').trim();
-     const readLabel = dmMode ? '既読' : `既読 ${readers.length}`;
-     indicator.classList.remove('d-none');
-     indicator.textContent = readLabel;
-     list.innerHTML = `<ul>${readers.map((name) => `<li>${escapeHtml(name)}</li>`).join('')}</ul>`;
-   }
- 
-+  function refreshReadIndicators() {
-+    msgBox.querySelectorAll('.chat-row.me').forEach((row) => refreshReadIndicatorForRow(row));
-+  }
++  {% with flashes = get_flashed_messages(with_categories=true) %}
++  {% if flashes %}
++    {% for category, message in flashes %}
++      <div class="alert alert-{{ 'danger' if category in ['error', 'danger'] else ('warning' if category == 'warning' else 'success') }}">{{ message }}</div>
++    {% endfor %}
++  {% endif %}
++  {% endwith %}
 +
-   function toggleReadList(chatMain) {
-     const list = chatMain?.querySelector('.chat-read-list');
-     if (!list || list.classList.contains('d-none') && !list.innerHTML) return;
-     list.classList.toggle('d-none');
-   }
- 
-   function sendSeenForLatestMessage() {
-     const rows = msgBox.querySelectorAll('.chat-row[data-message-id]');
-     const lastRow = rows.length ? rows[rows.length - 1] : null;
-     if (!lastRow) return;
-     sendSeenForMessageId(Number(lastRow.dataset.messageId || 0));
-   }
- 
-   function sendSeenForMessageId(messageId) {
-     if (!Number.isFinite(messageId) || messageId <= 0) return;
-     if (dmMode) {
-       socket.emit('chat_seen', { dm_uuid: dmUuid, room_id: effectiveDmRoomId, last_seen_message_id: messageId });
-     } else {
-       socket.emit('chat_seen', { event_id: eventId, room_id: roomId, last_seen_message_id: messageId });
-     }
-   }
- 
-   function escapeHtml(value) {
-     return String(value || '')
-       .replace(/&/g, '&amp;')
++  <div class="card mb-4">
++    <div class="card-header fw-bold">F. 自動判定</div>
++    <div class="card-body">
++      {% for check in ctx.checks %}
++        <div class="alert py-2 mb-2 {% if check.level == 'error' %}alert-danger{% elif check.level == 'warning' %}alert-warning{% else %}alert-success{% endif %}">
++          <strong>[{{ check.level|upper }}]</strong> {{ check.message }}
++        </div>
++      {% endfor %}
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">A. リクエスト情報</div>
++    <div class="card-body">
++      <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="row g-2 align-items-end mb-3">
++        <div class="col-md-2"><label class="form-label">event_id</label><input class="form-control" name="event_id" value="{{ event_id }}"></div>
++        <div class="col-md-2"><label class="form-label">room_id</label><input class="form-control" name="room_id" value="{{ room_id }}"></div>
++        <div class="col-md-3"><label class="form-label">dm_uuid</label><input class="form-control" name="dm_uuid" value="{{ dm_uuid }}"></div>
++        <div class="col-md-3"><label class="form-label">actor_key</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
++        <div class="col-md-2"><button class="btn btn-primary w-100">再読込</button></div>
++      </form>
++      <table class="table table-sm table-bordered">
++        <tr><th>mode</th><td>{{ ctx.mode }}</td></tr>
++        <tr><th>event_id</th><td>{{ ctx.event_id or '-' }}</td></tr>
++        <tr><th>room_id</th><td>{{ ctx.room_id or '-' }}</td></tr>
++        <tr><th>dm_uuid</th><td>{{ ctx.dm_uuid or '-' }}</td></tr>
++        <tr><th>requested_actor_key</th><td>{{ ctx.requested_actor_key or '-' }}</td></tr>
++        <tr><th>effective_actor_key</th><td>{{ ctx.effective_actor_key or '-' }}</td></tr>
++        <tr><th>room_key</th><td>{{ ctx.room_key or '-' }}</td></tr>
++      </table>
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">B. actor 情報</div>
++    <div class="card-body">
++      <table class="table table-sm table-bordered">
++        <tr><th>canonical read actor_key</th><td>{{ ctx.effective_actor_key or '-' }}</td></tr>
++        <tr><th>split result</th><td>{{ ctx.split_actor_key.actor_type }} / {{ ctx.split_actor_key.actor_id }}</td></tr>
++        <tr><th>aliases</th><td>{{ ctx.aliases|join(', ') or '-' }}</td></tr>
++      </table>
++      <div class="fw-bold mb-1">raw actor object</div>
++      <pre class="bg-light p-2 border rounded">{{ ctx.raw_actor|tojson(indent=2) }}</pre>
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">C. DB生データ（V2）</div>
++    <div class="card-body">
++      <table class="table table-sm table-striped table-bordered">
++        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
++        <tbody>
++          {% for row in ctx.v2_rows %}
++          <tr class="{% if row.canonical_actor_key == ctx.effective_actor_key %}table-warning{% endif %}">
++            <td>{{ row.actor_key }}</td>
++            <td>{{ row.canonical_actor_key }}</td>
++            <td>{{ row.last_read_message_id }}</td>
++            <td>{{ row.updated_at or '-' }}</td>
++          </tr>
++          {% else %}
++          <tr><td colspan="4" class="text-muted">データなし</td></tr>
++          {% endfor %}
++        </tbody>
++      </table>
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">D. snapshot 結果</div>
++    <div class="card-body">
++      <table class="table table-sm table-striped table-bordered">
++        <thead><tr><th>actor_key</th><th>actor_type</th><th>actor_id</th><th>display_name</th><th>last_read_message_id</th></tr></thead>
++        <tbody>
++          {% for row in ctx.snapshot_rows %}
++          <tr class="{% if row.actor_key == ctx.effective_actor_key %}table-warning{% endif %}">
++            <td>{{ row.actor_key }}</td><td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.display_name }}</td><td>{{ row.last_read_message_id }}</td>
++          </tr>
++          {% else %}
++          <tr><td colspan="5" class="text-muted">データなし</td></tr>
++          {% endfor %}
++        </tbody>
++      </table>
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">E. 旧テーブル比較</div>
++    <div class="card-body">
++      {% if ctx.mode == 'event' %}
++      <table class="table table-sm table-striped table-bordered">
++        <thead><tr><th>actor_type</th><th>actor_id</th><th>legacy_actor_key</th><th>canonical_legacy_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
++        <tbody>
++          {% for row in ctx.legacy_rows %}
++          <tr>
++            <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.legacy_actor_key }}</td><td>{{ row.canonical_legacy_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
++          </tr>
++          {% else %}
++          <tr><td colspan="6" class="text-muted">データなし</td></tr>
++          {% endfor %}
++        </tbody>
++      </table>
++      {% else %}
++      <div class="mb-2"><strong>chat_dm_conversations</strong>: uuid={{ ctx.conversation_meta.uuid or '-' }}, id={{ ctx.conversation_meta.id or '-' }}</div>
++      <table class="table table-sm table-striped table-bordered">
++        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
++        <tbody>
++          {% for row in ctx.legacy_rows %}
++          <tr>
++            <td>{{ row.actor_key }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
++          </tr>
++          {% else %}
++          <tr><td colspan="4" class="text-muted">データなし</td></tr>
++          {% endfor %}
++        </tbody>
++      </table>
++      {% endif %}
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">G. 手動テスト</div>
++    <div class="card-body">
++      <form method="post" action="{{ url_for('chat.debug_read_v2_upsert') }}" class="row g-2 align-items-end">
++        <input type="hidden" name="event_id" value="{{ event_id }}">
++        <input type="hidden" name="room_id" value="{{ room_id }}">
++        <input type="hidden" name="dm_uuid" value="{{ dm_uuid }}">
++        <input type="hidden" name="actor_key" value="{{ ctx.effective_actor_key }}">
++        <div class="col-md-4">
++          <label class="form-label">message_id</label>
++          <input class="form-control" name="message_id" value="{{ test_message_id }}" placeholder="例: 12345">
++        </div>
++        <div class="col-md-3"><button class="btn btn-danger w-100" type="submit">V2へ保存テスト</button></div>
++        <div class="col-md-3"><a class="btn btn-secondary w-100" href="{{ url_for('chat.debug_read_v2', event_id=event_id, room_id=room_id, dm_uuid=dm_uuid, actor_key=ctx.effective_actor_key) }}">再読込</a></div>
++      </form>
++    </div>
++  </div>
++
++  <div class="card mb-4">
++    <div class="card-header fw-bold">Presence (chat_active_views)</div>
++    <div class="card-body">
++      <table class="table table-sm table-striped table-bordered">
++        <thead><tr><th>actor_type</th><th>actor_id</th><th>room_id</th><th>client_id</th><th>is_visible</th><th>entered_at</th><th>last_ping_at</th><th>updated_at</th></tr></thead>
++        <tbody>
++          {% for row in ctx.presence_rows %}
++          <tr>
++            <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.room_id }}</td><td>{{ row.client_id }}</td><td>{{ row.is_visible }}</td><td>{{ row.entered_at or '-' }}</td><td>{{ row.last_ping_at or '-' }}</td><td>{{ row.updated_at or '-' }}</td>
++          </tr>
++          {% else %}
++          <tr><td colspan="8" class="text-muted">データなし</td></tr>
++          {% endfor %}
++        </tbody>
++      </table>
++    </div>
++  </div>
++</div>
++{% endblock %}
