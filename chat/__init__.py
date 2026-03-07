@@ -4439,9 +4439,9 @@ def _save_dm_message(conversation: dict[str, Any], sender_actor_key: str, body: 
 
 
 def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> dict[str, Any]:
-    sender_key = str(message.get("sender_actor_key") or "")
-    sender_type, _, sender_id = sender_key.partition(":")
-    sender_id = sender_id or sender_key
+    sender_key = _canonical_dm_actor_key(str(message.get("sender_actor_key") or ""))
+    current_actor_key = _canonical_dm_actor_key(current_actor_key)
+    sender_type, sender_id = _split_dm_actor_key(sender_key)
     created_at = message.get("created_at")
     created_at_iso = ""
     created_at_jst_date_label = ""
@@ -4450,8 +4450,8 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         created_at_iso, created_at_jst_date_label, created_at_jst_time_hm = _format_jst_labels(created_at)
     dm_uuid = str(message.get("dm_uuid") or "")
     deleted_flag = int(message.get("deleted_flag") or 0) == 1
-    deleted_by_actor_key = str(message.get("deleted_by_actor_key") or "")
-    deleted_by_actor_type, deleted_by_actor_id = _split_actor_key(deleted_by_actor_key)
+    deleted_by_actor_key = _canonical_dm_actor_key(str(message.get("deleted_by_actor_key") or ""))
+    deleted_by_actor_type, deleted_by_actor_id = _split_dm_actor_key(deleted_by_actor_key)
     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
     body_text = "" if deleted_flag else str(message.get("body_text") or "")
     raw_images = [] if deleted_flag else (message.get("images") or [])
@@ -4487,7 +4487,7 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "id": int(message.get("id") or 0),
         "dm_uuid": dm_uuid,
         "room_id": f"dm:{dm_uuid}",
-        "sender_id": _actor_sender_id(sender_type, sender_id),
+        "sender_id": sender_key,
         "sender_display_name": _actor_key_to_display_name(sender_key),
         "sender_avatar_url": _resolve_sender_avatar_url(sender_type, sender_id, avatar_cache={}),
         "body": body_text,
@@ -4511,8 +4511,8 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "deleted_text": deleted_text,
         "edited_flag": 1 if int(message.get("edited_flag") or 0) == 1 else 0,
         "edited_at": message.get("edited_at").isoformat() if message.get("edited_at") else None,
-        "edited_by_actor_type": _split_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
-        "edited_by_actor_id": _split_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
+        "edited_by_actor_type": _split_dm_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
+        "edited_by_actor_id": _split_dm_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
         "reactions_summary": [] if deleted_flag else (message.get("reactions_summary") or []),
         "my_reaction": None if deleted_flag else message.get("my_reaction"),
         "images": images,
@@ -4536,6 +4536,18 @@ def _split_actor_key(actor_key: str) -> tuple[str, str]:
     actor_type, actor_id = value.split(":", 1)
     if actor_type == "admin":
         return "admin", "admin"
+    return actor_type, actor_id
+
+
+def _split_dm_actor_key(actor_key: str) -> tuple[str, str]:
+    canonical_key = _canonical_dm_actor_key(actor_key)
+    if not canonical_key:
+        return "", ""
+    actor_type, sep, actor_id = canonical_key.partition(":")
+    if actor_type == "admin":
+        return "admin", "1"
+    if not sep or not actor_type or not actor_id:
+        return "", ""
     return actor_type, actor_id
 
 
@@ -4573,7 +4585,7 @@ def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
 
     snapshot: list[dict[str, Any]] = []
     for actor_key, entry in merged_by_actor_key.items():
-        actor_type, actor_id = _split_actor_key(actor_key)
+        actor_type, actor_id = _split_dm_actor_key(actor_key)
         snapshot.append(
             {
                 "actor_type": actor_type,
@@ -7005,7 +7017,7 @@ def on_seen(data):
         if actual_last_read_id <= 0:
             emit("chat_error", {"error": "participant_not_found"})
             return
-        actor_type, actor_id = _split_actor_key(actor_key)
+        actor_type, actor_id = _split_dm_actor_key(actor_key)
         emit(
             "chat_read_update",
             {
