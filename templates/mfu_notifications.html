@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}通知一覧{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2 class="mb-0">通知一覧</h2>
+  <button id="readAllBtn" class="btn btn-sm btn-outline-secondary">すべて既読</button>
+</div>
+<div id="notifList" class="list-group"></div>
+<script>
+(function(){
+  const list = document.getElementById('notifList');
+  const readAllBtn = document.getElementById('readAllBtn');
+  const iconByKind = (k) => k === 'dm' ? '💬' : (k === 'event_chat' ? '📢' : '🔔');
+  const esc = (s) => String(s||'').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+  async function load(){
+    const r = await fetch('/api/mfu-notifications', {cache:'no-store'});
+    if (!r.ok) return;
+    const j = await r.json();
+    const items = j.items || [];
+    list.innerHTML = items.map((it) => `
+      <a href="${esc(it.target_url || '/')}" class="list-group-item list-group-item-action ${it.is_read ? '' : 'list-group-item-primary'}" data-id="${it.id}">
+        <div class="d-flex w-100 justify-content-between gap-2">
+          <h6 class="mb-1">${iconByKind(it.kind)} ${esc(it.title || 'お知らせ')}</h6>
+          <small class="text-muted">${esc(it.relative_time || '')}</small>
+        </div>
+        <p class="mb-1 text-muted">${esc((it.body || '').slice(0,120))}</p>
+      </a>
+    `).join('');
+
+    list.querySelectorAll('a[data-id]').forEach((a) => {
+      a.addEventListener('click', async (e) => {
+        e.preventDefault();
+        await fetch(`/api/mfu-notifications/${a.dataset.id}/read`, {method:'POST'});
+        window.location.href = a.href;
+      });
+    });
+  }
+
+  readAllBtn.addEventListener('click', async () => {
+    await fetch('/api/mfu-notifications/read-all', {method:'POST'});
+    await load();
+  });
+
+  load();
+})();
+</script>
+{% endblock %}

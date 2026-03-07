@@ -3339,10 +3339,12 @@ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_set
 
 from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
 from app.external_login_user.sw_blueprint import sw_bp
+from app.external_login_user.notifications import mfu_notifications_bp
 init_line_oauth(app)
 app.register_blueprint(ext_login_bp, url_prefix="/external-login")
 app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
 app.register_blueprint(sw_bp)
+app.register_blueprint(mfu_notifications_bp)
 
 from app.s_u_calendar.routes import s_u_calendar_bp
 app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
