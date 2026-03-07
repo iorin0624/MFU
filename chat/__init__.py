@@ -81,6 +81,8 @@ CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
 CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_READ_STATE_SCHEMA_READY: bool | None = None
+CHAT_READ_STATE_V2_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_READ_STATE_V2_SCHEMA_READY: bool | None = None
 CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_REACTION_SCHEMA_READY: bool | None = None
 CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
@@ -528,49 +530,31 @@ def _update_room_presence_ping(
     try:
         cur.execute(
             """
-            UPDATE chat_active_views
-               SET event_id=%s,
-                   room_id=%s,
-                   is_visible=%s,
-                   last_ping_at=%s,
-                   updated_at=%s
-             WHERE actor_type=%s
-               AND actor_id=%s
-               AND client_id=%s
+            INSERT INTO chat_active_views (
+              actor_type, actor_id, event_id, room_id, client_id,
+              is_visible, entered_at, last_ping_at, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              event_id=VALUES(event_id),
+              room_id=VALUES(room_id),
+              is_visible=VALUES(is_visible),
+              last_ping_at=VALUES(last_ping_at),
+              updated_at=VALUES(updated_at)
             """,
             (
+                str(actor_type),
+                str(actor_id),
                 int(event_id),
                 str(room_id),
+                str(client_id),
                 1 if is_visible else 0,
                 now,
                 now,
-                str(actor_type),
-                str(actor_id),
-                str(client_id),
+                now,
+                now,
             ),
         )
-        if int(cur.rowcount or 0) == 0:
-            cur.execute(
-                """
-                INSERT INTO chat_active_views (
-                  actor_type, actor_id, event_id, room_id, client_id,
-                  is_visible, entered_at, last_ping_at, created_at, updated_at
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    str(actor_type),
-                    str(actor_id),
-                    int(event_id),
-                    str(room_id),
-                    str(client_id),
-                    1 if is_visible else 0,
-                    now,
-                    now,
-                    now,
-                    now,
-                ),
-            )
         db.commit()
         return True
     except Exception:
@@ -1082,6 +1066,251 @@ def _ensure_chat_read_state_schema() -> bool:
             db.close()
 
 
+
+
+def _canonical_read_actor_key(actor_key: str | None) -> str:
+    value = str(actor_key or "").strip()
+    if not value:
+        return ""
+    if value == "admin" or value.startswith("admin:"):
+        return "admin:admin"
+    if value == "system" or value.startswith("system:"):
+        return "system:system"
+    actor_type, sep, actor_id = value.partition(":")
+    actor_type = actor_type.strip()
+    actor_id = actor_id.strip()
+    if actor_type in {"line", "acl"} and actor_id:
+        return f"{actor_type}:{actor_id}"
+    return ""
+
+
+def _canonical_read_actor_key_from_actor(actor: dict[str, Any] | None) -> str:
+    if not actor:
+        return ""
+    actor_type = str(actor.get("actor_type") or "").strip()
+    actor_id = str(actor.get("actor_id") or "").strip()
+    if actor_type == "admin":
+        return "admin:admin"
+    if actor_type == "system":
+        return "system:system"
+    if actor_type in {"line", "acl"} and actor_id:
+        return f"{actor_type}:{actor_id}"
+    return ""
+
+
+def _split_read_actor_key(actor_key: str) -> tuple[str, str]:
+    canonical_key = _canonical_read_actor_key(actor_key)
+    if not canonical_key:
+        return "", ""
+    actor_type, sep, actor_id = canonical_key.partition(":")
+    if not sep or not actor_type or not actor_id:
+        return "", ""
+    return actor_type, actor_id
+
+
+def _read_actor_key_aliases(actor_key: str) -> list[str]:
+    canonical_key = _canonical_read_actor_key(actor_key)
+    if not canonical_key:
+        return []
+    aliases: list[str]
+    if canonical_key == "admin:admin":
+        aliases = ["admin:admin", "admin:1", "admin"]
+    elif canonical_key == "system:system":
+        aliases = ["system:system", "system"]
+    else:
+        aliases = [canonical_key]
+    deduped: list[str] = []
+    for alias in aliases:
+        if alias and alias not in deduped:
+            deduped.append(alias)
+    return deduped
+
+
+def _build_read_room_key(event_id: int | None = None, room_id: str | None = None, dm_uuid: str | None = None) -> str:
+    dm_value = str(dm_uuid or "").strip()
+    if dm_value:
+        return f"dm:{dm_value}"
+    if event_id is None or int(event_id) <= 0:
+        return ""
+    room_value = str(room_id or "").strip()
+    if not room_value:
+        return ""
+    return f"event:{int(event_id)}:room:{room_value}"
+
+
+def _ensure_chat_read_state_v2_schema() -> bool:
+    global CHAT_READ_STATE_V2_SCHEMA_READY
+    if CHAT_READ_STATE_V2_SCHEMA_READY is not None:
+        return CHAT_READ_STATE_V2_SCHEMA_READY
+
+    with CHAT_READ_STATE_V2_SCHEMA_CHECK_LOCK:
+        if CHAT_READ_STATE_V2_SCHEMA_READY is not None:
+            return CHAT_READ_STATE_V2_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        now = datetime.utcnow()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_read_state_v2 (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  room_key VARCHAR(191) NOT NULL,
+                  actor_key VARCHAR(64) NOT NULL,
+                  last_read_message_id BIGINT NOT NULL DEFAULT 0,
+                  created_at DATETIME NOT NULL,
+                  updated_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_read_state_v2_room_actor (room_key, actor_key),
+                  KEY idx_chat_read_state_v2_room_last (room_key, last_read_message_id),
+                  KEY idx_chat_read_state_v2_actor (actor_key)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+
+            if _ensure_chat_read_state_room_schema():
+                cur.execute(
+                    """
+                    SELECT event_id, room_id, actor_type, actor_id, last_read_message_id
+                      FROM chat_read_state
+                     WHERE IFNULL(last_read_message_id, 0) > 0
+                    """
+                )
+                for row in cur.fetchall() or []:
+                    room_key = _build_read_room_key(event_id=int(row.get("event_id") or 0), room_id=str(row.get("room_id") or ""))
+                    actor_key = _canonical_read_actor_key(f"{str(row.get('actor_type') or '')}:{str(row.get('actor_id') or '')}")
+                    last_read_message_id = int(row.get("last_read_message_id") or 0)
+                    if not room_key or not actor_key or last_read_message_id <= 0:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO chat_read_state_v2 (room_key, actor_key, last_read_message_id, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                          last_read_message_id=GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
+                          updated_at=VALUES(updated_at)
+                        """,
+                        (room_key, actor_key, last_read_message_id, now, now),
+                    )
+
+            if _ensure_chat_dm_schema():
+                cur.execute(
+                    """
+                    SELECT c.uuid AS dm_uuid, p.actor_key, p.last_read_message_id
+                      FROM chat_dm_participants p
+                      JOIN chat_dm_conversations c ON c.id = p.conversation_id
+                     WHERE IFNULL(p.last_read_message_id, 0) > 0
+                    """
+                )
+                for row in cur.fetchall() or []:
+                    room_key = _build_read_room_key(dm_uuid=str(row.get("dm_uuid") or ""))
+                    actor_key = _canonical_read_actor_key(str(row.get("actor_key") or ""))
+                    last_read_message_id = int(row.get("last_read_message_id") or 0)
+                    if not room_key or not actor_key or last_read_message_id <= 0:
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO chat_read_state_v2 (room_key, actor_key, last_read_message_id, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE
+                          last_read_message_id=GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
+                          updated_at=VALUES(updated_at)
+                        """,
+                        (room_key, actor_key, last_read_message_id, now, now),
+                    )
+
+            db.commit()
+            CHAT_READ_STATE_V2_SCHEMA_READY = True
+            return True
+        except Exception:
+            db.rollback()
+            current_app.logger.warning("chat read_state_v2 schema ensure failed", exc_info=True)
+            CHAT_READ_STATE_V2_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _upsert_chat_read_state_v2(room_key: str, actor_key: str, last_read_message_id: int) -> int:
+    room_key = str(room_key or "").strip()
+    actor_key = _canonical_read_actor_key(actor_key)
+    next_id = int(last_read_message_id or 0)
+    if not _ensure_chat_read_state_v2_schema() or not room_key or not actor_key or next_id <= 0:
+        return 0
+
+    now = datetime.utcnow()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            INSERT INTO chat_read_state_v2 (room_key, actor_key, last_read_message_id, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              last_read_message_id=GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
+              updated_at=VALUES(updated_at)
+            """,
+            (room_key, actor_key, next_id, now, now),
+        )
+        cur.execute(
+            """
+            SELECT last_read_message_id
+              FROM chat_read_state_v2
+             WHERE room_key=%s AND actor_key=%s
+             LIMIT 1
+            """,
+            (room_key, actor_key),
+        )
+        row = cur.fetchone() or {}
+        db.commit()
+        return int(row.get("last_read_message_id") or 0)
+    finally:
+        cur.close()
+        db.close()
+
+
+def _load_chat_read_state_v2_snapshot(room_key: str) -> list[dict[str, Any]]:
+    room_key = str(room_key or "").strip()
+    if not room_key or not _ensure_chat_read_state_v2_schema():
+        return []
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_key, last_read_message_id
+              FROM chat_read_state_v2
+             WHERE room_key=%s
+            """,
+            (room_key,),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    merged: dict[str, int] = {}
+    for row in rows:
+        canonical_key = _canonical_read_actor_key(str(row.get("actor_key") or ""))
+        if not canonical_key:
+            continue
+        read_id = int(row.get("last_read_message_id") or 0)
+        merged[canonical_key] = max(merged.get(canonical_key, 0), read_id)
+
+    snapshot: list[dict[str, Any]] = []
+    for actor_key, last_read in merged.items():
+        actor_type, actor_id = _split_read_actor_key(actor_key)
+        snapshot.append(
+            {
+                "actor_key": actor_key,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "display_name": _actor_key_to_display_name(actor_key),
+                "last_read_message_id": int(last_read),
+            }
+        )
+    return snapshot
 def _log_auto_migration_error(name: str, sql: str, event_id: int | None = None) -> None:
     current_app.logger.warning(
         "chat auto-migration failed name=%s event_id=%s sql=%s",
@@ -1910,17 +2139,17 @@ def _present_message(
     is_event_chat_message = int(msg.get("event_id") or 0) > 0
 
     if is_event_chat_message:
-        sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id) or _actor_sender_id(
+        sender_id = _canonical_read_actor_key(f"{sender_actor_type}:{sender_actor_id}") or _actor_sender_id(
             sender_actor_type,
             sender_actor_id,
         )
-        current_actor_id = _canonical_event_actor_key(current_actor_type, current_actor_raw_id) or _actor_sender_id(
+        current_actor_id = _canonical_read_actor_key_from_actor(current_actor) or _actor_sender_id(
             current_actor_type,
             current_actor_raw_id,
         )
     else:
-        sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-        current_actor_id = _actor_sender_id(current_actor_type, current_actor_raw_id)
+        sender_id = _canonical_read_actor_key(f"{sender_actor_type}:{sender_actor_id}") or _actor_sender_id(sender_actor_type, sender_actor_id)
+        current_actor_id = _canonical_read_actor_key_from_actor(current_actor) or _actor_sender_id(current_actor_type, current_actor_raw_id)
     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
@@ -2228,12 +2457,7 @@ def _canonical_dm_actor_key(actor_key: str) -> str:
 
 
 def _dm_actor_key_aliases(actor_key: str) -> list[str]:
-    canonical_key = _canonical_dm_actor_key(actor_key)
-    if not canonical_key:
-        return []
-    if canonical_key == "admin:1":
-        return ["admin:1", "admin:admin", "admin"]
-    return [canonical_key]
+    return _read_actor_key_aliases(actor_key)
 
 
 def _get_dm_actor_key(actor: dict[str, Any] | None) -> str | None:
@@ -4102,14 +4326,18 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
 
 
 def _actor_key_to_display_name(actor_key: str) -> str:
-    actor_key = _canonical_dm_actor_key(actor_key)
-    if actor_key == "admin:1":
+    actor_key = _canonical_read_actor_key(actor_key)
+    if actor_key == "admin:admin":
         return "admin"
+    if actor_key == "system:system":
+        return "System"
     if actor_key.startswith("line:"):
         try:
             return get_external_user_display_name(int(actor_key.split(":", 1)[1]))
         except Exception:
             return f"LINE-{actor_key.split(':', 1)[1]}"
+    if actor_key.startswith("acl:"):
+        return actor_key.split(":", 1)[1]
     return actor_key
 
 
@@ -4439,9 +4667,9 @@ def _save_dm_message(conversation: dict[str, Any], sender_actor_key: str, body: 
 
 
 def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> dict[str, Any]:
-    sender_key = _canonical_dm_actor_key(str(message.get("sender_actor_key") or ""))
-    current_actor_key = _canonical_dm_actor_key(current_actor_key)
-    sender_type, sender_id = _split_dm_actor_key(sender_key)
+    sender_key = _canonical_read_actor_key(str(message.get("sender_actor_key") or ""))
+    current_key = _canonical_read_actor_key(current_actor_key)
+    sender_type, sender_id = _split_read_actor_key(sender_key)
     created_at = message.get("created_at")
     created_at_iso = ""
     created_at_jst_date_label = ""
@@ -4450,8 +4678,8 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         created_at_iso, created_at_jst_date_label, created_at_jst_time_hm = _format_jst_labels(created_at)
     dm_uuid = str(message.get("dm_uuid") or "")
     deleted_flag = int(message.get("deleted_flag") or 0) == 1
-    deleted_by_actor_key = _canonical_dm_actor_key(str(message.get("deleted_by_actor_key") or ""))
-    deleted_by_actor_type, deleted_by_actor_id = _split_dm_actor_key(deleted_by_actor_key)
+    deleted_by_actor_key = _canonical_read_actor_key(str(message.get("deleted_by_actor_key") or ""))
+    deleted_by_actor_type, deleted_by_actor_id = _split_read_actor_key(deleted_by_actor_key)
     deleted_text = "管理者により、削除されました" if deleted_by_actor_type == "admin" else "このメッセージは削除されました"
     body_text = "" if deleted_flag else str(message.get("body_text") or "")
     raw_images = [] if deleted_flag else (message.get("images") or [])
@@ -4472,11 +4700,11 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
                 "height": image.get("image_height"),
             }
         )
-    sender_is_me = sender_key == current_actor_key
+    sender_is_me = sender_key == current_key
     can_delete = False
     can_edit = False
     if not deleted_flag:
-        if current_actor_key.startswith("admin:"):
+        if current_key.startswith("admin:"):
             can_delete = True
         elif sender_is_me and isinstance(created_at, datetime):
             can_delete = created_at + timedelta(hours=12) >= datetime.utcnow()
@@ -4511,8 +4739,8 @@ def _dm_message_to_payload(message: dict[str, Any], current_actor_key: str) -> d
         "deleted_text": deleted_text,
         "edited_flag": 1 if int(message.get("edited_flag") or 0) == 1 else 0,
         "edited_at": message.get("edited_at").isoformat() if message.get("edited_at") else None,
-        "edited_by_actor_type": _split_dm_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
-        "edited_by_actor_id": _split_dm_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
+        "edited_by_actor_type": _split_read_actor_key(str(message.get("edited_by_actor_key") or ""))[0],
+        "edited_by_actor_id": _split_read_actor_key(str(message.get("edited_by_actor_key") or ""))[1],
         "reactions_summary": [] if deleted_flag else (message.get("reactions_summary") or []),
         "my_reaction": None if deleted_flag else message.get("my_reaction"),
         "images": images,
@@ -4540,15 +4768,7 @@ def _split_actor_key(actor_key: str) -> tuple[str, str]:
 
 
 def _split_dm_actor_key(actor_key: str) -> tuple[str, str]:
-    canonical_key = _canonical_dm_actor_key(actor_key)
-    if not canonical_key:
-        return "", ""
-    actor_type, sep, actor_id = canonical_key.partition(":")
-    if actor_type == "admin":
-        return "admin", "1"
-    if not sep or not actor_type or not actor_id:
-        return "", ""
-    return actor_type, actor_id
+    return _split_read_actor_key(actor_key)
 
 
 def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
@@ -4761,6 +4981,7 @@ def dm_entry():
     actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key:
         abort(403)
+    _ensure_chat_read_state_v2_schema()
     if actor_key == "admin:1":
         return redirect(url_for("chat.dm_inbox"))
     admin_actor_key = _chat_dm_admin_actor_key()
@@ -4824,7 +5045,7 @@ def dm_room(uuid: str):
     return render_template(
         "chat/room.html",
         actor=actor,
-        current_user_id=_get_dm_actor_key(actor),
+        current_user_id=_canonical_read_actor_key_from_actor(actor),
         event={"id": 0, "title": "DM"},
         messages=messages,
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
@@ -5179,39 +5400,12 @@ def dm_api_seen():
     if not conversation:
         return jsonify({"ok": False, "error": "not_found"}), 404
 
-    aliases = _dm_actor_key_aliases(actor_key or "")
-    if not aliases:
-        return jsonify({"ok": False, "error": "participant_not_found"}), 409
-
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    try:
-        cur.execute(
-            """
-            UPDATE chat_dm_participants
-            SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
-            WHERE conversation_id=%s AND actor_key=%s
-            """,
-            (last_seen_message_id, conversation["id"], actor_key),
-        )
-        placeholders = ",".join(["%s"] * len(aliases))
-        cur.execute(
-            f"""
-            SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
-            FROM chat_dm_participants
-            WHERE conversation_id=%s AND actor_key IN ({placeholders})
-            """,
-            (conversation["id"], *aliases),
-        )
-        row = cur.fetchone() or {}
-        db.commit()
-    finally:
-        cur.close()
-        db.close()
-    actual_last_read_id = int(row.get("last_read_message_id") or 0)
+    actor_key = _canonical_read_actor_key_from_actor(actor)
+    room_key = _build_read_room_key(dm_uuid=dm_uuid)
+    actual_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
     if actual_last_read_id <= 0:
         return jsonify({"ok": False, "error": "participant_not_found"}), 409
-    return jsonify({"ok": True, "last_read_message_id": actual_last_read_id})
+    return jsonify({"ok": True, "actor_key": actor_key, "actual_last_read_id": actual_last_read_id, "last_read_message_id": actual_last_read_id})
 
 
 @chat_bp.get("/dm/settings")
@@ -5319,6 +5513,7 @@ def room(event_id: int):
     _ensure_chat_messages_room_schema()
     _ensure_chat_thread_schema()
     _ensure_chat_read_state_room_schema()
+    _ensure_chat_read_state_v2_schema()
     _ensure_chat_delete_schema()
     _ensure_chat_edit_schema()
 
@@ -5345,10 +5540,7 @@ def room(event_id: int):
         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     accessible_rooms = _list_accessible_rooms(event_id, actor)
-    current_user_id = (
-        _canonical_event_actor_key(actor["actor_type"], str(actor["actor_id"]))
-        or _actor_sender_id(actor["actor_type"], str(actor["actor_id"]))
-    )
+    current_user_id = _canonical_read_actor_key_from_actor(actor)
     return render_template(
         "chat/room.html",
         actor=actor,
@@ -6919,6 +7111,7 @@ def on_join(data):
     _ensure_chat_room_members_schema()
     _ensure_chat_messages_room_schema()
     _ensure_chat_read_state_room_schema()
+    _ensure_chat_read_state_v2_schema()
     _ensure_chat_edit_schema()
     actor = get_chat_actor()
     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
@@ -6934,16 +7127,15 @@ def on_join(data):
             return
         join_room(f"dm:{dm_uuid}")
         emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
-        conversation = _get_dm_conversation_by_uuid(dm_uuid)
-        if conversation:
-            emit(
-                "chat_read_snapshot",
-                {
-                    "dm_uuid": dm_uuid,
-                    "room_id": f"dm:{dm_uuid}",
-                    "read_states": _load_dm_read_state_snapshot(int(conversation["id"])),
-                },
-            )
+        room_key = _build_read_room_key(dm_uuid=dm_uuid)
+        emit(
+            "chat_read_snapshot",
+            {
+                "dm_uuid": dm_uuid,
+                "room_id": f"dm:{dm_uuid}",
+                "read_states": _load_chat_read_state_v2_snapshot(room_key),
+            },
+        )
         return
 
     if (room_id or "").startswith("dm:"):
@@ -6959,7 +7151,8 @@ def on_join(data):
     join_room(f"event:{event_id}:room:{effective_room_id}")
     emit("chat_joined", {"event_id": event_id, "room_id": effective_room_id})
     _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, result="ok")
-    emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_event_read_state_snapshot(event_id, effective_room_id)})
+    room_key = _build_read_room_key(event_id=event_id, room_id=effective_room_id)
+    emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_chat_read_state_v2_snapshot(room_key)})
 
 
 @socketio.on("chat_seen")
@@ -6984,45 +7177,19 @@ def on_seen(data):
         if not conversation:
             emit("chat_error", {"error": "not_found"})
             return
-        db = get_db()
-        cur = db.cursor(dictionary=True)
-        try:
-            cur.execute(
-                """
-                UPDATE chat_dm_participants
-                SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
-                WHERE conversation_id=%s AND actor_key=%s
-                """,
-                (last_seen_message_id, conversation["id"], actor_key),
-            )
-            aliases = _dm_actor_key_aliases(actor_key)
-            if not aliases:
-                emit("chat_error", {"error": "participant_not_found"})
-                return
-            placeholders = ",".join(["%s"] * len(aliases))
-            cur.execute(
-                f"""
-                SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
-                FROM chat_dm_participants
-                WHERE conversation_id=%s AND actor_key IN ({placeholders})
-                """,
-                (conversation["id"], *aliases),
-            )
-            row = cur.fetchone() or {}
-            db.commit()
-        finally:
-            cur.close()
-            db.close()
-        actual_last_read_id = int(row.get("last_read_message_id") or 0)
+        actor_key = _canonical_read_actor_key_from_actor(actor)
+        room_key = _build_read_room_key(dm_uuid=dm_uuid)
+        actual_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
         if actual_last_read_id <= 0:
             emit("chat_error", {"error": "participant_not_found"})
             return
-        actor_type, actor_id = _split_dm_actor_key(actor_key)
+        actor_type, actor_id = _split_read_actor_key(actor_key)
         emit(
             "chat_read_update",
             {
                 "dm_uuid": dm_uuid,
                 "room_id": f"dm:{dm_uuid}",
+                "actor_key": actor_key,
                 "actor_type": actor_type,
                 "actor_id": actor_id,
                 "display_name": _actor_key_to_display_name(actor_key),
@@ -7042,16 +7209,21 @@ def on_seen(data):
         disconnect()
         return
 
-    effective_last_read_id, canonical_actor = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
+    actor_key = _canonical_read_actor_key_from_actor(actor)
+    room_key = _build_read_room_key(event_id=event_id, room_id=effective_room_id)
+    effective_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
+    actor_type, actor_id = _split_read_actor_key(actor_key)
     _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
     emit(
         "chat_read_update",
         {
-            "actor_type": canonical_actor["actor_type"],
-            "actor_id": canonical_actor["actor_id"],
-            "display_name": canonical_actor["display_name"],
-            "last_read_message_id": effective_last_read_id,
+            "event_id": event_id,
             "room_id": effective_room_id,
+            "actor_key": actor_key,
+            "actor_type": actor_type,
+            "actor_id": actor_id,
+            "display_name": _actor_key_to_display_name(actor_key),
+            "last_read_message_id": effective_last_read_id,
         },
         to=f"event:{event_id}:room:{effective_room_id}",
     )
