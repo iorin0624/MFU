@@ -110,13 +110,17 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
   body TEXT NULL,
   target_url VARCHAR(512) NOT NULL,
   event_id BIGINT UNSIGNED NULL,
+  chat_event_id BIGINT UNSIGNED NULL,
+  chat_room_id VARCHAR(64) NULL,
   created_at DATETIME NOT NULL,
   read_at DATETIME NULL,
   dedup_key VARCHAR(191) NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_mfu_notifications_dedup (user_kind, user_id, dedup_key),
   KEY idx_mfu_notifications_unread (user_kind, user_id, read_at, created_at),
-  KEY idx_mfu_notifications_created (user_kind, user_id, created_at)
+  KEY idx_mfu_notifications_created (user_kind, user_id, created_at),
+  KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at),
+  KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 

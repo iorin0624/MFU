@@ -213,6 +213,11 @@ def _ensure_notification_schema() -> None:
             if key_name not in existing_indexes:
                 cur.execute(ddl)
 
+        last_id = 0
+        scanned_count = 0
+        updated_count = 0
+        skipped_count = 0
+        parse_failed_count = 0
         while True:
             cur.execute(
                 """
@@ -220,18 +225,28 @@ def _ensure_notification_schema() -> None:
                   FROM mfu_notifications
                  WHERE kind='chat_message'
                    AND (chat_room_id IS NULL OR chat_room_id='')
+                   AND id > %s
                  ORDER BY id ASC
                  LIMIT 200
                 """
+                ,
+                (int(last_id),),
             )
             rows = cur.fetchall() or []
             if not rows:
                 break
 
-            updated_in_batch = 0
             for row in rows:
-                event_id, room_id = _parse_chat_room_context(row)
+                row_id = int(row.get("id") or 0)
+                last_id = max(last_id, row_id)
+                scanned_count += 1
+                try:
+                    event_id, room_id = _parse_chat_room_context(row)
+                except Exception:
+                    parse_failed_count += 1
+                    continue
                 if not room_id:
+                    skipped_count += 1
                     continue
                 cur.execute(
                     """
@@ -242,9 +257,15 @@ def _ensure_notification_schema() -> None:
                     """,
                     (int(event_id) if event_id else None, str(room_id), int(row["id"])),
                 )
-                updated_in_batch += int(cur.rowcount or 0)
-            if updated_in_batch <= 0:
-                break
+                updated_count += int(cur.rowcount or 0)
+
+        current_app.logger.info(
+            "notifications backfill chat_room_id scanned=%s updated=%s skipped=%s parse_failed=%s",
+            scanned_count,
+            updated_count,
+            skipped_count,
+            parse_failed_count,
+        )
         db.commit()
     except Exception:
         db.rollback()
@@ -280,6 +301,18 @@ def create_notification_external(
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        normalized_kind = (kind or "").strip() or "general"
+        normalized_chat_room_id = str(chat_room_id).strip() if chat_room_id else None
+        if normalized_kind == "chat_message" and not normalized_chat_room_id:
+            current_app.logger.warning(
+                "create_notification_external rejected: chat_message requires chat_room_id user_id=%s event_id=%s chat_event_id=%s dedup_key=%s",
+                int(user_id),
+                int(event_id) if event_id else None,
+                int(chat_event_id) if chat_event_id else None,
+                (dedup_key or "").strip()[:191],
+            )
+            return False
+
         dedup = (dedup_key or "").strip()[:191]
         cur.execute(
             """
@@ -304,13 +337,13 @@ def create_notification_external(
             (
                 "external",
                 int(user_id),
-                (kind or "").strip() or "general",
+                normalized_kind,
                 (title or "").strip() or "お知らせ",
                 (body or "").strip(),
                 (target_url or "").strip() or "/external-login/",
                 int(event_id) if event_id else None,
                 int(chat_event_id) if chat_event_id else None,
-                str(chat_room_id).strip() if chat_room_id else None,
+                normalized_chat_room_id,
                 dedup,
                 datetime.utcnow(),
             ),
@@ -325,7 +358,7 @@ def create_notification_external(
             "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
             int(user_id),
             int(event_id) if event_id else None,
-            (kind or "").strip() or "general",
+            normalized_kind,
             dedup,
             inserted,
             existing["id"] if existing else None,
@@ -651,17 +684,53 @@ def api_notifications_mark_read_by_room():
         resp.status_code = 400
         return resp
 
-    try:
-        event_id = int(event_id_raw)
-    except Exception:
-        resp = jsonify({"ok": False, "reason": "event_id_required"})
-        resp.status_code = 400
-        return resp
+    event_id = None
+    if event_id_raw not in (None, "", 0, "0"):
+        try:
+            event_id = int(event_id_raw)
+        except Exception:
+            resp = jsonify({"ok": False, "reason": "invalid_event_id"})
+            resp.status_code = 400
+            return resp
 
     _ensure_notification_schema()
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        cur.execute(
+            "SELECT event_id, is_main FROM chat_rooms WHERE room_id=%s LIMIT 1",
+            (room_id,),
+        )
+        room = cur.fetchone() or {}
+        if not room:
+            resp = jsonify({"ok": False, "reason": "room_not_found"})
+            resp.status_code = 404
+            return resp
+
+        room_event_id = int(room.get("event_id") or 0)
+        if event_id and room_event_id and event_id != room_event_id:
+            resp = jsonify({"ok": False, "reason": "event_room_mismatch"})
+            resp.status_code = 400
+            return resp
+
+        is_main = int(room.get("is_main") or 0)
+        if is_main != 1:
+            cur.execute(
+                """
+                SELECT 1
+                  FROM chat_room_members
+                 WHERE room_id=%s
+                   AND actor_type='line'
+                   AND actor_id=%s
+                 LIMIT 1
+                """,
+                (room_id, str(uid)),
+            )
+            if not cur.fetchone():
+                resp = jsonify({"ok": False, "reason": "forbidden"})
+                resp.status_code = 403
+                return resp
+
         now = datetime.utcnow()
         cur.execute(
             """
@@ -670,11 +739,10 @@ def api_notifications_mark_read_by_room():
              WHERE user_kind='external'
                AND user_id=%s
                AND kind='chat_message'
-               AND chat_event_id=%s
                AND chat_room_id=%s
                AND read_at IS NULL
             """,
-            (now, uid, event_id, room_id),
+            (now, uid, room_id),
         )
         updated_count = int(cur.rowcount or 0)
         db.commit()
@@ -691,6 +759,15 @@ def api_notifications_mark_read_by_room():
         )
         latest_id = int((cur.fetchone() or {}).get("latest_id") or 0)
         _emit_notif_unread(uid, reason="room_read", latest_id=latest_id)
+        current_app.logger.info(
+            "notifications read-by-room user_id=%s room_id=%s event_id=%s updated_count=%s unread_count=%s latest_id=%s",
+            uid,
+            room_id,
+            event_id,
+            updated_count,
+            unread_count,
+            latest_id,
+        )
 
         return jsonify(
             {
@@ -700,6 +777,15 @@ def api_notifications_mark_read_by_room():
                 "latest_id": latest_id,
             }
         )
+    except Exception:
+        current_app.logger.warning(
+            "notifications read-by-room failed user_id=%s room_id=%s event_id=%s",
+            uid,
+            room_id,
+            event_id,
+            exc_info=True,
+        )
+        raise
     finally:
         cur.close()
         db.close()

@@ -1574,7 +1574,7 @@
 
 <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
   const root = document.querySelector('[data-event-id]');
   if (!root) return;
 
@@ -1760,11 +1760,8 @@ window.addEventListener('DOMContentLoaded', () => {
 
   initReactionUis();
   syncExistingMessageIds();
-  if (!dmMode && eventId > 0 && roomId) {
-    markChatNotificationsReadByRoom();
-  }
+  await initializeNotificationState();
   scheduleUnreadRefresh();
-  refreshNotificationBadge();
   startNotificationBadgePolling();
   refreshMuteButton();
   scrollToLatestMessage();
@@ -4177,7 +4174,6 @@ function openFulltextModal(row) {
     if (state.unreadRefreshTimer) clearTimeout(state.unreadRefreshTimer);
     state.unreadRefreshTimer = setTimeout(() => {
       refreshUnread();
-      refreshNotificationBadge();
     }, 1000);
   }
 
@@ -4192,6 +4188,20 @@ function openFulltextModal(row) {
     });
     updateRoomOptionUnreadBadges();
     updateUnreadJumpButton();
+  }
+
+
+  async function initializeNotificationState() {
+    if (dmMode || !(eventId > 0 && roomId)) {
+      await refreshNotificationBadge();
+      return;
+    }
+    try {
+      await markChatNotificationsReadByRoom();
+      await refreshNotificationBadge();
+    } catch (_e) {
+      await refreshNotificationBadge();
+    }
   }
 
   function updateRoomOptionUnreadBadges() {
@@ -4247,13 +4257,25 @@ function openFulltextModal(row) {
         credentials: 'same-origin',
         body: JSON.stringify({ event_id: eventId, room_id: roomId }),
       });
-      if (res.status === 401) return;
+      if (res.status === 401) {
+        console.info('[notifications] read-by-room skipped (unauthorized)');
+        return;
+      }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) return;
+      if (!res.ok || !data.ok) {
+        console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
+        return;
+      }
       const unread = Number(data.unread_count || 0);
       applyNotificationBadge(unread);
-    } catch (_e) {
-      // noop
+      console.info('[notifications] read-by-room success', {
+        room_id: roomId,
+        event_id: eventId,
+        updated_count: Number(data.updated_count || 0),
+        unread_count: unread,
+      });
+    } catch (e) {
+      console.info('[notifications] read-by-room exception', e);
     }
   }
 
