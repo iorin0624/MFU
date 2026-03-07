@@ -1,367 +1,322 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index fbc5ef9ba09f510903f11adf2b29d16f121d45d1..1c8eba2cf1b344af129be8c4407b2b10af56c42e 100644
+index 1c8eba2cf1b344af129be8c4407b2b10af56c42e..60eba912d1779bb983561546bdde0fc2e1359aec 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1289,50 +1289,322 @@ def _load_chat_read_state_v2_snapshot(room_key: str) -> list[dict[str, Any]]:
+@@ -1116,50 +1116,221 @@ def _read_actor_key_aliases(actor_key: str) -> list[str]:
+     if canonical_key == "admin:admin":
+         aliases = ["admin:admin", "admin:1", "admin"]
+     elif canonical_key == "system:system":
+         aliases = ["system:system", "system"]
+     else:
+         aliases = [canonical_key]
+     deduped: list[str] = []
+     for alias in aliases:
+         if alias and alias not in deduped:
+             deduped.append(alias)
+     return deduped
+ 
+ 
+ def _build_read_room_key(event_id: int | None = None, room_id: str | None = None, dm_uuid: str | None = None) -> str:
+     dm_value = str(dm_uuid or "").strip()
+     if dm_value:
+         return f"dm:{dm_value}"
+     if event_id is None or int(event_id) <= 0:
+         return ""
+     room_value = str(room_id or "").strip()
+     if not room_value:
+         return ""
+     return f"event:{int(event_id)}:room:{room_value}"
+ 
+ 
++def _parse_read_room_key(room_key: str | None) -> dict[str, Any]:
++    value = str(room_key or "").strip()
++    result: dict[str, Any] = {
++        "room_key": value,
++        "mode": "",
++        "event_id": None,
++        "room_id": "",
++        "dm_uuid": "",
++    }
++    if not value:
++        return result
++    if value.startswith("dm:"):
++        dm_uuid = value.split(":", 1)[1].strip()
++        if dm_uuid:
++            result.update({"mode": "dm", "dm_uuid": dm_uuid, "room_key": _build_read_room_key(dm_uuid=dm_uuid)})
++        return result
++
++    parts = value.split(":")
++    if len(parts) == 4 and parts[0] == "event" and parts[2] == "room":
++        try:
++            event_id = int(parts[1])
++        except Exception:
++            event_id = 0
++        room_id = parts[3].strip()
++        if event_id > 0 and room_id:
++            result.update(
++                {
++                    "mode": "event",
++                    "event_id": event_id,
++                    "room_id": room_id,
++                    "room_key": _build_read_room_key(event_id=event_id, room_id=room_id),
++                }
++            )
++    return result
++
++
++def _debug_list_recent_event_rooms(limit: int = 50) -> list[dict[str, Any]]:
++    max_rows = max(1, min(int(limit or 50), 200))
++    if not _ensure_chat_rooms_schema() or not _ensure_chat_messages_room_schema():
++        return []
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT r.event_id,
++                   r.room_id,
++                   r.room_name,
++                   latest.latest_message_id,
++                   latest.latest_message_at
++              FROM chat_rooms r
++              JOIN (
++                    SELECT m.event_id,
++                           m.room_id,
++                           MAX(m.id) AS latest_message_id,
++                           MAX(m.created_at) AS latest_message_at
++                      FROM chat_messages m
++                     GROUP BY m.event_id, m.room_id
++              ) latest
++                ON latest.event_id = r.event_id
++               AND latest.room_id = r.room_id
++             WHERE IFNULL(r.is_archived, 0) = 0
++             ORDER BY latest.latest_message_at DESC, latest.latest_message_id DESC
++             LIMIT %s
++            """,
++            (max_rows,),
++        )
++        rows = cur.fetchall() or []
++    finally:
++        cur.close()
++        db.close()
++
++    items: list[dict[str, Any]] = []
++    for row in rows:
++        event_id = int(row.get("event_id") or 0)
++        room_id = str(row.get("room_id") or "").strip()
++        if event_id <= 0 or not room_id:
++            continue
++        room_name = str(row.get("room_name") or "").strip() or room_id
++        items.append(
++            {
++                "event_id": event_id,
++                "room_id": room_id,
++                "room_name": room_name,
++                "latest_message_id": int(row.get("latest_message_id") or 0),
++                "latest_message_at": row.get("latest_message_at"),
++                "room_key": _build_read_room_key(event_id=event_id, room_id=room_id),
++            }
++        )
++    return items
++
++
++def _debug_list_recent_dm_rooms(limit: int = 50) -> list[dict[str, Any]]:
++    max_rows = max(1, min(int(limit or 50), 200))
++    if not _ensure_chat_dm_schema():
++        return []
++
++    actor = get_chat_actor() or {}
++    me_actor_key = _canonical_read_actor_key(get_chat_actor_key(actor))
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT id, uuid, dm_type, pair_key, last_message_id, last_message_at
++              FROM chat_dm_conversations
++             ORDER BY last_message_at DESC, id DESC
++             LIMIT %s
++            """,
++            (max_rows,),
++        )
++        conversations = cur.fetchall() or []
++        conversation_ids = [int(row.get("id") or 0) for row in conversations if int(row.get("id") or 0) > 0]
++
++        participant_map: dict[int, list[dict[str, Any]]] = {}
++        if conversation_ids:
++            placeholders = ",".join(["%s"] * len(conversation_ids))
++            cur.execute(
++                f"""
++                SELECT conversation_id, actor_key, display_name_cache
++                  FROM chat_dm_participants
++                 WHERE conversation_id IN ({placeholders})
++                """,
++                tuple(conversation_ids),
++            )
++            for row in cur.fetchall() or []:
++                cid = int(row.get("conversation_id") or 0)
++                participant_map.setdefault(cid, []).append(row)
++    finally:
++        cur.close()
++        db.close()
++
++    items: list[dict[str, Any]] = []
++    for conv in conversations:
++        conversation_id = int(conv.get("id") or 0)
++        dm_uuid = str(conv.get("uuid") or "").strip()
++        if conversation_id <= 0 or not dm_uuid:
++            continue
++
++        participants = participant_map.get(conversation_id) or []
++        peer_row = None
++        for participant in participants:
++            actor_key = _canonical_read_actor_key(str(participant.get("actor_key") or ""))
++            if actor_key and actor_key != me_actor_key:
++                peer_row = participant
++                break
++        if peer_row is None and participants:
++            peer_row = participants[0]
++
++        peer_actor_key = _canonical_read_actor_key(str((peer_row or {}).get("actor_key") or ""))
++        peer_display_name = str((peer_row or {}).get("display_name_cache") or "").strip()
++        if not peer_display_name and peer_actor_key:
++            peer_display_name = _actor_key_to_display_name(peer_actor_key)
++
++        items.append(
++            {
++                "dm_uuid": dm_uuid,
++                "conversation_id": conversation_id,
++                "dm_type": str(conv.get("dm_type") or ""),
++                "pair_key": str(conv.get("pair_key") or ""),
++                "latest_message_id": int(conv.get("last_message_id") or 0),
++                "latest_message_at": conv.get("last_message_at"),
++                "room_key": _build_read_room_key(dm_uuid=dm_uuid),
++                "peer_actor_key": peer_actor_key,
++                "peer_display_name": peer_display_name,
++            }
++        )
++    return items
++
++
+ def _ensure_chat_read_state_v2_schema() -> bool:
+     global CHAT_READ_STATE_V2_SCHEMA_READY
+     if CHAT_READ_STATE_V2_SCHEMA_READY is not None:
+         return CHAT_READ_STATE_V2_SCHEMA_READY
+ 
+     with CHAT_READ_STATE_V2_SCHEMA_CHECK_LOCK:
+         if CHAT_READ_STATE_V2_SCHEMA_READY is not None:
+             return CHAT_READ_STATE_V2_SCHEMA_READY
+ 
+         db = get_db()
+         cur = db.cursor(dictionary=True)
+         now = datetime.utcnow()
+         try:
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS chat_read_state_v2 (
+                   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                   room_key VARCHAR(191) NOT NULL,
+                   actor_key VARCHAR(64) NOT NULL,
+                   last_read_message_id BIGINT NOT NULL DEFAULT 0,
+                   created_at DATETIME NOT NULL,
+                   updated_at DATETIME NOT NULL,
+                   UNIQUE KEY uq_chat_read_state_v2_room_actor (room_key, actor_key),
+                   KEY idx_chat_read_state_v2_room_last (room_key, last_read_message_id),
+                   KEY idx_chat_read_state_v2_actor (actor_key)
+@@ -1381,72 +1552,82 @@ def _debug_fetch_legacy_event_read_rows(event_id: int | None, room_id: str | Non
+             {
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "legacy_actor_key": legacy_actor_key,
+                 "canonical_legacy_actor_key": _canonical_read_actor_key(legacy_actor_key),
+                 "last_read_message_id": int(row.get("last_read_message_id") or 0),
+                 "updated_at": row.get("updated_at"),
+             }
+         )
+     return result
+ 
+ 
+ def _debug_fetch_legacy_dm_read_rows(dm_uuid: str | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+     uuid_value = str(dm_uuid or "").strip()
+     if not uuid_value or not _ensure_chat_dm_schema():
+         return [], {}
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT id, uuid FROM chat_dm_conversations WHERE uuid=%s LIMIT 1", (uuid_value,))
+         conversation = cur.fetchone() or {}
+         conversation_id = int(conversation.get("id") or 0)
+         if conversation_id <= 0:
+             return [], {}
++
++        cur.execute("SHOW COLUMNS FROM chat_dm_participants LIKE 'updated_at'")
++        has_updated_at = bool(cur.fetchone())
++        updated_at_select = "updated_at" if has_updated_at else "NULL AS updated_at"
+         cur.execute(
+-            """
+-            SELECT actor_key, last_read_message_id, updated_at
++            f"""
++            SELECT actor_key,
++                   display_name_cache,
++                   last_read_message_id,
++                   created_at,
++                   {updated_at_select}
+               FROM chat_dm_participants
+              WHERE conversation_id=%s
+-             ORDER BY updated_at DESC, actor_key ASC
++             ORDER BY created_at DESC, actor_key ASC
+             """,
+             (conversation_id,),
+         )
+         participant_rows = cur.fetchall() or []
      finally:
          cur.close()
          db.close()
  
-     merged: dict[str, int] = {}
-     for row in rows:
-         canonical_key = _canonical_read_actor_key(str(row.get("actor_key") or ""))
-         if not canonical_key:
-             continue
-         read_id = int(row.get("last_read_message_id") or 0)
-         merged[canonical_key] = max(merged.get(canonical_key, 0), read_id)
- 
-     snapshot: list[dict[str, Any]] = []
-     for actor_key, last_read in merged.items():
-         actor_type, actor_id = _split_read_actor_key(actor_key)
-         snapshot.append(
+     rows: list[dict[str, Any]] = []
+     for row in participant_rows:
+         actor_key = str(row.get("actor_key") or "").strip()
+         rows.append(
              {
                  "actor_key": actor_key,
-                 "actor_type": actor_type,
-                 "actor_id": actor_id,
-                 "display_name": _actor_key_to_display_name(actor_key),
-                 "last_read_message_id": int(last_read),
+                 "canonical_actor_key": _canonical_read_actor_key(actor_key),
++                "display_name_cache": str(row.get("display_name_cache") or "").strip(),
+                 "last_read_message_id": int(row.get("last_read_message_id") or 0),
++                "created_at": row.get("created_at"),
+                 "updated_at": row.get("updated_at"),
              }
          )
-     return snapshot
-+
-+
-+def _debug_fetch_chat_read_state_v2_rows(room_key: str) -> list[dict[str, Any]]:
-+    room_key = str(room_key or "").strip()
-+    if not room_key or not _ensure_chat_read_state_v2_schema():
-+        return []
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT actor_key, last_read_message_id, updated_at
-+              FROM chat_read_state_v2
-+             WHERE room_key=%s
-+             ORDER BY updated_at DESC, actor_key ASC
-+            """,
-+            (room_key,),
-+        )
-+        rows = cur.fetchall() or []
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    normalized: list[dict[str, Any]] = []
-+    for row in rows:
-+        raw_actor_key = str(row.get("actor_key") or "").strip()
-+        canonical_actor_key = _canonical_read_actor_key(raw_actor_key)
-+        actor_type, actor_id = _split_read_actor_key(raw_actor_key)
-+        normalized.append(
-+            {
-+                "actor_key": raw_actor_key,
-+                "canonical_actor_key": canonical_actor_key,
-+                "actor_type": actor_type,
-+                "actor_id": actor_id,
-+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
-+                "updated_at": row.get("updated_at"),
-+            }
-+        )
-+    return normalized
-+
-+
-+def _debug_fetch_legacy_event_read_rows(event_id: int | None, room_id: str | None) -> list[dict[str, Any]]:
-+    if not event_id or int(event_id) <= 0 or not str(room_id or "").strip() or not _ensure_chat_read_state_room_schema():
-+        return []
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT actor_type, actor_id, last_read_message_id, updated_at
-+              FROM chat_read_state
-+             WHERE event_id=%s AND room_id=%s
-+             ORDER BY updated_at DESC, actor_type ASC, actor_id ASC
-+            """,
-+            (int(event_id), str(room_id).strip()),
-+        )
-+        rows = cur.fetchall() or []
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    result: list[dict[str, Any]] = []
-+    for row in rows:
-+        actor_type = str(row.get("actor_type") or "").strip()
-+        actor_id = str(row.get("actor_id") or "").strip()
-+        legacy_actor_key = f"{actor_type}:{actor_id}" if actor_type and actor_id else ""
-+        result.append(
-+            {
-+                "actor_type": actor_type,
-+                "actor_id": actor_id,
-+                "legacy_actor_key": legacy_actor_key,
-+                "canonical_legacy_actor_key": _canonical_read_actor_key(legacy_actor_key),
-+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
-+                "updated_at": row.get("updated_at"),
-+            }
-+        )
-+    return result
-+
-+
-+def _debug_fetch_legacy_dm_read_rows(dm_uuid: str | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+    uuid_value = str(dm_uuid or "").strip()
-+    if not uuid_value or not _ensure_chat_dm_schema():
-+        return [], {}
-+
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute("SELECT id, uuid FROM chat_dm_conversations WHERE uuid=%s LIMIT 1", (uuid_value,))
-+        conversation = cur.fetchone() or {}
-+        conversation_id = int(conversation.get("id") or 0)
-+        if conversation_id <= 0:
-+            return [], {}
-+        cur.execute(
-+            """
-+            SELECT actor_key, last_read_message_id, updated_at
-+              FROM chat_dm_participants
-+             WHERE conversation_id=%s
-+             ORDER BY updated_at DESC, actor_key ASC
-+            """,
-+            (conversation_id,),
-+        )
-+        participant_rows = cur.fetchall() or []
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    rows: list[dict[str, Any]] = []
-+    for row in participant_rows:
-+        actor_key = str(row.get("actor_key") or "").strip()
-+        rows.append(
-+            {
-+                "actor_key": actor_key,
-+                "canonical_actor_key": _canonical_read_actor_key(actor_key),
-+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
-+                "updated_at": row.get("updated_at"),
-+            }
-+        )
-+    return rows, {"id": int(conversation.get("id") or 0), "uuid": str(conversation.get("uuid") or "")}
-+
-+
-+def _debug_fetch_presence_rows(actor_key: str, room_key: str) -> list[dict[str, Any]]:
-+    actor_type, actor_id = _split_read_actor_key(actor_key)
-+    room_key = str(room_key or "").strip()
-+    if not actor_type or not actor_id or not room_key or not _ensure_chat_active_view_schema():
-+        return []
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT actor_type, actor_id, room_id, client_id, is_visible,
-+                   entered_at, last_ping_at, updated_at
-+              FROM chat_active_views
-+             WHERE actor_type=%s AND actor_id=%s AND room_id=%s
-+             ORDER BY updated_at DESC
-+            """,
-+            (actor_type, actor_id, room_key),
-+        )
-+        return cur.fetchall() or []
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _debug_build_read_v2_checks(ctx: dict[str, Any]) -> list[dict[str, str]]:
-+    checks: list[dict[str, str]] = []
-+    room_key = str(ctx.get("room_key") or "")
-+    effective_actor_key = str(ctx.get("effective_actor_key") or "")
-+    aliases = [str(v) for v in (ctx.get("aliases") or []) if str(v)]
-+    alias_canonical_set = {_canonical_read_actor_key(value) for value in aliases if _canonical_read_actor_key(value)}
-+    v2_rows = list(ctx.get("v2_rows") or [])
-+    snapshot_rows = list(ctx.get("snapshot_rows") or [])
-+    legacy_rows = list(ctx.get("legacy_rows") or [])
-+
-+    if not room_key:
-+        checks.append({"level": "error", "message": "room_key が空です。"})
-+    if not effective_actor_key:
-+        checks.append({"level": "error", "message": "effective_actor_key が空です。"})
-+
-+    if not v2_rows:
-+        checks.append({"level": "warning", "message": "V2 に room_key 対象行がありません。"})
-+
-+    v2_alias_rows = [
-+        row
-+        for row in v2_rows
-+        if _canonical_read_actor_key(str(row.get("actor_key") or "")) in alias_canonical_set
-+    ]
-+    if effective_actor_key and not v2_alias_rows:
-+        checks.append({"level": "warning", "message": "effective_actor_key の alias に一致する V2 行がありません。"})
-+
-+    snapshot_effective_rows = [
-+        row
-+        for row in snapshot_rows
-+        if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key
-+    ]
-+    if v2_alias_rows and effective_actor_key and not snapshot_effective_rows:
-+        checks.append({"level": "warning", "message": "V2 にはあるが snapshot には effective_actor_key がありません。"})
-+
-+    snapshot_mismatch_rows = [
-+        row
-+        for row in snapshot_rows
-+        if str(row.get("actor_key") or "")
-+        and _canonical_read_actor_key(str(row.get("actor_key") or "")) != str(row.get("actor_key") or "")
-+    ]
-+    if snapshot_mismatch_rows:
-+        checks.append({"level": "warning", "message": "snapshot に canonical 後の actor_key がズレている行があります。"})
-+
-+    legacy_effective_rows = [
-+        row
-+        for row in legacy_rows
-+        if _canonical_read_actor_key(str(row.get("canonical_legacy_actor_key") or row.get("canonical_actor_key") or "")) == effective_actor_key
-+    ]
-+    if legacy_effective_rows and not v2_alias_rows:
-+        checks.append({"level": "warning", "message": "旧テーブルにはあるが V2 に存在しません。"})
-+
-+    if legacy_effective_rows and v2_alias_rows:
-+        legacy_max = max(int(row.get("last_read_message_id") or 0) for row in legacy_effective_rows)
-+        v2_max = max(int(row.get("last_read_message_id") or 0) for row in v2_alias_rows)
-+        if legacy_max != v2_max:
-+            checks.append({"level": "warning", "message": f"旧テーブル({legacy_max}) と V2({v2_max}) の last_read_message_id が不一致です。"})
-+        if v2_max < legacy_max:
-+            checks.append({"level": "warning", "message": f"V2 の last_read_message_id ({v2_max}) が期待値 ({legacy_max}) より小さいです。"})
-+
-+    if snapshot_effective_rows and v2_alias_rows:
-+        snapshot_max = max(int(row.get("last_read_message_id") or 0) for row in snapshot_effective_rows)
-+        v2_max = max(int(row.get("last_read_message_id") or 0) for row in v2_alias_rows)
-+        if snapshot_max < v2_max:
-+            checks.append({"level": "warning", "message": f"snapshot の last_read_message_id ({snapshot_max}) が V2 ({v2_max}) より小さいです。"})
-+
-+    if not checks:
-+        checks.append({"level": "ok", "message": "目立った不整合は検出されませんでした。"})
-+    return checks
-+
-+
-+def _debug_collect_read_v2_context(
-+    event_id: int | None = None,
-+    room_id: str | None = None,
-+    dm_uuid: str | None = None,
-+    actor_key: str | None = None,
-+) -> dict[str, Any]:
-+    actor = get_chat_actor()
-+    dm_uuid_value = str(dm_uuid or "").strip()
-+    mode = "dm" if dm_uuid_value else "event"
-+    parsed_event_id = int(event_id or 0) if mode == "event" else None
-+    room_id_value = str(room_id or "").strip() if mode == "event" else ""
-+    requested_actor_key = str(actor_key or "").strip()
-+
-+    effective_actor_key = _canonical_read_actor_key(requested_actor_key) if requested_actor_key else _canonical_read_actor_key_from_actor(actor)
-+    room_key = _build_read_room_key(
-+        event_id=parsed_event_id if mode == "event" else None,
-+        room_id=room_id_value if mode == "event" else None,
-+        dm_uuid=dm_uuid_value if mode == "dm" else None,
-+    )
-+    aliases = _read_actor_key_aliases(effective_actor_key)
-+    split_type, split_id = _split_read_actor_key(effective_actor_key)
-+
-+    v2_rows = _debug_fetch_chat_read_state_v2_rows(room_key)
-+    snapshot_rows = _load_chat_read_state_v2_snapshot(room_key)
-+    conversation_meta: dict[str, Any] = {}
-+    if mode == "dm":
-+        legacy_rows, conversation_meta = _debug_fetch_legacy_dm_read_rows(dm_uuid_value)
-+    else:
-+        legacy_rows = _debug_fetch_legacy_event_read_rows(parsed_event_id, room_id_value)
-+    presence_rows = _debug_fetch_presence_rows(effective_actor_key, room_key)
-+
-+    ctx: dict[str, Any] = {
-+        "mode": mode,
-+        "event_id": parsed_event_id,
-+        "room_id": room_id_value,
-+        "dm_uuid": dm_uuid_value,
-+        "room_key": room_key,
-+        "requested_actor_key": requested_actor_key,
-+        "raw_actor": actor,
-+        "effective_actor_key": effective_actor_key,
-+        "effective_actor_type": split_type,
-+        "effective_actor_id": split_id,
-+        "split_actor_key": {"actor_type": split_type, "actor_id": split_id},
-+        "aliases": aliases,
-+        "v2_rows": v2_rows,
-+        "v2_effective_rows": [row for row in v2_rows if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key],
-+        "snapshot_rows": snapshot_rows,
-+        "snapshot_effective_rows": [
-+            row for row in snapshot_rows if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key
-+        ],
-+        "legacy_rows": legacy_rows,
-+        "conversation_meta": conversation_meta,
-+        "presence_rows": presence_rows,
-+    }
-+    ctx["checks"] = _debug_build_read_v2_checks(ctx)
-+    return ctx
-+
-+
- def _log_auto_migration_error(name: str, sql: str, event_id: int | None = None) -> None:
-     current_app.logger.warning(
-         "chat auto-migration failed name=%s event_id=%s sql=%s",
-         name,
-         event_id,
-         sql,
-         exc_info=True,
-     )
+     return rows, {"id": int(conversation.get("id") or 0), "uuid": str(conversation.get("uuid") or "")}
  
  
- def _ensure_chat_rooms_schema() -> bool:
-     global CHAT_ROOMS_SCHEMA_READY
-     if CHAT_ROOMS_SCHEMA_READY is not None:
-         return CHAT_ROOMS_SCHEMA_READY
-     with CHAT_ROOMS_SCHEMA_CHECK_LOCK:
-         if CHAT_ROOMS_SCHEMA_READY is not None:
-             return CHAT_ROOMS_SCHEMA_READY
-         db = get_db()
-         cur = db.cursor()
-         try:
-             sql = """
-             CREATE TABLE IF NOT EXISTS chat_rooms (
-               room_id VARCHAR(36) PRIMARY KEY,
-               event_id BIGINT NOT NULL,
-               room_name VARCHAR(80) NOT NULL,
-@@ -4921,60 +5193,141 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
-         nickname = str(user.get("nickname") or "").strip() or peer_actor_key
-         rows_by_peer[peer_actor_key] = {
-             "id": None,
-             "uuid": None,
-             "dm_type": "admin_user",
-             "last_message_at": None,
-             "last_read_message_id": None,
-             "last_message": "",
-             "unread_count": 0,
-             "peer_actor_key": peer_actor_key,
-             "peer_display_name": nickname,
-         }
- 
-     items = list(rows_by_peer.values())
-     items.sort(
-         key=lambda row: (
-             0 if int(row.get("unread_count") or 0) > 0 else 1,
-             -int(row.get("unread_count") or 0),
-             -(int(row["last_message_at"].timestamp()) if isinstance(row.get("last_message_at"), datetime) else 0),
-             str(row.get("peer_display_name") or ""),
+ def _debug_fetch_presence_rows(actor_key: str, room_key: str) -> list[dict[str, Any]]:
+     actor_type, actor_id = _split_read_actor_key(actor_key)
+     room_key = str(room_key or "").strip()
+     if not actor_type or not actor_id or not room_key or not _ensure_chat_active_view_schema():
+         return []
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT actor_type, actor_id, room_id, client_id, is_visible,
+                    entered_at, last_ping_at, updated_at
+               FROM chat_active_views
+              WHERE actor_type=%s AND actor_id=%s AND room_id=%s
+              ORDER BY updated_at DESC
+             """,
+             (actor_type, actor_id, room_key),
          )
-     )
-     return items
+         return cur.fetchall() or []
+@@ -5223,67 +5404,98 @@ def _parse_debug_int(value: Any) -> int | None:
+         parsed = int(text)
+     except Exception:
+         return None
+     return parsed if parsed > 0 else None
  
  
-+def _parse_debug_int(value: Any) -> int | None:
-+    text = str(value or "").strip()
-+    if not text:
-+        return None
-+    try:
-+        parsed = int(text)
-+    except Exception:
-+        return None
-+    return parsed if parsed > 0 else None
-+
-+
  @chat_bp.before_request
  def _require_any_login():
      if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
@@ -372,295 +327,355 @@ index fbc5ef9ba09f510903f11adf2b29d16f121d45d1..1c8eba2cf1b344af129be8c4407b2b10
      return None
  
  
-+@chat_bp.get("/debug/read-v2")
-+def debug_read_v2():
-+    actor = get_chat_actor()
-+    if not _is_admin_actor(actor):
-+        abort(403)
-+
-+    event_id = _parse_debug_int(request.args.get("event_id"))
-+    room_id = (request.args.get("room_id") or "").strip()
-+    dm_uuid = (request.args.get("dm_uuid") or "").strip()
-+    requested_actor_key = (request.args.get("actor_key") or "").strip()
-+
-+    ctx = _debug_collect_read_v2_context(
-+        event_id=event_id,
-+        room_id=room_id,
-+        dm_uuid=dm_uuid,
-+        actor_key=requested_actor_key,
-+    )
-+    return render_template(
-+        "chat/debug_read_v2.html",
-+        actor=actor,
-+        ctx=ctx,
-+        mode=ctx.get("mode"),
-+        event_id=ctx.get("event_id") or "",
-+        room_id=ctx.get("room_id") or "",
-+        dm_uuid=ctx.get("dm_uuid") or "",
-+        requested_actor_key=ctx.get("requested_actor_key") or "",
-+        test_message_id=(request.args.get("test_message_id") or "").strip(),
-+    )
-+
-+
-+@chat_bp.post("/debug/read-v2/upsert")
-+def debug_read_v2_upsert():
-+    actor = get_chat_actor()
-+    if not _is_admin_actor(actor):
-+        abort(403)
-+
-+    event_id = _parse_debug_int(request.form.get("event_id"))
-+    room_id = (request.form.get("room_id") or "").strip()
-+    dm_uuid = (request.form.get("dm_uuid") or "").strip()
-+    message_id = _parse_debug_int(request.form.get("message_id"))
-+    raw_actor_key = (request.form.get("actor_key") or "").strip()
-+
-+    effective_actor_key = _canonical_read_actor_key(raw_actor_key) if raw_actor_key else _canonical_read_actor_key_from_actor(actor)
-+    room_key = _build_read_room_key(
-+        event_id=event_id if not dm_uuid else None,
-+        room_id=room_id if not dm_uuid else None,
-+        dm_uuid=dm_uuid or None,
-+    )
-+
-+    saved_value = 0
-+    if room_key and effective_actor_key and message_id:
-+        saved_value = _upsert_chat_read_state_v2(room_key, effective_actor_key, int(message_id))
-+        if saved_value > 0:
-+            flash(f"V2へ保存テストを実行しました。saved={saved_value}", "success")
-+        else:
-+            flash("V2へ保存テストを実行しましたが保存値を取得できませんでした。", "warning")
-+    else:
-+        flash("入力が不足しています（room_key / actor_key / message_id）。", "danger")
-+
-+    params = {
-+        "event_id": event_id or "",
-+        "room_id": room_id,
-+        "dm_uuid": dm_uuid,
-+        "actor_key": effective_actor_key,
-+        "test_message_id": message_id or "",
-+        "saved_value": saved_value,
-+    }
-+    return redirect(url_for("chat.debug_read_v2", **params))
-+
-+
- @chat_bp.route("/")
- def index():
+ @chat_bp.get("/debug/read-v2")
+ def debug_read_v2():
      actor = get_chat_actor()
-     if not actor:
+     if not _is_admin_actor(actor):
          abort(403)
-     events = _accessible_events(actor)
-     dm_inbox_items: list[dict[str, Any]] = []
-     if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
-         actor_key = get_chat_actor_key(actor) or "admin:1"
-         dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
+ 
+     event_id = _parse_debug_int(request.args.get("event_id"))
+     room_id = (request.args.get("room_id") or "").strip()
+     dm_uuid = (request.args.get("dm_uuid") or "").strip()
++    room_key = (request.args.get("room_key") or "").strip()
+     requested_actor_key = (request.args.get("actor_key") or "").strip()
+ 
++    warnings: list[str] = []
++    room_key_parse = _parse_read_room_key(room_key)
++    if room_key and room_key_parse.get("mode") == "":
++        warnings.append("room_key を解析できませんでした。event / dm の入力または候補一覧から選択してください。")
++    if room_key_parse.get("mode") == "dm":
++        dm_uuid = str(room_key_parse.get("dm_uuid") or "")
++        event_id = None
++        room_id = ""
++    elif room_key_parse.get("mode") == "event":
++        event_id = int(room_key_parse.get("event_id") or 0) or None
++        room_id = str(room_key_parse.get("room_id") or "")
++        dm_uuid = ""
++
++    recent_event_rooms: list[dict[str, Any]] = []
++    recent_dm_rooms: list[dict[str, Any]] = []
++    try:
++        recent_event_rooms = _debug_list_recent_event_rooms(limit=50)
++    except Exception:
++        current_app.logger.warning("debug read-v2 failed to load recent event rooms", exc_info=True)
++        warnings.append("最近のイベントルーム取得に失敗しました。")
++    try:
++        recent_dm_rooms = _debug_list_recent_dm_rooms(limit=50)
++    except Exception:
++        current_app.logger.warning("debug read-v2 failed to load recent DM rooms", exc_info=True)
++        warnings.append("最近のDM取得に失敗しました。")
++
+     ctx = _debug_collect_read_v2_context(
+         event_id=event_id,
+         room_id=room_id,
+         dm_uuid=dm_uuid,
+         actor_key=requested_actor_key,
+     )
      return render_template(
-         "chat/index.html",
+         "chat/debug_read_v2.html",
          actor=actor,
-         events=events,
-         csrf_token=_chat_csrf(),
-         nav_mode="chat",
-         dm_inbox_items=dm_inbox_items,
-         dm_user_user_enabled=_chat_dm_enable_user_user(),
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+         ctx=ctx,
+         mode=ctx.get("mode"),
+         event_id=ctx.get("event_id") or "",
+         room_id=ctx.get("room_id") or "",
+         dm_uuid=ctx.get("dm_uuid") or "",
++        room_key=room_key,
+         requested_actor_key=ctx.get("requested_actor_key") or "",
++        recent_event_rooms=recent_event_rooms,
++        recent_dm_rooms=recent_dm_rooms,
++        warnings=warnings,
+         test_message_id=(request.args.get("test_message_id") or "").strip(),
      )
  
  
- @chat_bp.route("/dm")
- def dm_entry():
+ @chat_bp.post("/debug/read-v2/upsert")
+ def debug_read_v2_upsert():
      actor = get_chat_actor()
+     if not _is_admin_actor(actor):
+         abort(403)
+ 
+     event_id = _parse_debug_int(request.form.get("event_id"))
+     room_id = (request.form.get("room_id") or "").strip()
+     dm_uuid = (request.form.get("dm_uuid") or "").strip()
+     message_id = _parse_debug_int(request.form.get("message_id"))
+     raw_actor_key = (request.form.get("actor_key") or "").strip()
+ 
+     effective_actor_key = _canonical_read_actor_key(raw_actor_key) if raw_actor_key else _canonical_read_actor_key_from_actor(actor)
+     room_key = _build_read_room_key(
+         event_id=event_id if not dm_uuid else None,
+         room_id=room_id if not dm_uuid else None,
+         dm_uuid=dm_uuid or None,
+     )
+ 
+     saved_value = 0
+     if room_key and effective_actor_key and message_id:
 diff --git a/chat/templates/chat/debug_read_v2.html b/chat/templates/chat/debug_read_v2.html
-new file mode 100644
-index 0000000000000000000000000000000000000000..ccaf8e7be554f1108ac07abaec0944829491f48b
---- /dev/null
+index ccaf8e7be554f1108ac07abaec0944829491f48b..0a9061dd1e03919e93ccc2578f93af32d2be6f7c 100644
+--- a/chat/templates/chat/debug_read_v2.html
 +++ b/chat/templates/chat/debug_read_v2.html
-@@ -0,0 +1,191 @@
-+{% extends "chat/base_chat.html" %}
-+{% block content %}
-+<div class="container py-4">
-+  <h1 class="mb-3">既読V2 デバッグ</h1>
+@@ -1,60 +1,145 @@
+ {% extends "chat/base_chat.html" %}
+ {% block content %}
+ <div class="container py-4">
++  <style>
++    .debug-target-row.active { background: #fff3cd; }
++  </style>
+   <h1 class="mb-3">既読V2 デバッグ</h1>
+ 
+   <div class="card mb-4 border-2">
+     <div class="card-body">
+       <div class="row g-3">
+         <div class="col-md-4">
+           <div class="text-muted">mode</div>
+           <div class="fs-5 fw-bold">{{ ctx.mode }}</div>
+         </div>
+         <div class="col-md-4">
+           <div class="text-muted">room_key</div>
+           <div class="fs-5 fw-bold text-break">{{ ctx.room_key or '-' }}</div>
+         </div>
+         <div class="col-md-4">
+           <div class="text-muted">effective actor_key</div>
+           <div class="fs-5 fw-bold text-break">{{ ctx.effective_actor_key or '-' }}</div>
+         </div>
+       </div>
+       {% if request.args.get('saved_value') %}
+       <div class="alert alert-success mt-3 mb-0">actual saved value: {{ request.args.get('saved_value') }}</div>
+       {% endif %}
+     </div>
+   </div>
+ 
+   {% with flashes = get_flashed_messages(with_categories=true) %}
+   {% if flashes %}
+     {% for category, message in flashes %}
+       <div class="alert alert-{{ 'danger' if category in ['error', 'danger'] else ('warning' if category == 'warning' else 'success') }}">{{ message }}</div>
+     {% endfor %}
+   {% endif %}
+   {% endwith %}
+ 
++  {% for warning in warnings or [] %}
++  <div class="alert alert-warning">{{ warning }}</div>
++  {% endfor %}
 +
-+  <div class="card mb-4 border-2">
++  <div class="card mb-4">
++    <div class="card-header fw-bold">デバッグ対象選択</div>
 +    <div class="card-body">
-+      <div class="row g-3">
-+        <div class="col-md-4">
-+          <div class="text-muted">mode</div>
-+          <div class="fs-5 fw-bold">{{ ctx.mode }}</div>
++      <div class="row g-3 mb-3">
++        <div class="col-lg-6">
++          <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="border rounded p-3">
++            <div class="fw-bold mb-2">イベント既読</div>
++            <div class="mb-2"><label class="form-label">event_id</label><input class="form-control" name="event_id" value="{{ event_id }}"></div>
++            <div class="mb-2"><label class="form-label">room_id</label><input class="form-control" name="room_id" value="{{ room_id }}"></div>
++            <div class="mb-2"><label class="form-label">actor_key (任意)</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
++            <button class="btn btn-primary">イベント既読を開く</button>
++          </form>
 +        </div>
-+        <div class="col-md-4">
-+          <div class="text-muted">room_key</div>
-+          <div class="fs-5 fw-bold text-break">{{ ctx.room_key or '-' }}</div>
-+        </div>
-+        <div class="col-md-4">
-+          <div class="text-muted">effective actor_key</div>
-+          <div class="fs-5 fw-bold text-break">{{ ctx.effective_actor_key or '-' }}</div>
++        <div class="col-lg-6">
++          <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="border rounded p-3">
++            <div class="fw-bold mb-2">DM既読</div>
++            <div class="mb-2"><label class="form-label">dm_uuid</label><input class="form-control" name="dm_uuid" value="{{ dm_uuid }}"></div>
++            <div class="mb-2"><label class="form-label">actor_key (任意)</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
++            <button class="btn btn-primary">DM既読を開く</button>
++          </form>
 +        </div>
 +      </div>
-+      {% if request.args.get('saved_value') %}
-+      <div class="alert alert-success mt-3 mb-0">actual saved value: {{ request.args.get('saved_value') }}</div>
-+      {% endif %}
++
++      <div class="mb-3 border rounded p-3">
++        <div class="fw-bold mb-2">room_key 直指定</div>
++        <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="row g-2 align-items-end">
++          <div class="col-md-8"><label class="form-label">room_key</label><input class="form-control" name="room_key" value="{{ room_key or '' }}" placeholder="event:123:room:main / dm:uuid"></div>
++          <div class="col-md-4"><button class="btn btn-outline-primary w-100">room_keyで開く</button></div>
++        </form>
++      </div>
++
++      <div class="fw-bold mb-2">最近のイベントルーム</div>
++      <div class="table-responsive mb-4">
++        <table class="table table-sm table-striped table-bordered align-middle">
++          <thead><tr><th>event_id</th><th>room_id</th><th>room_name</th><th>latest_message_id</th><th>latest_message_at</th><th>room_key</th><th></th></tr></thead>
++          <tbody>
++            {% for row in recent_event_rooms %}
++            <tr class="debug-target-row {% if row.room_key == ctx.room_key %}active{% endif %}">
++              <td>{{ row.event_id }}</td>
++              <td>{{ row.room_id }}</td>
++              <td>{{ row.room_name }}</td>
++              <td>{{ row.latest_message_id or '-' }}</td>
++              <td>{{ row.latest_message_at or '-' }}</td>
++              <td class="text-break">{{ row.room_key }}</td>
++              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.debug_read_v2', event_id=row.event_id, room_id=row.room_id, actor_key=requested_actor_key) }}">開く</a></td>
++            </tr>
++            {% else %}
++            <tr><td colspan="7" class="text-muted">候補なし</td></tr>
++            {% endfor %}
++          </tbody>
++        </table>
++      </div>
++
++      <div class="fw-bold mb-2">最近のDM</div>
++      <div class="table-responsive">
++        <table class="table table-sm table-striped table-bordered align-middle">
++          <thead><tr><th>dm_uuid</th><th>conversation_id</th><th>dm_type</th><th>peer_display_name</th><th>latest_message_id</th><th>latest_message_at</th><th>room_key</th><th></th></tr></thead>
++          <tbody>
++            {% for row in recent_dm_rooms %}
++            <tr class="debug-target-row {% if row.room_key == ctx.room_key %}active{% endif %}">
++              <td class="text-break">{{ row.dm_uuid }}</td>
++              <td>{{ row.conversation_id }}</td>
++              <td>{{ row.dm_type or '-' }}</td>
++              <td>{{ row.peer_display_name or row.peer_actor_key or '-' }}</td>
++              <td>{{ row.latest_message_id or '-' }}</td>
++              <td>{{ row.latest_message_at or '-' }}</td>
++              <td class="text-break">{{ row.room_key }}</td>
++              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.debug_read_v2', dm_uuid=row.dm_uuid, actor_key=requested_actor_key) }}">開く</a></td>
++            </tr>
++            {% else %}
++            <tr><td colspan="8" class="text-muted">候補なし</td></tr>
++            {% endfor %}
++          </tbody>
++        </table>
++      </div>
 +    </div>
 +  </div>
 +
-+  {% with flashes = get_flashed_messages(with_categories=true) %}
-+  {% if flashes %}
-+    {% for category, message in flashes %}
-+      <div class="alert alert-{{ 'danger' if category in ['error', 'danger'] else ('warning' if category == 'warning' else 'success') }}">{{ message }}</div>
-+    {% endfor %}
-+  {% endif %}
-+  {% endwith %}
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">F. 自動判定</div>
-+    <div class="card-body">
-+      {% for check in ctx.checks %}
-+        <div class="alert py-2 mb-2 {% if check.level == 'error' %}alert-danger{% elif check.level == 'warning' %}alert-warning{% else %}alert-success{% endif %}">
-+          <strong>[{{ check.level|upper }}]</strong> {{ check.message }}
-+        </div>
-+      {% endfor %}
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">A. リクエスト情報</div>
-+    <div class="card-body">
-+      <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="row g-2 align-items-end mb-3">
-+        <div class="col-md-2"><label class="form-label">event_id</label><input class="form-control" name="event_id" value="{{ event_id }}"></div>
-+        <div class="col-md-2"><label class="form-label">room_id</label><input class="form-control" name="room_id" value="{{ room_id }}"></div>
-+        <div class="col-md-3"><label class="form-label">dm_uuid</label><input class="form-control" name="dm_uuid" value="{{ dm_uuid }}"></div>
-+        <div class="col-md-3"><label class="form-label">actor_key</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
-+        <div class="col-md-2"><button class="btn btn-primary w-100">再読込</button></div>
-+      </form>
-+      <table class="table table-sm table-bordered">
-+        <tr><th>mode</th><td>{{ ctx.mode }}</td></tr>
-+        <tr><th>event_id</th><td>{{ ctx.event_id or '-' }}</td></tr>
-+        <tr><th>room_id</th><td>{{ ctx.room_id or '-' }}</td></tr>
-+        <tr><th>dm_uuid</th><td>{{ ctx.dm_uuid or '-' }}</td></tr>
-+        <tr><th>requested_actor_key</th><td>{{ ctx.requested_actor_key or '-' }}</td></tr>
-+        <tr><th>effective_actor_key</th><td>{{ ctx.effective_actor_key or '-' }}</td></tr>
-+        <tr><th>room_key</th><td>{{ ctx.room_key or '-' }}</td></tr>
-+      </table>
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">B. actor 情報</div>
-+    <div class="card-body">
-+      <table class="table table-sm table-bordered">
-+        <tr><th>canonical read actor_key</th><td>{{ ctx.effective_actor_key or '-' }}</td></tr>
-+        <tr><th>split result</th><td>{{ ctx.split_actor_key.actor_type }} / {{ ctx.split_actor_key.actor_id }}</td></tr>
-+        <tr><th>aliases</th><td>{{ ctx.aliases|join(', ') or '-' }}</td></tr>
-+      </table>
-+      <div class="fw-bold mb-1">raw actor object</div>
-+      <pre class="bg-light p-2 border rounded">{{ ctx.raw_actor|tojson(indent=2) }}</pre>
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">C. DB生データ（V2）</div>
-+    <div class="card-body">
-+      <table class="table table-sm table-striped table-bordered">
-+        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
-+        <tbody>
-+          {% for row in ctx.v2_rows %}
-+          <tr class="{% if row.canonical_actor_key == ctx.effective_actor_key %}table-warning{% endif %}">
-+            <td>{{ row.actor_key }}</td>
-+            <td>{{ row.canonical_actor_key }}</td>
-+            <td>{{ row.last_read_message_id }}</td>
-+            <td>{{ row.updated_at or '-' }}</td>
-+          </tr>
-+          {% else %}
-+          <tr><td colspan="4" class="text-muted">データなし</td></tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">D. snapshot 結果</div>
-+    <div class="card-body">
-+      <table class="table table-sm table-striped table-bordered">
-+        <thead><tr><th>actor_key</th><th>actor_type</th><th>actor_id</th><th>display_name</th><th>last_read_message_id</th></tr></thead>
-+        <tbody>
-+          {% for row in ctx.snapshot_rows %}
-+          <tr class="{% if row.actor_key == ctx.effective_actor_key %}table-warning{% endif %}">
-+            <td>{{ row.actor_key }}</td><td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.display_name }}</td><td>{{ row.last_read_message_id }}</td>
-+          </tr>
-+          {% else %}
-+          <tr><td colspan="5" class="text-muted">データなし</td></tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">E. 旧テーブル比較</div>
-+    <div class="card-body">
-+      {% if ctx.mode == 'event' %}
-+      <table class="table table-sm table-striped table-bordered">
-+        <thead><tr><th>actor_type</th><th>actor_id</th><th>legacy_actor_key</th><th>canonical_legacy_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
-+        <tbody>
-+          {% for row in ctx.legacy_rows %}
-+          <tr>
-+            <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.legacy_actor_key }}</td><td>{{ row.canonical_legacy_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
-+          </tr>
-+          {% else %}
+   <div class="card mb-4">
+     <div class="card-header fw-bold">F. 自動判定</div>
+     <div class="card-body">
+       {% for check in ctx.checks %}
+         <div class="alert py-2 mb-2 {% if check.level == 'error' %}alert-danger{% elif check.level == 'warning' %}alert-warning{% else %}alert-success{% endif %}">
+           <strong>[{{ check.level|upper }}]</strong> {{ check.message }}
+         </div>
+       {% endfor %}
+     </div>
+   </div>
+ 
+   <div class="card mb-4">
+     <div class="card-header fw-bold">A. リクエスト情報</div>
+     <div class="card-body">
+       <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="row g-2 align-items-end mb-3">
+         <div class="col-md-2"><label class="form-label">event_id</label><input class="form-control" name="event_id" value="{{ event_id }}"></div>
+         <div class="col-md-2"><label class="form-label">room_id</label><input class="form-control" name="room_id" value="{{ room_id }}"></div>
+         <div class="col-md-3"><label class="form-label">dm_uuid</label><input class="form-control" name="dm_uuid" value="{{ dm_uuid }}"></div>
+         <div class="col-md-3"><label class="form-label">actor_key</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
+         <div class="col-md-2"><button class="btn btn-primary w-100">再読込</button></div>
+       </form>
+       <table class="table table-sm table-bordered">
+         <tr><th>mode</th><td>{{ ctx.mode }}</td></tr>
+         <tr><th>event_id</th><td>{{ ctx.event_id or '-' }}</td></tr>
+         <tr><th>room_id</th><td>{{ ctx.room_id or '-' }}</td></tr>
+@@ -115,58 +200,58 @@
+           {% endfor %}
+         </tbody>
+       </table>
+     </div>
+   </div>
+ 
+   <div class="card mb-4">
+     <div class="card-header fw-bold">E. 旧テーブル比較</div>
+     <div class="card-body">
+       {% if ctx.mode == 'event' %}
+       <table class="table table-sm table-striped table-bordered">
+         <thead><tr><th>actor_type</th><th>actor_id</th><th>legacy_actor_key</th><th>canonical_legacy_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
+         <tbody>
+           {% for row in ctx.legacy_rows %}
+           <tr>
+             <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.legacy_actor_key }}</td><td>{{ row.canonical_legacy_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
+           </tr>
+           {% else %}
+           <tr><td colspan="6" class="text-muted">データなし</td></tr>
+           {% endfor %}
+         </tbody>
+       </table>
+       {% else %}
+       <div class="mb-2"><strong>chat_dm_conversations</strong>: uuid={{ ctx.conversation_meta.uuid or '-' }}, id={{ ctx.conversation_meta.id or '-' }}</div>
+       <table class="table table-sm table-striped table-bordered">
+-        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
++        <thead><tr><th>actor_key</th><th>display_name_cache</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>created_at</th><th>updated_at</th></tr></thead>
+         <tbody>
+           {% for row in ctx.legacy_rows %}
+           <tr>
+-            <td>{{ row.actor_key }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
++            <td>{{ row.actor_key }}</td><td>{{ row.display_name_cache or '-' }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.created_at or '-' }}</td><td>{{ row.updated_at or '-' }}</td>
+           </tr>
+           {% else %}
+-          <tr><td colspan="4" class="text-muted">データなし</td></tr>
 +          <tr><td colspan="6" class="text-muted">データなし</td></tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+      {% else %}
-+      <div class="mb-2"><strong>chat_dm_conversations</strong>: uuid={{ ctx.conversation_meta.uuid or '-' }}, id={{ ctx.conversation_meta.id or '-' }}</div>
-+      <table class="table table-sm table-striped table-bordered">
-+        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
-+        <tbody>
-+          {% for row in ctx.legacy_rows %}
-+          <tr>
-+            <td>{{ row.actor_key }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
-+          </tr>
-+          {% else %}
-+          <tr><td colspan="4" class="text-muted">データなし</td></tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
+           {% endfor %}
+         </tbody>
+       </table>
+       {% endif %}
+     </div>
+   </div>
+ 
+   <div class="card mb-4">
+     <div class="card-header fw-bold">G. 手動テスト</div>
+     <div class="card-body">
+       <form method="post" action="{{ url_for('chat.debug_read_v2_upsert') }}" class="row g-2 align-items-end">
+         <input type="hidden" name="event_id" value="{{ event_id }}">
+         <input type="hidden" name="room_id" value="{{ room_id }}">
+         <input type="hidden" name="dm_uuid" value="{{ dm_uuid }}">
+         <input type="hidden" name="actor_key" value="{{ ctx.effective_actor_key }}">
+         <div class="col-md-4">
+           <label class="form-label">message_id</label>
+           <input class="form-control" name="message_id" value="{{ test_message_id }}" placeholder="例: 12345">
+         </div>
+         <div class="col-md-3"><button class="btn btn-danger w-100" type="submit">V2へ保存テスト</button></div>
+         <div class="col-md-3"><a class="btn btn-secondary w-100" href="{{ url_for('chat.debug_read_v2', event_id=event_id, room_id=room_id, dm_uuid=dm_uuid, actor_key=ctx.effective_actor_key) }}">再読込</a></div>
+       </form>
+     </div>
+   </div>
+ 
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index a298e214e6d9056e30446abeb52cd9042a9bc907..301263808008f63c290b91aedb8e0b4b10683337 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -1209,50 +1209,53 @@
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+     <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
+ 
+ <div class="container py-3 chat-page"
+      data-event-id="{{ event.id }}"
+      data-room-id="{{ active_room.room_id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}"
+      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}"
+      data-dm-mode="{{ 1 if dm_mode else 0 }}"
+      data-dm-uuid="{{ dm_uuid or '' }}"
+      data-dm-room-id="{{ dm_room_id or '' }}">
+   {% include "chat/_chat_nav.html" %}
+   <div class="chat-room-main">
+     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
+     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
++      {% if actor.actor_type == 'admin' %}
++      <a class="btn btn-sm btn-outline-dark" target="_blank" rel="noopener" href="{% if dm_mode %}{{ url_for('chat.debug_read_v2', dm_uuid=dm_uuid) }}{% else %}{{ url_for('chat.debug_read_v2', event_id=event.id, room_id=active_room.room_id) }}{% endif %}">既読デバッグ</a>
 +      {% endif %}
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">G. 手動テスト</div>
-+    <div class="card-body">
-+      <form method="post" action="{{ url_for('chat.debug_read_v2_upsert') }}" class="row g-2 align-items-end">
-+        <input type="hidden" name="event_id" value="{{ event_id }}">
-+        <input type="hidden" name="room_id" value="{{ room_id }}">
-+        <input type="hidden" name="dm_uuid" value="{{ dm_uuid }}">
-+        <input type="hidden" name="actor_key" value="{{ ctx.effective_actor_key }}">
-+        <div class="col-md-4">
-+          <label class="form-label">message_id</label>
-+          <input class="form-control" name="message_id" value="{{ test_message_id }}" placeholder="例: 12345">
-+        </div>
-+        <div class="col-md-3"><button class="btn btn-danger w-100" type="submit">V2へ保存テスト</button></div>
-+        <div class="col-md-3"><a class="btn btn-secondary w-100" href="{{ url_for('chat.debug_read_v2', event_id=event_id, room_id=room_id, dm_uuid=dm_uuid, actor_key=ctx.effective_actor_key) }}">再読込</a></div>
-+      </form>
-+    </div>
-+  </div>
-+
-+  <div class="card mb-4">
-+    <div class="card-header fw-bold">Presence (chat_active_views)</div>
-+    <div class="card-body">
-+      <table class="table table-sm table-striped table-bordered">
-+        <thead><tr><th>actor_type</th><th>actor_id</th><th>room_id</th><th>client_id</th><th>is_visible</th><th>entered_at</th><th>last_ping_at</th><th>updated_at</th></tr></thead>
-+        <tbody>
-+          {% for row in ctx.presence_rows %}
-+          <tr>
-+            <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.room_id }}</td><td>{{ row.client_id }}</td><td>{{ row.is_visible }}</td><td>{{ row.entered_at or '-' }}</td><td>{{ row.last_ping_at or '-' }}</td><td>{{ row.updated_at or '-' }}</td>
-+          </tr>
-+          {% else %}
-+          <tr><td colspan="8" class="text-muted">データなし</td></tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+    </div>
-+  </div>
-+</div>
-+{% endblock %}
+       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
+       {% if can_manage_rooms %}
+       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
+       {% if active_room.is_main|int != 1 %}
+       <button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>
+       <button type="button" id="chat-room-delete-btn" class="btn btn-sm btn-outline-danger">サブルーム削除</button>
+       {% endif %}
+       {% endif %}
+     </div>
+ 
+     <div class="chat-body-layout">
+   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
+     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
+     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
+     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
+   </div>
+   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+ 
+   <div id="chatRoomPickerModal" class="chat-room-picker-modal d-none" aria-hidden="true">
+     <div class="backdrop" data-room-picker-close="1"></div>
+     <div class="panel">
+       <div class="d-flex justify-content-between align-items-center mb-2">
+         <h6 class="mb-0">サブルーム選択</h6>
+         <button type="button" class="btn btn-sm btn-light" data-room-picker-close="1">閉じる</button>
+       </div>

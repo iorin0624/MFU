@@ -1,6 +1,9 @@
 {% extends "chat/base_chat.html" %}
 {% block content %}
 <div class="container py-4">
+  <style>
+    .debug-target-row.active { background: #fff3cd; }
+  </style>
   <h1 class="mb-3">既読V2 デバッグ</h1>
 
   <div class="card mb-4 border-2">
@@ -32,6 +35,88 @@
     {% endfor %}
   {% endif %}
   {% endwith %}
+
+  {% for warning in warnings or [] %}
+  <div class="alert alert-warning">{{ warning }}</div>
+  {% endfor %}
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">デバッグ対象選択</div>
+    <div class="card-body">
+      <div class="row g-3 mb-3">
+        <div class="col-lg-6">
+          <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="border rounded p-3">
+            <div class="fw-bold mb-2">イベント既読</div>
+            <div class="mb-2"><label class="form-label">event_id</label><input class="form-control" name="event_id" value="{{ event_id }}"></div>
+            <div class="mb-2"><label class="form-label">room_id</label><input class="form-control" name="room_id" value="{{ room_id }}"></div>
+            <div class="mb-2"><label class="form-label">actor_key (任意)</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
+            <button class="btn btn-primary">イベント既読を開く</button>
+          </form>
+        </div>
+        <div class="col-lg-6">
+          <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="border rounded p-3">
+            <div class="fw-bold mb-2">DM既読</div>
+            <div class="mb-2"><label class="form-label">dm_uuid</label><input class="form-control" name="dm_uuid" value="{{ dm_uuid }}"></div>
+            <div class="mb-2"><label class="form-label">actor_key (任意)</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
+            <button class="btn btn-primary">DM既読を開く</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="mb-3 border rounded p-3">
+        <div class="fw-bold mb-2">room_key 直指定</div>
+        <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="row g-2 align-items-end">
+          <div class="col-md-8"><label class="form-label">room_key</label><input class="form-control" name="room_key" value="{{ room_key or '' }}" placeholder="event:123:room:main / dm:uuid"></div>
+          <div class="col-md-4"><button class="btn btn-outline-primary w-100">room_keyで開く</button></div>
+        </form>
+      </div>
+
+      <div class="fw-bold mb-2">最近のイベントルーム</div>
+      <div class="table-responsive mb-4">
+        <table class="table table-sm table-striped table-bordered align-middle">
+          <thead><tr><th>event_id</th><th>room_id</th><th>room_name</th><th>latest_message_id</th><th>latest_message_at</th><th>room_key</th><th></th></tr></thead>
+          <tbody>
+            {% for row in recent_event_rooms %}
+            <tr class="debug-target-row {% if row.room_key == ctx.room_key %}active{% endif %}">
+              <td>{{ row.event_id }}</td>
+              <td>{{ row.room_id }}</td>
+              <td>{{ row.room_name }}</td>
+              <td>{{ row.latest_message_id or '-' }}</td>
+              <td>{{ row.latest_message_at or '-' }}</td>
+              <td class="text-break">{{ row.room_key }}</td>
+              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.debug_read_v2', event_id=row.event_id, room_id=row.room_id, actor_key=requested_actor_key) }}">開く</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="text-muted">候補なし</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="fw-bold mb-2">最近のDM</div>
+      <div class="table-responsive">
+        <table class="table table-sm table-striped table-bordered align-middle">
+          <thead><tr><th>dm_uuid</th><th>conversation_id</th><th>dm_type</th><th>peer_display_name</th><th>latest_message_id</th><th>latest_message_at</th><th>room_key</th><th></th></tr></thead>
+          <tbody>
+            {% for row in recent_dm_rooms %}
+            <tr class="debug-target-row {% if row.room_key == ctx.room_key %}active{% endif %}">
+              <td class="text-break">{{ row.dm_uuid }}</td>
+              <td>{{ row.conversation_id }}</td>
+              <td>{{ row.dm_type or '-' }}</td>
+              <td>{{ row.peer_display_name or row.peer_actor_key or '-' }}</td>
+              <td>{{ row.latest_message_id or '-' }}</td>
+              <td>{{ row.latest_message_at or '-' }}</td>
+              <td class="text-break">{{ row.room_key }}</td>
+              <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.debug_read_v2', dm_uuid=row.dm_uuid, actor_key=requested_actor_key) }}">開く</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="text-muted">候補なし</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
   <div class="card mb-4">
     <div class="card-header fw-bold">F. 自動判定</div>
@@ -137,14 +222,14 @@
       {% else %}
       <div class="mb-2"><strong>chat_dm_conversations</strong>: uuid={{ ctx.conversation_meta.uuid or '-' }}, id={{ ctx.conversation_meta.id or '-' }}</div>
       <table class="table table-sm table-striped table-bordered">
-        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
+        <thead><tr><th>actor_key</th><th>display_name_cache</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>created_at</th><th>updated_at</th></tr></thead>
         <tbody>
           {% for row in ctx.legacy_rows %}
           <tr>
-            <td>{{ row.actor_key }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
+            <td>{{ row.actor_key }}</td><td>{{ row.display_name_cache or '-' }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.created_at or '-' }}</td><td>{{ row.updated_at or '-' }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="text-muted">データなし</td></tr>
+          <tr><td colspan="6" class="text-muted">データなし</td></tr>
           {% endfor %}
         </tbody>
       </table>
