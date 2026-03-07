@@ -3440,6 +3440,7 @@ def _create_external_chat_notification(
         target_url=target_url,
         dedup_key=dedup_key,
         event_id=event_id,
+        chat_room_id=str(room_id).strip() if room_id else None,
     )
 
 
@@ -3935,6 +3936,32 @@ def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
         db.close()
 
 
+def _resolve_presence_room_context(
+    actor: dict[str, Any],
+    event_id: int,
+    room_id: str,
+) -> tuple[bool, int, str, str | None]:
+    normalized_room_id = str(room_id or "").strip()
+    if not normalized_room_id:
+        return False, 0, "", "invalid_params"
+
+    if normalized_room_id.startswith("dm:"):
+        dm_uuid = normalized_room_id.split(":", 1)[1].strip()
+        if not dm_uuid:
+            return False, 0, "", "invalid_dm_room"
+        actor_key = _actor_sender_id(actor.get("actor_type", ""), str(actor.get("actor_id") or ""))
+        if not can_access_dm(dm_uuid, actor_key):
+            return False, 0, "", "forbidden"
+        return True, 0, f"dm:{dm_uuid}", None
+
+    if event_id <= 0:
+        return False, 0, "", "invalid_params"
+    allowed, effective_room_id, _room = _can_access_room(event_id, normalized_room_id, actor)
+    if not allowed or not effective_room_id:
+        return False, 0, "", "forbidden"
+    return True, int(event_id), str(effective_room_id), None
+
+
 def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", limit: int = 200) -> list[dict[str, Any]]:
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -4260,6 +4287,7 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
     db = get_db()
     cur = db.cursor(dictionary=True)
     sent_count = 0
+    dm_room_id = f"dm:{dm_uuid}"
     try:
         cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s", (conversation_id, sender_actor_key))
         targets = cur.fetchall() or []
@@ -4272,10 +4300,19 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
         a_type, _, a_id = actor_key.partition(":")
         if not a_type or not a_id:
             continue
+        if _is_actor_actively_viewing_room(a_type, a_id, dm_room_id):
+            current_app.logger.info(
+                "dm notification suppressed by presence conversation_id=%s room_id=%s actor=%s:%s",
+                conversation_id,
+                dm_room_id,
+                a_type,
+                a_id,
+            )
+            continue
         sent_count += _send_push_to_actor(
             a_type,
             a_id,
-            {"title": f"{sender_display_name}さんからDM", "body": body, "event_id": 0, "room_id": f"dm:{dm_uuid}", "url": f"/chat/dm/room/{dm_uuid}"},
+            {"title": f"{sender_display_name}さんからDM", "body": body, "event_id": 0, "room_id": dm_room_id, "url": f"/chat/dm/room/{dm_uuid}"},
         )
         if a_type == "line":
             _create_external_chat_notification(
@@ -4284,7 +4321,7 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
                 title=f"{sender_display_name}さんからDM",
                 body=body,
                 event_id=0,
-                room_id=f"dm:{dm_uuid}",
+                room_id=dm_room_id,
                 room_name="DM",
                 dedup_key=f"chat:dm:{dm_uuid}:{int(time.time())}:{a_id}",
             )
@@ -6251,14 +6288,14 @@ def api_room_presence_enter():
     visible_raw = payload.get("is_visible")
     is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
 
-    if event_id <= 0 or not room_id or not client_id:
+    if not room_id or not client_id:
         return jsonify({"ok": False, "error": "invalid_params"}), 400
 
-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
     if not allowed or not effective_room_id:
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+        return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
 
-    ok = _upsert_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
+    ok = _upsert_room_presence(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id, is_visible)
     return jsonify({"ok": bool(ok), "room_id": effective_room_id})
 
 
@@ -6282,14 +6319,14 @@ def api_room_presence_ping():
     visible_raw = payload.get("is_visible")
     is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
 
-    if event_id <= 0 or not room_id or not client_id:
+    if not room_id or not client_id:
         return jsonify({"ok": False, "error": "invalid_params"}), 400
 
-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
     if not allowed or not effective_room_id:
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+        return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
 
-    ok = _update_room_presence_ping(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
+    ok = _update_room_presence_ping(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id, is_visible)
     return jsonify({"ok": bool(ok), "room_id": effective_room_id})
 
 
@@ -6311,14 +6348,14 @@ def api_room_presence_leave():
     room_id = str(payload.get("room_id") or "").strip()
     client_id = str(payload.get("client_id") or "").strip()
 
-    if event_id <= 0 or not room_id or not client_id:
+    if not room_id or not client_id:
         return jsonify({"ok": False, "error": "invalid_params"}), 400
 
-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
     if not allowed or not effective_room_id:
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+        return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
 
-    _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id)
+    _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id)
     return jsonify({"ok": True, "room_id": effective_room_id})
 
 

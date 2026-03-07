@@ -4202,7 +4202,9 @@ function openFulltextModal(row) {
 
 
   async function initializeNotificationState() {
-    if (dmMode || !(eventId > 0 && roomId)) {
+    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
+    const hasRoomContext = dmMode ? Boolean(activeRoomId) : (eventId > 0 && Boolean(activeRoomId));
+    if (!hasRoomContext) {
       await refreshNotificationBadge();
       return;
     }
@@ -4215,7 +4217,9 @@ function openFulltextModal(row) {
     }
 
     try {
-      const readResult = await markChatNotificationsReadByRoom();
+      const readResult = dmMode
+        ? await markDmNotificationsReadByRoom(activeRoomId)
+        : await markChatNotificationsReadByRoom();
       if (readResult && typeof readResult.unread_count !== 'undefined') {
         applyNotificationBadge(Number(readResult.unread_count || 0));
       } else {
@@ -4298,6 +4302,35 @@ function openFulltextModal(row) {
     return data;
   }
 
+  async function markDmNotificationsReadByRoom(dmRoomId) {
+    const roomKey = String(dmRoomId || '').trim();
+    if (!roomKey) return null;
+    const res = await fetch('/external-login/api/notifications/read-dm-room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ room_id: roomKey }),
+    });
+    if (res.status === 401) {
+      console.info('[notifications] read-dm-room skipped (unauthorized)');
+      return null;
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      console.info('[notifications] read-dm-room failed', { status: res.status, reason: data.reason || null });
+      throw new Error('read-dm-room failed');
+    }
+    console.info('[notifications] read-dm-room success', {
+      room_id: roomKey,
+      updated_count: Number(data.updated_count || 0),
+      unread_count: Number(data.unread_count || 0),
+      latest_id: Number(data.latest_id || 0),
+    });
+    return data;
+  }
+
+
+
   function getPresenceClientId() {
     const key = 'chat_presence_client_id';
     let cid = window.sessionStorage.getItem(key) || '';
@@ -4309,15 +4342,16 @@ function openFulltextModal(row) {
   }
 
   async function enterRoomPresence() {
-    if (dmMode || !(eventId > 0 && roomId)) return false;
+    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
+    if (!activeRoomId || (!dmMode && !(eventId > 0))) return false;
     const res = await fetch('/chat/api/room-presence/enter', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({
         csrf_token: csrfToken,
-        event_id: eventId,
-        room_id: roomId,
+        event_id: dmMode ? 0 : eventId,
+        room_id: activeRoomId,
         client_id: getPresenceClientId(),
         is_visible: document.visibilityState === 'visible' ? 1 : 0,
       }),
@@ -4331,15 +4365,16 @@ function openFulltextModal(row) {
   }
 
   async function pingRoomPresence() {
-    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
+    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
+    if (!activeRoomId || (!dmMode && !(eventId > 0)) || !state.roomPresenceEntered) return;
     const res = await fetch('/chat/api/room-presence/ping', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify({
         csrf_token: csrfToken,
-        event_id: eventId,
-        room_id: roomId,
+        event_id: dmMode ? 0 : eventId,
+        room_id: activeRoomId,
         client_id: getPresenceClientId(),
         is_visible: document.visibilityState === 'visible' ? 1 : 0,
       }),
@@ -4354,7 +4389,7 @@ function openFulltextModal(row) {
   }
 
   function startPresenceHeartbeat() {
-    if (state.presenceHeartbeatTimer || dmMode || !state.roomPresenceEntered) return;
+    if (state.presenceHeartbeatTimer || !state.roomPresenceEntered) return;
     state.presenceHeartbeatTimer = setInterval(() => {
       pingRoomPresence().catch((e) => console.info('[presence] heartbeat failed', e));
     }, 20000);
@@ -4367,11 +4402,12 @@ function openFulltextModal(row) {
   }
 
   function sendRoomPresenceLeaveBeacon() {
-    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
+    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
+    if (!activeRoomId || (!dmMode && !(eventId > 0)) || !state.roomPresenceEntered) return;
     const payload = JSON.stringify({
       csrf_token: csrfToken,
-      event_id: eventId,
-      room_id: roomId,
+      event_id: dmMode ? 0 : eventId,
+      room_id: activeRoomId,
       client_id: getPresenceClientId(),
     });
     if (navigator.sendBeacon) {

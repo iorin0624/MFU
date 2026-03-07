@@ -51,6 +51,8 @@ def _is_notification_visible_for_external(cur, uid: int, row: dict[str, Any], ro
     event_id, room_id = _parse_chat_room_context(row)
     if not room_id:
         return True, None
+    if str(room_id).startswith("dm:"):
+        return True, "DM"
 
     cache_key = f"{event_id}:{room_id}"
     if cache_key in room_cache:
@@ -783,6 +785,79 @@ def api_notifications_mark_read_by_room():
             uid,
             room_id,
             event_id,
+            exc_info=True,
+        )
+        raise
+    finally:
+        cur.close()
+        db.close()
+
+
+@bp.post("/api/notifications/read-dm-room")
+def api_notifications_mark_read_dm_room():
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    uid = int(session.get("ext_user_id") or 0)
+    payload = request.get_json(silent=True) or {}
+    room_id = str(payload.get("room_id") or "").strip()
+    if not room_id or not room_id.startswith("dm:"):
+        resp = jsonify({"ok": False, "reason": "invalid_room_id"})
+        resp.status_code = 400
+        return resp
+
+    _ensure_notification_schema()
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            UPDATE mfu_notifications
+               SET read_at=%s
+             WHERE user_kind='external'
+               AND user_id=%s
+               AND kind='dm'
+               AND chat_room_id=%s
+               AND read_at IS NULL
+            """,
+            (now, uid, room_id),
+        )
+        updated_count = int(cur.rowcount or 0)
+        db.commit()
+
+        unread_count = _compute_unread_count_external(uid)
+        cur.execute(
+            """
+            SELECT MAX(id) AS latest_id
+              FROM mfu_notifications
+             WHERE user_kind='external'
+               AND user_id=%s
+            """,
+            (uid,),
+        )
+        latest_id = int((cur.fetchone() or {}).get("latest_id") or 0)
+        _emit_notif_unread(uid, reason="dm_room_read", latest_id=latest_id)
+        current_app.logger.info(
+            "notifications read-dm-room user_id=%s room_id=%s updated_count=%s unread_count=%s latest_id=%s",
+            uid,
+            room_id,
+            updated_count,
+            unread_count,
+            latest_id,
+        )
+        return jsonify({
+            "ok": True,
+            "updated_count": updated_count,
+            "unread_count": unread_count,
+            "latest_id": latest_id,
+        })
+    except Exception:
+        current_app.logger.warning(
+            "notifications read-dm-room failed user_id=%s room_id=%s",
+            uid,
+            room_id,
             exc_info=True,
         )
         raise
