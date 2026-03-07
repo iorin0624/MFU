@@ -1688,6 +1688,13 @@ window.addEventListener('DOMContentLoaded', async () => {
   const [myActorType, myActorId] = meId.includes(':')
     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
     : ['', ''];
+  const canonicalMeId = (() => {
+    if (dmMode) return meId;
+    const [actorType, actorId] = meId.includes(':')
+      ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
+      : ['', ''];
+    return canonicalEventActorKey(actorType, actorId) || meId;
+  })();
 
   function buildSafeBodyHtml(msg) {
     const rawHtml = (msg?.body_html || '').trim();
@@ -3537,8 +3544,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     const actorType = payload?.actor_type || '';
     const actorId = String(payload?.actor_id || '');
     if (!actorType || !actorId) return;
-    const key = `${actorType}:${actorId}`;
-    if (key === meId) return;
+    const key = dmMode ? `${actorType}:${actorId}` : canonicalEventActorKey(actorType, actorId);
+    if (!key) return;
+    if (key === canonicalMeId) return;
 
     if (payload?.is_typing) {
       state.typingMembers.set(key, payload?.display_name || key);
@@ -4070,7 +4078,9 @@ function openFulltextModal(row) {
   function refreshReadIndicatorForRow(row) {
     if (!row?.classList.contains('me')) return;
     const messageId = Number(row.dataset.messageId || 0);
-    const senderId = row.dataset.senderId || '';
+    const senderId = dmMode
+      ? (row.dataset.senderId || '')
+      : (canonicalEventActorKey(...splitActorKey(row.dataset.senderId || '')) || row.dataset.senderId || '');
     const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
     const list = row.querySelector('.chat-read-list');
     if (!messageId || !indicator || !list) return;
@@ -4079,7 +4089,7 @@ function openFulltextModal(row) {
     for (const entry of state.readStateByActor.values()) {
       if (Number(entry.last_read_message_id || 0) < messageId) continue;
       if (senderId && isSameActorByKey(entry.actor_type, entry.actor_id, senderId)) continue;
-      if (meId && isSameActorByKey(entry.actor_type, entry.actor_id, meId)) continue;
+      if (canonicalMeId && isSameActorByKey(entry.actor_type, entry.actor_id, canonicalMeId)) continue;
       readers.push(entry.display_name || `${entry.actor_type}:${entry.actor_id}`);
     }
     readers.sort((a, b) => a.localeCompare(b, 'ja'));

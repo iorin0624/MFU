@@ -1706,9 +1706,16 @@ def _normalize_event_actor_pair(actor_type: str, actor_id: str) -> tuple[str, st
     return normalized_type, normalized_id
 
 
+def _canonical_event_actor_key(actor_type: str, actor_id: str) -> str:
+    canonical_type, canonical_id = _normalize_event_actor_pair(actor_type, actor_id)
+    if not canonical_type or not canonical_id:
+        return ""
+    return f"{canonical_type}:{canonical_id}"
+
+
 def _canonical_event_actor(actor_type: str, actor_id: str, display_name: str = "") -> dict[str, str]:
     canonical_type, canonical_id = _normalize_event_actor_pair(actor_type, actor_id)
-    canonical_key = _actor_sender_id(canonical_type, canonical_id) if canonical_type and canonical_id else ""
+    canonical_key = _canonical_event_actor_key(canonical_type, canonical_id)
     return {
         "actor_type": canonical_type,
         "actor_id": canonical_id,
@@ -6676,11 +6683,11 @@ def on_join(data):
     _ensure_chat_read_state_room_schema()
     _ensure_chat_edit_schema()
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
     room_id = str((data or {}).get("room_id") or "").strip() or None
 
     if dm_uuid:
+        actor_key = get_chat_actor_key(actor)
         if not actor or not actor_key:
             emit("chat_error", {"error": "forbidden"})
             return
@@ -6720,7 +6727,6 @@ def on_join(data):
 @socketio.on("chat_seen")
 def on_seen(data):
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
     if not actor:
         disconnect()
         return
@@ -6730,6 +6736,7 @@ def on_seen(data):
     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
 
     if dm_uuid:
+        actor_key = get_chat_actor_key(actor)
         if not actor_key or last_seen_message_id <= 0:
             return
         if not can_access_dm(dm_uuid, actor_key):
