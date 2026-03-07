@@ -1,594 +1,333 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index e6b4a298fb244c7fcfd5ed948d5183ec2647a0a7..a4924049bea28e8dd42ceb0557258fc0779ac0b8 100644
+index a4924049bea28e8dd42ceb0557258fc0779ac0b8..01b6a7f2a7f79ddc217f9fb7f3833cb664158c99 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -53,92 +53,96 @@ try:
+@@ -3418,50 +3418,51 @@ def _create_external_chat_notification(
+     from app.external_login_user.notifications import create_notification_external
  
-     register_heif_opener()
-     HEIF_OPENER_AVAILABLE = True
- except Exception:
-     HEIF_OPENER_AVAILABLE = False
+     if kind == "dm" and room_id and room_id.startswith("dm:"):
+         dm_uuid = room_id.split(":", 1)[1]
+         target_url = f"/chat/dm/room/{dm_uuid}"
+     elif int(event_id or 0) <= 0 and room_id and room_id.startswith("dm:"):
+         dm_uuid = room_id.split(":", 1)[1]
+         target_url = f"/chat/dm/room/{dm_uuid}"
+     else:
+         params = {"event_id": event_id}
+         if room_id:
+             params["room_id"] = room_id
+         target_url = f"/chat/events/{event_id}?{urlencode(params)}"
+     title_text = title
+     if room_name:
+         title_text = f"[{room_name}] {title}"
  
- chat_bp = Blueprint(
-     "chat",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
-     url_prefix="/chat",
- )
- 
- MESSAGE_MAX_LEN = 2000
- RATE_LIMIT_SECONDS = 1
- RATE_LIMIT_PER_SECOND = 1
- RATE_LIMIT_PER_MINUTE = 30
- RATE_LIMIT_ERROR_MESSAGE = "送信が速すぎます。少し待ってください"
- JST = ZoneInfo("Asia/Tokyo")
- 
- CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REPLY_SCHEMA_READY: bool | None = None
- CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_PUSH_SCHEMA_READY: bool | None = None
-+CHAT_ACTIVE_VIEW_SCHEMA_CHECK_LOCK = threading.Lock()
-+CHAT_ACTIVE_VIEW_SCHEMA_READY: bool | None = None
- CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
- CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_READ_STATE_SCHEMA_READY: bool | None = None
- CHAT_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_REACTION_SCHEMA_READY: bool | None = None
- CHAT_IMAGE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_IMAGE_SCHEMA_READY: bool | None = None
- CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DELETE_SCHEMA_READY: bool | None = None
- CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOMS_SCHEMA_READY: bool | None = None
- CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
- CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
- CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_EDIT_SCHEMA_READY: bool | None = None
- CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_SEARCH_SCHEMA_READY: bool | None = None
- CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_THREAD_SCHEMA_READY: bool | None = None
- CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_SCHEMA_READY: bool | None = None
- CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
- CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
- CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
- CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
- CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
- CHAT_UPLOAD_MAX_FILES = 6
- PUSH_REQUEST_TIMEOUT_SECONDS = 6
- PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
- PUSH_LOG_SUPPRESSION_SECONDS = 300
-+CHAT_ACTIVE_VIEW_TTL_SECONDS = 60
-+CHAT_ACTIVE_VIEW_HEARTBEAT_INTERVAL_SECONDS = 20
- PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
- PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
- PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
- PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
- PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
- PUSH_ASYNC_INFLIGHT = 0
- _LINKIFY_RE = re.compile(
-     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
- )
- _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
- CHAT_TYPING_STATE_LOCK = threading.Lock()
- CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
- CHAT_TYPING_TTL_SECONDS = 3
- SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
- SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
- 
- SYSTEM_TEMPLATE_DEFAULTS: dict[str, str] = {
-     "join_approved": "{nickname}さんが参加しました！",
- }
- SYSTEM_TEMPLATE_ALLOWED_PLACEHOLDERS: dict[str, set[str]] = {
-     "join_approved": {"nickname"},
- }
- 
- CHAT_RATE_LIMIT_LOCK = threading.Lock()
- CHAT_RATE_LIMIT_MEMORY: dict[str, deque[float]] = {}
-@@ -373,50 +377,310 @@ def _ensure_chat_push_schema() -> bool:
- 
-             try:
-                 cur.execute(
-                     "ALTER TABLE chat_push_subscriptions ADD UNIQUE KEY uq_chat_push (actor_type, actor_id, endpoint_hash)"
-                 )
-             except Exception:
-                 pass
- 
-             try:
-                 cur.execute("ALTER TABLE chat_push_subscriptions ADD KEY idx_chat_push_actor (actor_type, actor_id)")
-             except Exception:
-                 pass
- 
-             db.commit()
-             CHAT_PUSH_SCHEMA_READY = True
-             return True
-         except Exception:
-             current_app.logger.warning("chat push schema ensure failed", exc_info=True)
-             CHAT_PUSH_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
+     create_notification_external(
+         user_id=recipient_user_id,
+         kind=kind,
+         title=title_text,
+         body=_build_plain_excerpt(body, max_len=300),
+         target_url=target_url,
+         dedup_key=dedup_key,
+         event_id=event_id,
++        chat_room_id=str(room_id).strip() if room_id else None,
+     )
  
  
-+
-+
-+def _ensure_chat_active_view_schema() -> bool:
-+    global CHAT_ACTIVE_VIEW_SCHEMA_READY
-+    if CHAT_ACTIVE_VIEW_SCHEMA_READY is not None:
-+        return CHAT_ACTIVE_VIEW_SCHEMA_READY
-+
-+    with CHAT_ACTIVE_VIEW_SCHEMA_CHECK_LOCK:
-+        if CHAT_ACTIVE_VIEW_SCHEMA_READY is not None:
-+            return CHAT_ACTIVE_VIEW_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor()
-+        try:
-+            cur.execute(
-+                """
-+                CREATE TABLE IF NOT EXISTS chat_active_views (
-+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+                  actor_type VARCHAR(16) NOT NULL,
-+                  actor_id VARCHAR(64) NOT NULL,
-+                  event_id BIGINT UNSIGNED NOT NULL,
-+                  room_id VARCHAR(64) NOT NULL,
-+                  client_id VARCHAR(64) NOT NULL,
-+                  is_visible TINYINT(1) NOT NULL DEFAULT 1,
-+                  entered_at DATETIME NOT NULL,
-+                  last_ping_at DATETIME NOT NULL,
-+                  created_at DATETIME NOT NULL,
-+                  updated_at DATETIME NOT NULL,
-+                  UNIQUE KEY uq_chat_active_view_actor_client (actor_type, actor_id, client_id),
-+                  KEY idx_chat_active_view_room (room_id),
-+                  KEY idx_chat_active_view_lookup (actor_type, actor_id, room_id, is_visible, last_ping_at)
-+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+                """
-+            )
-+            db.commit()
-+            CHAT_ACTIVE_VIEW_SCHEMA_READY = True
-+            return True
-+        except Exception:
-+            current_app.logger.warning("chat active view schema ensure failed", exc_info=True)
-+            CHAT_ACTIVE_VIEW_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
-+def _resolve_current_actor() -> dict[str, Any] | None:
-+    return get_chat_actor()
-+
-+
-+def _upsert_room_presence(
-+    actor_type: str,
-+    actor_id: str,
-+    event_id: int,
-+    room_id: str,
-+    client_id: str,
-+    is_visible: bool,
-+) -> bool:
-+    if not _ensure_chat_active_view_schema():
-+        return False
-+
-+    now = datetime.utcnow()
-+    db = get_db()
-+    cur = db.cursor()
-+    try:
-+        cur.execute(
-+            """
-+            INSERT INTO chat_active_views (
-+              actor_type, actor_id, event_id, room_id, client_id,
-+              is_visible, entered_at, last_ping_at, created_at, updated_at
-+            )
-+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+            ON DUPLICATE KEY UPDATE
-+              event_id=VALUES(event_id),
-+              room_id=VALUES(room_id),
-+              is_visible=VALUES(is_visible),
-+              entered_at=VALUES(entered_at),
-+              last_ping_at=VALUES(last_ping_at),
-+              updated_at=VALUES(updated_at)
-+            """,
-+            (
-+                str(actor_type),
-+                str(actor_id),
-+                int(event_id),
-+                str(room_id),
-+                str(client_id),
-+                1 if is_visible else 0,
-+                now,
-+                now,
-+                now,
-+                now,
-+            ),
-+        )
-+        db.commit()
-+        return True
-+    except Exception:
-+        db.rollback()
-+        current_app.logger.warning(
-+            "room presence upsert failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
-+            actor_type,
-+            actor_id,
-+            event_id,
-+            room_id,
-+            client_id,
-+            exc_info=True,
-+        )
-+        return False
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _update_room_presence_ping(
-+    actor_type: str,
-+    actor_id: str,
-+    event_id: int,
-+    room_id: str,
-+    client_id: str,
-+    is_visible: bool,
-+) -> bool:
-+    if not _ensure_chat_active_view_schema():
-+        return False
-+
-+    now = datetime.utcnow()
-+    db = get_db()
-+    cur = db.cursor()
-+    try:
-+        cur.execute(
-+            """
-+            UPDATE chat_active_views
-+               SET event_id=%s,
-+                   room_id=%s,
-+                   is_visible=%s,
-+                   last_ping_at=%s,
-+                   updated_at=%s
-+             WHERE actor_type=%s
-+               AND actor_id=%s
-+               AND client_id=%s
-+            """,
-+            (
-+                int(event_id),
-+                str(room_id),
-+                1 if is_visible else 0,
-+                now,
-+                now,
-+                str(actor_type),
-+                str(actor_id),
-+                str(client_id),
-+            ),
-+        )
-+        if int(cur.rowcount or 0) == 0:
-+            cur.execute(
-+                """
-+                INSERT INTO chat_active_views (
-+                  actor_type, actor_id, event_id, room_id, client_id,
-+                  is_visible, entered_at, last_ping_at, created_at, updated_at
-+                )
-+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+                """,
-+                (
-+                    str(actor_type),
-+                    str(actor_id),
-+                    int(event_id),
-+                    str(room_id),
-+                    str(client_id),
-+                    1 if is_visible else 0,
-+                    now,
-+                    now,
-+                    now,
-+                    now,
-+                ),
-+            )
-+        db.commit()
-+        return True
-+    except Exception:
-+        db.rollback()
-+        current_app.logger.warning(
-+            "room presence ping failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
-+            actor_type,
-+            actor_id,
-+            event_id,
-+            room_id,
-+            client_id,
-+            exc_info=True,
-+        )
-+        return False
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _clear_room_presence(actor_type: str, actor_id: str, event_id: int, room_id: str, client_id: str) -> None:
-+    if not _ensure_chat_active_view_schema():
-+        return
-+
-+    db = get_db()
-+    cur = db.cursor()
-+    try:
-+        cur.execute(
-+            """
-+            DELETE FROM chat_active_views
-+             WHERE actor_type=%s
-+               AND actor_id=%s
-+               AND event_id=%s
-+               AND room_id=%s
-+               AND client_id=%s
-+            """,
-+            (str(actor_type), str(actor_id), int(event_id), str(room_id), str(client_id)),
-+        )
-+        db.commit()
-+    except Exception:
-+        db.rollback()
-+        current_app.logger.warning(
-+            "room presence leave failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
-+            actor_type,
-+            actor_id,
-+            event_id,
-+            room_id,
-+            client_id,
-+            exc_info=True,
-+        )
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _is_actor_actively_viewing_room(actor_type: str, actor_id: str, room_id: str) -> bool:
-+    if not _ensure_chat_active_view_schema():
-+        return False
-+
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT 1
-+              FROM chat_active_views
-+             WHERE actor_type=%s
-+               AND actor_id=%s
-+               AND room_id=%s
-+               AND is_visible=1
-+               AND last_ping_at >= (UTC_TIMESTAMP() - INTERVAL %s SECOND)
-+             LIMIT 1
-+            """,
-+            (str(actor_type), str(actor_id), str(room_id), int(CHAT_ACTIVE_VIEW_TTL_SECONDS)),
-+        )
-+        return bool(cur.fetchone())
-+    except Exception:
-+        current_app.logger.warning(
-+            "room presence active check failed actor=%s:%s room_id=%s",
-+            actor_type,
-+            actor_id,
-+            room_id,
-+            exc_info=True,
-+        )
-+        return False
-+    finally:
-+        cur.close()
-+        db.close()
-+
- def _ensure_chat_system_template_schema() -> bool:
-     global SYSTEM_TEMPLATE_SCHEMA_READY
-     if SYSTEM_TEMPLATE_SCHEMA_READY is not None:
-         return bool(SYSTEM_TEMPLATE_SCHEMA_READY)
+ def _send_chat_message_push_async(
+     app: Any,
+     event_id: int,
+     room_id: str,
+     sender_actor: dict[str, Any],
+     sender_display_name: str,
+     message_body: str,
+     message_id: int,
+     has_image: bool = False,
+     timing: dict[str, float] | None = None,
+ ) -> None:
+     with app.app_context():
+         from app.external_login_user.notifications import create_notification_external
  
-     with SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK:
-         if SYSTEM_TEMPLATE_SCHEMA_READY is not None:
-             return bool(SYSTEM_TEMPLATE_SCHEMA_READY)
+         t3 = time.monotonic()
+         trace = dict(timing or {})
+         trace["t3"] = t3
+         actor_push_metrics = {
+             "target_actors": 0,
+             "subscription_count": 0,
+             "success_count": 0,
+             "failure_count": 0,
+@@ -3913,50 +3914,76 @@ def _get_dm_conversation_by_uuid(dm_uuid: str) -> dict[str, Any] | None:
  
-         db = get_db()
-         cur = db.cursor()
-         try:
-             cur.execute(
-                 """
-                 CREATE TABLE IF NOT EXISTS chat_system_templates (
-                   id BIGINT NOT NULL AUTO_INCREMENT,
-                   template_key VARCHAR(64) NOT NULL,
-                   body_template TEXT NOT NULL,
-                   updated_at DATETIME NOT NULL,
-                   updated_by VARCHAR(64) NULL,
-                   PRIMARY KEY (id),
-                   UNIQUE KEY uq_chat_system_templates_template_key (template_key)
-                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-                 """
-             )
-@@ -3215,50 +3479,61 @@ def _send_chat_message_push_async(
-                     payload_body = f"{payload_body} {excerpt}"
-             else:
-                 payload_body = f"{sender_display_name}: {excerpt}"
  
-             payload = {
-                 "type": "chat_message",
-                 "event_id": event_id,
-                 "room_id": room_id,
-                 "url": f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
-                 "title": "イベントチャット",
-                 "body": payload_body,
-             }
- 
-             event = _get_event(event_id)
-             if event and event.get("title"):
-                 payload["title"] = str(event.get("title"))
-             room = _get_room(event_id, room_id, allow_archived=True)
-             room_name = str(room.get("room_name") or "") if room else ""
-             if room_name:
-                 payload["title"] = f"[{room_name}] {payload['title']}"
- 
-             sent_count = 0
-             for actor_type, actor_id in _build_chat_message_push_targets(event_id, room_id, sender_actor):
-                 if not _can_notify_actor_in_room(event_id, room_id, actor_type, actor_id):
-                     continue
-+                if _is_actor_actively_viewing_room(actor_type, actor_id, room_id):
-+                    notification_skipped += 1
-+                    current_app.logger.info(
-+                        "chat notification suppressed by presence event_id=%s room_id=%s actor=%s:%s message_id=%s",
-+                        event_id,
-+                        room_id,
-+                        actor_type,
-+                        actor_id,
-+                        message_id,
-+                    )
-+                    continue
-                 actor_push_metrics["target_actors"] += 1
-                 sent_count += _send_push_to_actor(actor_type, actor_id, payload, metrics=actor_push_metrics)
-                 if actor_type == "line":
-                     inserted = create_notification_external(
-                         user_id=int(actor_id),
-                         kind="chat_message",
-                         title=str(payload.get("title") or "イベントチャット"),
-                         body=str(payload.get("body") or message_body),
-                         target_url=f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
-                         dedup_key=f"chat:{event_id}:{room_id}:{message_id}:{actor_id}",
-                         event_id=event_id,
-                         chat_event_id=event_id,
-                         chat_room_id=room_id,
-                     )
-                     if inserted:
-                         notification_inserted += 1
-                     else:
-                         notification_skipped += 1
- 
-             _log_notification(event_id, "chat_message", payload, sent_count)
-         except Exception as exc:
-             sender = f"{sender_actor.get('actor_type', '?')}:{sender_actor.get('actor_id', '?')}"
-             current_app.logger.warning(
-                 "chat push async worker recovered event_id=%s sender=%s error=%s",
-                 event_id,
-@@ -5934,50 +6209,141 @@ def api_room_mute(event_id: int, room_id: str):
+ def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
+     conv = _get_dm_conversation_by_uuid(conversation_uuid)
+     if not conv:
+         return False
+     if str(conv.get("dm_type") or "") == "user_user" and not _chat_dm_enable_user_user():
+         return False
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
          cur.execute(
              """
-             INSERT IGNORE INTO chat_room_members (
-               room_id, actor_type, actor_id,
-               added_at, added_by_actor_type, added_by_actor_id
-             ) VALUES (%s,%s,%s,%s,%s,%s)
+             SELECT 1 FROM chat_dm_participants
+             WHERE conversation_id=%s AND actor_key=%s
+             LIMIT 1
              """,
-             (effective_room_id, actor["actor_type"], str(actor["actor_id"]), now, actor["actor_type"], str(actor["actor_id"])),
+             (conv["id"], actor_key),
          )
-         cur.execute(
-             """
-             UPDATE chat_room_members
-                SET muted_until=%s
-              WHERE room_id=%s AND actor_type=%s AND actor_id=%s
-             """,
-             (muted_until, effective_room_id, actor["actor_type"], str(actor["actor_id"])),
-         )
-         db.commit()
+         return bool(cur.fetchone())
      finally:
          cur.close()
+         db.close()
+ 
+ 
++def _resolve_presence_room_context(
++    actor: dict[str, Any],
++    event_id: int,
++    room_id: str,
++) -> tuple[bool, int, str, str | None]:
++    normalized_room_id = str(room_id or "").strip()
++    if not normalized_room_id:
++        return False, 0, "", "invalid_params"
++
++    if normalized_room_id.startswith("dm:"):
++        dm_uuid = normalized_room_id.split(":", 1)[1].strip()
++        if not dm_uuid:
++            return False, 0, "", "invalid_dm_room"
++        actor_key = _actor_sender_id(actor.get("actor_type", ""), str(actor.get("actor_id") or ""))
++        if not can_access_dm(dm_uuid, actor_key):
++            return False, 0, "", "forbidden"
++        return True, 0, f"dm:{dm_uuid}", None
++
++    if event_id <= 0:
++        return False, 0, "", "invalid_params"
++    allowed, effective_room_id, _room = _can_access_room(event_id, normalized_room_id, actor)
++    if not allowed or not effective_room_id:
++        return False, 0, "", "forbidden"
++    return True, int(event_id), str(effective_room_id), None
++
++
+ def _load_dm_messages(conversation_id: int, actor_key: str, dm_uuid: str = "", limit: int = 200) -> list[dict[str, Any]]:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT id, sender_actor_key, body_type, body_text, created_at,
+                    COALESCE(deleted_flag, 0) AS deleted_flag,
+                    deleted_at,
+                    deleted_by_actor_key,
+                    COALESCE(edited_flag, 0) AS edited_flag,
+                    edited_at,
+                    edited_by_actor_key
+             FROM chat_dm_messages
+             WHERE conversation_id=%s
+             ORDER BY id DESC
+             LIMIT %s
+             """,
+             (conversation_id, max(1, min(int(limit), 200))),
+         )
+         rows = list(reversed(cur.fetchall() or []))
+     finally:
+         cur.close()
+         db.close()
+ 
+@@ -4238,75 +4265,85 @@ def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
+             (conversation_id,),
+         )
+         rows = cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+     snapshot: list[dict[str, Any]] = []
+     for row in rows:
+         actor_key = str(row.get("actor_key") or "")
+         actor_type, actor_id = _split_actor_key(actor_key)
+         snapshot.append(
+             {
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "display_name": _actor_key_to_display_name(actor_key),
+                 "last_read_message_id": int(row.get("last_read_message_id") or 0),
+             }
+         )
+     return snapshot
+ 
+ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sender_display_name: str, body: str) -> None:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     sent_count = 0
++    dm_room_id = f"dm:{dm_uuid}"
+     try:
+         cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s", (conversation_id, sender_actor_key))
+         targets = cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+     for t in targets:
+         actor_key = str(t.get("actor_key") or "")
+         a_type, _, a_id = actor_key.partition(":")
+         if not a_type or not a_id:
+             continue
++        if _is_actor_actively_viewing_room(a_type, a_id, dm_room_id):
++            current_app.logger.info(
++                "dm notification suppressed by presence conversation_id=%s room_id=%s actor=%s:%s",
++                conversation_id,
++                dm_room_id,
++                a_type,
++                a_id,
++            )
++            continue
+         sent_count += _send_push_to_actor(
+             a_type,
+             a_id,
+-            {"title": f"{sender_display_name}さんからDM", "body": body, "event_id": 0, "room_id": f"dm:{dm_uuid}", "url": f"/chat/dm/room/{dm_uuid}"},
++            {"title": f"{sender_display_name}さんからDM", "body": body, "event_id": 0, "room_id": dm_room_id, "url": f"/chat/dm/room/{dm_uuid}"},
+         )
+         if a_type == "line":
+             _create_external_chat_notification(
+                 recipient_user_id=int(a_id),
+                 kind="dm",
+                 title=f"{sender_display_name}さんからDM",
+                 body=body,
+                 event_id=0,
+-                room_id=f"dm:{dm_uuid}",
++                room_id=dm_room_id,
+                 room_name="DM",
+                 dedup_key=f"chat:dm:{dm_uuid}:{int(time.time())}:{a_id}",
+             )
+     _log_notification(0, "dm", {"dm_uuid": dm_uuid, "link": f"/chat/dm/room/{dm_uuid}"}, sent_count)
+ 
+ 
+ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT c.id, c.uuid, c.dm_type, c.last_message_at,
+                    p.last_read_message_id,
+                    (SELECT body_text FROM chat_dm_messages m WHERE m.id = c.last_message_id LIMIT 1) AS last_message,
+                    (SELECT COUNT(*) FROM chat_dm_messages m
+                      WHERE m.conversation_id=c.id
+                        AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count,
+                    (SELECT actor_key FROM chat_dm_participants pp
+                      WHERE pp.conversation_id=c.id AND pp.actor_key<>%s
+                      LIMIT 1) AS peer_actor_key
+             FROM chat_dm_conversations c
+             JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
+             ORDER BY (unread_count > 0) DESC, unread_count DESC, c.last_message_at DESC
+             """,
+@@ -6229,118 +6266,118 @@ def api_room_mute(event_id: int, room_id: str):
          db.close()
  
      return jsonify({"ok": True, "muted_until": muted_until.isoformat() if muted_until else None})
  
  
-+@chat_bp.post("/api/room-presence/enter")
-+def api_room_presence_enter():
-+    payload = request.get_json(silent=True) or {}
-+    token = (payload.get("csrf_token") or "").strip()
-+    if token != session.get("chat_csrf"):
-+        return jsonify({"ok": False, "error": "csrf"}), 400
-+
-+    actor = _resolve_current_actor()
-+    if not actor:
-+        return jsonify({"ok": False, "error": "unauthorized"}), 401
-+
-+    try:
-+        event_id = int(payload.get("event_id") or 0)
-+    except Exception:
-+        event_id = 0
-+    room_id = str(payload.get("room_id") or "").strip()
-+    client_id = str(payload.get("client_id") or "").strip()
-+    visible_raw = payload.get("is_visible")
-+    is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
-+
-+    if event_id <= 0 or not room_id or not client_id:
-+        return jsonify({"ok": False, "error": "invalid_params"}), 400
-+
-+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-+    if not allowed or not effective_room_id:
-+        return jsonify({"ok": False, "error": "forbidden"}), 403
-+
-+    ok = _upsert_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
-+    return jsonify({"ok": bool(ok), "room_id": effective_room_id})
-+
-+
-+@chat_bp.post("/api/room-presence/ping")
-+def api_room_presence_ping():
-+    payload = request.get_json(silent=True) or {}
-+    token = (payload.get("csrf_token") or "").strip()
-+    if token != session.get("chat_csrf"):
-+        return jsonify({"ok": False, "error": "csrf"}), 400
-+
-+    actor = _resolve_current_actor()
-+    if not actor:
-+        return jsonify({"ok": False, "error": "unauthorized"}), 401
-+
-+    try:
-+        event_id = int(payload.get("event_id") or 0)
-+    except Exception:
-+        event_id = 0
-+    room_id = str(payload.get("room_id") or "").strip()
-+    client_id = str(payload.get("client_id") or "").strip()
-+    visible_raw = payload.get("is_visible")
-+    is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
-+
-+    if event_id <= 0 or not room_id or not client_id:
-+        return jsonify({"ok": False, "error": "invalid_params"}), 400
-+
-+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-+    if not allowed or not effective_room_id:
-+        return jsonify({"ok": False, "error": "forbidden"}), 403
-+
-+    ok = _update_room_presence_ping(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
-+    return jsonify({"ok": bool(ok), "room_id": effective_room_id})
-+
-+
-+@chat_bp.post("/api/room-presence/leave")
-+def api_room_presence_leave():
-+    payload = request.get_json(silent=True) or {}
-+    token = (payload.get("csrf_token") or "").strip()
-+    if token != session.get("chat_csrf"):
-+        return jsonify({"ok": False, "error": "csrf"}), 400
-+
-+    actor = _resolve_current_actor()
-+    if not actor:
-+        return jsonify({"ok": False, "error": "unauthorized"}), 401
-+
-+    try:
-+        event_id = int(payload.get("event_id") or 0)
-+    except Exception:
-+        event_id = 0
-+    room_id = str(payload.get("room_id") or "").strip()
-+    client_id = str(payload.get("client_id") or "").strip()
-+
-+    if event_id <= 0 or not room_id or not client_id:
-+        return jsonify({"ok": False, "error": "invalid_params"}), 400
-+
-+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
-+    if not allowed or not effective_room_id:
-+        return jsonify({"ok": False, "error": "forbidden"}), 403
-+
-+    _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id)
-+    return jsonify({"ok": True, "room_id": effective_room_id})
-+
-+
+ @chat_bp.post("/api/room-presence/enter")
+ def api_room_presence_enter():
+     payload = request.get_json(silent=True) or {}
+     token = (payload.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+ 
+     actor = _resolve_current_actor()
+     if not actor:
+         return jsonify({"ok": False, "error": "unauthorized"}), 401
+ 
+     try:
+         event_id = int(payload.get("event_id") or 0)
+     except Exception:
+         event_id = 0
+     room_id = str(payload.get("room_id") or "").strip()
+     client_id = str(payload.get("client_id") or "").strip()
+     visible_raw = payload.get("is_visible")
+     is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
+ 
+-    if event_id <= 0 or not room_id or not client_id:
++    if not room_id or not client_id:
+         return jsonify({"ok": False, "error": "invalid_params"}), 400
+ 
+-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
++    allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
+     if not allowed or not effective_room_id:
+-        return jsonify({"ok": False, "error": "forbidden"}), 403
++        return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
+ 
+-    ok = _upsert_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
++    ok = _upsert_room_presence(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id, is_visible)
+     return jsonify({"ok": bool(ok), "room_id": effective_room_id})
+ 
+ 
+ @chat_bp.post("/api/room-presence/ping")
+ def api_room_presence_ping():
+     payload = request.get_json(silent=True) or {}
+     token = (payload.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+ 
+     actor = _resolve_current_actor()
+     if not actor:
+         return jsonify({"ok": False, "error": "unauthorized"}), 401
+ 
+     try:
+         event_id = int(payload.get("event_id") or 0)
+     except Exception:
+         event_id = 0
+     room_id = str(payload.get("room_id") or "").strip()
+     client_id = str(payload.get("client_id") or "").strip()
+     visible_raw = payload.get("is_visible")
+     is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
+ 
+-    if event_id <= 0 or not room_id or not client_id:
++    if not room_id or not client_id:
+         return jsonify({"ok": False, "error": "invalid_params"}), 400
+ 
+-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
++    allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
+     if not allowed or not effective_room_id:
+-        return jsonify({"ok": False, "error": "forbidden"}), 403
++        return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
+ 
+-    ok = _update_room_presence_ping(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
++    ok = _update_room_presence_ping(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id, is_visible)
+     return jsonify({"ok": bool(ok), "room_id": effective_room_id})
+ 
+ 
+ @chat_bp.post("/api/room-presence/leave")
+ def api_room_presence_leave():
+     payload = request.get_json(silent=True) or {}
+     token = (payload.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+ 
+     actor = _resolve_current_actor()
+     if not actor:
+         return jsonify({"ok": False, "error": "unauthorized"}), 401
+ 
+     try:
+         event_id = int(payload.get("event_id") or 0)
+     except Exception:
+         event_id = 0
+     room_id = str(payload.get("room_id") or "").strip()
+     client_id = str(payload.get("client_id") or "").strip()
+ 
+-    if event_id <= 0 or not room_id or not client_id:
++    if not room_id or not client_id:
+         return jsonify({"ok": False, "error": "invalid_params"}), 400
+ 
+-    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
++    allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
+     if not allowed or not effective_room_id:
+-        return jsonify({"ok": False, "error": "forbidden"}), 403
++        return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
+ 
+-    _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id)
++    _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id)
+     return jsonify({"ok": True, "room_id": effective_room_id})
+ 
+ 
  @chat_bp.get("/api/push/bootstrap")
  def push_bootstrap():
      actor = get_chat_actor()
@@ -611,159 +350,16 @@ index e6b4a298fb244c7fcfd5ed948d5183ec2647a0a7..a4924049bea28e8dd42ceb0557258fc0
          abort(403)
      token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
      if token != session.get("chat_csrf"):
-         abort(400)
-     data = request.get_json(silent=True) or {}
-     endpoint = (data.get("endpoint") or "").strip()
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 2291fc2b354d486363fc994b6b5615cc127c61ce..835b5cd560be2dba22dfe00c01372720c1ac3b36 100644
+index 835b5cd560be2dba22dfe00c01372720c1ac3b36..73d72a5d46f025762c4b156fafa6589cea54bb89 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1708,81 +1708,84 @@ window.addEventListener('DOMContentLoaded', async () => {
-     touchDoubleTap: {
-       startX: 0,
-       startY: 0,
-       moved: false,
-       row: null,
-       bubble: null,
-       lastTapAt: 0,
-       lastTapX: 0,
-       lastTapY: 0,
-       lastTapMessageId: null,
-     },
-     ctxRow: null,
-     ctxBodyPlain: '',
-     editTargetMessageId: null,
-     typingMembers: new Map(),
-     typingDebounceTimer: null,
-     typingStopTimer: null,
-     typingSent: false,
-     threadRootId: null,
-     loadingOlder: false,
-     hasMoreOlder: true,
-     messageIds: new Set(),
-     unreadByRoomId: new Map(),
-     unreadRefreshTimer: null,
-     notificationPollTimer: null,
-+    presenceHeartbeatTimer: null,
-+    roomPresenceEntered: false,
-     muteUntilByRoomId: new Map(),
-     mentionCandidates: [],
-     mentionActiveIndex: 0,
-     mentionRange: null,
-     mentionDebounceTimer: null,
-     uploadPreviewFiles: [],
-     uploadPreviewUrls: [],
-     dragOverlayDepth: 0,
-   };
- 
-   if (ctxReactions && ctxReactions.childElementCount === 0) {
-     reactionEmojis.forEach((emoji) => {
-       const btn = document.createElement('button');
-       btn.type = 'button';
-       btn.className = 'chat-reaction-emoji';
-       btn.dataset.emoji = emoji;
-       btn.textContent = emoji;
-       ctxReactions.appendChild(btn);
+@@ -4180,64 +4180,68 @@ function openFulltextModal(row) {
      });
    }
  
-   const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-   if (dmMode) {
-     socket.emit('chat_join', { dm_uuid: dmUuid, room_id: effectiveDmRoomId });
-   } else {
-     socket.emit('chat_join', { event_id: eventId, room_id: roomId });
-   }
- 
-   initReactionUis();
-   syncExistingMessageIds();
-   await initializeNotificationState();
-+  startPresenceHeartbeat();
-   scheduleUnreadRefresh();
-   startNotificationBadgePolling();
-   refreshMuteButton();
-   scrollToLatestMessage();
-   refreshReadIndicators();
-   window.addEventListener('load', () => {
-     scrollToLatestMessage();
-     sendSeenForLatestMessage();
-   }, { once: true });
- 
-   updateAutoGrow();
-   bodyInput?.addEventListener('input', () => {
-     updateAutoGrow();
-     queueTypingStart();
-     handleMentionInput();
-   });
-   bodyInput?.addEventListener('keydown', handleMentionKeydown);
- 
-   socket.on('chat_message', (msg) => {
-     const wasNearBottom = isNearBottom(msgBox);
-     const messageId = Number(msg?.id || 0);
-     const threadRootId = Number(msg?.thread_root_id || 0);
-     const isThreadReply = threadRootId > 0;
- 
-     if (isThreadReply) {
-@@ -2241,52 +2244,59 @@ window.addEventListener('DOMContentLoaded', async () => {
-   searchToggleBtn?.addEventListener('click', () => {
-     if (!searchRow) return;
-     const isHidden = searchRow.classList.contains('d-none');
-     if (isHidden) {
-       searchRow.classList.remove('d-none');
-       searchInput?.focus();
-     } else {
-       searchRow.classList.add('d-none');
-       hideSearchPanel();
-     }
-   });
-   searchBtn?.addEventListener('click', () => runRoomSearch());
-   searchCloseBtn?.addEventListener('click', () => {
-     hideSearchPanel();
-     if (searchInput) searchInput.value = '';
-     searchRow?.classList.add('d-none');
-   });
-   searchInput?.addEventListener('keydown', (e) => {
-     if (e.key !== 'Enter') return;
-     e.preventDefault();
-     runRoomSearch();
-   });
-   window.addEventListener('beforeunload', () => {
-     sendTypingStop();
-     stopNotificationBadgePolling();
-+    stopPresenceHeartbeat();
-+    sendRoomPresenceLeaveBeacon();
-+  });
-+  window.addEventListener('pagehide', () => {
-+    stopPresenceHeartbeat();
-+    sendRoomPresenceLeaveBeacon();
-   });
-   document.addEventListener('visibilitychange', () => {
-+    syncRoomPresenceVisibility();
-     if (document.visibilityState === 'visible') scheduleNotifRefreshSoon();
-   });
-   window.addEventListener('focus', () => scheduleNotifRefreshSoon());
-   const notifLink = document.querySelector('.chat-notification-link');
-   notifLink?.addEventListener('click', () => {
-     setTimeout(() => refreshNotificationBadge(), 1000);
-   });
- 
-   imageBtn?.addEventListener('click', () => imageInput?.click());
-   imageInput?.addEventListener('change', () => {
-     const files = Array.from(imageInput.files || []);
-     if (files.length) openUploadPreview(files, { source: 'picker' });
-     imageInput.value = '';
-   });
- 
-   function isImageDataTransfer(dataTransfer) {
-     if (!dataTransfer) return false;
-     const items = Array.from(dataTransfer.items || []);
-     if (items.some((item) => item.kind === 'file' && String(item.type || '').startsWith('image/'))) return true;
-     const files = Array.from(dataTransfer.files || []);
-     return files.some((file) => String(file?.type || '').startsWith('image/'));
-   }
- 
-   function extractImageFiles(rawFiles) {
-     return Array.from(rawFiles || []).filter((file) => String(file?.type || '').startsWith('image/'));
-@@ -4175,130 +4185,229 @@ function openFulltextModal(row) {
+   function scheduleUnreadRefresh() {
+     if (state.unreadRefreshTimer) clearTimeout(state.unreadRefreshTimer);
      state.unreadRefreshTimer = setTimeout(() => {
        refreshUnread();
      }, 1000);
@@ -784,30 +380,33 @@ index 2291fc2b354d486363fc994b6b5615cc127c61ce..835b5cd560be2dba22dfe00c01372720
  
  
    async function initializeNotificationState() {
-     if (dmMode || !(eventId > 0 && roomId)) {
+-    if (dmMode || !(eventId > 0 && roomId)) {
++    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
++    const hasRoomContext = dmMode ? Boolean(activeRoomId) : (eventId > 0 && Boolean(activeRoomId));
++    if (!hasRoomContext) {
        await refreshNotificationBadge();
        return;
      }
      try {
--      await markChatNotificationsReadByRoom();
--      await refreshNotificationBadge();
--    } catch (_e) {
-+      const presenceEntered = await enterRoomPresence();
-+      state.roomPresenceEntered = Boolean(presenceEntered);
-+    } catch (e) {
-+      console.info('[presence] enter failed', e);
-+      state.roomPresenceEntered = false;
-+    }
-+
-+    try {
-+      const readResult = await markChatNotificationsReadByRoom();
-+      if (readResult && typeof readResult.unread_count !== 'undefined') {
-+        applyNotificationBadge(Number(readResult.unread_count || 0));
-+      } else {
-+        await refreshNotificationBadge();
-+      }
-+    } catch (e) {
-+      console.info('[notifications] read-by-room failed', e);
+       const presenceEntered = await enterRoomPresence();
+       state.roomPresenceEntered = Boolean(presenceEntered);
+     } catch (e) {
+       console.info('[presence] enter failed', e);
+       state.roomPresenceEntered = false;
+     }
+ 
+     try {
+-      const readResult = await markChatNotificationsReadByRoom();
++      const readResult = dmMode
++        ? await markDmNotificationsReadByRoom(activeRoomId)
++        : await markChatNotificationsReadByRoom();
+       if (readResult && typeof readResult.unread_count !== 'undefined') {
+         applyNotificationBadge(Number(readResult.unread_count || 0));
+       } else {
+         await refreshNotificationBadge();
+       }
+     } catch (e) {
+       console.info('[notifications] read-by-room failed', e);
        await refreshNotificationBadge();
      }
    }
@@ -826,75 +425,52 @@ index 2291fc2b354d486363fc994b6b5615cc127c61ce..835b5cd560be2dba22dfe00c01372720
    async function refreshNotificationBadge() {
      try {
        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-       if (res.status === 401) {
-         stopNotificationBadgePolling();
-         if (notificationBadge) {
-           notificationBadge.textContent = '🔔';
-           notificationBadge.classList.remove('has-unread');
-           notificationBadge.classList.add('no-unread');
-         }
-         return;
-       }
-       const data = await res.json().catch(() => ({}));
-       if (!res.ok) return;
-       const unread = Number(data.count || 0);
-       applyNotificationBadge(unread);
-     } catch (_e) {
-       // noop
+@@ -4276,124 +4280,156 @@ function openFulltextModal(row) {
+     const res = await fetch('/external-login/api/notifications/read-by-room', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       credentials: 'same-origin',
+       body: JSON.stringify({ event_id: eventId, room_id: roomId }),
+     });
+     if (res.status === 401) {
+       console.info('[notifications] read-by-room skipped (unauthorized)');
+       return null;
      }
+     const data = await res.json().catch(() => ({}));
+     if (!res.ok || !data.ok) {
+       console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
+       throw new Error('read-by-room failed');
+     }
+     console.info('[notifications] read-by-room success', {
+       room_id: roomId,
+       event_id: eventId,
+       updated_count: Number(data.updated_count || 0),
+       unread_count: Number(data.unread_count || 0),
+       latest_id: Number(data.latest_id || 0),
+     });
+     return data;
    }
  
-   function applyNotificationBadge(unread) {
-     if (!notificationBadge) return;
-     if (unread > 0) {
-       notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
-       notificationBadge.classList.remove('no-unread');
-       notificationBadge.classList.add('has-unread');
-     } else {
-       notificationBadge.textContent = '🔔';
-       notificationBadge.classList.remove('has-unread');
-       notificationBadge.classList.add('no-unread');
-     }
-   }
- 
-   async function markChatNotificationsReadByRoom() {
--    try {
--      const res = await fetch('/external-login/api/notifications/read-by-room', {
--        method: 'POST',
--        headers: { 'Content-Type': 'application/json' },
--        credentials: 'same-origin',
--        body: JSON.stringify({ event_id: eventId, room_id: roomId }),
--      });
--      if (res.status === 401) {
--        console.info('[notifications] read-by-room skipped (unauthorized)');
--        return;
--      }
--      const data = await res.json().catch(() => ({}));
--      if (!res.ok || !data.ok) {
--        console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
--        return;
--      }
--      const unread = Number(data.unread_count || 0);
--      applyNotificationBadge(unread);
--      console.info('[notifications] read-by-room success', {
-+    const res = await fetch('/external-login/api/notifications/read-by-room', {
++  async function markDmNotificationsReadByRoom(dmRoomId) {
++    const roomKey = String(dmRoomId || '').trim();
++    if (!roomKey) return null;
++    const res = await fetch('/external-login/api/notifications/read-dm-room', {
 +      method: 'POST',
 +      headers: { 'Content-Type': 'application/json' },
 +      credentials: 'same-origin',
-+      body: JSON.stringify({ event_id: eventId, room_id: roomId }),
++      body: JSON.stringify({ room_id: roomKey }),
 +    });
 +    if (res.status === 401) {
-+      console.info('[notifications] read-by-room skipped (unauthorized)');
++      console.info('[notifications] read-dm-room skipped (unauthorized)');
 +      return null;
 +    }
 +    const data = await res.json().catch(() => ({}));
 +    if (!res.ok || !data.ok) {
-+      console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
-+      throw new Error('read-by-room failed');
++      console.info('[notifications] read-dm-room failed', { status: res.status, reason: data.reason || null });
++      throw new Error('read-dm-room failed');
 +    }
-+    console.info('[notifications] read-by-room success', {
-+      room_id: roomId,
-+      event_id: eventId,
++    console.info('[notifications] read-dm-room success', {
++      room_id: roomKey,
 +      updated_count: Number(data.updated_count || 0),
 +      unread_count: Number(data.unread_count || 0),
 +      latest_id: Number(data.latest_id || 0),
@@ -902,99 +478,109 @@ index 2291fc2b354d486363fc994b6b5615cc127c61ce..835b5cd560be2dba22dfe00c01372720
 +    return data;
 +  }
 +
-+  function getPresenceClientId() {
-+    const key = 'chat_presence_client_id';
-+    let cid = window.sessionStorage.getItem(key) || '';
-+    if (!cid) {
-+      cid = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-+      window.sessionStorage.setItem(key, cid);
-+    }
-+    return cid;
-+  }
 +
-+  async function enterRoomPresence() {
-+    if (dmMode || !(eventId > 0 && roomId)) return false;
-+    const res = await fetch('/chat/api/room-presence/enter', {
-+      method: 'POST',
-+      headers: { 'Content-Type': 'application/json' },
-+      credentials: 'same-origin',
-+      body: JSON.stringify({
-+        csrf_token: csrfToken,
-+        event_id: eventId,
-         room_id: roomId,
-+        client_id: getPresenceClientId(),
-+        is_visible: document.visibilityState === 'visible' ? 1 : 0,
-+      }),
-+    });
-+    const data = await res.json().catch(() => ({}));
-+    if (!res.ok || !data.ok) {
-+      console.info('[presence] enter failed', { status: res.status, error: data.error || null });
-+      return false;
-+    }
-+    return true;
-+  }
 +
-+  async function pingRoomPresence() {
-+    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
-+    const res = await fetch('/chat/api/room-presence/ping', {
-+      method: 'POST',
-+      headers: { 'Content-Type': 'application/json' },
-+      credentials: 'same-origin',
-+      body: JSON.stringify({
-+        csrf_token: csrfToken,
-         event_id: eventId,
--        updated_count: Number(data.updated_count || 0),
--        unread_count: unread,
--      });
--    } catch (e) {
--      console.info('[notifications] read-by-room exception', e);
-+        room_id: roomId,
-+        client_id: getPresenceClientId(),
-+        is_visible: document.visibilityState === 'visible' ? 1 : 0,
-+      }),
-+    });
-+    if (!res.ok) {
-+      console.info('[presence] ping failed', { status: res.status });
-+    }
-+  }
-+
-+  function syncRoomPresenceVisibility() {
-+    pingRoomPresence().catch((e) => console.info('[presence] visibility ping failed', e));
-+  }
-+
-+  function startPresenceHeartbeat() {
-+    if (state.presenceHeartbeatTimer || dmMode || !state.roomPresenceEntered) return;
-+    state.presenceHeartbeatTimer = setInterval(() => {
-+      pingRoomPresence().catch((e) => console.info('[presence] heartbeat failed', e));
-+    }, 20000);
-+  }
-+
-+  function stopPresenceHeartbeat() {
-+    if (!state.presenceHeartbeatTimer) return;
-+    clearInterval(state.presenceHeartbeatTimer);
-+    state.presenceHeartbeatTimer = null;
-+  }
-+
-+  function sendRoomPresenceLeaveBeacon() {
-+    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
-+    const payload = JSON.stringify({
-+      csrf_token: csrfToken,
-+      event_id: eventId,
-+      room_id: roomId,
-+      client_id: getPresenceClientId(),
-+    });
-+    if (navigator.sendBeacon) {
-+      const blob = new Blob([payload], { type: 'application/json' });
-+      navigator.sendBeacon('/chat/api/room-presence/leave', blob);
-+      return;
+   function getPresenceClientId() {
+     const key = 'chat_presence_client_id';
+     let cid = window.sessionStorage.getItem(key) || '';
+     if (!cid) {
+       cid = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+       window.sessionStorage.setItem(key, cid);
      }
-+    fetch('/chat/api/room-presence/leave', {
-+      method: 'POST',
-+      headers: { 'Content-Type': 'application/json' },
-+      credentials: 'same-origin',
-+      keepalive: true,
-+      body: payload,
-+    }).catch(() => {});
+     return cid;
+   }
+ 
+   async function enterRoomPresence() {
+-    if (dmMode || !(eventId > 0 && roomId)) return false;
++    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
++    if (!activeRoomId || (!dmMode && !(eventId > 0))) return false;
+     const res = await fetch('/chat/api/room-presence/enter', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       credentials: 'same-origin',
+       body: JSON.stringify({
+         csrf_token: csrfToken,
+-        event_id: eventId,
+-        room_id: roomId,
++        event_id: dmMode ? 0 : eventId,
++        room_id: activeRoomId,
+         client_id: getPresenceClientId(),
+         is_visible: document.visibilityState === 'visible' ? 1 : 0,
+       }),
+     });
+     const data = await res.json().catch(() => ({}));
+     if (!res.ok || !data.ok) {
+       console.info('[presence] enter failed', { status: res.status, error: data.error || null });
+       return false;
+     }
+     return true;
+   }
+ 
+   async function pingRoomPresence() {
+-    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
++    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
++    if (!activeRoomId || (!dmMode && !(eventId > 0)) || !state.roomPresenceEntered) return;
+     const res = await fetch('/chat/api/room-presence/ping', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       credentials: 'same-origin',
+       body: JSON.stringify({
+         csrf_token: csrfToken,
+-        event_id: eventId,
+-        room_id: roomId,
++        event_id: dmMode ? 0 : eventId,
++        room_id: activeRoomId,
+         client_id: getPresenceClientId(),
+         is_visible: document.visibilityState === 'visible' ? 1 : 0,
+       }),
+     });
+     if (!res.ok) {
+       console.info('[presence] ping failed', { status: res.status });
+     }
+   }
+ 
+   function syncRoomPresenceVisibility() {
+     pingRoomPresence().catch((e) => console.info('[presence] visibility ping failed', e));
+   }
+ 
+   function startPresenceHeartbeat() {
+-    if (state.presenceHeartbeatTimer || dmMode || !state.roomPresenceEntered) return;
++    if (state.presenceHeartbeatTimer || !state.roomPresenceEntered) return;
+     state.presenceHeartbeatTimer = setInterval(() => {
+       pingRoomPresence().catch((e) => console.info('[presence] heartbeat failed', e));
+     }, 20000);
+   }
+ 
+   function stopPresenceHeartbeat() {
+     if (!state.presenceHeartbeatTimer) return;
+     clearInterval(state.presenceHeartbeatTimer);
+     state.presenceHeartbeatTimer = null;
+   }
+ 
+   function sendRoomPresenceLeaveBeacon() {
+-    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
++    const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
++    if (!activeRoomId || (!dmMode && !(eventId > 0)) || !state.roomPresenceEntered) return;
+     const payload = JSON.stringify({
+       csrf_token: csrfToken,
+-      event_id: eventId,
+-      room_id: roomId,
++      event_id: dmMode ? 0 : eventId,
++      room_id: activeRoomId,
+       client_id: getPresenceClientId(),
+     });
+     if (navigator.sendBeacon) {
+       const blob = new Blob([payload], { type: 'application/json' });
+       navigator.sendBeacon('/chat/api/room-presence/leave', blob);
+       return;
+     }
+     fetch('/chat/api/room-presence/leave', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       credentials: 'same-origin',
+       keepalive: true,
+       body: payload,
+     }).catch(() => {});
    }
  
    function startNotificationBadgePolling() {
@@ -1006,176 +592,159 @@ index 2291fc2b354d486363fc994b6b5615cc127c61ce..835b5cd560be2dba22dfe00c01372720
  
    function stopNotificationBadgePolling() {
      if (!state.notificationPollTimer) return;
-     clearInterval(state.notificationPollTimer);
-     state.notificationPollTimer = null;
-   }
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index e18a170b942e995c0ecdf1f7052e46fc5f725a62..fe807eb972bb8c0cfd3e7d401b5bf4cd94508204 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -29,50 +29,52 @@ def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | Non
+     target_url = str(row.get("target_url") or "").strip()
+     event_id = int(row.get("event_id") or 0) or chat_event_id
+     if not target_url:
+         return event_id, None
+     try:
+         parsed = urlparse(target_url)
+         if not parsed.path.startswith("/chat/events/"):
+             return event_id, None
+         qs = parse_qs(parsed.query or "")
+         room_id = (qs.get("room_id") or [None])[0]
+         if room_id:
+             room_id = str(room_id)
+         if not event_id:
+             ev = (qs.get("event_id") or [None])[0]
+             if ev:
+                 event_id = int(ev)
+         return event_id, room_id
+     except Exception:
+         return event_id, None
  
-   function updateUnreadJumpButton() {
-     const info = state.unreadByRoomId.get(roomId) || {};
-     const firstUnreadId = Number(info.first_unread_id || 0);
-     if (!unreadJumpBtn) return;
-     if (!firstUnreadId) {
-       unreadJumpBtn.classList.add('d-none');
-       unreadJumpBtn.disabled = true;
-       return;
-     }
-     unreadJumpBtn.classList.remove('d-none');
-@@ -4425,50 +4534,51 @@ function openFulltextModal(row) {
-     const mentionText = `@${candidate.display_name} `;
-     bodyInput.value = `${before}${mentionText}${after}`;
-     const nextCaret = before.length + mentionText.length;
-     bodyInput.setSelectionRange(nextCaret, nextCaret);
-     closeMentionMenu();
-     updateAutoGrow();
-   }
  
-   mentionMenu?.addEventListener('mousedown', (e) => {
-     const item = e.target.closest('[data-mention-index]');
-     if (!item) return;
-     e.preventDefault();
-     applyMentionCandidate(Number(item.dataset.mentionIndex || 0));
-   });
+ def _is_notification_visible_for_external(cur, uid: int, row: dict[str, Any], room_cache: dict[str, tuple[int, str]]) -> tuple[bool, str | None]:
+     event_id, room_id = _parse_chat_room_context(row)
+     if not room_id:
+         return True, None
++    if str(room_id).startswith("dm:"):
++        return True, "DM"
  
-   document.addEventListener('click', (e) => {
-     if (!mentionMenu || mentionMenu.classList.contains('d-none')) return;
-     if (mentionMenu.contains(e.target) || bodyInput?.contains(e.target)) return;
-     closeMentionMenu();
-   });
+     cache_key = f"{event_id}:{room_id}"
+     if cache_key in room_cache:
+         is_main, room_name = room_cache[cache_key]
+     else:
+         cur.execute(
+             "SELECT is_main, room_name FROM chat_rooms WHERE event_id=%s AND room_id=%s LIMIT 1",
+             (event_id, room_id),
+         )
+         room = cur.fetchone() or {}
+         if not room:
+             room_cache[cache_key] = (0, "")
+             return False, None
+         is_main = int(room.get("is_main") or 0)
+         room_name = str(room.get("room_name") or "")
+         room_cache[cache_key] = (is_main, room_name)
  
-   function moveToRoom(nextRoomId) {
-     if (!nextRoomId || nextRoomId === roomId) return;
-     const u = new URL(window.location.href);
-     u.searchParams.set('room_id', nextRoomId);
-+    sendRoomPresenceLeaveBeacon();
-     window.location.href = u.toString();
-   }
+     if is_main == 1:
+         return True, room_name or "メイン"
  
-   function openRoomPicker() {
-     roomPickerModal?.classList.remove('d-none');
-   }
+     cur.execute(
+         """
+         SELECT 1
+           FROM chat_room_members
+          WHERE room_id=%s
+@@ -767,25 +769,98 @@ def api_notifications_mark_read_by_room():
+             updated_count,
+             unread_count,
+             latest_id,
+         )
  
-   function closeRoomPicker() {
-     roomPickerModal?.classList.add('d-none');
-   }
- 
-   roomSwitch?.addEventListener('change', () => {
-     moveToRoom(roomSwitch.value || '');
-   });
- 
-   roomPickerToggle?.addEventListener('click', (e) => {
-     e.preventDefault();
-     openRoomPicker();
-   });
- 
-   roomPickerModal?.addEventListener('click', (e) => {
-     const closeBtn = e.target.closest('[data-room-picker-close]');
-     if (closeBtn || e.target.classList.contains('backdrop')) {
-       closeRoomPicker();
-       return;
-@@ -4593,82 +4703,84 @@ function openFulltextModal(row) {
-   roomCreateBtn?.addEventListener('click', async () => {
-     const candidates = await fetchCandidates();
-     if (!candidates) return;
-     roomUi.createSelected.clear();
-     renderCandidateList('room-create-candidates', roomUi.createSelected, '');
-     const input = document.getElementById('room-create-name');
-     if (input) input.value = '';
-     openModal(roomCreateModal);
-   });
- 
-   document.getElementById('room-create-submit')?.addEventListener('click', async (e) => {
-     const btn = e.currentTarget;
-     const roomName = (document.getElementById('room-create-name')?.value || '').trim();
-     if (!roomName) { alert('ルーム名を入力してください'); return; }
-     btn.disabled = true;
-     const res = await fetch(`/chat/api/events/${eventId}/rooms/create`, {
-       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-       body: JSON.stringify({ csrf_token: csrfToken, room_name: roomName, member_actor_keys: Array.from(roomUi.createSelected) }),
-     });
-     const data = await res.json().catch(() => ({}));
-     btn.disabled = false;
-     if (res.status === 401 || res.status === 403) { alert('権限がありません'); closeModal(roomCreateModal); return; }
-     if (!data.ok || !data.room_id) { alert(data.error || 'サブルーム作成に失敗しました'); return; }
-     const u = new URL(window.location.href);
-     u.searchParams.set('room_id', data.room_id);
-+    sendRoomPresenceLeaveBeacon();
-     window.location.href = u.toString();
-   });
- 
-   roomMembersBtn?.addEventListener('click', async () => {
-     const candidates = await fetchCandidates();
-     if (!candidates) return;
-     const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members`, { credentials: 'same-origin' });
-     const data = await res.json().catch(() => ({}));
-     if (res.status === 401 || res.status === 403) { alert('権限がありません'); return; }
-     if (!data.ok) { alert(data.error || '現在メンバー取得に失敗しました'); return; }
-     roomUi.editSelected.clear();
-     (data.members || []).forEach((m) => { if (m?.actor_key) roomUi.editSelected.add(m.actor_key); });
-     renderCandidateList('room-members-candidates', roomUi.editSelected, '');
-     openModal(roomMembersModal);
-   });
- 
-   roomDeleteBtn?.addEventListener('click', async () => {
-     if (!roomId) return;
-     if (!confirm('このサブルームを削除しますか？（削除後は復元できません）')) return;
- 
-     try {
-       const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/delete`, {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         credentials: 'same-origin',
-         body: JSON.stringify({ csrf_token: csrfToken }),
-       });
-       const data = await res.json().catch(() => ({}));
-       if (res.status === 401 || res.status === 403) { alert('権限がありません'); return; }
-       if (!res.ok || !data.ok) throw new Error(data.error || '削除に失敗しました');
- 
-       const u = new URL(window.location.href);
-       u.searchParams.delete('room_id');
-+      sendRoomPresenceLeaveBeacon();
-       window.location.href = u.toString();
-     } catch (err) {
-       alert(err?.message || '削除に失敗しました');
-     }
-   });
- 
-   document.getElementById('room-members-submit')?.addEventListener('click', async (e) => {
-     const btn = e.currentTarget;
-     btn.disabled = true;
-     const res = await fetch(`/chat/api/events/${eventId}/rooms/${encodeURIComponent(roomId)}/members/set`, {
-       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-       body: JSON.stringify({ csrf_token: csrfToken, member_actor_keys: Array.from(roomUi.editSelected) }),
-     });
-     const data = await res.json().catch(() => ({}));
-     btn.disabled = false;
-     if (res.status === 401 || res.status === 403) { alert('権限がありません'); closeModal(roomMembersModal); return; }
-     if (!data.ok) { alert(data.error || 'メンバー更新に失敗しました'); return; }
-     closeModal(roomMembersModal);
-     alert('メンバーを更新しました');
-   });
- 
- });
- </script>
- {% endblock %}
-diff --git a/docs/sql/20260307_chat_active_views.sql b/docs/sql/20260307_chat_active_views.sql
-new file mode 100644
-index 0000000000000000000000000000000000000000..0b5c1af10404308c101d24fce37218b59122d09e
---- /dev/null
-+++ b/docs/sql/20260307_chat_active_views.sql
-@@ -0,0 +1,16 @@
-+CREATE TABLE IF NOT EXISTS chat_active_views (
-+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+  actor_type VARCHAR(16) NOT NULL,
-+  actor_id VARCHAR(64) NOT NULL,
-+  event_id BIGINT UNSIGNED NOT NULL,
-+  room_id VARCHAR(64) NOT NULL,
-+  client_id VARCHAR(64) NOT NULL,
-+  is_visible TINYINT(1) NOT NULL DEFAULT 1,
-+  entered_at DATETIME NOT NULL,
-+  last_ping_at DATETIME NOT NULL,
-+  created_at DATETIME NOT NULL,
-+  updated_at DATETIME NOT NULL,
-+  UNIQUE KEY uq_chat_active_view_actor_client (actor_type, actor_id, client_id),
-+  KEY idx_chat_active_view_room (room_id),
-+  KEY idx_chat_active_view_lookup (actor_type, actor_id, room_id, is_visible, last_ping_at)
-+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+         return jsonify(
+             {
+                 "ok": True,
+                 "updated_count": updated_count,
+                 "unread_count": unread_count,
+                 "latest_id": latest_id,
+             }
+         )
+     except Exception:
+         current_app.logger.warning(
+             "notifications read-by-room failed user_id=%s room_id=%s event_id=%s",
+             uid,
+             room_id,
+             event_id,
+             exc_info=True,
+         )
+         raise
+     finally:
+         cur.close()
+         db.close()
++
++
++@bp.post("/api/notifications/read-dm-room")
++def api_notifications_mark_read_dm_room():
++    guard = _require_ext_login()
++    if guard:
++        return guard
++
++    uid = int(session.get("ext_user_id") or 0)
++    payload = request.get_json(silent=True) or {}
++    room_id = str(payload.get("room_id") or "").strip()
++    if not room_id or not room_id.startswith("dm:"):
++        resp = jsonify({"ok": False, "reason": "invalid_room_id"})
++        resp.status_code = 400
++        return resp
++
++    _ensure_notification_schema()
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        now = datetime.utcnow()
++        cur.execute(
++            """
++            UPDATE mfu_notifications
++               SET read_at=%s
++             WHERE user_kind='external'
++               AND user_id=%s
++               AND kind='dm'
++               AND chat_room_id=%s
++               AND read_at IS NULL
++            """,
++            (now, uid, room_id),
++        )
++        updated_count = int(cur.rowcount or 0)
++        db.commit()
++
++        unread_count = _compute_unread_count_external(uid)
++        cur.execute(
++            """
++            SELECT MAX(id) AS latest_id
++              FROM mfu_notifications
++             WHERE user_kind='external'
++               AND user_id=%s
++            """,
++            (uid,),
++        )
++        latest_id = int((cur.fetchone() or {}).get("latest_id") or 0)
++        _emit_notif_unread(uid, reason="dm_room_read", latest_id=latest_id)
++        current_app.logger.info(
++            "notifications read-dm-room user_id=%s room_id=%s updated_count=%s unread_count=%s latest_id=%s",
++            uid,
++            room_id,
++            updated_count,
++            unread_count,
++            latest_id,
++        )
++        return jsonify({
++            "ok": True,
++            "updated_count": updated_count,
++            "unread_count": unread_count,
++            "latest_id": latest_id,
++        })
++    except Exception:
++        current_app.logger.warning(
++            "notifications read-dm-room failed user_id=%s room_id=%s",
++            uid,
++            room_id,
++            exc_info=True,
++        )
++        raise
++    finally:
++        cur.close()
++        db.close()
