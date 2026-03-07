@@ -75,6 +75,8 @@ CHAT_REPLY_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_REPLY_SCHEMA_READY: bool | None = None
 CHAT_PUSH_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_PUSH_SCHEMA_READY: bool | None = None
+CHAT_ACTIVE_VIEW_SCHEMA_CHECK_LOCK = threading.Lock()
+CHAT_ACTIVE_VIEW_SCHEMA_READY: bool | None = None
 CHAT_NOTIFICATION_LOG_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_NOTIFICATION_LOG_SCHEMA_READY: bool | None = None
 CHAT_READ_STATE_SCHEMA_CHECK_LOCK = threading.Lock()
@@ -117,6 +119,8 @@ CHAT_UPLOAD_MAX_FILES = 6
 PUSH_REQUEST_TIMEOUT_SECONDS = 6
 PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
 PUSH_LOG_SUPPRESSION_SECONDS = 300
+CHAT_ACTIVE_VIEW_TTL_SECONDS = 60
+CHAT_ACTIVE_VIEW_HEARTBEAT_INTERVAL_SECONDS = 20
 PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
 PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
 PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
@@ -394,6 +398,266 @@ def _ensure_chat_push_schema() -> bool:
             cur.close()
             db.close()
 
+
+
+
+def _ensure_chat_active_view_schema() -> bool:
+    global CHAT_ACTIVE_VIEW_SCHEMA_READY
+    if CHAT_ACTIVE_VIEW_SCHEMA_READY is not None:
+        return CHAT_ACTIVE_VIEW_SCHEMA_READY
+
+    with CHAT_ACTIVE_VIEW_SCHEMA_CHECK_LOCK:
+        if CHAT_ACTIVE_VIEW_SCHEMA_READY is not None:
+            return CHAT_ACTIVE_VIEW_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_active_views (
+                  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+                  actor_type VARCHAR(16) NOT NULL,
+                  actor_id VARCHAR(64) NOT NULL,
+                  event_id BIGINT UNSIGNED NOT NULL,
+                  room_id VARCHAR(64) NOT NULL,
+                  client_id VARCHAR(64) NOT NULL,
+                  is_visible TINYINT(1) NOT NULL DEFAULT 1,
+                  entered_at DATETIME NOT NULL,
+                  last_ping_at DATETIME NOT NULL,
+                  created_at DATETIME NOT NULL,
+                  updated_at DATETIME NOT NULL,
+                  UNIQUE KEY uq_chat_active_view_actor_client (actor_type, actor_id, client_id),
+                  KEY idx_chat_active_view_room (room_id),
+                  KEY idx_chat_active_view_lookup (actor_type, actor_id, room_id, is_visible, last_ping_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            db.commit()
+            CHAT_ACTIVE_VIEW_SCHEMA_READY = True
+            return True
+        except Exception:
+            current_app.logger.warning("chat active view schema ensure failed", exc_info=True)
+            CHAT_ACTIVE_VIEW_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
+def _resolve_current_actor() -> dict[str, Any] | None:
+    return get_chat_actor()
+
+
+def _upsert_room_presence(
+    actor_type: str,
+    actor_id: str,
+    event_id: int,
+    room_id: str,
+    client_id: str,
+    is_visible: bool,
+) -> bool:
+    if not _ensure_chat_active_view_schema():
+        return False
+
+    now = datetime.utcnow()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO chat_active_views (
+              actor_type, actor_id, event_id, room_id, client_id,
+              is_visible, entered_at, last_ping_at, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              event_id=VALUES(event_id),
+              room_id=VALUES(room_id),
+              is_visible=VALUES(is_visible),
+              entered_at=VALUES(entered_at),
+              last_ping_at=VALUES(last_ping_at),
+              updated_at=VALUES(updated_at)
+            """,
+            (
+                str(actor_type),
+                str(actor_id),
+                int(event_id),
+                str(room_id),
+                str(client_id),
+                1 if is_visible else 0,
+                now,
+                now,
+                now,
+                now,
+            ),
+        )
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        current_app.logger.warning(
+            "room presence upsert failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
+            actor_type,
+            actor_id,
+            event_id,
+            room_id,
+            client_id,
+            exc_info=True,
+        )
+        return False
+    finally:
+        cur.close()
+        db.close()
+
+
+def _update_room_presence_ping(
+    actor_type: str,
+    actor_id: str,
+    event_id: int,
+    room_id: str,
+    client_id: str,
+    is_visible: bool,
+) -> bool:
+    if not _ensure_chat_active_view_schema():
+        return False
+
+    now = datetime.utcnow()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE chat_active_views
+               SET event_id=%s,
+                   room_id=%s,
+                   is_visible=%s,
+                   last_ping_at=%s,
+                   updated_at=%s
+             WHERE actor_type=%s
+               AND actor_id=%s
+               AND client_id=%s
+            """,
+            (
+                int(event_id),
+                str(room_id),
+                1 if is_visible else 0,
+                now,
+                now,
+                str(actor_type),
+                str(actor_id),
+                str(client_id),
+            ),
+        )
+        if int(cur.rowcount or 0) == 0:
+            cur.execute(
+                """
+                INSERT INTO chat_active_views (
+                  actor_type, actor_id, event_id, room_id, client_id,
+                  is_visible, entered_at, last_ping_at, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    str(actor_type),
+                    str(actor_id),
+                    int(event_id),
+                    str(room_id),
+                    str(client_id),
+                    1 if is_visible else 0,
+                    now,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        current_app.logger.warning(
+            "room presence ping failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
+            actor_type,
+            actor_id,
+            event_id,
+            room_id,
+            client_id,
+            exc_info=True,
+        )
+        return False
+    finally:
+        cur.close()
+        db.close()
+
+
+def _clear_room_presence(actor_type: str, actor_id: str, event_id: int, room_id: str, client_id: str) -> None:
+    if not _ensure_chat_active_view_schema():
+        return
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            DELETE FROM chat_active_views
+             WHERE actor_type=%s
+               AND actor_id=%s
+               AND event_id=%s
+               AND room_id=%s
+               AND client_id=%s
+            """,
+            (str(actor_type), str(actor_id), int(event_id), str(room_id), str(client_id)),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        current_app.logger.warning(
+            "room presence leave failed actor=%s:%s event_id=%s room_id=%s client_id=%s",
+            actor_type,
+            actor_id,
+            event_id,
+            room_id,
+            client_id,
+            exc_info=True,
+        )
+    finally:
+        cur.close()
+        db.close()
+
+
+def _is_actor_actively_viewing_room(actor_type: str, actor_id: str, room_id: str) -> bool:
+    if not _ensure_chat_active_view_schema():
+        return False
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT 1
+              FROM chat_active_views
+             WHERE actor_type=%s
+               AND actor_id=%s
+               AND room_id=%s
+               AND is_visible=1
+               AND last_ping_at >= (UTC_TIMESTAMP() - INTERVAL %s SECOND)
+             LIMIT 1
+            """,
+            (str(actor_type), str(actor_id), str(room_id), int(CHAT_ACTIVE_VIEW_TTL_SECONDS)),
+        )
+        return bool(cur.fetchone())
+    except Exception:
+        current_app.logger.warning(
+            "room presence active check failed actor=%s:%s room_id=%s",
+            actor_type,
+            actor_id,
+            room_id,
+            exc_info=True,
+        )
+        return False
+    finally:
+        cur.close()
+        db.close()
 
 def _ensure_chat_system_template_schema() -> bool:
     global SYSTEM_TEMPLATE_SCHEMA_READY
@@ -3237,6 +3501,17 @@ def _send_chat_message_push_async(
             for actor_type, actor_id in _build_chat_message_push_targets(event_id, room_id, sender_actor):
                 if not _can_notify_actor_in_room(event_id, room_id, actor_type, actor_id):
                     continue
+                if _is_actor_actively_viewing_room(actor_type, actor_id, room_id):
+                    notification_skipped += 1
+                    current_app.logger.info(
+                        "chat notification suppressed by presence event_id=%s room_id=%s actor=%s:%s message_id=%s",
+                        event_id,
+                        room_id,
+                        actor_type,
+                        actor_id,
+                        message_id,
+                    )
+                    continue
                 actor_push_metrics["target_actors"] += 1
                 sent_count += _send_push_to_actor(actor_type, actor_id, payload, metrics=actor_push_metrics)
                 if actor_type == "line":
@@ -5954,6 +6229,97 @@ def api_room_mute(event_id: int, room_id: str):
         db.close()
 
     return jsonify({"ok": True, "muted_until": muted_until.isoformat() if muted_until else None})
+
+
+@chat_bp.post("/api/room-presence/enter")
+def api_room_presence_enter():
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+
+    actor = _resolve_current_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    try:
+        event_id = int(payload.get("event_id") or 0)
+    except Exception:
+        event_id = 0
+    room_id = str(payload.get("room_id") or "").strip()
+    client_id = str(payload.get("client_id") or "").strip()
+    visible_raw = payload.get("is_visible")
+    is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
+
+    if event_id <= 0 or not room_id or not client_id:
+        return jsonify({"ok": False, "error": "invalid_params"}), 400
+
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    ok = _upsert_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
+    return jsonify({"ok": bool(ok), "room_id": effective_room_id})
+
+
+@chat_bp.post("/api/room-presence/ping")
+def api_room_presence_ping():
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+
+    actor = _resolve_current_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    try:
+        event_id = int(payload.get("event_id") or 0)
+    except Exception:
+        event_id = 0
+    room_id = str(payload.get("room_id") or "").strip()
+    client_id = str(payload.get("client_id") or "").strip()
+    visible_raw = payload.get("is_visible")
+    is_visible = str(visible_raw if visible_raw is not None else 1).strip().lower() not in {"0", "false", "no", "off"}
+
+    if event_id <= 0 or not room_id or not client_id:
+        return jsonify({"ok": False, "error": "invalid_params"}), 400
+
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    ok = _update_room_presence_ping(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id, is_visible)
+    return jsonify({"ok": bool(ok), "room_id": effective_room_id})
+
+
+@chat_bp.post("/api/room-presence/leave")
+def api_room_presence_leave():
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get("csrf_token") or "").strip()
+    if token != session.get("chat_csrf"):
+        return jsonify({"ok": False, "error": "csrf"}), 400
+
+    actor = _resolve_current_actor()
+    if not actor:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    try:
+        event_id = int(payload.get("event_id") or 0)
+    except Exception:
+        event_id = 0
+    room_id = str(payload.get("room_id") or "").strip()
+    client_id = str(payload.get("client_id") or "").strip()
+
+    if event_id <= 0 or not room_id or not client_id:
+        return jsonify({"ok": False, "error": "invalid_params"}), 400
+
+    allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+    if not allowed or not effective_room_id:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), event_id, effective_room_id, client_id)
+    return jsonify({"ok": True, "room_id": effective_room_id})
 
 
 @chat_bp.get("/api/push/bootstrap")

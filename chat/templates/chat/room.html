@@ -1730,6 +1730,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     unreadByRoomId: new Map(),
     unreadRefreshTimer: null,
     notificationPollTimer: null,
+    presenceHeartbeatTimer: null,
+    roomPresenceEntered: false,
     muteUntilByRoomId: new Map(),
     mentionCandidates: [],
     mentionActiveIndex: 0,
@@ -1761,6 +1763,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   initReactionUis();
   syncExistingMessageIds();
   await initializeNotificationState();
+  startPresenceHeartbeat();
   scheduleUnreadRefresh();
   startNotificationBadgePolling();
   refreshMuteButton();
@@ -2263,8 +2266,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   window.addEventListener('beforeunload', () => {
     sendTypingStop();
     stopNotificationBadgePolling();
+    stopPresenceHeartbeat();
+    sendRoomPresenceLeaveBeacon();
+  });
+  window.addEventListener('pagehide', () => {
+    stopPresenceHeartbeat();
+    sendRoomPresenceLeaveBeacon();
   });
   document.addEventListener('visibilitychange', () => {
+    syncRoomPresenceVisibility();
     if (document.visibilityState === 'visible') scheduleNotifRefreshSoon();
   });
   window.addEventListener('focus', () => scheduleNotifRefreshSoon());
@@ -4197,9 +4207,22 @@ function openFulltextModal(row) {
       return;
     }
     try {
-      await markChatNotificationsReadByRoom();
-      await refreshNotificationBadge();
-    } catch (_e) {
+      const presenceEntered = await enterRoomPresence();
+      state.roomPresenceEntered = Boolean(presenceEntered);
+    } catch (e) {
+      console.info('[presence] enter failed', e);
+      state.roomPresenceEntered = false;
+    }
+
+    try {
+      const readResult = await markChatNotificationsReadByRoom();
+      if (readResult && typeof readResult.unread_count !== 'undefined') {
+        applyNotificationBadge(Number(readResult.unread_count || 0));
+      } else {
+        await refreshNotificationBadge();
+      }
+    } catch (e) {
+      console.info('[notifications] read-by-room failed', e);
       await refreshNotificationBadge();
     }
   }
@@ -4250,33 +4273,119 @@ function openFulltextModal(row) {
   }
 
   async function markChatNotificationsReadByRoom() {
-    try {
-      const res = await fetch('/external-login/api/notifications/read-by-room', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ event_id: eventId, room_id: roomId }),
-      });
-      if (res.status === 401) {
-        console.info('[notifications] read-by-room skipped (unauthorized)');
-        return;
-      }
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
-        return;
-      }
-      const unread = Number(data.unread_count || 0);
-      applyNotificationBadge(unread);
-      console.info('[notifications] read-by-room success', {
-        room_id: roomId,
-        event_id: eventId,
-        updated_count: Number(data.updated_count || 0),
-        unread_count: unread,
-      });
-    } catch (e) {
-      console.info('[notifications] read-by-room exception', e);
+    const res = await fetch('/external-login/api/notifications/read-by-room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ event_id: eventId, room_id: roomId }),
+    });
+    if (res.status === 401) {
+      console.info('[notifications] read-by-room skipped (unauthorized)');
+      return null;
     }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
+      throw new Error('read-by-room failed');
+    }
+    console.info('[notifications] read-by-room success', {
+      room_id: roomId,
+      event_id: eventId,
+      updated_count: Number(data.updated_count || 0),
+      unread_count: Number(data.unread_count || 0),
+      latest_id: Number(data.latest_id || 0),
+    });
+    return data;
+  }
+
+  function getPresenceClientId() {
+    const key = 'chat_presence_client_id';
+    let cid = window.sessionStorage.getItem(key) || '';
+    if (!cid) {
+      cid = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      window.sessionStorage.setItem(key, cid);
+    }
+    return cid;
+  }
+
+  async function enterRoomPresence() {
+    if (dmMode || !(eventId > 0 && roomId)) return false;
+    const res = await fetch('/chat/api/room-presence/enter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        csrf_token: csrfToken,
+        event_id: eventId,
+        room_id: roomId,
+        client_id: getPresenceClientId(),
+        is_visible: document.visibilityState === 'visible' ? 1 : 0,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      console.info('[presence] enter failed', { status: res.status, error: data.error || null });
+      return false;
+    }
+    return true;
+  }
+
+  async function pingRoomPresence() {
+    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
+    const res = await fetch('/chat/api/room-presence/ping', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        csrf_token: csrfToken,
+        event_id: eventId,
+        room_id: roomId,
+        client_id: getPresenceClientId(),
+        is_visible: document.visibilityState === 'visible' ? 1 : 0,
+      }),
+    });
+    if (!res.ok) {
+      console.info('[presence] ping failed', { status: res.status });
+    }
+  }
+
+  function syncRoomPresenceVisibility() {
+    pingRoomPresence().catch((e) => console.info('[presence] visibility ping failed', e));
+  }
+
+  function startPresenceHeartbeat() {
+    if (state.presenceHeartbeatTimer || dmMode || !state.roomPresenceEntered) return;
+    state.presenceHeartbeatTimer = setInterval(() => {
+      pingRoomPresence().catch((e) => console.info('[presence] heartbeat failed', e));
+    }, 20000);
+  }
+
+  function stopPresenceHeartbeat() {
+    if (!state.presenceHeartbeatTimer) return;
+    clearInterval(state.presenceHeartbeatTimer);
+    state.presenceHeartbeatTimer = null;
+  }
+
+  function sendRoomPresenceLeaveBeacon() {
+    if (dmMode || !(eventId > 0 && roomId) || !state.roomPresenceEntered) return;
+    const payload = JSON.stringify({
+      csrf_token: csrfToken,
+      event_id: eventId,
+      room_id: roomId,
+      client_id: getPresenceClientId(),
+    });
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/chat/api/room-presence/leave', blob);
+      return;
+    }
+    fetch('/chat/api/room-presence/leave', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      keepalive: true,
+      body: payload,
+    }).catch(() => {});
   }
 
   function startNotificationBadgePolling() {
@@ -4447,6 +4556,7 @@ function openFulltextModal(row) {
     if (!nextRoomId || nextRoomId === roomId) return;
     const u = new URL(window.location.href);
     u.searchParams.set('room_id', nextRoomId);
+    sendRoomPresenceLeaveBeacon();
     window.location.href = u.toString();
   }
 
@@ -4615,6 +4725,7 @@ function openFulltextModal(row) {
     if (!data.ok || !data.room_id) { alert(data.error || 'サブルーム作成に失敗しました'); return; }
     const u = new URL(window.location.href);
     u.searchParams.set('room_id', data.room_id);
+    sendRoomPresenceLeaveBeacon();
     window.location.href = u.toString();
   });
 
@@ -4648,6 +4759,7 @@ function openFulltextModal(row) {
 
       const u = new URL(window.location.href);
       u.searchParams.delete('room_id');
+      sendRoomPresenceLeaveBeacon();
       window.location.href = u.toString();
     } catch (err) {
       alert(err?.message || '削除に失敗しました');
