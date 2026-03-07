@@ -3248,6 +3248,8 @@ def _send_chat_message_push_async(
                         target_url=f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
                         dedup_key=f"chat:{event_id}:{room_id}:{message_id}:{actor_id}",
                         event_id=event_id,
+                        chat_event_id=event_id,
+                        chat_room_id=room_id,
                     )
                     if inserted:
                         notification_inserted += 1

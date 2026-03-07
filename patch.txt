@@ -1,82 +1,939 @@
+diff --git a/chat/__init__.py b/chat/__init__.py
+index e9f832f1b9db7f5fc95d56b493377ce782c5756c..e6b4a298fb244c7fcfd5ed948d5183ec2647a0a7 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -3226,50 +3226,52 @@ def _send_chat_message_push_async(
+             }
+ 
+             event = _get_event(event_id)
+             if event and event.get("title"):
+                 payload["title"] = str(event.get("title"))
+             room = _get_room(event_id, room_id, allow_archived=True)
+             room_name = str(room.get("room_name") or "") if room else ""
+             if room_name:
+                 payload["title"] = f"[{room_name}] {payload['title']}"
+ 
+             sent_count = 0
+             for actor_type, actor_id in _build_chat_message_push_targets(event_id, room_id, sender_actor):
+                 if not _can_notify_actor_in_room(event_id, room_id, actor_type, actor_id):
+                     continue
+                 actor_push_metrics["target_actors"] += 1
+                 sent_count += _send_push_to_actor(actor_type, actor_id, payload, metrics=actor_push_metrics)
+                 if actor_type == "line":
+                     inserted = create_notification_external(
+                         user_id=int(actor_id),
+                         kind="chat_message",
+                         title=str(payload.get("title") or "イベントチャット"),
+                         body=str(payload.get("body") or message_body),
+                         target_url=f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
+                         dedup_key=f"chat:{event_id}:{room_id}:{message_id}:{actor_id}",
+                         event_id=event_id,
++                        chat_event_id=event_id,
++                        chat_room_id=room_id,
+                     )
+                     if inserted:
+                         notification_inserted += 1
+                     else:
+                         notification_skipped += 1
+ 
+             _log_notification(event_id, "chat_message", payload, sent_count)
+         except Exception as exc:
+             sender = f"{sender_actor.get('actor_type', '?')}:{sender_actor.get('actor_id', '?')}"
+             current_app.logger.warning(
+                 "chat push async worker recovered event_id=%s sender=%s error=%s",
+                 event_id,
+                 sender,
+                 type(exc).__name__,
+             )
+             if app.debug:
+                 current_app.logger.exception("chat push async worker debug traceback")
+         finally:
+             t_end = time.monotonic()
+             t4 = actor_push_metrics.get("http_start")
+             t5 = actor_push_metrics.get("http_end")
+             current_app.logger.info(
+                 "chat_push_timeline event_id=%s actor_id=%s targets=%s subs=%s success=%s failure=%s notif_inserted=%s notif_skipped=%s t1_t0=%.3fs t2_t1=%.3fs t3_t2=%.3fs t4_t3=%.3fs t5_t4=%.3fs total=%.3fs errors=%s",
+                 event_id,
+                 sender_actor.get("actor_id"),
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 1234567..89abcde 100644
+index e7a45b260e7c4ebd921de22e28f95cebb5bc0f1f..71bb1312cf36532c45d3313facefad14d4e4b782 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1710,6 +1710,27 @@
-     notificationPollTimer: null,
+@@ -1738,50 +1738,53 @@ window.addEventListener('DOMContentLoaded', () => {
+     uploadPreviewFiles: [],
+     uploadPreviewUrls: [],
+     dragOverlayDepth: 0,
    };
  
-+  // Service Workerへの状態通知
-+  function notifyActiveToServiceWorker(active) {
-+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-+      navigator.serviceWorker.controller.postMessage({
-+        type: 'CHAT_ROOM_ACTIVE',
-+        active: active,
-+        eventId: eventId,
-+        roomId: roomId
-+      });
+   if (ctxReactions && ctxReactions.childElementCount === 0) {
+     reactionEmojis.forEach((emoji) => {
+       const btn = document.createElement('button');
+       btn.type = 'button';
+       btn.className = 'chat-reaction-emoji';
+       btn.dataset.emoji = emoji;
+       btn.textContent = emoji;
+       ctxReactions.appendChild(btn);
+     });
+   }
+ 
+   const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+   if (dmMode) {
+     socket.emit('chat_join', { dm_uuid: dmUuid, room_id: effectiveDmRoomId });
+   } else {
+     socket.emit('chat_join', { event_id: eventId, room_id: roomId });
+   }
+ 
+   initReactionUis();
+   syncExistingMessageIds();
++  if (!dmMode && eventId > 0 && roomId) {
++    markChatNotificationsReadByRoom();
++  }
+   scheduleUnreadRefresh();
+   refreshNotificationBadge();
+   startNotificationBadgePolling();
+   refreshMuteButton();
+   scrollToLatestMessage();
+   refreshReadIndicators();
+   window.addEventListener('load', () => {
+     scrollToLatestMessage();
+     sendSeenForLatestMessage();
+   }, { once: true });
+ 
+   updateAutoGrow();
+   bodyInput?.addEventListener('input', () => {
+     updateAutoGrow();
+     queueTypingStart();
+     handleMentionInput();
+   });
+   bodyInput?.addEventListener('keydown', handleMentionKeydown);
+ 
+   socket.on('chat_message', (msg) => {
+     const wasNearBottom = isNearBottom(msgBox);
+     const messageId = Number(msg?.id || 0);
+     const threadRootId = Number(msg?.thread_root_id || 0);
+     const isThreadReply = threadRootId > 0;
+ 
+@@ -4195,60 +4198,82 @@ function openFulltextModal(row) {
+     if (!roomSwitch) return;
+     Array.from(roomSwitch.options).forEach((opt) => {
+       const baseLabel = String(opt.textContent || '').replace(/\s*\(未読\d+\)$/u, '');
+       const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
+       opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
+     });
+   }
+ 
+ 
+ 
+   async function refreshNotificationBadge() {
+     try {
+       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
+       if (res.status === 401) {
+         stopNotificationBadgePolling();
+         if (notificationBadge) {
+           notificationBadge.textContent = '🔔';
+           notificationBadge.classList.remove('has-unread');
+           notificationBadge.classList.add('no-unread');
+         }
+         return;
+       }
+       const data = await res.json().catch(() => ({}));
+       if (!res.ok) return;
+       const unread = Number(data.count || 0);
+-      if (!notificationBadge) return;
+-      if (unread > 0) {
+-        notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
+-        notificationBadge.classList.remove('no-unread');
+-        notificationBadge.classList.add('has-unread');
+-      } else {
+-        notificationBadge.textContent = '🔔';
+-        notificationBadge.classList.remove('has-unread');
+-        notificationBadge.classList.add('no-unread');
+-      }
++      applyNotificationBadge(unread);
++    } catch (_e) {
++      // noop
 +    }
 +  }
 +
-+  window.addEventListener('focus', () => {
-+    notifyActiveToServiceWorker(true);
-+    refreshNotificationBadge(); // フォーカス時にバッジも更新
-+  });
-+  window.addEventListener('blur', () => notifyActiveToServiceWorker(false));
-+  window.addEventListener('beforeunload', () => notifyActiveToServiceWorker(false));
-+  // 初期状態の通知
-+  if (document.hasFocus()) notifyActiveToServiceWorker(true);
-+
-   function escapeHtml(str) {
-     const div = document.createElement('div');
-     div.textContent = str;
-diff --git a/chat/templates/chat/sw.js b/chat/templates/chat/sw.js
-index 2345678..9fedcba 100644
---- a/chat/templates/chat/sw.js
-+++ b/chat/templates/chat/sw.js
-@@ -8,6 +8,21 @@ self.addEventListener('activate', (event) => {
-   event.waitUntil(clients.claim());
- });
- 
-+let activeRooms = new Map(); // clientId -> { eventId, roomId }
-+
-+self.addEventListener('message', (event) => {
-+  if (event.data && event.data.type === 'CHAT_ROOM_ACTIVE') {
-+    if (event.data.active) {
-+      activeRooms.set(event.source.id, {
-+        eventId: String(event.data.eventId),
-+        roomId: String(event.data.roomId)
-+      });
++  function applyNotificationBadge(unread) {
++    if (!notificationBadge) return;
++    if (unread > 0) {
++      notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
++      notificationBadge.classList.remove('no-unread');
++      notificationBadge.classList.add('has-unread');
 +    } else {
-+      activeRooms.delete(event.source.id);
++      notificationBadge.textContent = '🔔';
++      notificationBadge.classList.remove('has-unread');
++      notificationBadge.classList.add('no-unread');
 +    }
 +  }
-+});
 +
- self.addEventListener('push', (event) => {
-   let payload = {};
-   try {
-@@ -20,6 +35,23 @@ self.addEventListener('push', (event) => {
-   const body = payload.body || '新着メッセージがあります';
-   const url = payload.url || (payload.event_id ? `/chat/events/${payload.event_id}` : '/chat/');
++  async function markChatNotificationsReadByRoom() {
++    try {
++      const res = await fetch('/external-login/api/notifications/read-by-room', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        credentials: 'same-origin',
++        body: JSON.stringify({ event_id: eventId, room_id: roomId }),
++      });
++      if (res.status === 401) return;
++      const data = await res.json().catch(() => ({}));
++      if (!res.ok || !data.ok) return;
++      const unread = Number(data.unread_count || 0);
++      applyNotificationBadge(unread);
+     } catch (_e) {
+       // noop
+     }
+   }
  
-+  const incomingEventId = String(payload.event_id || '');
-+  const incomingRoomId = String(payload.room_id || '');
+   function startNotificationBadgePolling() {
+     if (state.notificationPollTimer) return;
+     state.notificationPollTimer = setInterval(() => {
+       refreshNotificationBadge();
+     }, 15000);
+   }
+ 
+   function stopNotificationBadgePolling() {
+     if (!state.notificationPollTimer) return;
+     clearInterval(state.notificationPollTimer);
+     state.notificationPollTimer = null;
+   }
+ 
+   function updateUnreadJumpButton() {
+     const info = state.unreadByRoomId.get(roomId) || {};
+     const firstUnreadId = Number(info.first_unread_id || 0);
+     if (!unreadJumpBtn) return;
+     if (!firstUnreadId) {
+       unreadJumpBtn.classList.add('d-none');
+       unreadJumpBtn.disabled = true;
+diff --git a/docs/external_login_user_push_investigation.md b/docs/external_login_user_push_investigation.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..c242b48a5ec8741d0195a340223c4262388916c8
+--- /dev/null
++++ b/docs/external_login_user_push_investigation.md
+@@ -0,0 +1,66 @@
++# external_login_user の Push 通知構造・問題点 調査メモ
 +
-+  // アクティブなルームの通知を抑制
-+  if (incomingEventId && incomingRoomId) {
-+    let isRoomOpenAndFocused = false;
-+    for (const room of activeRooms.values()) {
-+      if (room.eventId === incomingEventId && room.roomId === incomingRoomId) {
-+        isRoomOpenAndFocused = true;
-+        break;
-+      }
-+    }
-+    if (isRoomOpenAndFocused) {
-+      return; // 通知を表示しない
-+    }
-+  }
++## 1. 全体構造（どこで何をしているか）
 +
-   event.waitUntil(
-     self.registration.showNotification(title, {
-       body,
++### 1-1. クライアント（external_login_user 側）
++- ベーステンプレート `base_extlogin.html` で Service Worker を `/sw.js`（scope=`/`）に登録している。
++- 旧 scope (`/external-login/`, `/chat/`) の Service Worker をアンレジストしてから再登録する移行処理を持つ。
++- `ext_index.html` の「プッシュ通知の有効」ボタンで、
++  - `/chat/api/push/bootstrap` から CSRF と VAPID 公開鍵を取得
++  - `PushManager.subscribe(...)`
++  - `/chat/api/push/subscribe` へ endpoint/keys/sw_scope を送信
++  - 無効化時は `/chat/api/push/unsubscribe` を呼ぶ
++
++### 1-2. Service Worker
++- `static/sw.js` が Push イベントを受け取り、`title/body/url` を使って通知表示する。
++- 通知クリック時は `data.url` に遷移（同一オリジン制限あり）。
++- Push受信時に既存タブへ `postMessage`（`MFU_PUSH_NAV`）し、画面側で localStorage に保留遷移情報を書き、可視化タイミングで遷移する実装。
++
++### 1-3. サーバー（chat API 側）
++- Push購読情報は `chat_push_subscriptions` に保存（`actor_type`,`actor_id`,`endpoint_hash` をユニーク）。
++- `/chat/api/push/bootstrap` はログイン済み actor に対して `csrf_token`,`vapid_public_key`,`sw_url` を返す。
++- `/chat/api/push/subscribe` は endpoint/p256dh/auth を保存（actor単位）。
++- `/chat/api/push/unsubscribe` は endpoint_hash で削除。
++- 実際の送信は `_send_push_to_actor()` で `pywebpush` を使う。
++  - `CHAT_VAPID_PUBLIC_KEY / PRIVATE_KEY` 必須
++  - 429/5xx はリトライ
++  - 404/410 は購読削除
++
++### 1-4. external_login_user への通知生成
++- external_login_user は chat actor として `actor_type='line'`, `actor_id=<ext_user_id>` で扱われる。
++- チャットメッセージ配信時、Push送信に加えて `create_notification_external()` で `mfu_notifications` へ通知を保存（通知一覧画面のデータソース）。
++- つまり「Web Push（即時通知）」と「DB通知（通知一覧）」の二層構造。
++
++---
++
++## 2. 問題点・リスク（現状コードから確認できたもの）
++
++### 問題1: broadcast 送信のURL生成で未定義変数を参照
++- `broadcast_push()` の payload URL 生成で `effective_room_id` を使っているが、この関数内で定義されていない。
++- 実行時に `NameError` となり、external_login_user 向け含む Push ブロードキャストが失敗する可能性が高い。
++
++### 問題2: Push無効時のフォールバックが画面ごとに分散
++- Push通知自体が届かない場合でも DB通知は残る設計だが、通知検知（未読更新反映）は Socket.IO / polling 依存。
++- Push有効化導線が `ext_index.html` 依存で、他画面からの初回導線が弱い。
++- ユーザー体験として「Pushは来ないが通知一覧にはある」状態が発生しやすい。
++
++### 問題3: Service Worker 登録処理が複数箇所に重複
++- `base_extlogin.html` と `ext_index.html` の双方に「旧scope解除→`/sw.js`登録」ロジックがあり、保守時の差分混入リスクがある。
++
++### 問題4: 通知一覧APIの可視性判定が重い
++- `api_notifications_list()` はページ取得後に可視性フィルタし、さらに total 計算のため全件再走査している。
++- 通知件数が増えると external_login_user の通知画面表示が遅くなる可能性がある。
++
++### 問題5: VAPID未設定時のサイレント機能停止
++- `_send_push_to_actor()` は鍵未設定時に `0` を返して終了するため、運用上は「Pushが飛ばないがエラーに見えにくい」状態になりうる。
++- UI側にはアラートがあるが、サーバー運用者向けの明示的ヘルスシグナルが薄い。
++
++---
++
++## 3. まとめ
++- external_login_user 向け Push は **chat基盤を共用**しており、
++  1) ブラウザPush（`chat_push_subscriptions` + `pywebpush`）
++  2) アプリ内通知（`mfu_notifications`）
++  の二段構成。
++- 致命度が高いのは `broadcast_push()` の未定義変数参照。
++- 次点で、SW登録ロジック重複・通知一覧APIの走査コスト・VAPID未設定時の可観測性不足が運用課題。
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index 7fe331b96afa537f4513428c4e8fb380d4c04459..a227f6e88f62704a9aa96510d1eff4627b4d8dbe 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -1,50 +1,55 @@
+ from __future__ import annotations
+ 
+ from datetime import datetime, timezone
+ from time import perf_counter
+ from typing import Any
+ from urllib.parse import parse_qs, urlparse
+ 
+ from flask import abort, current_app, jsonify, render_template, request, session
+ 
+ from . import bp
+ from .utils import _require_ext_login
+ from app.utils.db import get_db
+ 
+ try:
+     from app.chat.socketio_ext import socketio
+ except Exception:  # pragma: no cover
+     socketio = None
+ 
+ 
+ _READ_NOTIFICATIONS_KEEP_LIMIT = 30
+ 
+ 
+ def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
++    chat_room_id = str(row.get("chat_room_id") or "").strip()
++    chat_event_id = int(row.get("chat_event_id") or 0) or None
++    if chat_room_id:
++        return chat_event_id, chat_room_id
++
+     target_url = str(row.get("target_url") or "").strip()
+-    event_id = int(row.get("event_id") or 0) or None
++    event_id = int(row.get("event_id") or 0) or chat_event_id
+     if not target_url:
+         return event_id, None
+     try:
+         parsed = urlparse(target_url)
+         if not parsed.path.startswith("/chat/events/"):
+             return event_id, None
+         qs = parse_qs(parsed.query or "")
+         room_id = (qs.get("room_id") or [None])[0]
+         if room_id:
+             room_id = str(room_id)
+         if not event_id:
+             ev = (qs.get("event_id") or [None])[0]
+             if ev:
+                 event_id = int(ev)
+         return event_id, room_id
+     except Exception:
+         return event_id, None
+ 
+ 
+ def _is_notification_visible_for_external(cur, uid: int, row: dict[str, Any], room_cache: dict[str, tuple[int, str]]) -> tuple[bool, str | None]:
+     event_id, room_id = _parse_chat_room_context(row)
+     if not room_id:
+         return True, None
+ 
+     cache_key = f"{event_id}:{room_id}"
+@@ -97,363 +102,439 @@ def _prune_old_read_notifications(cur, user_id: int) -> int:
+     if overflow <= 0:
+         return 0
+ 
+     cur.execute(
+         """
+         DELETE FROM mfu_notifications
+          WHERE user_kind=%s
+            AND user_id=%s
+            AND read_at IS NOT NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT %s
+         """,
+         ("external", int(user_id), overflow),
+     )
+     return int(cur.rowcount or 0)
+ 
+ 
+ def _compute_unread_count_external(uid: int) -> int:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         room_cache: dict[str, tuple[int, str]] = {}
+         cur.execute(
+             """
+             SELECT id, target_url, event_id
++                 , chat_event_id, chat_room_id
+               FROM mfu_notifications
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND read_at IS NULL
+             """,
+             (int(uid),),
+         )
+         unread_rows = cur.fetchall() or []
+         count = 0
+         for row in unread_rows:
+             visible, _room_name = _is_notification_visible_for_external(cur, int(uid), row, room_cache)
+             if visible:
+                 count += 1
+         return count
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _emit_notif_unread(uid: int, reason: str = "sync", latest_id: int | None = None) -> None:
+     if socketio is None:
+         return
+     try:
+         count = _compute_unread_count_external(int(uid))
+         socketio.emit(
+             "notif_unread",
+             {"count": count, "latest_id": latest_id, "reason": reason},
+             room=f"external_user:{int(uid)}",
+         )
+     except Exception:
+         current_app.logger.warning(
+             "notifications emit failed user_id=%s reason=%s latest_id=%s",
+             int(uid),
+             reason,
+             latest_id,
+             exc_info=True,
+         )
+ 
+ 
+ _NOTIFICATION_DDL = """
+ CREATE TABLE IF NOT EXISTS mfu_notifications (
+   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   user_kind VARCHAR(16) NOT NULL,
+   user_id BIGINT UNSIGNED NOT NULL,
+   kind VARCHAR(64) NOT NULL,
+   title VARCHAR(255) NOT NULL,
+   body TEXT NULL,
+   target_url VARCHAR(512) NOT NULL,
+   event_id BIGINT UNSIGNED NULL,
++  chat_event_id BIGINT UNSIGNED NULL,
++  chat_room_id VARCHAR(64) NULL,
+   created_at DATETIME NOT NULL,
+   read_at DATETIME NULL,
+   dedup_key VARCHAR(191) NOT NULL,
+   PRIMARY KEY (id),
+   UNIQUE KEY uq_mfu_notifications_dedup (user_kind, user_id, dedup_key),
+   KEY idx_mfu_notifications_unread (user_kind, user_id, read_at, created_at),
+-  KEY idx_mfu_notifications_created (user_kind, user_id, created_at)
++  KEY idx_mfu_notifications_created (user_kind, user_id, created_at),
++  KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at),
++  KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ 
++def _ensure_notification_schema() -> None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(_NOTIFICATION_DDL)
++
++        cur.execute("SHOW COLUMNS FROM mfu_notifications")
++        existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
++
++        if "chat_event_id" not in existing:
++            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_event_id BIGINT UNSIGNED NULL AFTER event_id")
++        if "chat_room_id" not in existing:
++            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_room_id VARCHAR(64) NULL AFTER chat_event_id")
++
++        index_map = {
++            "idx_mfu_notifications_chat_room_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at)",
++            "idx_mfu_notifications_unread_kind": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)",
++        }
++        cur.execute("SHOW INDEX FROM mfu_notifications")
++        existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
++        for key_name, ddl in index_map.items():
++            if key_name not in existing_indexes:
++                cur.execute(ddl)
++
++        while True:
++            cur.execute(
++                """
++                SELECT id, target_url, event_id
++                  FROM mfu_notifications
++                 WHERE kind='chat_message'
++                   AND (chat_room_id IS NULL OR chat_room_id='')
++                 ORDER BY id ASC
++                 LIMIT 200
++                """
++            )
++            rows = cur.fetchall() or []
++            if not rows:
++                break
++
++            updated_in_batch = 0
++            for row in rows:
++                event_id, room_id = _parse_chat_room_context(row)
++                if not room_id:
++                    continue
++                cur.execute(
++                    """
++                    UPDATE mfu_notifications
++                       SET chat_event_id=COALESCE(chat_event_id, %s),
++                           chat_room_id=COALESCE(chat_room_id, %s)
++                     WHERE id=%s
++                    """,
++                    (int(event_id) if event_id else None, str(room_id), int(row["id"])),
++                )
++                updated_in_batch += int(cur.rowcount or 0)
++            if updated_in_batch <= 0:
++                break
++        db.commit()
++    except Exception:
++        db.rollback()
++        current_app.logger.exception("ensure mfu_notifications schema migration failed")
++        raise
++    finally:
++        cur.close()
++        db.close()
++
++
+ @bp.record_once
+ def _ensure_notification_table(state) -> None:
+     app = state.app
+     with app.app_context():
+-        db = get_db()
+-        cur = db.cursor()
+         try:
+-            cur.execute(_NOTIFICATION_DDL)
+-            db.commit()
++            _ensure_notification_schema()
+         except Exception:
+             app.logger.exception("ensure mfu_notifications failed")
+-        finally:
+-            cur.close()
+-            db.close()
+ 
+ 
+ def create_notification_external(
+     user_id: int,
+     kind: str,
+     title: str,
+     body: str,
+     target_url: str,
+     dedup_key: str,
+     event_id: int | None = None,
++    chat_event_id: int | None = None,
++    chat_room_id: str | None = None,
+ ) -> bool:
++    _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         dedup = (dedup_key or "").strip()[:191]
+         cur.execute(
+             """
+             SELECT id, created_at
+               FROM mfu_notifications
+              WHERE user_kind=%s AND user_id=%s AND dedup_key=%s
+              LIMIT 1
+             """,
+             ("external", int(user_id), dedup),
+         )
+         existing = cur.fetchone()
+ 
+         cur.execute(
+             """
+             INSERT INTO mfu_notifications (
+               user_kind, user_id, kind, title, body, target_url,
+-              event_id, dedup_key, created_at, read_at
++              event_id, chat_event_id, chat_room_id, dedup_key, created_at, read_at
+             )
+-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
++            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+             ON DUPLICATE KEY UPDATE id=id
+             """,
+             (
+                 "external",
+                 int(user_id),
+                 (kind or "").strip() or "general",
+                 (title or "").strip() or "お知らせ",
+                 (body or "").strip(),
+                 (target_url or "").strip() or "/external-login/",
+                 int(event_id) if event_id else None,
++                int(chat_event_id) if chat_event_id else None,
++                str(chat_room_id).strip() if chat_room_id else None,
+                 dedup,
+                 datetime.utcnow(),
+             ),
+         )
+         deleted_old_read = _prune_old_read_notifications(cur, int(user_id))
+         inserted = cur.rowcount == 1
+         latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
+         db.commit()
+         if inserted:
+             _emit_notif_unread(int(user_id), reason="created", latest_id=latest_id)
+         current_app.logger.info(
+             "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
+             int(user_id),
+             int(event_id) if event_id else None,
+             (kind or "").strip() or "general",
+             dedup,
+             inserted,
+             existing["id"] if existing else None,
+             deleted_old_read,
+         )
+         return inserted
+     except Exception:
+         current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
+         return False
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @bp.get("/notifications")
+ def notifications_page():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+     return render_template("notifications.html")
+ 
+ 
+ @bp.get("/api/notifications/unread-count")
+ def api_notifications_unread_count():
++    _ensure_notification_schema()
+     uid = int(session.get("ext_user_id") or 0)
+     if uid <= 0:
+         resp = jsonify({"ok": False, "reason": "login_required"})
+         resp.status_code = 401
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
+ 
+     try:
+         count = _compute_unread_count_external(uid)
+         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
+         resp = jsonify({"count": count})
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
+     except Exception:
+         current_app.logger.warning("notifications unread-count failed user_id=%s", uid, exc_info=True)
+         raise
+ 
+ 
+ @bp.get("/api/notifications")
+ def api_notifications_list():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     uid = int(session.get("ext_user_id") or 0)
++    _ensure_notification_schema()
+     unread_arg = (request.args.get("unread") or "").strip().lower()
+     unread_only = unread_arg not in {"0", "false", "no", "off"}
+     page = max(int(request.args.get("page") or 1), 1)
+     per_page = 20
+     offset = (page - 1) * per_page
+ 
+     where = ["user_kind='external'", "user_id=%s"]
+     params: list[Any] = [uid]
+     if unread_only:
+         where.append("read_at IS NULL")
+ 
+     where_sql = " AND ".join(where)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         room_cache: dict[str, tuple[int, str]] = {}
+         cur.execute(
+             f"""
+             SELECT id, kind, title, body, target_url, event_id, created_at, read_at
++                 , chat_event_id, chat_room_id
+               FROM mfu_notifications
+              WHERE {where_sql}
+              ORDER BY created_at DESC, id DESC
+              LIMIT %s OFFSET %s
+             """,
+             tuple(params + [per_page, offset]),
+         )
+         rows = cur.fetchall() or []
+ 
+         cur.execute(
+             f"SELECT COUNT(*) AS cnt FROM mfu_notifications WHERE {where_sql}",
+             tuple(params),
+         )
+         _ = int((cur.fetchone() or {}).get("cnt") or 0)
+ 
+         items = []
+         for row in rows:
+             visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+             if not visible:
+                 continue
+             items.append(
+                 {
+                     "id": int(row["id"]),
+                     "kind": row.get("kind"),
+                     "title": row.get("title"),
+                     "body": row.get("body") or "",
+                     "target_url": row.get("target_url") or "/external-login/",
+                     "event_id": row.get("event_id"),
+                     "room_name": room_name,
+                     "created_at": row.get("created_at").replace(tzinfo=timezone.utc).isoformat() if row.get("created_at") else None,
+                     "read_at": row.get("read_at").replace(tzinfo=timezone.utc).isoformat() if row.get("read_at") else None,
+                 }
+             )
+ 
+         cur.execute(
+-            f"SELECT id, target_url, event_id FROM mfu_notifications WHERE {where_sql}",
++            f"SELECT id, target_url, event_id, chat_event_id, chat_room_id FROM mfu_notifications WHERE {where_sql}",
+             tuple(params),
+         )
+         all_rows = cur.fetchall() or []
+         total = 0
+         for row in all_rows:
+             visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+             if visible:
+                 total += 1
+ 
+         latest_id = items[0]["id"] if items else None
+         latest_created_at = items[0]["created_at"] if items else None
+         current_app.logger.info(
+             "notifications list user_id=%s page=%s unread_only=%s returned=%s total=%s latest_id=%s latest_created_at=%s",
+             uid,
+             page,
+             unread_only,
+             len(items),
+             total,
+             latest_id,
+             latest_created_at,
+         )
+ 
+         resp = jsonify(
+             {
+                 "items": items,
+                 "pagination": {
+                     "page": page,
+                     "per_page": per_page,
+                     "total": total,
+                     "has_next": page * per_page < total,
+                 },
+             }
+         )
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @bp.get("/api/notifications/updates")
+ def api_notifications_updates():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     uid = int(session.get("ext_user_id") or 0)
++    _ensure_notification_schema()
+     since_id = max(int(request.args.get("since_id") or 0), 0)
+     limit = min(max(int(request.args.get("limit") or 20), 1), 100)
+ 
+     started = perf_counter()
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         db.start_transaction()
+         room_cache: dict[str, tuple[int, str]] = {}
+ 
+         cur.execute(
+             """
+             SELECT id, title, body, target_url, event_id, created_at, read_at
++                 , chat_event_id, chat_room_id
+               FROM mfu_notifications
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND id > %s
+              ORDER BY id ASC
+              LIMIT %s
+             """,
+             (uid, since_id, limit),
+         )
+         rows = cur.fetchall() or []
+ 
+         cur.execute(
+             """
+             SELECT id, target_url, event_id
++                 , chat_event_id, chat_room_id
+               FROM mfu_notifications
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND read_at IS NULL
+             """,
+             (uid,),
+         )
+         unread_rows = cur.fetchall() or []
+         unread_count = 0
+         for row in unread_rows:
+             visible, _room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+             if visible:
+                 unread_count += 1
+         db.commit()
+ 
+         items = []
+         latest_id = since_id
+         for row in rows:
+             visible, room_name = _is_notification_visible_for_external(cur, uid, row, room_cache)
+             if not visible:
+                 continue
+             item_id = int(row["id"])
+             latest_id = max(latest_id, item_id)
+             items.append(
+                 {
+@@ -479,75 +560,146 @@ def api_notifications_updates():
+             elapsed_ms,
+         )
+ 
+         resp = jsonify(
+             {
+                 "latest_id": latest_id,
+                 "unread_count": unread_count,
+                 "items": items,
+             }
+         )
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @bp.post("/api/notifications/<int:notification_id>/read")
+ def api_notifications_mark_read(notification_id: int):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     uid = int(session.get("ext_user_id") or 0)
++    _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=COALESCE(read_at, %s)
+              WHERE id=%s
+                AND user_kind='external'
+                AND user_id=%s
+             """,
+             (datetime.utcnow(), notification_id, uid),
+         )
+         db.commit()
+         if cur.rowcount == 0:
+             abort(404)
+         _emit_notif_unread(uid, reason="read")
+         return jsonify({"ok": True})
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ @bp.post("/api/notifications/read-all")
+ def api_notifications_mark_all_read():
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     uid = int(session.get("ext_user_id") or 0)
++    _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=%s
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND read_at IS NULL
+             """,
+             (datetime.utcnow(), uid),
+         )
+         updated = int(cur.rowcount or 0)
+         db.commit()
+         _emit_notif_unread(uid, reason="read_all")
+         return jsonify({"ok": True, "updated": updated})
+     finally:
+         cur.close()
+         db.close()
++
++
++@bp.post("/api/notifications/read-by-room")
++def api_notifications_mark_read_by_room():
++    guard = _require_ext_login()
++    if guard:
++        return guard
++
++    uid = int(session.get("ext_user_id") or 0)
++    payload = request.get_json(silent=True) or {}
++    event_id_raw = payload.get("event_id")
++    room_id = str(payload.get("room_id") or "").strip()
++    if not room_id:
++        resp = jsonify({"ok": False, "reason": "room_id_required"})
++        resp.status_code = 400
++        return resp
++
++    try:
++        event_id = int(event_id_raw)
++    except Exception:
++        resp = jsonify({"ok": False, "reason": "event_id_required"})
++        resp.status_code = 400
++        return resp
++
++    _ensure_notification_schema()
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        now = datetime.utcnow()
++        cur.execute(
++            """
++            UPDATE mfu_notifications
++               SET read_at=%s
++             WHERE user_kind='external'
++               AND user_id=%s
++               AND kind='chat_message'
++               AND chat_event_id=%s
++               AND chat_room_id=%s
++               AND read_at IS NULL
++            """,
++            (now, uid, event_id, room_id),
++        )
++        updated_count = int(cur.rowcount or 0)
++        db.commit()
++
++        unread_count = _compute_unread_count_external(uid)
++        cur.execute(
++            """
++            SELECT MAX(id) AS latest_id
++              FROM mfu_notifications
++             WHERE user_kind='external'
++               AND user_id=%s
++            """,
++            (uid,),
++        )
++        latest_id = int((cur.fetchone() or {}).get("latest_id") or 0)
++        _emit_notif_unread(uid, reason="room_read", latest_id=latest_id)
++
++        return jsonify(
++            {
++                "ok": True,
++                "updated_count": updated_count,
++                "unread_count": unread_count,
++                "latest_id": latest_id,
++            }
++        )
++    finally:
++        cur.close()
++        db.close()

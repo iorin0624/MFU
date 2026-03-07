@@ -1760,6 +1760,9 @@ window.addEventListener('DOMContentLoaded', () => {
 
   initReactionUis();
   syncExistingMessageIds();
+  if (!dmMode && eventId > 0 && roomId) {
+    markChatNotificationsReadByRoom();
+  }
   scheduleUnreadRefresh();
   refreshNotificationBadge();
   startNotificationBadgePolling();
@@ -4217,16 +4220,38 @@ function openFulltextModal(row) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
       const unread = Number(data.count || 0);
-      if (!notificationBadge) return;
-      if (unread > 0) {
-        notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
-        notificationBadge.classList.remove('no-unread');
-        notificationBadge.classList.add('has-unread');
-      } else {
-        notificationBadge.textContent = '🔔';
-        notificationBadge.classList.remove('has-unread');
-        notificationBadge.classList.add('no-unread');
-      }
+      applyNotificationBadge(unread);
+    } catch (_e) {
+      // noop
+    }
+  }
+
+  function applyNotificationBadge(unread) {
+    if (!notificationBadge) return;
+    if (unread > 0) {
+      notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
+      notificationBadge.classList.remove('no-unread');
+      notificationBadge.classList.add('has-unread');
+    } else {
+      notificationBadge.textContent = '🔔';
+      notificationBadge.classList.remove('has-unread');
+      notificationBadge.classList.add('no-unread');
+    }
+  }
+
+  async function markChatNotificationsReadByRoom() {
+    try {
+      const res = await fetch('/external-login/api/notifications/read-by-room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ event_id: eventId, room_id: roomId }),
+      });
+      if (res.status === 401) return;
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) return;
+      const unread = Number(data.unread_count || 0);
+      applyNotificationBadge(unread);
     } catch (_e) {
       // noop
     }
