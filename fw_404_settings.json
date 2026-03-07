@@ -1,6 +1,6 @@
 {
-  "short_window_sec": 3.0,
-  "short_threshold": 3,
+  "short_window_sec": 5.0,
+  "short_threshold": 4,
   "ip_window_sec": 120.0,
   "ip_threshold": 10,
   "cooldown_sec": 120,
