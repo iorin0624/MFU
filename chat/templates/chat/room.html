@@ -1688,13 +1688,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const [myActorType, myActorId] = meId.includes(':')
     ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
     : ['', ''];
-  const canonicalMeId = (() => {
-    if (dmMode) return meId;
-    const [actorType, actorId] = meId.includes(':')
-      ? [meId.split(':')[0], meId.slice(meId.indexOf(':') + 1)]
-      : ['', ''];
-    return canonicalEventActorKey(actorType, actorId) || meId;
-  })();
+  const canonicalMeId = (() => canonicalReadTargetKey(meId))();
 
   function buildSafeBodyHtml(msg) {
     const rawHtml = (msg?.body_html || '').trim();
@@ -2633,11 +2627,9 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   function isMyMessage(msg) {
     const senderRawKey = String(msg.sender_id || '');
-    const senderKey = dmMode
-      ? senderRawKey
-      : (canonicalEventActorKey(...splitActorKey(senderRawKey)) || senderRawKey);
-    const selfKey = dmMode ? meId : canonicalMeId;
-    return (senderKey && selfKey && String(senderKey) === String(selfKey))
+    const senderKey = canonicalReadTargetKey(senderRawKey);
+    const selfKey = canonicalMeId;
+    return (senderKey && selfKey && senderKey === selfKey)
       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
   }
 
@@ -3549,7 +3541,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const actorType = payload?.actor_type || '';
     const actorId = String(payload?.actor_id || '');
     if (!actorType || !actorId) return;
-    const key = dmMode ? `${actorType}:${actorId}` : canonicalEventActorKey(actorType, actorId);
+    const key = canonicalReadActorKey(actorType, actorId);
     if (!key) return;
     if (key === canonicalMeId) return;
 
@@ -4034,15 +4026,47 @@ function openFulltextModal(row) {
     return `${t}:${i}`;
   }
 
+  function canonicalDmActorKey(actorType, actorId) {
+    const t = String(actorType || '');
+    const i = String(actorId || '');
+    if (!t) return '';
+    if (t === 'admin') return 'admin:1';
+    if (!i) return '';
+    return `${t}:${i}`;
+  }
+
+  function canonicalDmActorKeyFromKey(actorKey) {
+    const key = String(actorKey || '').trim();
+    if (!key) return '';
+    if (key === 'admin' || key.startsWith('admin:')) return 'admin:1';
+    if (key.includes(':')) {
+      const [t, i] = splitActorKey(key);
+      return canonicalDmActorKey(t, i);
+    }
+    const [t, i] = splitActorKey(key);
+    return canonicalDmActorKey(t, i);
+  }
+
+  function canonicalReadActorKey(actorType, actorId) {
+    if (dmMode) return canonicalDmActorKey(actorType, actorId);
+    return canonicalEventActorKey(actorType, actorId);
+  }
+
+  function canonicalReadTargetKey(actorKey) {
+    const key = String(actorKey || '');
+    if (dmMode) return canonicalDmActorKeyFromKey(key);
+    return canonicalEventActorKey(...splitActorKey(key)) || key || '';
+  }
+
   function normalizeActorKeyForCompare(actorType, actorId) {
-    const canonicalKey = canonicalEventActorKey(actorType, actorId);
+    const canonicalKey = canonicalReadActorKey(actorType, actorId);
     if (!canonicalKey) return '';
-    if (canonicalKey === 'admin:admin') return 'admin';
+    if (!dmMode && canonicalKey === 'admin:admin') return 'admin';
     return canonicalKey;
   }
 
   function isSameActorByKey(actorType, actorId, targetKey) {
-    const normTarget = normalizeActorKeyForCompare(...splitActorKey(targetKey));
+    const normTarget = normalizeActorKeyForCompare(...splitActorKey(canonicalReadTargetKey(targetKey)));
     if (!normTarget) return false;
     const normActor = normalizeActorKeyForCompare(actorType, actorId);
     if (normActor === normTarget) return true;
@@ -4061,9 +4085,12 @@ function openFulltextModal(row) {
 
   function applyReadUpdate(readState) {
     if (!readState?.actor_type || !readState?.actor_id) return;
-    const key = canonicalEventActorKey(readState.actor_type, readState.actor_id);
+    const key = canonicalReadActorKey(readState.actor_type, readState.actor_id);
     if (!key) return;
-    const [canonicalActorType, canonicalActorId] = splitActorKey(key);
+    const [canonicalActorType, canonicalActorId] = key.includes(':')
+      ? [key.split(':')[0], key.slice(key.indexOf(':') + 1)]
+      : ['', ''];
+    if (!canonicalActorType || !canonicalActorId) return;
     const prev = state.readStateByActor.get(key);
     const nextReadId = Number(readState.last_read_message_id || 0);
     const prevReadId = Number(prev?.last_read_message_id || 0);
@@ -4083,9 +4110,7 @@ function openFulltextModal(row) {
   function refreshReadIndicatorForRow(row) {
     if (!row?.classList.contains('me')) return;
     const messageId = Number(row.dataset.messageId || 0);
-    const senderId = dmMode
-      ? (row.dataset.senderId || '')
-      : (canonicalEventActorKey(...splitActorKey(row.dataset.senderId || '')) || row.dataset.senderId || '');
+    const senderId = canonicalReadTargetKey(row.dataset.senderId || '');
     const indicator = row.querySelector('.chat-read-inline, .chat-read-indicator');
     const list = row.querySelector('.chat-read-list');
     if (!messageId || !indicator || !list) return;
