@@ -1,71 +1,146 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 20c65932c319fb1aaabce166c9478e7f4477d403..cbaaeff65197839cf553274d28373dbcfb021f0d 100644
+index cbaaeff65197839cf553274d28373dbcfb021f0d..4f18547c5fd429b6ffab02593436300ca0332413 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -4293,51 +4293,51 @@ def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
-             {
-                 "actor_type": actor_type,
-                 "actor_id": actor_id,
-                 "display_name": _actor_key_to_display_name(actor_key),
-                 "last_read_message_id": int(row.get("last_read_message_id") or 0),
-             }
-         )
-     return snapshot
- 
- def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sender_display_name: str, body: str) -> None:
-     from app.external_login_user.notifications import create_notification_mfu
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     sent_count = 0
-     dm_room_id = f"dm:{dm_uuid}"
-     try:
-         cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s", (conversation_id, sender_actor_key))
-         targets = cur.fetchall() or []
+@@ -1676,86 +1676,133 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
+                 username = str(row.get("username") or "")
+                 if not username:
+                     continue
+                 resolved[f"acl:{username}"] = username
+     except Exception:
+         current_app.logger.warning("chat actor display names resolve failed event=%s", event_id, exc_info=True)
      finally:
          cur.close()
          db.close()
  
-     for t in targets:
-         actor_key = str(t.get("actor_key") or "")
--        a_type, _, a_id = actor_key.partition(":")
-+        a_type, a_id = _split_actor_key(actor_key)
-         if not a_type or not a_id:
+     for actor_type, actor_id in actor_pairs:
+         key = f"{actor_type}:{actor_id}"
+         if key in resolved:
              continue
-         if _is_actor_actively_viewing_room(a_type, a_id, dm_room_id):
-             current_app.logger.info(
-                 "dm notification suppressed by presence conversation_id=%s room_id=%s actor=%s:%s",
-                 conversation_id,
-                 dm_room_id,
-                 a_type,
-                 a_id,
-             )
-             continue
-         sent_count += _send_push_to_actor(
-             a_type,
-             a_id,
-             {"title": f"{sender_display_name}さんからDM", "body": body, "event_id": 0, "room_id": dm_room_id, "url": f"/chat/dm/room/{dm_uuid}"},
-         )
-         if a_type == "line":
-             _create_external_chat_notification(
-                 recipient_user_id=int(a_id),
-                 kind="dm",
-                 title=f"{sender_display_name}さんからDM",
-                 body=body,
-                 event_id=0,
-                 room_id=dm_room_id,
-                 room_name="DM",
-diff --git a/docs/sql/20260307_fix_mfu_dm_recipient_key_admin.sql b/docs/sql/20260307_fix_mfu_dm_recipient_key_admin.sql
-new file mode 100644
-index 0000000000000000000000000000000000000000..96fd6163d7fff0f2a2e371c45be6bf4c4290cbdb
---- /dev/null
-+++ b/docs/sql/20260307_fix_mfu_dm_recipient_key_admin.sql
-@@ -0,0 +1,8 @@
-+-- One-time data correction for DM notifications created before actor-key normalization fix.
-+-- Fixes admin DM rows saved with recipient_key='1' so MFU unread-count can match username='admin'.
+         if str(actor_type) == "admin":
+             resolved[key] = "admin"
+         elif str(actor_type) == "system":
+             resolved[key] = "System"
+         elif str(actor_type) == "line":
+             resolved[key] = f"LINE-{actor_id}"
+         else:
+             resolved[key] = str(actor_id)
+     return resolved
+ 
+ 
++def _normalize_event_actor_pair(actor_type: str, actor_id: str) -> tuple[str, str]:
++    normalized_type = str(actor_type or "")
++    normalized_id = str(actor_id or "")
++    if normalized_type == "admin":
++        return "admin", "admin"
++    return normalized_type, normalized_id
 +
-+UPDATE mfu_notifications
-+SET recipient_key = 'admin'
-+WHERE user_kind = 'mfu'
-+  AND kind = 'dm'
-+  AND recipient_key = '1';
++
+ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
+     if not _ensure_chat_read_state_room_schema():
+         return []
+ 
+     participants = _build_chat_participants(event_id)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT actor_type, actor_id, last_read_message_id, updated_at
+               FROM chat_read_state
+              WHERE event_id=%s AND room_id=%s
+             """,
+             (event_id, room_id),
+         )
+         rows = cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+-    snapshot: list[dict[str, Any]] = []
++    participant_by_normalized_key: dict[str, dict[str, str]] = {}
++    for participant in participants.values():
++        participant_actor_type, participant_actor_id = _normalize_event_actor_pair(
++            str(participant.get("actor_type") or ""),
++            str(participant.get("actor_id") or ""),
++        )
++        normalized_key = f"{participant_actor_type}:{participant_actor_id}"
++        if not participant_actor_type or not participant_actor_id:
++            continue
++        participant_by_normalized_key[normalized_key] = {
++            "actor_type": participant_actor_type,
++            "actor_id": participant_actor_id,
++            "display_name": str(participant.get("display_name") or normalized_key),
++        }
++
++    snapshot_by_actor: dict[str, dict[str, Any]] = {}
+     for row in rows:
+-        actor_type = str(row.get("actor_type") or "")
+-        actor_id = str(row.get("actor_id") or "")
++        actor_type, actor_id = _normalize_event_actor_pair(
++            str(row.get("actor_type") or ""),
++            str(row.get("actor_id") or ""),
++        )
+         key = f"{actor_type}:{actor_id}"
+-        participant = participants.get(key)
++        participant = participant_by_normalized_key.get(key)
+         if not participant:
+             continue
+-        snapshot.append(
+-            {
++
++        next_read_id = int(row.get("last_read_message_id") or 0)
++        updated_at = row.get("updated_at")
++        prev = snapshot_by_actor.get(key)
++        if not prev:
++            snapshot_by_actor[key] = {
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "display_name": participant["display_name"],
+-                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+-                "updated_at_iso": row.get("updated_at").isoformat() if row.get("updated_at") else None,
++                "last_read_message_id": next_read_id,
++                "updated_at": updated_at,
++            }
++            continue
++
++        prev_read_id = int(prev.get("last_read_message_id") or 0)
++        prev_updated = prev.get("updated_at")
++        prev["last_read_message_id"] = max(prev_read_id, next_read_id)
++        if updated_at and (not prev_updated or updated_at > prev_updated):
++            prev["updated_at"] = updated_at
++
++    snapshot: list[dict[str, Any]] = []
++    for entry in snapshot_by_actor.values():
++        snapshot.append(
++            {
++                "actor_type": str(entry.get("actor_type") or ""),
++                "actor_id": str(entry.get("actor_id") or ""),
++                "display_name": str(entry.get("display_name") or ""),
++                "last_read_message_id": int(entry.get("last_read_message_id") or 0),
++                "updated_at_iso": entry.get("updated_at").isoformat() if entry.get("updated_at") else None,
+             }
+         )
+     return snapshot
+ 
+ 
+ def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> int:
+     if not _ensure_chat_read_state_room_schema():
+         return 0
+ 
+     now = datetime.utcnow()
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             INSERT INTO chat_read_state (event_id, room_id, actor_type, actor_id, last_read_message_id, updated_at)
+             VALUES (%s, %s, %s, %s, %s, %s)
+             ON DUPLICATE KEY UPDATE
+               last_read_message_id = GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
+               updated_at = VALUES(updated_at)
+             """,
+             (event_id, room_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
+         )
+         cur.execute(
+             """

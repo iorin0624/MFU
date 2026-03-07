@@ -1698,6 +1698,14 @@ def _resolve_actor_display_names(event_id: int, actor_pairs: list[tuple[str, str
     return resolved
 
 
+def _normalize_event_actor_pair(actor_type: str, actor_id: str) -> tuple[str, str]:
+    normalized_type = str(actor_type or "")
+    normalized_id = str(actor_id or "")
+    if normalized_type == "admin":
+        return "admin", "admin"
+    return normalized_type, normalized_id
+
+
 def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
     if not _ensure_chat_read_state_room_schema():
         return []
@@ -1719,21 +1727,60 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
         cur.close()
         db.close()
 
-    snapshot: list[dict[str, Any]] = []
+    participant_by_normalized_key: dict[str, dict[str, str]] = {}
+    for participant in participants.values():
+        participant_actor_type, participant_actor_id = _normalize_event_actor_pair(
+            str(participant.get("actor_type") or ""),
+            str(participant.get("actor_id") or ""),
+        )
+        normalized_key = f"{participant_actor_type}:{participant_actor_id}"
+        if not participant_actor_type or not participant_actor_id:
+            continue
+        participant_by_normalized_key[normalized_key] = {
+            "actor_type": participant_actor_type,
+            "actor_id": participant_actor_id,
+            "display_name": str(participant.get("display_name") or normalized_key),
+        }
+
+    snapshot_by_actor: dict[str, dict[str, Any]] = {}
     for row in rows:
-        actor_type = str(row.get("actor_type") or "")
-        actor_id = str(row.get("actor_id") or "")
+        actor_type, actor_id = _normalize_event_actor_pair(
+            str(row.get("actor_type") or ""),
+            str(row.get("actor_id") or ""),
+        )
         key = f"{actor_type}:{actor_id}"
-        participant = participants.get(key)
+        participant = participant_by_normalized_key.get(key)
         if not participant:
             continue
-        snapshot.append(
-            {
+
+        next_read_id = int(row.get("last_read_message_id") or 0)
+        updated_at = row.get("updated_at")
+        prev = snapshot_by_actor.get(key)
+        if not prev:
+            snapshot_by_actor[key] = {
                 "actor_type": actor_type,
                 "actor_id": actor_id,
                 "display_name": participant["display_name"],
-                "last_read_message_id": int(row.get("last_read_message_id") or 0),
-                "updated_at_iso": row.get("updated_at").isoformat() if row.get("updated_at") else None,
+                "last_read_message_id": next_read_id,
+                "updated_at": updated_at,
+            }
+            continue
+
+        prev_read_id = int(prev.get("last_read_message_id") or 0)
+        prev_updated = prev.get("updated_at")
+        prev["last_read_message_id"] = max(prev_read_id, next_read_id)
+        if updated_at and (not prev_updated or updated_at > prev_updated):
+            prev["updated_at"] = updated_at
+
+    snapshot: list[dict[str, Any]] = []
+    for entry in snapshot_by_actor.values():
+        snapshot.append(
+            {
+                "actor_type": str(entry.get("actor_type") or ""),
+                "actor_id": str(entry.get("actor_id") or ""),
+                "display_name": str(entry.get("display_name") or ""),
+                "last_read_message_id": int(entry.get("last_read_message_id") or 0),
+                "updated_at_iso": entry.get("updated_at").isoformat() if entry.get("updated_at") else None,
             }
         )
     return snapshot
