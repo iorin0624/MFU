@@ -1897,7 +1897,11 @@ def _present_message(
 ) -> dict[str, Any]:
     sender_actor_type = str(msg["sender_actor_type"])
     sender_actor_id = str(msg["sender_actor_id"])
-    sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
+    sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id)
+    current_actor_id = _canonical_event_actor_key(
+        str(current_actor.get("actor_type") or ""),
+        str(current_actor.get("actor_id") or ""),
+    )
     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
@@ -1948,7 +1952,7 @@ def _present_message(
         reply_excerpt = "元メッセージが見つかりません"
 
     actor_is_admin = _is_admin_actor(current_actor)
-    is_me = str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])))
+    is_me = bool(sender_id and current_actor_id and str(sender_id) == str(current_actor_id))
     can_delete = False
     can_edit = False
     if not deleted_flag:
@@ -5114,7 +5118,10 @@ def room(event_id: int):
     return render_template(
         "chat/room.html",
         actor=actor,
-        current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
+        current_user_id=(
+            _canonical_event_actor_key(actor["actor_type"], str(actor["actor_id"]))
+            or _actor_sender_id(actor["actor_type"], str(actor["actor_id"]))
+        ),
         event=event,
         messages=messages,
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
