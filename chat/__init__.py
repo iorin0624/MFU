@@ -4315,7 +4315,7 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
 
     for t in targets:
         actor_key = str(t.get("actor_key") or "")
-        a_type, _, a_id = actor_key.partition(":")
+        a_type, a_id = _split_actor_key(actor_key)
         if not a_type or not a_id:
             continue
         if _is_actor_actively_viewing_room(a_type, a_id, dm_room_id):
