@@ -1311,6 +1311,278 @@ def _load_chat_read_state_v2_snapshot(room_key: str) -> list[dict[str, Any]]:
             }
         )
     return snapshot
+
+
+def _debug_fetch_chat_read_state_v2_rows(room_key: str) -> list[dict[str, Any]]:
+    room_key = str(room_key or "").strip()
+    if not room_key or not _ensure_chat_read_state_v2_schema():
+        return []
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_key, last_read_message_id, updated_at
+              FROM chat_read_state_v2
+             WHERE room_key=%s
+             ORDER BY updated_at DESC, actor_key ASC
+            """,
+            (room_key,),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        raw_actor_key = str(row.get("actor_key") or "").strip()
+        canonical_actor_key = _canonical_read_actor_key(raw_actor_key)
+        actor_type, actor_id = _split_read_actor_key(raw_actor_key)
+        normalized.append(
+            {
+                "actor_key": raw_actor_key,
+                "canonical_actor_key": canonical_actor_key,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return normalized
+
+
+def _debug_fetch_legacy_event_read_rows(event_id: int | None, room_id: str | None) -> list[dict[str, Any]]:
+    if not event_id or int(event_id) <= 0 or not str(room_id or "").strip() or not _ensure_chat_read_state_room_schema():
+        return []
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_type, actor_id, last_read_message_id, updated_at
+              FROM chat_read_state
+             WHERE event_id=%s AND room_id=%s
+             ORDER BY updated_at DESC, actor_type ASC, actor_id ASC
+            """,
+            (int(event_id), str(room_id).strip()),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        actor_type = str(row.get("actor_type") or "").strip()
+        actor_id = str(row.get("actor_id") or "").strip()
+        legacy_actor_key = f"{actor_type}:{actor_id}" if actor_type and actor_id else ""
+        result.append(
+            {
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "legacy_actor_key": legacy_actor_key,
+                "canonical_legacy_actor_key": _canonical_read_actor_key(legacy_actor_key),
+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return result
+
+
+def _debug_fetch_legacy_dm_read_rows(dm_uuid: str | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    uuid_value = str(dm_uuid or "").strip()
+    if not uuid_value or not _ensure_chat_dm_schema():
+        return [], {}
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id, uuid FROM chat_dm_conversations WHERE uuid=%s LIMIT 1", (uuid_value,))
+        conversation = cur.fetchone() or {}
+        conversation_id = int(conversation.get("id") or 0)
+        if conversation_id <= 0:
+            return [], {}
+        cur.execute(
+            """
+            SELECT actor_key, last_read_message_id, updated_at
+              FROM chat_dm_participants
+             WHERE conversation_id=%s
+             ORDER BY updated_at DESC, actor_key ASC
+            """,
+            (conversation_id,),
+        )
+        participant_rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    rows: list[dict[str, Any]] = []
+    for row in participant_rows:
+        actor_key = str(row.get("actor_key") or "").strip()
+        rows.append(
+            {
+                "actor_key": actor_key,
+                "canonical_actor_key": _canonical_read_actor_key(actor_key),
+                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return rows, {"id": int(conversation.get("id") or 0), "uuid": str(conversation.get("uuid") or "")}
+
+
+def _debug_fetch_presence_rows(actor_key: str, room_key: str) -> list[dict[str, Any]]:
+    actor_type, actor_id = _split_read_actor_key(actor_key)
+    room_key = str(room_key or "").strip()
+    if not actor_type or not actor_id or not room_key or not _ensure_chat_active_view_schema():
+        return []
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT actor_type, actor_id, room_id, client_id, is_visible,
+                   entered_at, last_ping_at, updated_at
+              FROM chat_active_views
+             WHERE actor_type=%s AND actor_id=%s AND room_id=%s
+             ORDER BY updated_at DESC
+            """,
+            (actor_type, actor_id, room_key),
+        )
+        return cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+
+def _debug_build_read_v2_checks(ctx: dict[str, Any]) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    room_key = str(ctx.get("room_key") or "")
+    effective_actor_key = str(ctx.get("effective_actor_key") or "")
+    aliases = [str(v) for v in (ctx.get("aliases") or []) if str(v)]
+    alias_canonical_set = {_canonical_read_actor_key(value) for value in aliases if _canonical_read_actor_key(value)}
+    v2_rows = list(ctx.get("v2_rows") or [])
+    snapshot_rows = list(ctx.get("snapshot_rows") or [])
+    legacy_rows = list(ctx.get("legacy_rows") or [])
+
+    if not room_key:
+        checks.append({"level": "error", "message": "room_key が空です。"})
+    if not effective_actor_key:
+        checks.append({"level": "error", "message": "effective_actor_key が空です。"})
+
+    if not v2_rows:
+        checks.append({"level": "warning", "message": "V2 に room_key 対象行がありません。"})
+
+    v2_alias_rows = [
+        row
+        for row in v2_rows
+        if _canonical_read_actor_key(str(row.get("actor_key") or "")) in alias_canonical_set
+    ]
+    if effective_actor_key and not v2_alias_rows:
+        checks.append({"level": "warning", "message": "effective_actor_key の alias に一致する V2 行がありません。"})
+
+    snapshot_effective_rows = [
+        row
+        for row in snapshot_rows
+        if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key
+    ]
+    if v2_alias_rows and effective_actor_key and not snapshot_effective_rows:
+        checks.append({"level": "warning", "message": "V2 にはあるが snapshot には effective_actor_key がありません。"})
+
+    snapshot_mismatch_rows = [
+        row
+        for row in snapshot_rows
+        if str(row.get("actor_key") or "")
+        and _canonical_read_actor_key(str(row.get("actor_key") or "")) != str(row.get("actor_key") or "")
+    ]
+    if snapshot_mismatch_rows:
+        checks.append({"level": "warning", "message": "snapshot に canonical 後の actor_key がズレている行があります。"})
+
+    legacy_effective_rows = [
+        row
+        for row in legacy_rows
+        if _canonical_read_actor_key(str(row.get("canonical_legacy_actor_key") or row.get("canonical_actor_key") or "")) == effective_actor_key
+    ]
+    if legacy_effective_rows and not v2_alias_rows:
+        checks.append({"level": "warning", "message": "旧テーブルにはあるが V2 に存在しません。"})
+
+    if legacy_effective_rows and v2_alias_rows:
+        legacy_max = max(int(row.get("last_read_message_id") or 0) for row in legacy_effective_rows)
+        v2_max = max(int(row.get("last_read_message_id") or 0) for row in v2_alias_rows)
+        if legacy_max != v2_max:
+            checks.append({"level": "warning", "message": f"旧テーブル({legacy_max}) と V2({v2_max}) の last_read_message_id が不一致です。"})
+        if v2_max < legacy_max:
+            checks.append({"level": "warning", "message": f"V2 の last_read_message_id ({v2_max}) が期待値 ({legacy_max}) より小さいです。"})
+
+    if snapshot_effective_rows and v2_alias_rows:
+        snapshot_max = max(int(row.get("last_read_message_id") or 0) for row in snapshot_effective_rows)
+        v2_max = max(int(row.get("last_read_message_id") or 0) for row in v2_alias_rows)
+        if snapshot_max < v2_max:
+            checks.append({"level": "warning", "message": f"snapshot の last_read_message_id ({snapshot_max}) が V2 ({v2_max}) より小さいです。"})
+
+    if not checks:
+        checks.append({"level": "ok", "message": "目立った不整合は検出されませんでした。"})
+    return checks
+
+
+def _debug_collect_read_v2_context(
+    event_id: int | None = None,
+    room_id: str | None = None,
+    dm_uuid: str | None = None,
+    actor_key: str | None = None,
+) -> dict[str, Any]:
+    actor = get_chat_actor()
+    dm_uuid_value = str(dm_uuid or "").strip()
+    mode = "dm" if dm_uuid_value else "event"
+    parsed_event_id = int(event_id or 0) if mode == "event" else None
+    room_id_value = str(room_id or "").strip() if mode == "event" else ""
+    requested_actor_key = str(actor_key or "").strip()
+
+    effective_actor_key = _canonical_read_actor_key(requested_actor_key) if requested_actor_key else _canonical_read_actor_key_from_actor(actor)
+    room_key = _build_read_room_key(
+        event_id=parsed_event_id if mode == "event" else None,
+        room_id=room_id_value if mode == "event" else None,
+        dm_uuid=dm_uuid_value if mode == "dm" else None,
+    )
+    aliases = _read_actor_key_aliases(effective_actor_key)
+    split_type, split_id = _split_read_actor_key(effective_actor_key)
+
+    v2_rows = _debug_fetch_chat_read_state_v2_rows(room_key)
+    snapshot_rows = _load_chat_read_state_v2_snapshot(room_key)
+    conversation_meta: dict[str, Any] = {}
+    if mode == "dm":
+        legacy_rows, conversation_meta = _debug_fetch_legacy_dm_read_rows(dm_uuid_value)
+    else:
+        legacy_rows = _debug_fetch_legacy_event_read_rows(parsed_event_id, room_id_value)
+    presence_rows = _debug_fetch_presence_rows(effective_actor_key, room_key)
+
+    ctx: dict[str, Any] = {
+        "mode": mode,
+        "event_id": parsed_event_id,
+        "room_id": room_id_value,
+        "dm_uuid": dm_uuid_value,
+        "room_key": room_key,
+        "requested_actor_key": requested_actor_key,
+        "raw_actor": actor,
+        "effective_actor_key": effective_actor_key,
+        "effective_actor_type": split_type,
+        "effective_actor_id": split_id,
+        "split_actor_key": {"actor_type": split_type, "actor_id": split_id},
+        "aliases": aliases,
+        "v2_rows": v2_rows,
+        "v2_effective_rows": [row for row in v2_rows if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key],
+        "snapshot_rows": snapshot_rows,
+        "snapshot_effective_rows": [
+            row for row in snapshot_rows if _canonical_read_actor_key(str(row.get("actor_key") or "")) == effective_actor_key
+        ],
+        "legacy_rows": legacy_rows,
+        "conversation_meta": conversation_meta,
+        "presence_rows": presence_rows,
+    }
+    ctx["checks"] = _debug_build_read_v2_checks(ctx)
+    return ctx
+
+
 def _log_auto_migration_error(name: str, sql: str, event_id: int | None = None) -> None:
     current_app.logger.warning(
         "chat auto-migration failed name=%s event_id=%s sql=%s",
@@ -4943,6 +5215,17 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
     return items
 
 
+def _parse_debug_int(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text)
+    except Exception:
+        return None
+    return parsed if parsed > 0 else None
+
+
 @chat_bp.before_request
 def _require_any_login():
     if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
@@ -4951,6 +5234,76 @@ def _require_any_login():
     if not actor:
         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
     return None
+
+
+@chat_bp.get("/debug/read-v2")
+def debug_read_v2():
+    actor = get_chat_actor()
+    if not _is_admin_actor(actor):
+        abort(403)
+
+    event_id = _parse_debug_int(request.args.get("event_id"))
+    room_id = (request.args.get("room_id") or "").strip()
+    dm_uuid = (request.args.get("dm_uuid") or "").strip()
+    requested_actor_key = (request.args.get("actor_key") or "").strip()
+
+    ctx = _debug_collect_read_v2_context(
+        event_id=event_id,
+        room_id=room_id,
+        dm_uuid=dm_uuid,
+        actor_key=requested_actor_key,
+    )
+    return render_template(
+        "chat/debug_read_v2.html",
+        actor=actor,
+        ctx=ctx,
+        mode=ctx.get("mode"),
+        event_id=ctx.get("event_id") or "",
+        room_id=ctx.get("room_id") or "",
+        dm_uuid=ctx.get("dm_uuid") or "",
+        requested_actor_key=ctx.get("requested_actor_key") or "",
+        test_message_id=(request.args.get("test_message_id") or "").strip(),
+    )
+
+
+@chat_bp.post("/debug/read-v2/upsert")
+def debug_read_v2_upsert():
+    actor = get_chat_actor()
+    if not _is_admin_actor(actor):
+        abort(403)
+
+    event_id = _parse_debug_int(request.form.get("event_id"))
+    room_id = (request.form.get("room_id") or "").strip()
+    dm_uuid = (request.form.get("dm_uuid") or "").strip()
+    message_id = _parse_debug_int(request.form.get("message_id"))
+    raw_actor_key = (request.form.get("actor_key") or "").strip()
+
+    effective_actor_key = _canonical_read_actor_key(raw_actor_key) if raw_actor_key else _canonical_read_actor_key_from_actor(actor)
+    room_key = _build_read_room_key(
+        event_id=event_id if not dm_uuid else None,
+        room_id=room_id if not dm_uuid else None,
+        dm_uuid=dm_uuid or None,
+    )
+
+    saved_value = 0
+    if room_key and effective_actor_key and message_id:
+        saved_value = _upsert_chat_read_state_v2(room_key, effective_actor_key, int(message_id))
+        if saved_value > 0:
+            flash(f"V2へ保存テストを実行しました。saved={saved_value}", "success")
+        else:
+            flash("V2へ保存テストを実行しましたが保存値を取得できませんでした。", "warning")
+    else:
+        flash("入力が不足しています（room_key / actor_key / message_id）。", "danger")
+
+    params = {
+        "event_id": event_id or "",
+        "room_id": room_id,
+        "dm_uuid": dm_uuid,
+        "actor_key": effective_actor_key,
+        "test_message_id": message_id or "",
+        "saved_value": saved_value,
+    }
+    return redirect(url_for("chat.debug_read_v2", **params))
 
 
 @chat_bp.route("/")

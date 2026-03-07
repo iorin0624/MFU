@@ -1,0 +1,191 @@
+{% extends "chat/base_chat.html" %}
+{% block content %}
+<div class="container py-4">
+  <h1 class="mb-3">既読V2 デバッグ</h1>
+
+  <div class="card mb-4 border-2">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <div class="text-muted">mode</div>
+          <div class="fs-5 fw-bold">{{ ctx.mode }}</div>
+        </div>
+        <div class="col-md-4">
+          <div class="text-muted">room_key</div>
+          <div class="fs-5 fw-bold text-break">{{ ctx.room_key or '-' }}</div>
+        </div>
+        <div class="col-md-4">
+          <div class="text-muted">effective actor_key</div>
+          <div class="fs-5 fw-bold text-break">{{ ctx.effective_actor_key or '-' }}</div>
+        </div>
+      </div>
+      {% if request.args.get('saved_value') %}
+      <div class="alert alert-success mt-3 mb-0">actual saved value: {{ request.args.get('saved_value') }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  {% with flashes = get_flashed_messages(with_categories=true) %}
+  {% if flashes %}
+    {% for category, message in flashes %}
+      <div class="alert alert-{{ 'danger' if category in ['error', 'danger'] else ('warning' if category == 'warning' else 'success') }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+  {% endwith %}
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">F. 自動判定</div>
+    <div class="card-body">
+      {% for check in ctx.checks %}
+        <div class="alert py-2 mb-2 {% if check.level == 'error' %}alert-danger{% elif check.level == 'warning' %}alert-warning{% else %}alert-success{% endif %}">
+          <strong>[{{ check.level|upper }}]</strong> {{ check.message }}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">A. リクエスト情報</div>
+    <div class="card-body">
+      <form method="get" action="{{ url_for('chat.debug_read_v2') }}" class="row g-2 align-items-end mb-3">
+        <div class="col-md-2"><label class="form-label">event_id</label><input class="form-control" name="event_id" value="{{ event_id }}"></div>
+        <div class="col-md-2"><label class="form-label">room_id</label><input class="form-control" name="room_id" value="{{ room_id }}"></div>
+        <div class="col-md-3"><label class="form-label">dm_uuid</label><input class="form-control" name="dm_uuid" value="{{ dm_uuid }}"></div>
+        <div class="col-md-3"><label class="form-label">actor_key</label><input class="form-control" name="actor_key" value="{{ requested_actor_key }}"></div>
+        <div class="col-md-2"><button class="btn btn-primary w-100">再読込</button></div>
+      </form>
+      <table class="table table-sm table-bordered">
+        <tr><th>mode</th><td>{{ ctx.mode }}</td></tr>
+        <tr><th>event_id</th><td>{{ ctx.event_id or '-' }}</td></tr>
+        <tr><th>room_id</th><td>{{ ctx.room_id or '-' }}</td></tr>
+        <tr><th>dm_uuid</th><td>{{ ctx.dm_uuid or '-' }}</td></tr>
+        <tr><th>requested_actor_key</th><td>{{ ctx.requested_actor_key or '-' }}</td></tr>
+        <tr><th>effective_actor_key</th><td>{{ ctx.effective_actor_key or '-' }}</td></tr>
+        <tr><th>room_key</th><td>{{ ctx.room_key or '-' }}</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">B. actor 情報</div>
+    <div class="card-body">
+      <table class="table table-sm table-bordered">
+        <tr><th>canonical read actor_key</th><td>{{ ctx.effective_actor_key or '-' }}</td></tr>
+        <tr><th>split result</th><td>{{ ctx.split_actor_key.actor_type }} / {{ ctx.split_actor_key.actor_id }}</td></tr>
+        <tr><th>aliases</th><td>{{ ctx.aliases|join(', ') or '-' }}</td></tr>
+      </table>
+      <div class="fw-bold mb-1">raw actor object</div>
+      <pre class="bg-light p-2 border rounded">{{ ctx.raw_actor|tojson(indent=2) }}</pre>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">C. DB生データ（V2）</div>
+    <div class="card-body">
+      <table class="table table-sm table-striped table-bordered">
+        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
+        <tbody>
+          {% for row in ctx.v2_rows %}
+          <tr class="{% if row.canonical_actor_key == ctx.effective_actor_key %}table-warning{% endif %}">
+            <td>{{ row.actor_key }}</td>
+            <td>{{ row.canonical_actor_key }}</td>
+            <td>{{ row.last_read_message_id }}</td>
+            <td>{{ row.updated_at or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-muted">データなし</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">D. snapshot 結果</div>
+    <div class="card-body">
+      <table class="table table-sm table-striped table-bordered">
+        <thead><tr><th>actor_key</th><th>actor_type</th><th>actor_id</th><th>display_name</th><th>last_read_message_id</th></tr></thead>
+        <tbody>
+          {% for row in ctx.snapshot_rows %}
+          <tr class="{% if row.actor_key == ctx.effective_actor_key %}table-warning{% endif %}">
+            <td>{{ row.actor_key }}</td><td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.display_name }}</td><td>{{ row.last_read_message_id }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="text-muted">データなし</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">E. 旧テーブル比較</div>
+    <div class="card-body">
+      {% if ctx.mode == 'event' %}
+      <table class="table table-sm table-striped table-bordered">
+        <thead><tr><th>actor_type</th><th>actor_id</th><th>legacy_actor_key</th><th>canonical_legacy_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
+        <tbody>
+          {% for row in ctx.legacy_rows %}
+          <tr>
+            <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.legacy_actor_key }}</td><td>{{ row.canonical_legacy_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="text-muted">データなし</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="mb-2"><strong>chat_dm_conversations</strong>: uuid={{ ctx.conversation_meta.uuid or '-' }}, id={{ ctx.conversation_meta.id or '-' }}</div>
+      <table class="table table-sm table-striped table-bordered">
+        <thead><tr><th>actor_key</th><th>canonical_actor_key</th><th>last_read_message_id</th><th>updated_at</th></tr></thead>
+        <tbody>
+          {% for row in ctx.legacy_rows %}
+          <tr>
+            <td>{{ row.actor_key }}</td><td>{{ row.canonical_actor_key }}</td><td>{{ row.last_read_message_id }}</td><td>{{ row.updated_at or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-muted">データなし</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">G. 手動テスト</div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('chat.debug_read_v2_upsert') }}" class="row g-2 align-items-end">
+        <input type="hidden" name="event_id" value="{{ event_id }}">
+        <input type="hidden" name="room_id" value="{{ room_id }}">
+        <input type="hidden" name="dm_uuid" value="{{ dm_uuid }}">
+        <input type="hidden" name="actor_key" value="{{ ctx.effective_actor_key }}">
+        <div class="col-md-4">
+          <label class="form-label">message_id</label>
+          <input class="form-control" name="message_id" value="{{ test_message_id }}" placeholder="例: 12345">
+        </div>
+        <div class="col-md-3"><button class="btn btn-danger w-100" type="submit">V2へ保存テスト</button></div>
+        <div class="col-md-3"><a class="btn btn-secondary w-100" href="{{ url_for('chat.debug_read_v2', event_id=event_id, room_id=room_id, dm_uuid=dm_uuid, actor_key=ctx.effective_actor_key) }}">再読込</a></div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-header fw-bold">Presence (chat_active_views)</div>
+    <div class="card-body">
+      <table class="table table-sm table-striped table-bordered">
+        <thead><tr><th>actor_type</th><th>actor_id</th><th>room_id</th><th>client_id</th><th>is_visible</th><th>entered_at</th><th>last_ping_at</th><th>updated_at</th></tr></thead>
+        <tbody>
+          {% for row in ctx.presence_rows %}
+          <tr>
+            <td>{{ row.actor_type }}</td><td>{{ row.actor_id }}</td><td>{{ row.room_id }}</td><td>{{ row.client_id }}</td><td>{{ row.is_visible }}</td><td>{{ row.entered_at or '-' }}</td><td>{{ row.last_ping_at or '-' }}</td><td>{{ row.updated_at or '-' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="8" class="text-muted">データなし</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
