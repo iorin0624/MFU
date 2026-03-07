@@ -1,8 +1,8 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 9fb267ca94bc321d5ca91a70ff5162d1661ca043..72b2a99eef4b32c70340b0d453102a94fc26ef87 100644
+index 72b2a99eef4b32c70340b0d453102a94fc26ef87..26e2e09b4370d2555f4967df2e2f18daf7c1da73 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -1875,102 +1875,106 @@ def _to_jst(value: Any) -> datetime:
+@@ -1875,55 +1875,66 @@ def _to_jst(value: Any) -> datetime:
      dt_utc = _to_utc_datetime(value)
      return dt_utc.astimezone(JST)
  
@@ -28,12 +28,27 @@ index 9fb267ca94bc321d5ca91a70ff5162d1661ca043..72b2a99eef4b32c70340b0d453102a94
  ) -> dict[str, Any]:
      sender_actor_type = str(msg["sender_actor_type"])
      sender_actor_id = str(msg["sender_actor_id"])
--    sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
-+    sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id)
-+    current_actor_id = _canonical_event_actor_key(
-+        str(current_actor.get("actor_type") or ""),
-+        str(current_actor.get("actor_id") or ""),
-+    )
+-    sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id)
+-    current_actor_id = _canonical_event_actor_key(
+-        str(current_actor.get("actor_type") or ""),
+-        str(current_actor.get("actor_id") or ""),
+-    )
++    current_actor_type = str(current_actor.get("actor_type") or "")
++    current_actor_raw_id = str(current_actor.get("actor_id") or "")
++    is_event_chat_message = int(msg.get("event_id") or 0) > 0
++
++    if is_event_chat_message:
++        sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id) or _actor_sender_id(
++            sender_actor_type,
++            sender_actor_id,
++        )
++        current_actor_id = _canonical_event_actor_key(current_actor_type, current_actor_raw_id) or _actor_sender_id(
++            current_actor_type,
++            current_actor_raw_id,
++        )
++    else:
++        sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
++        current_actor_id = _actor_sender_id(current_actor_type, current_actor_raw_id)
      created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
      deleted_flag = int(msg.get("deleted_flag") or 0) == 1
      deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
@@ -59,172 +74,3 @@ index 9fb267ca94bc321d5ca91a70ff5162d1661ca043..72b2a99eef4b32c70340b0d453102a94
          images.append(
              {
                  "seq": int(image.get("seq") or (len(images) + 1)),
-                 "url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_file),
-                 "thumb_url": url_for("chat.chat_image", event_id=msg["event_id"], name=image_thumb_file),
-                 "mime": image.get("image_mime"),
-                 "size": image.get("image_size"),
-                 "width": image.get("image_width"),
-                 "height": image.get("image_height"),
-             }
-         )
- 
-     has_image = bool(images)
-     first_image = images[0] if images else None
-     body_value = "" if deleted_flag else (msg.get("body") or "")
-     body_plain = (
-         str(body_value)
-         .replace("<br>", "\n")
-         .replace("<br/>", "\n")
-         .replace("<br />", "\n")
-         .strip()
-     )
-     body_html = deleted_text if deleted_flag else _linkify_escaped_text(body_value).replace("\n", "<br>")
-     reply_excerpt = msg.get("reply_to_body_plain_excerpt")
-     if not reply_excerpt and msg.get("reply_to_message_id"):
-         reply_excerpt = "元メッセージが見つかりません"
- 
-     actor_is_admin = _is_admin_actor(current_actor)
--    is_me = str(sender_id) == str(_actor_sender_id(current_actor["actor_type"], str(current_actor["actor_id"])))
-+    is_me = bool(sender_id and current_actor_id and str(sender_id) == str(current_actor_id))
-     can_delete = False
-     can_edit = False
-     if not deleted_flag:
-         if actor_is_admin:
-             can_delete = True
-         elif is_me and isinstance(msg.get("created_at"), datetime):
-             can_delete = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
-         if is_me and isinstance(msg.get("created_at"), datetime):
-             can_edit = msg["created_at"] + timedelta(hours=12) >= datetime.utcnow()
- 
-     edited_flag = 1 if int(msg.get("edited_flag") or 0) == 1 else 0
- 
-     return {
-         "id": msg["id"],
-         "event_id": msg["event_id"],
-         "sender_id": sender_id,
-         "sender_display_name": msg["sender_display_name"],
-         "sender_avatar_url": _resolve_sender_avatar_url(sender_actor_type, sender_actor_id, avatar_cache=avatar_cache),
-         "body": body_value,
-         "body_plain": deleted_text if deleted_flag else body_plain,
-         "body_html": body_html,
-         "edited_flag": edited_flag,
-         "edited_at": msg.get("edited_at").isoformat() if msg.get("edited_at") else None,
-         "deleted_flag": 1 if deleted_flag else 0,
-         "deleted_at": msg.get("deleted_at").isoformat() if msg.get("deleted_at") else None,
-@@ -5092,51 +5096,54 @@ def room(event_id: int):
-     allowed, effective_room_id, active_room = _can_access_room(event_id, requested_room_id, actor)
-     if not allowed or not effective_room_id or not active_room:
-         abort(403)
- 
-     event = _get_event(event_id)
-     if not event:
-         abort(404)
-     avatar_cache: dict[str, str] = {}
-     raw_messages = _load_messages(event_id, effective_room_id)
-     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
-     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
-     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
-     images_by_message = _load_message_images_by_message_ids(message_ids)
-     messages = []
-     for message in raw_messages:
-         message_id = int(message.get("id") or 0)
-         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
-         message["my_reaction"] = my_reaction_by_message.get(message_id)
-         message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
-         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
-     can_broadcast = actor["actor_type"] in {"admin", "acl"}
-     accessible_rooms = _list_accessible_rooms(event_id, actor)
-     return render_template(
-         "chat/room.html",
-         actor=actor,
--        current_user_id=_actor_sender_id(actor["actor_type"], str(actor["actor_id"])),
-+        current_user_id=(
-+            _canonical_event_actor_key(actor["actor_type"], str(actor["actor_id"]))
-+            or _actor_sender_id(actor["actor_type"], str(actor["actor_id"]))
-+        ),
-         event=event,
-         messages=messages,
-         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
-         csrf_token=_chat_csrf(),
-         can_broadcast=can_broadcast,
-         can_manage_rooms=_can_manage_rooms(event_id, actor),
-         accessible_rooms=accessible_rooms,
-         active_room=active_room,
-         default_avatar_url=_default_avatar_url(),
-         nav_mode="chat",
-         dm_mode=False,
-         dm_uuid="",
-         dm_room_id="",
-         peer_display_name="",
-     )
- 
- 
- @chat_bp.get("/events/<int:event_id>/images/<path:name>")
- def chat_image(event_id: int, name: str):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if not _can_access_event(event_id, actor):
-         abort(403)
-     if "/" in name or "\\" in name or name.startswith("."):
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 67a5a46e7a49030e776ef323c874d729aeecd6d4..d18d19cdc3598343b838c5eba064010c3247b1eb 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -2610,51 +2610,55 @@ window.addEventListener('DOMContentLoaded', async () => {
-       return;
-     }
-     updatePushButton(true);
-   }
- 
-   async function disablePush(registration, subscription) {
-     await subscription.unsubscribe();
-     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
-     if (endpoint) {
-       await fetch('/chat/api/push/unsubscribe', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
-       });
-     }
-     const nextSubscription = await registration.pushManager.getSubscription();
-     updatePushButton(Boolean(nextSubscription));
-   }
- 
-   function setSendingState(isSending) {
-     if (sendBtn) sendBtn.disabled = isSending;
-     if (imageBtn) imageBtn.disabled = isSending;
-   }
- 
-   function isMyMessage(msg) {
--    return (msg.sender_id && meId && String(msg.sender_id) === String(meId))
-+    const senderKey = dmMode
-+      ? String(msg.sender_id || '')
-+      : (canonicalEventActorKey(...splitActorKey(msg.sender_id || '')) || String(msg.sender_id || ''));
-+    const selfKey = dmMode ? meId : canonicalMeId;
-+    return (senderKey && selfKey && String(senderKey) === String(selfKey))
-       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
-   }
- 
-   function renderMessage(msg) {
-     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
-     const dateLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_date_label || '')
-       : formatDateLabel(createdAt);
-     const timeLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_time_hm || '')
-       : formatTimeLabel(createdAt);
- 
-     appendDateDividerIfNeeded(dateLabel);
- 
-     const isMe = isMyMessage(msg);
- 
-     const row = document.createElement('div');
-     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
-     row.id = `msg-${msg.id}`;
-     row.dataset.messageId = msg.id;
-     row.dataset.senderName = msg.sender_display_name || 'Unknown';
-     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-     const fullPlain = msg.body_plain || msg.body || '';
-     row.dataset.bodyPlain = JSON.stringify(msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
-     row.dataset.bodyPlainFull = JSON.stringify(fullPlain || msg.body_plain_excerpt || makeExcerpt(msg.body || ''));
