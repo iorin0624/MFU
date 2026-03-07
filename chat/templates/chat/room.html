@@ -1231,6 +1231,9 @@
   <div class="chat-room-main">
     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+      {% if actor.actor_type == 'admin' %}
+      <a class="btn btn-sm btn-outline-dark" target="_blank" rel="noopener" href="{% if dm_mode %}{{ url_for('chat.debug_read_v2', dm_uuid=dm_uuid) }}{% else %}{{ url_for('chat.debug_read_v2', event_id=event.id, room_id=active_room.room_id) }}{% endif %}">既読デバッグ</a>
+      {% endif %}
       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
       {% if can_manage_rooms %}
       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
