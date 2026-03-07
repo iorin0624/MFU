@@ -62,9 +62,25 @@
           </ul>
 
           <!-- 右側：ログイン状態表示 -->
-          <div class="d-flex align-items-center">
+          <div class="d-flex align-items-center gap-2">
             {% if session.get('user') %}
-              <span class="me-3 text-muted">
+              <div id="mfuNotifRoot" class="mfu-notif-root position-relative me-1" data-enabled="1">
+                <button id="mfuNotifBell" type="button" class="btn btn-light border mfu-notif-bell" aria-label="通知" aria-expanded="false">
+                  🔔
+                  <span id="mfuNotifBadge" class="mfu-notif-badge d-none">0</span>
+                </button>
+                <div id="mfuNotifPopup" class="mfu-notif-popup d-none" role="dialog" aria-label="通知一覧">
+                  <div class="mfu-notif-popup-header d-flex justify-content-between align-items-center">
+                    <strong>通知</strong>
+                    <button type="button" class="btn btn-sm btn-link p-0" id="mfuNotifReadAll">すべて既読</button>
+                  </div>
+                  <div id="mfuNotifList" class="mfu-notif-list"></div>
+                  <div class="mfu-notif-footer d-flex justify-content-end">
+                    <a class="btn btn-sm btn-outline-secondary" href="/mfu-notifications">すべて見る</a>
+                  </div>
+                </div>
+              </div>
+              <span class="me-2 text-muted">
                 🧑 <strong>
                   {% if session.nickname %}
                     {{ session.nickname }}（{{ session.user }}）
@@ -91,8 +107,48 @@
   {% block body_extra %}{% endblock %}
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
 
   <!-- ▼ 追加：PC幅はhoverでドロップダウンを展開 -->
+  
+  <style>
+    .mfu-notif-bell { min-width: 42px; }
+    .mfu-notif-badge {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      background: #dc3545;
+      color: #fff;
+      border-radius: 999px;
+      font-size: 11px;
+      padding: 1px 6px;
+      line-height: 1.4;
+    }
+    .mfu-notif-popup {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      width: min(420px, 92vw);
+      max-height: 65vh;
+      background: #fff;
+      border: 1px solid #dee2e6;
+      border-radius: .5rem;
+      box-shadow: 0 6px 24px rgba(0,0,0,.16);
+      z-index: 1100;
+      display: flex;
+      flex-direction: column;
+    }
+    .mfu-notif-popup-header, .mfu-notif-footer { padding: .6rem .75rem; border-bottom: 1px solid #eee; }
+    .mfu-notif-footer { border-top: 1px solid #eee; border-bottom: none; }
+    .mfu-notif-list { overflow-y: auto; }
+    .mfu-notif-item { display: block; padding: .6rem .75rem; border-bottom: 1px solid #f1f1f1; color: inherit; text-decoration: none; }
+    .mfu-notif-item:hover { background: #f8f9fa; }
+    .mfu-notif-item.unread { background: #eef5ff; }
+    .mfu-notif-item-title { font-weight: 600; font-size: .92rem; }
+    .mfu-notif-item-body { color: #666; font-size: .85rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .mfu-notif-item-meta { color: #888; font-size: .78rem; }
+  </style>
+
   <style>
   @media (min-width: 992px) {
     .navbar .dropdown:hover .dropdown-menu {
@@ -117,5 +173,91 @@
     }
   });
   </script>
+
+  <script>
+  (function(){
+    const root = document.getElementById('mfuNotifRoot');
+    if (!root) return;
+    const bell = document.getElementById('mfuNotifBell');
+    const badge = document.getElementById('mfuNotifBadge');
+    const popup = document.getElementById('mfuNotifPopup');
+    const listEl = document.getElementById('mfuNotifList');
+    const readAllBtn = document.getElementById('mfuNotifReadAll');
+    let latestId = 0;
+    let opened = false;
+
+    const iconByKind = (kind) => kind === 'dm' ? '💬' : (kind === 'event_chat' ? '📢' : '🔔');
+    const badgeText = (n) => n > 99 ? '99+' : String(n);
+    const setBadge = (n) => {
+      if (!Number(n)) { badge.classList.add('d-none'); return; }
+      badge.textContent = badgeText(Number(n));
+      badge.classList.remove('d-none');
+    };
+    const renderItems = (items, prepend=false) => {
+      if (!Array.isArray(items)) return;
+      const fr = document.createDocumentFragment();
+      items.forEach((it) => {
+        latestId = Math.max(latestId, Number(it.id || 0));
+        const a = document.createElement('a');
+        a.href = it.target_url || '/';
+        a.className = 'mfu-notif-item' + (it.is_read ? '' : ' unread');
+        a.innerHTML = `<div class="mfu-notif-item-title">${iconByKind(it.kind)} ${escapeHtml(it.title || 'お知らせ')}</div>
+          <div class="mfu-notif-item-body">${escapeHtml(it.body || '')}</div>
+          <div class="mfu-notif-item-meta">${escapeHtml(it.relative_time || '')}</div>`;
+        a.addEventListener('click', async (e) => {
+          e.preventDefault();
+          try { await fetch(`/api/mfu-notifications/${it.id}/read`, { method:'POST' }); } catch (_) {}
+          window.location.href = a.href;
+        });
+        fr.appendChild(a);
+      });
+      if (prepend) listEl.prepend(fr); else listEl.replaceChildren(fr);
+    };
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
+    async function fetchCount(){
+      const r = await fetch('/api/mfu-notifications/unread-count', {cache:'no-store'});
+      if (!r.ok) { if (r.status===401 || r.status===403) root.remove(); return; }
+      const j = await r.json();
+      setBadge(j.unread_count || 0);
+    }
+    async function fetchList(){
+      const r = await fetch('/api/mfu-notifications', {cache:'no-store'});
+      if (!r.ok) return;
+      const j = await r.json();
+      renderItems(j.items || []);
+      setBadge(j.unread_count || 0);
+      latestId = Number(j.latest_id || latestId || 0);
+    }
+    async function fetchUpdates(){
+      if (!latestId) return fetchList();
+      const r = await fetch(`/api/mfu-notifications/updates?since_id=${latestId}`, {cache:'no-store'});
+      if (!r.ok) return;
+      const j = await r.json();
+      if (Array.isArray(j.items) && j.items.length) renderItems(j.items, true);
+      setBadge(j.unread_count || 0);
+      latestId = Number(j.latest_id || latestId || 0);
+    }
+    function closePopup(){ opened=false; popup.classList.add('d-none'); bell.setAttribute('aria-expanded','false'); }
+    function openPopup(){ opened=true; popup.classList.remove('d-none'); bell.setAttribute('aria-expanded','true'); fetchList(); }
+
+    bell.addEventListener('click', () => opened ? closePopup() : openPopup());
+    document.addEventListener('click', (e) => { if (opened && !root.contains(e.target)) closePopup(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && opened) closePopup(); });
+    readAllBtn.addEventListener('click', async () => { await fetch('/api/mfu-notifications/read-all', {method:'POST'}); await fetchList(); });
+
+    fetchCount();
+    setInterval(() => { fetchCount(); if (opened) fetchUpdates(); }, 15000);
+
+    if (window.io) {
+      try {
+        const socket = window.io({transports:['websocket','polling']});
+        socket.on('notif_unread', (p) => { if (p && typeof p.count !== 'undefined') setBadge(p.count); if (opened) fetchUpdates(); });
+        socket.on('notif_new', () => { if (opened) fetchUpdates(); else fetchCount(); });
+      } catch (_) {}
+    }
+  })();
+  </script>
+
 </body>
 </html>

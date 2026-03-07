@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from flask import abort, current_app, jsonify, render_template, request, session
+from flask import Blueprint, abort, current_app, jsonify, render_template, request, session
 
 from . import bp
 from .utils import _require_ext_login
@@ -18,6 +18,57 @@ except Exception:  # pragma: no cover
 
 
 _READ_NOTIFICATIONS_KEEP_LIMIT = 30
+mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
+
+
+def _is_mfu_notification_user(username: str) -> bool:
+    name = (username or "").strip()
+    if not name:
+        return False
+    if name == "admin":
+        return True
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT 1 FROM mfu_event_admin_acl WHERE username=%s LIMIT 1", (name,))
+        return bool(cur.fetchone())
+    except Exception:
+        return False
+    finally:
+        cur.close()
+        db.close()
+
+
+def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
+    if session.get("ext_user_id"):
+        return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+    username = str(session.get("user") or "").strip()
+    if not username:
+        return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
+    if not _is_mfu_notification_user(username):
+        return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+    return username, None
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _relative_time_from(dt: datetime | None) -> str:
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = max(0, int((_now_utc() - dt).total_seconds()))
+    if delta < 60:
+        return "たった今"
+    if delta < 3600:
+        return f"{delta // 60}分前"
+    if delta < 86400:
+        return f"{delta // 3600}時間前"
+    if delta < 86400 * 7:
+        return f"{delta // 86400}日前"
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
@@ -171,6 +222,7 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_kind VARCHAR(16) NOT NULL,
   user_id BIGINT UNSIGNED NOT NULL,
+  recipient_key VARCHAR(191) NULL,
   kind VARCHAR(64) NOT NULL,
   title VARCHAR(255) NOT NULL,
   body TEXT NULL,
@@ -178,6 +230,9 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
   event_id BIGINT UNSIGNED NULL,
   chat_event_id BIGINT UNSIGNED NULL,
   chat_room_id VARCHAR(64) NULL,
+  room_type VARCHAR(32) NULL,
+  room_id VARCHAR(64) NULL,
+  sender_label VARCHAR(255) NULL,
   created_at DATETIME NOT NULL,
   read_at DATETIME NULL,
   dedup_key VARCHAR(191) NOT NULL,
@@ -186,7 +241,9 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
   KEY idx_mfu_notifications_unread (user_kind, user_id, read_at, created_at),
   KEY idx_mfu_notifications_created (user_kind, user_id, created_at),
   KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at),
-  KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)
+  KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind),
+  KEY idx_mfu_notifications_recipient_unread (user_kind, recipient_key, read_at, created_at),
+  KEY idx_mfu_notifications_recipient_created (user_kind, recipient_key, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
@@ -204,10 +261,20 @@ def _ensure_notification_schema() -> None:
             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_event_id BIGINT UNSIGNED NULL AFTER event_id")
         if "chat_room_id" not in existing:
             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_room_id VARCHAR(64) NULL AFTER chat_event_id")
+        if "recipient_key" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN recipient_key VARCHAR(191) NULL AFTER user_id")
+        if "room_type" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_type VARCHAR(32) NULL AFTER chat_room_id")
+        if "room_id" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_id VARCHAR(64) NULL AFTER room_type")
+        if "sender_label" not in existing:
+            cur.execute("ALTER TABLE mfu_notifications ADD COLUMN sender_label VARCHAR(255) NULL AFTER room_id")
 
         index_map = {
             "idx_mfu_notifications_chat_room_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at)",
             "idx_mfu_notifications_unread_kind": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)",
+            "idx_mfu_notifications_recipient_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_recipient_unread (user_kind, recipient_key, read_at, created_at)",
+            "idx_mfu_notifications_recipient_created": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_recipient_created (user_kind, recipient_key, created_at)",
         }
         cur.execute("SHOW INDEX FROM mfu_notifications")
         existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
@@ -375,12 +442,309 @@ def create_notification_external(
         db.close()
 
 
+def _compute_unread_count_mfu(username: str) -> int:
+    recipient = (username or "").strip()
+    if not recipient:
+        return 0
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS cnt
+              FROM mfu_notifications
+             WHERE user_kind='mfu'
+               AND recipient_key=%s
+               AND read_at IS NULL
+            """,
+            (recipient,),
+        )
+        return int((cur.fetchone() or {}).get("cnt") or 0)
+    finally:
+        cur.close()
+        db.close()
+
+
+def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int | None = None) -> None:
+    if socketio is None:
+        return
+    recipient = (username or "").strip()
+    if not recipient:
+        return
+    try:
+        count = _compute_unread_count_mfu(recipient)
+        socketio.emit(
+            "notif_unread",
+            {"count": count, "latest_id": latest_id, "reason": reason, "scope": "mfu"},
+            room=f"mfu_user:{recipient}",
+        )
+    except Exception:
+        current_app.logger.warning(
+            "mfu notifications emit failed username=%s reason=%s latest_id=%s",
+            recipient,
+            reason,
+            latest_id,
+            exc_info=True,
+        )
+
+
+def _serialize_mfu_notification_item(row: dict[str, Any]) -> dict[str, Any]:
+    created_at = row.get("created_at")
+    if created_at and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    read_at = row.get("read_at")
+    if read_at and read_at.tzinfo is None:
+        read_at = read_at.replace(tzinfo=timezone.utc)
+    return {
+        "id": int(row.get("id") or 0),
+        "kind": row.get("kind") or "general",
+        "title": row.get("title") or "お知らせ",
+        "body": row.get("body") or "",
+        "target_url": row.get("target_url") or "/",
+        "sender_label": row.get("sender_label") or "",
+        "room_type": row.get("room_type") or "",
+        "room_id": row.get("room_id") or row.get("chat_room_id") or "",
+        "is_read": bool(read_at),
+        "created_at": created_at.isoformat() if created_at else None,
+        "relative_time": _relative_time_from(created_at),
+    }
+
+
+def create_notification_mfu(
+    *,
+    recipient_username: str,
+    kind: str,
+    title: str,
+    body: str,
+    target_url: str,
+    sender_label: str = "",
+    room_type: str | None = None,
+    room_id: str | None = None,
+    dedup_key: str | None = None,
+) -> bool:
+    _ensure_notification_schema()
+    recipient = (recipient_username or "").strip()
+    if not recipient:
+        return False
+
+    dedup = ((dedup_key or "").strip() or f"mfu:{recipient}:{kind}:{hash((title, body, target_url))}")[:191]
+    room_type_value = (room_type or "").strip() or None
+    room_id_value = (room_id or "").strip() or None
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id
+              FROM mfu_notifications
+             WHERE user_kind='mfu'
+               AND recipient_key=%s
+               AND dedup_key=%s
+             LIMIT 1
+            """,
+            (recipient, dedup),
+        )
+        if cur.fetchone():
+            return False
+
+        cur.execute(
+            """
+            INSERT INTO mfu_notifications (
+              user_kind, user_id, recipient_key, kind, title, body, target_url,
+              room_type, room_id, sender_label,
+              dedup_key, created_at, read_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+            """,
+            (
+                "mfu",
+                0,
+                recipient,
+                (kind or "").strip() or "general",
+                (title or "").strip() or "お知らせ",
+                (body or "").strip()[:300],
+                (target_url or "").strip() or "/",
+                room_type_value,
+                room_id_value,
+                (sender_label or "").strip()[:255],
+                dedup,
+                datetime.utcnow(),
+            ),
+        )
+        inserted = cur.rowcount == 1
+        latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
+        db.commit()
+        if inserted:
+            _emit_notif_unread_mfu(recipient, reason="created", latest_id=latest_id)
+            if socketio is not None:
+                socketio.emit(
+                    "notif_new",
+                    {"item": _serialize_mfu_notification_item({
+                        "id": latest_id,
+                        "kind": kind,
+                        "title": title,
+                        "body": body,
+                        "target_url": target_url,
+                        "sender_label": sender_label,
+                        "room_type": room_type_value,
+                        "room_id": room_id_value,
+                        "read_at": None,
+                        "created_at": _now_utc(),
+                    })},
+                    room=f"mfu_user:{recipient}",
+                )
+        return inserted
+    except Exception:
+        db.rollback()
+        current_app.logger.warning("create_notification_mfu failed username=%s", recipient, exc_info=True)
+        return False
+    finally:
+        cur.close()
+        db.close()
+
+
 @bp.get("/notifications")
 def notifications_page():
     guard = _require_ext_login()
     if guard:
         return guard
     return render_template("notifications.html")
+
+
+@mfu_notifications_bp.get("/mfu-notifications")
+def mfu_notifications_page():
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    return render_template("mfu_notifications.html", mfu_notification_user=username)
+
+
+@mfu_notifications_bp.get("/api/mfu-notifications/unread-count")
+def api_mfu_notifications_unread_count():
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    return jsonify({"ok": True, "unread_count": _compute_unread_count_mfu(username)})
+
+
+def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0) -> tuple[list[dict[str, Any]], int | None]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        where_sql = "user_kind='mfu' AND recipient_key=%s"
+        params: list[Any] = [recipient]
+        if since_id > 0:
+            where_sql += " AND id > %s"
+            params.append(int(since_id))
+            order_sql = "ORDER BY id ASC"
+        else:
+            order_sql = "ORDER BY id DESC"
+        cur.execute(
+            f"""
+            SELECT id, kind, title, body, target_url, sender_label, room_type, room_id,
+                   chat_room_id, created_at, read_at
+              FROM mfu_notifications
+             WHERE {where_sql}
+             {order_sql}
+             LIMIT %s
+            """,
+            tuple(params + [int(limit)]),
+        )
+        rows = cur.fetchall() or []
+        items = [_serialize_mfu_notification_item(r) for r in rows]
+        if since_id <= 0:
+            items = sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)
+        latest_id = max((int(x.get("id") or 0) for x in items), default=0) or None
+        return items, latest_id
+    finally:
+        cur.close()
+        db.close()
+
+
+@mfu_notifications_bp.get("/api/mfu-notifications")
+def api_mfu_notifications_list():
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0)
+    return jsonify({
+        "ok": True,
+        "items": items,
+        "unread_count": _compute_unread_count_mfu(username),
+        "latest_id": latest_id,
+    })
+
+
+@mfu_notifications_bp.get("/api/mfu-notifications/updates")
+def api_mfu_notifications_updates():
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    since_id = max(int(request.args.get("since_id") or 0), 0)
+    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id)
+    return jsonify({
+        "ok": True,
+        "items": items,
+        "unread_count": _compute_unread_count_mfu(username),
+        "latest_id": latest_id or since_id,
+    })
+
+
+@mfu_notifications_bp.post("/api/mfu-notifications/<int:notification_id>/read")
+def api_mfu_notifications_mark_read(notification_id: int):
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE mfu_notifications
+               SET read_at=COALESCE(read_at, %s)
+             WHERE id=%s AND user_kind='mfu' AND recipient_key=%s
+            """,
+            (datetime.utcnow(), int(notification_id), username),
+        )
+        db.commit()
+        if int(cur.rowcount or 0) == 0:
+            abort(404)
+        _emit_notif_unread_mfu(username, reason="read", latest_id=notification_id)
+        return jsonify({"ok": True})
+    finally:
+        cur.close()
+        db.close()
+
+
+@mfu_notifications_bp.post("/api/mfu-notifications/read-all")
+def api_mfu_notifications_mark_all_read():
+    _ensure_notification_schema()
+    username, error = _require_mfu_admin_acl()
+    if error:
+        return error
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE mfu_notifications
+               SET read_at=%s
+             WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
+            """,
+            (datetime.utcnow(), username),
+        )
+        updated = int(cur.rowcount or 0)
+        db.commit()
+        _emit_notif_unread_mfu(username, reason="read_all")
+        return jsonify({"ok": True, "updated": updated})
+    finally:
+        cur.close()
+        db.close()
 
 
 @bp.get("/api/notifications/unread-count")

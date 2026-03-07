@@ -3456,7 +3456,7 @@ def _send_chat_message_push_async(
     timing: dict[str, float] | None = None,
 ) -> None:
     with app.app_context():
-        from app.external_login_user.notifications import create_notification_external
+        from app.external_login_user.notifications import create_notification_external, create_notification_mfu
 
         t3 = time.monotonic()
         trace = dict(timing or {})
@@ -3526,6 +3526,22 @@ def _send_chat_message_push_async(
                         event_id=event_id,
                         chat_event_id=event_id,
                         chat_room_id=room_id,
+                    )
+                    if inserted:
+                        notification_inserted += 1
+                    else:
+                        notification_skipped += 1
+                elif actor_type in {"admin", "acl"}:
+                    inserted = create_notification_mfu(
+                        recipient_username=str(actor_id),
+                        kind="event_chat",
+                        title="イベントチャットに新着メッセージがあります",
+                        body=f"{sender_display_name}: {_build_plain_excerpt(message_body, max_len=80)}",
+                        target_url=f"/chat/events/{event_id}?{urlencode({'event_id': event_id, 'room_id': room_id})}",
+                        sender_label=sender_display_name,
+                        room_type="event_chat",
+                        room_id=room_id,
+                        dedup_key=f"mfu:event_chat:{event_id}:{room_id}:{message_id}:{actor_id}",
                     )
                     if inserted:
                         notification_inserted += 1
@@ -4284,6 +4300,8 @@ def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
     return snapshot
 
 def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sender_display_name: str, body: str) -> None:
+    from app.external_login_user.notifications import create_notification_mfu
+
     db = get_db()
     cur = db.cursor(dictionary=True)
     sent_count = 0
@@ -4324,6 +4342,18 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
                 room_id=dm_room_id,
                 room_name="DM",
                 dedup_key=f"chat:dm:{dm_uuid}:{int(time.time())}:{a_id}",
+            )
+        elif a_type in {"admin", "acl"}:
+            create_notification_mfu(
+                recipient_username=str(a_id),
+                kind="dm",
+                title="新着DMがあります",
+                body=f"{sender_display_name}: {_build_plain_excerpt(body, max_len=80)}",
+                target_url=f"/chat/dm/room/{dm_uuid}",
+                sender_label=sender_display_name,
+                room_type="dm",
+                room_id=dm_room_id,
+                dedup_key=f"mfu:dm:{conversation_id}:{int(time.time())}:{a_id}",
             )
     _log_notification(0, "dm", {"dm_uuid": dm_uuid, "link": f"/chat/dm/room/{dm_uuid}"}, sent_count)
 
@@ -6555,6 +6585,13 @@ def chat_connect():
             join_room(f"external_user:{int(ext_user_id)}")
         except Exception:
             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
+
+    mfu_username = str(session.get("user") or "").strip()
+    if mfu_username:
+        try:
+            join_room(f"mfu_user:{mfu_username}")
+        except Exception:
+            current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
     return True
 
 @socketio.on("chat_join")
