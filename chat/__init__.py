@@ -1897,11 +1897,22 @@ def _present_message(
 ) -> dict[str, Any]:
     sender_actor_type = str(msg["sender_actor_type"])
     sender_actor_id = str(msg["sender_actor_id"])
-    sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id)
-    current_actor_id = _canonical_event_actor_key(
-        str(current_actor.get("actor_type") or ""),
-        str(current_actor.get("actor_id") or ""),
-    )
+    current_actor_type = str(current_actor.get("actor_type") or "")
+    current_actor_raw_id = str(current_actor.get("actor_id") or "")
+    is_event_chat_message = int(msg.get("event_id") or 0) > 0
+
+    if is_event_chat_message:
+        sender_id = _canonical_event_actor_key(sender_actor_type, sender_actor_id) or _actor_sender_id(
+            sender_actor_type,
+            sender_actor_id,
+        )
+        current_actor_id = _canonical_event_actor_key(current_actor_type, current_actor_raw_id) or _actor_sender_id(
+            current_actor_type,
+            current_actor_raw_id,
+        )
+    else:
+        sender_id = _actor_sender_id(sender_actor_type, sender_actor_id)
+        current_actor_id = _actor_sender_id(current_actor_type, current_actor_raw_id)
     created_at_iso, date_label, time_label = _format_jst_labels(msg["created_at"])
     deleted_flag = int(msg.get("deleted_flag") or 0) == 1
     deleted_by_actor_type = str(msg.get("deleted_by_actor_type") or "")
