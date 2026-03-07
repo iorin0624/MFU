@@ -1,61 +1,1230 @@
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index d18d19cdc3598343b838c5eba064010c3247b1eb..78d4c65880ac84dc35fba44128dc3b558294f1ae 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -2610,53 +2610,54 @@ window.addEventListener('DOMContentLoaded', async () => {
-       return;
-     }
-     updatePushButton(true);
-   }
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 5c9290f62b3885551a0b1f193ef06afa8db6320f..890aff6f0c857853507b685c498adf77f05aeeb6 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -1553,64 +1553,58 @@ def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
+     participants: dict[str, dict[str, str]] = {"admin:admin": {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}}
  
-   async function disablePush(registration, subscription) {
-     await subscription.unsubscribe();
-     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
-     if (endpoint) {
-       await fetch('/chat/api/push/unsubscribe', {
-         method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
-         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
-       });
-     }
-     const nextSubscription = await registration.pushManager.getSubscription();
-     updatePushButton(Boolean(nextSubscription));
-   }
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT DISTINCT u.id, u.nickname
+               FROM mfu_event_member m
+               JOIN external_login_user u ON u.id = m.user_id
+              WHERE m.event_id=%s
+             """,
+             (event_id,),
+         )
+         for row in cur.fetchall() or []:
+             actor_id = str(row["id"])
+             key = f"line:{actor_id}"
+             participants[key] = {
+                 "actor_type": "line",
+                 "actor_id": actor_id,
+                 "display_name": str(row.get("nickname") or f"LINE-{actor_id}"),
+             }
  
-   function setSendingState(isSending) {
-     if (sendBtn) sendBtn.disabled = isSending;
-     if (imageBtn) imageBtn.disabled = isSending;
-   }
+         cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+         acl_rows = [str(row["username"]) for row in (cur.fetchall() or [])]
+-        non_admin_acls = [name for name in acl_rows if name != "admin"]
+-        if non_admin_acls:
+-            placeholders = ",".join(["%s"] * len(non_admin_acls))
+-            cur.execute(
+-                f"SELECT username FROM users WHERE username IN ({placeholders})",
+-                tuple(non_admin_acls),
+-            )
+-            for row in cur.fetchall() or []:
+-                username = str(row["username"])
+-                participants[f"acl:{username}"] = {
+-                    "actor_type": "acl",
+-                    "actor_id": username,
+-                    "display_name": username,
+-                }
++        for username in acl_rows:
++            if username == "admin":
++                continue
++            participants[f"acl:{username}"] = {
++                "actor_type": "acl",
++                "actor_id": username,
++                "display_name": username,
++            }
  
-   function isMyMessage(msg) {
-+    const senderRawKey = String(msg.sender_id || '');
-     const senderKey = dmMode
--      ? String(msg.sender_id || '')
--      : (canonicalEventActorKey(...splitActorKey(msg.sender_id || '')) || String(msg.sender_id || ''));
-+      ? senderRawKey
-+      : (canonicalEventActorKey(...splitActorKey(senderRawKey)) || senderRawKey);
-     const selfKey = dmMode ? meId : canonicalMeId;
-     return (senderKey && selfKey && String(senderKey) === String(selfKey))
-       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
-   }
+         if "admin" in acl_rows:
+             participants["admin:admin"] = {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}
+     finally:
+         cur.close()
+         db.close()
  
-   function renderMessage(msg) {
-     const createdAt = msg.created_at_iso ? new Date(msg.created_at_iso) : new Date();
-     const dateLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_date_label || '')
-       : formatDateLabel(createdAt);
-     const timeLabel = Number.isNaN(createdAt.getTime())
-       ? (msg.created_at_jst_time_hm || '')
-       : formatTimeLabel(createdAt);
+     return participants
  
-     appendDateDividerIfNeeded(dateLabel);
  
-     const isMe = isMyMessage(msg);
+ def _build_room_member_candidates(event_id: int) -> list[dict[str, str]]:
+     participants = _build_chat_participants(event_id)
+     candidates: list[dict[str, str]] = []
+     for actor_key, participant in participants.items():
+         actor_type = str(participant.get("actor_type") or "")
+         role_hint = "参加者"
+         if actor_type == "admin":
+             role_hint = "admin"
+         elif actor_type == "acl":
+             role_hint = "ACL"
+         candidates.append(
+             {
+                 "actor_key": actor_key,
+                 "display_name": str(participant.get("display_name") or actor_key),
+                 "role_hint": role_hint,
+@@ -1747,61 +1741,75 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
  
-     const row = document.createElement('div');
-     row.className = `chat-row chat-message ${isMe ? 'me' : 'other'}`;
-     row.id = `msg-${msg.id}`;
-     row.dataset.messageId = msg.id;
-     row.dataset.senderName = msg.sender_display_name || 'Unknown';
-     row.dataset.senderAvatarUrl = msg.sender_avatar_url || defaultAvatarUrl;
-     const fullPlain = msg.body_plain || msg.body || '';
+     participant_by_normalized_key: dict[str, dict[str, str]] = {}
+     for participant in participants.values():
+         canonical_participant = _canonical_event_actor(
+             str(participant.get("actor_type") or ""),
+             str(participant.get("actor_id") or ""),
+             str(participant.get("display_name") or ""),
+         )
+         normalized_key = canonical_participant["actor_key"]
+         if not normalized_key:
+             continue
+         participant_by_normalized_key[normalized_key] = {
+             "actor_type": canonical_participant["actor_type"],
+             "actor_id": canonical_participant["actor_id"],
+             "display_name": canonical_participant["display_name"],
+         }
+ 
+     snapshot_by_actor: dict[str, dict[str, Any]] = {}
+     for row in rows:
+         canonical_actor = _canonical_event_actor(
+             str(row.get("actor_type") or ""),
+             str(row.get("actor_id") or ""),
+         )
+         key = canonical_actor["actor_key"]
+         participant = participant_by_normalized_key.get(key)
+-        if not participant:
+-            continue
++        display_name = ""
++        if participant:
++            display_name = str(participant.get("display_name") or "")
++        else:
++            actor_type = str(canonical_actor.get("actor_type") or "")
++            actor_id = str(canonical_actor.get("actor_id") or "")
++            if actor_type == "admin":
++                display_name = "admin"
++            elif actor_type == "system":
++                display_name = "System"
++            elif actor_type == "acl":
++                display_name = actor_id
++            elif actor_type == "line":
++                display_name = f"LINE-{actor_id}"
++            else:
++                continue
+ 
+         next_read_id = int(row.get("last_read_message_id") or 0)
+         updated_at = row.get("updated_at")
+         prev = snapshot_by_actor.get(key)
+         if not prev:
+             snapshot_by_actor[key] = {
+                 "actor_type": canonical_actor["actor_type"],
+                 "actor_id": canonical_actor["actor_id"],
+-                "display_name": participant["display_name"],
++                "display_name": display_name,
+                 "last_read_message_id": next_read_id,
+                 "updated_at": updated_at,
+             }
+             continue
+ 
+         prev_read_id = int(prev.get("last_read_message_id") or 0)
+         prev_updated = prev.get("updated_at")
+         prev["last_read_message_id"] = max(prev_read_id, next_read_id)
+         if updated_at and (not prev_updated or updated_at > prev_updated):
+             prev["updated_at"] = updated_at
+ 
+     snapshot: list[dict[str, Any]] = []
+     for entry in snapshot_by_actor.values():
+         snapshot.append(
+             {
+                 "actor_type": str(entry.get("actor_type") or ""),
+                 "actor_id": str(entry.get("actor_id") or ""),
+                 "display_name": str(entry.get("display_name") or ""),
+                 "last_read_message_id": int(entry.get("last_read_message_id") or 0),
+                 "updated_at_iso": entry.get("updated_at").isoformat() if entry.get("updated_at") else None,
+             }
+         )
+     return snapshot
+ 
+ 
+@@ -2179,50 +2187,89 @@ def get_chat_actor() -> dict[str, Any] | None:
+             return None
+         return {
+             "actor_type": "line",
+             "actor_id": str(row["id"]),
+             "display_name": display_name,
+             "email": row.get("email"),
+         }
+ 
+     return None
+ 
+ 
+ def get_chat_actor_key(actor: dict[str, Any] | None) -> str | None:
+     if not actor:
+         return None
+     actor_type = str(actor.get("actor_type") or "")
+     actor_id = str(actor.get("actor_id") or "")
+     if actor_type == "admin":
+         return "admin:1"
+     if actor_type == "line":
+         return f"line:{actor_id}"
+     if actor_type and actor_id:
+         return f"{actor_type}:{actor_id}"
+     return None
+ 
+ 
++def _canonical_dm_actor_key(actor_key: str) -> str:
++    value = str(actor_key or "").strip()
++    if not value:
++        return ""
++    if value == "admin":
++        return "admin:1"
++    actor_type, sep, actor_id = value.partition(":")
++    if not sep:
++        return value
++    actor_type = actor_type.strip()
++    actor_id = actor_id.strip()
++    if actor_type == "admin":
++        return "admin:1"
++    if actor_type and actor_id:
++        return f"{actor_type}:{actor_id}"
++    return ""
++
++
++def _dm_actor_key_aliases(actor_key: str) -> list[str]:
++    canonical_key = _canonical_dm_actor_key(actor_key)
++    if not canonical_key:
++        return []
++    if canonical_key == "admin:1":
++        return ["admin:1", "admin:admin", "admin"]
++    return [canonical_key]
++
++
++def _get_dm_actor_key(actor: dict[str, Any] | None) -> str | None:
++    if not actor:
++        return None
++    actor_type = str(actor.get("actor_type") or "")
++    actor_id = str(actor.get("actor_id") or "")
++    if not actor_type or not actor_id:
++        return None
++    if actor_type == "admin":
++        return "admin:1"
++    return _canonical_dm_actor_key(f"{actor_type}:{actor_id}") or None
++
++
+ 
+ 
+ def _ensure_settings_table() -> None:
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS settings (
+               `key` VARCHAR(128) NOT NULL,
+               `value` TEXT NULL,
+               PRIMARY KEY (`key`)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+             """
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _get_setting_value(key: str, default: str = "") -> str:
+     _ensure_settings_table()
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+@@ -2232,51 +2279,52 @@ def _get_setting_value(key: str, default: str = "") -> str:
+         if not row:
+             return default
+         return str(row.get("value") or default)
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _set_setting_value(key: str, value: str) -> None:
+     _ensure_settings_table()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute("REPLACE INTO settings (`key`, `value`) VALUES (%s, %s)", (key, value))
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _chat_dm_enable_user_user() -> bool:
+     return _get_setting_value("CHAT_DM_ENABLE_USER_USER", "0").strip().lower() in {"1", "true", "on", "yes"}
+ 
+ 
+ def _chat_dm_admin_actor_key() -> str:
+-    return (_get_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", "admin:1") or "admin:1").strip() or "admin:1"
++    value = (_get_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", "admin:1") or "admin:1").strip() or "admin:1"
++    return _canonical_dm_actor_key(value) or "admin:1"
+ 
+ 
+ def _ensure_chat_dm_schema() -> bool:
+     global CHAT_DM_SCHEMA_READY
+     if CHAT_DM_SCHEMA_READY is not None:
+         return CHAT_DM_SCHEMA_READY
+ 
+     with CHAT_DM_SCHEMA_CHECK_LOCK:
+         if CHAT_DM_SCHEMA_READY is not None:
+             return CHAT_DM_SCHEMA_READY
+ 
+         db = get_db()
+         cur = db.cursor()
+         try:
+             _ensure_settings_table()
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS chat_dm_conversations (
+                   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                   uuid CHAR(36) NOT NULL,
+                   dm_type VARCHAR(32) NOT NULL,
+                   pair_key VARCHAR(255) NOT NULL,
+                   last_message_id BIGINT UNSIGNED NULL,
+                   last_message_at DATETIME NULL,
+                   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+@@ -2297,50 +2345,168 @@ def _ensure_chat_dm_schema() -> bool:
+                   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   PRIMARY KEY (id),
+                   UNIQUE KEY uq_chat_dm_participants (conversation_id, actor_key),
+                   KEY idx_chat_dm_participants_actor_key (actor_key)
+                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                 """
+             )
+             cur.execute(
+                 """
+                 CREATE TABLE IF NOT EXISTS chat_dm_messages (
+                   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                   conversation_id BIGINT UNSIGNED NOT NULL,
+                   sender_actor_key VARCHAR(128) NOT NULL,
+                   body_type VARCHAR(32) NOT NULL DEFAULT 'text',
+                   body_text TEXT NULL,
+                   body_json JSON NULL,
+                   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                   PRIMARY KEY (id),
+                   KEY idx_chat_dm_messages_conv_id (conversation_id, id),
+                   KEY idx_chat_dm_messages_created_at (created_at)
+                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                 """
+             )
+             cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ENABLE_USER_USER', '0' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ENABLE_USER_USER')")
+             cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ADMIN_ACTOR_KEY', 'admin:1' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY')")
++
++            cur.execute("SELECT `value` FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY' LIMIT 1")
++            row = cur.fetchone()
++            current_admin_actor_key = str((row[0] if isinstance(row, tuple) else (row.get("value") if isinstance(row, dict) else "")) or "")
++            canonical_admin_actor_key = _canonical_dm_actor_key(current_admin_actor_key) or "admin:1"
++            if canonical_admin_actor_key != current_admin_actor_key:
++                cur.execute("UPDATE settings SET `value`=%s WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY'", (canonical_admin_actor_key,))
++
++            cur.execute(
++                """
++                SELECT id, conversation_id, actor_key, display_name_cache, last_read_message_id, created_at
++                FROM chat_dm_participants
++                WHERE actor_key='admin' OR actor_key='admin:admin' OR actor_key LIKE 'admin:%'
++                ORDER BY conversation_id ASC, id ASC
++                """
++            )
++            admin_rows = cur.fetchall() or []
++            rows_by_conversation: dict[int, list[Any]] = {}
++            for row_data in admin_rows:
++                if isinstance(row_data, dict):
++                    conv_id = int(row_data.get("conversation_id") or 0)
++                else:
++                    conv_id = int(row_data[1] or 0)
++                if conv_id <= 0:
++                    continue
++                rows_by_conversation.setdefault(conv_id, []).append(row_data)
++
++            for conv_id, rows_in_conv in rows_by_conversation.items():
++                normalized_rows: list[dict[str, Any]] = []
++                for row_data in rows_in_conv:
++                    if isinstance(row_data, dict):
++                        normalized_rows.append(row_data)
++                    else:
++                        normalized_rows.append(
++                            {
++                                "id": row_data[0],
++                                "conversation_id": row_data[1],
++                                "actor_key": row_data[2],
++                                "display_name_cache": row_data[3],
++                                "last_read_message_id": row_data[4],
++                                "created_at": row_data[5],
++                            }
++                        )
++
++                normalized_rows = [r for r in normalized_rows if _canonical_dm_actor_key(str(r.get("actor_key") or "")) == "admin:1"]
++                if not normalized_rows:
++                    continue
++
++                keep_row = None
++                for row_data in normalized_rows:
++                    if str(row_data.get("actor_key") or "") == "admin:1":
++                        keep_row = row_data
++                        break
++                if keep_row is None:
++                    keep_row = normalized_rows[0]
++
++                max_last_read = max(int(r.get("last_read_message_id") or 0) for r in normalized_rows)
++                display_name = ""
++                for r in normalized_rows:
++                    candidate = str(r.get("display_name_cache") or "").strip()
++                    if candidate:
++                        display_name = candidate
++                        break
++                created_candidates = [r.get("created_at") for r in normalized_rows if r.get("created_at") is not None]
++                oldest_created = min(created_candidates) if created_candidates else keep_row.get("created_at")
++
++                cur.execute(
++                    """
++                    UPDATE chat_dm_participants
++                    SET actor_key=%s,
++                        display_name_cache=%s,
++                        last_read_message_id=%s,
++                        created_at=%s
++                    WHERE id=%s
++                    """,
++                    ("admin:1", display_name or None, max_last_read, oldest_created, keep_row.get("id")),
++                )
++
++                delete_ids = [int(r.get("id") or 0) for r in normalized_rows if int(r.get("id") or 0) != int(keep_row.get("id") or 0)]
++                if delete_ids:
++                    placeholders = ",".join(["%s"] * len(delete_ids))
++                    cur.execute(f"DELETE FROM chat_dm_participants WHERE id IN ({placeholders})", tuple(delete_ids))
++
++            cur.execute("SHOW COLUMNS FROM chat_dm_messages LIKE 'sender_actor_key'")
++            if cur.fetchone():
++                cur.execute(
++                    """
++                    UPDATE chat_dm_messages
++                    SET sender_actor_key='admin:1'
++                    WHERE sender_actor_key='admin'
++                       OR sender_actor_key='admin:admin'
++                       OR sender_actor_key LIKE 'admin:%'
++                    """
++                )
++
++            cur.execute("SHOW COLUMNS FROM chat_dm_messages LIKE 'deleted_by_actor_key'")
++            if cur.fetchone():
++                cur.execute(
++                    """
++                    UPDATE chat_dm_messages
++                    SET deleted_by_actor_key='admin:1'
++                    WHERE deleted_by_actor_key='admin'
++                       OR deleted_by_actor_key='admin:admin'
++                       OR deleted_by_actor_key LIKE 'admin:%'
++                    """
++                )
++
++            cur.execute("SHOW COLUMNS FROM chat_dm_messages LIKE 'edited_by_actor_key'")
++            if cur.fetchone():
++                cur.execute(
++                    """
++                    UPDATE chat_dm_messages
++                    SET edited_by_actor_key='admin:1'
++                    WHERE edited_by_actor_key='admin'
++                       OR edited_by_actor_key='admin:admin'
++                       OR edited_by_actor_key LIKE 'admin:%'
++                    """
++                )
+             db.commit()
+ 
+             if not _ensure_chat_dm_delete_schema():
+                 raise RuntimeError("chat dm delete schema ensure failed")
+             if not _ensure_chat_dm_message_images_schema():
+                 raise RuntimeError("chat dm image schema ensure failed")
+             if not _ensure_chat_dm_reaction_schema():
+                 raise RuntimeError("chat dm reaction schema ensure failed")
+             if not _ensure_chat_dm_edit_schema():
+                 raise RuntimeError("chat dm edit schema ensure failed")
+ 
+             CHAT_DM_SCHEMA_READY = True
+         except Exception:
+             current_app.logger.warning("chat dm schema ensure failed", exc_info=True)
+             CHAT_DM_SCHEMA_READY = False
+         finally:
+             cur.close()
+             db.close()
+ 
+     return bool(CHAT_DM_SCHEMA_READY)
+ 
+ 
+ def _ensure_chat_dm_delete_schema() -> bool:
+     global CHAT_DM_DELETE_SCHEMA_READY
+     if CHAT_DM_DELETE_SCHEMA_READY is not None:
+@@ -3914,69 +4080,73 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
+                         metrics["http_end"] = time.monotonic()
+                     _log_push_endpoint_warning(
+                         endpoint,
+                         "chat push unexpected failure actor=%s:%s error=%s",
+                         actor_type,
+                         actor_id,
+                         type(exc).__name__,
+                     )
+                     if current_app.debug:
+                         current_app.logger.exception("chat push unexpected traceback endpoint_hash logging")
+                     break
+ 
+             if not push_success:
+                 continue
+         db.commit()
+         _audit_log("push_notify", actor=f"{actor_type}:{actor_id}", event_id=payload.get("event_id"), room_id=payload.get("room_id"), result="ok", sent_count=sent)
+         return sent
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ 
+ 
+ def _actor_key_to_display_name(actor_key: str) -> str:
+-    actor_key = str(actor_key or "")
++    actor_key = _canonical_dm_actor_key(actor_key)
+     if actor_key == "admin:1":
+         return "admin"
+     if actor_key.startswith("line:"):
+         try:
+             return get_external_user_display_name(int(actor_key.split(":", 1)[1]))
+         except Exception:
+             return f"LINE-{actor_key.split(':', 1)[1]}"
+     return actor_key
+ 
+ 
+ def _pair_key(actor_a: str, actor_b: str) -> str:
+     a, b = sorted([str(actor_a), str(actor_b)])
+     return f"{a}|{b}"
+ 
+ 
+ def get_or_create_dm_conversation(actor_a: str, actor_b: str, dm_type: str) -> dict[str, Any]:
+     if not _ensure_chat_dm_schema():
+         raise RuntimeError("dm schema")
++    actor_a = _canonical_dm_actor_key(actor_a)
++    actor_b = _canonical_dm_actor_key(actor_b)
++    if not actor_a or not actor_b:
++        raise RuntimeError("invalid dm actor")
+     pair_key = _pair_key(actor_a, actor_b)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT * FROM chat_dm_conversations WHERE pair_key=%s LIMIT 1", (pair_key,))
+         row = cur.fetchone()
+         if row:
+             return row
+ 
+         dm_uuid = str(uuid.uuid4())
+         now = datetime.utcnow()
+         cur.execute(
+             """
+             INSERT INTO chat_dm_conversations (uuid, dm_type, pair_key, created_at)
+             VALUES (%s, %s, %s, %s)
+             """,
+             (dm_uuid, dm_type, pair_key, now),
+         )
+         conversation_id = int(cur.lastrowid)
+         cur.execute(
+             """
+             INSERT IGNORE INTO chat_dm_participants (conversation_id, actor_key, display_name_cache, created_at)
+             VALUES (%s, %s, %s, %s), (%s, %s, %s, %s)
+             """,
+             (
+@@ -4004,65 +4174,70 @@ def get_or_create_dm_conversation(actor_a: str, actor_b: str, dm_type: str) -> d
+         db.rollback()
+         cur.execute("SELECT * FROM chat_dm_conversations WHERE pair_key=%s LIMIT 1", (pair_key,))
+         row = cur.fetchone()
+         if row:
+             return row
+         raise
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _get_dm_conversation_by_uuid(dm_uuid: str) -> dict[str, Any] | None:
+     if not _ensure_chat_dm_schema():
+         return None
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT * FROM chat_dm_conversations WHERE uuid=%s LIMIT 1", (dm_uuid,))
+         return cur.fetchone()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
++    actor_key = _canonical_dm_actor_key(actor_key)
++    aliases = _dm_actor_key_aliases(actor_key)
++    if not aliases:
++        return False
+     conv = _get_dm_conversation_by_uuid(conversation_uuid)
+     if not conv:
+         return False
+     if str(conv.get("dm_type") or "") == "user_user" and not _chat_dm_enable_user_user():
+         return False
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
++        placeholders = ",".join(["%s"] * len(aliases))
+         cur.execute(
+-            """
++            f"""
+             SELECT 1 FROM chat_dm_participants
+-            WHERE conversation_id=%s AND actor_key=%s
++            WHERE conversation_id=%s AND actor_key IN ({placeholders})
+             LIMIT 1
+             """,
+-            (conv["id"], actor_key),
++            (conv["id"], *aliases),
+         )
+         return bool(cur.fetchone())
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _resolve_presence_room_context(
+     actor: dict[str, Any],
+     event_id: int,
+     room_id: str,
+ ) -> tuple[bool, int, str, str | None]:
+     normalized_room_id = str(room_id or "").strip()
+     if not normalized_room_id:
+         return False, 0, "", "invalid_params"
+ 
+     if normalized_room_id.startswith("dm:"):
+         dm_uuid = normalized_room_id.split(":", 1)[1].strip()
+         if not dm_uuid:
+             return False, 0, "", "invalid_dm_room"
+         actor_key = _actor_sender_id(actor.get("actor_type", ""), str(actor.get("actor_id") or ""))
+         if not can_access_dm(dm_uuid, actor_key):
+             return False, 0, "", "forbidden"
+         return True, 0, f"dm:{dm_uuid}", None
+ 
+@@ -4359,60 +4534,74 @@ def _split_actor_key(actor_key: str) -> tuple[str, str]:
+     if ":" not in value:
+         return value, value
+     actor_type, actor_id = value.split(":", 1)
+     if actor_type == "admin":
+         return "admin", "admin"
+     return actor_type, actor_id
+ 
+ 
+ def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT actor_key, last_read_message_id
+             FROM chat_dm_participants
+             WHERE conversation_id=%s
+             """,
+             (conversation_id,),
+         )
+         rows = cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+-    snapshot: list[dict[str, Any]] = []
++    merged_by_actor_key: dict[str, dict[str, Any]] = {}
+     for row in rows:
+-        actor_key = str(row.get("actor_key") or "")
++        actor_key = _canonical_dm_actor_key(str(row.get("actor_key") or ""))
++        if not actor_key:
++            continue
++        next_read_id = int(row.get("last_read_message_id") or 0)
++        prev = merged_by_actor_key.get(actor_key)
++        if not prev:
++            merged_by_actor_key[actor_key] = {
++                "actor_key": actor_key,
++                "last_read_message_id": next_read_id,
++            }
++            continue
++        prev["last_read_message_id"] = max(int(prev.get("last_read_message_id") or 0), next_read_id)
++
++    snapshot: list[dict[str, Any]] = []
++    for actor_key, entry in merged_by_actor_key.items():
+         actor_type, actor_id = _split_actor_key(actor_key)
+         snapshot.append(
+             {
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "display_name": _actor_key_to_display_name(actor_key),
+-                "last_read_message_id": int(row.get("last_read_message_id") or 0),
++                "last_read_message_id": int(entry.get("last_read_message_id") or 0),
+             }
+         )
+     return snapshot
+ 
+ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sender_display_name: str, body: str) -> None:
+     from app.external_login_user.notifications import create_notification_mfu
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     sent_count = 0
+     dm_room_id = f"dm:{dm_uuid}"
+     try:
+         cur.execute("SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s", (conversation_id, sender_actor_key))
+         targets = cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+     for t in targets:
+         actor_key = str(t.get("actor_key") or "")
+         a_type, a_id = _split_actor_key(actor_key)
+         if not a_type or not a_id:
+             continue
+         if _is_actor_actively_viewing_room(a_type, a_id, dm_room_id):
+             current_app.logger.info(
+@@ -4433,81 +4622,82 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
+                 recipient_user_id=int(a_id),
+                 kind="dm",
+                 title=f"{sender_display_name}さんからDM",
+                 body=body,
+                 event_id=0,
+                 room_id=dm_room_id,
+                 room_name="DM",
+                 dedup_key=f"chat:dm:{dm_uuid}:{int(time.time())}:{a_id}",
+             )
+         elif a_type in {"admin", "acl"}:
+             create_notification_mfu(
+                 recipient_username=str(a_id),
+                 kind="dm",
+                 title="新着DMがあります",
+                 body=f"{sender_display_name}: {_build_plain_excerpt(body, max_len=80)}",
+                 target_url=f"/chat/dm/room/{dm_uuid}",
+                 sender_label=sender_display_name,
+                 room_type="dm",
+                 room_id=dm_room_id,
+                 dedup_key=f"mfu:dm:{conversation_id}:{int(time.time())}:{a_id}",
+             )
+     _log_notification(0, "dm", {"dm_uuid": dm_uuid, "link": f"/chat/dm/room/{dm_uuid}"}, sent_count)
+ 
+ 
+ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
++    actor_key = _canonical_dm_actor_key(actor_key)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT c.id, c.uuid, c.dm_type, c.last_message_at,
+                    p.last_read_message_id,
+                    (SELECT body_text FROM chat_dm_messages m WHERE m.id = c.last_message_id LIMIT 1) AS last_message,
+                    (SELECT COUNT(*) FROM chat_dm_messages m
+                      WHERE m.conversation_id=c.id
+                        AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count,
+                    (SELECT actor_key FROM chat_dm_participants pp
+                      WHERE pp.conversation_id=c.id AND pp.actor_key<>%s
+                      LIMIT 1) AS peer_actor_key
+             FROM chat_dm_conversations c
+             JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
+             ORDER BY (unread_count > 0) DESC, unread_count DESC, c.last_message_at DESC
+             """,
+             (actor_key, actor_key),
+         )
+         rows = cur.fetchall() or []
+ 
+         cur.execute("SELECT id, nickname FROM external_login_user ORDER BY COALESCE(nickname, ''), id")
+         ext_users = cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
+ 
+     rows_by_peer: dict[str, dict[str, Any]] = {}
+     for row in rows:
+-        peer_actor_key = str(row.get("peer_actor_key") or "")
++        peer_actor_key = _canonical_dm_actor_key(str(row.get("peer_actor_key") or ""))
+         if not peer_actor_key:
+             continue
+         row["peer_actor_key"] = peer_actor_key
+         row["peer_display_name"] = _actor_key_to_display_name(peer_actor_key)
+         rows_by_peer[peer_actor_key] = row
+ 
+     for user in ext_users:
+         peer_actor_key = f"line:{int(user.get('id') or 0)}"
+         if peer_actor_key in rows_by_peer:
+             continue
+         nickname = str(user.get("nickname") or "").strip() or peer_actor_key
+         rows_by_peer[peer_actor_key] = {
+             "id": None,
+             "uuid": None,
+             "dm_type": "admin_user",
+             "last_message_at": None,
+             "last_read_message_id": None,
+             "last_message": "",
+             "unread_count": 0,
+             "peer_actor_key": peer_actor_key,
+             "peer_display_name": nickname,
+         }
+ 
+     items = list(rows_by_peer.values())
+     items.sort(
+@@ -4534,179 +4724,179 @@ def _require_any_login():
+ @chat_bp.route("/")
+ def index():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     events = _accessible_events(actor)
+     dm_inbox_items: list[dict[str, Any]] = []
+     if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
+         actor_key = get_chat_actor_key(actor) or "admin:1"
+         dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
+     return render_template(
+         "chat/index.html",
+         actor=actor,
+         events=events,
+         csrf_token=_chat_csrf(),
+         nav_mode="chat",
+         dm_inbox_items=dm_inbox_items,
+         dm_user_user_enabled=_chat_dm_enable_user_user(),
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+     )
+ 
+ 
+ @chat_bp.route("/dm")
+ def dm_entry():
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         abort(403)
+     if actor_key == "admin:1":
+         return redirect(url_for("chat.dm_inbox"))
+     admin_actor_key = _chat_dm_admin_actor_key()
+     conversation = get_or_create_dm_conversation(actor_key, admin_actor_key, "admin_user")
+     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
+ 
+ 
+ @chat_bp.route("/dm/inbox")
+ def dm_inbox():
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key or actor.get("actor_type") != "admin":
+         abort(403)
+     if not _ensure_chat_dm_schema():
+         abort(500)
+ 
+     rows = _build_admin_dm_inbox_items(actor_key)
+ 
+     return render_template("chat/dm_inbox.html", actor=actor, items=rows, csrf_token=_chat_csrf(), nav_mode="chat")
+ 
+ 
+ @chat_bp.get("/dm/open/line/<int:line_user_id>")
+ def dm_open_line(line_user_id: int):
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key or actor.get("actor_type") != "admin":
+         abort(403)
+     if line_user_id <= 0:
+         abort(404)
+     conversation = get_or_create_dm_conversation(actor_key, f"line:{line_user_id}", "admin_user")
+     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
+ 
+ 
+ @chat_bp.get("/dm/room/<uuid>")
+ def dm_room(uuid: str):
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         abort(403)
+     if not can_access_dm(uuid, actor_key):
+         abort(403)
+ 
+     conversation = _get_dm_conversation_by_uuid(uuid)
+     if not conversation:
+         abort(404)
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
+             (conversation["id"], actor_key),
+         )
+         peer = cur.fetchone() or {}
+     finally:
+         cur.close()
+         db.close()
+ 
+     messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
+     peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
+     return render_template(
+         "chat/room.html",
+         actor=actor,
+-        current_user_id=get_chat_actor_key(actor),
++        current_user_id=_get_dm_actor_key(actor),
+         event={"id": 0, "title": "DM"},
+         messages=messages,
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+         csrf_token=_chat_csrf(),
+         can_broadcast=False,
+         can_manage_rooms=False,
+         accessible_rooms=[],
+         active_room={"room_id": f"dm:{uuid}", "room_name": peer_name, "is_main": 1},
+         default_avatar_url=_default_avatar_url(),
+         nav_mode="chat",
+         dm_mode=True,
+         dm_uuid=uuid,
+         dm_room_id=f"dm:{uuid}",
+         peer_display_name=peer_name,
+     )
+ 
+ 
+ @chat_bp.post("/dm/api/send")
+ def dm_api_send():
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     payload = request.get_json(silent=True) or {}
+     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+     dm_uuid = str(payload.get("dm_uuid") or "").strip()
+     if not dm_uuid:
+         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+     if not can_access_dm(dm_uuid, actor_key):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     conversation = _get_dm_conversation_by_uuid(dm_uuid)
+     if not conversation:
+         return jsonify({"ok": False, "error": "not_found"}), 404
+ 
+     body = _validate_body(payload.get("body") or "")
+     saved = _save_dm_message(conversation, actor_key, body)
+     saved["dm_uuid"] = dm_uuid
+     msg_payload = _dm_message_to_payload(saved, actor_key)
+     socketio.emit("chat_message", msg_payload, to=f"dm:{dm_uuid}")
+     _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
+     return jsonify({"ok": True, "message": msg_payload})
+ 
+ 
+ @chat_bp.get("/dm/images/<uuid:dm_uuid>/<path:name>")
+ def chat_dm_image(dm_uuid: str, name: str):
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     dm_uuid_str = str(dm_uuid)
+     if not actor or not actor_key:
+         abort(403)
+     if not can_access_dm(dm_uuid_str, actor_key):
+         abort(403)
+     if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+         abort(404)
+     return send_from_directory(os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid_str), name)
+ 
+ 
+ @chat_bp.post("/dm/api/upload-image")
+ def dm_upload_image():
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_message_images_schema():
+         return jsonify({"ok": False, "error": "DM画像機能の初期化に失敗しました"}), 500
+ 
+     token = (request.form.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+     dm_uuid = str(request.form.get("dm_uuid") or "").strip()
+     if not dm_uuid:
+         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+     if not can_access_dm(dm_uuid, actor_key):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     conversation = _get_dm_conversation_by_uuid(dm_uuid)
+     if not conversation:
+         return jsonify({"ok": False, "error": "not_found"}), 404
+ 
+     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
+     if not raw_upload_files:
+         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
+     if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:
+         return _upload_image_error_response(code="too_many_files", message=f"画像は最大6枚まで送れます（現在: {len(raw_upload_files)}枚）", status=400)
+ 
+     caption = _validate_caption_optional(request.form.get("body") or "")
+     image_metas: list[dict[str, Any]] = []
+@@ -4937,84 +5127,101 @@ def dm_edit_message(message_id: int):
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+     message_payload = _load_single_dm_message_payload(conversation, message_id, actor_key, dm_uuid)
+     if not message_payload:
+         return jsonify({"ok": False, "error": "編集後メッセージの再取得に失敗しました"}), 500
+ 
+     socketio.emit(
+         "chat_edit_update",
+         {
+             **message_payload,
+             "room_id": f"dm:{dm_uuid}",
+             "message_id": message_id,
+         },
+         to=f"dm:{dm_uuid}",
+     )
+     return jsonify({"ok": True, "message": message_payload})
+ 
+ 
+ @chat_bp.post("/dm/api/seen")
+ def dm_api_seen():
+     actor = get_chat_actor()
+-    actor_key = get_chat_actor_key(actor)
++    actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     payload = request.get_json(silent=True) or {}
+     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+     dm_uuid = str(payload.get("dm_uuid") or "").strip()
+     last_seen_message_id = int(payload.get("last_seen_message_id") or 0)
+     if not dm_uuid:
+         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+     if last_seen_message_id <= 0:
+         return jsonify({"ok": True, "last_read_message_id": 0})
+     if not can_access_dm(dm_uuid, actor_key):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     conversation = _get_dm_conversation_by_uuid(dm_uuid)
+     if not conversation:
+         return jsonify({"ok": False, "error": "not_found"}), 404
+ 
++    aliases = _dm_actor_key_aliases(actor_key or "")
++    if not aliases:
++        return jsonify({"ok": False, "error": "participant_not_found"}), 409
++
+     db = get_db()
+-    cur = db.cursor()
++    cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             UPDATE chat_dm_participants
+             SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
+             WHERE conversation_id=%s AND actor_key=%s
+             """,
+             (last_seen_message_id, conversation["id"], actor_key),
+         )
++        placeholders = ",".join(["%s"] * len(aliases))
++        cur.execute(
++            f"""
++            SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
++            FROM chat_dm_participants
++            WHERE conversation_id=%s AND actor_key IN ({placeholders})
++            """,
++            (conversation["id"], *aliases),
++        )
++        row = cur.fetchone() or {}
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+-    return jsonify({"ok": True, "last_read_message_id": last_seen_message_id})
++    actual_last_read_id = int(row.get("last_read_message_id") or 0)
++    if actual_last_read_id <= 0:
++        return jsonify({"ok": False, "error": "participant_not_found"}), 409
++    return jsonify({"ok": True, "last_read_message_id": actual_last_read_id})
+ 
+ 
+ @chat_bp.get("/dm/settings")
+ def dm_settings_get():
+     actor = get_chat_actor()
+     if not actor or actor.get("actor_type") != "admin":
+         abort(403)
+     return render_template(
+         "chat/dm_settings.html",
+         actor=actor,
+         csrf_token=_chat_csrf(),
+         enable_user_user=_chat_dm_enable_user_user(),
+         admin_actor_key=_chat_dm_admin_actor_key(),
+         nav_mode="chat",
+     )
+ 
+ 
+ @chat_bp.post("/dm/settings")
+ def dm_settings_post():
+     actor = get_chat_actor()
+     if not actor or actor.get("actor_type") != "admin":
+         abort(403)
+     token = (request.form.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400, "invalid csrf token")
+@@ -6684,134 +6891,152 @@ def chat_connect():
+         try:
+             join_room(f"external_user:{int(ext_user_id)}")
+         except Exception:
+             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
+ 
+     mfu_username = str(session.get("user") or "").strip()
+     if mfu_username:
+         try:
+             join_room(f"mfu_user:{mfu_username}")
+         except Exception:
+             current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
+     return True
+ 
+ @socketio.on("chat_join")
+ def on_join(data):
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     _ensure_chat_read_state_room_schema()
+     _ensure_chat_edit_schema()
+     actor = get_chat_actor()
+     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+     room_id = str((data or {}).get("room_id") or "").strip() or None
+ 
+     if dm_uuid:
+-        actor_key = get_chat_actor_key(actor)
++        actor_key = _get_dm_actor_key(actor)
+         if not actor or not actor_key:
+             emit("chat_error", {"error": "forbidden"})
+             return
+         if not can_access_dm(dm_uuid, actor_key):
+             emit("chat_error", {"error": "forbidden"})
+             return
+         join_room(f"dm:{dm_uuid}")
+         emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
+         conversation = _get_dm_conversation_by_uuid(dm_uuid)
+         if conversation:
+             emit(
+                 "chat_read_snapshot",
+                 {
+                     "dm_uuid": dm_uuid,
+                     "room_id": f"dm:{dm_uuid}",
+                     "read_states": _load_dm_read_state_snapshot(int(conversation["id"])),
+                 },
+             )
+         return
+ 
+     if (room_id or "").startswith("dm:"):
+         emit("chat_error", {"error": "dm_uuid_required"})
+         return
+ 
+     event_id = int((data or {}).get("event_id") or 0)
+     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor or {}) if actor else (False, None, None)
+     if not actor or not event_id or not allowed or not effective_room_id:
+         _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=room_id, result="deny")
+         disconnect()
+         return
+     join_room(f"event:{event_id}:room:{effective_room_id}")
+     emit("chat_joined", {"event_id": event_id, "room_id": effective_room_id})
+     _audit_log("room_join", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, result="ok")
+     emit("chat_read_snapshot", {"event_id": event_id, "room_id": effective_room_id, "read_states": _load_event_read_state_snapshot(event_id, effective_room_id)})
+ 
+ 
+ @socketio.on("chat_seen")
+ def on_seen(data):
+     actor = get_chat_actor()
+     if not actor:
+         disconnect()
+         return
+ 
+     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+     room_id = str((data or {}).get("room_id") or "").strip() or None
+     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
+ 
+     if dm_uuid:
+-        actor_key = get_chat_actor_key(actor)
++        actor_key = _get_dm_actor_key(actor)
+         if not actor_key or last_seen_message_id <= 0:
+             return
+         if not can_access_dm(dm_uuid, actor_key):
+             emit("chat_error", {"error": "forbidden"})
+             return
+         conversation = _get_dm_conversation_by_uuid(dm_uuid)
+         if not conversation:
+             emit("chat_error", {"error": "not_found"})
+             return
+         db = get_db()
+-        cur = db.cursor()
++        cur = db.cursor(dictionary=True)
+         try:
+             cur.execute(
+                 """
+                 UPDATE chat_dm_participants
+                 SET last_read_message_id=GREATEST(COALESCE(last_read_message_id, 0), %s)
+                 WHERE conversation_id=%s AND actor_key=%s
+                 """,
+                 (last_seen_message_id, conversation["id"], actor_key),
+             )
++            aliases = _dm_actor_key_aliases(actor_key)
++            if not aliases:
++                emit("chat_error", {"error": "participant_not_found"})
++                return
++            placeholders = ",".join(["%s"] * len(aliases))
++            cur.execute(
++                f"""
++                SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
++                FROM chat_dm_participants
++                WHERE conversation_id=%s AND actor_key IN ({placeholders})
++                """,
++                (conversation["id"], *aliases),
++            )
++            row = cur.fetchone() or {}
+             db.commit()
+         finally:
+             cur.close()
+             db.close()
++        actual_last_read_id = int(row.get("last_read_message_id") or 0)
++        if actual_last_read_id <= 0:
++            emit("chat_error", {"error": "participant_not_found"})
++            return
+         actor_type, actor_id = _split_actor_key(actor_key)
+         emit(
+             "chat_read_update",
+             {
+                 "dm_uuid": dm_uuid,
+                 "room_id": f"dm:{dm_uuid}",
+                 "actor_type": actor_type,
+                 "actor_id": actor_id,
+                 "display_name": _actor_key_to_display_name(actor_key),
+-                "last_read_message_id": last_seen_message_id,
++                "last_read_message_id": actual_last_read_id,
+             },
+             to=f"dm:{dm_uuid}",
+         )
+         return
+ 
+     if (room_id or "").startswith("dm:"):
+         emit("chat_error", {"error": "dm_uuid_required"})
+         return
+ 
+     event_id = int((data or {}).get("event_id") or 0)
+     allowed, effective_room_id, _room = _can_access_room(event_id, room_id, actor)
+     if event_id <= 0 or last_seen_message_id <= 0 or not allowed or not effective_room_id:
+         disconnect()
+         return
+ 
+     effective_last_read_id, canonical_actor = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
+     _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
+     emit(
+         "chat_read_update",
+         {
+             "actor_type": canonical_actor["actor_type"],
+             "actor_id": canonical_actor["actor_id"],
+             "display_name": canonical_actor["display_name"],
+             "last_read_message_id": effective_last_read_id,
+             "room_id": effective_room_id,

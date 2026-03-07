@@ -1575,20 +1575,14 @@ def _build_chat_participants(event_id: int) -> dict[str, dict[str, str]]:
 
         cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
         acl_rows = [str(row["username"]) for row in (cur.fetchall() or [])]
-        non_admin_acls = [name for name in acl_rows if name != "admin"]
-        if non_admin_acls:
-            placeholders = ",".join(["%s"] * len(non_admin_acls))
-            cur.execute(
-                f"SELECT username FROM users WHERE username IN ({placeholders})",
-                tuple(non_admin_acls),
-            )
-            for row in cur.fetchall() or []:
-                username = str(row["username"])
-                participants[f"acl:{username}"] = {
-                    "actor_type": "acl",
-                    "actor_id": username,
-                    "display_name": username,
-                }
+        for username in acl_rows:
+            if username == "admin":
+                continue
+            participants[f"acl:{username}"] = {
+                "actor_type": "acl",
+                "actor_id": username,
+                "display_name": username,
+            }
 
         if "admin" in acl_rows:
             participants["admin:admin"] = {"actor_type": "admin", "actor_id": "admin", "display_name": "admin"}
@@ -1769,8 +1763,22 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
         )
         key = canonical_actor["actor_key"]
         participant = participant_by_normalized_key.get(key)
-        if not participant:
-            continue
+        display_name = ""
+        if participant:
+            display_name = str(participant.get("display_name") or "")
+        else:
+            actor_type = str(canonical_actor.get("actor_type") or "")
+            actor_id = str(canonical_actor.get("actor_id") or "")
+            if actor_type == "admin":
+                display_name = "admin"
+            elif actor_type == "system":
+                display_name = "System"
+            elif actor_type == "acl":
+                display_name = actor_id
+            elif actor_type == "line":
+                display_name = f"LINE-{actor_id}"
+            else:
+                continue
 
         next_read_id = int(row.get("last_read_message_id") or 0)
         updated_at = row.get("updated_at")
@@ -1779,7 +1787,7 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
             snapshot_by_actor[key] = {
                 "actor_type": canonical_actor["actor_type"],
                 "actor_id": canonical_actor["actor_id"],
-                "display_name": participant["display_name"],
+                "display_name": display_name,
                 "last_read_message_id": next_read_id,
                 "updated_at": updated_at,
             }
@@ -2201,6 +2209,45 @@ def get_chat_actor_key(actor: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _canonical_dm_actor_key(actor_key: str) -> str:
+    value = str(actor_key or "").strip()
+    if not value:
+        return ""
+    if value == "admin":
+        return "admin:1"
+    actor_type, sep, actor_id = value.partition(":")
+    if not sep:
+        return value
+    actor_type = actor_type.strip()
+    actor_id = actor_id.strip()
+    if actor_type == "admin":
+        return "admin:1"
+    if actor_type and actor_id:
+        return f"{actor_type}:{actor_id}"
+    return ""
+
+
+def _dm_actor_key_aliases(actor_key: str) -> list[str]:
+    canonical_key = _canonical_dm_actor_key(actor_key)
+    if not canonical_key:
+        return []
+    if canonical_key == "admin:1":
+        return ["admin:1", "admin:admin", "admin"]
+    return [canonical_key]
+
+
+def _get_dm_actor_key(actor: dict[str, Any] | None) -> str | None:
+    if not actor:
+        return None
+    actor_type = str(actor.get("actor_type") or "")
+    actor_id = str(actor.get("actor_id") or "")
+    if not actor_type or not actor_id:
+        return None
+    if actor_type == "admin":
+        return "admin:1"
+    return _canonical_dm_actor_key(f"{actor_type}:{actor_id}") or None
+
+
 
 
 def _ensure_settings_table() -> None:
@@ -2254,7 +2301,8 @@ def _chat_dm_enable_user_user() -> bool:
 
 
 def _chat_dm_admin_actor_key() -> str:
-    return (_get_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", "admin:1") or "admin:1").strip() or "admin:1"
+    value = (_get_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", "admin:1") or "admin:1").strip() or "admin:1"
+    return _canonical_dm_actor_key(value) or "admin:1"
 
 
 def _ensure_chat_dm_schema() -> bool:
@@ -2319,6 +2367,124 @@ def _ensure_chat_dm_schema() -> bool:
             )
             cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ENABLE_USER_USER', '0' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ENABLE_USER_USER')")
             cur.execute("INSERT INTO settings (`key`, `value`) SELECT 'CHAT_DM_ADMIN_ACTOR_KEY', 'admin:1' WHERE NOT EXISTS (SELECT 1 FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY')")
+
+            cur.execute("SELECT `value` FROM settings WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY' LIMIT 1")
+            row = cur.fetchone()
+            current_admin_actor_key = str((row[0] if isinstance(row, tuple) else (row.get("value") if isinstance(row, dict) else "")) or "")
+            canonical_admin_actor_key = _canonical_dm_actor_key(current_admin_actor_key) or "admin:1"
+            if canonical_admin_actor_key != current_admin_actor_key:
+                cur.execute("UPDATE settings SET `value`=%s WHERE `key`='CHAT_DM_ADMIN_ACTOR_KEY'", (canonical_admin_actor_key,))
+
+            cur.execute(
+                """
+                SELECT id, conversation_id, actor_key, display_name_cache, last_read_message_id, created_at
+                FROM chat_dm_participants
+                WHERE actor_key='admin' OR actor_key='admin:admin' OR actor_key LIKE 'admin:%'
+                ORDER BY conversation_id ASC, id ASC
+                """
+            )
+            admin_rows = cur.fetchall() or []
+            rows_by_conversation: dict[int, list[Any]] = {}
+            for row_data in admin_rows:
+                if isinstance(row_data, dict):
+                    conv_id = int(row_data.get("conversation_id") or 0)
+                else:
+                    conv_id = int(row_data[1] or 0)
+                if conv_id <= 0:
+                    continue
+                rows_by_conversation.setdefault(conv_id, []).append(row_data)
+
+            for conv_id, rows_in_conv in rows_by_conversation.items():
+                normalized_rows: list[dict[str, Any]] = []
+                for row_data in rows_in_conv:
+                    if isinstance(row_data, dict):
+                        normalized_rows.append(row_data)
+                    else:
+                        normalized_rows.append(
+                            {
+                                "id": row_data[0],
+                                "conversation_id": row_data[1],
+                                "actor_key": row_data[2],
+                                "display_name_cache": row_data[3],
+                                "last_read_message_id": row_data[4],
+                                "created_at": row_data[5],
+                            }
+                        )
+
+                normalized_rows = [r for r in normalized_rows if _canonical_dm_actor_key(str(r.get("actor_key") or "")) == "admin:1"]
+                if not normalized_rows:
+                    continue
+
+                keep_row = None
+                for row_data in normalized_rows:
+                    if str(row_data.get("actor_key") or "") == "admin:1":
+                        keep_row = row_data
+                        break
+                if keep_row is None:
+                    keep_row = normalized_rows[0]
+
+                max_last_read = max(int(r.get("last_read_message_id") or 0) for r in normalized_rows)
+                display_name = ""
+                for r in normalized_rows:
+                    candidate = str(r.get("display_name_cache") or "").strip()
+                    if candidate:
+                        display_name = candidate
+                        break
+                created_candidates = [r.get("created_at") for r in normalized_rows if r.get("created_at") is not None]
+                oldest_created = min(created_candidates) if created_candidates else keep_row.get("created_at")
+
+                cur.execute(
+                    """
+                    UPDATE chat_dm_participants
+                    SET actor_key=%s,
+                        display_name_cache=%s,
+                        last_read_message_id=%s,
+                        created_at=%s
+                    WHERE id=%s
+                    """,
+                    ("admin:1", display_name or None, max_last_read, oldest_created, keep_row.get("id")),
+                )
+
+                delete_ids = [int(r.get("id") or 0) for r in normalized_rows if int(r.get("id") or 0) != int(keep_row.get("id") or 0)]
+                if delete_ids:
+                    placeholders = ",".join(["%s"] * len(delete_ids))
+                    cur.execute(f"DELETE FROM chat_dm_participants WHERE id IN ({placeholders})", tuple(delete_ids))
+
+            cur.execute("SHOW COLUMNS FROM chat_dm_messages LIKE 'sender_actor_key'")
+            if cur.fetchone():
+                cur.execute(
+                    """
+                    UPDATE chat_dm_messages
+                    SET sender_actor_key='admin:1'
+                    WHERE sender_actor_key='admin'
+                       OR sender_actor_key='admin:admin'
+                       OR sender_actor_key LIKE 'admin:%'
+                    """
+                )
+
+            cur.execute("SHOW COLUMNS FROM chat_dm_messages LIKE 'deleted_by_actor_key'")
+            if cur.fetchone():
+                cur.execute(
+                    """
+                    UPDATE chat_dm_messages
+                    SET deleted_by_actor_key='admin:1'
+                    WHERE deleted_by_actor_key='admin'
+                       OR deleted_by_actor_key='admin:admin'
+                       OR deleted_by_actor_key LIKE 'admin:%'
+                    """
+                )
+
+            cur.execute("SHOW COLUMNS FROM chat_dm_messages LIKE 'edited_by_actor_key'")
+            if cur.fetchone():
+                cur.execute(
+                    """
+                    UPDATE chat_dm_messages
+                    SET edited_by_actor_key='admin:1'
+                    WHERE edited_by_actor_key='admin'
+                       OR edited_by_actor_key='admin:admin'
+                       OR edited_by_actor_key LIKE 'admin:%'
+                    """
+                )
             db.commit()
 
             if not _ensure_chat_dm_delete_schema():
@@ -3936,7 +4102,7 @@ def _send_push_to_actor(actor_type: str, actor_id: str, payload: dict[str, Any],
 
 
 def _actor_key_to_display_name(actor_key: str) -> str:
-    actor_key = str(actor_key or "")
+    actor_key = _canonical_dm_actor_key(actor_key)
     if actor_key == "admin:1":
         return "admin"
     if actor_key.startswith("line:"):
@@ -3955,6 +4121,10 @@ def _pair_key(actor_a: str, actor_b: str) -> str:
 def get_or_create_dm_conversation(actor_a: str, actor_b: str, dm_type: str) -> dict[str, Any]:
     if not _ensure_chat_dm_schema():
         raise RuntimeError("dm schema")
+    actor_a = _canonical_dm_actor_key(actor_a)
+    actor_b = _canonical_dm_actor_key(actor_b)
+    if not actor_a or not actor_b:
+        raise RuntimeError("invalid dm actor")
     pair_key = _pair_key(actor_a, actor_b)
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -4026,6 +4196,10 @@ def _get_dm_conversation_by_uuid(dm_uuid: str) -> dict[str, Any] | None:
 
 
 def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
+    actor_key = _canonical_dm_actor_key(actor_key)
+    aliases = _dm_actor_key_aliases(actor_key)
+    if not aliases:
+        return False
     conv = _get_dm_conversation_by_uuid(conversation_uuid)
     if not conv:
         return False
@@ -4034,13 +4208,14 @@ def can_access_dm(conversation_uuid: str, actor_key: str) -> bool:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        placeholders = ",".join(["%s"] * len(aliases))
         cur.execute(
-            """
+            f"""
             SELECT 1 FROM chat_dm_participants
-            WHERE conversation_id=%s AND actor_key=%s
+            WHERE conversation_id=%s AND actor_key IN ({placeholders})
             LIMIT 1
             """,
-            (conv["id"], actor_key),
+            (conv["id"], *aliases),
         )
         return bool(cur.fetchone())
     finally:
@@ -4381,16 +4556,30 @@ def _load_dm_read_state_snapshot(conversation_id: int) -> list[dict[str, Any]]:
         cur.close()
         db.close()
 
-    snapshot: list[dict[str, Any]] = []
+    merged_by_actor_key: dict[str, dict[str, Any]] = {}
     for row in rows:
-        actor_key = str(row.get("actor_key") or "")
+        actor_key = _canonical_dm_actor_key(str(row.get("actor_key") or ""))
+        if not actor_key:
+            continue
+        next_read_id = int(row.get("last_read_message_id") or 0)
+        prev = merged_by_actor_key.get(actor_key)
+        if not prev:
+            merged_by_actor_key[actor_key] = {
+                "actor_key": actor_key,
+                "last_read_message_id": next_read_id,
+            }
+            continue
+        prev["last_read_message_id"] = max(int(prev.get("last_read_message_id") or 0), next_read_id)
+
+    snapshot: list[dict[str, Any]] = []
+    for actor_key, entry in merged_by_actor_key.items():
         actor_type, actor_id = _split_actor_key(actor_key)
         snapshot.append(
             {
                 "actor_type": actor_type,
                 "actor_id": actor_id,
                 "display_name": _actor_key_to_display_name(actor_key),
-                "last_read_message_id": int(row.get("last_read_message_id") or 0),
+                "last_read_message_id": int(entry.get("last_read_message_id") or 0),
             }
         )
     return snapshot
@@ -4455,6 +4644,7 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
 
 
 def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
+    actor_key = _canonical_dm_actor_key(actor_key)
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
@@ -4485,7 +4675,7 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
 
     rows_by_peer: dict[str, dict[str, Any]] = {}
     for row in rows:
-        peer_actor_key = str(row.get("peer_actor_key") or "")
+        peer_actor_key = _canonical_dm_actor_key(str(row.get("peer_actor_key") or ""))
         if not peer_actor_key:
             continue
         row["peer_actor_key"] = peer_actor_key
@@ -4556,7 +4746,7 @@ def index():
 @chat_bp.route("/dm")
 def dm_entry():
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key:
         abort(403)
     if actor_key == "admin:1":
@@ -4569,7 +4759,7 @@ def dm_entry():
 @chat_bp.route("/dm/inbox")
 def dm_inbox():
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key or actor.get("actor_type") != "admin":
         abort(403)
     if not _ensure_chat_dm_schema():
@@ -4583,7 +4773,7 @@ def dm_inbox():
 @chat_bp.get("/dm/open/line/<int:line_user_id>")
 def dm_open_line(line_user_id: int):
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key or actor.get("actor_type") != "admin":
         abort(403)
     if line_user_id <= 0:
@@ -4595,7 +4785,7 @@ def dm_open_line(line_user_id: int):
 @chat_bp.get("/dm/room/<uuid>")
 def dm_room(uuid: str):
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key:
         abort(403)
     if not can_access_dm(uuid, actor_key):
@@ -4622,7 +4812,7 @@ def dm_room(uuid: str):
     return render_template(
         "chat/room.html",
         actor=actor,
-        current_user_id=get_chat_actor_key(actor),
+        current_user_id=_get_dm_actor_key(actor),
         event={"id": 0, "title": "DM"},
         messages=messages,
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
@@ -4643,7 +4833,7 @@ def dm_room(uuid: str):
 @chat_bp.post("/dm/api/send")
 def dm_api_send():
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key:
         return jsonify({"ok": False, "error": "forbidden"}), 403
     payload = request.get_json(silent=True) or {}
@@ -4670,7 +4860,7 @@ def dm_api_send():
 @chat_bp.get("/dm/images/<uuid:dm_uuid>/<path:name>")
 def chat_dm_image(dm_uuid: str, name: str):
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     dm_uuid_str = str(dm_uuid)
     if not actor or not actor_key:
         abort(403)
@@ -4684,7 +4874,7 @@ def chat_dm_image(dm_uuid: str, name: str):
 @chat_bp.post("/dm/api/upload-image")
 def dm_upload_image():
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key:
         return jsonify({"ok": False, "error": "forbidden"}), 403
     if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_message_images_schema():
@@ -4959,7 +5149,7 @@ def dm_edit_message(message_id: int):
 @chat_bp.post("/dm/api/seen")
 def dm_api_seen():
     actor = get_chat_actor()
-    actor_key = get_chat_actor_key(actor)
+    actor_key = _get_dm_actor_key(actor)
     if not actor or not actor_key:
         return jsonify({"ok": False, "error": "forbidden"}), 403
     payload = request.get_json(silent=True) or {}
@@ -4977,8 +5167,12 @@ def dm_api_seen():
     if not conversation:
         return jsonify({"ok": False, "error": "not_found"}), 404
 
+    aliases = _dm_actor_key_aliases(actor_key or "")
+    if not aliases:
+        return jsonify({"ok": False, "error": "participant_not_found"}), 409
+
     db = get_db()
-    cur = db.cursor()
+    cur = db.cursor(dictionary=True)
     try:
         cur.execute(
             """
@@ -4988,11 +5182,24 @@ def dm_api_seen():
             """,
             (last_seen_message_id, conversation["id"], actor_key),
         )
+        placeholders = ",".join(["%s"] * len(aliases))
+        cur.execute(
+            f"""
+            SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
+            FROM chat_dm_participants
+            WHERE conversation_id=%s AND actor_key IN ({placeholders})
+            """,
+            (conversation["id"], *aliases),
+        )
+        row = cur.fetchone() or {}
         db.commit()
     finally:
         cur.close()
         db.close()
-    return jsonify({"ok": True, "last_read_message_id": last_seen_message_id})
+    actual_last_read_id = int(row.get("last_read_message_id") or 0)
+    if actual_last_read_id <= 0:
+        return jsonify({"ok": False, "error": "participant_not_found"}), 409
+    return jsonify({"ok": True, "last_read_message_id": actual_last_read_id})
 
 
 @chat_bp.get("/dm/settings")
@@ -6706,7 +6913,7 @@ def on_join(data):
     room_id = str((data or {}).get("room_id") or "").strip() or None
 
     if dm_uuid:
-        actor_key = get_chat_actor_key(actor)
+        actor_key = _get_dm_actor_key(actor)
         if not actor or not actor_key:
             emit("chat_error", {"error": "forbidden"})
             return
@@ -6755,7 +6962,7 @@ def on_seen(data):
     last_seen_message_id = int((data or {}).get("last_seen_message_id") or 0)
 
     if dm_uuid:
-        actor_key = get_chat_actor_key(actor)
+        actor_key = _get_dm_actor_key(actor)
         if not actor_key or last_seen_message_id <= 0:
             return
         if not can_access_dm(dm_uuid, actor_key):
@@ -6766,7 +6973,7 @@ def on_seen(data):
             emit("chat_error", {"error": "not_found"})
             return
         db = get_db()
-        cur = db.cursor()
+        cur = db.cursor(dictionary=True)
         try:
             cur.execute(
                 """
@@ -6776,10 +6983,28 @@ def on_seen(data):
                 """,
                 (last_seen_message_id, conversation["id"], actor_key),
             )
+            aliases = _dm_actor_key_aliases(actor_key)
+            if not aliases:
+                emit("chat_error", {"error": "participant_not_found"})
+                return
+            placeholders = ",".join(["%s"] * len(aliases))
+            cur.execute(
+                f"""
+                SELECT MAX(COALESCE(last_read_message_id, 0)) AS last_read_message_id
+                FROM chat_dm_participants
+                WHERE conversation_id=%s AND actor_key IN ({placeholders})
+                """,
+                (conversation["id"], *aliases),
+            )
+            row = cur.fetchone() or {}
             db.commit()
         finally:
             cur.close()
             db.close()
+        actual_last_read_id = int(row.get("last_read_message_id") or 0)
+        if actual_last_read_id <= 0:
+            emit("chat_error", {"error": "participant_not_found"})
+            return
         actor_type, actor_id = _split_actor_key(actor_key)
         emit(
             "chat_read_update",
@@ -6789,7 +7014,7 @@ def on_seen(data):
                 "actor_type": actor_type,
                 "actor_id": actor_id,
                 "display_name": _actor_key_to_display_name(actor_key),
-                "last_read_message_id": last_seen_message_id,
+                "last_read_message_id": actual_last_read_id,
             },
             to=f"dm:{dm_uuid}",
         )
