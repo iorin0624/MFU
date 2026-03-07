@@ -1706,6 +1706,17 @@ def _normalize_event_actor_pair(actor_type: str, actor_id: str) -> tuple[str, st
     return normalized_type, normalized_id
 
 
+def _canonical_event_actor(actor_type: str, actor_id: str, display_name: str = "") -> dict[str, str]:
+    canonical_type, canonical_id = _normalize_event_actor_pair(actor_type, actor_id)
+    canonical_key = _actor_sender_id(canonical_type, canonical_id) if canonical_type and canonical_id else ""
+    return {
+        "actor_type": canonical_type,
+        "actor_id": canonical_id,
+        "actor_key": canonical_key,
+        "display_name": str(display_name or canonical_id),
+    }
+
+
 def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[str, Any]]:
     if not _ensure_chat_read_state_room_schema():
         return []
@@ -1729,26 +1740,27 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
 
     participant_by_normalized_key: dict[str, dict[str, str]] = {}
     for participant in participants.values():
-        participant_actor_type, participant_actor_id = _normalize_event_actor_pair(
+        canonical_participant = _canonical_event_actor(
             str(participant.get("actor_type") or ""),
             str(participant.get("actor_id") or ""),
+            str(participant.get("display_name") or ""),
         )
-        normalized_key = f"{participant_actor_type}:{participant_actor_id}"
-        if not participant_actor_type or not participant_actor_id:
+        normalized_key = canonical_participant["actor_key"]
+        if not normalized_key:
             continue
         participant_by_normalized_key[normalized_key] = {
-            "actor_type": participant_actor_type,
-            "actor_id": participant_actor_id,
-            "display_name": str(participant.get("display_name") or normalized_key),
+            "actor_type": canonical_participant["actor_type"],
+            "actor_id": canonical_participant["actor_id"],
+            "display_name": canonical_participant["display_name"],
         }
 
     snapshot_by_actor: dict[str, dict[str, Any]] = {}
     for row in rows:
-        actor_type, actor_id = _normalize_event_actor_pair(
+        canonical_actor = _canonical_event_actor(
             str(row.get("actor_type") or ""),
             str(row.get("actor_id") or ""),
         )
-        key = f"{actor_type}:{actor_id}"
+        key = canonical_actor["actor_key"]
         participant = participant_by_normalized_key.get(key)
         if not participant:
             continue
@@ -1758,8 +1770,8 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
         prev = snapshot_by_actor.get(key)
         if not prev:
             snapshot_by_actor[key] = {
-                "actor_type": actor_type,
-                "actor_id": actor_id,
+                "actor_type": canonical_actor["actor_type"],
+                "actor_id": canonical_actor["actor_id"],
                 "display_name": participant["display_name"],
                 "last_read_message_id": next_read_id,
                 "updated_at": updated_at,
@@ -1786,9 +1798,17 @@ def _load_event_read_state_snapshot(event_id: int, room_id: str) -> list[dict[st
     return snapshot
 
 
-def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> int:
+def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], last_seen_message_id: int) -> tuple[int, dict[str, str]]:
     if not _ensure_chat_read_state_room_schema():
-        return 0
+        return 0, _canonical_event_actor("", "")
+
+    canonical_actor = _canonical_event_actor(
+        str(actor.get("actor_type") or ""),
+        str(actor.get("actor_id") or ""),
+        str(actor.get("display_name") or ""),
+    )
+    if not canonical_actor["actor_type"] or not canonical_actor["actor_id"]:
+        return 0, canonical_actor
 
     now = datetime.utcnow()
     db = get_db()
@@ -1802,7 +1822,14 @@ def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], 
               last_read_message_id = GREATEST(IFNULL(last_read_message_id, 0), VALUES(last_read_message_id)),
               updated_at = VALUES(updated_at)
             """,
-            (event_id, room_id, actor["actor_type"], actor["actor_id"], last_seen_message_id, now),
+            (
+                event_id,
+                room_id,
+                canonical_actor["actor_type"],
+                canonical_actor["actor_id"],
+                last_seen_message_id,
+                now,
+            ),
         )
         cur.execute(
             """
@@ -1811,11 +1838,11 @@ def _upsert_chat_read_state(event_id: int, room_id: str, actor: dict[str, Any], 
              WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
              LIMIT 1
             """,
-            (event_id, room_id, actor["actor_type"], actor["actor_id"]),
+            (event_id, room_id, canonical_actor["actor_type"], canonical_actor["actor_id"]),
         )
         row = cur.fetchone() or {}
         db.commit()
-        return int(row.get("last_read_message_id") or 0)
+        return int(row.get("last_read_message_id") or 0), canonical_actor
     finally:
         cur.close()
         db.close()
@@ -6752,14 +6779,14 @@ def on_seen(data):
         disconnect()
         return
 
-    effective_last_read_id = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
+    effective_last_read_id, canonical_actor = _upsert_chat_read_state(event_id, effective_room_id, actor, last_seen_message_id)
     _audit_log("chat_seen", actor=_actor_log_id(actor), event_id=event_id, room_id=effective_room_id, message_id=effective_last_read_id, result="ok")
     emit(
         "chat_read_update",
         {
-            "actor_type": actor["actor_type"],
-            "actor_id": actor["actor_id"],
-            "display_name": actor["display_name"],
+            "actor_type": canonical_actor["actor_type"],
+            "actor_id": canonical_actor["actor_id"],
+            "display_name": canonical_actor["display_name"],
             "last_read_message_id": effective_last_read_id,
             "room_id": effective_room_id,
         },

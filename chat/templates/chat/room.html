@@ -4013,33 +4013,52 @@ function openFulltextModal(row) {
     }
   }
 
-  function normalizeActorKeyForCompare(actorType, actorId) {
+  function canonicalEventActorKey(actorType, actorId) {
     const t = String(actorType || '');
     const i = String(actorId || '');
-    if (t === 'admin') return 'admin';
+    if (!t || !i) return '';
+    if (t === 'admin') return 'admin:admin';
     return `${t}:${i}`;
   }
 
+  function normalizeActorKeyForCompare(actorType, actorId) {
+    const canonicalKey = canonicalEventActorKey(actorType, actorId);
+    if (!canonicalKey) return '';
+    if (canonicalKey === 'admin:admin') return 'admin';
+    return canonicalKey;
+  }
+
   function isSameActorByKey(actorType, actorId, targetKey) {
-    const normTarget = String(targetKey || '');
+    const normTarget = normalizeActorKeyForCompare(...splitActorKey(targetKey));
     if (!normTarget) return false;
     const normActor = normalizeActorKeyForCompare(actorType, actorId);
     if (normActor === normTarget) return true;
-    if (normActor === 'admin' && (normTarget === 'admin:1' || normTarget === 'admin:admin' || normTarget === 'admin')) return true;
     return false;
+  }
+
+  function splitActorKey(actorKey) {
+    const key = String(actorKey || '');
+    const sepIndex = key.indexOf(':');
+    if (sepIndex < 0) {
+      if (key === 'admin') return ['admin', 'admin'];
+      return ['', ''];
+    }
+    return [key.slice(0, sepIndex), key.slice(sepIndex + 1)];
   }
 
   function applyReadUpdate(readState) {
     if (!readState?.actor_type || !readState?.actor_id) return;
-    const key = `${readState.actor_type}:${readState.actor_id}`;
+    const key = canonicalEventActorKey(readState.actor_type, readState.actor_id);
+    if (!key) return;
+    const [canonicalActorType, canonicalActorId] = splitActorKey(key);
     const prev = state.readStateByActor.get(key);
     const nextReadId = Number(readState.last_read_message_id || 0);
     const prevReadId = Number(prev?.last_read_message_id || 0);
     if (prev && prevReadId > nextReadId) return;
     state.readStateByActor.set(key, {
-      actor_type: readState.actor_type,
-      actor_id: String(readState.actor_id),
-      display_name: readState.display_name || prev?.display_name || readState.actor_id,
+      actor_type: canonicalActorType,
+      actor_id: String(canonicalActorId),
+      display_name: readState.display_name || prev?.display_name || canonicalActorId,
       last_read_message_id: Math.max(prevReadId, nextReadId),
     });
   }
