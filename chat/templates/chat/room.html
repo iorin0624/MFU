@@ -2632,9 +2632,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   function isMyMessage(msg) {
+    const senderRawKey = String(msg.sender_id || '');
     const senderKey = dmMode
-      ? String(msg.sender_id || '')
-      : (canonicalEventActorKey(...splitActorKey(msg.sender_id || '')) || String(msg.sender_id || ''));
+      ? senderRawKey
+      : (canonicalEventActorKey(...splitActorKey(senderRawKey)) || senderRawKey);
     const selfKey = dmMode ? meId : canonicalMeId;
     return (senderKey && selfKey && String(senderKey) === String(selfKey))
       || (!msg.sender_id && msg.sender_display_name && myDisplayName && msg.sender_display_name === myDisplayName);
