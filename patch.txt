@@ -1,170 +1,47 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index dd93beedbf7eb5fecd78e73eb9d30e5e7899ca24..49b48019e28f871042770634fb49294aca54270f 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -91,50 +91,52 @@ CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DELETE_SCHEMA_READY: bool | None = None
- CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOMS_SCHEMA_READY: bool | None = None
- CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
- CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
- CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_EDIT_SCHEMA_READY: bool | None = None
- CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_SEARCH_SCHEMA_READY: bool | None = None
- CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_THREAD_SCHEMA_READY: bool | None = None
- CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_SCHEMA_READY: bool | None = None
- CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
- CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
-+MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK = threading.Lock()
-+MFU_EVENT_DELETED_AT_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
- CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
- CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
- CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
- CHAT_UPLOAD_MAX_FILES = 6
- PUSH_REQUEST_TIMEOUT_SECONDS = 6
- PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
- PUSH_LOG_SUPPRESSION_SECONDS = 300
- CHAT_ACTIVE_VIEW_TTL_SECONDS = 60
- CHAT_ACTIVE_VIEW_HEARTBEAT_INTERVAL_SECONDS = 20
- PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
- PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
- PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
- PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
- PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
- PUSH_ASYNC_INFLIGHT = 0
- _LINKIFY_RE = re.compile(
-     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
- )
- _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
- CHAT_TYPING_STATE_LOCK = threading.Lock()
- CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
- CHAT_TYPING_TTL_SECONDS = 3
- SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
- SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
-@@ -3363,78 +3365,107 @@ def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
-                  LIMIT 1
-                 """,
-                 (event_id, actor["actor_id"]),
-             )
-             return bool(cur.fetchone())
+diff --git a/chat/templates/chat/index.html b/chat/templates/chat/index.html
+index e4aebcbbc4e2de416c7c38898e37796b24c04681..065b64ad65e29141df7cd27010565d06806d3ae7 100644
+--- a/chat/templates/chat/index.html
++++ b/chat/templates/chat/index.html
+@@ -160,40 +160,40 @@
+     if (!pushState.supported) {
+       alert('この端末はPush通知に非対応です');
+       return;
+     }
+     if (pushState.subscription) {
+       await disablePush(pushState.registration, pushState.subscription);
+       return;
+     }
+     await enablePush(pushState.registration);
+   });
+ })();
+ </script>
+ {% endif %}
  
-         # acl: mfu_event_admin_acl + users(admin系)
-         cur.execute(
-             """
-             SELECT 1
-               FROM mfu_event_admin_acl
-              WHERE event_id=%s AND username=%s
-              LIMIT 1
-             """,
-             (event_id, actor["actor_id"]),
-         )
-         return bool(cur.fetchone())
-     except Exception:
-         current_app.logger.warning("chat access check failed event=%s actor=%s", event_id, actor, exc_info=True)
-         return False
-     finally:
-         cur.close()
-         db.close()
+ <script>
+ (() => {
+   const titleBase = 'チャットルーム';
  
+   function applyChatIndexTitle(unreadCount) {
+     const count = Number.isFinite(Number(unreadCount)) ? Math.max(0, Number(unreadCount)) : 0;
+     document.title = `${titleBase}（${count}）`;
+   }
  
-+def _mfu_event_has_deleted_at_column() -> bool:
-+    global MFU_EVENT_DELETED_AT_SCHEMA_READY
-+    if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
-+        return MFU_EVENT_DELETED_AT_SCHEMA_READY
-+
-+    with MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK:
-+        if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
-+            return MFU_EVENT_DELETED_AT_SCHEMA_READY
-+
-+        db = get_db()
-+        cur = db.cursor()
-+        try:
-+            cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_at'")
-+            MFU_EVENT_DELETED_AT_SCHEMA_READY = bool(cur.fetchone())
-+            return MFU_EVENT_DELETED_AT_SCHEMA_READY
-+        except Exception:
-+            current_app.logger.warning("mfu_event deleted_at schema check failed", exc_info=True)
-+            MFU_EVENT_DELETED_AT_SCHEMA_READY = False
-+            return False
-+        finally:
-+            cur.close()
-+            db.close()
-+
-+
- def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-+        has_deleted_at = _mfu_event_has_deleted_at_column()
-+        where_deleted = " WHERE deleted_at IS NULL" if has_deleted_at else ""
-+        where_deleted_clause = "AND e.deleted_at IS NULL" if has_deleted_at else ""
-         if actor["actor_type"] == "admin":
--            cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event ORDER BY starts_at DESC LIMIT 100")
-+            cur.execute(f"SELECT id, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
-             return cur.fetchall() or []
-         if actor["actor_type"] == "line":
-             cur.execute(
--                """
-+                f"""
-                 SELECT e.id, e.title, e.starts_at AS start_at
-                   FROM mfu_event e
-                   JOIN mfu_event_member m ON m.event_id = e.id
-                  WHERE m.user_id = %s
--                 ORDER BY e.starts_at DESC
-+                   {where_deleted_clause}
-+                 ORDER BY e.starts_at IS NULL, e.starts_at ASC
-                  LIMIT 100
-                 """,
-                 (actor["actor_id"],),
-             )
-             return cur.fetchall() or []
+   async function refreshChatIndexTitle() {
+     try {
+-      const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
++      const res = await fetch('/chat/api/index/unread-summary', { credentials: 'same-origin', cache: 'no-store' });
+       if (!res.ok) return;
+       const data = await res.json().catch(() => ({}));
+-      applyChatIndexTitle(data.count || 0);
++      applyChatIndexTitle(data.total_unread || 0);
+     } catch (_e) {
+       // noop
+     }
+   }
  
-         cur.execute(
--            """
-+            f"""
-             SELECT e.id, e.title, e.starts_at AS start_at
-               FROM mfu_event e
-               JOIN mfu_event_admin_acl a ON a.event_id = e.id
-              WHERE a.username = %s
--             ORDER BY e.starts_at DESC
-+               {where_deleted_clause}
-+             ORDER BY e.starts_at IS NULL, e.starts_at ASC
-              LIMIT 100
-             """,
-             (actor["actor_id"],),
-         )
-         return cur.fetchall() or []
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _get_event(event_id: int) -> dict[str, Any] | None:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-         return cur.fetchone()
-     finally:
-         cur.close()
-         db.close()
- 
- 
- 
- 
- def _normalize_legacy_image_thread_replies(event_id: int, room_id: str) -> None:
-     """旧実装で誤って thread_root_id が立った画像リプライを通常返信へ補正する。"""
+   applyChatIndexTitle(0);
+   refreshChatIndexTitle();
+   setInterval(refreshChatIndexTitle, 15000);
+ })();
+ </script>
+ {% endblock %}

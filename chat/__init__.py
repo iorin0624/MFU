@@ -115,6 +115,8 @@ CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
 MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK = threading.Lock()
 MFU_EVENT_DELETED_AT_SCHEMA_READY: bool | None = None
+MFU_EVENT_DELETED_FLAG_SCHEMA_CHECK_LOCK = threading.Lock()
+MFU_EVENT_DELETED_FLAG_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -1126,6 +1128,35 @@ def _read_actor_key_aliases(actor_key: str) -> list[str]:
         if alias and alias not in deduped:
             deduped.append(alias)
     return deduped
+
+
+def _load_read_state_v2_last_read_id(room_key: str, actor_key: str) -> int:
+    normalized_room_key = str(room_key or "").strip()
+    aliases = _read_actor_key_aliases(actor_key)
+    if not normalized_room_key or not aliases or not _ensure_chat_read_state_v2_schema():
+        return 0
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        placeholders = ",".join(["%s"] * len(aliases))
+        cur.execute(
+            f"""
+            SELECT MAX(IFNULL(last_read_message_id, 0))
+              FROM chat_read_state_v2
+             WHERE room_key=%s
+               AND actor_key IN ({placeholders})
+            """,
+            (normalized_room_key, *aliases),
+        )
+        row = cur.fetchone()
+        if not row:
+            return 0
+        value = row[0] if isinstance(row, (tuple, list)) else 0
+        return int(value or 0)
+    finally:
+        cur.close()
+        db.close()
 
 
 def _build_read_room_key(event_id: int | None = None, room_id: str | None = None, dm_uuid: str | None = None) -> str:
@@ -3412,17 +3443,52 @@ def _mfu_event_has_deleted_at_column() -> bool:
             db.close()
 
 
+def _mfu_event_has_deleted_flag_column() -> bool:
+    global MFU_EVENT_DELETED_FLAG_SCHEMA_READY
+    if MFU_EVENT_DELETED_FLAG_SCHEMA_READY is not None:
+        return MFU_EVENT_DELETED_FLAG_SCHEMA_READY
+
+    with MFU_EVENT_DELETED_FLAG_SCHEMA_CHECK_LOCK:
+        if MFU_EVENT_DELETED_FLAG_SCHEMA_READY is not None:
+            return MFU_EVENT_DELETED_FLAG_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_flag'")
+            MFU_EVENT_DELETED_FLAG_SCHEMA_READY = bool(cur.fetchone())
+            return MFU_EVENT_DELETED_FLAG_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("mfu_event deleted_flag schema check failed", exc_info=True)
+            MFU_EVENT_DELETED_FLAG_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
 def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         has_deleted_at = _mfu_event_has_deleted_at_column()
-        where_deleted = " WHERE deleted_at IS NULL" if has_deleted_at else ""
-        where_deleted_clause = "AND e.deleted_at IS NULL" if has_deleted_at else ""
+        has_deleted_flag = _mfu_event_has_deleted_flag_column()
+
+        deleted_filters_plain: list[str] = []
+        deleted_filters_alias: list[str] = []
+        if has_deleted_at:
+            deleted_filters_plain.append("deleted_at IS NULL")
+            deleted_filters_alias.append("e.deleted_at IS NULL")
+        if has_deleted_flag:
+            deleted_filters_plain.append("COALESCE(deleted_flag, 0) = 0")
+            deleted_filters_alias.append("COALESCE(e.deleted_flag, 0) = 0")
+
+        where_deleted = f" WHERE {' AND '.join(deleted_filters_plain)}" if deleted_filters_plain else ""
+        where_deleted_clause = f"AND {' AND '.join(deleted_filters_alias)}" if deleted_filters_alias else ""
         if actor["actor_type"] == "admin":
             cur.execute(f"SELECT id, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
-            return cur.fetchall() or []
-        if actor["actor_type"] == "line":
+            events = cur.fetchall() or []
+        elif actor["actor_type"] == "line":
             cur.execute(
                 f"""
                 SELECT e.id, e.title, e.starts_at AS start_at
@@ -3435,24 +3501,77 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
                 """,
                 (actor["actor_id"],),
             )
-            return cur.fetchall() or []
-
-        cur.execute(
-            f"""
-            SELECT e.id, e.title, e.starts_at AS start_at
-              FROM mfu_event e
-              JOIN mfu_event_admin_acl a ON a.event_id = e.id
-             WHERE a.username = %s
-               {where_deleted_clause}
-             ORDER BY e.starts_at IS NULL, e.starts_at ASC
-             LIMIT 100
-            """,
-            (actor["actor_id"],),
-        )
-        return cur.fetchall() or []
+            events = cur.fetchall() or []
+        else:
+            cur.execute(
+                f"""
+                SELECT e.id, e.title, e.starts_at AS start_at
+                  FROM mfu_event e
+                  JOIN mfu_event_admin_acl a ON a.event_id = e.id
+                 WHERE a.username = %s
+                   {where_deleted_clause}
+                 ORDER BY e.starts_at IS NULL, e.starts_at ASC
+                 LIMIT 100
+                """,
+                (actor["actor_id"],),
+            )
+            events = cur.fetchall() or []
     finally:
         cur.close()
         db.close()
+
+    return _attach_event_unread_counts(events, actor)
+
+
+def _attach_event_unread_counts(events: list[dict[str, Any]], actor: dict[str, Any]) -> list[dict[str, Any]]:
+    if not events:
+        return events
+    if not _ensure_chat_rooms_schema() or not _ensure_chat_messages_room_schema() or not _ensure_chat_read_state_room_schema():
+        for ev in events:
+            ev["unread_count"] = 0
+        return events
+
+    actor_type = str(actor.get("actor_type") or "").strip()
+    actor_id = str(actor.get("actor_id") or "").strip()
+    if not actor_type or not actor_id:
+        for ev in events:
+            ev["unread_count"] = 0
+        return events
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        for ev in events:
+            event_id = int(ev.get("id") or 0)
+            if event_id <= 0:
+                ev["unread_count"] = 0
+                continue
+
+            unread_total = 0
+            rooms = _list_accessible_rooms(event_id, actor)
+            room_ids = [str(r.get("room_id") or "").strip() for r in rooms if str(r.get("room_id") or "").strip()]
+            for room_id in room_ids:
+                room_key = _build_read_room_key(event_id=event_id, room_id=room_id)
+                last_read_id = _load_read_state_v2_last_read_id(room_key, f"{actor_type}:{actor_id}")
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS unread_count
+                      FROM chat_messages
+                     WHERE event_id=%s
+                       AND room_id=%s
+                       AND COALESCE(deleted_flag, 0)=0
+                       AND thread_root_id IS NULL
+                       AND id > %s
+                    """,
+                    (event_id, room_id, last_read_id),
+                )
+                unread_total += int((cur.fetchone() or {}).get("unread_count") or 0)
+            ev["unread_count"] = unread_total
+    finally:
+        cur.close()
+        db.close()
+
+    return events
 
 
 def _get_event(event_id: int) -> dict[str, Any] | None:
@@ -5360,6 +5479,53 @@ def _send_dm_push(conversation_id: int, dm_uuid: str, sender_actor_key: str, sen
     _log_notification(0, "dm", {"dm_uuid": dm_uuid, "link": f"/chat/dm/room/{dm_uuid}"}, sent_count)
 
 
+def _count_dm_unread_for_actor(actor: dict[str, Any]) -> int:
+    dm_actor_key = _get_dm_actor_key(actor)
+    read_actor_key = _canonical_read_actor_key(dm_actor_key)
+    aliases = _read_actor_key_aliases(read_actor_key)
+    if not dm_actor_key or not aliases or not _ensure_chat_dm_schema() or not _ensure_chat_read_state_v2_schema():
+        return 0
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        placeholders = ",".join(["%s"] * len(aliases))
+        cur.execute(
+            f"""
+            SELECT DISTINCT c.id, c.uuid
+              FROM chat_dm_conversations c
+              JOIN chat_dm_participants p ON p.conversation_id = c.id
+             WHERE p.actor_key IN ({placeholders})
+            """,
+            tuple(aliases),
+        )
+        rows = cur.fetchall() or []
+
+        unread_total = 0
+        for row in rows:
+            dm_uuid = str(row.get("uuid") or "").strip()
+            conversation_id = int(row.get("id") or 0)
+            if conversation_id <= 0 or not dm_uuid:
+                continue
+            room_key = _build_read_room_key(dm_uuid=dm_uuid)
+            last_read_id = _load_read_state_v2_last_read_id(room_key, read_actor_key)
+            cur.execute(
+                """
+                SELECT COUNT(*) AS unread_count
+                  FROM chat_dm_messages
+                 WHERE conversation_id=%s
+                   AND COALESCE(deleted_flag, 0)=0
+                   AND id > %s
+                """,
+                (conversation_id, last_read_id),
+            )
+            unread_total += int((cur.fetchone() or {}).get("unread_count") or 0)
+        return unread_total
+    finally:
+        cur.close()
+        db.close()
+
+
 def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
     actor_key = _canonical_dm_actor_key(actor_key)
     db = get_db()
@@ -5370,15 +5536,12 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
             SELECT c.id, c.uuid, c.dm_type, c.last_message_at,
                    p.last_read_message_id,
                    (SELECT body_text FROM chat_dm_messages m WHERE m.id = c.last_message_id LIMIT 1) AS last_message,
-                   (SELECT COUNT(*) FROM chat_dm_messages m
-                     WHERE m.conversation_id=c.id
-                       AND (p.last_read_message_id IS NULL OR m.id > p.last_read_message_id)) AS unread_count,
                    (SELECT actor_key FROM chat_dm_participants pp
                      WHERE pp.conversation_id=c.id AND pp.actor_key<>%s
                      LIMIT 1) AS peer_actor_key
             FROM chat_dm_conversations c
             JOIN chat_dm_participants p ON p.conversation_id=c.id AND p.actor_key=%s
-            ORDER BY (unread_count > 0) DESC, unread_count DESC, c.last_message_at DESC
+            ORDER BY c.last_message_at DESC
             """,
             (actor_key, actor_key),
         )
@@ -5389,6 +5552,29 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
     finally:
         cur.close()
         db.close()
+
+    for row in rows:
+        dm_uuid = str(row.get("uuid") or "").strip()
+        room_key = _build_read_room_key(dm_uuid=dm_uuid)
+        last_read_v2 = _load_read_state_v2_last_read_id(room_key, actor_key) if room_key else 0
+
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS unread_count
+                  FROM chat_dm_messages
+                 WHERE conversation_id=%s
+                   AND COALESCE(deleted_flag, 0)=0
+                   AND id > %s
+                """,
+                (int(row.get("id") or 0), int(last_read_v2 or 0)),
+            )
+            row["unread_count"] = int((cur.fetchone() or {}).get("unread_count") or 0)
+        finally:
+            cur.close()
+            db.close()
 
     rows_by_peer: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -5570,6 +5756,24 @@ def index():
         dm_user_user_enabled=_chat_dm_enable_user_user(),
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
     )
+
+
+@chat_bp.get("/api/index/unread-summary")
+def api_index_unread_summary():
+    actor = get_chat_actor()
+    if not actor:
+        return jsonify({"ok": False}), 403
+
+    events = _accessible_events(actor)
+    event_unread_total = sum(int(ev.get("unread_count") or 0) for ev in events)
+    dm_unread_total = _count_dm_unread_for_actor(actor)
+    total = int(event_unread_total) + int(dm_unread_total)
+    return jsonify({
+        "ok": True,
+        "event_unread_total": int(event_unread_total),
+        "dm_unread_total": int(dm_unread_total),
+        "total_unread": total,
+    })
 
 
 @chat_bp.route("/dm")
@@ -7322,16 +7526,9 @@ def api_room_unread(event_id: int):
     results: list[dict[str, Any]] = []
     try:
         for rid in room_ids:
-            cur.execute(
-                """
-                SELECT COALESCE(last_read_message_id, 0) AS last_read_message_id
-                  FROM chat_read_state
-                 WHERE event_id=%s AND room_id=%s AND actor_type=%s AND actor_id=%s
-                 LIMIT 1
-                """,
-                (event_id, rid, actor.get("actor_type"), str(actor.get("actor_id") or "")),
-            )
-            last_read_id = int((cur.fetchone() or {}).get("last_read_message_id") or 0)
+            actor_key = _canonical_read_actor_key_from_actor(actor)
+            room_key = _build_read_room_key(event_id=event_id, room_id=rid)
+            last_read_id = _load_read_state_v2_last_read_id(room_key, actor_key)
             cur.execute(
                 """
                 SELECT COUNT(*) AS unread_count, MIN(id) AS first_unread_id
