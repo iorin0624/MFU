@@ -88,6 +88,21 @@ def _normalize_external_url(raw: str | None) -> str | None:
     return f"https://{url}"
 
 
+
+
+def _mfu_event_has_deleted_at_column() -> bool:
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_at'")
+        row = cur.fetchone()
+        return bool(row)
+    except Exception:
+        return False
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
 def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24, redirect_url: str | None = None) -> str:
     """
     検証用トークンを発行して DB に保存し、URL に載せるプレーントークンを返す。
@@ -787,7 +802,9 @@ def index():
     events_upcoming, events_past = [], []
     if me:
         db = get_db(); cur = db.cursor(dictionary=True)
-        cur.execute("""
+        has_deleted_at = _mfu_event_has_deleted_at_column()
+        where_deleted = "WHERE e.deleted_at IS NULL" if has_deleted_at else ""
+        cur.execute(f"""
           SELECT
             e.id, e.event_uuid, e.title,
             e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
@@ -807,6 +824,7 @@ def index():
                GROUP BY event_id
           ) mm ON mm.event_id = e.id
           JOIN mfu_event_member m ON m.id = mm.id
+          {where_deleted}
           ORDER BY e.starts_at IS NULL, e.starts_at
           LIMIT 200
         """, (me["id"],))

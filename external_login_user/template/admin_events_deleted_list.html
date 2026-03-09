@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}外部ログイン 管理 - 削除済みイベント一覧{% endblock %}
+
+{% block content %}
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg|safe }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">削除済みイベント一覧（論理削除）</h1>
+  <a class="btn btn-sm btn-outline-secondary"
+     href="{{ url_for('external_login_user.admin_events_list') }}">
+    イベント一覧へ戻る
+  </a>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    {% if events|length == 0 %}
+      <div class="text-muted">削除済みイベントはありません。</div>
+    {% else %}
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>開始日</th>
+            <th>タイトル</th>
+            <th>イベントUUID</th>
+            <th>削除日時</th>
+            <th>削除者</th>
+            <th>詳細</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in events %}
+          <tr>
+            <td>{{ e.id }}</td>
+            <td>{{ e.starts_at or '—' }}</td>
+            <td class="fw-bold">{{ e.title }}</td>
+            <td><code>{{ e.event_uuid_str or '—' }}</code></td>
+            <td>{{ e.deleted_at or '—' }}</td>
+            <td>{{ e.deleted_by or '—' }}</td>
+            <td>
+              <a class="btn btn-sm btn-outline-primary"
+                 href="{{ url_for('external_login_user.admin_event_view', event_id=e.id) }}">
+                詳細
+              </a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

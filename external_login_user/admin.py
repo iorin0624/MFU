@@ -197,6 +197,33 @@ def _ensure_member_memo_columns():
         try: cur.close(); db.close()
         except Exception: pass
 
+
+def _ensure_event_soft_delete_columns():
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("SHOW COLUMNS FROM mfu_event")
+        cols = {(r[0] if isinstance(r, tuple) else r.get("Field")) for r in (cur.fetchall() or [])}
+
+        def _add(sql):
+            try:
+                cur.execute(sql)
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+
+        if "deleted_at" not in cols:
+            _add("ALTER TABLE mfu_event ADD COLUMN deleted_at DATETIME NULL")
+        if "deleted_by" not in cols:
+            _add("ALTER TABLE mfu_event ADD COLUMN deleted_by VARCHAR(80) NULL")
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
 def _pick_first(d: Dict[str, Any], keys: Tuple[str, ...], default=None):
     """辞書 d から候補 keys のうち最初に見つかったキーの値を返す（無ければ default）。"""
     for k in keys:
@@ -320,6 +347,8 @@ def admin_events_list():
     from flask import session
     username = (session.get("user") or "").strip()
 
+    _ensure_event_soft_delete_columns()
+
     db = get_db(); cur = db.cursor()
     try:
         if username == "admin":
@@ -338,6 +367,7 @@ def admin_events_list():
                     AND (m.status='approved' OR m.status IS NULL)
                 ) AS members
               FROM mfu_event e
+              WHERE e.deleted_at IS NULL
               ORDER BY
                 (e.starts_at IS NULL) ASC,
                 e.starts_at ASC,
@@ -363,6 +393,7 @@ def admin_events_list():
                   FROM mfu_event e
                   JOIN mfu_event_admin_acl a ON a.event_id = e.id
                   WHERE a.username = %s
+                    AND e.deleted_at IS NULL
                   ORDER BY
                     (e.starts_at IS NULL) ASC,
                     e.starts_at ASC,
@@ -398,6 +429,101 @@ def admin_events_list():
             "members": members,
         })
     return render_template("admin_events_list.html", events=events)
+
+
+@bp.get("/admin/events/deleted")
+def admin_events_deleted_list():
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+
+    from flask import session
+    if (session.get("user") or "").strip() != "admin":
+        abort(403)
+
+    _ensure_event_soft_delete_columns()
+
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("""
+          SELECT
+            e.id,
+            e.title,
+            e.event_uuid,
+            e.starts_at,
+            e.deleted_at,
+            e.deleted_by
+          FROM mfu_event e
+          WHERE e.deleted_at IS NOT NULL
+          ORDER BY e.deleted_at DESC, e.id DESC
+          LIMIT 200
+        """)
+        raws = cur.fetchall()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    events = []
+    for r in raws or []:
+        events.append({
+            "id": r[0] if isinstance(r, tuple) else r["id"],
+            "title": r[1] if isinstance(r, tuple) else r["title"],
+            "event_uuid_str": _uuid_bytes_to_str(r[2] if isinstance(r, tuple) else r["event_uuid"]),
+            "starts_at": r[3] if isinstance(r, tuple) else r["starts_at"],
+            "deleted_at": r[4] if isinstance(r, tuple) else r["deleted_at"],
+            "deleted_by": r[5] if isinstance(r, tuple) else r["deleted_by"],
+        })
+
+    return render_template("admin_events_deleted_list.html", events=events)
+
+
+@bp.post("/admin/events/<int:event_id>/delete")
+def admin_event_soft_delete(event_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+
+    from flask import session
+    username = (session.get("user") or "").strip()
+    if username != "admin":
+        abort(403)
+
+    token = request.form.get("csrf_token", "")
+    if not token or token != session.get("admin_csrf"):
+        abort(400, "invalid csrf")
+
+    _ensure_event_soft_delete_columns()
+
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE mfu_event
+               SET deleted_at=NOW(),
+                   deleted_by=%s
+             WHERE id=%s
+               AND deleted_at IS NULL
+             LIMIT 1
+            """,
+            (username, event_id),
+        )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    flash("イベントを削除済み一覧へ移動しました（論理削除）。", "success")
+    return redirect(url_for("external_login_user.admin_events_list"))
 
 @bp.route("/admin/events/new", methods=["GET", "POST"])
 def admin_event_new():
