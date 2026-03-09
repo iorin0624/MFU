@@ -77,10 +77,13 @@
       a.addEventListener('click', async (e) => {
         e.preventDefault();
         try {
-          await fetch(`/external-login/api/notifications/${item.id}/read`, {
+          const res = await fetch(`/external-login/api/notifications/${item.id}/read`, {
             method: 'POST',
             credentials: 'same-origin',
           });
+          if (res.ok) {
+            await syncAppBadgeSafe();
+          }
         } catch (_e) {
           // noop
         }
@@ -90,16 +93,25 @@
     };
 
     const updateNavBadge = (count) => {
-      const badge = document.getElementById('navNotifBadge');
-      if (!badge) return;
-      const safeCount = Number.isFinite(Number(count)) ? Math.max(0, Number(count)) : 0;
-      if (safeCount > 0) {
-        badge.textContent = String(Math.min(Math.floor(safeCount), 99));
-        badge.classList.remove('d-none');
-        return;
+      if (typeof window.updateExternalNavNotifBadge === 'function') {
+        window.updateExternalNavNotifBadge(count);
       }
-      badge.textContent = '0';
-      badge.classList.add('d-none');
+    };
+
+    const syncAppBadgeSafe = async () => {
+      if (typeof window.syncAppBadge === 'function') {
+        await window.syncAppBadge();
+      }
+    };
+
+    const applyCounts = async (count) => {
+      updateNavBadge(count);
+      if (count > 0) {
+        if (typeof window.setAppBadgeSafe === 'function') await window.setAppBadgeSafe(count);
+      } else if (typeof window.clearAppBadgeSafe === 'function') {
+        await window.clearAppBadgeSafe();
+      }
+      if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
     };
 
     const prependNewItems = (items) => {
@@ -146,8 +158,7 @@
         hasNext = !!data?.pagination?.has_next;
         renderItems(data.items || [], append);
         if (!append) {
-          const unreadCount = (data.items || []).filter((item) => !item.read_at).length;
-          updateNavBadge(unreadCount);
+          await syncAppBadgeSafe();
         }
       } finally {
         loading = false;
@@ -166,7 +177,7 @@
         const data = await res.json();
         prependNewItems(data.items || []);
         lastId = Math.max(lastId, Number(data?.latest_id || 0));
-        updateNavBadge(data?.unread_count ?? 0);
+        await applyCounts(Number(data?.unread_count ?? 0));
       } catch (_e) {
         // noop
       }
@@ -201,18 +212,24 @@
       page = 1;
       await load({ append: false });
       await pollUpdatesOnce();
+      await syncAppBadgeSafe();
     });
 
     markAllReadBtn.addEventListener('click', async () => {
       markAllReadBtn.disabled = true;
       try {
-        await fetch('/external-login/api/notifications/read-all', {
+        const res = await fetch('/external-login/api/notifications/read-all', {
           method: 'POST',
           credentials: 'same-origin',
         });
+        if (res.ok && typeof window.clearAppBadgeSafe === 'function') {
+          await window.clearAppBadgeSafe();
+          if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
+        }
         page = 1;
         await load({ append: false });
         await pollUpdatesOnce();
+        await syncAppBadgeSafe();
       } finally {
         markAllReadBtn.disabled = false;
       }
@@ -238,9 +255,10 @@
       if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
     });
 
-    load({ append: false }).then(() => {
+    load({ append: false }).then(async () => {
       startPolling();
-      pollUpdatesOnce();
+      await pollUpdatesOnce();
+      await syncAppBadgeSafe();
     });
   })();
 </script>

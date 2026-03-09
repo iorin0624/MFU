@@ -4688,20 +4688,31 @@ function openFulltextModal(row) {
   }
 
   function applyNotificationBadge(unread) {
+    const count = Number.isFinite(Number(unread)) ? Math.max(0, Math.floor(Number(unread))) : 0;
     if (!notificationBadge) {
-      applyBrowserTitle(unread);
-      return;
-    }
-    if (unread > 0) {
-      notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
+      applyBrowserTitle(count);
+    } else if (count > 0) {
+      notificationBadge.textContent = count > 99 ? '99+' : String(count);
       notificationBadge.classList.remove('no-unread');
       notificationBadge.classList.add('has-unread');
+      applyBrowserTitle(count);
     } else {
       notificationBadge.textContent = '🔔';
       notificationBadge.classList.remove('has-unread');
       notificationBadge.classList.add('no-unread');
+      applyBrowserTitle(count);
     }
-    applyBrowserTitle(unread);
+
+    if (typeof window.setAppBadgeSafe === 'function' && typeof window.clearAppBadgeSafe === 'function') {
+      if (count > 0) {
+        window.setAppBadgeSafe(count);
+      } else {
+        window.clearAppBadgeSafe();
+      }
+    }
+    if (typeof window.notifySwToSyncBadge === 'function') {
+      window.notifySwToSyncBadge();
+    }
   }
 
   async function markChatNotificationsReadByRoom() {
@@ -4727,6 +4738,9 @@ function openFulltextModal(row) {
       unread_count: Number(data.unread_count || 0),
       latest_id: Number(data.latest_id || 0),
     });
+    if (typeof window.syncAppBadge === 'function') {
+      window.syncAppBadge();
+    }
     return data;
   }
 
@@ -4754,6 +4768,9 @@ function openFulltextModal(row) {
       unread_count: Number(data.unread_count || 0),
       latest_id: Number(data.latest_id || 0),
     });
+    if (typeof window.syncAppBadge === 'function') {
+      window.syncAppBadge();
+    }
     return data;
   }
 

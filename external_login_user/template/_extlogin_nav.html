@@ -27,17 +27,22 @@
 
 <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-  document.addEventListener('DOMContentLoaded', () => {
-    const badge = document.getElementById('navNotifBadge');
-    if (!badge) return;
+  (() => {
+    const BADGE_API_URL = '/external-login/api/notifications/unread-count';
+    const SW_SYNC_TYPE = 'SYNC_BADGE';
 
-    let pollTimer = null;
-    let pollingDisabled = false;
+    const toSafeCount = (rawCount) => {
+      const value = Number(rawCount ?? 0);
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, Math.floor(value));
+    };
 
-    const applyCount = (rawCount) => {
-      const count = Number(rawCount ?? 0);
-      if (Number.isFinite(count) && count > 0) {
-        badge.textContent = String(Math.min(Math.floor(count), 99));
+    const updateNavBadge = (rawCount) => {
+      const badge = document.getElementById('navNotifBadge');
+      if (!badge) return;
+      const count = toSafeCount(rawCount);
+      if (count > 0) {
+        badge.textContent = String(Math.min(count, 99));
         badge.classList.remove('d-none');
         return;
       }
@@ -45,58 +50,130 @@
       badge.classList.add('d-none');
     };
 
-    const updateBadge = async () => {
-      if (pollingDisabled) return;
-      try {
-        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
-        if (res.status === 401) {
-          pollingDisabled = true;
-          stopPolling();
-          applyCount(0);
-          return;
-        }
-        if (!res.ok) {
-          applyCount(0);
-          return;
-        }
-        const data = await res.json();
-        applyCount(data?.count ?? 0);
-      } catch (_e) {
-        applyCount(0);
+    async function setAppBadgeSafe(rawCount) {
+      const count = toSafeCount(rawCount);
+      if (count <= 0) {
+        await clearAppBadgeSafe();
+        return;
       }
-    };
-
-    const startPolling = () => {
-      if (pollTimer !== null) return;
-      pollTimer = window.setInterval(updateBadge, 30000);
-    };
-
-    const stopPolling = () => {
-      if (pollTimer === null) return;
-      window.clearInterval(pollTimer);
-      pollTimer = null;
-    };
-
-    if (window.io) {
-      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-      socket.on('connect', () => {
-        stopPolling();
-        updateBadge();
-      });
-      socket.on('disconnect', () => {
-        startPolling();
-      });
-      socket.on('notif_unread', (data) => {
-        applyCount(data?.count ?? 0);
-      });
-    } else {
-      startPolling();
+      try {
+        if (typeof navigator.setAppBadge === 'function') {
+          await navigator.setAppBadge(count);
+        }
+      } catch (e) {
+        console.debug('[badge] setAppBadge failed', e);
+      }
     }
 
-    updateBadge();
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) updateBadge();
+    async function clearAppBadgeSafe() {
+      try {
+        if (typeof navigator.clearAppBadge === 'function') {
+          await navigator.clearAppBadge();
+        }
+      } catch (e) {
+        console.debug('[badge] clearAppBadge failed', e);
+      }
+    }
+
+    function notifySwToSyncBadge() {
+      try {
+        if (navigator.serviceWorker?.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
+        }
+      } catch (e) {
+        console.debug('[badge] notify sw failed', e);
+      }
+    }
+
+    async function syncAppBadge() {
+      try {
+        const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
+        if (res.status === 401) {
+          updateNavBadge(0);
+          await clearAppBadgeSafe();
+          notifySwToSyncBadge();
+          return 0;
+        }
+        if (!res.ok) {
+          return null;
+        }
+        const data = await res.json().catch(() => ({}));
+        const count = toSafeCount(data?.count ?? 0);
+        updateNavBadge(count);
+        if (count > 0) {
+          await setAppBadgeSafe(count);
+        } else {
+          await clearAppBadgeSafe();
+        }
+        notifySwToSyncBadge();
+        return count;
+      } catch (e) {
+        console.debug('[badge] sync failed', e);
+        return null;
+      }
+    }
+
+    window.setAppBadgeSafe = setAppBadgeSafe;
+    window.clearAppBadgeSafe = clearAppBadgeSafe;
+    window.syncAppBadge = syncAppBadge;
+    window.notifySwToSyncBadge = notifySwToSyncBadge;
+    window.updateExternalNavNotifBadge = updateNavBadge;
+
+    document.addEventListener('DOMContentLoaded', () => {
+      if (!document.getElementById('navNotifBadge')) return;
+
+      let pollTimer = null;
+      let pollingDisabled = false;
+
+      const updateBadge = async () => {
+        if (pollingDisabled) return;
+        const result = await syncAppBadge();
+        if (result === 0) {
+          pollingDisabled = true;
+          stopPolling();
+        }
+      };
+
+      const startPolling = () => {
+        if (pollTimer !== null) return;
+        pollTimer = window.setInterval(updateBadge, 30000);
+      };
+
+      const stopPolling = () => {
+        if (pollTimer === null) return;
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      };
+
+      if (window.io) {
+        const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+        socket.on('connect', () => {
+          stopPolling();
+          updateBadge();
+        });
+        socket.on('disconnect', () => {
+          startPolling();
+        });
+        socket.on('notif_unread', (data) => {
+          const count = toSafeCount(data?.count ?? 0);
+          updateNavBadge(count);
+          if (count > 0) {
+            setAppBadgeSafe(count);
+          } else {
+            clearAppBadgeSafe();
+          }
+          notifySwToSyncBadge();
+        });
+      } else {
+        startPolling();
+      }
+
+      updateBadge();
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) updateBadge();
+      });
+      window.addEventListener('pageshow', updateBadge);
+      window.addEventListener('online', updateBadge);
     });
-    window.addEventListener('pageshow', updateBadge);
-  });
+  })();
 </script>
