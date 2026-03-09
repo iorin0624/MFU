@@ -113,6 +113,8 @@ CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
 CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
 CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
+MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK = threading.Lock()
+MFU_EVENT_DELETED_AT_SCHEMA_READY: bool | None = None
 DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
 CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
@@ -2058,10 +2060,11 @@ def _ensure_chat_thread_schema() -> bool:
                 cur.execute(
                     """
                     UPDATE chat_messages child
-                    LEFT JOIN chat_messages parent ON parent.id = child.reply_to_message_id
-                    SET child.thread_root_id = COALESCE(parent.thread_root_id, child.reply_to_message_id)
+                    JOIN chat_messages parent ON parent.id = child.reply_to_message_id
+                    SET child.thread_root_id = parent.thread_root_id
                     WHERE child.reply_to_message_id IS NOT NULL
                       AND child.thread_root_id IS NULL
+                      AND parent.thread_root_id IS NOT NULL
                     """
                 )
                 db.commit()
@@ -3385,21 +3388,49 @@ def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
         db.close()
 
 
+def _mfu_event_has_deleted_at_column() -> bool:
+    global MFU_EVENT_DELETED_AT_SCHEMA_READY
+    if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
+        return MFU_EVENT_DELETED_AT_SCHEMA_READY
+
+    with MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK:
+        if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
+            return MFU_EVENT_DELETED_AT_SCHEMA_READY
+
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_at'")
+            MFU_EVENT_DELETED_AT_SCHEMA_READY = bool(cur.fetchone())
+            return MFU_EVENT_DELETED_AT_SCHEMA_READY
+        except Exception:
+            current_app.logger.warning("mfu_event deleted_at schema check failed", exc_info=True)
+            MFU_EVENT_DELETED_AT_SCHEMA_READY = False
+            return False
+        finally:
+            cur.close()
+            db.close()
+
+
 def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
+        has_deleted_at = _mfu_event_has_deleted_at_column()
+        where_deleted = " WHERE deleted_at IS NULL" if has_deleted_at else ""
+        where_deleted_clause = "AND e.deleted_at IS NULL" if has_deleted_at else ""
         if actor["actor_type"] == "admin":
-            cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event ORDER BY starts_at DESC LIMIT 100")
+            cur.execute(f"SELECT id, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
             return cur.fetchall() or []
         if actor["actor_type"] == "line":
             cur.execute(
-                """
+                f"""
                 SELECT e.id, e.title, e.starts_at AS start_at
                   FROM mfu_event e
                   JOIN mfu_event_member m ON m.event_id = e.id
                  WHERE m.user_id = %s
-                 ORDER BY e.starts_at DESC
+                   {where_deleted_clause}
+                 ORDER BY e.starts_at IS NULL, e.starts_at ASC
                  LIMIT 100
                 """,
                 (actor["actor_id"],),
@@ -3407,12 +3438,13 @@ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
             return cur.fetchall() or []
 
         cur.execute(
-            """
+            f"""
             SELECT e.id, e.title, e.starts_at AS start_at
               FROM mfu_event e
               JOIN mfu_event_admin_acl a ON a.event_id = e.id
              WHERE a.username = %s
-             ORDER BY e.starts_at DESC
+               {where_deleted_clause}
+             ORDER BY e.starts_at IS NULL, e.starts_at ASC
              LIMIT 100
             """,
             (actor["actor_id"],),
