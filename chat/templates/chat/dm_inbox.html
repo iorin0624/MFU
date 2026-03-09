@@ -7,17 +7,17 @@
   </div>
   <ul class="list-group">
     {% for it in items %}
-    <li class="list-group-item d-flex justify-content-between align-items-center" data-dm-peer-name="{{ (it.peer_display_name or '')|lower }}">
-      <div>
+    <li class="list-group-item d-flex justify-content-between align-items-center gap-2" data-dm-peer-name="{{ (it.peer_display_name or '')|lower }}">
+      <div class="flex-grow-1 overflow-hidden">
         <div>{{ it.peer_display_name }}</div>
-        <small class="text-muted">{{ it.last_message or '' }}</small>
+        <small class="text-muted d-block text-truncate">{{ it.last_message or '' }}</small>
       </div>
-      <div class="text-end">
-        {% if it.unread_count|int > 0 %}<span class="badge bg-danger">{{ it.unread_count }}</span>{% endif %}
+      <div class="d-inline-flex align-items-center gap-2 flex-shrink-0">
+        {% if it.unread_count|int > 0 %}<span class="badge bg-danger">未読 {{ it.unread_count }}</span>{% endif %}
         {% if it.uuid %}
-        <a class="btn btn-sm btn-primary ms-2" href="{{ url_for('chat.dm_room', uuid=it.uuid) }}">開く</a>
+        <a class="btn btn-sm btn-primary" href="{{ url_for('chat.dm_room', uuid=it.uuid) }}">開く</a>
         {% else %}
-        <a class="btn btn-sm btn-outline-primary ms-2" href="{{ url_for('chat.dm_open_line', line_user_id=(it.peer_actor_key or '').replace('line:', '')|int) }}">送信</a>
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('chat.dm_open_line', line_user_id=(it.peer_actor_key or '').replace('line:', '')|int) }}">送信</a>
         {% endif %}
       </div>
     </li>
