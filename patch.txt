@@ -1,145 +1,170 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index f726cbabc56c388de57b43eb222ab4d286babf82..0dd86a57642440494de3eb5bb95d428947b0421d 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -66,50 +66,65 @@ AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
+diff --git a/chat/__init__.py b/chat/__init__.py
+index dd93beedbf7eb5fecd78e73eb9d30e5e7899ca24..49b48019e28f871042770634fb49294aca54270f 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -91,50 +91,52 @@ CHAT_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
+ CHAT_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DELETE_SCHEMA_READY: bool | None = None
+ CHAT_ROOMS_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_ROOMS_SCHEMA_READY: bool | None = None
+ CHAT_ROOM_MEMBERS_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_ROOM_MEMBERS_SCHEMA_READY: bool | None = None
+ CHAT_MESSAGES_ROOM_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
+ CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_EDIT_SCHEMA_READY: bool | None = None
+ CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_SEARCH_SCHEMA_READY: bool | None = None
+ CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_THREAD_SCHEMA_READY: bool | None = None
+ CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_SCHEMA_READY: bool | None = None
+ CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
+ CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
+ CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
+ CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
++MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK = threading.Lock()
++MFU_EVENT_DELETED_AT_SCHEMA_READY: bool | None = None
+ DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+ CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
+ CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
+ CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
+ CHAT_UPLOAD_MAX_FILES = 6
+ PUSH_REQUEST_TIMEOUT_SECONDS = 6
+ PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
+ PUSH_LOG_SUPPRESSION_SECONDS = 300
+ CHAT_ACTIVE_VIEW_TTL_SECONDS = 60
+ CHAT_ACTIVE_VIEW_HEARTBEAT_INTERVAL_SECONDS = 20
+ PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
+ PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
+ PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
+ PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
+ PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
+ PUSH_ASYNC_INFLIGHT = 0
+ _LINKIFY_RE = re.compile(
+     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+ )
+ _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
+ CHAT_TYPING_STATE_LOCK = threading.Lock()
+ CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
+ CHAT_TYPING_TTL_SECONDS = 3
+ SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
+ SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
+@@ -3363,78 +3365,107 @@ def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
+                  LIMIT 1
+                 """,
+                 (event_id, actor["actor_id"]),
+             )
+             return bool(cur.fetchone())
  
- 
- JST = timezone(timedelta(hours=9))
- 
- # =========================
- # 便利ヘルパ（このファイル内限定）
- # =========================
- def _normalize_email(s: str) -> str | None:
-     s = (s or "").strip()
-     if not s or "@" not in s or len(s) > 255:
-         return None
-     return s
- 
- 
- def _normalize_external_url(raw: str | None) -> str | None:
-     if not isinstance(raw, str):
-         return None
-     url = raw.strip()
-     if not url:
-         return None
-     if url.startswith(("http://", "https://")):
-         return url
-     return f"https://{url}"
- 
- 
-+
-+
-+def _mfu_event_has_deleted_at_column() -> bool:
-+    db = get_db(); cur = db.cursor()
-+    try:
-+        cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_at'")
-+        row = cur.fetchone()
-+        return bool(row)
-+    except Exception:
-+        return False
-+    finally:
-+        try:
-+            cur.close(); db.close()
-+        except Exception:
-+            pass
- def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24, redirect_url: str | None = None) -> str:
-     """
-     検証用トークンを発行して DB に保存し、URL に載せるプレーントークンを返す。
-     DB 側には SHA256 ハッシュで保存。
-     """
-     raw = secrets.token_urlsafe(32)
-     token_hex = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-     expires_at = datetime.utcnow() + timedelta(hours=ttl_hours)
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         # redirect_url カラムがある前提で進めます（なければ後ほど ALTER TABLE を検討）
-         # 既存のコードから推測すると、このテーブルに動的にカラムを追加するのは難しいため、
-         # もしカラムがない場合はエラーになりますが、まずは追加を試みます。
-         try:
-             cur.execute("""
-                 INSERT INTO mfu_email_verification (user_id, email, token, expires_at, redirect_url)
-                 VALUES (%s, %s, %s, %s, %s)
-             """, (user_id, email, token_hex, expires_at, redirect_url))
-         except Exception:
-             # カラムがない場合のフォールバック
-             cur.execute("""
-                 INSERT INTO mfu_email_verification (user_id, email, token, expires_at)
-                 VALUES (%s, %s, %s, %s)
-             """, (user_id, email, token_hex, expires_at))
-@@ -765,70 +780,73 @@ def index():
-                     Markup(
-                         '<div style="font-weight:600;">メール確認のお願い</div>'
-                         f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
-                     ),
-                     "warning unverified_email"
-                 )
+         # acl: mfu_event_admin_acl + users(admin系)
+         cur.execute(
+             """
+             SELECT 1
+               FROM mfu_event_admin_acl
+              WHERE event_id=%s AND username=%s
+              LIMIT 1
+             """,
+             (event_id, actor["actor_id"]),
+         )
+         return bool(cur.fetchone())
      except Exception:
-         try:
-             current_app.logger.exception("top banner check failed")
-         except Exception:
-             pass
-     # -----------------------------------------------------------------------
+         current_app.logger.warning("chat access check failed event=%s actor=%s", event_id, actor, exc_info=True)
+         return False
+     finally:
+         cur.close()
+         db.close()
  
-     social_id = session.get("ext_user_social_id")
-     me = _get_ext_user_by_social(social_id) if social_id else None
  
-     if request.args.get("tip") == "done":
-         if request.args.get("status") == "ok":
-             flash("投げ銭ありがとうございます！", "success")
-         elif request.args.get("status") == "ng":
-             flash("投げ銭の決済が完了しませんでした。", "warning")
- 
-     events_upcoming, events_past = [], []
-     if me:
-         db = get_db(); cur = db.cursor(dictionary=True)
--        cur.execute("""
++def _mfu_event_has_deleted_at_column() -> bool:
++    global MFU_EVENT_DELETED_AT_SCHEMA_READY
++    if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
++        return MFU_EVENT_DELETED_AT_SCHEMA_READY
++
++    with MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK:
++        if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
++            return MFU_EVENT_DELETED_AT_SCHEMA_READY
++
++        db = get_db()
++        cur = db.cursor()
++        try:
++            cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_at'")
++            MFU_EVENT_DELETED_AT_SCHEMA_READY = bool(cur.fetchone())
++            return MFU_EVENT_DELETED_AT_SCHEMA_READY
++        except Exception:
++            current_app.logger.warning("mfu_event deleted_at schema check failed", exc_info=True)
++            MFU_EVENT_DELETED_AT_SCHEMA_READY = False
++            return False
++        finally:
++            cur.close()
++            db.close()
++
++
+ def _accessible_events(actor: dict[str, Any]) -> list[dict[str, Any]]:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
 +        has_deleted_at = _mfu_event_has_deleted_at_column()
-+        where_deleted = "WHERE e.deleted_at IS NULL" if has_deleted_at else ""
-+        cur.execute(f"""
-           SELECT
-             e.id, e.event_uuid, e.title,
-             e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
-             COALESCE(e.tip_enabled,0) AS tip_enabled,
-             m.id AS member_id,
-             COALESCE(m.status,'pending')                        AS status,
-             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
-             m.receipt_url,
-             COALESCE(m.bank_transfer,0) AS bank_transfer,
-             COALESCE(m.paypay_transfer,0) AS paypay_transfer,
-             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
-           FROM mfu_event e
-           JOIN (
-               SELECT MAX(id) AS id, event_id
-                 FROM mfu_event_member
-                WHERE user_id = %s
-                GROUP BY event_id
-           ) mm ON mm.event_id = e.id
-           JOIN mfu_event_member m ON m.id = mm.id
-+          {where_deleted}
-           ORDER BY e.starts_at IS NULL, e.starts_at
-           LIMIT 200
-         """, (me["id"],))
-         raws = cur.fetchall()
-         cur.close(); db.close()
++        where_deleted = " WHERE deleted_at IS NULL" if has_deleted_at else ""
++        where_deleted_clause = "AND e.deleted_at IS NULL" if has_deleted_at else ""
+         if actor["actor_type"] == "admin":
+-            cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event ORDER BY starts_at DESC LIMIT 100")
++            cur.execute(f"SELECT id, title, starts_at AS start_at FROM mfu_event{where_deleted} ORDER BY starts_at IS NULL, starts_at ASC LIMIT 100")
+             return cur.fetchall() or []
+         if actor["actor_type"] == "line":
+             cur.execute(
+-                """
++                f"""
+                 SELECT e.id, e.title, e.starts_at AS start_at
+                   FROM mfu_event e
+                   JOIN mfu_event_member m ON m.event_id = e.id
+                  WHERE m.user_id = %s
+-                 ORDER BY e.starts_at DESC
++                   {where_deleted_clause}
++                 ORDER BY e.starts_at IS NULL, e.starts_at ASC
+                  LIMIT 100
+                 """,
+                 (actor["actor_id"],),
+             )
+             return cur.fetchall() or []
  
-         from datetime import datetime as _dt
-         now = _dt.now()
+         cur.execute(
+-            """
++            f"""
+             SELECT e.id, e.title, e.starts_at AS start_at
+               FROM mfu_event e
+               JOIN mfu_event_admin_acl a ON a.event_id = e.id
+              WHERE a.username = %s
+-             ORDER BY e.starts_at DESC
++               {where_deleted_clause}
++             ORDER BY e.starts_at IS NULL, e.starts_at ASC
+              LIMIT 100
+             """,
+             (actor["actor_id"],),
+         )
+         return cur.fetchall() or []
+     finally:
+         cur.close()
+         db.close()
  
-         def _to_dt(v):
-             try:
-                 if hasattr(v, "year"): return v
-                 return _dt.fromisoformat(str(v).replace(" ", "T"))
-             except Exception:
-                 return None
  
-         for r in raws:
-             euuid_str = _uuid_bytes_to_str(r["event_uuid"])
-             item = {
-                 "id": r["id"],
-                 "event_uuid_str": euuid_str,
-                 "title": r["title"],
-                 "starts_at": r["starts_at"],
-                 "status": r["status"] or "pending",
-                 "payment_status": r["payment_status"] or "unpaid",
+ def _get_event(event_id: int) -> dict[str, Any] | None:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT id, title, starts_at AS start_at FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+         return cur.fetchone()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ 
+ 
+ def _normalize_legacy_image_thread_replies(event_id: int, room_id: str) -> None:
+     """旧実装で誤って thread_root_id が立った画像リプライを通常返信へ補正する。"""
