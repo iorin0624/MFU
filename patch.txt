@@ -1,397 +1,8 @@
-diff --git a/chat/templates/chat/_chat_nav.html b/chat/templates/chat/_chat_nav.html
-index 080891c25ebfba957622885336d15b5510872119..95132b41d2fc3578f86fbe13d0ad38d59508b52c 100644
---- a/chat/templates/chat/_chat_nav.html
-+++ b/chat/templates/chat/_chat_nav.html
-@@ -33,79 +33,94 @@
-     </div>
- 
-     <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
-       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
-       <span class="chat-nav-label">検索</span>
-     </button>
- 
-     {% if actor and actor.actor_type == 'admin' %}
-       <a class="chat-nav-link" href="{{ url_for('chat.admin_system_template_join_approved_get') }}" aria-label="Systemテンプレ">
-         <span class="chat-nav-icon" aria-hidden="true">⚙️</span>
-         <span class="chat-nav-label">Systemテンプレ</span>
-       </a>
-     {% endif %}
-   </div>
- </div>
- 
- <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
-   document.addEventListener('DOMContentLoaded', () => {
-     const badge = document.getElementById('chatNavNotifBadge');
-     if (!badge) return;
- 
-     let pollTimer = null;
-     let pollingDisabled = false;
- 
--    const applyCount = (rawCount) => {
-+    const toSafeCount = (rawCount) => {
-       const count = Number(rawCount ?? 0);
--      if (Number.isFinite(count) && count > 0) {
--        badge.textContent = String(Math.min(Math.floor(count), 99));
-+      if (!Number.isFinite(count)) return 0;
-+      return Math.max(0, Math.floor(count));
-+    };
-+
-+    const applyCount = async (rawCount) => {
-+      const count = toSafeCount(rawCount);
-+      if (count > 0) {
-+        badge.textContent = String(Math.min(count, 99));
-         badge.classList.remove('d-none');
--        return;
-+      } else {
-+        badge.textContent = '0';
-+        badge.classList.add('d-none');
-+      }
-+      if (typeof window.setAppBadgeSafe === 'function' && typeof window.clearAppBadgeSafe === 'function') {
-+        if (count > 0) {
-+          await window.setAppBadgeSafe(count);
-+        } else {
-+          await window.clearAppBadgeSafe();
-+        }
-+      }
-+      if (typeof window.notifySwToSyncBadge === 'function') {
-+        window.notifySwToSyncBadge();
-       }
--      badge.textContent = '0';
--      badge.classList.add('d-none');
-     };
- 
-     const updateBadge = async () => {
-       if (pollingDisabled) return;
-       try {
-         const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
-         if (res.status === 401) {
-           pollingDisabled = true;
-           stopPolling();
--          applyCount(0);
-+          await applyCount(0);
-           return;
-         }
-         if (!res.ok) {
--          applyCount(0);
-           return;
-         }
-         const data = await res.json();
--        applyCount(data?.count ?? 0);
-+        await applyCount(data?.count ?? 0);
-       } catch (_e) {
--        applyCount(0);
-+        // noop
-       }
-     };
- 
-     const startPolling = () => {
-       if (pollTimer !== null) return;
-       pollTimer = window.setInterval(updateBadge, 30000);
-     };
- 
-     const stopPolling = () => {
-       if (pollTimer === null) return;
-       window.clearInterval(pollTimer);
-       pollTimer = null;
-     };
- 
-     if (window.io) {
-       const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-       socket.on('connect', () => {
-         stopPolling();
-         updateBadge();
-       });
-       socket.on('disconnect', () => {
-         startPolling();
-       });
-       socket.on('notif_unread', (data) => {
-         applyCount(data?.count ?? 0);
-diff --git a/chat/templates/chat/base_chat.html b/chat/templates/chat/base_chat.html
-index 83a283eaf8969b688f657cceb7b789077dfc429c..706dbfcefb09c90cf985ecb82066ac1490233fc5 100644
---- a/chat/templates/chat/base_chat.html
-+++ b/chat/templates/chat/base_chat.html
-@@ -1,38 +1,121 @@
- {% extends "base.html" %}
- {% block head_extra %}
-   {{ super() }}
-   <link rel="manifest" href="/manifest.webmanifest">
-   <meta name="theme-color" content="#0d6efd">
-   <meta name="apple-mobile-web-app-capable" content="yes">
-   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-   <link rel="stylesheet" href="{{ url_for('chat.static', filename='chat/css/chat.css') }}">
-   <script>
-     if ('serviceWorker' in navigator) {
-       navigator.serviceWorker.register('/sw.js', { scope: '/' });
-     }
- 
-+
-+    (() => {
-+      const BADGE_API_URL = '/external-login/api/notifications/unread-count';
-+      const SW_SYNC_TYPE = 'SYNC_BADGE';
-+      const toSafeCount = (rawCount) => {
-+        const value = Number(rawCount ?? 0);
-+        if (!Number.isFinite(value)) return 0;
-+        return Math.max(0, Math.floor(value));
-+      };
-+
-+      async function setAppBadgeSafe(rawCount) {
-+        const count = toSafeCount(rawCount);
-+        if (count <= 0) {
-+          await clearAppBadgeSafe();
-+          return;
-+        }
-+        try {
-+          if (typeof navigator.setAppBadge === 'function') {
-+            await navigator.setAppBadge(count);
-+          }
-+        } catch (e) {
-+          console.debug('[badge] setAppBadge failed', e);
-+        }
-+      }
-+
-+      async function clearAppBadgeSafe() {
-+        try {
-+          if (typeof navigator.clearAppBadge === 'function') {
-+            await navigator.clearAppBadge();
-+          }
-+        } catch (e) {
-+          console.debug('[badge] clearAppBadge failed', e);
-+        }
-+      }
-+
-+      function notifySwToSyncBadge() {
-+        try {
-+          if (navigator.serviceWorker?.controller) {
-+            navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
-+          }
-+        } catch (e) {
-+          console.debug('[badge] notify sw failed', e);
-+        }
-+      }
-+
-+      async function syncAppBadge() {
-+        try {
-+          const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
-+          if (res.status === 401) {
-+            await clearAppBadgeSafe();
-+            notifySwToSyncBadge();
-+            return 0;
-+          }
-+          if (!res.ok) return null;
-+          const data = await res.json().catch(() => ({}));
-+          const count = toSafeCount(data?.count ?? 0);
-+          if (count > 0) {
-+            await setAppBadgeSafe(count);
-+          } else {
-+            await clearAppBadgeSafe();
-+          }
-+          notifySwToSyncBadge();
-+          return count;
-+        } catch (e) {
-+          console.debug('[badge] sync failed', e);
-+          return null;
-+        }
-+      }
-+
-+      window.setAppBadgeSafe = window.setAppBadgeSafe || setAppBadgeSafe;
-+      window.clearAppBadgeSafe = window.clearAppBadgeSafe || clearAppBadgeSafe;
-+      window.notifySwToSyncBadge = window.notifySwToSyncBadge || notifySwToSyncBadge;
-+      window.syncAppBadge = window.syncAppBadge || syncAppBadge;
-+
-+      window.addEventListener('pageshow', () => { window.syncAppBadge?.(); });
-+      window.addEventListener('online', () => { window.syncAppBadge?.(); });
-+      document.addEventListener('visibilitychange', () => {
-+        if (!document.hidden) {
-+          window.syncAppBadge?.();
-+        }
-+      });
-+    })();
-+
-     (() => {
-       const PENDING_KEY = 'mfu_push_pending_nav';
-       const MAX_AGE_MS = 15000;
- 
-       const normalizePath = (rawUrl) => {
-         try {
-           const u = new URL(rawUrl, window.location.origin);
-           if (u.origin !== window.location.origin) return '/';
-           return `${u.pathname}${u.search}${u.hash}`;
-         } catch (_e) {
-           return '/';
-         }
-       };
- 
-       const handlePendingNavigation = () => {
-         let pending = null;
-         try {
-           pending = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null');
-         } catch (_e) {
-           localStorage.removeItem(PENDING_KEY);
-           return;
-         }
- 
-         if (!pending || !pending.url || !pending.ts) return;
-         if (Date.now() - Number(pending.ts) > MAX_AGE_MS) {
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index f697fbf50707f9b6cbe6c5323f7eabee06836b7d..ae65d6d0fe3d49da1a875343d02c4ed2e8892767 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -4666,116 +4666,133 @@ function openFulltextModal(row) {
-       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-       if (res.status === 401) {
-         stopNotificationBadgePolling();
-         if (notificationBadge) {
-           notificationBadge.textContent = '🔔';
-           notificationBadge.classList.remove('has-unread');
-           notificationBadge.classList.add('no-unread');
-         }
-         return;
-       }
-       const data = await res.json().catch(() => ({}));
-       if (!res.ok) return;
-       const unread = Number(data.count || 0);
-       applyNotificationBadge(unread);
-     } catch (_e) {
-       // noop
-     }
-   }
- 
-   function applyBrowserTitle(unread) {
-     const count = Number.isFinite(Number(unread)) ? Math.max(0, Number(unread)) : 0;
-     document.title = `${pageTitleBase}（${count}）`;
-   }
- 
-   function applyNotificationBadge(unread) {
-+    const count = Number.isFinite(Number(unread)) ? Math.max(0, Math.floor(Number(unread))) : 0;
-     if (!notificationBadge) {
--      applyBrowserTitle(unread);
--      return;
--    }
--    if (unread > 0) {
--      notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
-+      applyBrowserTitle(count);
-+    } else if (count > 0) {
-+      notificationBadge.textContent = count > 99 ? '99+' : String(count);
-       notificationBadge.classList.remove('no-unread');
-       notificationBadge.classList.add('has-unread');
-+      applyBrowserTitle(count);
-     } else {
-       notificationBadge.textContent = '🔔';
-       notificationBadge.classList.remove('has-unread');
-       notificationBadge.classList.add('no-unread');
-+      applyBrowserTitle(count);
-+    }
-+
-+    if (typeof window.setAppBadgeSafe === 'function' && typeof window.clearAppBadgeSafe === 'function') {
-+      if (count > 0) {
-+        window.setAppBadgeSafe(count);
-+      } else {
-+        window.clearAppBadgeSafe();
-+      }
-+    }
-+    if (typeof window.notifySwToSyncBadge === 'function') {
-+      window.notifySwToSyncBadge();
-     }
--    applyBrowserTitle(unread);
-   }
- 
-   async function markChatNotificationsReadByRoom() {
-     const res = await fetch('/external-login/api/notifications/read-by-room', {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
-       credentials: 'same-origin',
-       body: JSON.stringify({ event_id: eventId, room_id: roomId }),
-     });
-     if (res.status === 401) {
-       console.info('[notifications] read-by-room skipped (unauthorized)');
-       return null;
-     }
-     const data = await res.json().catch(() => ({}));
-     if (!res.ok || !data.ok) {
-       console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
-       throw new Error('read-by-room failed');
-     }
-     console.info('[notifications] read-by-room success', {
-       room_id: roomId,
-       event_id: eventId,
-       updated_count: Number(data.updated_count || 0),
-       unread_count: Number(data.unread_count || 0),
-       latest_id: Number(data.latest_id || 0),
-     });
-+    if (typeof window.syncAppBadge === 'function') {
-+      window.syncAppBadge();
-+    }
-     return data;
-   }
- 
-   async function markDmNotificationsReadByRoom(dmRoomId) {
-     const roomKey = String(dmRoomId || '').trim();
-     if (!roomKey) return null;
-     const res = await fetch('/external-login/api/notifications/read-dm-room', {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
-       credentials: 'same-origin',
-       body: JSON.stringify({ room_id: roomKey }),
-     });
-     if (res.status === 401) {
-       console.info('[notifications] read-dm-room skipped (unauthorized)');
-       return null;
-     }
-     const data = await res.json().catch(() => ({}));
-     if (!res.ok || !data.ok) {
-       console.info('[notifications] read-dm-room failed', { status: res.status, reason: data.reason || null });
-       throw new Error('read-dm-room failed');
-     }
-     console.info('[notifications] read-dm-room success', {
-       room_id: roomKey,
-       updated_count: Number(data.updated_count || 0),
-       unread_count: Number(data.unread_count || 0),
-       latest_id: Number(data.latest_id || 0),
-     });
-+    if (typeof window.syncAppBadge === 'function') {
-+      window.syncAppBadge();
-+    }
-     return data;
-   }
- 
- 
- 
-   function getPresenceClientId() {
-     const key = 'chat_presence_client_id';
-     let cid = window.sessionStorage.getItem(key) || '';
-     if (!cid) {
-       cid = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-       window.sessionStorage.setItem(key, cid);
-     }
-     return cid;
-   }
- 
-   async function enterRoomPresence() {
-     const activeRoomId = dmMode ? effectiveDmRoomId : roomId;
-     if (!activeRoomId || (!dmMode && !(eventId > 0))) return false;
-     const res = await fetch('/chat/api/room-presence/enter', {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
-       credentials: 'same-origin',
-       body: JSON.stringify({
-         csrf_token: csrfToken,
-         event_id: dmMode ? 0 : eventId,
 diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index 0a6b8bf1cfde8851286aebfb38ce4d1e57693e51..202defbec2f8d17be445a3adeaa0f5bdcbe88e58 100644
+index 202defbec2f8d17be445a3adeaa0f5bdcbe88e58..624652cc58a4dd2f4e6679b216edb6ef880cb94f 100644
 --- a/external_login_user/template/_extlogin_nav.html
 +++ b/external_login_user/template/_extlogin_nav.html
-@@ -5,98 +5,175 @@
-     <div class="d-flex align-items-center gap-2 ms-auto">
-       <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
-         <span class="fs-5">🔔</span>
-         <span id="navNotifBadge"
-               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-       </a>
- 
-       <button class="navbar-toggler" type="button"
-               data-bs-toggle="collapse" data-bs-target="#extNavCollapse"
-               aria-controls="extNavCollapse" aria-expanded="false" aria-label="メニュー">
+@@ -15,50 +15,61 @@
          <span class="navbar-toggler-icon"></span>
        </button>
      </div>
@@ -407,31 +18,33 @@ index 0a6b8bf1cfde8851286aebfb38ce4d1e57693e51..202defbec2f8d17be445a3adeaa0f5bd
  
  <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
  <script>
--  document.addEventListener('DOMContentLoaded', () => {
--    const badge = document.getElementById('navNotifBadge');
--    if (!badge) return;
-+  (() => {
-+    const BADGE_API_URL = '/external-login/api/notifications/unread-count';
-+    const SW_SYNC_TYPE = 'SYNC_BADGE';
+   (() => {
+     const BADGE_API_URL = '/external-login/api/notifications/unread-count';
+     const SW_SYNC_TYPE = 'SYNC_BADGE';
  
--    let pollTimer = null;
--    let pollingDisabled = false;
-+    const toSafeCount = (rawCount) => {
-+      const value = Number(rawCount ?? 0);
-+      if (!Number.isFinite(value)) return 0;
-+      return Math.max(0, Math.floor(value));
+     const toSafeCount = (rawCount) => {
+       const value = Number(rawCount ?? 0);
+       if (!Number.isFinite(value)) return 0;
+       return Math.max(0, Math.floor(value));
+     };
+ 
++
++    const emitUnreadChanged = (rawCount) => {
++      try {
++        window.dispatchEvent(new CustomEvent('external:notif_unread', {
++          detail: { count: toSafeCount(rawCount) },
++        }));
++      } catch (_e) {
++        // noop
++      }
 +    };
- 
--    const applyCount = (rawCount) => {
--      const count = Number(rawCount ?? 0);
--      if (Number.isFinite(count) && count > 0) {
--        badge.textContent = String(Math.min(Math.floor(count), 99));
-+    const updateNavBadge = (rawCount) => {
-+      const badge = document.getElementById('navNotifBadge');
-+      if (!badge) return;
-+      const count = toSafeCount(rawCount);
-+      if (count > 0) {
-+        badge.textContent = String(Math.min(count, 99));
++
+     const updateNavBadge = (rawCount) => {
+       const badge = document.getElementById('navNotifBadge');
+       if (!badge) return;
+       const count = toSafeCount(rawCount);
+       if (count > 0) {
+         badge.textContent = String(Math.min(count, 99));
          badge.classList.remove('d-none');
          return;
        }
@@ -439,590 +52,464 @@ index 0a6b8bf1cfde8851286aebfb38ce4d1e57693e51..202defbec2f8d17be445a3adeaa0f5bd
        badge.classList.add('d-none');
      };
  
--    const updateBadge = async () => {
--      if (pollingDisabled) return;
-+    async function setAppBadgeSafe(rawCount) {
-+      const count = toSafeCount(rawCount);
-+      if (count <= 0) {
-+        await clearAppBadgeSafe();
-+        return;
-+      }
-+      try {
-+        if (typeof navigator.setAppBadge === 'function') {
-+          await navigator.setAppBadge(count);
-+        }
-+      } catch (e) {
-+        console.debug('[badge] setAppBadge failed', e);
-+      }
-+    }
-+
-+    async function clearAppBadgeSafe() {
-+      try {
-+        if (typeof navigator.clearAppBadge === 'function') {
-+          await navigator.clearAppBadge();
-+        }
-+      } catch (e) {
-+        console.debug('[badge] clearAppBadge failed', e);
-+      }
-+    }
-+
-+    function notifySwToSyncBadge() {
-+      try {
-+        if (navigator.serviceWorker?.controller) {
-+          navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
-+        }
-+      } catch (e) {
-+        console.debug('[badge] notify sw failed', e);
-+      }
-+    }
-+
-+    async function syncAppBadge() {
-       try {
--        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
-+        const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
-         if (res.status === 401) {
--          pollingDisabled = true;
--          stopPolling();
--          applyCount(0);
--          return;
-+          updateNavBadge(0);
-+          await clearAppBadgeSafe();
-+          notifySwToSyncBadge();
-+          return 0;
-         }
-         if (!res.ok) {
--          applyCount(0);
--          return;
-+          return null;
-         }
--        const data = await res.json();
--        applyCount(data?.count ?? 0);
--      } catch (_e) {
--        applyCount(0);
-+        const data = await res.json().catch(() => ({}));
-+        const count = toSafeCount(data?.count ?? 0);
-+        updateNavBadge(count);
-+        if (count > 0) {
-+          await setAppBadgeSafe(count);
-+        } else {
-+          await clearAppBadgeSafe();
-+        }
-+        notifySwToSyncBadge();
-+        return count;
-+      } catch (e) {
-+        console.debug('[badge] sync failed', e);
-+        return null;
-       }
--    };
-+    }
- 
--    const startPolling = () => {
--      if (pollTimer !== null) return;
--      pollTimer = window.setInterval(updateBadge, 30000);
--    };
-+    window.setAppBadgeSafe = setAppBadgeSafe;
-+    window.clearAppBadgeSafe = clearAppBadgeSafe;
-+    window.syncAppBadge = syncAppBadge;
-+    window.notifySwToSyncBadge = notifySwToSyncBadge;
-+    window.updateExternalNavNotifBadge = updateNavBadge;
- 
--    const stopPolling = () => {
--      if (pollTimer === null) return;
--      window.clearInterval(pollTimer);
--      pollTimer = null;
--    };
-+    document.addEventListener('DOMContentLoaded', () => {
-+      if (!document.getElementById('navNotifBadge')) return;
- 
--    if (window.io) {
--      const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
--      socket.on('connect', () => {
--        stopPolling();
--        updateBadge();
--      });
--      socket.on('disconnect', () => {
-+      let pollTimer = null;
-+      let pollingDisabled = false;
-+
-+      const updateBadge = async () => {
-+        if (pollingDisabled) return;
-+        const result = await syncAppBadge();
-+        if (result === 0) {
-+          pollingDisabled = true;
-+          stopPolling();
-+        }
-+      };
-+
-+      const startPolling = () => {
-+        if (pollTimer !== null) return;
-+        pollTimer = window.setInterval(updateBadge, 30000);
-+      };
-+
-+      const stopPolling = () => {
-+        if (pollTimer === null) return;
-+        window.clearInterval(pollTimer);
-+        pollTimer = null;
-+      };
-+
-+      if (window.io) {
-+        const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-+        socket.on('connect', () => {
-+          stopPolling();
-+          updateBadge();
-+        });
-+        socket.on('disconnect', () => {
-+          startPolling();
-+        });
-+        socket.on('notif_unread', (data) => {
-+          const count = toSafeCount(data?.count ?? 0);
-+          updateNavBadge(count);
-+          if (count > 0) {
-+            setAppBadgeSafe(count);
-+          } else {
-+            clearAppBadgeSafe();
-+          }
-+          notifySwToSyncBadge();
-+        });
-+      } else {
-         startPolling();
--      });
--      socket.on('notif_unread', (data) => {
--        applyCount(data?.count ?? 0);
--      });
--    } else {
--      startPolling();
--    }
-+      }
- 
--    updateBadge();
--    document.addEventListener('visibilitychange', () => {
--      if (!document.hidden) updateBadge();
-+      updateBadge();
-+      document.addEventListener('visibilitychange', () => {
-+        if (!document.hidden) updateBadge();
-+      });
-+      window.addEventListener('pageshow', updateBadge);
-+      window.addEventListener('online', updateBadge);
-     });
--    window.addEventListener('pageshow', updateBadge);
--  });
-+  })();
- </script>
-diff --git a/external_login_user/template/notifications.html b/external_login_user/template/notifications.html
-index 4561c9b2bf81bb474fd23fd5f8c5aea698c0d5c1..e2617d1bb32eaf56321bf2805a575bd895a300a8 100644
---- a/external_login_user/template/notifications.html
-+++ b/external_login_user/template/notifications.html
-@@ -55,193 +55,211 @@
-         hour: 'numeric',
-         minute: '2-digit',
-         hour12: false,
-       }).formatToParts(d);
-       const getPart = (type) => parts.find((p) => p.type === type)?.value || '';
-       return `${getPart('year')}/${getPart('month')}/${getPart('day')} ${getPart('hour')}:${getPart('minute')}`;
-     };
- 
-     const createItem = (item) => {
-       const a = document.createElement('a');
-       a.href = '#';
-       a.className = `list-group-item list-group-item-action ${item.read_at ? '' : 'list-group-item-warning'}`;
-       a.innerHTML = `
-         <div class="d-flex w-100 justify-content-between align-items-start">
-           <div class="me-3">
-             <h2 class="h6 mb-1">${escapeHtml(item.title || 'お知らせ')}</h2>
-             <p class="mb-1">${escapeHtml(item.body || '')}</p>
-             <small class="text-muted">${formatDate(item.created_at)}</small>
-           </div>
-           <span class="badge ${item.read_at ? 'bg-secondary' : 'bg-danger'}">${item.read_at ? '既読' : '未読'}</span>
-         </div>
-       `;
-       a.addEventListener('click', async (e) => {
-         e.preventDefault();
-         try {
--          await fetch(`/external-login/api/notifications/${item.id}/read`, {
-+          const res = await fetch(`/external-login/api/notifications/${item.id}/read`, {
-             method: 'POST',
-             credentials: 'same-origin',
-           });
-+          if (res.ok) {
-+            await syncAppBadgeSafe();
-+          }
-         } catch (_e) {
-           // noop
-         }
-         window.location.assign(item.target_url || '/external-login/');
-       });
-       return a;
-     };
- 
-     const updateNavBadge = (count) => {
--      const badge = document.getElementById('navNotifBadge');
--      if (!badge) return;
--      const safeCount = Number.isFinite(Number(count)) ? Math.max(0, Number(count)) : 0;
--      if (safeCount > 0) {
--        badge.textContent = String(Math.min(Math.floor(safeCount), 99));
--        badge.classList.remove('d-none');
--        return;
-+      if (typeof window.updateExternalNavNotifBadge === 'function') {
-+        window.updateExternalNavNotifBadge(count);
-       }
--      badge.textContent = '0';
--      badge.classList.add('d-none');
-+    };
-+
-+    const syncAppBadgeSafe = async () => {
-+      if (typeof window.syncAppBadge === 'function') {
-+        await window.syncAppBadge();
-+      }
-+    };
-+
-+    const applyCounts = async (count) => {
-+      updateNavBadge(count);
-+      if (count > 0) {
-+        if (typeof window.setAppBadgeSafe === 'function') await window.setAppBadgeSafe(count);
-+      } else if (typeof window.clearAppBadgeSafe === 'function') {
-+        await window.clearAppBadgeSafe();
-+      }
-+      if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
-     };
- 
-     const prependNewItems = (items) => {
-       if (!Array.isArray(items) || items.length === 0) return;
-       for (const item of items) {
-         if (!item || !item.id || knownIds.has(item.id)) continue;
-         knownIds.add(item.id);
-         listEl.insertBefore(createItem(item), listEl.firstChild);
-       }
-       emptyEl.classList.toggle('d-none', listEl.children.length > 0);
-     };
- 
-     const renderItems = (items, append = false) => {
-       if (!append) {
-         listEl.innerHTML = '';
-         knownIds.clear();
-       }
-       items.forEach((item) => {
-         if (!item || !item.id || knownIds.has(item.id)) return;
-         knownIds.add(item.id);
-         listEl.appendChild(createItem(item));
-       });
-       const hasItems = listEl.children.length > 0;
-       emptyEl.classList.toggle('d-none', hasItems);
-       loadMoreBtn.classList.toggle('d-none', !hasNext);
- 
-       if (!append) {
-         const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
-         lastId = Math.max(lastId, latest);
-       }
-     };
- 
-     const load = async ({ append = false } = {}) => {
-       if (loading) return;
-       loading = true;
-       try {
-         const unread = onlyUnread.checked ? '1' : '0';
-         const res = await fetch(`/external-login/api/notifications?unread=${unread}&page=${page}`, {
-           credentials: 'same-origin',
-           cache: 'no-store',
-         });
-         if (!res.ok) throw new Error('failed to load notifications');
-         const data = await res.json();
-         hasNext = !!data?.pagination?.has_next;
-         renderItems(data.items || [], append);
-         if (!append) {
--          const unreadCount = (data.items || []).filter((item) => !item.read_at).length;
--          updateNavBadge(unreadCount);
-+          await syncAppBadgeSafe();
-         }
-       } finally {
-         loading = false;
-       }
-     };
- 
-     const pollUpdatesOnce = async () => {
-       if (document.hidden) return;
-       if (onlyUnread.checked) return;
-       try {
-         const res = await fetch(`/external-login/api/notifications/updates?since_id=${lastId}&limit=50`, {
-           credentials: 'same-origin',
-           cache: 'no-store',
-         });
-         if (!res.ok) return;
-         const data = await res.json();
-         prependNewItems(data.items || []);
-         lastId = Math.max(lastId, Number(data?.latest_id || 0));
--        updateNavBadge(data?.unread_count ?? 0);
-+        await applyCounts(Number(data?.unread_count ?? 0));
-       } catch (_e) {
-         // noop
-       }
-     };
- 
-     const stopPolling = () => {
-       if (pollingTimer) {
-         window.clearInterval(pollingTimer);
-         pollingTimer = null;
-       }
-     };
- 
-     const startPolling = () => {
-       stopPolling();
-       if (document.hidden || onlyUnread.checked) return;
-       pollingTimer = window.setInterval(pollUpdatesOnce, 2000);
-     };
- 
-     onlyUnread.addEventListener('change', async () => {
-       page = 1;
-       await load({ append: false });
-       startPolling();
-     });
- 
-     loadMoreBtn.addEventListener('click', async () => {
-       if (!hasNext) return;
-       page += 1;
-       await load({ append: true });
-     });
- 
-     refreshBtn.addEventListener('click', async () => {
-       page = 1;
-       await load({ append: false });
-       await pollUpdatesOnce();
-+      await syncAppBadgeSafe();
-     });
- 
-     markAllReadBtn.addEventListener('click', async () => {
-       markAllReadBtn.disabled = true;
-       try {
--        await fetch('/external-login/api/notifications/read-all', {
-+        const res = await fetch('/external-login/api/notifications/read-all', {
-           method: 'POST',
-           credentials: 'same-origin',
-         });
-+        if (res.ok && typeof window.clearAppBadgeSafe === 'function') {
-+          await window.clearAppBadgeSafe();
-+          if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
-+        }
-         page = 1;
-         await load({ append: false });
-         await pollUpdatesOnce();
-+        await syncAppBadgeSafe();
-       } finally {
-         markAllReadBtn.disabled = false;
-       }
-     });
- 
-     const refreshCurrentHead = async () => {
-       await pollUpdatesOnce();
-     };
- 
-     document.addEventListener('visibilitychange', () => {
-       if (document.hidden) {
-         stopPolling();
+     async function setAppBadgeSafe(rawCount) {
+       const count = toSafeCount(rawCount);
+       if (count <= 0) {
+         await clearAppBadgeSafe();
          return;
        }
-       refreshCurrentHead();
-       startPolling();
-     });
-     window.addEventListener('pageshow', async () => {
-       await refreshCurrentHead();
-       startPolling();
-     });
-     window.addEventListener('message', (event) => {
-       if (event?.data?.type === 'mfu-notification-updated') pollUpdatesOnce();
-     });
+       try {
+         if (typeof navigator.setAppBadge === 'function') {
+           await navigator.setAppBadge(count);
+         }
+       } catch (e) {
+         console.debug('[badge] setAppBadge failed', e);
+@@ -78,50 +89,51 @@
+     function notifySwToSyncBadge() {
+       try {
+         if (navigator.serviceWorker?.controller) {
+           navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
+         }
+       } catch (e) {
+         console.debug('[badge] notify sw failed', e);
+       }
+     }
  
--    load({ append: false }).then(() => {
-+    load({ append: false }).then(async () => {
-       startPolling();
--      pollUpdatesOnce();
-+      await pollUpdatesOnce();
-+      await syncAppBadgeSafe();
+     async function syncAppBadge() {
+       try {
+         const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
+         if (res.status === 401) {
+           updateNavBadge(0);
+           await clearAppBadgeSafe();
+           notifySwToSyncBadge();
+           return 0;
+         }
+         if (!res.ok) {
+           return null;
+         }
+         const data = await res.json().catch(() => ({}));
+         const count = toSafeCount(data?.count ?? 0);
+         updateNavBadge(count);
++        emitUnreadChanged(count);
+         if (count > 0) {
+           await setAppBadgeSafe(count);
+         } else {
+           await clearAppBadgeSafe();
+         }
+         notifySwToSyncBadge();
+         return count;
+       } catch (e) {
+         console.debug('[badge] sync failed', e);
+         return null;
+       }
+     }
+ 
+     window.setAppBadgeSafe = setAppBadgeSafe;
+     window.clearAppBadgeSafe = clearAppBadgeSafe;
+     window.syncAppBadge = syncAppBadge;
+     window.notifySwToSyncBadge = notifySwToSyncBadge;
+     window.updateExternalNavNotifBadge = updateNavBadge;
+ 
+     document.addEventListener('DOMContentLoaded', () => {
+       if (!document.getElementById('navNotifBadge')) return;
+ 
+       let pollTimer = null;
+       let pollingDisabled = false;
+ 
+@@ -135,45 +147,46 @@
+       };
+ 
+       const startPolling = () => {
+         if (pollTimer !== null) return;
+         pollTimer = window.setInterval(updateBadge, 30000);
+       };
+ 
+       const stopPolling = () => {
+         if (pollTimer === null) return;
+         window.clearInterval(pollTimer);
+         pollTimer = null;
+       };
+ 
+       if (window.io) {
+         const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+         socket.on('connect', () => {
+           stopPolling();
+           updateBadge();
+         });
+         socket.on('disconnect', () => {
+           startPolling();
+         });
+         socket.on('notif_unread', (data) => {
+           const count = toSafeCount(data?.count ?? 0);
+           updateNavBadge(count);
++          emitUnreadChanged(count);
+           if (count > 0) {
+             setAppBadgeSafe(count);
+           } else {
+             clearAppBadgeSafe();
+           }
+           notifySwToSyncBadge();
+         });
+       } else {
+         startPolling();
+       }
+ 
+       updateBadge();
+       document.addEventListener('visibilitychange', () => {
+         if (!document.hidden) updateBadge();
+       });
+       window.addEventListener('pageshow', updateBadge);
+       window.addEventListener('online', updateBadge);
      });
    })();
  </script>
- {% endblock %}
-diff --git a/static/sw.js b/static/sw.js
-index 8becdbf6fe642da25b80ec9bcf6dc5fa625a92d6..a3abe42ce7a5bb9a55e18e3c48b301ec2d397ae8 100644
---- a/static/sw.js
-+++ b/static/sw.js
-@@ -1,33 +1,92 @@
- const SW_VERSION = '2026-03-04-01';
-+const BADGE_SYNC_MESSAGE = 'SYNC_BADGE';
-+
-+function badgeApiUrl() {
-+  return new URL('/external-login/api/notifications/unread-count', self.location.origin).toString();
-+}
-+
-+async function setBadgeSafe(count) {
-+  const normalized = Number.isFinite(Number(count)) ? Math.floor(Number(count)) : 0;
-+  if (normalized <= 0) {
-+    await clearBadgeSafe();
-+    return;
-+  }
-+  try {
-+    if (self.registration && typeof self.registration.setAppBadge === 'function') {
-+      await self.registration.setAppBadge(normalized);
-+    }
-+  } catch (e) {
-+    console.debug('[sw] set badge failed', e);
-+  }
-+}
-+
-+async function clearBadgeSafe() {
-+  try {
-+    if (self.registration && typeof self.registration.clearAppBadge === 'function') {
-+      await self.registration.clearAppBadge();
-+    }
-+  } catch (e) {
-+    console.debug('[sw] clear badge failed', e);
-+  }
-+}
-+
-+async function syncBadgeFromApi() {
-+  try {
-+    const res = await fetch(badgeApiUrl(), {
-+      method: 'GET',
-+      credentials: 'include',
-+      cache: 'no-store',
-+    });
-+    if (res.status === 401) {
-+      await clearBadgeSafe();
-+      return;
-+    }
-+    if (!res.ok) {
-+      return;
-+    }
-+    const data = await res.json().catch(() => ({}));
-+    const count = Number(data?.count ?? 0);
-+    if (Number.isFinite(count) && count > 0) {
-+      await setBadgeSafe(count);
-+      return;
-+    }
-+    await clearBadgeSafe();
-+  } catch (e) {
-+    console.debug('[sw] sync badge failed', e);
-+  }
-+}
+
+
+diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
+index 42d45b8d707ee07ad26ae30d49a3df8ce4961f68..389d1c0eacf59f1f8c6b90ddcc89aa5f39f3f59a 100644
+--- a/external_login_user/template/ext_index.html
++++ b/external_login_user/template/ext_index.html
+@@ -149,53 +149,52 @@
+                   </div>
+                   <div class="text-muted small mb-2">
+                     {% if start %}
+                       {% if start is string %}
+                         {{ start }}
+                       {% else %}
+                         {{ start.strftime("%Y/%m/%d %H:%M") }}
+                       {% endif %}
+                     {% else %}—{% endif %}
+                   </div>
  
- self.addEventListener('install', () => {
-   self.skipWaiting();
- });
+                   <div class="d-flex flex-wrap gap-2">
+                     {% if ps == 'paid' and rcpt %}
+                       <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
+                     {% elif ps == 'paid' %}
+                       <button class="btn btn-sm btn-success" disabled>支払済</button>
+                     {% elif needs_pay %}
+                       <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
+                     {% else %}
+                       <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
+                     {% endif %}
  
- self.addEventListener('activate', (event) => {
--  event.waitUntil(clients.claim());
-+  event.waitUntil((async () => {
-+    await clients.claim();
-+    await syncBadgeFromApi();
-+  })());
- });
+                     {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
+                     {% if not has_openchat %}
+                       <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+-                      {% if (e.chat_unread_count|default(0)|int) > 0 %}
+-                        <span class="badge rounded-pill bg-danger text-white align-self-center">{{ e.chat_unread_count }}</span>
+-                      {% endif %}
++                      {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
++                      <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
+                     {% endif %}
  
- function normalizeTargetUrl(rawUrl, eventId) {
-   const fallbackPath = eventId ? `/chat/events/${eventId}` : '/';
-   const candidate = typeof rawUrl === 'string' && rawUrl.trim() ? rawUrl.trim() : fallbackPath;
+                     {% if album_url %}
+                       <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
+                     {% else %}
+                       <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
+                     {% endif %}
  
-   if (candidate.startsWith('//')) {
-     return `${self.location.origin}/`;
-   }
+                     <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+                   </div>
+                 </div>
+               </div>
+             {% endfor %}
+           </div>
+         {% endif %}
  
-   try {
-     const url = new URL(candidate, self.location.origin);
-     if (url.origin !== self.location.origin) {
-       return `${self.location.origin}/`;
-     }
-     return url.toString();
-   } catch (_e) {
-     return `${self.location.origin}/`;
-   }
- }
+         <!-- ========= 終了イベント ========= -->
+         <div class="mt-4">
+           <h3 class="h6 text-muted mb-2">終了イベント</h3>
+           {% set past = events_past or [] %}
  
- self.addEventListener('push', (event) => {
-   let payload = {};
-   try {
-     payload = event.data ? event.data.json() : {};
-@@ -39,80 +98,86 @@ self.addEventListener('push', (event) => {
-   const body = payload.body || '新着通知があります';
-   const targetUrl = normalizeTargetUrl(payload.url, payload.event_id);
+           {% if past|length == 0 %}
+             <div class="text-muted">終了イベントはありません。</div>
+           {% else %}
+             <!-- PC/スマホ共通：カード表示に統一 -->
+@@ -219,53 +218,52 @@
+                     </div>
+                     <div class="text-muted small mb-2">
+                       {% if start %}
+                         {% if start is string %}
+                           {{ start }}
+                         {% else %}
+                           {{ start.strftime("%Y/%m/%d %H:%M") }}
+                         {% endif %}
+                       {% else %}—{% endif %}
+                     </div>
  
-   const showPromise = self.registration.showNotification(title, {
-     body,
-     data: { url: targetUrl },
-   });
+                     <div class="d-flex flex-wrap gap-2">
+                       {% if ps == 'paid' and rcpt %}
+                         <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
+                       {% elif ps == 'paid' %}
+                         <button class="btn btn-sm btn-success" disabled>支払済</button>
+                       {% elif needs_pay %}
+                         <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
+                       {% else %}
+                         <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
+                       {% endif %}
  
-   const broadcastPromise = (async () => {
-     try {
-       const windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-       for (const client of windowClients) {
-         try {
-           const origin = new URL(client.url).origin;
-           if (origin !== self.location.origin) continue;
-           client.postMessage({ type: 'MFU_PUSH_NAV', url: targetUrl, ts: Date.now() });
-         } catch (_e) {
-           // noop
+                       {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
+                       {% if not has_openchat %}
+                         <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+-                        {% if (e.chat_unread_count|default(0)|int) > 0 %}
+-                          <span class="badge rounded-pill bg-danger text-white align-self-center">{{ e.chat_unread_count }}</span>
+-                        {% endif %}
++                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
++                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
+                       {% endif %}
+ 
+                       {% if album_url %}
+                         <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
+                       {% else %}
+                         <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
+                       {% endif %}
+ 
+                       <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+ 
+                       {% if (e.tip_enabled|default(0)|int) == 1 %}
+                         <button
+                           type="button"
+                           class="btn btn-sm btn-warning js-tip-open"
+                           data-bs-toggle="modal"
+                           data-bs-target="#tipModal"
+                           data-event-id="{{ e.id }}"
+                           data-event-title="{{ e.title|e }}"
+                         >投げ銭</button>
+                       {% endif %}
+                     </div>
+                   </div>
+                 </div>
+               {% endfor %}
+             </div>
+@@ -699,50 +697,106 @@
+         });
+ 
+         const res = await fetch('/chat/api/push/subscribe', {
+           method: 'POST',
+           headers: { 'Content-Type': 'application/json' },
+           credentials: 'same-origin',
+           body: JSON.stringify({ csrf_token: csrfToken, sw_scope: new URL(registration.scope).pathname || '/', ...sub.toJSON() }),
+         });
+ 
+         if (!res.ok) {
+           alert('購読登録に失敗しました');
+           return;
          }
-       }
-     } catch (_e) {
-       // noop
-     }
-   })();
  
--  event.waitUntil(Promise.all([showPromise, broadcastPromise]));
-+  event.waitUntil(Promise.all([showPromise, broadcastPromise, syncBadgeFromApi()]));
- });
- 
- self.addEventListener('notificationclick', (event) => {
-   event.notification.close();
-   let targetUrl = `${self.location.origin}/`;
-   try {
-     targetUrl = normalizeTargetUrl(event.notification?.data?.url);
-   } catch (_e) {
-     targetUrl = `${self.location.origin}/`;
-   }
- 
-   event.waitUntil((async () => {
-+    await syncBadgeFromApi();
-     let windowClients = [];
-     try {
-       windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
-     } catch (_e) {
-       windowClients = [];
-     }
- 
-     const sameOriginClient = windowClients.find((client) => {
-       try {
-         return new URL(client.url).origin === self.location.origin;
-       } catch (_e) {
-         return false;
+         setBtn(true);
+         setGuideVisibility(true);
+       } catch (e) {
+         console.error(e);
+         alert('プッシュ通知設定でエラーが発生しました');
        }
      });
  
-     if (sameOriginClient) {
-       if ('navigate' in sameOriginClient) {
-         try {
-           await sameOriginClient.navigate(targetUrl);
-         } catch (_e) {
-           // fallback to focus/openWindow below
-         }
-       }
-       if ('focus' in sameOriginClient) {
-         try {
-           await sameOriginClient.focus();
-           return;
-         } catch (_e) {
-           // fallback to openWindow below
-         }
-       }
-     }
+     document.addEventListener('DOMContentLoaded', initPush);
+   })();
  
-     if (clients.openWindow) {
-       try {
-         await clients.openWindow(targetUrl);
-       } catch (_e) {
-         // noop
-       }
-     }
-   })());
- });
++  (() => {
++    const badges = Array.from(document.querySelectorAll('.js-chat-unread-badge[data-event-id]'));
++    if (!badges.length) return;
 +
-+self.addEventListener('message', (event) => {
-+  if (event?.data?.type !== BADGE_SYNC_MESSAGE) return;
-+  event.waitUntil(syncBadgeFromApi());
-+});
++    const toInt = (v) => {
++      const n = Number(v ?? 0);
++      if (!Number.isFinite(n)) return 0;
++      return Math.max(0, Math.floor(n));
++    };
++
++    const byEventId = new Map();
++    for (const badge of badges) {
++      const eventId = Number(badge.dataset.eventId || 0);
++      if (eventId > 0) byEventId.set(eventId, badge);
++    }
++
++    const applyCounts = (counts) => {
++      byEventId.forEach((badge, eventId) => {
++        const count = toInt(counts?.[String(eventId)] ?? 0);
++        if (count > 0) {
++          badge.textContent = String(Math.min(count, 999));
++          badge.classList.remove('d-none');
++        } else {
++          badge.textContent = '0';
++          badge.classList.add('d-none');
++        }
++      });
++    };
++
++    const refreshEventUnread = async () => {
++      const eventIds = Array.from(byEventId.keys());
++      if (!eventIds.length) return;
++      try {
++        const qs = encodeURIComponent(eventIds.join(','));
++        const res = await fetch(`/external-login/api/events/chat-unread-counts?event_ids=${qs}`, {
++          credentials: 'same-origin',
++          cache: 'no-store',
++        });
++        if (!res.ok) return;
++        const data = await res.json().catch(() => ({}));
++        applyCounts(data?.counts || {});
++      } catch (e) {
++        console.debug('event unread sync failed', e);
++      }
++    };
++
++    document.addEventListener('DOMContentLoaded', refreshEventUnread);
++    document.addEventListener('visibilitychange', () => {
++      if (!document.hidden) refreshEventUnread();
++    });
++    window.addEventListener('pageshow', refreshEventUnread);
++    window.addEventListener('online', refreshEventUnread);
++    window.addEventListener('external:notif_unread', refreshEventUnread);
++    window.setInterval(refreshEventUnread, 30000);
++  })();
++
+   (() => {
+     const PENDING_KEY = 'mfu_push_pending_nav';
+     const MAX_AGE_MS = 15000;
+ 
+     const normalizePath = (rawUrl) => {
+       try {
+         const u = new URL(rawUrl, window.location.origin);
+         if (u.origin !== window.location.origin) return '/';
+         return `${u.pathname}${u.search}${u.hash}`;
+       } catch (_e) {
+         return '/';
+       }
+     };
+ 
+     const handlePendingNavigation = () => {
+       let pending = null;
+       try {
+         pending = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null');
+       } catch (_e) {
+         localStorage.removeItem(PENDING_KEY);
+         return;
+       }
+       if (!pending || !pending.url || !pending.ts) return;
+ 
+       if (Date.now() - Number(pending.ts) > MAX_AGE_MS) {
+
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 76798a7ea7783096ff18861113d60ece66f946e9..dc3230c39b23a0258ead8316ca7ba8beff0b6334 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1052,50 +1052,119 @@ def index():
+             try:
+                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
+             except Exception:
+                 return _dt.max
+ 
+         def _key_desc(x):
+             from datetime import datetime as _dt
+             v = x.get("starts_at")
+             try:
+                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
+             except Exception:
+                 return _dt.min
+ 
+         events_upcoming.sort(key=_key_asc)
+         events_past.sort(key=_key_desc, reverse=True)
+ 
+     resp = make_response(render_template("ext_index.html",
+                            login=bool(me), me=me,
+                            events_upcoming=events_upcoming,
+                            events_past=events_past))
+     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+     resp.headers["Pragma"] = "no-cache"
+     return resp
+ 
+ 
++
++
++@bp.get("/api/events/chat-unread-counts")
++def api_event_chat_unread_counts():
++    social_id = session.get("ext_user_social_id")
++    me = _get_ext_user_by_social(social_id) if social_id else None
++    if not me:
++        return jsonify({"ok": False, "error": "unauthorized"}), 401
++
++    ids_arg = (request.args.get("event_ids") or "").strip()
++    event_ids: list[int] = []
++    if ids_arg:
++        for token in ids_arg.split(","):
++            token = token.strip()
++            if not token:
++                continue
++            try:
++                event_id = int(token)
++            except Exception:
++                continue
++            if event_id > 0:
++                event_ids.append(event_id)
++    # 重複除去 + 件数上限
++    event_ids = list(dict.fromkeys(event_ids))[:200]
++
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        if event_ids:
++            placeholders = ",".join(["%s"] * len(event_ids))
++            cur.execute(
++                f"""
++                SELECT
++                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
++                  COUNT(*) AS unread_count
++                FROM mfu_notifications
++                WHERE user_kind='external'
++                  AND user_id=%s
++                  AND kind='chat_message'
++                  AND read_at IS NULL
++                  AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
++                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
++                """,
++                (me["id"], *event_ids),
++            )
++        else:
++            cur.execute(
++                """
++                SELECT
++                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
++                  COUNT(*) AS unread_count
++                FROM mfu_notifications
++                WHERE user_kind='external'
++                  AND user_id=%s
++                  AND kind='chat_message'
++                  AND read_at IS NULL
++                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
++                """,
++                (me["id"],),
++            )
++        counts = {}
++        for row in (cur.fetchall() or []):
++            event_id = int(row.get("event_id") or 0)
++            if event_id > 0:
++                counts[str(event_id)] = int(row.get("unread_count") or 0)
++    finally:
++        cur.close(); db.close()
++
++    return jsonify({"ok": True, "counts": counts})
++
+ @bp.route("/me")
+ def me():
+     return redirect(url_for("external_login_user.index"))
+ 
+ 
+ # =========================
+ # LINEログイン（単一定義）
+ # =========================
+ def _state_signer():
+     # Flask の secret_key を使って署名
+     return URLSafeSerializer(current_app.secret_key, salt="line-state-v2")
+ 
+ def _ua_sha256(ua: str) -> str:
+     return hashlib.sha256((ua or "").encode("utf-8")).hexdigest()
+ 
+ def _client_ip_prefix(addr: str) -> str:
+     """
+     端末の IP をプレフィックスに丸めて格納。
+     - IPv6: /64 に丸める（モバイル環境での変動をある程度許容）
+     - IPv4: /24 に丸める
+     """
+     try:
+         ip = ip_address(addr)
+         if isinstance(ip, IPv6Address):
+             net = ip_network(str(ip) + "/64", strict=False)
