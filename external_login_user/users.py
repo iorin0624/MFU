@@ -170,7 +170,8 @@ def _get_admin_payer_profile(cur):
 
 
 def _send_verify_mail(to_email: str, token_raw: str):
-    """メールアドレス確認メール（イベント非関連）→ send_mail に統一"""
+    """legacy / no longer used for new verification flow."""
+    """メールアドレス確認コード（イベント非関連）→ send_mail に統一"""
     verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
     subject = "イベント管理システムからメールアドレス確認のお願い"
     body = (
@@ -186,6 +187,131 @@ def _send_verify_mail(to_email: str, token_raw: str):
         body=body,
         event_uuid=None,
     )
+
+
+def _generate_6digit_pin() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _sender_ip() -> str:
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")[:64]
+
+
+def _send_verify_pin_mail(email: str, pin: str) -> None:
+    subject = "イベント管理システムのメールアドレス確認コード"
+    body = (
+        "メールアドレスの確認コードをお送りします。\n\n"
+        "確認コード:\n"
+        f"{pin}\n\n"
+        "有効期限は10分です。\n"
+        "このコードを未確認ページで入力してください。\n\n"
+        "このメールに心当たりがない場合は破棄してください。"
+    )
+    send_mail(to=email, subject=subject, body=body, event_uuid=None)
+
+
+def _issue_verify_pin(user_id: int, email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tuple[bool, str, str | None]:
+    from .schema import ensure_email_verify_pin_schema
+    ensure_email_verify_pin_schema()
+
+    now = datetime.utcnow()
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT issued_at FROM mfu_email_verify_pin
+             WHERE email=%s
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (email,),
+        )
+        last = cur.fetchone()
+        if last and last.get("issued_at") and (now - last["issued_at"]).total_seconds() < cooldown_sec:
+            return False, "cooldown", None
+
+        cur.execute(
+            """
+            SELECT COUNT(*) AS c FROM mfu_email_verify_pin
+             WHERE email=%s AND issued_at >= (UTC_TIMESTAMP() - INTERVAL 1 HOUR)
+            """,
+            (email,),
+        )
+        cnt = int((cur.fetchone() or {}).get("c") or 0)
+        if cnt >= 5:
+            return False, "rate_limited", None
+
+        pin = _generate_6digit_pin()
+        cur.execute(
+            """
+            INSERT INTO mfu_email_verify_pin
+              (user_id, email, pin_hash, issued_at, expires_at, sender_ip, purpose)
+            VALUES
+              (%s, %s, %s, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL %s MINUTE), %s, 'verify')
+            """,
+            (user_id, email, _hash_pin(pin), ttl_min, _sender_ip()),
+        )
+        db.commit()
+        return True, "ok", pin
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+
+def _consume_verify_pin(user_id: int, email: str, pin: str) -> tuple[bool, str]:
+    from .schema import ensure_email_verify_pin_schema
+    ensure_email_verify_pin_schema()
+
+    if not re.fullmatch(r"\d{6}", pin or ""):
+        return False, "invalid_format"
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, pin_hash, expires_at, failed_attempts, locked_until
+              FROM mfu_email_verify_pin
+             WHERE user_id=%s
+               AND email=%s
+               AND purpose='verify'
+               AND used_at IS NULL
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (user_id, email),
+        )
+        rec = cur.fetchone()
+        if not rec:
+            return False, "not_found"
+
+        now = datetime.utcnow()
+        if rec.get("locked_until") and now < rec["locked_until"]:
+            return False, "locked"
+        if rec.get("expires_at") and now > rec["expires_at"]:
+            return False, "expired"
+
+        if _hash_pin(pin) != (rec.get("pin_hash") or ""):
+            failed = int(rec.get("failed_attempts") or 0) + 1
+            lock_until = None
+            if failed >= 5:
+                lock_until = now + timedelta(minutes=10)
+            cur.execute(
+                "UPDATE mfu_email_verify_pin SET failed_attempts=%s, locked_until=%s WHERE id=%s LIMIT 1",
+                (failed, lock_until, rec["id"]),
+            )
+            db.commit()
+            return False, "locked" if lock_until else "mismatch"
+
+        cur.execute("UPDATE mfu_email_verify_pin SET used_at=UTC_TIMESTAMP() WHERE id=%s LIMIT 1", (rec["id"],))
+        cur.execute(
+            "UPDATE external_login_user SET email_verified_at=UTC_TIMESTAMP() WHERE id=%s AND email=%s LIMIT 1",
+            (user_id, email),
+        )
+        db.commit()
+        return True, "ok"
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
 
 
 def _get_admin_webhook_url() -> str | None:
@@ -638,7 +764,7 @@ def _maybe_flash_email_verify_banner_for_top():
 
         btn = Markup(
             f'''<form method="post" action="{escape(url_for('external_login_user.resend_verify_email'))}" style="display:inline;margin-left:8px;">
-                    <button type="submit" class="btn btn-sm btn-primary">確認メールを再送する</button>
+                    <button type="submit" class="btn btn-sm btn-primary">確認コードを再送する</button>
                 </form>'''
         )
 
@@ -772,7 +898,7 @@ def index():
                 resend_url = url_for("external_login_user.resend_verify_email")
                 btn = Markup(
                     f'''<form method="post" action="{escape(resend_url)}" style="display:inline;margin-left:8px;">
-                            <button type="submit" class="btn btn-sm btn-primary">確認メールを再送する</button>
+                            <button type="submit" class="btn btn-sm btn-primary">確認コードを再送する</button>
                         </form>'''
                 )
                 # ★ カテゴリ: "warning unverified_email"（黄色スタイル + 後段の特定しやすさ）
@@ -1288,7 +1414,7 @@ def profile():
     外部参加者のプロフィール編集。
     - 画像アップロード: <input type="file" name="avatar_file">
     - CSRF: session["ext_csrf"] と hidden input csrf_token を比較
-    - メールアドレス: 変更時は email_verified_at をクリアし確認メール送信
+    - メールアドレス: 変更時は email_verified_at をクリアし確認コード送信
     - 保存後は ext_after_login_next（join等）に戻す
     - ★通知設定: notify_album_upload / notify_album_process をON/OFF保存
     - ★決済モード: payment_mode (manual / auto)
@@ -1635,17 +1761,25 @@ def profile():
         or (request.form.get("next") or "").strip()
     )
 
-    # ===== メール確認メール送信 =====
+    # ===== メール確認コード送信 =====
     needs_verify = False
     try:
         if email_in and (email_changed or (email_in and not was_verified)):
             # next_url を DB に保存するために渡す
-            t_raw = _issue_email_verify_token(me["id"], email_in, redirect_url=next_url)  # 24h
-            _send_verify_mail(email_in, t_raw)
-            flash("確認メールを送信しました。受信ボックスをご確認ください。", "info")
+            ok_pin, pin_reason, pin_raw = _issue_verify_pin(me["id"], email_in)
+            if ok_pin and pin_raw:
+                _send_verify_pin_mail(email_in, pin_raw)
+                flash("確認コードを送信しました。メールをご確認ください。", "info")
+            elif pin_reason == "cooldown":
+                flash("送信間隔が短すぎます。しばらく待ってから再度お試しください。", "warning")
+            elif pin_reason == "rate_limited":
+                flash("送信回数が上限に達しました。時間をおいて再度お試しください。", "warning")
+            else:
+                flash("確認コードの送信に失敗しました。時間をおいて再度お試しください。", "danger")
             needs_verify = True
     except Exception:
-        current_app.logger.exception("send verify mail failed")
+        current_app.logger.exception("send verify pin failed")
+        flash("確認コードの送信に失敗しました。時間をおいて再度お試しください。", "danger")
 
     # メール確認が必要な場合、確認完了後に戻る先をセッションに保存しておく
     if needs_verify and next_url:
@@ -1668,6 +1802,8 @@ def profile():
     cur.close()
     db.close()
     flash("プロフィールを保存しました。", "success")
+    if needs_verify:
+        return redirect(url_for("external_login_user.unverified", next=next_url))
     return redirect(next_url)
 
 
@@ -3428,7 +3564,7 @@ def email_start():
       <input type="email" name="email" required style="padding:8px;width:320px;max-width:100%">
     </label>
     <div style="margin-top:12px">
-      <button type="submit" style="padding:10px 16px">確認メールを送信</button>
+      <button type="submit" style="padding:10px 16px">確認コードを送信</button>
     </div>
   </form>
 </div>
@@ -3453,109 +3589,24 @@ def email_start():
         flash("このメールアドレスは既に確認済みです。", "info")
         return redirect(url_for("external_login_user.email_start"))
 
-    t_raw = _issue_email_verify_token(me["id"], email)  # type: ignore
-    _send_verify_mail(email, t_raw)
-    flash("確認メールを送信しました。受信ボックスをご確認ください。", "success")
+    ok_pin, reason, pin_raw = _issue_verify_pin(me["id"], email)
+    if ok_pin and pin_raw:
+        _send_verify_pin_mail(email, pin_raw)
+        flash("確認コードを送信しました。メールをご確認ください。", "success")
+    elif reason == "cooldown":
+        flash("送信間隔が短すぎます。しばらく待ってから再度お試しください。", "warning")
+    elif reason == "rate_limited":
+        flash("送信回数が上限に達しました。時間をおいて再度お試しください。", "warning")
+    else:
+        flash("確認コードの送信に失敗しました。時間をおいて再度お試しください。", "danger")
     return redirect(url_for("external_login_user.email_start"))
 
 
 @bp.route("/email/verify", methods=["GET", "POST"])
 def email_verify():
-    token_raw = (request.values.get("t") or "").strip()
-    if not token_raw:
-        abort(400, "missing token")
-    token_hex = hashlib.sha256(token_raw.encode("utf-8")).hexdigest()
-
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        # redirect_url カラムがない場合を考慮して、まずは全カラム取得を試みる
-        try:
-            cur.execute("""
-                SELECT id, user_id, email, expires_at, used_at, redirect_url
-                  FROM mfu_email_verification
-                 WHERE token=%s
-                 LIMIT 1
-            """, (token_hex,))
-        except Exception:
-            # カラムがない場合は redirect_url を除いて取得
-            cur.execute("""
-                SELECT id, user_id, email, expires_at, used_at
-                  FROM mfu_email_verification
-                 WHERE token=%s
-                 LIMIT 1
-            """, (token_hex,))
-
-        row = cur.fetchone()
-        if not row:
-            abort(400, "invalid token")
-
-        if isinstance(row, tuple):
-            # tuple の場合はインデックスで取得
-            rec_id = row[0]
-            user_id = row[1]
-            email = row[2]
-            expires_at = row[3]
-            used_at = row[4]
-            db_redirect_url = row[5] if len(row) > 5 else None
-        else:
-            rec_id = row["id"]
-            user_id = row["user_id"]
-            email = row["email"]
-            expires_at = row["expires_at"]
-            used_at = row["used_at"]
-            db_redirect_url = row.get("redirect_url")  # カラムがなければ None になる
-
-        now = datetime.utcnow()
-        if used_at or (expires_at and now > expires_at):
-            abort(400, "token expired or used")
-    finally:
-        try: cur.close(); db.close()
-        except Exception: pass
-
-    if request.method == "GET":
-        from flask import render_template_string
-        return render_template_string("""
-<!doctype html><meta charset="utf-8">
-<title>メールアドレス確認</title>
-<div style="padding:24px;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial">
-  <h1 style="font-size:20px;margin:0 0 12px">このメールアドレスを登録・確認しますか？</h1>
-  <p style="margin:0 0 16px"><strong>{{ email }}</strong></p>
-  <form method="post" style="display:inline-block;margin-right:8px">
-    <input type="hidden" name="t" value="{{ token_raw }}">
-    <button type="submit" style="padding:10px 16px">確認する</button>
-  </form>
-</div>
-        """, email=email, token_raw=token_raw)
-
-    # POST: 確定
-    db = get_db(); cur = db.cursor()
-    try:
-        cur.execute("UPDATE external_login_user SET email=%s, email_verified_at=NOW() WHERE id=%s LIMIT 1",
-                    (email, user_id))
-        cur.execute("UPDATE mfu_email_verification SET used_at=NOW() WHERE id=%s LIMIT 1", (rec_id,))
-        db.commit()
-    finally:
-        try: cur.close(); db.close()
-        except Exception: pass
-
-    # 完了後の戻り先を決定（DB保存値を優先し、なければセッション、それもなければマイページ）
-    next_url = db_redirect_url or session.pop("ext_after_verify_next", None) or session.pop("ext_after_login_next", None) or "https://mfu.iori0624.jp/e/"
-    
-    from flask import render_template_string
-    return render_template_string("""
-<!doctype html><meta charset="utf-8">
-<title>確認完了</title>
-<div style="padding:24px;font-family:system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial">
-  <p style="margin:0 0 8px">メールアドレスの確認が完了しました。</p>
-  <p style="margin:0 0 16px"><strong>{{ email }}</strong></p>
-  <a href="{{ next_url }}" 
-     style="padding:10px 16px;display:inline-block;
-            text-decoration:none;border:1px solid #ccc;
-            border-radius:6px;background:#f8f9fa">
-    【元のページに戻って参加を完了する】
-  </a>
-</div>
-        """, email=email, next_url=next_url)
+    """legacy / no longer used for new verification flow."""
+    flash("この認証方式は終了しました。確認コードを入力してください。", "warning")
+    return redirect(url_for("external_login_user.unverified"))
 
 @bp.route("/admin/avatars/backfill", methods=["GET", "POST"])
 def backfill_avatars():
@@ -3614,19 +3665,12 @@ def backfill_avatars():
 
 @bp.post("/email/resend-verify", endpoint="resend_verify_email")
 def resend_verify_email():
-    """
-    トップの注意喚起バナーから叩かれる『確認メールの再送』。
-    - ログイン必須
-    - email が未設定なら警告
-    - トークン発行 → 確認メール送信 → フラッシュ表示
-    """
-    # ログインチェック（未ログインならトップへ）
+    """未認証ユーザー向け確認コード再送。"""
     social_id = session.get("ext_user_social_id")
     if not social_id:
         flash("ログイン状態が無効です。もう一度お試しください。", "warning")
         return redirect(url_for("external_login_user.index"))
 
-    # 対象ユーザー取得
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
         cur.execute("""
@@ -3649,35 +3693,29 @@ def resend_verify_email():
         flash("メールアドレスが未登録です。プロフィール編集からご登録ください。", "warning")
         return redirect(url_for("external_login_user.profile", reason="email"))
 
-    # トークン発行して送信
     try:
-        # セッションから戻り先を取得（イベント参加URLを最優先する）
-        n1 = session.get("ext_after_login_next") or ""
-        n2 = session.get("ext_after_verify_next") or ""
-        
-        if "/events/join/" in n1:
-            next_url = n1
-        elif "/events/join/" in n2:
-            next_url = n2
+        ok_pin, reason, pin_raw = _issue_verify_pin(me["id"], email)
+        if ok_pin and pin_raw:
+            _send_verify_pin_mail(email, pin_raw)
+            flash("確認コードを再送しました。メールをご確認ください。", "info")
+        elif reason == "cooldown":
+            flash("送信間隔が短すぎます。しばらく待ってから再度お試しください。", "warning")
+        elif reason == "rate_limited":
+            flash("送信回数が上限に達しました。時間をおいて再度お試しください。", "warning")
         else:
-            next_url = n1 or n2 or None
-
-        token_raw = _issue_email_verify_token(me["id"], email, redirect_url=next_url)  # 24h 有効
-        _send_verify_mail(email, token_raw)
-        flash("確認メールを再送しました。受信ボックスをご確認ください。", "info")
+            flash("確認コードの再送に失敗しました。時間をおいて再度お試しください。", "danger")
     except Exception:
-        current_app.logger.exception("resend verify mail failed")
-        flash("確認メールの再送に失敗しました。時間をおいて再度お試しください。", "danger")
+        current_app.logger.exception("resend verify pin failed")
+        flash("確認コードの再送に失敗しました。時間をおいて再度お試しください。", "danger")
 
-    # トップへ戻る（バナーは email_verified_at が NULL の間だけ表示されます）
-    return redirect(url_for("external_login_user.index"))
+    return redirect(url_for("external_login_user.unverified"))
 
 @bp.route("/unverified")
 def unverified():
     """
     メール未確認ユーザー専用ページ。
     - ここからプロフィール編集へ
-    - 確認メールの再送へ
+    - 確認コードの再送へ
     - ログアウトへ
     以外は before_request でブロックされる想定。
     """
@@ -3705,6 +3743,49 @@ def unverified():
         email=email,
         next=request.args.get("next") or "",
     )
+
+
+@bp.post("/email/verify-pin", endpoint="verify_email_pin")
+def verify_email_pin():
+    uid = session.get("ext_user_id")
+    if not uid:
+        return redirect(url_for("external_login_user.index"))
+
+    pin = (request.form.get("pin") or "").strip()
+    if not re.fullmatch(r"\d{6}", pin):
+        flash("6桁の確認コードを入力してください。", "warning")
+        return redirect(url_for("external_login_user.unverified", next=request.form.get("next") or ""))
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT email, email_verified_at FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
+        row = cur.fetchone()
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+
+    email = (row.get("email") or "").strip() if row else ""
+    if not email:
+        flash("メールアドレスが未登録です。プロフィール編集からご登録ください。", "warning")
+        return redirect(url_for("external_login_user.profile"))
+
+    ok, reason = _consume_verify_pin(uid, email, pin)
+    if ok:
+        flash("メールアドレスの確認が完了しました。", "success")
+        next_url = (request.form.get("next") or "").strip() or session.pop("ext_after_verify_next", None) or session.pop("ext_after_login_next", None) or url_for("external_login_user.index")
+        if not (next_url.startswith("/") and not next_url.startswith("//")):
+            next_url = url_for("external_login_user.index")
+        return redirect(next_url)
+
+    msg = {
+        "invalid_format": "6桁の確認コードを入力してください。",
+        "locked": "試行回数が上限に達しました。しばらく待ってから再度お試しください。",
+        "expired": "確認コードが一致しないか、有効期限が切れています。",
+        "mismatch": "確認コードが一致しないか、有効期限が切れています。",
+        "not_found": "確認コードが一致しないか、有効期限が切れています。",
+    }.get(reason, "確認コードが一致しないか、有効期限が切れています。")
+    flash(msg, "warning")
+    return redirect(url_for("external_login_user.unverified", next=request.form.get("next") or ""))
 
 
 # ==== PINコードログイン（LINEが使えない人向け：メール→PIN→ログイン） ====

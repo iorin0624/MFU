@@ -6,13 +6,13 @@ from flask import request, render_template, jsonify, abort, url_for
 from . import bp
 from app.utils.db import get_db
 from .utils import _require_mfu_login_redirect, _admin_csrf_token
-from app.utils.mail import send_mail  # ← 指定の mail.py を利用
 
 # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
 try:
-    from .users import _issue_email_verify_token  # type: ignore
+    from .users import _issue_verify_pin, _send_verify_pin_mail  # type: ignore
 except Exception:
-    _issue_email_verify_token = None  # type: ignore
+    _issue_verify_pin = None  # type: ignore
+    _send_verify_pin_mail = None  # type: ignore
 
 
 # ============= 内部ヘルパ =============
@@ -233,9 +233,7 @@ def admin_ext_users_update(user_id: int):
 @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
 def admin_ext_users_resend_verify(user_id: int):
     """
-    メール確認リンクの再送
-    - トークンを発行（users._issue_email_verify_token）
-    - mail.py の send_mail() で送信
+    メール確認コードの再送
     """
     guard = _require_mfu_login_redirect()
     if guard:
@@ -245,10 +243,9 @@ def admin_ext_users_resend_verify(user_id: int):
     if not token_req or token_req != _admin_csrf_token():
         return jsonify({"ok": False, "error": "invalid_csrf"}), 400
 
-    if not _issue_email_verify_token:
-        return jsonify({"ok": False, "error": "token_issuer_unavailable"}), 500
+    if not _issue_verify_pin or not _send_verify_pin_mail:
+        return jsonify({"ok": False, "error": "pin_issuer_unavailable"}), 500
 
-    # 対象メール取得
     db = get_db(); cur = db.cursor()
     try:
         cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
@@ -260,35 +257,14 @@ def admin_ext_users_resend_verify(user_id: int):
         if not email:
             return jsonify({"ok": False, "error": "no_email"}), 400
 
-        # トークン発行
-        token_raw = _issue_email_verify_token(user_id, email)  # type: ignore
+        ok_pin, reason, pin_raw = _issue_verify_pin(user_id, email)  # type: ignore
+        if not ok_pin or not pin_raw:
+            return jsonify({"ok": False, "error": reason}), 429 if reason in ("cooldown", "rate_limited") else 400
 
-        # 検証URL
-        verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
-
-        subject = "イベント管理システムからメールアドレス確認のお願い"
-        body = (
-            "メールアドレスの確認をお願いします。\n"
-            "下記の確認ページを開き、「確認する」ボタンを押してください（有効期限: 24時間）。\n\n"
-            f"{verify_url_get}\n\n"
-            "—\n"
-            "発行元：MFU イベント管理\n"
-            "このメールに心当たりが無い場合は破棄してください。"
-        )
-
-        # ここで mail.py の send_mail を使用（ホスト/ポートは mail.py のデフォルト: localhost:25）
         try:
-            send_mail(
-                to=email,
-                subject=subject,
-                body=body,
-                event_uuid=None,   # From: noreply@mail.iori0624.jp
-                # 必要なら smtp_host / smtp_port / timeout をここで明示
-                # smtp_host="localhost", smtp_port=25, timeout=10,
-            )
-        except Exception as e:
-            # SMTP接続や拒否などの例外を呼び元に返す
-            return jsonify({"ok": False, "error": "smtp_error", "detail": str(e)}), 502
+            _send_verify_pin_mail(email, pin_raw)  # type: ignore
+        except Exception:
+            return jsonify({"ok": False, "error": "smtp_error"}), 502
 
         return jsonify({"ok": True})
     finally:

@@ -8,13 +8,13 @@ from flask import request, render_template, jsonify, abort, url_for, redirect
 from . import bp
 from app.utils.db import get_db
 from .utils import _require_mfu_login_redirect, _admin_csrf_token
-from app.utils.mail import send_mail  # /mnt/mfu/app/utils/mail.py
 
 # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
 try:
-    from .users import _issue_email_verify_token  # type: ignore
+    from .users import _issue_verify_pin, _send_verify_pin_mail  # type: ignore
 except Exception:
-    _issue_email_verify_token = None  # type: ignore
+    _issue_verify_pin = None  # type: ignore
+    _send_verify_pin_mail = None  # type: ignore
 
 
 # ============= 内部ヘルパ =============
@@ -392,7 +392,7 @@ def admin_ext_users_update(user_id: int):
 @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
 def admin_ext_users_resend_verify(user_id: int):
     """
-    確認メールの再送
+    確認コードの再送
     - Form投稿: 成功時は編集ページへリダイレクト（?sent=1）
     - JSON投稿(AJAX): 互換のため JSON を返す
     """
@@ -406,13 +406,12 @@ def admin_ext_users_resend_verify(user_id: int):
             return jsonify({"ok": False, "error": "invalid_csrf"}), 400
         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
 
-    if not _issue_email_verify_token:
+    if not _issue_verify_pin or not _send_verify_pin_mail:
         if request.is_json:
-            return jsonify({"ok": False, "error": "token_issuer_unavailable"}), 500
-        return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="token"))
+            return jsonify({"ok": False, "error": "pin_issuer_unavailable"}), 500
+        return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="pin"))
 
-    db = get_db()
-    cur = db.cursor()
+    db = get_db(); cur = db.cursor()
     try:
         cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
         row = cur.fetchone()
@@ -427,40 +426,25 @@ def admin_ext_users_resend_verify(user_id: int):
                 return jsonify({"ok": False, "error": "no_email"}), 400
             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
 
-        # トークン発行
-        token_raw = _issue_email_verify_token(user_id, email)  # type: ignore
-
-        # 検証URL
-        verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
-
-        subject = "イベント管理システムからメールアドレス確認のお願い"
-        body = (
-            "メールアドレスの確認をお願いします。\n"
-            "下記の確認ページを開き、「確認する」ボタンを押してください（有効期限: 24時間）。\n\n"
-            f"{verify_url_get}\n\n"
-        )
-
-        # 送信（/app/utils/mail.py）
-        try:
-            send_mail(
-                to=email,
-                subject=subject,
-                body=body,
-                event_uuid=None,  # From: noreply@mail.iori0624.jp
-            )
-        except Exception as e:
+        ok_pin, reason, pin_raw = _issue_verify_pin(user_id, email)  # type: ignore
+        if not ok_pin or not pin_raw:
             if request.is_json:
-                return jsonify({"ok": False, "error": "smtp_error", "detail": str(e)}), 502
+                return jsonify({"ok": False, "error": reason}), 429 if reason in ("cooldown", "rate_limited") else 400
+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error=reason))
+
+        try:
+            _send_verify_pin_mail(email, pin_raw)  # type: ignore
+        except Exception:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "smtp_error"}), 502
             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="smtp"))
 
         if request.is_json:
             return jsonify({"ok": True})
         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, sent="1"))
-
     finally:
         try:
-            cur.close()
-            db.close()
+            cur.close(); db.close()
         except Exception:
             pass
 
