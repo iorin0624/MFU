@@ -957,6 +957,38 @@ def index():
         raws = cur.fetchall()
         cur.close(); db.close()
 
+        event_unread_counts: dict[int, int] = {}
+        if raws:
+            event_ids = [int(r["id"]) for r in raws if r.get("id")]
+            if event_ids:
+                db2 = get_db(); cur2 = db2.cursor(dictionary=True)
+                try:
+                    placeholders = ",".join(["%s"] * len(event_ids))
+                    cur2.execute(
+                        f"""
+                        SELECT
+                          COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
+                          COUNT(*) AS unread_count
+                        FROM mfu_notifications
+                        WHERE user_kind='external'
+                          AND user_id=%s
+                          AND kind='chat_message'
+                          AND read_at IS NULL
+                          AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
+                        GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
+                        """,
+                        (me["id"], *event_ids),
+                    )
+                    for row in (cur2.fetchall() or []):
+                        event_id = int(row.get("event_id") or 0)
+                        if event_id > 0:
+                            event_unread_counts[event_id] = int(row.get("unread_count") or 0)
+                finally:
+                    try:
+                        cur2.close(); db2.close()
+                    except Exception:
+                        pass
+
         from datetime import datetime as _dt
         now = _dt.now()
 
@@ -989,6 +1021,7 @@ def index():
                 "my_payment_status": r["payment_status"] or "unpaid",
                 "my_receipt_url": r["receipt_url"],
                 "line_openchat_url": _normalize_external_url(r.get("line_openchat_url")),
+                "chat_unread_count": int(event_unread_counts.get(int(r["id"]), 0)),
             }
             receipt_pdf_url = None
             if (
@@ -1040,6 +1073,75 @@ def index():
     resp.headers["Pragma"] = "no-cache"
     return resp
 
+
+
+
+@bp.get("/api/events/chat-unread-counts")
+def api_event_chat_unread_counts():
+    social_id = session.get("ext_user_social_id")
+    me = _get_ext_user_by_social(social_id) if social_id else None
+    if not me:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    ids_arg = (request.args.get("event_ids") or "").strip()
+    event_ids: list[int] = []
+    if ids_arg:
+        for token in ids_arg.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                event_id = int(token)
+            except Exception:
+                continue
+            if event_id > 0:
+                event_ids.append(event_id)
+    # 重複除去 + 件数上限
+    event_ids = list(dict.fromkeys(event_ids))[:200]
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        if event_ids:
+            placeholders = ",".join(["%s"] * len(event_ids))
+            cur.execute(
+                f"""
+                SELECT
+                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
+                  COUNT(*) AS unread_count
+                FROM mfu_notifications
+                WHERE user_kind='external'
+                  AND user_id=%s
+                  AND kind='chat_message'
+                  AND read_at IS NULL
+                  AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
+                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
+                """,
+                (me["id"], *event_ids),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT
+                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
+                  COUNT(*) AS unread_count
+                FROM mfu_notifications
+                WHERE user_kind='external'
+                  AND user_id=%s
+                  AND kind='chat_message'
+                  AND read_at IS NULL
+                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
+                """,
+                (me["id"],),
+            )
+        counts = {}
+        for row in (cur.fetchall() or []):
+            event_id = int(row.get("event_id") or 0)
+            if event_id > 0:
+                counts[str(event_id)] = int(row.get("unread_count") or 0)
+    finally:
+        cur.close(); db.close()
+
+    return jsonify({"ok": True, "counts": counts})
 
 @bp.route("/me")
 def me():

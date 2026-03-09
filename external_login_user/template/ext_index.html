@@ -171,6 +171,8 @@
                     {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
                     {% if not has_openchat %}
                       <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+                      {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
+                      <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
                     {% endif %}
 
                     {% if album_url %}
@@ -238,6 +240,8 @@
                       {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
                       {% if not has_openchat %}
                         <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
+                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
                       {% endif %}
 
                       {% if album_url %}
@@ -713,6 +717,62 @@
     });
 
     document.addEventListener('DOMContentLoaded', initPush);
+  })();
+
+  (() => {
+    const badges = Array.from(document.querySelectorAll('.js-chat-unread-badge[data-event-id]'));
+    if (!badges.length) return;
+
+    const toInt = (v) => {
+      const n = Number(v ?? 0);
+      if (!Number.isFinite(n)) return 0;
+      return Math.max(0, Math.floor(n));
+    };
+
+    const byEventId = new Map();
+    for (const badge of badges) {
+      const eventId = Number(badge.dataset.eventId || 0);
+      if (eventId > 0) byEventId.set(eventId, badge);
+    }
+
+    const applyCounts = (counts) => {
+      byEventId.forEach((badge, eventId) => {
+        const count = toInt(counts?.[String(eventId)] ?? 0);
+        if (count > 0) {
+          badge.textContent = String(Math.min(count, 999));
+          badge.classList.remove('d-none');
+        } else {
+          badge.textContent = '0';
+          badge.classList.add('d-none');
+        }
+      });
+    };
+
+    const refreshEventUnread = async () => {
+      const eventIds = Array.from(byEventId.keys());
+      if (!eventIds.length) return;
+      try {
+        const qs = encodeURIComponent(eventIds.join(','));
+        const res = await fetch(`/external-login/api/events/chat-unread-counts?event_ids=${qs}`, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        applyCounts(data?.counts || {});
+      } catch (e) {
+        console.debug('event unread sync failed', e);
+      }
+    };
+
+    document.addEventListener('DOMContentLoaded', refreshEventUnread);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refreshEventUnread();
+    });
+    window.addEventListener('pageshow', refreshEventUnread);
+    window.addEventListener('online', refreshEventUnread);
+    window.addEventListener('external:notif_unread', refreshEventUnread);
+    window.setInterval(refreshEventUnread, 30000);
   })();
 
   (() => {

@@ -37,6 +37,17 @@
       return Math.max(0, Math.floor(value));
     };
 
+
+    const emitUnreadChanged = (rawCount) => {
+      try {
+        window.dispatchEvent(new CustomEvent('external:notif_unread', {
+          detail: { count: toSafeCount(rawCount) },
+        }));
+      } catch (_e) {
+        // noop
+      }
+    };
+
     const updateNavBadge = (rawCount) => {
       const badge = document.getElementById('navNotifBadge');
       if (!badge) return;
@@ -100,6 +111,7 @@
         const data = await res.json().catch(() => ({}));
         const count = toSafeCount(data?.count ?? 0);
         updateNavBadge(count);
+        emitUnreadChanged(count);
         if (count > 0) {
           await setAppBadgeSafe(count);
         } else {
@@ -157,6 +169,7 @@
         socket.on('notif_unread', (data) => {
           const count = toSafeCount(data?.count ?? 0);
           updateNavBadge(count);
+          emitUnreadChanged(count);
           if (count > 0) {
             setAppBadgeSafe(count);
           } else {
