@@ -20,6 +20,10 @@
          href="{{ url_for('external_login_user.admin_event_new') }}">
         新規作成
       </a>
+      <a class="btn btn-sm btn-outline-danger"
+         href="{{ url_for('external_login_user.admin_events_deleted_list') }}">
+        削除済み一覧
+      </a>
       {# NOTE: エンドポイント解決エラー回避のため、既知のURLを直接指定 #}
       <a class="btn btn-sm btn-outline-secondary"
          href="/external-login/admin/ext-users">
@@ -47,6 +51,7 @@
             <th>詳細</th>
             <th>権限一覧</th>
             <th>コピー</th>
+            <th>削除</th>
           </tr>
         </thead>
         <tbody>
@@ -83,6 +88,21 @@
                   <input type="hidden" name="csrf_token" value="{{ session.get('admin_csrf') }}">
                   <button type="submit" class="btn btn-sm btn-outline-secondary">
                     コピー
+                  </button>
+                </form>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if session.get('user') == 'admin' %}
+                <form method="post"
+                      action="{{ url_for('external_login_user.admin_event_soft_delete', event_id=e.id) }}"
+                      style="display:inline;"
+                      onsubmit="return confirm('イベント「{{ e.title|e }}」を削除済み一覧へ移動します（論理削除）。よろしいですか？');">
+                  <input type="hidden" name="csrf_token" value="{{ session.get('admin_csrf') }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">
+                    削除
                   </button>
                 </form>
               {% else %}

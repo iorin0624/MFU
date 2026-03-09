@@ -1,320 +1,145 @@
-diff --git a/chat/templates/chat/index.html b/chat/templates/chat/index.html
-index 300f5c9c1cdfc586786f6542252ade96a21f7041..1e3ccdb438e258a0843d34d9425646e0f58474b5 100644
---- a/chat/templates/chat/index.html
-+++ b/chat/templates/chat/index.html
-@@ -1,26 +1,27 @@
- {% extends "chat/base_chat.html" %}
-+{% block title %}チャットルーム（0）{% endblock %}
- {% block content %}
- <div class="container py-4">
-   <h2>イベントチャット</h2>
-   <p class="text-muted">ログインユーザー: {{ actor.display_name }} ({{ actor.actor_type }})</p>
-   {% if actor.actor_type in ['admin', 'acl'] %}
-   <div class="mb-3">
-     <button type="button" id="chat-index-enable-push" class="btn btn-sm btn-outline-secondary">Push通知を有効化</button>
-     <small class="text-muted ms-2">個別DM通知にも利用されます</small>
-   </div>
-   {% endif %}
-   <div class="alert alert-info">参加者/運営のみチャット入室できます（adminは例外で入室可能）。</div>
-   <ul class="list-group">
-     {% for ev in events %}
-       <li class="list-group-item d-flex justify-content-between align-items-center">
-         <span>{{ ev.title }} {% if ev.start_at %}<small class="text-muted">{{ ev.start_at }}</small>{% endif %}</span>
-         <a class="btn btn-primary btn-sm" href="{{ url_for('chat.room', event_id=ev.id) }}">入室</a>
-       </li>
-     {% else %}
-       <li class="list-group-item">入室可能なイベントがありません。</li>
-     {% endfor %}
-   </ul>
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index f726cbabc56c388de57b43eb222ab4d286babf82..0dd86a57642440494de3eb5bb95d428947b0421d 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -66,50 +66,65 @@ AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
  
-   {% if actor.actor_type == 'admin' %}
-   <div class="card mt-4">
-     <div class="card-body">
-@@ -141,26 +142,52 @@
-   (async () => {
-     const pushState = await getPushState();
-     if (!pushState.supported) {
-       pushBtn.disabled = true;
-       pushBtn.textContent = 'Push通知は非対応です';
-       return;
-     }
-     updatePushButton(Boolean(pushState.subscription));
-   })();
  
-   pushBtn.addEventListener('click', async () => {
-     const pushState = await getPushState();
-     if (!pushState.supported) {
-       alert('この端末はPush通知に非対応です');
-       return;
-     }
-     if (pushState.subscription) {
-       await disablePush(pushState.registration, pushState.subscription);
-       return;
-     }
-     await enablePush(pushState.registration);
-   });
- })();
- </script>
- {% endif %}
+ JST = timezone(timedelta(hours=9))
+ 
+ # =========================
+ # 便利ヘルパ（このファイル内限定）
+ # =========================
+ def _normalize_email(s: str) -> str | None:
+     s = (s or "").strip()
+     if not s or "@" not in s or len(s) > 255:
+         return None
+     return s
+ 
+ 
+ def _normalize_external_url(raw: str | None) -> str | None:
+     if not isinstance(raw, str):
+         return None
+     url = raw.strip()
+     if not url:
+         return None
+     if url.startswith(("http://", "https://")):
+         return url
+     return f"https://{url}"
+ 
+ 
 +
-+<script>
-+(() => {
-+  const titleBase = 'チャットルーム';
 +
-+  function applyChatIndexTitle(unreadCount) {
-+    const count = Number.isFinite(Number(unreadCount)) ? Math.max(0, Number(unreadCount)) : 0;
-+    document.title = `${titleBase}（${count}）`;
-+  }
-+
-+  async function refreshChatIndexTitle() {
-+    try {
-+      const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-+      if (!res.ok) return;
-+      const data = await res.json().catch(() => ({}));
-+      applyChatIndexTitle(data.count || 0);
-+    } catch (_e) {
-+      // noop
-+    }
-+  }
-+
-+  applyChatIndexTitle(0);
-+  refreshChatIndexTitle();
-+  setInterval(refreshChatIndexTitle, 15000);
-+})();
-+</script>
- {% endblock %}
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index a5be77ab7921cebe4be345dd55ace2d2f4a5a4eb..f697fbf50707f9b6cbe6c5323f7eabee06836b7d 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -1276,51 +1276,52 @@
- {% macro render_reaction_box(message) -%}
-   <div class="chat-reaction-box"
-        data-reaction-box="1"
-        data-my-reaction="{{ message.my_reaction or '' }}"
-        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
-     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-     <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-     <div class="chat-reaction-panel d-none"></div>
-     <div class="chat-reaction-summary"></div>
-   </div>
- {%- endmacro %}
++def _mfu_event_has_deleted_at_column() -> bool:
++    db = get_db(); cur = db.cursor()
++    try:
++        cur.execute("SHOW COLUMNS FROM mfu_event LIKE 'deleted_at'")
++        row = cur.fetchone()
++        return bool(row)
++    except Exception:
++        return False
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
+ def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24, redirect_url: str | None = None) -> str:
+     """
+     検証用トークンを発行して DB に保存し、URL に載せるプレーントークンを返す。
+     DB 側には SHA256 ハッシュで保存。
+     """
+     raw = secrets.token_urlsafe(32)
+     token_hex = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+     expires_at = datetime.utcnow() + timedelta(hours=ttl_hours)
  
- <div class="container py-3 chat-page"
-      data-event-id="{{ event.id }}"
-      data-room-id="{{ active_room.room_id }}"
-      data-csrf="{{ csrf_token }}"
-      data-vapid="{{ vapid_public_key }}"
-      data-me="{{ current_user_id or me_user_id or '' }}"
-      data-display-name="{{ actor.display_name }}"
-      data-default-avatar="{{ default_avatar_url }}"
-      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}"
-      data-dm-mode="{{ 1 if dm_mode else 0 }}"
-      data-dm-uuid="{{ dm_uuid or '' }}"
-      data-dm-room-id="{{ dm_room_id or '' }}"
-      data-read-front-debug-enabled="{{ 1 if chat_read_front_debug_enabled else 0 }}"
--     data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}">
-+     data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}"
-+     data-title-base="{% if dm_mode %}{{ peer_display_name }}{% else %}{{ event.title }}{% endif %}">
-   {% include "chat/_chat_nav.html" %}
-   <div class="chat-room-main">
-     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
-     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
-       {% if actor.actor_type == 'admin' %}
-       <a class="btn btn-sm btn-outline-dark" target="_blank" rel="noopener" href="{% if dm_mode %}{{ url_for('chat.debug_read_v2', dm_uuid=dm_uuid) }}{% else %}{{ url_for('chat.debug_read_v2', event_id=event.id, room_id=active_room.room_id) }}{% endif %}">既読デバッグ</a>
-       {% endif %}
-       <button type="button" id="chat-read-front-debug-toggle" class="btn btn-sm btn-outline-secondary chat-read-front-debug-toggle d-none" aria-pressed="false">既読UIデバッグ OFF</button>
-       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
-       {% if can_manage_rooms %}
-       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
-       {% if active_room.is_main|int != 1 %}
-       <button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>
-       <button type="button" id="chat-room-delete-btn" class="btn btn-sm btn-outline-danger">サブルーム削除</button>
-       {% endif %}
-       {% endif %}
-     </div>
+     db = get_db(); cur = db.cursor()
+     try:
+         # redirect_url カラムがある前提で進めます（なければ後ほど ALTER TABLE を検討）
+         # 既存のコードから推測すると、このテーブルに動的にカラムを追加するのは難しいため、
+         # もしカラムがない場合はエラーになりますが、まずは追加を試みます。
+         try:
+             cur.execute("""
+                 INSERT INTO mfu_email_verification (user_id, email, token, expires_at, redirect_url)
+                 VALUES (%s, %s, %s, %s, %s)
+             """, (user_id, email, token_hex, expires_at, redirect_url))
+         except Exception:
+             # カラムがない場合のフォールバック
+             cur.execute("""
+                 INSERT INTO mfu_email_verification (user_id, email, token, expires_at)
+                 VALUES (%s, %s, %s, %s)
+             """, (user_id, email, token_hex, expires_at))
+@@ -765,70 +780,73 @@ def index():
+                     Markup(
+                         '<div style="font-weight:600;">メール確認のお願い</div>'
+                         f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
+                     ),
+                     "warning unverified_email"
+                 )
+     except Exception:
+         try:
+             current_app.logger.exception("top banner check failed")
+         except Exception:
+             pass
+     # -----------------------------------------------------------------------
  
-     <div class="chat-body-layout">
-   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
-     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
-     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
-     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
-   </div>
-   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
-@@ -1651,50 +1652,51 @@
- <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
- window.addEventListener('DOMContentLoaded', async () => {
-   const root = document.querySelector('[data-event-id]');
-   if (!root) return;
+     social_id = session.get("ext_user_social_id")
+     me = _get_ext_user_by_social(social_id) if social_id else None
  
-   if (!window.io) {
-     return;
-   }
+     if request.args.get("tip") == "done":
+         if request.args.get("status") == "ok":
+             flash("投げ銭ありがとうございます！", "success")
+         elif request.args.get("status") == "ng":
+             flash("投げ銭の決済が完了しませんでした。", "warning")
  
-   const eventId = Number(root.dataset.eventId);
-   const roomId = root.dataset.roomId || "";
-   const csrfToken = root.dataset.csrf;
-   const vapidKey = root.dataset.vapid;
-   const meId = root.dataset.me || '';
-   const myDisplayName = root.dataset.displayName || '';
-   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
-   const isAdmin = root.dataset.isAdmin === '1';
-   const canReadFrontDebug = root.dataset.readFrontDebugEnabled === '1';
-   const roomDebugKey = root.dataset.roomDebugKey || '';
-   const readFrontDebugStorageKey = 'chat.readFrontDebug.enabled';
-   const sendBtn = document.getElementById('chat-send-btn');
-   const dmMode = root.dataset.dmMode === '1';
-   const dmUuid = root.dataset.dmUuid || "";
-   const dmRoomId = root.dataset.dmRoomId || "";
-+  const pageTitleBase = String(root.dataset.titleBase || '').trim() || (dmMode ? 'DM' : 'チャット');
-   const effectiveDmRoomId = dmRoomId || (dmUuid ? `dm:${dmUuid}` : "");
-   if (dmMode && (!dmUuid || !effectiveDmRoomId)) {
-     if (sendBtn) sendBtn.disabled = true;
-     alert('DM UUIDが取得できないため送信できません。');
-     return;
-   }
-   const isMobile = window.matchMedia('(hover: none)').matches;
-   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
-   const maxUploadImages = 6;
-   const maxUploadImageBytes = 20 * 1024 * 1024;
-   const DOUBLE_TAP_INTERVAL_MS = 280;
-   const DOUBLE_TAP_MAX_DISTANCE = 12;
-   const DOUBLE_TAP_MOVE_CANCEL = 8;
+     events_upcoming, events_past = [], []
+     if me:
+         db = get_db(); cur = db.cursor(dictionary=True)
+-        cur.execute("""
++        has_deleted_at = _mfu_event_has_deleted_at_column()
++        where_deleted = "WHERE e.deleted_at IS NULL" if has_deleted_at else ""
++        cur.execute(f"""
+           SELECT
+             e.id, e.event_uuid, e.title,
+             e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
+             COALESCE(e.tip_enabled,0) AS tip_enabled,
+             m.id AS member_id,
+             COALESCE(m.status,'pending')                        AS status,
+             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
+             m.receipt_url,
+             COALESCE(m.bank_transfer,0) AS bank_transfer,
+             COALESCE(m.paypay_transfer,0) AS paypay_transfer,
+             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
+           FROM mfu_event e
+           JOIN (
+               SELECT MAX(id) AS id, event_id
+                 FROM mfu_event_member
+                WHERE user_id = %s
+                GROUP BY event_id
+           ) mm ON mm.event_id = e.id
+           JOIN mfu_event_member m ON m.id = mm.id
++          {where_deleted}
+           ORDER BY e.starts_at IS NULL, e.starts_at
+           LIMIT 200
+         """, (me["id"],))
+         raws = cur.fetchall()
+         cur.close(); db.close()
  
-   const msgBox = document.getElementById('messages');
-   const form = document.getElementById('chat-form');
-   const bodyInput = document.getElementById('chat-body');
-   const maxInputLines = 6;
-   const pushBtn = document.getElementById('enable-push');
-   const roomSwitch = document.getElementById('chat-room-switch');
-   const roomPickerToggle = document.getElementById('chat-room-picker-toggle');
-   const roomPickerModal = document.getElementById('chatRoomPickerModal');
-   const notificationBadge = document.getElementById('chat-notification-badge');
-   const roomCreateBtn = document.getElementById('chat-room-create-btn');
-   const roomMembersBtn = document.getElementById('chat-room-members-btn');
-@@ -1752,50 +1754,52 @@ window.addEventListener('DOMContentLoaded', async () => {
-   const ctxReactions = ctxMenu?.querySelector('[data-ctx-reactions]');
+         from datetime import datetime as _dt
+         now = _dt.now()
  
-   const fmtDate = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     year: 'numeric',
-     month: 'numeric',
-     day: 'numeric',
-     weekday: 'short',
-   });
-   const fmtTime = new Intl.DateTimeFormat('ja-JP', {
-     timeZone: 'Asia/Tokyo',
-     hour: 'numeric',
-     minute: '2-digit',
-     hour12: false,
-   });
+         def _to_dt(v):
+             try:
+                 if hasattr(v, "year"): return v
+                 return _dt.fromisoformat(str(v).replace(" ", "T"))
+             except Exception:
+                 return None
  
-   const canonicalMeId = canonicalReadActorKeyFromKey(meId);
- 
-   function buildSafeBodyHtml(msg) {
-     const rawHtml = (msg?.body_html || '').trim();
-     if (rawHtml) return rawHtml;
-     const rawText = String(msg?.body_text ?? msg?.body ?? '');
-     return escapeHtml(rawText).replace(/\n/g, '<br>');
-   }
- 
-+  applyBrowserTitle(0);
-+
-   const state = {
-     replyToId: null,
-     selectedBubble: null,
-     selectedRowEl: null,
-     readStateByActor: new Map(),
-     reactionByMessage: new Map(),
-     viewerImages: [],
-     viewerIndex: 0,
-     ctxMessageId: null,
-     touchDoubleTap: {
-       startX: 0,
-       startY: 0,
-       moved: false,
-       row: null,
-       bubble: null,
-       lastTapAt: 0,
-       lastTapX: 0,
-       lastTapY: 0,
-       lastTapMessageId: null,
-     },
-     ctxRow: null,
-     ctxBodyPlain: '',
-     editTargetMessageId: null,
-     typingMembers: new Map(),
-     typingDebounceTimer: null,
-@@ -4656,61 +4660,70 @@ function openFulltextModal(row) {
-   }
- 
- 
- 
-   async function refreshNotificationBadge() {
-     try {
-       const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
-       if (res.status === 401) {
-         stopNotificationBadgePolling();
-         if (notificationBadge) {
-           notificationBadge.textContent = '🔔';
-           notificationBadge.classList.remove('has-unread');
-           notificationBadge.classList.add('no-unread');
-         }
-         return;
-       }
-       const data = await res.json().catch(() => ({}));
-       if (!res.ok) return;
-       const unread = Number(data.count || 0);
-       applyNotificationBadge(unread);
-     } catch (_e) {
-       // noop
-     }
-   }
- 
-+  function applyBrowserTitle(unread) {
-+    const count = Number.isFinite(Number(unread)) ? Math.max(0, Number(unread)) : 0;
-+    document.title = `${pageTitleBase}（${count}）`;
-+  }
-+
-   function applyNotificationBadge(unread) {
--    if (!notificationBadge) return;
-+    if (!notificationBadge) {
-+      applyBrowserTitle(unread);
-+      return;
-+    }
-     if (unread > 0) {
-       notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
-       notificationBadge.classList.remove('no-unread');
-       notificationBadge.classList.add('has-unread');
-     } else {
-       notificationBadge.textContent = '🔔';
-       notificationBadge.classList.remove('has-unread');
-       notificationBadge.classList.add('no-unread');
-     }
-+    applyBrowserTitle(unread);
-   }
- 
-   async function markChatNotificationsReadByRoom() {
-     const res = await fetch('/external-login/api/notifications/read-by-room', {
-       method: 'POST',
-       headers: { 'Content-Type': 'application/json' },
-       credentials: 'same-origin',
-       body: JSON.stringify({ event_id: eventId, room_id: roomId }),
-     });
-     if (res.status === 401) {
-       console.info('[notifications] read-by-room skipped (unauthorized)');
-       return null;
-     }
-     const data = await res.json().catch(() => ({}));
-     if (!res.ok || !data.ok) {
-       console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
-       throw new Error('read-by-room failed');
-     }
-     console.info('[notifications] read-by-room success', {
-       room_id: roomId,
-       event_id: eventId,
-       updated_count: Number(data.updated_count || 0),
-       unread_count: Number(data.unread_count || 0),
-       latest_id: Number(data.latest_id || 0),
-     });
+         for r in raws:
+             euuid_str = _uuid_bytes_to_str(r["event_uuid"])
+             item = {
+                 "id": r["id"],
+                 "event_uuid_str": euuid_str,
+                 "title": r["title"],
+                 "starts_at": r["starts_at"],
+                 "status": r["status"] or "pending",
+                 "payment_status": r["payment_status"] or "unpaid",
