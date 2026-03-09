@@ -11,6 +11,89 @@
       navigator.serviceWorker.register('/sw.js', { scope: '/' });
     }
 
+
+    (() => {
+      const BADGE_API_URL = '/external-login/api/notifications/unread-count';
+      const SW_SYNC_TYPE = 'SYNC_BADGE';
+      const toSafeCount = (rawCount) => {
+        const value = Number(rawCount ?? 0);
+        if (!Number.isFinite(value)) return 0;
+        return Math.max(0, Math.floor(value));
+      };
+
+      async function setAppBadgeSafe(rawCount) {
+        const count = toSafeCount(rawCount);
+        if (count <= 0) {
+          await clearAppBadgeSafe();
+          return;
+        }
+        try {
+          if (typeof navigator.setAppBadge === 'function') {
+            await navigator.setAppBadge(count);
+          }
+        } catch (e) {
+          console.debug('[badge] setAppBadge failed', e);
+        }
+      }
+
+      async function clearAppBadgeSafe() {
+        try {
+          if (typeof navigator.clearAppBadge === 'function') {
+            await navigator.clearAppBadge();
+          }
+        } catch (e) {
+          console.debug('[badge] clearAppBadge failed', e);
+        }
+      }
+
+      function notifySwToSyncBadge() {
+        try {
+          if (navigator.serviceWorker?.controller) {
+            navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
+          }
+        } catch (e) {
+          console.debug('[badge] notify sw failed', e);
+        }
+      }
+
+      async function syncAppBadge() {
+        try {
+          const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
+          if (res.status === 401) {
+            await clearAppBadgeSafe();
+            notifySwToSyncBadge();
+            return 0;
+          }
+          if (!res.ok) return null;
+          const data = await res.json().catch(() => ({}));
+          const count = toSafeCount(data?.count ?? 0);
+          if (count > 0) {
+            await setAppBadgeSafe(count);
+          } else {
+            await clearAppBadgeSafe();
+          }
+          notifySwToSyncBadge();
+          return count;
+        } catch (e) {
+          console.debug('[badge] sync failed', e);
+          return null;
+        }
+      }
+
+      window.setAppBadgeSafe = window.setAppBadgeSafe || setAppBadgeSafe;
+      window.clearAppBadgeSafe = window.clearAppBadgeSafe || clearAppBadgeSafe;
+      window.notifySwToSyncBadge = window.notifySwToSyncBadge || notifySwToSyncBadge;
+      window.syncAppBadge = window.syncAppBadge || syncAppBadge;
+
+      window.addEventListener('pageshow', () => { window.syncAppBadge?.(); });
+      window.addEventListener('online', () => { window.syncAppBadge?.(); });
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+          window.syncAppBadge?.();
+        }
+      });
+    })();
+
     (() => {
       const PENDING_KEY = 'mfu_push_pending_nav';
       const MAX_AGE_MS = 15000;

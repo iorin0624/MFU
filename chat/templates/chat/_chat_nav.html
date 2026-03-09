@@ -55,15 +55,31 @@
     let pollTimer = null;
     let pollingDisabled = false;
 
-    const applyCount = (rawCount) => {
+    const toSafeCount = (rawCount) => {
       const count = Number(rawCount ?? 0);
-      if (Number.isFinite(count) && count > 0) {
-        badge.textContent = String(Math.min(Math.floor(count), 99));
+      if (!Number.isFinite(count)) return 0;
+      return Math.max(0, Math.floor(count));
+    };
+
+    const applyCount = async (rawCount) => {
+      const count = toSafeCount(rawCount);
+      if (count > 0) {
+        badge.textContent = String(Math.min(count, 99));
         badge.classList.remove('d-none');
-        return;
+      } else {
+        badge.textContent = '0';
+        badge.classList.add('d-none');
       }
-      badge.textContent = '0';
-      badge.classList.add('d-none');
+      if (typeof window.setAppBadgeSafe === 'function' && typeof window.clearAppBadgeSafe === 'function') {
+        if (count > 0) {
+          await window.setAppBadgeSafe(count);
+        } else {
+          await window.clearAppBadgeSafe();
+        }
+      }
+      if (typeof window.notifySwToSyncBadge === 'function') {
+        window.notifySwToSyncBadge();
+      }
     };
 
     const updateBadge = async () => {
@@ -73,17 +89,16 @@
         if (res.status === 401) {
           pollingDisabled = true;
           stopPolling();
-          applyCount(0);
+          await applyCount(0);
           return;
         }
         if (!res.ok) {
-          applyCount(0);
           return;
         }
         const data = await res.json();
-        applyCount(data?.count ?? 0);
+        await applyCount(data?.count ?? 0);
       } catch (_e) {
-        applyCount(0);
+        // noop
       }
     };
 

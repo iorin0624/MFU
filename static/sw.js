@@ -1,11 +1,70 @@
 const SW_VERSION = '2026-03-04-01';
+const BADGE_SYNC_MESSAGE = 'SYNC_BADGE';
+
+function badgeApiUrl() {
+  return new URL('/external-login/api/notifications/unread-count', self.location.origin).toString();
+}
+
+async function setBadgeSafe(count) {
+  const normalized = Number.isFinite(Number(count)) ? Math.floor(Number(count)) : 0;
+  if (normalized <= 0) {
+    await clearBadgeSafe();
+    return;
+  }
+  try {
+    if (self.registration && typeof self.registration.setAppBadge === 'function') {
+      await self.registration.setAppBadge(normalized);
+    }
+  } catch (e) {
+    console.debug('[sw] set badge failed', e);
+  }
+}
+
+async function clearBadgeSafe() {
+  try {
+    if (self.registration && typeof self.registration.clearAppBadge === 'function') {
+      await self.registration.clearAppBadge();
+    }
+  } catch (e) {
+    console.debug('[sw] clear badge failed', e);
+  }
+}
+
+async function syncBadgeFromApi() {
+  try {
+    const res = await fetch(badgeApiUrl(), {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+    });
+    if (res.status === 401) {
+      await clearBadgeSafe();
+      return;
+    }
+    if (!res.ok) {
+      return;
+    }
+    const data = await res.json().catch(() => ({}));
+    const count = Number(data?.count ?? 0);
+    if (Number.isFinite(count) && count > 0) {
+      await setBadgeSafe(count);
+      return;
+    }
+    await clearBadgeSafe();
+  } catch (e) {
+    console.debug('[sw] sync badge failed', e);
+  }
+}
 
 self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(clients.claim());
+  event.waitUntil((async () => {
+    await clients.claim();
+    await syncBadgeFromApi();
+  })());
 });
 
 function normalizeTargetUrl(rawUrl, eventId) {
@@ -61,7 +120,7 @@ self.addEventListener('push', (event) => {
     }
   })();
 
-  event.waitUntil(Promise.all([showPromise, broadcastPromise]));
+  event.waitUntil(Promise.all([showPromise, broadcastPromise, syncBadgeFromApi()]));
 });
 
 self.addEventListener('notificationclick', (event) => {
@@ -74,6 +133,7 @@ self.addEventListener('notificationclick', (event) => {
   }
 
   event.waitUntil((async () => {
+    await syncBadgeFromApi();
     let windowClients = [];
     try {
       windowClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
@@ -115,4 +175,9 @@ self.addEventListener('notificationclick', (event) => {
       }
     }
   })());
+});
+
+self.addEventListener('message', (event) => {
+  if (event?.data?.type !== BADGE_SYNC_MESSAGE) return;
+  event.waitUntil(syncBadgeFromApi());
 });
