@@ -508,3 +508,36 @@ def _ensure_event_bank_table(cur, db):
     """)
     db.commit()
 # ===== 追記ここまで =====
+
+
+def ensure_email_verify_pin_schema() -> None:
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS mfu_email_verify_pin (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              user_id BIGINT UNSIGNED NOT NULL,
+              email VARCHAR(255) NOT NULL,
+              pin_hash CHAR(64) NOT NULL,
+              issued_at DATETIME NOT NULL,
+              expires_at DATETIME NOT NULL,
+              used_at DATETIME NULL,
+              failed_attempts INT NOT NULL DEFAULT 0,
+              locked_until DATETIME NULL,
+              sender_ip VARCHAR(64) NULL,
+              purpose VARCHAR(32) NOT NULL DEFAULT 'verify',
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              KEY idx_user_email (user_id, email),
+              KEY idx_email_expires (email, expires_at),
+              KEY idx_expires (expires_at),
+              KEY idx_user_used (user_id, used_at),
+              CONSTRAINT fk_emailvp_user FOREIGN KEY (user_id)
+                REFERENCES external_login_user(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+        db.commit()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass

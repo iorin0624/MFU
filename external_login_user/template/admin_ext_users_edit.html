@@ -6,7 +6,7 @@
 
 {# ---- フラッシュ/通知 ---- #}
 {% if request.args.get('sent') %}
-  <div class="alert alert-success" role="alert">確認メールを送信しました。</div>
+  <div class="alert alert-success" role="alert">確認コードを送信しました。</div>
 {% elif request.args.get('assigned') %}
   <div class="alert alert-success" role="alert">イベントに参加として追加しました。</div>
 {% elif request.args.get('duplicated') %}
@@ -117,7 +117,7 @@
                 {% else %}
                   href="#"
                 {% endif %}
-              >確認メールを再送</a>
+              >確認コードを再送</a>
               {% if not u.email %}
                 <div class="small text-muted">※メール未設定のため送信できません。</div>
               {% endif %}
