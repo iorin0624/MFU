@@ -1298,7 +1298,8 @@
      data-dm-uuid="{{ dm_uuid or '' }}"
      data-dm-room-id="{{ dm_room_id or '' }}"
      data-read-front-debug-enabled="{{ 1 if chat_read_front_debug_enabled else 0 }}"
-     data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}">
+     data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}"
+     data-title-base="{% if dm_mode %}{{ peer_display_name }}{% else %}{{ event.title }}{% endif %}">
   {% include "chat/_chat_nav.html" %}
   <div class="chat-room-main">
     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
@@ -1673,6 +1674,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const dmMode = root.dataset.dmMode === '1';
   const dmUuid = root.dataset.dmUuid || "";
   const dmRoomId = root.dataset.dmRoomId || "";
+  const pageTitleBase = String(root.dataset.titleBase || '').trim() || (dmMode ? 'DM' : 'チャット');
   const effectiveDmRoomId = dmRoomId || (dmUuid ? `dm:${dmUuid}` : "");
   if (dmMode && (!dmUuid || !effectiveDmRoomId)) {
     if (sendBtn) sendBtn.disabled = true;
@@ -1773,6 +1775,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     const rawText = String(msg?.body_text ?? msg?.body ?? '');
     return escapeHtml(rawText).replace(/\n/g, '<br>');
   }
+
+  applyBrowserTitle(0);
 
   const state = {
     replyToId: null,
@@ -4678,8 +4682,16 @@ function openFulltextModal(row) {
     }
   }
 
+  function applyBrowserTitle(unread) {
+    const count = Number.isFinite(Number(unread)) ? Math.max(0, Number(unread)) : 0;
+    document.title = `${pageTitleBase}（${count}）`;
+  }
+
   function applyNotificationBadge(unread) {
-    if (!notificationBadge) return;
+    if (!notificationBadge) {
+      applyBrowserTitle(unread);
+      return;
+    }
     if (unread > 0) {
       notificationBadge.textContent = unread > 99 ? '99+' : String(unread);
       notificationBadge.classList.remove('no-unread');
@@ -4689,6 +4701,7 @@ function openFulltextModal(row) {
       notificationBadge.classList.remove('has-unread');
       notificationBadge.classList.add('no-unread');
     }
+    applyBrowserTitle(unread);
   }
 
   async function markChatNotificationsReadByRoom() {

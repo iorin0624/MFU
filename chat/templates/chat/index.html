@@ -1,4 +1,5 @@
 {% extends "chat/base_chat.html" %}
+{% block title %}チャットルーム（0）{% endblock %}
 {% block content %}
 <div class="container py-4">
   <h2>イベントチャット</h2>
@@ -163,4 +164,30 @@
 })();
 </script>
 {% endif %}
+
+<script>
+(() => {
+  const titleBase = 'チャットルーム';
+
+  function applyChatIndexTitle(unreadCount) {
+    const count = Number.isFinite(Number(unreadCount)) ? Math.max(0, Number(unreadCount)) : 0;
+    document.title = `${titleBase}（${count}）`;
+  }
+
+  async function refreshChatIndexTitle() {
+    try {
+      const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      applyChatIndexTitle(data.count || 0);
+    } catch (_e) {
+      // noop
+    }
+  }
+
+  applyChatIndexTitle(0);
+  refreshChatIndexTitle();
+  setInterval(refreshChatIndexTitle, 15000);
+})();
+</script>
 {% endblock %}

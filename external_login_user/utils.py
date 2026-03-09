@@ -277,7 +277,21 @@ def update_event_member_status(
         db.close()
 
     approved_transition = before_status != "approved" and new_status == "approved"
+    suppress_join_approved_message = False
     if approved_transition:
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute("SELECT line_openchat_url FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+            ev = cur.fetchone() or {}
+            suppress_join_approved_message = bool((ev.get("line_openchat_url") or "").strip())
+        except Exception:
+            current_app.logger.exception("line_openchat_url lookup failed event_id=%s", event_id)
+        finally:
+            cur.close()
+            db.close()
+
+    if approved_transition and not suppress_join_approved_message:
         try:
             from app.chat import get_external_user_display_name, post_system_message_to_event_main_room
 
@@ -296,6 +310,7 @@ def update_event_member_status(
         "changed": before_status != new_status,
         "created": created,
         "approved_transition": approved_transition,
+        "join_message_suppressed": suppress_join_approved_message,
     }
 
 def _event_by_uuid_str(u: str) -> Optional[dict]:
