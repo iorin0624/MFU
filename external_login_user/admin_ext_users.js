@@ -48,7 +48,8 @@ def admin_ext_users_index():
         has_verified = _column_exists("external_login_user", "email_verified_at")
         cols = """
             id, nickname, x_id, instagram_id, email, social_id,
-            avatar_file, avatar_url, created_at, updated_at
+            avatar_file, avatar_url, created_at, updated_at,
+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
         """
         if has_verified:
             cols += ", email_verified_at"
@@ -107,7 +108,8 @@ def admin_ext_users_data():
     has_verified = _column_exists("external_login_user", "email_verified_at")
     cols = """
         id, nickname, x_id, instagram_id, email, social_id,
-        avatar_file, avatar_url, created_at, updated_at
+        avatar_file, avatar_url, created_at, updated_at,
+        COALESCE(chat_admin_alias, 0) AS chat_admin_alias
     """
     if has_verified:
         cols += ", email_verified_at"
@@ -148,7 +150,8 @@ def admin_ext_users_detail(user_id: int):
         cur.execute("""
             SELECT
               id, nickname, x_id, instagram_id, email, social_id,
-              avatar_file, avatar_url, created_at, updated_at
+              avatar_file, avatar_url, created_at, updated_at,
+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
             FROM external_login_user
             WHERE id=%s
             LIMIT 1
@@ -182,6 +185,7 @@ def admin_ext_users_update(user_id: int):
     x_id_raw = (data.get("x_id") or "").strip().lstrip("@")
     ig_raw   = (data.get("instagram_id") or "").strip().lstrip("@")
     email    = (data.get("email") or "").strip() or None
+    chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
 
     errors = {}
     if not nickname:
@@ -211,17 +215,19 @@ def admin_ext_users_update(user_id: int):
             cur.execute("""
                 UPDATE external_login_user
                    SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
+                       chat_admin_alias=%s,
                        email_verified_at=NULL
                  WHERE id=%s
                  LIMIT 1
-            """, (nickname, x_id_raw or None, ig_raw or None, email, user_id))
+            """, (nickname, x_id_raw or None, ig_raw or None, email, chat_admin_alias, user_id))
         else:
             cur.execute("""
                 UPDATE external_login_user
-                   SET nickname=%s, x_id=%s, instagram_id=%s, email=%s
+                   SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
+                       chat_admin_alias=%s
                  WHERE id=%s
                  LIMIT 1
-            """, (nickname, x_id_raw or None, ig_raw or None, email, user_id))
+            """, (nickname, x_id_raw or None, ig_raw or None, email, chat_admin_alias, user_id))
         db.commit()
     finally:
         try: cur.close(); db.close()
@@ -284,7 +290,8 @@ def admin_ext_users_edit_page(user_id: int):
         has_verified = _column_exists("external_login_user", "email_verified_at")
         cols = """
             id, nickname, x_id, instagram_id, email, social_id,
-            avatar_file, avatar_url, created_at, updated_at
+            avatar_file, avatar_url, created_at, updated_at,
+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
         """
         if has_verified:
             cols += ", email_verified_at"

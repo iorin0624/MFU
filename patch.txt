@@ -1,515 +1,1558 @@
-diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index 202defbec2f8d17be445a3adeaa0f5bdcbe88e58..624652cc58a4dd2f4e6679b216edb6ef880cb94f 100644
---- a/external_login_user/template/_extlogin_nav.html
-+++ b/external_login_user/template/_extlogin_nav.html
-@@ -15,50 +15,61 @@
-         <span class="navbar-toggler-icon"></span>
-       </button>
-     </div>
- 
-     <div class="collapse navbar-collapse" id="extNavCollapse">
-       <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-         <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
-         <li class="nav-item"><a class="nav-link" href="/chat/dm">管理者DM</a></li>
-       </ul>
-     </div>
-   </div>
- </nav>
- 
- <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
-   (() => {
-     const BADGE_API_URL = '/external-login/api/notifications/unread-count';
-     const SW_SYNC_TYPE = 'SYNC_BADGE';
- 
-     const toSafeCount = (rawCount) => {
-       const value = Number(rawCount ?? 0);
-       if (!Number.isFinite(value)) return 0;
-       return Math.max(0, Math.floor(value));
-     };
- 
-+
-+    const emitUnreadChanged = (rawCount) => {
-+      try {
-+        window.dispatchEvent(new CustomEvent('external:notif_unread', {
-+          detail: { count: toSafeCount(rawCount) },
-+        }));
-+      } catch (_e) {
-+        // noop
-+      }
-+    };
-+
-     const updateNavBadge = (rawCount) => {
-       const badge = document.getElementById('navNotifBadge');
-       if (!badge) return;
-       const count = toSafeCount(rawCount);
-       if (count > 0) {
-         badge.textContent = String(Math.min(count, 99));
-         badge.classList.remove('d-none');
-         return;
-       }
-       badge.textContent = '0';
-       badge.classList.add('d-none');
-     };
- 
-     async function setAppBadgeSafe(rawCount) {
-       const count = toSafeCount(rawCount);
-       if (count <= 0) {
-         await clearAppBadgeSafe();
-         return;
-       }
-       try {
-         if (typeof navigator.setAppBadge === 'function') {
-           await navigator.setAppBadge(count);
-         }
-       } catch (e) {
-         console.debug('[badge] setAppBadge failed', e);
-@@ -78,50 +89,51 @@
-     function notifySwToSyncBadge() {
-       try {
-         if (navigator.serviceWorker?.controller) {
-           navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
-         }
-       } catch (e) {
-         console.debug('[badge] notify sw failed', e);
-       }
-     }
- 
-     async function syncAppBadge() {
-       try {
-         const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
-         if (res.status === 401) {
-           updateNavBadge(0);
-           await clearAppBadgeSafe();
-           notifySwToSyncBadge();
-           return 0;
-         }
-         if (!res.ok) {
-           return null;
-         }
-         const data = await res.json().catch(() => ({}));
-         const count = toSafeCount(data?.count ?? 0);
-         updateNavBadge(count);
-+        emitUnreadChanged(count);
-         if (count > 0) {
-           await setAppBadgeSafe(count);
-         } else {
-           await clearAppBadgeSafe();
-         }
-         notifySwToSyncBadge();
-         return count;
-       } catch (e) {
-         console.debug('[badge] sync failed', e);
-         return null;
-       }
-     }
- 
-     window.setAppBadgeSafe = setAppBadgeSafe;
-     window.clearAppBadgeSafe = clearAppBadgeSafe;
-     window.syncAppBadge = syncAppBadge;
-     window.notifySwToSyncBadge = notifySwToSyncBadge;
-     window.updateExternalNavNotifBadge = updateNavBadge;
- 
-     document.addEventListener('DOMContentLoaded', () => {
-       if (!document.getElementById('navNotifBadge')) return;
- 
-       let pollTimer = null;
-       let pollingDisabled = false;
- 
-@@ -135,45 +147,46 @@
-       };
- 
-       const startPolling = () => {
-         if (pollTimer !== null) return;
-         pollTimer = window.setInterval(updateBadge, 30000);
-       };
- 
-       const stopPolling = () => {
-         if (pollTimer === null) return;
-         window.clearInterval(pollTimer);
-         pollTimer = null;
-       };
- 
-       if (window.io) {
-         const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
-         socket.on('connect', () => {
-           stopPolling();
-           updateBadge();
-         });
-         socket.on('disconnect', () => {
-           startPolling();
-         });
-         socket.on('notif_unread', (data) => {
-           const count = toSafeCount(data?.count ?? 0);
-           updateNavBadge(count);
-+          emitUnreadChanged(count);
-           if (count > 0) {
-             setAppBadgeSafe(count);
-           } else {
-             clearAppBadgeSafe();
-           }
-           notifySwToSyncBadge();
-         });
-       } else {
-         startPolling();
-       }
- 
-       updateBadge();
-       document.addEventListener('visibilitychange', () => {
-         if (!document.hidden) updateBadge();
-       });
-       window.addEventListener('pageshow', updateBadge);
-       window.addEventListener('online', updateBadge);
-     });
-   })();
- </script>
-
-
-diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
-index 42d45b8d707ee07ad26ae30d49a3df8ce4961f68..389d1c0eacf59f1f8c6b90ddcc89aa5f39f3f59a 100644
---- a/external_login_user/template/ext_index.html
-+++ b/external_login_user/template/ext_index.html
-@@ -149,53 +149,52 @@
-                   </div>
-                   <div class="text-muted small mb-2">
-                     {% if start %}
-                       {% if start is string %}
-                         {{ start }}
-                       {% else %}
-                         {{ start.strftime("%Y/%m/%d %H:%M") }}
-                       {% endif %}
-                     {% else %}—{% endif %}
-                   </div>
- 
-                   <div class="d-flex flex-wrap gap-2">
-                     {% if ps == 'paid' and rcpt %}
-                       <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
-                     {% elif ps == 'paid' %}
-                       <button class="btn btn-sm btn-success" disabled>支払済</button>
-                     {% elif needs_pay %}
-                       <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
-                     {% else %}
-                       <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
-                     {% endif %}
- 
-                     {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
-                     {% if not has_openchat %}
-                       <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
--                      {% if (e.chat_unread_count|default(0)|int) > 0 %}
--                        <span class="badge rounded-pill bg-danger text-white align-self-center">{{ e.chat_unread_count }}</span>
--                      {% endif %}
-+                      {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
-+                      <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
-                     {% endif %}
- 
-                     {% if album_url %}
-                       <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
-                     {% else %}
-                       <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
-                     {% endif %}
- 
-                     <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
-                   </div>
-                 </div>
-               </div>
-             {% endfor %}
-           </div>
-         {% endif %}
- 
-         <!-- ========= 終了イベント ========= -->
-         <div class="mt-4">
-           <h3 class="h6 text-muted mb-2">終了イベント</h3>
-           {% set past = events_past or [] %}
- 
-           {% if past|length == 0 %}
-             <div class="text-muted">終了イベントはありません。</div>
-           {% else %}
-             <!-- PC/スマホ共通：カード表示に統一 -->
-@@ -219,53 +218,52 @@
-                     </div>
-                     <div class="text-muted small mb-2">
-                       {% if start %}
-                         {% if start is string %}
-                           {{ start }}
-                         {% else %}
-                           {{ start.strftime("%Y/%m/%d %H:%M") }}
-                         {% endif %}
-                       {% else %}—{% endif %}
-                     </div>
- 
-                     <div class="d-flex flex-wrap gap-2">
-                       {% if ps == 'paid' and rcpt %}
-                         <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
-                       {% elif ps == 'paid' %}
-                         <button class="btn btn-sm btn-success" disabled>支払済</button>
-                       {% elif needs_pay %}
-                         <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
-                       {% else %}
-                         <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
-                       {% endif %}
- 
-                       {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
-                       {% if not has_openchat %}
-                         <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
--                        {% if (e.chat_unread_count|default(0)|int) > 0 %}
--                          <span class="badge rounded-pill bg-danger text-white align-self-center">{{ e.chat_unread_count }}</span>
--                        {% endif %}
-+                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
-+                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
-                       {% endif %}
- 
-                       {% if album_url %}
-                         <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
-                       {% else %}
-                         <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
-                       {% endif %}
- 
-                       <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
- 
-                       {% if (e.tip_enabled|default(0)|int) == 1 %}
-                         <button
-                           type="button"
-                           class="btn btn-sm btn-warning js-tip-open"
-                           data-bs-toggle="modal"
-                           data-bs-target="#tipModal"
-                           data-event-id="{{ e.id }}"
-                           data-event-title="{{ e.title|e }}"
-                         >投げ銭</button>
-                       {% endif %}
-                     </div>
-                   </div>
-                 </div>
-               {% endfor %}
-             </div>
-@@ -699,50 +697,106 @@
-         });
- 
-         const res = await fetch('/chat/api/push/subscribe', {
-           method: 'POST',
-           headers: { 'Content-Type': 'application/json' },
-           credentials: 'same-origin',
-           body: JSON.stringify({ csrf_token: csrfToken, sw_scope: new URL(registration.scope).pathname || '/', ...sub.toJSON() }),
-         });
- 
-         if (!res.ok) {
-           alert('購読登録に失敗しました');
-           return;
-         }
- 
-         setBtn(true);
-         setGuideVisibility(true);
-       } catch (e) {
-         console.error(e);
-         alert('プッシュ通知設定でエラーが発生しました');
-       }
-     });
- 
-     document.addEventListener('DOMContentLoaded', initPush);
-   })();
- 
-+  (() => {
-+    const badges = Array.from(document.querySelectorAll('.js-chat-unread-badge[data-event-id]'));
-+    if (!badges.length) return;
-+
-+    const toInt = (v) => {
-+      const n = Number(v ?? 0);
-+      if (!Number.isFinite(n)) return 0;
-+      return Math.max(0, Math.floor(n));
-+    };
-+
-+    const byEventId = new Map();
-+    for (const badge of badges) {
-+      const eventId = Number(badge.dataset.eventId || 0);
-+      if (eventId > 0) byEventId.set(eventId, badge);
-+    }
-+
-+    const applyCounts = (counts) => {
-+      byEventId.forEach((badge, eventId) => {
-+        const count = toInt(counts?.[String(eventId)] ?? 0);
-+        if (count > 0) {
-+          badge.textContent = String(Math.min(count, 999));
-+          badge.classList.remove('d-none');
-+        } else {
-+          badge.textContent = '0';
-+          badge.classList.add('d-none');
-+        }
-+      });
-+    };
-+
-+    const refreshEventUnread = async () => {
-+      const eventIds = Array.from(byEventId.keys());
-+      if (!eventIds.length) return;
-+      try {
-+        const qs = encodeURIComponent(eventIds.join(','));
-+        const res = await fetch(`/external-login/api/events/chat-unread-counts?event_ids=${qs}`, {
-+          credentials: 'same-origin',
-+          cache: 'no-store',
-+        });
-+        if (!res.ok) return;
-+        const data = await res.json().catch(() => ({}));
-+        applyCounts(data?.counts || {});
-+      } catch (e) {
-+        console.debug('event unread sync failed', e);
-+      }
-+    };
-+
-+    document.addEventListener('DOMContentLoaded', refreshEventUnread);
-+    document.addEventListener('visibilitychange', () => {
-+      if (!document.hidden) refreshEventUnread();
-+    });
-+    window.addEventListener('pageshow', refreshEventUnread);
-+    window.addEventListener('online', refreshEventUnread);
-+    window.addEventListener('external:notif_unread', refreshEventUnread);
-+    window.setInterval(refreshEventUnread, 30000);
-+  })();
-+
-   (() => {
-     const PENDING_KEY = 'mfu_push_pending_nav';
-     const MAX_AGE_MS = 15000;
- 
-     const normalizePath = (rawUrl) => {
-       try {
-         const u = new URL(rawUrl, window.location.origin);
-         if (u.origin !== window.location.origin) return '/';
-         return `${u.pathname}${u.search}${u.hash}`;
-       } catch (_e) {
-         return '/';
-       }
-     };
- 
-     const handlePendingNavigation = () => {
-       let pending = null;
-       try {
-         pending = JSON.parse(localStorage.getItem(PENDING_KEY) || 'null');
-       } catch (_e) {
-         localStorage.removeItem(PENDING_KEY);
-         return;
-       }
-       if (!pending || !pending.url || !pending.ts) return;
- 
-       if (Date.now() - Number(pending.ts) > MAX_AGE_MS) {
-
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 76798a7ea7783096ff18861113d60ece66f946e9..dc3230c39b23a0258ead8316ca7ba8beff0b6334 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -1052,50 +1052,119 @@ def index():
-             try:
-                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
-             except Exception:
-                 return _dt.max
- 
-         def _key_desc(x):
-             from datetime import datetime as _dt
-             v = x.get("starts_at")
-             try:
-                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
-             except Exception:
-                 return _dt.min
- 
-         events_upcoming.sort(key=_key_asc)
-         events_past.sort(key=_key_desc, reverse=True)
- 
-     resp = make_response(render_template("ext_index.html",
-                            login=bool(me), me=me,
-                            events_upcoming=events_upcoming,
-                            events_past=events_past))
-     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-     resp.headers["Pragma"] = "no-cache"
-     return resp
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb2917e994 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -2175,51 +2175,51 @@ def _get_room(event_id: int, room_id: str | None, *, allow_archived: bool = Fals
+         if not allow_archived and int(room.get("is_archived") or 0) == 1:
+             return None
+         return room
+     finally:
+         cur.close()
+         db.close()
  
  
-+
-+
-+@bp.get("/api/events/chat-unread-counts")
-+def api_event_chat_unread_counts():
-+    social_id = session.get("ext_user_social_id")
-+    me = _get_ext_user_by_social(social_id) if social_id else None
-+    if not me:
-+        return jsonify({"ok": False, "error": "unauthorized"}), 401
-+
-+    ids_arg = (request.args.get("event_ids") or "").strip()
-+    event_ids: list[int] = []
-+    if ids_arg:
-+        for token in ids_arg.split(","):
-+            token = token.strip()
-+            if not token:
-+                continue
-+            try:
-+                event_id = int(token)
-+            except Exception:
-+                continue
-+            if event_id > 0:
-+                event_ids.append(event_id)
-+    # 重複除去 + 件数上限
-+    event_ids = list(dict.fromkeys(event_ids))[:200]
-+
-+    db = get_db(); cur = db.cursor(dictionary=True)
-+    try:
-+        if event_ids:
-+            placeholders = ",".join(["%s"] * len(event_ids))
-+            cur.execute(
-+                f"""
-+                SELECT
-+                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
-+                  COUNT(*) AS unread_count
-+                FROM mfu_notifications
-+                WHERE user_kind='external'
-+                  AND user_id=%s
-+                  AND kind='chat_message'
-+                  AND read_at IS NULL
-+                  AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
-+                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
-+                """,
-+                (me["id"], *event_ids),
-+            )
-+        else:
-+            cur.execute(
-+                """
-+                SELECT
-+                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
-+                  COUNT(*) AS unread_count
-+                FROM mfu_notifications
-+                WHERE user_kind='external'
-+                  AND user_id=%s
-+                  AND kind='chat_message'
-+                  AND read_at IS NULL
-+                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
-+                """,
-+                (me["id"],),
-+            )
-+        counts = {}
-+        for row in (cur.fetchall() or []):
-+            event_id = int(row.get("event_id") or 0)
-+            if event_id > 0:
-+                counts[str(event_id)] = int(row.get("unread_count") or 0)
-+    finally:
-+        cur.close(); db.close()
-+
-+    return jsonify({"ok": True, "counts": counts})
-+
- @bp.route("/me")
- def me():
-     return redirect(url_for("external_login_user.index"))
- 
- 
- # =========================
- # LINEログイン（単一定義）
- # =========================
- def _state_signer():
-     # Flask の secret_key を使って署名
-     return URLSafeSerializer(current_app.secret_key, salt="line-state-v2")
- 
- def _ua_sha256(ua: str) -> str:
-     return hashlib.sha256((ua or "").encode("utf-8")).hexdigest()
- 
- def _client_ip_prefix(addr: str) -> str:
-     """
-     端末の IP をプレフィックスに丸めて格納。
-     - IPv6: /64 に丸める（モバイル環境での変動をある程度許容）
-     - IPv4: /24 に丸める
-     """
+ def _is_room_member(room_id: str, actor: dict[str, Any]) -> bool:
+     if not _ensure_chat_room_members_schema():
+         return False
+     db = get_db()
+     cur = db.cursor(dictionary=True)
      try:
-         ip = ip_address(addr)
-         if isinstance(ip, IPv6Address):
-             net = ip_network(str(ip) + "/64", strict=False)
+         cur.execute(
+             "SELECT 1 FROM chat_room_members WHERE room_id=%s AND actor_type=%s AND actor_id=%s LIMIT 1",
+             (room_id, actor.get("actor_type"), str(actor.get("actor_id") or "")),
+         )
+         return bool(cur.fetchone())
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _can_manage_rooms(event_id: int, actor: dict[str, Any]) -> bool:
+-    if actor.get("actor_type") == "admin":
++    if _is_chat_admin_actor(actor):
+         return True
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         if actor.get("actor_type") == "line":
+             cur.execute(
+                 "SELECT 1 FROM mfu_event_member WHERE event_id=%s AND user_id=%s AND (COALESCE(is_host,0)=1 OR COALESCE(is_subhost,0)=1) LIMIT 1",
+                 (event_id, actor.get("actor_id")),
+             )
+             if cur.fetchone():
+                 return True
+         cur.execute(
+             "SELECT 1 FROM mfu_event_admin_acl WHERE event_id=%s AND username=%s LIMIT 1",
+             (event_id, actor.get("actor_id")),
+         )
+         return bool(cur.fetchone())
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _can_access_room(event_id: int, room_id: str | None, actor: dict[str, Any]) -> tuple[bool, str | None, dict[str, Any] | None]:
+     if not _can_access_event(event_id, actor):
+         return False, None, None
+     room = _get_room(event_id, room_id)
+@@ -2837,97 +2837,143 @@ def _cleanup_stale_typing_states(event_id: int | None = None, room_id: str | Non
+                 continue
+             last_ts = float(item.get("last_ts") or 0)
+             if now - last_ts >= CHAT_TYPING_TTL_SECONDS:
+                 stale_keys.append(key)
+                 stale_payloads.append((int(item.get("event_id") or 0), str(item.get("room_id") or ""), dict(item.get("actor") or {})))
+ 
+         for key in stale_keys:
+             CHAT_TYPING_STATE.pop(key, None)
+ 
+     for stale_event_id, stale_room_id, stale_actor in stale_payloads:
+         if stale_event_id <= 0 or not stale_room_id or not stale_actor:
+             continue
+         _emit_typing_state(stale_event_id, stale_room_id, stale_actor, False)
+ 
+ 
+ def _is_admin() -> bool:
+     return session.get("user") == "admin"
+ 
+ 
+ def _is_admin_actor(actor: dict[str, Any] | None) -> bool:
+     if not actor:
+         return False
+     return str(actor.get("actor_type") or "") == "admin"
+ 
+ 
++def _is_real_mfu_admin_actor(actor: dict[str, Any] | None) -> bool:
++    if not _is_admin_actor(actor):
++        return False
++    return not bool(actor.get("is_chat_admin_alias"))
++
++
++def _is_chat_admin_actor(actor: dict[str, Any] | None) -> bool:
++    return _is_admin_actor(actor)
++
++
++def _get_chat_admin_alias_row(ext_user_id: int) -> dict[str, Any] | None:
++    if int(ext_user_id or 0) <= 0:
++        return None
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT id, nickname, email, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
++              FROM external_login_user
++             WHERE id=%s
++             LIMIT 1
++            """,
++            (int(ext_user_id),),
++        )
++        row = cur.fetchone()
++        if not row:
++            return None
++        row["chat_admin_alias"] = int(row.get("chat_admin_alias") or 0)
++        return row
++    finally:
++        cur.close()
++        db.close()
++
++
++def _get_external_user_chat_admin_alias(ext_user_id: int) -> bool:
++    row = _get_chat_admin_alias_row(ext_user_id)
++    return bool(row and int(row.get("chat_admin_alias") or 0) == 1)
++
++
+ def get_chat_actor() -> dict[str, Any] | None:
+     """admin / acl / line を統一形式へ正規化。"""
+     if session.get("user"):
+         username = str(session.get("user"))
+         actor_type = "admin" if username == "admin" else "acl"
+         email = None
+         db = get_db()
+         cur = db.cursor(dictionary=True)
+         try:
+             cur.execute("SELECT username, email FROM users WHERE username=%s LIMIT 1", (username,))
+             row = cur.fetchone()
+             if row:
+                 email = row.get("email")
+         except Exception:
+             current_app.logger.warning("chat actor load failed for mfu user=%s", username, exc_info=True)
+         finally:
+             cur.close()
+             db.close()
+         return {
+             "actor_type": actor_type,
+             "actor_id": username,
+             "display_name": username,
+             "email": email,
+         }
+ 
+     ext_user_id = session.get("ext_user_id")
+     if ext_user_id:
+-        display_name = get_external_user_display_name(int(ext_user_id))
+-        db = get_db()
+-        cur = db.cursor(dictionary=True)
+-        try:
+-            cur.execute(
+-                "SELECT id, nickname, email FROM external_login_user WHERE id=%s LIMIT 1",
+-                (ext_user_id,),
+-            )
+-            row = cur.fetchone()
+-        finally:
+-            cur.close()
+-            db.close()
++        row = _get_chat_admin_alias_row(int(ext_user_id))
+         if not row:
+             current_app.logger.warning("chat actor load failed for ext_user_id=%s", ext_user_id)
+             return None
++        display_name = get_external_user_display_name(int(ext_user_id))
++        if int(row.get("chat_admin_alias") or 0) == 1:
++            current_app.logger.info(
++                "chat admin alias login ext_user_id=%s social_id=%s",
++                ext_user_id,
++                row.get("social_id"),
++            )
++            return {
++                "actor_type": "admin",
++                "actor_id": "admin",
++                "display_name": display_name,
++                "email": row.get("email"),
++                "is_chat_admin_alias": True,
++                "source_ext_user_id": int(row.get("id") or 0),
++                "source_social_id": row.get("social_id"),
++            }
+         return {
+             "actor_type": "line",
+             "actor_id": str(row["id"]),
+             "display_name": display_name,
+             "email": row.get("email"),
++            "is_chat_admin_alias": False,
+         }
+ 
+     return None
+ 
+ 
+ def get_chat_actor_key(actor: dict[str, Any] | None) -> str | None:
+     if not actor:
+         return None
+     actor_type = str(actor.get("actor_type") or "")
+     actor_id = str(actor.get("actor_id") or "")
+     if actor_type == "admin":
+         return "admin:1"
+     if actor_type == "line":
+         return f"line:{actor_id}"
+     if actor_type and actor_id:
+         return f"{actor_type}:{actor_id}"
+     return None
+ 
+ 
+ def _canonical_dm_actor_key(actor_key: str) -> str:
+     value = str(actor_key or "").strip()
+     if not value:
+         return ""
+     if value == "admin":
+         return "admin:1"
+@@ -5721,154 +5767,154 @@ def debug_read_v2_upsert():
+         if saved_value > 0:
+             flash(f"V2へ保存テストを実行しました。saved={saved_value}", "success")
+         else:
+             flash("V2へ保存テストを実行しましたが保存値を取得できませんでした。", "warning")
+     else:
+         flash("入力が不足しています（room_key / actor_key / message_id）。", "danger")
+ 
+     params = {
+         "event_id": event_id or "",
+         "room_id": room_id,
+         "dm_uuid": dm_uuid,
+         "actor_key": effective_actor_key,
+         "test_message_id": message_id or "",
+         "saved_value": saved_value,
+     }
+     return redirect(url_for("chat.debug_read_v2", **params))
+ 
+ 
+ @chat_bp.route("/")
+ def index():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     events = _accessible_events(actor)
+     dm_inbox_items: list[dict[str, Any]] = []
+-    if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
++    if _is_chat_admin_actor(actor) and _ensure_chat_dm_schema():
+         actor_key = get_chat_actor_key(actor) or "admin:1"
+         dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
+     return render_template(
+         "chat/index.html",
+         actor=actor,
+         events=events,
+         csrf_token=_chat_csrf(),
+         nav_mode="chat",
+         dm_inbox_items=dm_inbox_items,
+         dm_user_user_enabled=_chat_dm_enable_user_user(),
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+     )
+ 
+ 
+ @chat_bp.get("/api/index/unread-summary")
+ def api_index_unread_summary():
+     actor = get_chat_actor()
+     if not actor:
+         return jsonify({"ok": False}), 403
+ 
+     events = _accessible_events(actor)
+     event_unread_total = sum(int(ev.get("unread_count") or 0) for ev in events)
+     dm_unread_total = _count_dm_unread_for_actor(actor)
+     total = int(event_unread_total) + int(dm_unread_total)
+     return jsonify({
+         "ok": True,
+         "event_unread_total": int(event_unread_total),
+         "dm_unread_total": int(dm_unread_total),
+         "total_unread": total,
+     })
+ 
+ 
+ @chat_bp.route("/dm")
+ def dm_entry():
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         abort(403)
+     _ensure_chat_read_state_v2_schema()
+     if actor_key == "admin:1":
+         return redirect(url_for("chat.dm_inbox"))
+     admin_actor_key = _chat_dm_admin_actor_key()
+     conversation = get_or_create_dm_conversation(actor_key, admin_actor_key, "admin_user")
+     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
+ 
+ 
+ @chat_bp.route("/dm/inbox")
+ def dm_inbox():
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+-    if not actor or not actor_key or actor.get("actor_type") != "admin":
++    if not actor or not actor_key or not _is_chat_admin_actor(actor):
+         abort(403)
+     if not _ensure_chat_dm_schema():
+         abort(500)
+ 
+     rows = _build_admin_dm_inbox_items(actor_key)
+ 
+     return render_template("chat/dm_inbox.html", actor=actor, items=rows, csrf_token=_chat_csrf(), nav_mode="chat")
+ 
+ 
+ @chat_bp.get("/dm/open/line/<int:line_user_id>")
+ def dm_open_line(line_user_id: int):
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+-    if not actor or not actor_key or actor.get("actor_type") != "admin":
++    if not actor or not actor_key or not _is_chat_admin_actor(actor):
+         abort(403)
+     if line_user_id <= 0:
+         abort(404)
+     conversation = get_or_create_dm_conversation(actor_key, f"line:{line_user_id}", "admin_user")
+     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
+ 
+ 
+ @chat_bp.get("/dm/room/<uuid>")
+ def dm_room(uuid: str):
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         abort(403)
+     if not can_access_dm(uuid, actor_key):
+         abort(403)
+ 
+     conversation = _get_dm_conversation_by_uuid(uuid)
+     if not conversation:
+         abort(404)
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             "SELECT actor_key FROM chat_dm_participants WHERE conversation_id=%s AND actor_key<>%s LIMIT 1",
+             (conversation["id"], actor_key),
+         )
+         peer = cur.fetchone() or {}
+     finally:
+         cur.close()
+         db.close()
+ 
+     messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
+     peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
+     return render_template(
+         "chat/room.html",
+         actor=actor,
+-        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
++        chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
+         current_user_id=_canonical_read_actor_key_from_actor(actor),
+         event={"id": 0, "title": "DM"},
+         messages=messages,
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+         csrf_token=_chat_csrf(),
+         can_broadcast=False,
+         can_manage_rooms=False,
+         accessible_rooms=[],
+         active_room={"room_id": f"dm:{uuid}", "room_name": peer_name, "is_main": 1},
+         default_avatar_url=_default_avatar_url(),
+         nav_mode="chat",
+         dm_mode=True,
+         dm_uuid=uuid,
+         dm_room_id=f"dm:{uuid}",
+         peer_display_name=peer_name,
+     )
+ 
+ 
+ @chat_bp.post("/dm/api/send")
+ def dm_api_send():
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     payload = request.get_json(silent=True) or {}
+@@ -6039,51 +6085,51 @@ def dm_delete_message(message_id: int):
+     if not can_access_dm(dm_uuid, actor_key):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     conversation = _get_dm_conversation_by_uuid(dm_uuid)
+     if not conversation:
+         return jsonify({"ok": False, "error": "not_found"}), 404
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT id, sender_actor_key, created_at, COALESCE(deleted_flag, 0) AS deleted_flag
+             FROM chat_dm_messages
+             WHERE id=%s AND conversation_id=%s
+             LIMIT 1
+             """,
+             (message_id, conversation["id"]),
+         )
+         row = cur.fetchone()
+         if not row:
+             return jsonify({"ok": False, "error": "not_found"}), 404
+         if int(row.get("deleted_flag") or 0) == 1:
+             return jsonify({"ok": True, "message_id": message_id})
+ 
+         can_delete = False
+-        if actor.get("actor_type") == "admin":
++        if _is_chat_admin_actor(actor):
+             can_delete = True
+         elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
+             can_delete = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+         if not can_delete:
+             return jsonify({"ok": False, "error": "削除権限がありません"}), 403
+ 
+         now = datetime.utcnow()
+         cur.execute(
+             """
+             UPDATE chat_dm_messages
+             SET deleted_flag=1, deleted_at=%s, deleted_by_actor_key=%s
+             WHERE id=%s AND conversation_id=%s
+             """,
+             (now, actor_key, message_id, conversation["id"]),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+     deleted_by_actor_type, _deleted_by_actor_id = _split_actor_key(actor_key)
+     socketio.emit(
+         "chat_delete_update",
+         {
+             "dm_uuid": dm_uuid,
+@@ -6120,51 +6166,51 @@ def dm_edit_message(message_id: int):
+ 
+     try:
+         body_text = _validate_body(str(payload.get("body_text") or ""))
+     except ValueError as exc:
+         return jsonify({"ok": False, "error": str(exc)}), 400
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT id, sender_actor_key, created_at, COALESCE(deleted_flag, 0) AS deleted_flag
+             FROM chat_dm_messages
+             WHERE id=%s AND conversation_id=%s
+             LIMIT 1
+             """,
+             (message_id, conversation["id"]),
+         )
+         row = cur.fetchone()
+         if not row:
+             return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
+         if int(row.get("deleted_flag") or 0) == 1:
+             return jsonify({"ok": False, "error": "削除済みメッセージは編集できません"}), 403
+ 
+         can_edit = False
+-        if actor.get("actor_type") == "admin":
++        if _is_chat_admin_actor(actor):
+             can_edit = True
+         elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
+             can_edit = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
+         if not can_edit:
+             return jsonify({"ok": False, "error": "このメッセージを編集する権限がありません"}), 403
+ 
+         cur.execute(
+             """
+             UPDATE chat_dm_messages
+             SET body_text=%s,
+                 edited_flag=1,
+                 edited_at=NOW(),
+                 edited_by_actor_key=%s
+             WHERE id=%s AND conversation_id=%s
+             """,
+             (body_text, actor_key, message_id, conversation["id"]),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+     message_payload = _load_single_dm_message_payload(conversation, message_id, actor_key, dm_uuid)
+     if not message_payload:
+         return jsonify({"ok": False, "error": "編集後メッセージの再取得に失敗しました"}), 500
+@@ -6191,66 +6237,66 @@ def dm_api_seen():
+     if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+     dm_uuid = str(payload.get("dm_uuid") or "").strip()
+     last_seen_message_id = int(payload.get("last_seen_message_id") or 0)
+     if not dm_uuid:
+         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+     if last_seen_message_id <= 0:
+         return jsonify({"ok": True, "last_read_message_id": 0})
+     if not can_access_dm(dm_uuid, actor_key):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     conversation = _get_dm_conversation_by_uuid(dm_uuid)
+     if not conversation:
+         return jsonify({"ok": False, "error": "not_found"}), 404
+ 
+     actor_key = _canonical_read_actor_key_from_actor(actor)
+     room_key = _build_read_room_key(dm_uuid=dm_uuid)
+     actual_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
+     if actual_last_read_id <= 0:
+         return jsonify({"ok": False, "error": "participant_not_found"}), 409
+     return jsonify({"ok": True, "actor_key": actor_key, "actual_last_read_id": actual_last_read_id, "last_read_message_id": actual_last_read_id})
+ 
+ 
+ @chat_bp.get("/dm/settings")
+ def dm_settings_get():
+     actor = get_chat_actor()
+-    if not actor or actor.get("actor_type") != "admin":
++    if not actor or not _is_chat_admin_actor(actor):
+         abort(403)
+     return render_template(
+         "chat/dm_settings.html",
+         actor=actor,
+         csrf_token=_chat_csrf(),
+         enable_user_user=_chat_dm_enable_user_user(),
+         admin_actor_key=_chat_dm_admin_actor_key(),
+         nav_mode="chat",
+     )
+ 
+ 
+ @chat_bp.post("/dm/settings")
+ def dm_settings_post():
+     actor = get_chat_actor()
+-    if not actor or actor.get("actor_type") != "admin":
++    if not actor or not _is_chat_admin_actor(actor):
+         abort(403)
+     token = (request.form.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400, "invalid csrf token")
+     enabled = "1" if (request.form.get("enable_user_user") or "") in {"1", "on", "true"} else "0"
+     admin_actor_key = (request.form.get("admin_actor_key") or "admin:1").strip() or "admin:1"
+     _set_setting_value("CHAT_DM_ENABLE_USER_USER", enabled)
+     _set_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", admin_actor_key)
+     flash("DM設定を更新しました", "success")
+     return redirect(url_for("chat.dm_settings_get"))
+ 
+ 
+ @chat_bp.get("/admin/system-templates/join-approved")
+ def admin_system_template_join_approved_get():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     if actor.get("actor_type") != "admin":
+         abort(403)
+ 
+     return render_template(
+         "chat/admin_system_template_join_approved.html",
+         actor=actor,
+         csrf_token=_chat_csrf(),
+         body_template=get_system_template("join_approved"),
+@@ -6324,51 +6370,51 @@ def room(event_id: int):
+     if not allowed or not effective_room_id or not active_room:
+         abort(403)
+ 
+     event = _get_event(event_id)
+     if not event:
+         abort(404)
+     avatar_cache: dict[str, str] = {}
+     raw_messages = _load_messages(event_id, effective_room_id)
+     message_ids = [int(m.get("id") or 0) for m in raw_messages if int(m.get("id") or 0) > 0]
+     reaction_summary_by_message = _load_reactions_by_message_ids(message_ids)
+     my_reaction_by_message = _load_my_reactions_by_message_ids(message_ids, actor)
+     images_by_message = _load_message_images_by_message_ids(message_ids)
+     messages = []
+     for message in raw_messages:
+         message_id = int(message.get("id") or 0)
+         message["reactions_summary"] = reaction_summary_by_message.get(message_id, [])
+         message["my_reaction"] = my_reaction_by_message.get(message_id)
+         message["images"] = images_by_message.get(message_id) or _fallback_images_from_message(message)
+         messages.append(_present_message(message, actor, avatar_cache=avatar_cache))
+     can_broadcast = actor["actor_type"] in {"admin", "acl"}
+     accessible_rooms = _list_accessible_rooms(event_id, actor)
+     current_user_id = _canonical_read_actor_key_from_actor(actor)
+     return render_template(
+         "chat/room.html",
+         actor=actor,
+-        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
++        chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
+         current_user_id=current_user_id,
+         event=event,
+         messages=messages,
+         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+         csrf_token=_chat_csrf(),
+         can_broadcast=can_broadcast,
+         can_manage_rooms=_can_manage_rooms(event_id, actor),
+         accessible_rooms=accessible_rooms,
+         active_room=active_room,
+         default_avatar_url=_default_avatar_url(),
+         nav_mode="chat",
+         dm_mode=False,
+         dm_uuid="",
+         dm_room_id="",
+         peer_display_name="",
+     )
+ 
+ 
+ @chat_bp.get("/events/<int:event_id>/images/<path:name>")
+ def chat_image(event_id: int, name: str):
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     if not _can_access_event(event_id, actor):
+         abort(403)
+@@ -7877,50 +7923,56 @@ def manifest():
+         }
+     )
+ 
+ 
+ 
+ @socketio.on("connect")
+ def chat_connect():
+     actor = get_chat_actor()
+     _audit_log("room_join", actor=_actor_log_id(actor), result="connect")
+     if not actor:
+         current_app.logger.info("chat socket connect denied: no actor")
+         return False
+     ext_user_id = session.get("ext_user_id")
+     if ext_user_id:
+         try:
+             join_room(f"external_user:{int(ext_user_id)}")
+         except Exception:
+             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
+ 
+     mfu_username = str(session.get("user") or "").strip()
+     if mfu_username:
+         try:
+             join_room(f"mfu_user:{mfu_username}")
+         except Exception:
+             current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
++
++    if actor and actor.get("is_chat_admin_alias"):
++        try:
++            join_room("mfu_user:admin")
++        except Exception:
++            current_app.logger.warning("chat socket mfu_user join failed for alias ext_user_id=%s", actor.get("source_ext_user_id"), exc_info=True)
+     return True
+ 
+ @socketio.on("chat_join")
+ def on_join(data):
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     _ensure_chat_read_state_room_schema()
+     _ensure_chat_read_state_v2_schema()
+     _ensure_chat_edit_schema()
+     actor = get_chat_actor()
+     dm_uuid = str((data or {}).get("dm_uuid") or "").strip()
+     room_id = str((data or {}).get("room_id") or "").strip() or None
+ 
+     if dm_uuid:
+         actor_key = _get_dm_actor_key(actor)
+         if not actor or not actor_key:
+             emit("chat_error", {"error": "forbidden"})
+             return
+         if not can_access_dm(dm_uuid, actor_key):
+             emit("chat_error", {"error": "forbidden"})
+             return
+         join_room(f"dm:{dm_uuid}")
+         emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
+         room_key = _build_read_room_key(dm_uuid=dm_uuid)
+diff --git a/docs/sql/20260309_external_login_user_chat_admin_alias.sql b/docs/sql/20260309_external_login_user_chat_admin_alias.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..1b024e85ab42c6bfcf55aba57384142b601e16e8
+--- /dev/null
++++ b/docs/sql/20260309_external_login_user_chat_admin_alias.sql
+@@ -0,0 +1,15 @@
++SET @has_col := (
++  SELECT COUNT(*)
++    FROM information_schema.COLUMNS
++   WHERE TABLE_SCHEMA = DATABASE()
++     AND TABLE_NAME = 'external_login_user'
++     AND COLUMN_NAME = 'chat_admin_alias'
++);
++SET @ddl := IF(
++  @has_col = 0,
++  'ALTER TABLE external_login_user ADD COLUMN chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note',
++  'SELECT 1'
++);
++PREPARE stmt FROM @ddl;
++EXECUTE stmt;
++DEALLOCATE PREPARE stmt;
+diff --git a/external_login_user/admin_ext_users.js b/external_login_user/admin_ext_users.js
+index a668c87377806edc0dd3649995113e5fd23ac5e3..9ddf7615ebd3bb8fd61b8e0749469e012f2fdd58 100644
+--- a/external_login_user/admin_ext_users.js
++++ b/external_login_user/admin_ext_users.js
+@@ -26,51 +26,52 @@ def _column_exists(table: str, column: str) -> bool:
+             return False
+         cur.execute("""
+             SELECT 1
+               FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+              LIMIT 1
+         """, (dbname, table, column))
+         return cur.fetchone() is not None
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+ 
+ # ============= 画面（一覧） =============
+ @bp.route("/admin/ext-users")
+ def admin_ext_users_index():
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = """
+             id, nickname, x_id, instagram_id, email, social_id,
+-            avatar_file, avatar_url, created_at, updated_at
++            avatar_file, avatar_url, created_at, updated_at,
++            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+              ORDER BY id DESC
+              LIMIT 50
+         """)
+         initial_items = cur.fetchall() or []
+         if not has_verified:
+             for r in initial_items:
+                 r["email_verified_at"] = None
+ 
+         cur.execute("SELECT COUNT(*) AS c FROM external_login_user")
+         total = int((cur.fetchone() or {}).get("c", 0))
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return render_template(
+         "admin_ext_users.html",
+         admin_csrf=_admin_csrf_token(),
+         initial_items=initial_items,
+         initial_total=total,
+@@ -85,165 +86,170 @@ def admin_ext_users_data():
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     q = (request.args.get("q") or "").strip()
+     try:
+         page = max(int(request.args.get("page") or 1), 1)
+     except Exception:
+         page = 1
+     try:
+         per_page = min(max(int(request.args.get("per_page") or 50), 1), 200)
+     except Exception:
+         per_page = 50
+ 
+     params: list = []
+     where = []
+     if q:
+         like = f"%{q}%"
+         where.append("(nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)")
+         params += [like, like, like, like, like]
+     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+ 
+     has_verified = _column_exists("external_login_user", "email_verified_at")
+     cols = """
+         id, nickname, x_id, instagram_id, email, social_id,
+-        avatar_file, avatar_url, created_at, updated_at
++        avatar_file, avatar_url, created_at, updated_at,
++        COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+     """
+     if has_verified:
+         cols += ", email_verified_at"
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
+         total = int(cur.fetchone()["c"])
+         offset = (page - 1) * per_page
+ 
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+              ORDER BY id DESC
+              LIMIT %s OFFSET %s
+         """, params + [per_page, offset])
+         rows = cur.fetchall() or []
+         if not has_verified:
+             for r in rows:
+                 r["email_verified_at"] = None
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return jsonify({"ok": True, "items": rows, "total": total, "page": page, "per_page": per_page})
+ 
+ 
+ @bp.get("/admin/ext-users/<int:user_id>/detail")
+ def admin_ext_users_detail(user_id: int):
+     """（旧モーダル用）単票取得。"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               id, nickname, x_id, instagram_id, email, social_id,
+-              avatar_file, avatar_url, created_at, updated_at
++              avatar_file, avatar_url, created_at, updated_at,
++            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+             FROM external_login_user
+             WHERE id=%s
+             LIMIT 1
+         """, (user_id,))
+         row = cur.fetchone()
+         if not row:
+             abort(404)
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return jsonify({"ok": True, "item": row})
+ 
+ 
+ @bp.post("/admin/ext-users/<int:user_id>/update")
+ def admin_ext_users_update(user_id: int):
+     """
+     項目更新（nickname / x_id / instagram_id / email）
+     Body: JSON or form
+     """
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+     if not token_req or token_req != _admin_csrf_token():
+         return jsonify({"ok": False, "error": "invalid_csrf"}), 400
+ 
+     data = request.get_json(silent=True) or request.form
+     nickname = (data.get("nickname") or "").strip()
+     x_id_raw = (data.get("x_id") or "").strip().lstrip("@")
+     ig_raw   = (data.get("instagram_id") or "").strip().lstrip("@")
+     email    = (data.get("email") or "").strip() or None
++    chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
+ 
+     errors = {}
+     if not nickname:
+         errors["nickname"] = "ニックネームは必須です。"
+     if x_id_raw and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", x_id_raw):
+         errors["x_id"] = "X IDは @なし、半角英数と_で1〜15文字。"
+     if ig_raw:
+         ok = re.fullmatch(r"[A-Za-z0-9._]{1,30}", ig_raw) and not ig_raw.startswith(".") and not ig_raw.endswith(".") and ".." not in ig_raw
+         if not ok:
+             errors["instagram_id"] = "Instagram IDは英数・.・_で1〜30文字。先頭/末尾の . と .. は不可。"
+ 
+     if errors:
+         return jsonify({"ok": False, "errors": errors}), 400
+ 
+     has_verified = _column_exists("external_login_user", "email_verified_at")
+ 
+     db = get_db(); cur = db.cursor()
+     try:
+         cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+         row = cur.fetchone()
+         if not row:
+             return jsonify({"ok": False, "error": "not_found"}), 404
+         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
+         email_changed = (email or None) != (email_before or None)
+ 
+         if email_changed and has_verified:
+             cur.execute("""
+                 UPDATE external_login_user
+                    SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
++                       chat_admin_alias=%s,
+                        email_verified_at=NULL
+                  WHERE id=%s
+                  LIMIT 1
+-            """, (nickname, x_id_raw or None, ig_raw or None, email, user_id))
++            """, (nickname, x_id_raw or None, ig_raw or None, email, chat_admin_alias, user_id))
+         else:
+             cur.execute("""
+                 UPDATE external_login_user
+-                   SET nickname=%s, x_id=%s, instagram_id=%s, email=%s
++                   SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
++                       chat_admin_alias=%s
+                  WHERE id=%s
+                  LIMIT 1
+-            """, (nickname, x_id_raw or None, ig_raw or None, email, user_id))
++            """, (nickname, x_id_raw or None, ig_raw or None, email, chat_admin_alias, user_id))
+         db.commit()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return jsonify({"ok": True})
+ 
+ 
+ @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
+ def admin_ext_users_resend_verify(user_id: int):
+     """
+     メール確認コードの再送
+     """
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+     if not token_req or token_req != _admin_csrf_token():
+         return jsonify({"ok": False, "error": "invalid_csrf"}), 400
+ 
+     if not _issue_verify_pin or not _send_verify_pin_mail:
+         return jsonify({"ok": False, "error": "pin_issuer_unavailable"}), 500
+ 
+     db = get_db(); cur = db.cursor()
+@@ -262,40 +268,41 @@ def admin_ext_users_resend_verify(user_id: int):
+             return jsonify({"ok": False, "error": reason}), 429 if reason in ("cooldown", "rate_limited") else 400
+ 
+         try:
+             _send_verify_pin_mail(email, pin_raw)  # type: ignore
+         except Exception:
+             return jsonify({"ok": False, "error": "smtp_error"}), 502
+ 
+         return jsonify({"ok": True})
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+ 
+ # ============= 別ページ編集 =============
+ @bp.get("/admin/ext-users/<int:user_id>/edit")
+ def admin_ext_users_edit_page(user_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = """
+             id, nickname, x_id, instagram_id, email, social_id,
+-            avatar_file, avatar_url, created_at, updated_at
++            avatar_file, avatar_url, created_at, updated_at,
++            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+         user = cur.fetchone()
+         if not user:
+             abort(404)
+         if not has_verified:
+             user["email_verified_at"] = None
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return render_template("admin_ext_users_edit.html", u=user, admin_csrf=_admin_csrf_token())
+diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
+index 974995d1f844358ef47959c82064498cb35569de..a6fd2b8280defab6b7f6913acc96cbe237808940 100644
+--- a/external_login_user/admin_users.py
++++ b/external_login_user/admin_users.py
+@@ -111,50 +111,51 @@ def admin_ext_users_index():
+     where = []
+     if q:
+         like = f"%{q}%"
+         where.append(
+             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+         )
+         params += [like, like, like, like, like, like]
+     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = """
+             id,
+             nickname,
+             x_id,
+             instagram_id,
+             email,
+             social_id,
+             avatar_file,
+             avatar_url,
+             created_at,
+             updated_at,
+             admin_note,
++            COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+             COALESCE(notify_album_process, 1) AS notify_album_process,
+             (
+               SELECT COUNT(*)
+                 FROM external_login_user_card_data c
+                WHERE c.user_id = external_login_user.id
+                  AND c.deleted_at IS NULL
+             ) AS card_count
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+ 
+         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+              ORDER BY {order_by}
+         """, params)
+         initial_items = cur.fetchall() or []
+         if not has_verified:
+             for r in initial_items:
+                 r["email_verified_at"] = None
+         _format_email_verified_at_rows(initial_items)
+ 
+@@ -191,50 +192,51 @@ def admin_ext_users_data():
+     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
+     try:
+         page = max(int(request.args.get("page") or 1), 1)
+     except Exception:
+         page = 1
+     try:
+         per_page = min(max(int(request.args.get("per_page") or 1000), 1), 10000)
+     except Exception:
+         per_page = 1000
+ 
+     params: list = []
+     where = []
+     if q:
+         like = f"%{q}%"
+         where.append(
+             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+         )
+         params += [like, like, like, like, like, like]
+     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+ 
+     has_verified = _column_exists("external_login_user", "email_verified_at")
+     cols = """
+         id, nickname, x_id, instagram_id, email, social_id,
+         avatar_file, avatar_url, created_at, updated_at,
+         admin_note,
++        COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+         COALESCE(notify_album_process, 1) AS notify_album_process,
+         (
+           SELECT COUNT(*)
+             FROM external_login_user_card_data c
+            WHERE c.user_id = external_login_user.id
+              AND c.deleted_at IS NULL
+         ) AS card_count
+     """
+     if has_verified:
+         cols += ", email_verified_at"
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
+         total = int(cur.fetchone()["c"])
+         offset = (page - 1) * per_page
+ 
+         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+              ORDER BY {order_by}
+              LIMIT %s OFFSET %s
+@@ -259,145 +261,149 @@ def admin_ext_users_data():
+         "q": q,
+     })
+ 
+ # ============= API（単票：旧モーダル用） =============
+ @bp.get("/admin/ext-users/<int:user_id>/detail")
+ def admin_ext_users_detail(user_id: int):
+     """（旧モーダル用）単票取得。"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               id,
+               nickname,
+               x_id,
+               instagram_id,
+               email,
+               social_id,
+               avatar_file,
+               avatar_url,
+               created_at,
+               updated_at,
+-              admin_note
++              admin_note,
++              COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+             FROM external_login_user
+             WHERE id=%s
+             LIMIT 1
+         """, (user_id,))
+         row = cur.fetchone()
+         if not row:
+             abort(404)
+     finally:
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
+     return jsonify({"ok": True, "item": row})
+ 
+ 
+ # ============= 更新 =============
+ @bp.post("/admin/ext-users/<int:user_id>/update")
+ def admin_ext_users_update(user_id: int):
+     """項目更新（nickname / x_id / instagram_id / email / admin_note）
+        フォームPOST: 成功時は一覧へリダイレクト（?saved=1）
+        JSON(AJAX): 互換のため JSON を返す
+     """
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+     if not token_req or token_req != _admin_csrf_token():
+         if request.is_json:
+             return jsonify({"ok": False, "error": "invalid_csrf"}), 400
+         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
+ 
+     data = request.get_json(silent=True) or request.form
+     nickname   = (data.get("nickname") or "").strip()
+     x_id_raw   = (data.get("x_id") or "").strip().lstrip("@")
+     ig_raw     = (data.get("instagram_id") or "").strip().lstrip("@")
+     email      = (data.get("email") or "").strip() or None
+     admin_note = (data.get("admin_note") or "").strip() or None  # ★追加: 内部メモ
++    chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
+ 
+     errors = {}
+     if not nickname:
+         errors["nickname"] = "ニックネームは必須です。"
+     if x_id_raw and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", x_id_raw):
+         errors["x_id"] = "X IDは @なし、半角英数と_で1〜15文字。"
+     if ig_raw:
+         ok = re.fullmatch(r"[A-Za-z0-9._]{1,30}", ig_raw) and not ig_raw.startswith(".") and not ig_raw.endswith(".") and ".." not in ig_raw
+         if not ok:
+             errors["instagram_id"] = "Instagram IDは英数・.・_で1〜30文字。先頭/末尾の . と .. は不可。"
+ 
+     if errors:
+         if request.is_json:
+             return jsonify({"ok": False, "errors": errors}), 400
+         # フォームの場合は編集ページに戻してエラー表示（簡易）
+         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="validate"))
+ 
+     has_verified = _column_exists("external_login_user", "email_verified_at")
+ 
+     db = get_db(); cur = db.cursor()
+     try:
+         cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+         row = cur.fetchone()
+         if not row:
+             if request.is_json:
+                 return jsonify({"ok": False, "error": "not_found"}), 404
+             return redirect(url_for("external_login_user.admin_ext_users_index"))
+ 
+         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
+         email_changed = (email or None) != (email_before or None)
+ 
+         if email_changed and has_verified:
+             cur.execute("""
+                 UPDATE external_login_user
+                    SET nickname=%s,
+                        x_id=%s,
+                        instagram_id=%s,
+                        email=%s,
+                        admin_note=%s,
++                       chat_admin_alias=%s,
+                        email_verified_at=NULL
+                  WHERE id=%s
+                  LIMIT 1
+-            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, user_id))
++            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
+         else:
+             cur.execute("""
+                 UPDATE external_login_user
+                    SET nickname=%s,
+                        x_id=%s,
+                        instagram_id=%s,
+                        email=%s,
+-                       admin_note=%s
++                       admin_note=%s,
++                       chat_admin_alias=%s
+                  WHERE id=%s
+                  LIMIT 1
+-            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, user_id))
++            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
+         db.commit()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     # 成功時の応答
+     if request.is_json:
+         return jsonify({"ok": True})
+     # フォームは一覧へ
+     return redirect(url_for("external_login_user.admin_ext_users_index", saved=1))
+ 
+ 
+ # ============= 再送（送信） =============
+ @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
+ def admin_ext_users_resend_verify(user_id: int):
+     """
+     確認コードの再送
+     - Form投稿: 成功時は編集ページへリダイレクト（?sent=1）
+     - JSON投稿(AJAX): 互換のため JSON を返す
+     """
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+@@ -470,50 +476,51 @@ def admin_ext_users_resend_confirm(user_id: int):
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
+     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
+ 
+ 
+ # ============= 別ページ編集（GET） =============
+ @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
+ def admin_ext_users_edit_page(user_id: int):
+     """外部ログインユーザー 編集ページ（別ページ実装）"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = """
+             id, nickname, x_id, instagram_id, email, social_id,
+             avatar_file, avatar_url, created_at, updated_at,
+             admin_note,
++            COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+             COALESCE(notify_album_process, 1) AS notify_album_process
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+         user = cur.fetchone()
+         if not user:
+             abort(404)
+         if not has_verified:
+             user["email_verified_at"] = None
+ 
+         # 参加中イベント一覧
+         cur.execute(
+             """
+             SELECT
+               m.id AS member_id,
+               e.id AS event_id,
+               e.title,
+               e.starts_at,
+               m.status,
+               m.payment_status
+             FROM mfu_event_member AS m
+             JOIN mfu_event AS e ON e.id = m.event_id
+             WHERE m.user_id=%s
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index 0901c64a4d0a8f9477c513fa59aed0c458ec7e1d..6d9a9fbbaaf16ef38b0f27754fed562ac16d776e 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -1,70 +1,112 @@
+ from __future__ import annotations
+ 
+ from datetime import datetime, timezone
+ from time import perf_counter
+ from typing import Any
+ from urllib.parse import parse_qs, urlparse
+ 
+ from flask import Blueprint, abort, current_app, jsonify, render_template, request, session
+ 
+ from . import bp
+ from .utils import _require_ext_login
+ from app.utils.db import get_db
+ 
+ try:
+     from app.chat.socketio_ext import socketio
+ except Exception:  # pragma: no cover
+     socketio = None
+ 
+ 
+ _READ_NOTIFICATIONS_KEEP_LIMIT = 30
+ mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
+ 
++def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
++    if int(ext_user_id or 0) <= 0:
++        return None
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
++              FROM external_login_user
++             WHERE id=%s
++             LIMIT 1
++            """,
++            (int(ext_user_id),),
++        )
++        row = cur.fetchone()
++        if not row:
++            return None
++        if int(row.get("chat_admin_alias") or 0) != 1:
++            return None
++        return row
++    finally:
++        cur.close()
++        db.close()
++
++
++def _resolve_mfu_notification_recipient_for_session() -> str | None:
++    username = str(session.get("user") or "").strip()
++    if username:
++        return username
++
++    ext_user_id = int(session.get("ext_user_id") or 0)
++    if ext_user_id <= 0:
++        return None
++    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
++    if not alias_row:
++        return None
++    current_app.logger.info(
++        "mfu notifications admin alias ext_user_id=%s social_id=%s",
++        ext_user_id,
++        alias_row.get("social_id"),
++    )
++    return "admin"
++
+ 
+ def _is_mfu_notification_user(username: str) -> bool:
+     name = (username or "").strip()
+     if not name:
+         return False
+     if name == "admin":
+         return True
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT 1 FROM mfu_event_admin_acl WHERE username=%s LIMIT 1", (name,))
+         return bool(cur.fetchone())
+     except Exception:
+         return False
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
+-    if session.get("ext_user_id"):
+-        return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+-    username = str(session.get("user") or "").strip()
++    username = _resolve_mfu_notification_recipient_for_session() or ""
+     if not username:
+         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
+     if not _is_mfu_notification_user(username):
+         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+     return username, None
+ 
+ 
+ def _now_utc() -> datetime:
+     return datetime.now(timezone.utc)
+ 
+ 
+ def _relative_time_from(dt: datetime | None) -> str:
+     if not dt:
+         return ""
+     if dt.tzinfo is None:
+         dt = dt.replace(tzinfo=timezone.utc)
+     delta = max(0, int((_now_utc() - dt).total_seconds()))
+     if delta < 60:
+         return "たった今"
+     if delta < 3600:
+         return f"{delta // 60}分前"
+     if delta < 86400:
+         return f"{delta // 3600}時間前"
+     if delta < 86400 * 7:
+         return f"{delta // 86400}日前"
+diff --git a/external_login_user/schema.py b/external_login_user/schema.py
+index fb837e66d53b816c02aca4bcc55828449e75767a..56e02edaa940fac92db093a58c28c7b98fcac7f1 100644
+--- a/external_login_user/schema.py
++++ b/external_login_user/schema.py
+@@ -1,47 +1,48 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import logging
+ from flask import current_app
+ from . import bp
+ from app.utils.db import get_db
+ 
+ # MySQL エラーコード（任意）
+ try:
+     from mysql.connector import errors as mysql_errors
+ except Exception:
+     mysql_errors = None  # type: ignore
+ 
+ DDL_EXTERNAL = """
+ CREATE TABLE IF NOT EXISTS external_login_user (
+   id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   mfu_uuid         BINARY(16)      NOT NULL,
+   social_id        VARCHAR(191)    NOT NULL,
+   nickname         VARCHAR(50)     NOT NULL,
+   x_id             VARCHAR(15)     NULL,
+   instagram_id     VARCHAR(30)     NULL,
+   email            VARCHAR(191)    NULL,
++  chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
+   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uniq_mfu_uuid   (mfu_uuid),
+   UNIQUE KEY uniq_social_id  (social_id),
+   KEY        idx_x_id        (x_id),
+   KEY        idx_instagram   (instagram_id),
+   KEY        idx_email       (email)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ # ★ 支払期間（pay_from / pay_until）をDDLに追加
+ DDL_EVENT = """
+ CREATE TABLE IF NOT EXISTS mfu_event (
+   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   event_uuid      BINARY(16)      NOT NULL,
+   title           VARCHAR(200)    NOT NULL,
+   owner_user_id   BIGINT UNSIGNED NULL,
+   starts_at       DATETIME        NULL,
+   fee_yen         INT UNSIGNED    NULL,
+   tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
+   pay_from        DATETIME        NULL,
+   pay_until       DATETIME        NULL,
+   place_name      VARCHAR(200)    NULL,
+   address         VARCHAR(255)    NULL,
+@@ -176,50 +177,51 @@ def _on_bp_registered(state) -> None:
+             cur.execute(DDL_PAYMENT_REQUEST)
+             cur.execute(DDL_NOTIFICATIONS)
+ 
+             # 後方互換ALTER（存在しなければADD）
+             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COUNT(*) FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                     """, (table, col))
+                     has = cur.fetchone()[0]
+                 except Exception:
+                     has = 0
+                 if not has:
+                     try:
+                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl_after_add}")
+                     except Exception as e:
+                         if not (mysql_errors and getattr(e, "errno", None) == 1060):
+                             raise
+ 
+             # 既存のゆるいALTER群
+             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
+             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
+             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
+             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
++            _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
+ 
+             # ★ 追加：支払期間 列（後方互換で追加）
+             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
+             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+             _ensure_col("mfu_event", "checkin_qr_enabled",
+                         "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
+             _ensure_col("mfu_event", "checkin_qr_token",
+                         "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
+             _ensure_col("mfu_event", "checkin_qr_expires_at",
+                         "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
+             _ensure_col("mfu_event_member", "checkin_method",
+                         "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
+ 
+             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
+             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
+             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
+             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
+             _ensure_col("mfu_payment_request", "buyer_email", "buyer_email VARCHAR(255) NULL AFTER instagram_id")
+             _ensure_col("mfu_payment_request", "lecture_auto_approve",
+                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
+ 
+             def _ensure_payment_request_status_enum() -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
+index b9dfdaabc3ce0e9bc050684886eef53a05683057..617f00c65af4f462cec8b62206620ffa4e11fd6d 100644
+--- a/external_login_user/template/admin_ext_users_edit.html
++++ b/external_login_user/template/admin_ext_users_edit.html
+@@ -68,50 +68,59 @@
+           <div class="mt-3">
+             <label class="form-label">共有アルバム通知</label>
+             <div>
+               <span class="badge bg-outline-secondary text-dark me-2">
+                 アップロード通知:
+                 {% if u.notify_album_upload %}
+                   ON
+                 {% else %}
+                   OFF
+                 {% endif %}
+               </span>
+               <span class="badge bg-outline-secondary text-dark">
+                 加工完了通知:
+                 {% if u.notify_album_process %}
+                   ON
+                 {% else %}
+                   OFF
+                 {% endif %}
+               </span>
+             </div>
+             <div class="form-text mt-1 text-muted">
+               外部ユーザー本人のプロフィール画面で設定された通知フラグの現在値です（管理画面からは変更できません）。
+             </div>
+           </div>
+ 
++          <div class="mt-3">
++            <label class="form-label d-block">チャット管理者 alias</label>
++            <div class="form-check form-switch">
++              <input class="form-check-input" type="checkbox" id="chat_admin_alias" name="chat_admin_alias" value="1" {% if u.chat_admin_alias %}checked{% endif %}>
++              <label class="form-check-label" for="chat_admin_alias">LINEログイン時にチャット/通知のみ admin alias として扱う</label>
++            </div>
++            <div class="form-text mt-1 text-muted">※ /chat と /mfu-notifications のみ対象。管理画面全体の権限は付与されません。</div>
++          </div>
++
+           {# ★ 内部メモ（管理者用） #}
+           <div class="mt-3">
+             <label class="form-label">内部メモ（管理者用）</label>
+             <textarea
+               class="form-control"
+               name="admin_note"
+               rows="4"
+               placeholder="このユーザーに関する注意点やメモを記入">{{ u.admin_note or '' }}</textarea>
+             <div class="form-text mt-1 text-muted">
+               ※このメモは管理画面のみで使用され、ユーザー本人には表示されません。
+             </div>
+           </div>
+         </div>
+ 
+         <div class="col-md-4">
+           {% set avatar = u.avatar_file and ("/external-login/avatars/" ~ u.avatar_file) or u.avatar_url or "https://via.placeholder.com/120?text=—" %}
+           <div class="text-center">
+             <img src="{{ avatar }}" width="120" height="120" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;" alt="avatar">
+             <div class="small text-muted mt-2">social_id: {{ u.social_id or '-' }}</div>
+             <div class="d-grid gap-2 mt-3">
+               <a
+                 class="btn btn-outline-primary btn-sm {% if not u.email %}disabled{% endif %}"
+                 {% if u.email %}
+                   href="{{ url_for('external_login_user.admin_ext_users_resend_confirm', user_id=u.id) }}"
+                 {% else %}

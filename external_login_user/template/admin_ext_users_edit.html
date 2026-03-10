@@ -90,6 +90,15 @@
             </div>
           </div>
 
+          <div class="mt-3">
+            <label class="form-label d-block">チャット管理者 alias</label>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="chat_admin_alias" name="chat_admin_alias" value="1" {% if u.chat_admin_alias %}checked{% endif %}>
+              <label class="form-check-label" for="chat_admin_alias">LINEログイン時にチャット/通知のみ admin alias として扱う</label>
+            </div>
+            <div class="form-text mt-1 text-muted">※ /chat と /mfu-notifications のみ対象。管理画面全体の権限は付与されません。</div>
+          </div>
+
           {# ★ 内部メモ（管理者用） #}
           <div class="mt-3">
             <label class="form-label">内部メモ（管理者用）</label>
