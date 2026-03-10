@@ -1299,7 +1299,11 @@
      data-dm-room-id="{{ dm_room_id or '' }}"
      data-read-front-debug-enabled="{{ 1 if chat_read_front_debug_enabled else 0 }}"
      data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}"
-     data-title-base="{% if dm_mode %}{{ peer_display_name }}{% else %}{{ event.title }}{% endif %}">
+     data-title-base="{% if dm_mode %}{{ peer_display_name }}{% else %}{{ event.title }}{% endif %}"
+     data-notification-scope="{{ notification_scope|default('external') }}"
+     data-unread-api="{{ (notification_api_map.unread_count if notification_api_map else '/external-login/api/notifications/unread-count') }}"
+     data-room-read-api="{{ (notification_api_map.room_read if notification_api_map else '/external-login/api/notifications/read-by-room') }}"
+     data-dm-room-read-api="{{ (notification_api_map.dm_room_read if notification_api_map else '/external-login/api/notifications/read-dm-room') }}">
   {% include "chat/_chat_nav.html" %}
   <div class="chat-room-main">
     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
@@ -1675,6 +1679,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   const dmUuid = root.dataset.dmUuid || "";
   const dmRoomId = root.dataset.dmRoomId || "";
   const pageTitleBase = String(root.dataset.titleBase || '').trim() || (dmMode ? 'DM' : 'チャット');
+  const notificationScope = String(root.dataset.notificationScope || 'external').trim() || 'external';
+  const unreadApiUrl = String(root.dataset.unreadApi || '/external-login/api/notifications/unread-count');
+  const roomReadApiUrl = String(root.dataset.roomReadApi || '/external-login/api/notifications/read-by-room');
+  const dmRoomReadApiUrl = String(root.dataset.dmRoomReadApi || '/external-login/api/notifications/read-dm-room');
   const effectiveDmRoomId = dmRoomId || (dmUuid ? `dm:${dmUuid}` : "");
   if (dmMode && (!dmUuid || !effectiveDmRoomId)) {
     if (sendBtn) sendBtn.disabled = true;
@@ -2682,7 +2690,12 @@ window.addEventListener('DOMContentLoaded', async () => {
   });
 
   async function initPushUi() {
+    const bootstrap = await fetchPushBootstrap();
     const pushState = await getPushState();
+    if (bootstrap?.notification_scope === 'mfu' && bootstrap?.is_chat_admin_alias && pushState.supported && pushState.registration) {
+      await enablePush(pushState.registration, { forceResubscribe: true, vapidPublicKey: bootstrap.vapid_public_key || vapidKey });
+    }
+
     if (!pushState.supported) {
       if (pushBtn) {
         pushBtn.disabled = true;
@@ -2700,6 +2713,17 @@ window.addEventListener('DOMContentLoaded', async () => {
     pushBtn.classList.toggle('btn-outline-secondary', !enabled);
   }
 
+  async function fetchPushBootstrap() {
+    try {
+      const res = await fetch('/chat/api/push/bootstrap', { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      return data && data.ok ? data : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
   async function getPushState() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       return { supported: false, registration: null, subscription: null };
@@ -2709,8 +2733,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     return { supported: true, registration, subscription };
   }
 
-  async function enablePush(registration) {
-    if (!vapidKey) {
+  async function enablePush(registration, opts = {}) {
+    const keyToUse = String(opts?.vapidPublicKey || vapidKey || '');
+    if (!keyToUse) {
       alert('VAPID公開鍵が未設定のため通知を有効化できません');
       return;
     }
@@ -2720,9 +2745,13 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    const currentSubscription = await registration.pushManager.getSubscription();
+    if (opts?.forceResubscribe && currentSubscription) {
+      try { await currentSubscription.unsubscribe(); } catch (_e) {}
+    }
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+      applicationServerKey: urlBase64ToUint8Array(keyToUse),
     });
 
     const res = await fetch('/chat/api/push/subscribe', {
@@ -4663,7 +4692,7 @@ function openFulltextModal(row) {
 
   async function refreshNotificationBadge() {
     try {
-      const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
+      const res = await fetch(unreadApiUrl, { credentials: 'same-origin' });
       if (res.status === 401) {
         stopNotificationBadgePolling();
         if (notificationBadge) {
@@ -4716,7 +4745,8 @@ function openFulltextModal(row) {
   }
 
   async function markChatNotificationsReadByRoom() {
-    const res = await fetch('/external-login/api/notifications/read-by-room', {
+    if (notificationScope !== 'external') return null;
+    const res = await fetch(roomReadApiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -4745,9 +4775,10 @@ function openFulltextModal(row) {
   }
 
   async function markDmNotificationsReadByRoom(dmRoomId) {
+    if (notificationScope !== 'external') return null;
     const roomKey = String(dmRoomId || '').trim();
     if (!roomKey) return null;
-    const res = await fetch('/external-login/api/notifications/read-dm-room', {
+    const res = await fetch(dmRoomReadApiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',

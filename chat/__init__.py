@@ -2971,6 +2971,61 @@ def get_chat_actor_key(actor: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _resolve_notification_scope(actor: dict[str, Any] | None) -> str:
+    if not actor:
+        return "external"
+    if actor.get("is_chat_admin_alias"):
+        return "mfu"
+    if str(actor.get("actor_type") or "") in {"admin", "acl"}:
+        return "mfu"
+    return "external"
+
+
+def _build_notification_api_map(scope: str) -> dict[str, str]:
+    if scope == "mfu":
+        return {
+            "scope": "mfu",
+            "unread_count": "/api/mfu-notifications/unread-count",
+            "list": "/api/mfu-notifications",
+            "updates": "/api/mfu-notifications/updates",
+            "read": "/api/mfu-notifications/{id}/read",
+            "read_all": "/api/mfu-notifications/read-all",
+            "page": "/mfu-notifications",
+            "room_read": "",
+            "dm_room_read": "",
+        }
+    return {
+        "scope": "external",
+        "unread_count": "/external-login/api/notifications/unread-count",
+        "list": "/external-login/api/notifications",
+        "updates": "/external-login/api/notifications/updates",
+        "read": "/external-login/api/notifications/{id}/read",
+        "read_all": "/external-login/api/notifications/read-all",
+        "page": "/external-login/notifications",
+        "room_read": "/external-login/api/notifications/read-by-room",
+        "dm_room_read": "/external-login/api/notifications/read-dm-room",
+    }
+
+
+def _build_chat_notification_context(actor: dict[str, Any] | None) -> dict[str, Any]:
+    scope = _resolve_notification_scope(actor)
+    api_map = _build_notification_api_map(scope)
+    current_app.logger.info(
+        "chat notification scope resolved actor_type=%s actor_id=%s alias=%s scope=%s unread=%s list=%s",
+        (actor or {}).get("actor_type"),
+        (actor or {}).get("actor_id"),
+        bool((actor or {}).get("is_chat_admin_alias")),
+        scope,
+        api_map.get("unread_count"),
+        api_map.get("list"),
+    )
+    return {
+        "notification_scope": scope,
+        "notification_api_map": api_map,
+        "chat_notifications_url": api_map.get("page") or "/external-login/notifications",
+    }
+
+
 def _canonical_dm_actor_key(actor_key: str) -> str:
     value = str(actor_key or "").strip()
     if not value:
@@ -5792,6 +5847,7 @@ def index():
     if _is_chat_admin_actor(actor) and _ensure_chat_dm_schema():
         actor_key = get_chat_actor_key(actor) or "admin:1"
         dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
+    notif_ctx = _build_chat_notification_context(actor)
     return render_template(
         "chat/index.html",
         actor=actor,
@@ -5801,6 +5857,7 @@ def index():
         dm_inbox_items=dm_inbox_items,
         dm_user_user_enabled=_chat_dm_enable_user_user(),
         vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+        **notif_ctx,
     )
 
 
@@ -5889,6 +5946,7 @@ def dm_room(uuid: str):
 
     messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
     peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
+    notif_ctx = _build_chat_notification_context(actor)
     return render_template(
         "chat/room.html",
         actor=actor,
@@ -5908,6 +5966,7 @@ def dm_room(uuid: str):
         dm_uuid=uuid,
         dm_room_id=f"dm:{uuid}",
         peer_display_name=peer_name,
+        **notif_ctx,
     )
 
 
@@ -6389,6 +6448,7 @@ def room(event_id: int):
     can_broadcast = actor["actor_type"] in {"admin", "acl"}
     accessible_rooms = _list_accessible_rooms(event_id, actor)
     current_user_id = _canonical_read_actor_key_from_actor(actor)
+    notif_ctx = _build_chat_notification_context(actor)
     return render_template(
         "chat/room.html",
         actor=actor,
@@ -6408,6 +6468,7 @@ def room(event_id: int):
         dm_uuid="",
         dm_room_id="",
         peer_display_name="",
+        **notif_ctx,
     )
 
 
@@ -7747,12 +7808,17 @@ def push_bootstrap():
     actor = get_chat_actor()
     if not actor:
         abort(403)
+    scope = _resolve_notification_scope(actor)
     return jsonify(
         {
             "ok": True,
             "csrf_token": _chat_csrf(),
             "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
             "sw_url": "/sw.js",
+            "actor_type": str(actor.get("actor_type") or ""),
+            "actor_id": str(actor.get("actor_id") or ""),
+            "is_chat_admin_alias": bool(actor.get("is_chat_admin_alias")),
+            "notification_scope": scope,
         }
     )
 
@@ -7816,6 +7882,29 @@ def push_subscribe():
                     request.headers.get("User-Agent"),
                 ),
             )
+        alias_cleanup_deleted = 0
+        if bool(actor.get("is_chat_admin_alias")):
+            source_ext_user_id = str(actor.get("source_ext_user_id") or "").strip()
+            if source_ext_user_id:
+                cur.execute(
+                    """
+                    DELETE FROM chat_push_subscriptions
+                     WHERE actor_type='line'
+                       AND actor_id=%s
+                       AND (endpoint_hash=%s OR (user_agent IS NOT NULL AND user_agent=%s))
+                    """,
+                    (source_ext_user_id, endpoint_hash, request.headers.get("User-Agent")),
+                )
+                alias_cleanup_deleted = int(cur.rowcount or 0)
+        current_app.logger.info(
+            "chat push subscribe actor_type=%s actor_id=%s alias=%s source_ext_user_id=%s endpoint_hash_prefix=%s alias_cleanup_deleted=%s",
+            actor.get("actor_type"),
+            actor.get("actor_id"),
+            bool(actor.get("is_chat_admin_alias")),
+            actor.get("source_ext_user_id"),
+            (endpoint_hash or "")[:10],
+            alias_cleanup_deleted,
+        )
         db.commit()
     finally:
         cur.close()
@@ -7846,6 +7935,27 @@ def push_unsubscribe():
              WHERE actor_type=%s AND actor_id=%s AND endpoint_hash=%s
             """,
             (actor["actor_type"], actor["actor_id"], endpoint_hash),
+        )
+        alias_cleanup_deleted = 0
+        if bool(actor.get("is_chat_admin_alias")):
+            source_ext_user_id = str(actor.get("source_ext_user_id") or "").strip()
+            if source_ext_user_id:
+                cur.execute(
+                    """
+                    DELETE FROM chat_push_subscriptions
+                     WHERE actor_type='line'
+                       AND actor_id=%s
+                       AND endpoint_hash=%s
+                    """,
+                    (source_ext_user_id, endpoint_hash),
+                )
+                alias_cleanup_deleted = int(cur.rowcount or 0)
+        current_app.logger.info(
+            "chat push unsubscribe actor_type=%s actor_id=%s endpoint_hash_prefix=%s alias_cleanup_deleted=%s",
+            actor.get("actor_type"),
+            actor.get("actor_id"),
+            (endpoint_hash or "")[:10],
+            alias_cleanup_deleted,
         )
         db.commit()
     finally:
@@ -7932,25 +8042,42 @@ def chat_connect():
     if not actor:
         current_app.logger.info("chat socket connect denied: no actor")
         return False
+    ext_user_joined = False
     ext_user_id = session.get("ext_user_id")
     if ext_user_id:
         try:
             join_room(f"external_user:{int(ext_user_id)}")
+            ext_user_joined = True
         except Exception:
             current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
 
+    mfu_joined = False
     mfu_username = str(session.get("user") or "").strip()
     if mfu_username:
         try:
             join_room(f"mfu_user:{mfu_username}")
+            mfu_joined = True
         except Exception:
             current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
 
+    alias_admin_joined = False
     if actor and actor.get("is_chat_admin_alias"):
         try:
             join_room("mfu_user:admin")
+            alias_admin_joined = True
+            current_app.logger.info(
+                "chat socket alias joined mfu room ext_user_id=%s recipient=admin",
+                actor.get("source_ext_user_id"),
+            )
         except Exception:
             current_app.logger.warning("chat socket mfu_user join failed for alias ext_user_id=%s", actor.get("source_ext_user_id"), exc_info=True)
+    current_app.logger.info(
+        "chat socket connect joined external_user=%s mfu_user=%s alias_admin=%s actor_type=%s",
+        ext_user_joined,
+        mfu_joined,
+        alias_admin_joined,
+        actor.get("actor_type"),
+    )
     return True
 
 @socketio.on("chat_join")

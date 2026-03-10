@@ -96,6 +96,17 @@
     return outputArray;
   }
 
+  async function fetchPushBootstrap() {
+    try {
+      const res = await fetch('/chat/api/push/bootstrap', { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      return data && data.ok ? data : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
   async function getPushState() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       return { supported: false, registration: null, subscription: null };
@@ -105,8 +116,9 @@
     return { supported: true, registration, subscription };
   }
 
-  async function enablePush(registration) {
-    if (!vapidKey) {
+  async function enablePush(registration, opts = {}) {
+    const keyToUse = String(opts?.vapidPublicKey || vapidKey || '');
+    if (!keyToUse) {
       alert('VAPID公開鍵が未設定のため通知を有効化できません');
       return;
     }
@@ -115,9 +127,13 @@
       alert('通知の許可が必要です');
       return;
     }
+    const currentSubscription = await registration.pushManager.getSubscription();
+    if (opts?.forceResubscribe && currentSubscription) {
+      try { await currentSubscription.unsubscribe(); } catch (_e) {}
+    }
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(vapidKey),
+      applicationServerKey: urlBase64ToUint8Array(keyToUse),
     });
     const res = await fetch('/chat/api/push/subscribe', {
       method: 'POST',
@@ -146,10 +162,18 @@
   }
 
   (async () => {
+    const bootstrap = await fetchPushBootstrap();
     const pushState = await getPushState();
+
     if (!pushState.supported) {
       pushBtn.disabled = true;
       pushBtn.textContent = 'Push通知は非対応です';
+      return;
+    }
+    if (bootstrap?.notification_scope === 'mfu' && bootstrap?.is_chat_admin_alias) {
+      await enablePush(pushState.registration, { forceResubscribe: true, vapidPublicKey: bootstrap.vapid_public_key || vapidKey });
+      const refreshed = await getPushState();
+      updatePushButton(Boolean(refreshed.subscription));
       return;
     }
     updatePushButton(Boolean(pushState.subscription));

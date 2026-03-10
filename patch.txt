@@ -1,191 +1,14 @@
 diff --git a/chat/__init__.py b/chat/__init__.py
-index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb2917e994 100644
+index bbf390e623dcacbc8a96acf2626935bb2917e994..24d2671d3ac84dfa8bd012c62721c827ce314a19 100644
 --- a/chat/__init__.py
 +++ b/chat/__init__.py
-@@ -2175,51 +2175,51 @@ def _get_room(event_id: int, room_id: str | None, *, allow_archived: bool = Fals
-         if not allow_archived and int(room.get("is_archived") or 0) == 1:
-             return None
-         return room
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _is_room_member(room_id: str, actor: dict[str, Any]) -> bool:
-     if not _ensure_chat_room_members_schema():
-         return False
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             "SELECT 1 FROM chat_room_members WHERE room_id=%s AND actor_type=%s AND actor_id=%s LIMIT 1",
-             (room_id, actor.get("actor_type"), str(actor.get("actor_id") or "")),
-         )
-         return bool(cur.fetchone())
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _can_manage_rooms(event_id: int, actor: dict[str, Any]) -> bool:
--    if actor.get("actor_type") == "admin":
-+    if _is_chat_admin_actor(actor):
-         return True
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         if actor.get("actor_type") == "line":
-             cur.execute(
-                 "SELECT 1 FROM mfu_event_member WHERE event_id=%s AND user_id=%s AND (COALESCE(is_host,0)=1 OR COALESCE(is_subhost,0)=1) LIMIT 1",
-                 (event_id, actor.get("actor_id")),
-             )
-             if cur.fetchone():
-                 return True
-         cur.execute(
-             "SELECT 1 FROM mfu_event_admin_acl WHERE event_id=%s AND username=%s LIMIT 1",
-             (event_id, actor.get("actor_id")),
-         )
-         return bool(cur.fetchone())
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _can_access_room(event_id: int, room_id: str | None, actor: dict[str, Any]) -> tuple[bool, str | None, dict[str, Any] | None]:
-     if not _can_access_event(event_id, actor):
-         return False, None, None
-     room = _get_room(event_id, room_id)
-@@ -2837,97 +2837,143 @@ def _cleanup_stale_typing_states(event_id: int | None = None, room_id: str | Non
-                 continue
-             last_ts = float(item.get("last_ts") or 0)
-             if now - last_ts >= CHAT_TYPING_TTL_SECONDS:
-                 stale_keys.append(key)
-                 stale_payloads.append((int(item.get("event_id") or 0), str(item.get("room_id") or ""), dict(item.get("actor") or {})))
- 
-         for key in stale_keys:
-             CHAT_TYPING_STATE.pop(key, None)
- 
-     for stale_event_id, stale_room_id, stale_actor in stale_payloads:
-         if stale_event_id <= 0 or not stale_room_id or not stale_actor:
-             continue
-         _emit_typing_state(stale_event_id, stale_room_id, stale_actor, False)
- 
- 
- def _is_admin() -> bool:
-     return session.get("user") == "admin"
- 
- 
- def _is_admin_actor(actor: dict[str, Any] | None) -> bool:
-     if not actor:
-         return False
-     return str(actor.get("actor_type") or "") == "admin"
- 
- 
-+def _is_real_mfu_admin_actor(actor: dict[str, Any] | None) -> bool:
-+    if not _is_admin_actor(actor):
-+        return False
-+    return not bool(actor.get("is_chat_admin_alias"))
-+
-+
-+def _is_chat_admin_actor(actor: dict[str, Any] | None) -> bool:
-+    return _is_admin_actor(actor)
-+
-+
-+def _get_chat_admin_alias_row(ext_user_id: int) -> dict[str, Any] | None:
-+    if int(ext_user_id or 0) <= 0:
-+        return None
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT id, nickname, email, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-+              FROM external_login_user
-+             WHERE id=%s
-+             LIMIT 1
-+            """,
-+            (int(ext_user_id),),
-+        )
-+        row = cur.fetchone()
-+        if not row:
-+            return None
-+        row["chat_admin_alias"] = int(row.get("chat_admin_alias") or 0)
-+        return row
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _get_external_user_chat_admin_alias(ext_user_id: int) -> bool:
-+    row = _get_chat_admin_alias_row(ext_user_id)
-+    return bool(row and int(row.get("chat_admin_alias") or 0) == 1)
-+
-+
- def get_chat_actor() -> dict[str, Any] | None:
-     """admin / acl / line を統一形式へ正規化。"""
-     if session.get("user"):
-         username = str(session.get("user"))
-         actor_type = "admin" if username == "admin" else "acl"
-         email = None
-         db = get_db()
-         cur = db.cursor(dictionary=True)
-         try:
-             cur.execute("SELECT username, email FROM users WHERE username=%s LIMIT 1", (username,))
-             row = cur.fetchone()
-             if row:
-                 email = row.get("email")
-         except Exception:
-             current_app.logger.warning("chat actor load failed for mfu user=%s", username, exc_info=True)
-         finally:
-             cur.close()
-             db.close()
-         return {
-             "actor_type": actor_type,
-             "actor_id": username,
-             "display_name": username,
-             "email": email,
-         }
- 
-     ext_user_id = session.get("ext_user_id")
-     if ext_user_id:
--        display_name = get_external_user_display_name(int(ext_user_id))
--        db = get_db()
--        cur = db.cursor(dictionary=True)
--        try:
--            cur.execute(
--                "SELECT id, nickname, email FROM external_login_user WHERE id=%s LIMIT 1",
--                (ext_user_id,),
--            )
--            row = cur.fetchone()
--        finally:
--            cur.close()
--            db.close()
-+        row = _get_chat_admin_alias_row(int(ext_user_id))
-         if not row:
-             current_app.logger.warning("chat actor load failed for ext_user_id=%s", ext_user_id)
-             return None
-+        display_name = get_external_user_display_name(int(ext_user_id))
-+        if int(row.get("chat_admin_alias") or 0) == 1:
-+            current_app.logger.info(
-+                "chat admin alias login ext_user_id=%s social_id=%s",
-+                ext_user_id,
-+                row.get("social_id"),
-+            )
-+            return {
-+                "actor_type": "admin",
-+                "actor_id": "admin",
-+                "display_name": display_name,
-+                "email": row.get("email"),
-+                "is_chat_admin_alias": True,
-+                "source_ext_user_id": int(row.get("id") or 0),
-+                "source_social_id": row.get("social_id"),
-+            }
+@@ -2949,50 +2949,105 @@ def get_chat_actor() -> dict[str, Any] | None:
          return {
              "actor_type": "line",
              "actor_id": str(row["id"]),
              "display_name": display_name,
              "email": row.get("email"),
-+            "is_chat_admin_alias": False,
+             "is_chat_admin_alias": False,
          }
  
      return None
@@ -205,16 +28,87 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
      return None
  
  
++def _resolve_notification_scope(actor: dict[str, Any] | None) -> str:
++    if not actor:
++        return "external"
++    if actor.get("is_chat_admin_alias"):
++        return "mfu"
++    if str(actor.get("actor_type") or "") in {"admin", "acl"}:
++        return "mfu"
++    return "external"
++
++
++def _build_notification_api_map(scope: str) -> dict[str, str]:
++    if scope == "mfu":
++        return {
++            "scope": "mfu",
++            "unread_count": "/api/mfu-notifications/unread-count",
++            "list": "/api/mfu-notifications",
++            "updates": "/api/mfu-notifications/updates",
++            "read": "/api/mfu-notifications/{id}/read",
++            "read_all": "/api/mfu-notifications/read-all",
++            "page": "/mfu-notifications",
++            "room_read": "",
++            "dm_room_read": "",
++        }
++    return {
++        "scope": "external",
++        "unread_count": "/external-login/api/notifications/unread-count",
++        "list": "/external-login/api/notifications",
++        "updates": "/external-login/api/notifications/updates",
++        "read": "/external-login/api/notifications/{id}/read",
++        "read_all": "/external-login/api/notifications/read-all",
++        "page": "/external-login/notifications",
++        "room_read": "/external-login/api/notifications/read-by-room",
++        "dm_room_read": "/external-login/api/notifications/read-dm-room",
++    }
++
++
++def _build_chat_notification_context(actor: dict[str, Any] | None) -> dict[str, Any]:
++    scope = _resolve_notification_scope(actor)
++    api_map = _build_notification_api_map(scope)
++    current_app.logger.info(
++        "chat notification scope resolved actor_type=%s actor_id=%s alias=%s scope=%s unread=%s list=%s",
++        (actor or {}).get("actor_type"),
++        (actor or {}).get("actor_id"),
++        bool((actor or {}).get("is_chat_admin_alias")),
++        scope,
++        api_map.get("unread_count"),
++        api_map.get("list"),
++    )
++    return {
++        "notification_scope": scope,
++        "notification_api_map": api_map,
++        "chat_notifications_url": api_map.get("page") or "/external-login/notifications",
++    }
++
++
  def _canonical_dm_actor_key(actor_key: str) -> str:
      value = str(actor_key or "").strip()
      if not value:
          return ""
      if value == "admin":
          return "admin:1"
-@@ -5721,154 +5767,154 @@ def debug_read_v2_upsert():
-         if saved_value > 0:
-             flash(f"V2へ保存テストを実行しました。saved={saved_value}", "success")
-         else:
+     actor_type, sep, actor_id = value.partition(":")
+     if not sep:
+         return value
+     actor_type = actor_type.strip()
+     actor_id = actor_id.strip()
+     if actor_type == "admin":
+         return "admin:1"
+     if actor_type and actor_id:
+         return f"{actor_type}:{actor_id}"
+     return ""
+ 
+ 
+ def _dm_actor_key_aliases(actor_key: str) -> list[str]:
+     return _read_actor_key_aliases(actor_key)
+ 
+ 
+ def _get_dm_actor_key(actor: dict[str, Any] | None) -> str | None:
+     if not actor:
+         return None
+@@ -5770,59 +5825,61 @@ def debug_read_v2_upsert():
              flash("V2へ保存テストを実行しましたが保存値を取得できませんでした。", "warning")
      else:
          flash("入力が不足しています（room_key / actor_key / message_id）。", "danger")
@@ -237,10 +131,10 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
          abort(403)
      events = _accessible_events(actor)
      dm_inbox_items: list[dict[str, Any]] = []
--    if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
-+    if _is_chat_admin_actor(actor) and _ensure_chat_dm_schema():
+     if _is_chat_admin_actor(actor) and _ensure_chat_dm_schema():
          actor_key = get_chat_actor_key(actor) or "admin:1"
          dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
++    notif_ctx = _build_chat_notification_context(actor)
      return render_template(
          "chat/index.html",
          actor=actor,
@@ -250,6 +144,7 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
          dm_inbox_items=dm_inbox_items,
          dm_user_user_enabled=_chat_dm_enable_user_user(),
          vapid_public_key=os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
++        **notif_ctx,
      )
  
  
@@ -275,46 +170,7 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
  def dm_entry():
      actor = get_chat_actor()
      actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key:
-         abort(403)
-     _ensure_chat_read_state_v2_schema()
-     if actor_key == "admin:1":
-         return redirect(url_for("chat.dm_inbox"))
-     admin_actor_key = _chat_dm_admin_actor_key()
-     conversation = get_or_create_dm_conversation(actor_key, admin_actor_key, "admin_user")
-     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
- 
- 
- @chat_bp.route("/dm/inbox")
- def dm_inbox():
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
--    if not actor or not actor_key or actor.get("actor_type") != "admin":
-+    if not actor or not actor_key or not _is_chat_admin_actor(actor):
-         abort(403)
-     if not _ensure_chat_dm_schema():
-         abort(500)
- 
-     rows = _build_admin_dm_inbox_items(actor_key)
- 
-     return render_template("chat/dm_inbox.html", actor=actor, items=rows, csrf_token=_chat_csrf(), nav_mode="chat")
- 
- 
- @chat_bp.get("/dm/open/line/<int:line_user_id>")
- def dm_open_line(line_user_id: int):
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
--    if not actor or not actor_key or actor.get("actor_type") != "admin":
-+    if not actor or not actor_key or not _is_chat_admin_actor(actor):
-         abort(403)
-     if line_user_id <= 0:
-         abort(404)
-     conversation = get_or_create_dm_conversation(actor_key, f"line:{line_user_id}", "admin_user")
-     return redirect(url_for("chat.dm_room", uuid=conversation["uuid"]))
- 
- 
- @chat_bp.get("/dm/room/<uuid>")
- def dm_room(uuid: str):
+@@ -5867,69 +5924,71 @@ def dm_room(uuid: str):
      actor = get_chat_actor()
      actor_key = _get_dm_actor_key(actor)
      if not actor or not actor_key:
@@ -340,11 +196,11 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
  
      messages = _load_dm_messages(int(conversation["id"]), actor_key, uuid)
      peer_name = _actor_key_to_display_name(str(peer.get("actor_key") or ""))
++    notif_ctx = _build_chat_notification_context(actor)
      return render_template(
          "chat/room.html",
          actor=actor,
--        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
-+        chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
+         chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
          current_user_id=_canonical_read_actor_key_from_actor(actor),
          event={"id": 0, "title": "DM"},
          messages=messages,
@@ -360,6 +216,7 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
          dm_uuid=uuid,
          dm_room_id=f"dm:{uuid}",
          peer_display_name=peer_name,
++        **notif_ctx,
      )
  
  
@@ -370,182 +227,25 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
      if not actor or not actor_key:
          return jsonify({"ok": False, "error": "forbidden"}), 403
      payload = request.get_json(silent=True) or {}
-@@ -6039,51 +6085,51 @@ def dm_delete_message(message_id: int):
-     if not can_access_dm(dm_uuid, actor_key):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     conversation = _get_dm_conversation_by_uuid(dm_uuid)
-     if not conversation:
-         return jsonify({"ok": False, "error": "not_found"}), 404
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT id, sender_actor_key, created_at, COALESCE(deleted_flag, 0) AS deleted_flag
-             FROM chat_dm_messages
-             WHERE id=%s AND conversation_id=%s
-             LIMIT 1
-             """,
-             (message_id, conversation["id"]),
-         )
-         row = cur.fetchone()
-         if not row:
-             return jsonify({"ok": False, "error": "not_found"}), 404
-         if int(row.get("deleted_flag") or 0) == 1:
-             return jsonify({"ok": True, "message_id": message_id})
- 
-         can_delete = False
--        if actor.get("actor_type") == "admin":
-+        if _is_chat_admin_actor(actor):
-             can_delete = True
-         elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
-             can_delete = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
-         if not can_delete:
-             return jsonify({"ok": False, "error": "削除権限がありません"}), 403
- 
-         now = datetime.utcnow()
-         cur.execute(
-             """
-             UPDATE chat_dm_messages
-             SET deleted_flag=1, deleted_at=%s, deleted_by_actor_key=%s
-             WHERE id=%s AND conversation_id=%s
-             """,
-             (now, actor_key, message_id, conversation["id"]),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
-     deleted_by_actor_type, _deleted_by_actor_id = _split_actor_key(actor_key)
-     socketio.emit(
-         "chat_delete_update",
-         {
-             "dm_uuid": dm_uuid,
-@@ -6120,51 +6166,51 @@ def dm_edit_message(message_id: int):
- 
-     try:
-         body_text = _validate_body(str(payload.get("body_text") or ""))
-     except ValueError as exc:
-         return jsonify({"ok": False, "error": str(exc)}), 400
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT id, sender_actor_key, created_at, COALESCE(deleted_flag, 0) AS deleted_flag
-             FROM chat_dm_messages
-             WHERE id=%s AND conversation_id=%s
-             LIMIT 1
-             """,
-             (message_id, conversation["id"]),
-         )
-         row = cur.fetchone()
-         if not row:
-             return jsonify({"ok": False, "error": "対象メッセージが見つかりません"}), 404
-         if int(row.get("deleted_flag") or 0) == 1:
-             return jsonify({"ok": False, "error": "削除済みメッセージは編集できません"}), 403
- 
-         can_edit = False
--        if actor.get("actor_type") == "admin":
-+        if _is_chat_admin_actor(actor):
-             can_edit = True
-         elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
-             can_edit = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
-         if not can_edit:
-             return jsonify({"ok": False, "error": "このメッセージを編集する権限がありません"}), 403
- 
-         cur.execute(
-             """
-             UPDATE chat_dm_messages
-             SET body_text=%s,
-                 edited_flag=1,
-                 edited_at=NOW(),
-                 edited_by_actor_key=%s
-             WHERE id=%s AND conversation_id=%s
-             """,
-             (body_text, actor_key, message_id, conversation["id"]),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
-     message_payload = _load_single_dm_message_payload(conversation, message_id, actor_key, dm_uuid)
-     if not message_payload:
-         return jsonify({"ok": False, "error": "編集後メッセージの再取得に失敗しました"}), 500
-@@ -6191,66 +6237,66 @@ def dm_api_seen():
      if (payload.get("csrf_token") or "").strip() != session.get("chat_csrf"):
          return jsonify({"ok": False, "error": "csrf"}), 400
      dm_uuid = str(payload.get("dm_uuid") or "").strip()
-     last_seen_message_id = int(payload.get("last_seen_message_id") or 0)
      if not dm_uuid:
          return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
-     if last_seen_message_id <= 0:
-         return jsonify({"ok": True, "last_read_message_id": 0})
      if not can_access_dm(dm_uuid, actor_key):
          return jsonify({"ok": False, "error": "forbidden"}), 403
      conversation = _get_dm_conversation_by_uuid(dm_uuid)
      if not conversation:
          return jsonify({"ok": False, "error": "not_found"}), 404
  
-     actor_key = _canonical_read_actor_key_from_actor(actor)
-     room_key = _build_read_room_key(dm_uuid=dm_uuid)
-     actual_last_read_id = _upsert_chat_read_state_v2(room_key, actor_key, last_seen_message_id)
-     if actual_last_read_id <= 0:
-         return jsonify({"ok": False, "error": "participant_not_found"}), 409
-     return jsonify({"ok": True, "actor_key": actor_key, "actual_last_read_id": actual_last_read_id, "last_read_message_id": actual_last_read_id})
+     body = _validate_body(payload.get("body") or "")
+     saved = _save_dm_message(conversation, actor_key, body)
+     saved["dm_uuid"] = dm_uuid
+     msg_payload = _dm_message_to_payload(saved, actor_key)
+@@ -6367,69 +6426,71 @@ def room(event_id: int):
  
- 
- @chat_bp.get("/dm/settings")
- def dm_settings_get():
-     actor = get_chat_actor()
--    if not actor or actor.get("actor_type") != "admin":
-+    if not actor or not _is_chat_admin_actor(actor):
-         abort(403)
-     return render_template(
-         "chat/dm_settings.html",
-         actor=actor,
-         csrf_token=_chat_csrf(),
-         enable_user_user=_chat_dm_enable_user_user(),
-         admin_actor_key=_chat_dm_admin_actor_key(),
-         nav_mode="chat",
-     )
- 
- 
- @chat_bp.post("/dm/settings")
- def dm_settings_post():
-     actor = get_chat_actor()
--    if not actor or actor.get("actor_type") != "admin":
-+    if not actor or not _is_chat_admin_actor(actor):
-         abort(403)
-     token = (request.form.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400, "invalid csrf token")
-     enabled = "1" if (request.form.get("enable_user_user") or "") in {"1", "on", "true"} else "0"
-     admin_actor_key = (request.form.get("admin_actor_key") or "admin:1").strip() or "admin:1"
-     _set_setting_value("CHAT_DM_ENABLE_USER_USER", enabled)
-     _set_setting_value("CHAT_DM_ADMIN_ACTOR_KEY", admin_actor_key)
-     flash("DM設定を更新しました", "success")
-     return redirect(url_for("chat.dm_settings_get"))
- 
- 
- @chat_bp.get("/admin/system-templates/join-approved")
- def admin_system_template_join_approved_get():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if actor.get("actor_type") != "admin":
-         abort(403)
- 
-     return render_template(
-         "chat/admin_system_template_join_approved.html",
-         actor=actor,
-         csrf_token=_chat_csrf(),
-         body_template=get_system_template("join_approved"),
-@@ -6324,51 +6370,51 @@ def room(event_id: int):
+     requested_room_id = (request.args.get("room_id") or "").strip() or None
+     allowed, effective_room_id, active_room = _can_access_room(event_id, requested_room_id, actor)
      if not allowed or not effective_room_id or not active_room:
          abort(403)
  
@@ -568,11 +268,11 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
      can_broadcast = actor["actor_type"] in {"admin", "acl"}
      accessible_rooms = _list_accessible_rooms(event_id, actor)
      current_user_id = _canonical_read_actor_key_from_actor(actor)
++    notif_ctx = _build_chat_notification_context(actor)
      return render_template(
          "chat/room.html",
          actor=actor,
--        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
-+        chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
+         chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
          current_user_id=current_user_id,
          event=event,
          messages=messages,
@@ -588,6 +288,7 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
          dm_uuid="",
          dm_room_id="",
          peer_display_name="",
++        **notif_ctx,
      )
  
  
@@ -598,7 +299,223 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
          abort(403)
      if not _can_access_event(event_id, actor):
          abort(403)
-@@ -7877,50 +7923,56 @@ def manifest():
+     if "/" in name or "\\" in name or name.startswith("."):
+         abort(404)
+     directory = os.path.join(CHAT_UPLOAD_DIR, str(event_id))
+     return send_from_directory(directory, name)
+ 
+ 
+ @chat_bp.post("/api/events/<int:event_id>/upload-image")
+ def upload_image(event_id: int):
+     _ensure_chat_rooms_schema()
+     _ensure_chat_room_members_schema()
+     _ensure_chat_messages_room_schema()
+     _ensure_chat_thread_schema()
+     _ensure_chat_edit_schema()
+     actor = get_chat_actor()
+     if not actor:
+@@ -7725,56 +7786,61 @@ def api_room_presence_leave():
+         return jsonify({"ok": False, "error": "unauthorized"}), 401
+ 
+     try:
+         event_id = int(payload.get("event_id") or 0)
+     except Exception:
+         event_id = 0
+     room_id = str(payload.get("room_id") or "").strip()
+     client_id = str(payload.get("client_id") or "").strip()
+ 
+     if not room_id or not client_id:
+         return jsonify({"ok": False, "error": "invalid_params"}), 400
+ 
+     allowed, effective_event_id, effective_room_id, error = _resolve_presence_room_context(actor, event_id, room_id)
+     if not allowed or not effective_room_id:
+         return jsonify({"ok": False, "error": error or "forbidden"}), 403 if (error or "") == "forbidden" else 400
+ 
+     _clear_room_presence(actor["actor_type"], str(actor["actor_id"]), effective_event_id, effective_room_id, client_id)
+     return jsonify({"ok": True, "room_id": effective_room_id})
+ 
+ 
+ @chat_bp.get("/api/push/bootstrap")
+ def push_bootstrap():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
++    scope = _resolve_notification_scope(actor)
+     return jsonify(
+         {
+             "ok": True,
+             "csrf_token": _chat_csrf(),
+             "vapid_public_key": os.getenv("CHAT_VAPID_PUBLIC_KEY", ""),
+             "sw_url": "/sw.js",
++            "actor_type": str(actor.get("actor_type") or ""),
++            "actor_id": str(actor.get("actor_id") or ""),
++            "is_chat_admin_alias": bool(actor.get("is_chat_admin_alias")),
++            "notification_scope": scope,
+         }
+     )
+ 
+ 
+ @chat_bp.post("/api/push/subscribe")
+ def push_subscribe():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+     data = request.get_json(silent=True) or {}
+     endpoint = (data.get("endpoint") or "").strip()
+     endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
+     sw_scope = (data.get("sw_scope") or "/").strip() or "/"
+     if not sw_scope.startswith("/"):
+         sw_scope = "/"
+     keys = data.get("keys") or {}
+     if not endpoint or not keys.get("p256dh") or not keys.get("auth"):
+         abort(400)
+     if not _ensure_chat_push_schema():
+         abort(500)
+ 
+     db = get_db()
+@@ -7794,81 +7860,125 @@ def push_subscribe():
+                 endpoint_hash,
+                 sw_scope,
+                 keys["p256dh"],
+                 keys["auth"],
+                 request.headers.get("User-Agent"),
+                 datetime.utcnow(),
+                 datetime.utcnow(),
+             ),
+         )
+         if sw_scope == "/":
+             cur.execute(
+                 """
+                 DELETE FROM chat_push_subscriptions
+                  WHERE actor_type=%s
+                    AND actor_id=%s
+                    AND sw_scope <> '/'
+                    AND (endpoint_hash=%s OR (user_agent IS NOT NULL AND user_agent=%s))
+                 """,
+                 (
+                     actor["actor_type"],
+                     actor["actor_id"],
+                     endpoint_hash,
+                     request.headers.get("User-Agent"),
+                 ),
+             )
++        alias_cleanup_deleted = 0
++        if bool(actor.get("is_chat_admin_alias")):
++            source_ext_user_id = str(actor.get("source_ext_user_id") or "").strip()
++            if source_ext_user_id:
++                cur.execute(
++                    """
++                    DELETE FROM chat_push_subscriptions
++                     WHERE actor_type='line'
++                       AND actor_id=%s
++                       AND (endpoint_hash=%s OR (user_agent IS NOT NULL AND user_agent=%s))
++                    """,
++                    (source_ext_user_id, endpoint_hash, request.headers.get("User-Agent")),
++                )
++                alias_cleanup_deleted = int(cur.rowcount or 0)
++        current_app.logger.info(
++            "chat push subscribe actor_type=%s actor_id=%s alias=%s source_ext_user_id=%s endpoint_hash_prefix=%s alias_cleanup_deleted=%s",
++            actor.get("actor_type"),
++            actor.get("actor_id"),
++            bool(actor.get("is_chat_admin_alias")),
++            actor.get("source_ext_user_id"),
++            (endpoint_hash or "")[:10],
++            alias_cleanup_deleted,
++        )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+     return jsonify({"ok": True})
+ 
+ 
+ @chat_bp.post("/api/push/unsubscribe")
+ def push_unsubscribe():
+     actor = get_chat_actor()
+     if not actor:
+         abort(403)
+     token = (request.form.get("csrf_token") or (request.json or {}).get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+     endpoint = ((request.get_json(silent=True) or {}).get("endpoint") or "").strip()
+     endpoint_hash = hashlib.sha256(endpoint.encode("utf-8")).hexdigest() if endpoint else ""
+     if not endpoint:
+         abort(400)
+     if not _ensure_chat_push_schema():
+         abort(500)
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             DELETE FROM chat_push_subscriptions
+              WHERE actor_type=%s AND actor_id=%s AND endpoint_hash=%s
+             """,
+             (actor["actor_type"], actor["actor_id"], endpoint_hash),
+         )
++        alias_cleanup_deleted = 0
++        if bool(actor.get("is_chat_admin_alias")):
++            source_ext_user_id = str(actor.get("source_ext_user_id") or "").strip()
++            if source_ext_user_id:
++                cur.execute(
++                    """
++                    DELETE FROM chat_push_subscriptions
++                     WHERE actor_type='line'
++                       AND actor_id=%s
++                       AND endpoint_hash=%s
++                    """,
++                    (source_ext_user_id, endpoint_hash),
++                )
++                alias_cleanup_deleted = int(cur.rowcount or 0)
++        current_app.logger.info(
++            "chat push unsubscribe actor_type=%s actor_id=%s endpoint_hash_prefix=%s alias_cleanup_deleted=%s",
++            actor.get("actor_type"),
++            actor.get("actor_id"),
++            (endpoint_hash or "")[:10],
++            alias_cleanup_deleted,
++        )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+     return jsonify({"ok": True})
+ 
+ 
+ @chat_bp.post("/api/events/<int:event_id>/broadcast")
+ def broadcast_push(event_id: int):
+     actor = get_chat_actor()
+     if not actor or actor["actor_type"] == "line":
+         abort(403)
+     if not _can_access_event(event_id, actor):
+         abort(403)
+     token = (request.form.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         abort(400)
+ 
+     msg = _validate_body(request.form.get("body") or "")
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     sent_count = 0
+     try:
+         cur.execute("SELECT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+         for row in cur.fetchall() or []:
+@@ -7910,69 +8020,86 @@ def broadcast_push(event_id: int):
+ 
+ 
+ @chat_bp.get("/manifest.json")
+ def manifest():
+     return jsonify(
+         {
+             "name": "MFU Event Chat",
+             "short_name": "MFU Chat",
+             "start_url": "/chat/",
+             "display": "standalone",
+             "background_color": "#ffffff",
+             "theme_color": "#0d6efd",
+             "icons": [],
          }
      )
  
@@ -611,25 +528,42 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
      if not actor:
          current_app.logger.info("chat socket connect denied: no actor")
          return False
++    ext_user_joined = False
      ext_user_id = session.get("ext_user_id")
      if ext_user_id:
          try:
              join_room(f"external_user:{int(ext_user_id)}")
++            ext_user_joined = True
          except Exception:
              current_app.logger.warning("chat socket external_user join failed ext_user_id=%s", ext_user_id, exc_info=True)
  
++    mfu_joined = False
      mfu_username = str(session.get("user") or "").strip()
      if mfu_username:
          try:
              join_room(f"mfu_user:{mfu_username}")
++            mfu_joined = True
          except Exception:
              current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
-+
-+    if actor and actor.get("is_chat_admin_alias"):
-+        try:
-+            join_room("mfu_user:admin")
-+        except Exception:
-+            current_app.logger.warning("chat socket mfu_user join failed for alias ext_user_id=%s", actor.get("source_ext_user_id"), exc_info=True)
+ 
++    alias_admin_joined = False
+     if actor and actor.get("is_chat_admin_alias"):
+         try:
+             join_room("mfu_user:admin")
++            alias_admin_joined = True
++            current_app.logger.info(
++                "chat socket alias joined mfu room ext_user_id=%s recipient=admin",
++                actor.get("source_ext_user_id"),
++            )
+         except Exception:
+             current_app.logger.warning("chat socket mfu_user join failed for alias ext_user_id=%s", actor.get("source_ext_user_id"), exc_info=True)
++    current_app.logger.info(
++        "chat socket connect joined external_user=%s mfu_user=%s alias_admin=%s actor_type=%s",
++        ext_user_joined,
++        mfu_joined,
++        alias_admin_joined,
++        actor.get("actor_type"),
++    )
      return True
  
  @socketio.on("chat_join")
@@ -655,689 +589,793 @@ index 8f6a9bfc05f8d513fee27d6c75d043c6fc200241..bbf390e623dcacbc8a96acf2626935bb
          join_room(f"dm:{dm_uuid}")
          emit("chat_joined", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
          room_key = _build_read_room_key(dm_uuid=dm_uuid)
-diff --git a/docs/sql/20260309_external_login_user_chat_admin_alias.sql b/docs/sql/20260309_external_login_user_chat_admin_alias.sql
-new file mode 100644
-index 0000000000000000000000000000000000000000..1b024e85ab42c6bfcf55aba57384142b601e16e8
---- /dev/null
-+++ b/docs/sql/20260309_external_login_user_chat_admin_alias.sql
-@@ -0,0 +1,15 @@
-+SET @has_col := (
-+  SELECT COUNT(*)
-+    FROM information_schema.COLUMNS
-+   WHERE TABLE_SCHEMA = DATABASE()
-+     AND TABLE_NAME = 'external_login_user'
-+     AND COLUMN_NAME = 'chat_admin_alias'
-+);
-+SET @ddl := IF(
-+  @has_col = 0,
-+  'ALTER TABLE external_login_user ADD COLUMN chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note',
-+  'SELECT 1'
-+);
-+PREPARE stmt FROM @ddl;
-+EXECUTE stmt;
-+DEALLOCATE PREPARE stmt;
-diff --git a/external_login_user/admin_ext_users.js b/external_login_user/admin_ext_users.js
-index a668c87377806edc0dd3649995113e5fd23ac5e3..9ddf7615ebd3bb8fd61b8e0749469e012f2fdd58 100644
---- a/external_login_user/admin_ext_users.js
-+++ b/external_login_user/admin_ext_users.js
-@@ -26,51 +26,52 @@ def _column_exists(table: str, column: str) -> bool:
-             return False
-         cur.execute("""
-             SELECT 1
-               FROM information_schema.COLUMNS
-              WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
-              LIMIT 1
-         """, (dbname, table, column))
-         return cur.fetchone() is not None
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
- 
- # ============= 画面（一覧） =============
- @bp.route("/admin/ext-users")
- def admin_ext_users_index():
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-         cols = """
-             id, nickname, x_id, instagram_id, email, social_id,
--            avatar_file, avatar_url, created_at, updated_at
-+            avatar_file, avatar_url, created_at, updated_at,
-+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-         """
-         if has_verified:
-             cols += ", email_verified_at"
-         cur.execute(f"""
-             SELECT {cols}
-               FROM external_login_user
-              ORDER BY id DESC
-              LIMIT 50
-         """)
-         initial_items = cur.fetchall() or []
-         if not has_verified:
-             for r in initial_items:
-                 r["email_verified_at"] = None
- 
-         cur.execute("SELECT COUNT(*) AS c FROM external_login_user")
-         total = int((cur.fetchone() or {}).get("c", 0))
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return render_template(
-         "admin_ext_users.html",
-         admin_csrf=_admin_csrf_token(),
-         initial_items=initial_items,
-         initial_total=total,
-@@ -85,165 +86,170 @@ def admin_ext_users_data():
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     q = (request.args.get("q") or "").strip()
-     try:
-         page = max(int(request.args.get("page") or 1), 1)
-     except Exception:
-         page = 1
-     try:
-         per_page = min(max(int(request.args.get("per_page") or 50), 1), 200)
-     except Exception:
-         per_page = 50
- 
-     params: list = []
-     where = []
-     if q:
-         like = f"%{q}%"
-         where.append("(nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)")
-         params += [like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
-     cols = """
-         id, nickname, x_id, instagram_id, email, social_id,
--        avatar_file, avatar_url, created_at, updated_at
-+        avatar_file, avatar_url, created_at, updated_at,
-+        COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-     """
-     if has_verified:
-         cols += ", email_verified_at"
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
-         total = int(cur.fetchone()["c"])
-         offset = (page - 1) * per_page
- 
-         cur.execute(f"""
-             SELECT {cols}
-               FROM external_login_user
-               {sql_where}
-              ORDER BY id DESC
-              LIMIT %s OFFSET %s
-         """, params + [per_page, offset])
-         rows = cur.fetchall() or []
-         if not has_verified:
-             for r in rows:
-                 r["email_verified_at"] = None
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return jsonify({"ok": True, "items": rows, "total": total, "page": page, "per_page": per_page})
- 
- 
- @bp.get("/admin/ext-users/<int:user_id>/detail")
- def admin_ext_users_detail(user_id: int):
-     """（旧モーダル用）単票取得。"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT
-               id, nickname, x_id, instagram_id, email, social_id,
--              avatar_file, avatar_url, created_at, updated_at
-+              avatar_file, avatar_url, created_at, updated_at,
-+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-             FROM external_login_user
-             WHERE id=%s
-             LIMIT 1
-         """, (user_id,))
-         row = cur.fetchone()
-         if not row:
-             abort(404)
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return jsonify({"ok": True, "item": row})
- 
- 
- @bp.post("/admin/ext-users/<int:user_id>/update")
- def admin_ext_users_update(user_id: int):
-     """
-     項目更新（nickname / x_id / instagram_id / email）
-     Body: JSON or form
-     """
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
-     if not token_req or token_req != _admin_csrf_token():
-         return jsonify({"ok": False, "error": "invalid_csrf"}), 400
- 
-     data = request.get_json(silent=True) or request.form
-     nickname = (data.get("nickname") or "").strip()
-     x_id_raw = (data.get("x_id") or "").strip().lstrip("@")
-     ig_raw   = (data.get("instagram_id") or "").strip().lstrip("@")
-     email    = (data.get("email") or "").strip() or None
-+    chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
- 
-     errors = {}
-     if not nickname:
-         errors["nickname"] = "ニックネームは必須です。"
-     if x_id_raw and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", x_id_raw):
-         errors["x_id"] = "X IDは @なし、半角英数と_で1〜15文字。"
-     if ig_raw:
-         ok = re.fullmatch(r"[A-Za-z0-9._]{1,30}", ig_raw) and not ig_raw.startswith(".") and not ig_raw.endswith(".") and ".." not in ig_raw
-         if not ok:
-             errors["instagram_id"] = "Instagram IDは英数・.・_で1〜30文字。先頭/末尾の . と .. は不可。"
- 
-     if errors:
-         return jsonify({"ok": False, "errors": errors}), 400
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         row = cur.fetchone()
-         if not row:
-             return jsonify({"ok": False, "error": "not_found"}), 404
-         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
-         email_changed = (email or None) != (email_before or None)
- 
-         if email_changed and has_verified:
-             cur.execute("""
-                 UPDATE external_login_user
-                    SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
-+                       chat_admin_alias=%s,
-                        email_verified_at=NULL
-                  WHERE id=%s
-                  LIMIT 1
--            """, (nickname, x_id_raw or None, ig_raw or None, email, user_id))
-+            """, (nickname, x_id_raw or None, ig_raw or None, email, chat_admin_alias, user_id))
-         else:
-             cur.execute("""
-                 UPDATE external_login_user
--                   SET nickname=%s, x_id=%s, instagram_id=%s, email=%s
-+                   SET nickname=%s, x_id=%s, instagram_id=%s, email=%s,
-+                       chat_admin_alias=%s
-                  WHERE id=%s
-                  LIMIT 1
--            """, (nickname, x_id_raw or None, ig_raw or None, email, user_id))
-+            """, (nickname, x_id_raw or None, ig_raw or None, email, chat_admin_alias, user_id))
-         db.commit()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return jsonify({"ok": True})
- 
- 
- @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
- def admin_ext_users_resend_verify(user_id: int):
-     """
-     メール確認コードの再送
-     """
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
-     if not token_req or token_req != _admin_csrf_token():
-         return jsonify({"ok": False, "error": "invalid_csrf"}), 400
- 
-     if not _issue_verify_pin or not _send_verify_pin_mail:
-         return jsonify({"ok": False, "error": "pin_issuer_unavailable"}), 500
- 
-     db = get_db(); cur = db.cursor()
-@@ -262,40 +268,41 @@ def admin_ext_users_resend_verify(user_id: int):
-             return jsonify({"ok": False, "error": reason}), 429 if reason in ("cooldown", "rate_limited") else 400
- 
-         try:
-             _send_verify_pin_mail(email, pin_raw)  # type: ignore
-         except Exception:
-             return jsonify({"ok": False, "error": "smtp_error"}), 502
- 
-         return jsonify({"ok": True})
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
- 
- # ============= 別ページ編集 =============
- @bp.get("/admin/ext-users/<int:user_id>/edit")
- def admin_ext_users_edit_page(user_id: int):
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-         cols = """
-             id, nickname, x_id, instagram_id, email, social_id,
--            avatar_file, avatar_url, created_at, updated_at
-+            avatar_file, avatar_url, created_at, updated_at,
-+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-         """
-         if has_verified:
-             cols += ", email_verified_at"
-         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         user = cur.fetchone()
-         if not user:
-             abort(404)
-         if not has_verified:
-             user["email_verified_at"] = None
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return render_template("admin_ext_users_edit.html", u=user, admin_csrf=_admin_csrf_token())
-diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
-index 974995d1f844358ef47959c82064498cb35569de..a6fd2b8280defab6b7f6913acc96cbe237808940 100644
---- a/external_login_user/admin_users.py
-+++ b/external_login_user/admin_users.py
-@@ -111,50 +111,51 @@ def admin_ext_users_index():
-     where = []
-     if q:
-         like = f"%{q}%"
-         where.append(
-             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
-         )
-         params += [like, like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-         cols = """
-             id,
-             nickname,
-             x_id,
-             instagram_id,
-             email,
-             social_id,
-             avatar_file,
-             avatar_url,
-             created_at,
-             updated_at,
-             admin_note,
-+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-             COALESCE(notify_album_process, 1) AS notify_album_process,
-             (
-               SELECT COUNT(*)
-                 FROM external_login_user_card_data c
-                WHERE c.user_id = external_login_user.id
-                  AND c.deleted_at IS NULL
-             ) AS card_count
-         """
-         if has_verified:
-             cols += ", email_verified_at"
- 
-         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
-         cur.execute(f"""
-             SELECT {cols}
-               FROM external_login_user
-               {sql_where}
-              ORDER BY {order_by}
-         """, params)
-         initial_items = cur.fetchall() or []
-         if not has_verified:
-             for r in initial_items:
-                 r["email_verified_at"] = None
-         _format_email_verified_at_rows(initial_items)
- 
-@@ -191,50 +192,51 @@ def admin_ext_users_data():
-     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
-     try:
-         page = max(int(request.args.get("page") or 1), 1)
-     except Exception:
-         page = 1
-     try:
-         per_page = min(max(int(request.args.get("per_page") or 1000), 1), 10000)
-     except Exception:
-         per_page = 1000
- 
-     params: list = []
-     where = []
-     if q:
-         like = f"%{q}%"
-         where.append(
-             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
-         )
-         params += [like, like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
-     cols = """
-         id, nickname, x_id, instagram_id, email, social_id,
-         avatar_file, avatar_url, created_at, updated_at,
-         admin_note,
-+        COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-         COALESCE(notify_album_process, 1) AS notify_album_process,
-         (
-           SELECT COUNT(*)
-             FROM external_login_user_card_data c
-            WHERE c.user_id = external_login_user.id
-              AND c.deleted_at IS NULL
-         ) AS card_count
-     """
-     if has_verified:
-         cols += ", email_verified_at"
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
-         total = int(cur.fetchone()["c"])
-         offset = (page - 1) * per_page
- 
-         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
-         cur.execute(f"""
-             SELECT {cols}
-               FROM external_login_user
-               {sql_where}
-              ORDER BY {order_by}
-              LIMIT %s OFFSET %s
-@@ -259,145 +261,149 @@ def admin_ext_users_data():
-         "q": q,
-     })
- 
- # ============= API（単票：旧モーダル用） =============
- @bp.get("/admin/ext-users/<int:user_id>/detail")
- def admin_ext_users_detail(user_id: int):
-     """（旧モーダル用）単票取得。"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT
-               id,
-               nickname,
-               x_id,
-               instagram_id,
-               email,
-               social_id,
-               avatar_file,
-               avatar_url,
-               created_at,
-               updated_at,
--              admin_note
-+              admin_note,
-+              COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-             FROM external_login_user
-             WHERE id=%s
-             LIMIT 1
-         """, (user_id,))
-         row = cur.fetchone()
-         if not row:
-             abort(404)
-     finally:
-         try:
-             cur.close()
-             db.close()
-         except Exception:
-             pass
- 
-     return jsonify({"ok": True, "item": row})
- 
- 
- # ============= 更新 =============
- @bp.post("/admin/ext-users/<int:user_id>/update")
- def admin_ext_users_update(user_id: int):
-     """項目更新（nickname / x_id / instagram_id / email / admin_note）
-        フォームPOST: 成功時は一覧へリダイレクト（?saved=1）
-        JSON(AJAX): 互換のため JSON を返す
-     """
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
-     if not token_req or token_req != _admin_csrf_token():
-         if request.is_json:
-             return jsonify({"ok": False, "error": "invalid_csrf"}), 400
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
- 
-     data = request.get_json(silent=True) or request.form
-     nickname   = (data.get("nickname") or "").strip()
-     x_id_raw   = (data.get("x_id") or "").strip().lstrip("@")
-     ig_raw     = (data.get("instagram_id") or "").strip().lstrip("@")
-     email      = (data.get("email") or "").strip() or None
-     admin_note = (data.get("admin_note") or "").strip() or None  # ★追加: 内部メモ
-+    chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
- 
-     errors = {}
-     if not nickname:
-         errors["nickname"] = "ニックネームは必須です。"
-     if x_id_raw and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", x_id_raw):
-         errors["x_id"] = "X IDは @なし、半角英数と_で1〜15文字。"
-     if ig_raw:
-         ok = re.fullmatch(r"[A-Za-z0-9._]{1,30}", ig_raw) and not ig_raw.startswith(".") and not ig_raw.endswith(".") and ".." not in ig_raw
-         if not ok:
-             errors["instagram_id"] = "Instagram IDは英数・.・_で1〜30文字。先頭/末尾の . と .. は不可。"
- 
-     if errors:
-         if request.is_json:
-             return jsonify({"ok": False, "errors": errors}), 400
-         # フォームの場合は編集ページに戻してエラー表示（簡易）
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="validate"))
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         row = cur.fetchone()
-         if not row:
-             if request.is_json:
-                 return jsonify({"ok": False, "error": "not_found"}), 404
-             return redirect(url_for("external_login_user.admin_ext_users_index"))
- 
-         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
-         email_changed = (email or None) != (email_before or None)
- 
-         if email_changed and has_verified:
-             cur.execute("""
-                 UPDATE external_login_user
-                    SET nickname=%s,
-                        x_id=%s,
-                        instagram_id=%s,
-                        email=%s,
-                        admin_note=%s,
-+                       chat_admin_alias=%s,
-                        email_verified_at=NULL
-                  WHERE id=%s
-                  LIMIT 1
--            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, user_id))
-+            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
-         else:
-             cur.execute("""
-                 UPDATE external_login_user
-                    SET nickname=%s,
-                        x_id=%s,
-                        instagram_id=%s,
-                        email=%s,
--                       admin_note=%s
-+                       admin_note=%s,
-+                       chat_admin_alias=%s
-                  WHERE id=%s
-                  LIMIT 1
--            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, user_id))
-+            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
-         db.commit()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     # 成功時の応答
-     if request.is_json:
-         return jsonify({"ok": True})
-     # フォームは一覧へ
-     return redirect(url_for("external_login_user.admin_ext_users_index", saved=1))
- 
- 
- # ============= 再送（送信） =============
- @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
- def admin_ext_users_resend_verify(user_id: int):
-     """
-     確認コードの再送
-     - Form投稿: 成功時は編集ページへリダイレクト（?sent=1）
-     - JSON投稿(AJAX): 互換のため JSON を返す
-     """
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
-@@ -470,50 +476,51 @@ def admin_ext_users_resend_confirm(user_id: int):
-         try:
-             cur.close()
-             db.close()
-         except Exception:
-             pass
- 
-     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
- 
- 
- # ============= 別ページ編集（GET） =============
- @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
- def admin_ext_users_edit_page(user_id: int):
-     """外部ログインユーザー 編集ページ（別ページ実装）"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-         cols = """
-             id, nickname, x_id, instagram_id, email, social_id,
-             avatar_file, avatar_url, created_at, updated_at,
-             admin_note,
-+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-             COALESCE(notify_album_process, 1) AS notify_album_process
-         """
-         if has_verified:
-             cols += ", email_verified_at"
-         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         user = cur.fetchone()
-         if not user:
-             abort(404)
-         if not has_verified:
-             user["email_verified_at"] = None
- 
-         # 参加中イベント一覧
-         cur.execute(
-             """
-             SELECT
-               m.id AS member_id,
-               e.id AS event_id,
-               e.title,
-               e.starts_at,
-               m.status,
-               m.payment_status
-             FROM mfu_event_member AS m
-             JOIN mfu_event AS e ON e.id = m.event_id
-             WHERE m.user_id=%s
+diff --git a/chat/templates/chat/_chat_nav.html b/chat/templates/chat/_chat_nav.html
+index 95132b41d2fc3578f86fbe13d0ad38d59508b52c..7a6c89b93a36e282d96dafcada3e0e117618523c 100644
+--- a/chat/templates/chat/_chat_nav.html
++++ b/chat/templates/chat/_chat_nav.html
+@@ -32,107 +32,113 @@
+       </div>
+     </div>
+ 
+     <button type="button" id="chat-search-toggle" class="chat-nav-link chat-nav-button" aria-label="検索" title="検索">
+       <span class="chat-nav-icon" aria-hidden="true">🔎</span>
+       <span class="chat-nav-label">検索</span>
+     </button>
+ 
+     {% if actor and actor.actor_type == 'admin' %}
+       <a class="chat-nav-link" href="{{ url_for('chat.admin_system_template_join_approved_get') }}" aria-label="Systemテンプレ">
+         <span class="chat-nav-icon" aria-hidden="true">⚙️</span>
+         <span class="chat-nav-label">Systemテンプレ</span>
+       </a>
+     {% endif %}
+   </div>
+ </div>
+ 
+ <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+ <script>
+   document.addEventListener('DOMContentLoaded', () => {
+     const badge = document.getElementById('chatNavNotifBadge');
+     if (!badge) return;
+ 
+     let pollTimer = null;
+     let pollingDisabled = false;
++    const notificationScope = {{ (notification_scope|default('external'))|tojson }};
++    const notificationApiMap = {{ (notification_api_map|default({}))|tojson }};
++    const unreadApiUrl = notificationApiMap.unread_count || '/external-login/api/notifications/unread-count';
+ 
+     const toSafeCount = (rawCount) => {
+       const count = Number(rawCount ?? 0);
+       if (!Number.isFinite(count)) return 0;
+       return Math.max(0, Math.floor(count));
+     };
+ 
+     const applyCount = async (rawCount) => {
+       const count = toSafeCount(rawCount);
+       if (count > 0) {
+         badge.textContent = String(Math.min(count, 99));
+         badge.classList.remove('d-none');
+       } else {
+         badge.textContent = '0';
+         badge.classList.add('d-none');
+       }
+       if (typeof window.setAppBadgeSafe === 'function' && typeof window.clearAppBadgeSafe === 'function') {
+         if (count > 0) {
+           await window.setAppBadgeSafe(count);
+         } else {
+           await window.clearAppBadgeSafe();
+         }
+       }
+       if (typeof window.notifySwToSyncBadge === 'function') {
+         window.notifySwToSyncBadge();
+       }
+     };
+ 
+     const updateBadge = async () => {
+       if (pollingDisabled) return;
+       try {
+-        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
++        const res = await fetch(unreadApiUrl, { credentials: 'same-origin', cache: 'no-store' });
+         if (res.status === 401) {
+           pollingDisabled = true;
+           stopPolling();
+           await applyCount(0);
+           return;
+         }
+         if (!res.ok) {
+           return;
+         }
+         const data = await res.json();
+-        await applyCount(data?.count ?? 0);
++        await applyCount((data?.count ?? data?.unread_count ?? 0));
+       } catch (_e) {
+         // noop
+       }
+     };
+ 
+     const startPolling = () => {
+       if (pollTimer !== null) return;
+       pollTimer = window.setInterval(updateBadge, 30000);
+     };
+ 
+     const stopPolling = () => {
+       if (pollTimer === null) return;
+       window.clearInterval(pollTimer);
+       pollTimer = null;
+     };
+ 
+     if (window.io) {
+       const socket = window.io({ path: '/socket.io', transports: ['websocket', 'polling'] });
+       socket.on('connect', () => {
+         stopPolling();
+         updateBadge();
+       });
+       socket.on('disconnect', () => {
+         startPolling();
+       });
+       socket.on('notif_unread', (data) => {
+-        applyCount(data?.count ?? 0);
++        const payloadScope = data?.scope || 'external';
++        if (notificationScope === 'mfu' && payloadScope !== 'mfu') return;
++        if (notificationScope === 'external' && payloadScope === 'mfu') return;
++        applyCount((data?.count ?? data?.unread_count ?? 0));
+       });
+     } else {
+       startPolling();
+     }
+ 
+     updateBadge();
+     document.addEventListener('visibilitychange', () => {
+       if (!document.hidden) updateBadge();
+     });
+     window.addEventListener('pageshow', updateBadge);
+   });
+ </script>
+diff --git a/chat/templates/chat/base_chat.html b/chat/templates/chat/base_chat.html
+index 706dbfcefb09c90cf985ecb82066ac1490233fc5..8b848aeb63b0a140a98127d17677588888ea9511 100644
+--- a/chat/templates/chat/base_chat.html
++++ b/chat/templates/chat/base_chat.html
+@@ -1,94 +1,94 @@
+ {% extends "base.html" %}
+ {% block head_extra %}
+   {{ super() }}
+   <link rel="manifest" href="/manifest.webmanifest">
+   <meta name="theme-color" content="#0d6efd">
+   <meta name="apple-mobile-web-app-capable" content="yes">
+   <meta name="apple-mobile-web-app-status-bar-style" content="default">
+   <link rel="stylesheet" href="{{ url_for('chat.static', filename='chat/css/chat.css') }}">
+   <script>
+     if ('serviceWorker' in navigator) {
+       navigator.serviceWorker.register('/sw.js', { scope: '/' });
+     }
+ 
+ 
+     (() => {
+-      const BADGE_API_URL = '/external-login/api/notifications/unread-count';
++      const BADGE_API_URL = {{ ((notification_api_map.unread_count if notification_api_map else '/external-login/api/notifications/unread-count'))|tojson }};
+       const SW_SYNC_TYPE = 'SYNC_BADGE';
+       const toSafeCount = (rawCount) => {
+         const value = Number(rawCount ?? 0);
+         if (!Number.isFinite(value)) return 0;
+         return Math.max(0, Math.floor(value));
+       };
+ 
+       async function setAppBadgeSafe(rawCount) {
+         const count = toSafeCount(rawCount);
+         if (count <= 0) {
+           await clearAppBadgeSafe();
+           return;
+         }
+         try {
+           if (typeof navigator.setAppBadge === 'function') {
+             await navigator.setAppBadge(count);
+           }
+         } catch (e) {
+           console.debug('[badge] setAppBadge failed', e);
+         }
+       }
+ 
+       async function clearAppBadgeSafe() {
+         try {
+           if (typeof navigator.clearAppBadge === 'function') {
+             await navigator.clearAppBadge();
+           }
+         } catch (e) {
+           console.debug('[badge] clearAppBadge failed', e);
+         }
+       }
+ 
+       function notifySwToSyncBadge() {
+         try {
+           if (navigator.serviceWorker?.controller) {
+-            navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
++            navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE, badgeApiUrl: BADGE_API_URL });
+           }
+         } catch (e) {
+           console.debug('[badge] notify sw failed', e);
+         }
+       }
+ 
+       async function syncAppBadge() {
+         try {
+           const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
+           if (res.status === 401) {
+             await clearAppBadgeSafe();
+             notifySwToSyncBadge();
+             return 0;
+           }
+           if (!res.ok) return null;
+           const data = await res.json().catch(() => ({}));
+-          const count = toSafeCount(data?.count ?? 0);
++          const count = toSafeCount((data?.count ?? data?.unread_count ?? 0));
+           if (count > 0) {
+             await setAppBadgeSafe(count);
+           } else {
+             await clearAppBadgeSafe();
+           }
+           notifySwToSyncBadge();
+           return count;
+         } catch (e) {
+           console.debug('[badge] sync failed', e);
+           return null;
+         }
+       }
+ 
+       window.setAppBadgeSafe = window.setAppBadgeSafe || setAppBadgeSafe;
+       window.clearAppBadgeSafe = window.clearAppBadgeSafe || clearAppBadgeSafe;
+       window.notifySwToSyncBadge = window.notifySwToSyncBadge || notifySwToSyncBadge;
+       window.syncAppBadge = window.syncAppBadge || syncAppBadge;
+ 
+       window.addEventListener('pageshow', () => { window.syncAppBadge?.(); });
+       window.addEventListener('online', () => { window.syncAppBadge?.(); });
+       document.addEventListener('visibilitychange', () => {
+         if (!document.hidden) {
+           window.syncAppBadge?.();
+         }
+       });
+diff --git a/chat/templates/chat/index.html b/chat/templates/chat/index.html
+index 065b64ad65e29141df7cd27010565d06806d3ae7..4080689a63c87a915e363b4753357822d1edfef7 100644
+--- a/chat/templates/chat/index.html
++++ b/chat/templates/chat/index.html
+@@ -74,106 +74,130 @@
+ {% endif %}
+ 
+ {% if actor.actor_type in ['admin', 'acl'] %}
+ <script>
+ (() => {
+   const pushBtn = document.getElementById('chat-index-enable-push');
+   if (!pushBtn) return;
+   const csrfToken = {{ csrf_token|tojson }};
+   const vapidKey = {{ vapid_public_key|tojson }};
+ 
+   function updatePushButton(enabled) {
+     pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
+     pushBtn.classList.toggle('btn-outline-danger', enabled);
+     pushBtn.classList.toggle('btn-outline-secondary', !enabled);
+   }
+ 
+   function urlBase64ToUint8Array(base64String) {
+     const padding = '='.repeat((4 - base64String.length % 4) % 4);
+     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+     const rawData = atob(base64);
+     const outputArray = new Uint8Array(rawData.length);
+     for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+     return outputArray;
+   }
+ 
++  async function fetchPushBootstrap() {
++    try {
++      const res = await fetch('/chat/api/push/bootstrap', { credentials: 'same-origin', cache: 'no-store' });
++      if (!res.ok) return null;
++      const data = await res.json().catch(() => ({}));
++      return data && data.ok ? data : null;
++    } catch (_e) {
++      return null;
++    }
++  }
++
+   async function getPushState() {
+     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+       return { supported: false, registration: null, subscription: null };
+     }
+     const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+     const subscription = await registration.pushManager.getSubscription();
+     return { supported: true, registration, subscription };
+   }
+ 
+-  async function enablePush(registration) {
+-    if (!vapidKey) {
++  async function enablePush(registration, opts = {}) {
++    const keyToUse = String(opts?.vapidPublicKey || vapidKey || '');
++    if (!keyToUse) {
+       alert('VAPID公開鍵が未設定のため通知を有効化できません');
+       return;
+     }
+     const permission = await Notification.requestPermission();
+     if (permission !== 'granted') {
+       alert('通知の許可が必要です');
+       return;
+     }
++    const currentSubscription = await registration.pushManager.getSubscription();
++    if (opts?.forceResubscribe && currentSubscription) {
++      try { await currentSubscription.unsubscribe(); } catch (_e) {}
++    }
+     const subscription = await registration.pushManager.subscribe({
+       userVisibleOnly: true,
+-      applicationServerKey: urlBase64ToUint8Array(vapidKey),
++      applicationServerKey: urlBase64ToUint8Array(keyToUse),
+     });
+     const res = await fetch('/chat/api/push/subscribe', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ csrf_token: csrfToken, sw_scope: new URL(registration.scope).pathname || '/', ...subscription.toJSON() }),
+     });
+     if (!res.ok) {
+       alert('購読登録に失敗しました');
+       return;
+     }
+     updatePushButton(true);
+   }
+ 
+   async function disablePush(registration, subscription) {
+     await subscription.unsubscribe();
+     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+     if (endpoint) {
+       await fetch('/chat/api/push/unsubscribe', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ csrf_token: csrfToken, endpoint }),
+       });
+     }
+     const nextSubscription = await registration.pushManager.getSubscription();
+     updatePushButton(Boolean(nextSubscription));
+   }
+ 
+   (async () => {
++    const bootstrap = await fetchPushBootstrap();
+     const pushState = await getPushState();
++
+     if (!pushState.supported) {
+       pushBtn.disabled = true;
+       pushBtn.textContent = 'Push通知は非対応です';
+       return;
+     }
++    if (bootstrap?.notification_scope === 'mfu' && bootstrap?.is_chat_admin_alias) {
++      await enablePush(pushState.registration, { forceResubscribe: true, vapidPublicKey: bootstrap.vapid_public_key || vapidKey });
++      const refreshed = await getPushState();
++      updatePushButton(Boolean(refreshed.subscription));
++      return;
++    }
+     updatePushButton(Boolean(pushState.subscription));
+   })();
+ 
+   pushBtn.addEventListener('click', async () => {
+     const pushState = await getPushState();
+     if (!pushState.supported) {
+       alert('この端末はPush通知に非対応です');
+       return;
+     }
+     if (pushState.subscription) {
+       await disablePush(pushState.registration, pushState.subscription);
+       return;
+     }
+     await enablePush(pushState.registration);
+   });
+ })();
+ </script>
+ {% endif %}
+ 
+ <script>
+ (() => {
+   const titleBase = 'チャットルーム';
+ 
+   function applyChatIndexTitle(unreadCount) {
+     const count = Number.isFinite(Number(unreadCount)) ? Math.max(0, Number(unreadCount)) : 0;
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index ae65d6d0fe3d49da1a875343d02c4ed2e8892767..31a88a38ef9d7b7efb2528c03d0c5e31822d7281 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -1277,51 +1277,55 @@
+   <div class="chat-reaction-box"
+        data-reaction-box="1"
+        data-my-reaction="{{ message.my_reaction or '' }}"
+        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
+     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
+     <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+     <div class="chat-reaction-panel d-none"></div>
+     <div class="chat-reaction-summary"></div>
+   </div>
+ {%- endmacro %}
+ 
+ <div class="container py-3 chat-page"
+      data-event-id="{{ event.id }}"
+      data-room-id="{{ active_room.room_id }}"
+      data-csrf="{{ csrf_token }}"
+      data-vapid="{{ vapid_public_key }}"
+      data-me="{{ current_user_id or me_user_id or '' }}"
+      data-display-name="{{ actor.display_name }}"
+      data-default-avatar="{{ default_avatar_url }}"
+      data-is-admin="{{ 1 if actor.actor_type == 'admin' else 0 }}"
+      data-dm-mode="{{ 1 if dm_mode else 0 }}"
+      data-dm-uuid="{{ dm_uuid or '' }}"
+      data-dm-room-id="{{ dm_room_id or '' }}"
+      data-read-front-debug-enabled="{{ 1 if chat_read_front_debug_enabled else 0 }}"
+      data-room-debug-key="{% if dm_mode %}dm:{{ dm_uuid }}{% else %}event:{{ event.id }}:room:{{ active_room.room_id }}{% endif %}"
+-     data-title-base="{% if dm_mode %}{{ peer_display_name }}{% else %}{{ event.title }}{% endif %}">
++     data-title-base="{% if dm_mode %}{{ peer_display_name }}{% else %}{{ event.title }}{% endif %}"
++     data-notification-scope="{{ notification_scope|default('external') }}"
++     data-unread-api="{{ (notification_api_map.unread_count if notification_api_map else '/external-login/api/notifications/unread-count') }}"
++     data-room-read-api="{{ (notification_api_map.room_read if notification_api_map else '/external-login/api/notifications/read-by-room') }}"
++     data-dm-room-read-api="{{ (notification_api_map.dm_room_read if notification_api_map else '/external-login/api/notifications/read-dm-room') }}">
+   {% include "chat/_chat_nav.html" %}
+   <div class="chat-room-main">
+     <div class="chat-room-title">{% if dm_mode %}DM / {{ peer_display_name }}{% else %}{{ event.title }}/{{ active_room.room_name }}{% endif %}</div>
+     <div class="mb-2 d-flex gap-2 align-items-center flex-wrap">
+       {% if actor.actor_type == 'admin' %}
+       <a class="btn btn-sm btn-outline-dark" target="_blank" rel="noopener" href="{% if dm_mode %}{{ url_for('chat.debug_read_v2', dm_uuid=dm_uuid) }}{% else %}{{ url_for('chat.debug_read_v2', event_id=event.id, room_id=active_room.room_id) }}{% endif %}">既読デバッグ</a>
+       {% endif %}
+       <button type="button" id="chat-read-front-debug-toggle" class="btn btn-sm btn-outline-secondary chat-read-front-debug-toggle d-none" aria-pressed="false">既読UIデバッグ OFF</button>
+       <button type="button" id="chat-unread-jump-btn" class="btn btn-sm btn-outline-info d-none" disabled>未読へ</button>
+       {% if can_manage_rooms %}
+       <button type="button" id="chat-room-create-btn" class="btn btn-sm btn-outline-primary">サブルーム作成</button>
+       {% if active_room.is_main|int != 1 %}
+       <button type="button" id="chat-room-members-btn" class="btn btn-sm btn-outline-secondary">メンバー編集</button>
+       <button type="button" id="chat-room-delete-btn" class="btn btn-sm btn-outline-danger">サブルーム削除</button>
+       {% endif %}
+       {% endif %}
+     </div>
+ 
+     <div class="chat-body-layout">
+   <div id="chat-search-row" class="mb-2 d-flex gap-2 align-items-center d-none">
+     <input id="chat-search-input" type="text" class="form-control form-control-sm" maxlength="100" placeholder="このルームを検索">
+     <button type="button" id="chat-search-btn" class="btn btn-sm btn-outline-secondary" aria-label="検索" title="検索">🔎</button>
+     <button type="button" id="chat-search-close" class="btn btn-sm btn-light">閉じる</button>
+   </div>
+   <div id="chat-search-panel" class="chat-search-panel d-none"></div>
+@@ -1653,50 +1657,54 @@
+ <script>
+ window.addEventListener('DOMContentLoaded', async () => {
+   const root = document.querySelector('[data-event-id]');
+   if (!root) return;
+ 
+   if (!window.io) {
+     return;
+   }
+ 
+   const eventId = Number(root.dataset.eventId);
+   const roomId = root.dataset.roomId || "";
+   const csrfToken = root.dataset.csrf;
+   const vapidKey = root.dataset.vapid;
+   const meId = root.dataset.me || '';
+   const myDisplayName = root.dataset.displayName || '';
+   const defaultAvatarUrl = root.dataset.defaultAvatar || '/static/img/avatar_default.png';
+   const isAdmin = root.dataset.isAdmin === '1';
+   const canReadFrontDebug = root.dataset.readFrontDebugEnabled === '1';
+   const roomDebugKey = root.dataset.roomDebugKey || '';
+   const readFrontDebugStorageKey = 'chat.readFrontDebug.enabled';
+   const sendBtn = document.getElementById('chat-send-btn');
+   const dmMode = root.dataset.dmMode === '1';
+   const dmUuid = root.dataset.dmUuid || "";
+   const dmRoomId = root.dataset.dmRoomId || "";
+   const pageTitleBase = String(root.dataset.titleBase || '').trim() || (dmMode ? 'DM' : 'チャット');
++  const notificationScope = String(root.dataset.notificationScope || 'external').trim() || 'external';
++  const unreadApiUrl = String(root.dataset.unreadApi || '/external-login/api/notifications/unread-count');
++  const roomReadApiUrl = String(root.dataset.roomReadApi || '/external-login/api/notifications/read-by-room');
++  const dmRoomReadApiUrl = String(root.dataset.dmRoomReadApi || '/external-login/api/notifications/read-dm-room');
+   const effectiveDmRoomId = dmRoomId || (dmUuid ? `dm:${dmUuid}` : "");
+   if (dmMode && (!dmUuid || !effectiveDmRoomId)) {
+     if (sendBtn) sendBtn.disabled = true;
+     alert('DM UUIDが取得できないため送信できません。');
+     return;
+   }
+   const isMobile = window.matchMedia('(hover: none)').matches;
+   const reactionEmojis = ['💕', '👍', '😆', '😭', '😢', '🫶'];
+   const maxUploadImages = 6;
+   const maxUploadImageBytes = 20 * 1024 * 1024;
+   const DOUBLE_TAP_INTERVAL_MS = 280;
+   const DOUBLE_TAP_MAX_DISTANCE = 12;
+   const DOUBLE_TAP_MOVE_CANCEL = 8;
+ 
+   const msgBox = document.getElementById('messages');
+   const form = document.getElementById('chat-form');
+   const bodyInput = document.getElementById('chat-body');
+   const maxInputLines = 6;
+   const pushBtn = document.getElementById('enable-push');
+   const roomSwitch = document.getElementById('chat-room-switch');
+   const roomPickerToggle = document.getElementById('chat-room-picker-toggle');
+   const roomPickerModal = document.getElementById('chatRoomPickerModal');
+   const notificationBadge = document.getElementById('chat-notification-badge');
+   const roomCreateBtn = document.getElementById('chat-room-create-btn');
+   const roomMembersBtn = document.getElementById('chat-room-members-btn');
+@@ -2660,91 +2668,112 @@ window.addEventListener('DOMContentLoaded', async () => {
+     } finally {
+       setSendingState(false);
+     }
+   }
+ 
+   if (pushBtn) {
+     initPushUi();
+   }
+ 
+   pushBtn?.addEventListener('click', async () => {
+     const pushState = await getPushState();
+     if (!pushState.supported) {
+       alert('この端末はPush通知に非対応です');
+       return;
+     }
+ 
+     if (pushState.subscription) {
+       await disablePush(pushState.registration, pushState.subscription);
+       return;
+     }
+ 
+     await enablePush(pushState.registration);
+   });
+ 
+   async function initPushUi() {
++    const bootstrap = await fetchPushBootstrap();
+     const pushState = await getPushState();
++    if (bootstrap?.notification_scope === 'mfu' && bootstrap?.is_chat_admin_alias && pushState.supported && pushState.registration) {
++      await enablePush(pushState.registration, { forceResubscribe: true, vapidPublicKey: bootstrap.vapid_public_key || vapidKey });
++    }
++
+     if (!pushState.supported) {
+       if (pushBtn) {
+         pushBtn.disabled = true;
+         pushBtn.textContent = 'Push通知は非対応です';
+       }
+       return;
+     }
+     updatePushButton(Boolean(pushState.subscription));
+   }
+ 
+   function updatePushButton(enabled) {
+     if (!pushBtn) return;
+     pushBtn.textContent = enabled ? 'Push通知を無効化' : 'Push通知を有効化';
+     pushBtn.classList.toggle('btn-outline-danger', enabled);
+     pushBtn.classList.toggle('btn-outline-secondary', !enabled);
+   }
+ 
++  async function fetchPushBootstrap() {
++    try {
++      const res = await fetch('/chat/api/push/bootstrap', { credentials: 'same-origin', cache: 'no-store' });
++      if (!res.ok) return null;
++      const data = await res.json().catch(() => ({}));
++      return data && data.ok ? data : null;
++    } catch (_e) {
++      return null;
++    }
++  }
++
+   async function getPushState() {
+     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+       return { supported: false, registration: null, subscription: null };
+     }
+     const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+     const subscription = await registration.pushManager.getSubscription();
+     return { supported: true, registration, subscription };
+   }
+ 
+-  async function enablePush(registration) {
+-    if (!vapidKey) {
++  async function enablePush(registration, opts = {}) {
++    const keyToUse = String(opts?.vapidPublicKey || vapidKey || '');
++    if (!keyToUse) {
+       alert('VAPID公開鍵が未設定のため通知を有効化できません');
+       return;
+     }
+     const permission = await Notification.requestPermission();
+     if (permission !== 'granted') {
+       alert('通知の許可が必要です');
+       return;
+     }
+ 
++    const currentSubscription = await registration.pushManager.getSubscription();
++    if (opts?.forceResubscribe && currentSubscription) {
++      try { await currentSubscription.unsubscribe(); } catch (_e) {}
++    }
+     const subscription = await registration.pushManager.subscribe({
+       userVisibleOnly: true,
+-      applicationServerKey: urlBase64ToUint8Array(vapidKey),
++      applicationServerKey: urlBase64ToUint8Array(keyToUse),
+     });
+ 
+     const res = await fetch('/chat/api/push/subscribe', {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({
+         csrf_token: csrfToken,
+         sw_scope: new URL(registration.scope).pathname || '/',
+         ...subscription.toJSON(),
+       }),
+     });
+     if (!res.ok) {
+       alert('購読登録に失敗しました');
+       return;
+     }
+     updatePushButton(true);
+   }
+ 
+   async function disablePush(registration, subscription) {
+     await subscription.unsubscribe();
+     const endpoint = subscription.endpoint || (subscription.toJSON()?.endpoint) || '';
+     if (endpoint) {
+       await fetch('/chat/api/push/unsubscribe', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+@@ -4641,51 +4670,51 @@ function openFulltextModal(row) {
+         : await markChatNotificationsReadByRoom();
+       if (readResult && typeof readResult.unread_count !== 'undefined') {
+         applyNotificationBadge(Number(readResult.unread_count || 0));
+       } else {
+         await refreshNotificationBadge();
+       }
+     } catch (e) {
+       console.info('[notifications] read-by-room failed', e);
+       await refreshNotificationBadge();
+     }
+   }
+ 
+   function updateRoomOptionUnreadBadges() {
+     if (!roomSwitch) return;
+     Array.from(roomSwitch.options).forEach((opt) => {
+       const baseLabel = String(opt.textContent || '').replace(/\s*\(未読\d+\)$/u, '');
+       const unread = Number((state.unreadByRoomId.get(opt.value || '') || {}).unread_count || 0);
+       opt.textContent = unread > 0 ? `${baseLabel} (未読${unread})` : baseLabel;
+     });
+   }
+ 
+ 
+ 
+   async function refreshNotificationBadge() {
+     try {
+-      const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin' });
++      const res = await fetch(unreadApiUrl, { credentials: 'same-origin' });
+       if (res.status === 401) {
+         stopNotificationBadgePolling();
+         if (notificationBadge) {
+           notificationBadge.textContent = '🔔';
+           notificationBadge.classList.remove('has-unread');
+           notificationBadge.classList.add('no-unread');
+         }
+         return;
+       }
+       const data = await res.json().catch(() => ({}));
+       if (!res.ok) return;
+       const unread = Number(data.count || 0);
+       applyNotificationBadge(unread);
+     } catch (_e) {
+       // noop
+     }
+   }
+ 
+   function applyBrowserTitle(unread) {
+     const count = Number.isFinite(Number(unread)) ? Math.max(0, Number(unread)) : 0;
+     document.title = `${pageTitleBase}（${count}）`;
+   }
+ 
+   function applyNotificationBadge(unread) {
+     const count = Number.isFinite(Number(unread)) ? Math.max(0, Math.floor(Number(unread))) : 0;
+@@ -4694,82 +4723,84 @@ function openFulltextModal(row) {
+     } else if (count > 0) {
+       notificationBadge.textContent = count > 99 ? '99+' : String(count);
+       notificationBadge.classList.remove('no-unread');
+       notificationBadge.classList.add('has-unread');
+       applyBrowserTitle(count);
+     } else {
+       notificationBadge.textContent = '🔔';
+       notificationBadge.classList.remove('has-unread');
+       notificationBadge.classList.add('no-unread');
+       applyBrowserTitle(count);
+     }
+ 
+     if (typeof window.setAppBadgeSafe === 'function' && typeof window.clearAppBadgeSafe === 'function') {
+       if (count > 0) {
+         window.setAppBadgeSafe(count);
+       } else {
+         window.clearAppBadgeSafe();
+       }
+     }
+     if (typeof window.notifySwToSyncBadge === 'function') {
+       window.notifySwToSyncBadge();
+     }
+   }
+ 
+   async function markChatNotificationsReadByRoom() {
+-    const res = await fetch('/external-login/api/notifications/read-by-room', {
++    if (notificationScope !== 'external') return null;
++    const res = await fetch(roomReadApiUrl, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       credentials: 'same-origin',
+       body: JSON.stringify({ event_id: eventId, room_id: roomId }),
+     });
+     if (res.status === 401) {
+       console.info('[notifications] read-by-room skipped (unauthorized)');
+       return null;
+     }
+     const data = await res.json().catch(() => ({}));
+     if (!res.ok || !data.ok) {
+       console.info('[notifications] read-by-room failed', { status: res.status, reason: data.reason || null });
+       throw new Error('read-by-room failed');
+     }
+     console.info('[notifications] read-by-room success', {
+       room_id: roomId,
+       event_id: eventId,
+       updated_count: Number(data.updated_count || 0),
+       unread_count: Number(data.unread_count || 0),
+       latest_id: Number(data.latest_id || 0),
+     });
+     if (typeof window.syncAppBadge === 'function') {
+       window.syncAppBadge();
+     }
+     return data;
+   }
+ 
+   async function markDmNotificationsReadByRoom(dmRoomId) {
++    if (notificationScope !== 'external') return null;
+     const roomKey = String(dmRoomId || '').trim();
+     if (!roomKey) return null;
+-    const res = await fetch('/external-login/api/notifications/read-dm-room', {
++    const res = await fetch(dmRoomReadApiUrl, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       credentials: 'same-origin',
+       body: JSON.stringify({ room_id: roomKey }),
+     });
+     if (res.status === 401) {
+       console.info('[notifications] read-dm-room skipped (unauthorized)');
+       return null;
+     }
+     const data = await res.json().catch(() => ({}));
+     if (!res.ok || !data.ok) {
+       console.info('[notifications] read-dm-room failed', { status: res.status, reason: data.reason || null });
+       throw new Error('read-dm-room failed');
+     }
+     console.info('[notifications] read-dm-room success', {
+       room_id: roomKey,
+       updated_count: Number(data.updated_count || 0),
+       unread_count: Number(data.unread_count || 0),
+       latest_id: Number(data.latest_id || 0),
+     });
+     if (typeof window.syncAppBadge === 'function') {
+       window.syncAppBadge();
+     }
+     return data;
+   }
 diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 0901c64a4d0a8f9477c513fa59aed0c458ec7e1d..6d9a9fbbaaf16ef38b0f27754fed562ac16d776e 100644
+index 6d9a9fbbaaf16ef38b0f27754fed562ac16d776e..2d5c8d6b508de378928c3b70731910075108f812 100644
 --- a/external_login_user/notifications.py
 +++ b/external_login_user/notifications.py
-@@ -1,70 +1,112 @@
- from __future__ import annotations
+@@ -24,93 +24,97 @@ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | Non
+     if int(ext_user_id or 0) <= 0:
+         return None
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+               FROM external_login_user
+              WHERE id=%s
+              LIMIT 1
+             """,
+             (int(ext_user_id),),
+         )
+         row = cur.fetchone()
+         if not row:
+             return None
+         if int(row.get("chat_admin_alias") or 0) != 1:
+             return None
+         return row
+     finally:
+         cur.close()
+         db.close()
  
- from datetime import datetime, timezone
- from time import perf_counter
- from typing import Any
- from urllib.parse import parse_qs, urlparse
  
- from flask import Blueprint, abort, current_app, jsonify, render_template, request, session
+-def _resolve_mfu_notification_recipient_for_session() -> str | None:
++def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str | None]:
+     username = str(session.get("user") or "").strip()
+     if username:
+-        return username
++        role = "admin" if username == "admin" else "acl"
++        return username, role
  
- from . import bp
- from .utils import _require_ext_login
- from app.utils.db import get_db
+     ext_user_id = int(session.get("ext_user_id") or 0)
+     if ext_user_id <= 0:
+-        return None
++        return None, None
+     alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
+     if not alias_row:
+-        return None
++        return None, None
+     current_app.logger.info(
+         "mfu notifications admin alias ext_user_id=%s social_id=%s",
+         ext_user_id,
+         alias_row.get("social_id"),
+     )
+-    return "admin"
++    return "admin", "alias"
  
- try:
-     from app.chat.socketio_ext import socketio
- except Exception:  # pragma: no cover
-     socketio = None
- 
- 
- _READ_NOTIFICATIONS_KEEP_LIMIT = 30
- mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
- 
-+def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
-+    if int(ext_user_id or 0) <= 0:
-+        return None
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-+              FROM external_login_user
-+             WHERE id=%s
-+             LIMIT 1
-+            """,
-+            (int(ext_user_id),),
-+        )
-+        row = cur.fetchone()
-+        if not row:
-+            return None
-+        if int(row.get("chat_admin_alias") or 0) != 1:
-+            return None
-+        return row
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _resolve_mfu_notification_recipient_for_session() -> str | None:
-+    username = str(session.get("user") or "").strip()
-+    if username:
-+        return username
-+
-+    ext_user_id = int(session.get("ext_user_id") or 0)
-+    if ext_user_id <= 0:
-+        return None
-+    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-+    if not alias_row:
-+        return None
-+    current_app.logger.info(
-+        "mfu notifications admin alias ext_user_id=%s social_id=%s",
-+        ext_user_id,
-+        alias_row.get("social_id"),
-+    )
-+    return "admin"
-+
  
  def _is_mfu_notification_user(username: str) -> bool:
      name = (username or "").strip()
@@ -1358,14 +1396,15 @@ index 0901c64a4d0a8f9477c513fa59aed0c458ec7e1d..6d9a9fbbaaf16ef38b0f27754fed562a
  
  
  def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
--    if session.get("ext_user_id"):
--        return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
--    username = str(session.get("user") or "").strip()
-+    username = _resolve_mfu_notification_recipient_for_session() or ""
+-    username = _resolve_mfu_notification_recipient_for_session() or ""
++    username, role = _resolve_mfu_notification_recipient_for_session()
      if not username:
++        current_app.logger.info("mfu notification guard denied reason=login_required")
          return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
      if not _is_mfu_notification_user(username):
++        current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
          return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
++    current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
      return username, None
  
  
@@ -1387,172 +1426,122 @@ index 0901c64a4d0a8f9477c513fa59aed0c458ec7e1d..6d9a9fbbaaf16ef38b0f27754fed562a
          return f"{delta // 3600}時間前"
      if delta < 86400 * 7:
          return f"{delta // 86400}日前"
-diff --git a/external_login_user/schema.py b/external_login_user/schema.py
-index fb837e66d53b816c02aca4bcc55828449e75767a..56e02edaa940fac92db093a58c28c7b98fcac7f1 100644
---- a/external_login_user/schema.py
-+++ b/external_login_user/schema.py
-@@ -1,47 +1,48 @@
- # -*- coding: utf-8 -*-
- from __future__ import annotations
- import logging
- from flask import current_app
- from . import bp
- from app.utils.db import get_db
+     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
  
- # MySQL エラーコード（任意）
- try:
-     from mysql.connector import errors as mysql_errors
- except Exception:
-     mysql_errors = None  # type: ignore
  
- DDL_EXTERNAL = """
- CREATE TABLE IF NOT EXISTS external_login_user (
-   id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-   mfu_uuid         BINARY(16)      NOT NULL,
-   social_id        VARCHAR(191)    NOT NULL,
-   nickname         VARCHAR(50)     NOT NULL,
-   x_id             VARCHAR(15)     NULL,
-   instagram_id     VARCHAR(30)     NULL,
-   email            VARCHAR(191)    NULL,
-+  chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
-   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-   updated_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-   PRIMARY KEY (id),
-   UNIQUE KEY uniq_mfu_uuid   (mfu_uuid),
-   UNIQUE KEY uniq_social_id  (social_id),
-   KEY        idx_x_id        (x_id),
-   KEY        idx_instagram   (instagram_id),
-   KEY        idx_email       (email)
- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
- """
+ def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
+diff --git a/static/sw.js b/static/sw.js
+index a3abe42ce7a5bb9a55e18e3c48b301ec2d397ae8..a16e05d30a1ffe96b8a3c1f87ff771ba22b0d137 100644
+--- a/static/sw.js
++++ b/static/sw.js
+@@ -1,73 +1,76 @@
+ const SW_VERSION = '2026-03-04-01';
+ const BADGE_SYNC_MESSAGE = 'SYNC_BADGE';
  
- # ★ 支払期間（pay_from / pay_until）をDDLに追加
- DDL_EVENT = """
- CREATE TABLE IF NOT EXISTS mfu_event (
-   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-   event_uuid      BINARY(16)      NOT NULL,
-   title           VARCHAR(200)    NOT NULL,
-   owner_user_id   BIGINT UNSIGNED NULL,
-   starts_at       DATETIME        NULL,
-   fee_yen         INT UNSIGNED    NULL,
-   tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
-   pay_from        DATETIME        NULL,
-   pay_until       DATETIME        NULL,
-   place_name      VARCHAR(200)    NULL,
-   address         VARCHAR(255)    NULL,
-@@ -176,50 +177,51 @@ def _on_bp_registered(state) -> None:
-             cur.execute(DDL_PAYMENT_REQUEST)
-             cur.execute(DDL_NOTIFICATIONS)
+-function badgeApiUrl() {
+-  return new URL('/external-login/api/notifications/unread-count', self.location.origin).toString();
++function badgeApiUrl(overridePath) {
++  const path = (typeof overridePath === 'string' && overridePath.trim())
++    ? overridePath.trim()
++    : '/external-login/api/notifications/unread-count';
++  return new URL(path, self.location.origin).toString();
+ }
  
-             # 後方互換ALTER（存在しなければADD）
-             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
-                 try:
-                     cur.execute("""
-                         SELECT COUNT(*) FROM information_schema.COLUMNS
-                          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
-                     """, (table, col))
-                     has = cur.fetchone()[0]
-                 except Exception:
-                     has = 0
-                 if not has:
-                     try:
-                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl_after_add}")
-                     except Exception as e:
-                         if not (mysql_errors and getattr(e, "errno", None) == 1060):
-                             raise
+ async function setBadgeSafe(count) {
+   const normalized = Number.isFinite(Number(count)) ? Math.floor(Number(count)) : 0;
+   if (normalized <= 0) {
+     await clearBadgeSafe();
+     return;
+   }
+   try {
+     if (self.registration && typeof self.registration.setAppBadge === 'function') {
+       await self.registration.setAppBadge(normalized);
+     }
+   } catch (e) {
+     console.debug('[sw] set badge failed', e);
+   }
+ }
  
-             # 既存のゆるいALTER群
-             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
-             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
-             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
-             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
-+            _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
+ async function clearBadgeSafe() {
+   try {
+     if (self.registration && typeof self.registration.clearAppBadge === 'function') {
+       await self.registration.clearAppBadge();
+     }
+   } catch (e) {
+     console.debug('[sw] clear badge failed', e);
+   }
+ }
  
-             # ★ 追加：支払期間 列（後方互換で追加）
-             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
-             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
-             _ensure_col("mfu_event", "checkin_qr_enabled",
-                         "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
-             _ensure_col("mfu_event", "checkin_qr_token",
-                         "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
-             _ensure_col("mfu_event", "checkin_qr_expires_at",
-                         "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
-             _ensure_col("mfu_event_member", "checkin_method",
-                         "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
+-async function syncBadgeFromApi() {
++async function syncBadgeFromApi(overridePath) {
+   try {
+-    const res = await fetch(badgeApiUrl(), {
++    const res = await fetch(badgeApiUrl(overridePath), {
+       method: 'GET',
+       credentials: 'include',
+       cache: 'no-store',
+     });
+     if (res.status === 401) {
+       await clearBadgeSafe();
+       return;
+     }
+     if (!res.ok) {
+       return;
+     }
+     const data = await res.json().catch(() => ({}));
+-    const count = Number(data?.count ?? 0);
++    const count = Number(data?.count ?? data?.unread_count ?? 0);
+     if (Number.isFinite(count) && count > 0) {
+       await setBadgeSafe(count);
+       return;
+     }
+     await clearBadgeSafe();
+   } catch (e) {
+     console.debug('[sw] sync badge failed', e);
+   }
+ }
  
-             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
-             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
-             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
-             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
-             _ensure_col("mfu_payment_request", "buyer_email", "buyer_email VARCHAR(255) NULL AFTER instagram_id")
-             _ensure_col("mfu_payment_request", "lecture_auto_approve",
-                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
+ self.addEventListener('install', () => {
+   self.skipWaiting();
+ });
  
-             def _ensure_payment_request_status_enum() -> None:
-                 try:
-                     cur.execute("""
-                         SELECT COLUMN_TYPE FROM information_schema.COLUMNS
-diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
-index b9dfdaabc3ce0e9bc050684886eef53a05683057..617f00c65af4f462cec8b62206620ffa4e11fd6d 100644
---- a/external_login_user/template/admin_ext_users_edit.html
-+++ b/external_login_user/template/admin_ext_users_edit.html
-@@ -68,50 +68,59 @@
-           <div class="mt-3">
-             <label class="form-label">共有アルバム通知</label>
-             <div>
-               <span class="badge bg-outline-secondary text-dark me-2">
-                 アップロード通知:
-                 {% if u.notify_album_upload %}
-                   ON
-                 {% else %}
-                   OFF
-                 {% endif %}
-               </span>
-               <span class="badge bg-outline-secondary text-dark">
-                 加工完了通知:
-                 {% if u.notify_album_process %}
-                   ON
-                 {% else %}
-                   OFF
-                 {% endif %}
-               </span>
-             </div>
-             <div class="form-text mt-1 text-muted">
-               外部ユーザー本人のプロフィール画面で設定された通知フラグの現在値です（管理画面からは変更できません）。
-             </div>
-           </div>
+ self.addEventListener('activate', (event) => {
+   event.waitUntil((async () => {
+     await clients.claim();
+     await syncBadgeFromApi();
+   })());
+ });
  
-+          <div class="mt-3">
-+            <label class="form-label d-block">チャット管理者 alias</label>
-+            <div class="form-check form-switch">
-+              <input class="form-check-input" type="checkbox" id="chat_admin_alias" name="chat_admin_alias" value="1" {% if u.chat_admin_alias %}checked{% endif %}>
-+              <label class="form-check-label" for="chat_admin_alias">LINEログイン時にチャット/通知のみ admin alias として扱う</label>
-+            </div>
-+            <div class="form-text mt-1 text-muted">※ /chat と /mfu-notifications のみ対象。管理画面全体の権限は付与されません。</div>
-+          </div>
-+
-           {# ★ 内部メモ（管理者用） #}
-           <div class="mt-3">
-             <label class="form-label">内部メモ（管理者用）</label>
-             <textarea
-               class="form-control"
-               name="admin_note"
-               rows="4"
-               placeholder="このユーザーに関する注意点やメモを記入">{{ u.admin_note or '' }}</textarea>
-             <div class="form-text mt-1 text-muted">
-               ※このメモは管理画面のみで使用され、ユーザー本人には表示されません。
-             </div>
-           </div>
-         </div>
+ function normalizeTargetUrl(rawUrl, eventId) {
+   const fallbackPath = eventId ? `/chat/events/${eventId}` : '/';
+   const candidate = typeof rawUrl === 'string' && rawUrl.trim() ? rawUrl.trim() : fallbackPath;
  
-         <div class="col-md-4">
-           {% set avatar = u.avatar_file and ("/external-login/avatars/" ~ u.avatar_file) or u.avatar_url or "https://via.placeholder.com/120?text=—" %}
-           <div class="text-center">
-             <img src="{{ avatar }}" width="120" height="120" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;" alt="avatar">
-             <div class="small text-muted mt-2">social_id: {{ u.social_id or '-' }}</div>
-             <div class="d-grid gap-2 mt-3">
-               <a
-                 class="btn btn-outline-primary btn-sm {% if not u.email %}disabled{% endif %}"
-                 {% if u.email %}
-                   href="{{ url_for('external_login_user.admin_ext_users_resend_confirm', user_id=u.id) }}"
-                 {% else %}
+@@ -157,27 +160,27 @@ self.addEventListener('notificationclick', (event) => {
+           // fallback to focus/openWindow below
+         }
+       }
+       if ('focus' in sameOriginClient) {
+         try {
+           await sameOriginClient.focus();
+           return;
+         } catch (_e) {
+           // fallback to openWindow below
+         }
+       }
+     }
+ 
+     if (clients.openWindow) {
+       try {
+         await clients.openWindow(targetUrl);
+       } catch (_e) {
+         // noop
+       }
+     }
+   })());
+ });
+ 
+ self.addEventListener('message', (event) => {
+   if (event?.data?.type !== BADGE_SYNC_MESSAGE) return;
+-  event.waitUntil(syncBadgeFromApi());
++  event.waitUntil(syncBadgeFromApi(event?.data?.badgeApiUrl));
+ });

@@ -46,23 +46,24 @@ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | Non
         db.close()
 
 
-def _resolve_mfu_notification_recipient_for_session() -> str | None:
+def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str | None]:
     username = str(session.get("user") or "").strip()
     if username:
-        return username
+        role = "admin" if username == "admin" else "acl"
+        return username, role
 
     ext_user_id = int(session.get("ext_user_id") or 0)
     if ext_user_id <= 0:
-        return None
+        return None, None
     alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
     if not alias_row:
-        return None
+        return None, None
     current_app.logger.info(
         "mfu notifications admin alias ext_user_id=%s social_id=%s",
         ext_user_id,
         alias_row.get("social_id"),
     )
-    return "admin"
+    return "admin", "alias"
 
 
 def _is_mfu_notification_user(username: str) -> bool:
@@ -84,11 +85,14 @@ def _is_mfu_notification_user(username: str) -> bool:
 
 
 def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
-    username = _resolve_mfu_notification_recipient_for_session() or ""
+    username, role = _resolve_mfu_notification_recipient_for_session()
     if not username:
+        current_app.logger.info("mfu notification guard denied reason=login_required")
         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
     if not _is_mfu_notification_user(username):
+        current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+    current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
     return username, None
 
 
