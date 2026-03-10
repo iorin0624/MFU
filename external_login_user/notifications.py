@@ -5,7 +5,7 @@ from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from flask import Blueprint, abort, current_app, jsonify, render_template, request, session
+from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
 
 from . import bp
 from .utils import _require_ext_login
@@ -64,6 +64,58 @@ def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str |
         alias_row.get("social_id"),
     )
     return "admin", "alias"
+
+
+def _resolve_notification_scope_for_session() -> str | None:
+    if str(session.get("user") or "").strip():
+        return "mfu"
+
+    ext_user_id = int(session.get("ext_user_id") or 0)
+    if ext_user_id <= 0:
+        return None
+
+    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
+    if alias_row:
+        return "mfu"
+    return "external"
+
+
+def _is_notification_scope_mfu() -> bool:
+    return _resolve_notification_scope_for_session() == "mfu"
+
+
+def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
+    scope = _resolve_notification_scope_for_session()
+    if scope == "external":
+        return {
+            "scope": "external",
+            "urls": {
+                "list": "/external-login/api/notifications",
+                "unreadCount": "/external-login/api/notifications/unread-count",
+                "updates": "/external-login/api/notifications/updates",
+                "readOneBase": "/external-login/api/notifications",
+                "readAll": "/external-login/api/notifications/read-all",
+            },
+        }
+    if scope == "mfu":
+        return {
+            "scope": "mfu",
+            "urls": {
+                "list": "/api/mfu-notifications",
+                "unreadCount": "/api/mfu-notifications/unread-count",
+                "updates": "/api/mfu-notifications/updates",
+                "readOneBase": "/api/mfu-notifications",
+                "readAll": "/api/mfu-notifications/read-all",
+            },
+        }
+    return None
+
+
+@bp.app_context_processor
+def _inject_notification_ui_config() -> dict[str, Any]:
+    return {
+        "notification_config": _resolve_notification_api_mode_for_session(),
+    }
 
 
 def _is_mfu_notification_user(username: str) -> bool:
@@ -652,18 +704,52 @@ def create_notification_mfu(
 
 @bp.get("/notifications")
 def notifications_page():
-    guard = _require_ext_login()
-    if guard:
-        return guard
-    return render_template("notifications.html")
+    return redirect("/notifications")
+
+
+@mfu_notifications_bp.get("/notifications")
+def notifications_unified_page():
+    _ensure_notification_schema()
+    scope = _resolve_notification_scope_for_session()
+    if scope == "external":
+        guard = _require_ext_login()
+        if guard:
+            return guard
+    elif scope == "mfu":
+        username, error = _require_mfu_admin_acl()
+        if error:
+            return error
+    else:
+        return jsonify({"ok": False, "reason": "login_required"}), 401
+
+    return render_template(
+        "notifications.html",
+        notification_scope=scope,
+        notification_api_map=_resolve_notification_api_mode_for_session(),
+    )
 
 
 @mfu_notifications_bp.get("/mfu-notifications")
 def mfu_notifications_page():
+    _ensure_notification_schema()
     username, error = _require_mfu_admin_acl()
     if error:
         return error
-    return render_template("mfu_notifications.html", mfu_notification_user=username)
+    return render_template(
+        "notifications.html",
+        notification_scope="mfu",
+        notification_api_map={
+            "scope": "mfu",
+            "urls": {
+                "list": "/api/mfu-notifications",
+                "unreadCount": "/api/mfu-notifications/unread-count",
+                "updates": "/api/mfu-notifications/updates",
+                "readOneBase": "/api/mfu-notifications",
+                "readAll": "/api/mfu-notifications/read-all",
+            },
+        },
+        mfu_notification_user=username,
+    )
 
 
 @mfu_notifications_bp.get("/api/mfu-notifications/unread-count")
