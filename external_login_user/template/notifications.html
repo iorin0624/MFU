@@ -21,7 +21,23 @@
 </div>
 
 <script>
+  window.MFU_NOTIFICATION_CONFIG = Object.assign(
+    {},
+    window.MFU_NOTIFICATION_CONFIG || {},
+    {{ (notification_api_map or notification_config or {})|tojson }}
+  );
+</script>
+<script>
   (() => {
+    const cfg = window.MFU_NOTIFICATION_CONFIG || {};
+    const urls = cfg.urls || {};
+    const scope = cfg.scope || '{{ notification_scope or "external" }}';
+
+    if (!urls.list || !urls.readOneBase || !urls.readAll || !urls.updates) {
+      console.warn('[notifications] invalid config', cfg);
+      return;
+    }
+
     const listEl = document.getElementById('notificationList');
     const emptyEl = document.getElementById('emptyState');
     const loadMoreBtn = document.getElementById('loadMoreBtn');
@@ -63,7 +79,8 @@
     const createItem = (item) => {
       const a = document.createElement('a');
       a.href = '#';
-      a.className = `list-group-item list-group-item-action ${item.read_at ? '' : 'list-group-item-warning'}`;
+      const isRead = !!(item.read_at || item.is_read);
+      a.className = `list-group-item list-group-item-action ${isRead ? '' : 'list-group-item-warning'}`;
       a.innerHTML = `
         <div class="d-flex w-100 justify-content-between align-items-start">
           <div class="me-3">
@@ -71,13 +88,13 @@
             <p class="mb-1">${escapeHtml(item.body || '')}</p>
             <small class="text-muted">${formatDate(item.created_at)}</small>
           </div>
-          <span class="badge ${item.read_at ? 'bg-secondary' : 'bg-danger'}">${item.read_at ? '既読' : '未読'}</span>
+          <span class="badge ${isRead ? 'bg-secondary' : 'bg-danger'}">${isRead ? '既読' : '未読'}</span>
         </div>
       `;
       a.addEventListener('click', async (e) => {
         e.preventDefault();
         try {
-          const res = await fetch(`/external-login/api/notifications/${item.id}/read`, {
+          const res = await fetch(`${urls.readOneBase}/${item.id}/read`, {
             method: 'POST',
             credentials: 'same-origin',
           });
@@ -149,7 +166,7 @@
       loading = true;
       try {
         const unread = onlyUnread.checked ? '1' : '0';
-        const res = await fetch(`/external-login/api/notifications?unread=${unread}&page=${page}`, {
+        const res = await fetch(`${urls.list}?unread=${unread}&page=${page}`, {
           credentials: 'same-origin',
           cache: 'no-store',
         });
@@ -169,7 +186,7 @@
       if (document.hidden) return;
       if (onlyUnread.checked) return;
       try {
-        const res = await fetch(`/external-login/api/notifications/updates?since_id=${lastId}&limit=50`, {
+        const res = await fetch(`${urls.updates}?since_id=${lastId}&limit=50`, {
           credentials: 'same-origin',
           cache: 'no-store',
         });
@@ -218,7 +235,7 @@
     markAllReadBtn.addEventListener('click', async () => {
       markAllReadBtn.disabled = true;
       try {
-        const res = await fetch('/external-login/api/notifications/read-all', {
+        const res = await fetch(urls.readAll, {
           method: 'POST',
           credentials: 'same-origin',
         });

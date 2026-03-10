@@ -3,7 +3,7 @@
     <a class="navbar-brand" href="/external-login/">MFU</a>
 
     <div class="d-flex align-items-center gap-2 ms-auto">
-      <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
+      <a class="nav-link position-relative p-2" href="/notifications" aria-label="通知" id="navNotifBell">
         <span class="fs-5">🔔</span>
         <span id="navNotifBadge"
               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
@@ -25,10 +25,18 @@
   </div>
 </nav>
 
+<script>
+  window.MFU_NOTIFICATION_CONFIG = Object.assign(
+    {},
+    window.MFU_NOTIFICATION_CONFIG || {},
+    {{ (notification_config or {})|tojson }}
+  );
+</script>
 <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
   (() => {
-    const BADGE_API_URL = '/external-login/api/notifications/unread-count';
+    const cfg = window.MFU_NOTIFICATION_CONFIG || {};
+    const BADGE_API_URL = (cfg.urls || {}).unreadCount || '/external-login/api/notifications/unread-count';
     const SW_SYNC_TYPE = 'SYNC_BADGE';
 
     const toSafeCount = (rawCount) => {
@@ -53,7 +61,7 @@
       if (!badge) return;
       const count = toSafeCount(rawCount);
       if (count > 0) {
-        badge.textContent = String(Math.min(count, 99));
+        badge.textContent = count > 99 ? '99+' : String(count);
         badge.classList.remove('d-none');
         return;
       }
@@ -109,7 +117,7 @@
           return null;
         }
         const data = await res.json().catch(() => ({}));
-        const count = toSafeCount(data?.count ?? 0);
+        const count = toSafeCount(data?.count ?? data?.unread_count ?? 0);
         updateNavBadge(count);
         emitUnreadChanged(count);
         if (count > 0) {
