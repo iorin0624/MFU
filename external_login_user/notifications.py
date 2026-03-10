@@ -20,6 +20,50 @@ except Exception:  # pragma: no cover
 _READ_NOTIFICATIONS_KEEP_LIMIT = 30
 mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
 
+def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
+    if int(ext_user_id or 0) <= 0:
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+              FROM external_login_user
+             WHERE id=%s
+             LIMIT 1
+            """,
+            (int(ext_user_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        if int(row.get("chat_admin_alias") or 0) != 1:
+            return None
+        return row
+    finally:
+        cur.close()
+        db.close()
+
+
+def _resolve_mfu_notification_recipient_for_session() -> str | None:
+    username = str(session.get("user") or "").strip()
+    if username:
+        return username
+
+    ext_user_id = int(session.get("ext_user_id") or 0)
+    if ext_user_id <= 0:
+        return None
+    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
+    if not alias_row:
+        return None
+    current_app.logger.info(
+        "mfu notifications admin alias ext_user_id=%s social_id=%s",
+        ext_user_id,
+        alias_row.get("social_id"),
+    )
+    return "admin"
+
 
 def _is_mfu_notification_user(username: str) -> bool:
     name = (username or "").strip()
@@ -40,9 +84,7 @@ def _is_mfu_notification_user(username: str) -> bool:
 
 
 def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
-    if session.get("ext_user_id"):
-        return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
-    username = str(session.get("user") or "").strip()
+    username = _resolve_mfu_notification_recipient_for_session() or ""
     if not username:
         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
     if not _is_mfu_notification_user(username):

@@ -133,6 +133,7 @@ def admin_ext_users_index():
             created_at,
             updated_at,
             admin_note,
+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
             COALESCE(notify_album_process, 1) AS notify_album_process,
             (
@@ -213,6 +214,7 @@ def admin_ext_users_data():
         id, nickname, x_id, instagram_id, email, social_id,
         avatar_file, avatar_url, created_at, updated_at,
         admin_note,
+        COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
         COALESCE(notify_album_process, 1) AS notify_album_process,
         (
@@ -281,7 +283,8 @@ def admin_ext_users_detail(user_id: int):
               avatar_url,
               created_at,
               updated_at,
-              admin_note
+              admin_note,
+              COALESCE(chat_admin_alias, 0) AS chat_admin_alias
             FROM external_login_user
             WHERE id=%s
             LIMIT 1
@@ -322,6 +325,7 @@ def admin_ext_users_update(user_id: int):
     ig_raw     = (data.get("instagram_id") or "").strip().lstrip("@")
     email      = (data.get("email") or "").strip() or None
     admin_note = (data.get("admin_note") or "").strip() or None  # ★追加: 内部メモ
+    chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
 
     errors = {}
     if not nickname:
@@ -361,10 +365,11 @@ def admin_ext_users_update(user_id: int):
                        instagram_id=%s,
                        email=%s,
                        admin_note=%s,
+                       chat_admin_alias=%s,
                        email_verified_at=NULL
                  WHERE id=%s
                  LIMIT 1
-            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, user_id))
+            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
         else:
             cur.execute("""
                 UPDATE external_login_user
@@ -372,10 +377,11 @@ def admin_ext_users_update(user_id: int):
                        x_id=%s,
                        instagram_id=%s,
                        email=%s,
-                       admin_note=%s
+                       admin_note=%s,
+                       chat_admin_alias=%s
                  WHERE id=%s
                  LIMIT 1
-            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, user_id))
+            """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
         db.commit()
     finally:
         try: cur.close(); db.close()
@@ -492,6 +498,7 @@ def admin_ext_users_edit_page(user_id: int):
             id, nickname, x_id, instagram_id, email, social_id,
             avatar_file, avatar_url, created_at, updated_at,
             admin_note,
+            COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
             COALESCE(notify_album_process, 1) AS notify_album_process
         """

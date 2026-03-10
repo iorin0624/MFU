@@ -2197,7 +2197,7 @@ def _is_room_member(room_id: str, actor: dict[str, Any]) -> bool:
 
 
 def _can_manage_rooms(event_id: int, actor: dict[str, Any]) -> bool:
-    if actor.get("actor_type") == "admin":
+    if _is_chat_admin_actor(actor):
         return True
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -2859,6 +2859,46 @@ def _is_admin_actor(actor: dict[str, Any] | None) -> bool:
     return str(actor.get("actor_type") or "") == "admin"
 
 
+def _is_real_mfu_admin_actor(actor: dict[str, Any] | None) -> bool:
+    if not _is_admin_actor(actor):
+        return False
+    return not bool(actor.get("is_chat_admin_alias"))
+
+
+def _is_chat_admin_actor(actor: dict[str, Any] | None) -> bool:
+    return _is_admin_actor(actor)
+
+
+def _get_chat_admin_alias_row(ext_user_id: int) -> dict[str, Any] | None:
+    if int(ext_user_id or 0) <= 0:
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, nickname, email, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+              FROM external_login_user
+             WHERE id=%s
+             LIMIT 1
+            """,
+            (int(ext_user_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        row["chat_admin_alias"] = int(row.get("chat_admin_alias") or 0)
+        return row
+    finally:
+        cur.close()
+        db.close()
+
+
+def _get_external_user_chat_admin_alias(ext_user_id: int) -> bool:
+    row = _get_chat_admin_alias_row(ext_user_id)
+    return bool(row and int(row.get("chat_admin_alias") or 0) == 1)
+
+
 def get_chat_actor() -> dict[str, Any] | None:
     """admin / acl / line を統一形式へ正規化。"""
     if session.get("user"):
@@ -2886,26 +2926,32 @@ def get_chat_actor() -> dict[str, Any] | None:
 
     ext_user_id = session.get("ext_user_id")
     if ext_user_id:
-        display_name = get_external_user_display_name(int(ext_user_id))
-        db = get_db()
-        cur = db.cursor(dictionary=True)
-        try:
-            cur.execute(
-                "SELECT id, nickname, email FROM external_login_user WHERE id=%s LIMIT 1",
-                (ext_user_id,),
-            )
-            row = cur.fetchone()
-        finally:
-            cur.close()
-            db.close()
+        row = _get_chat_admin_alias_row(int(ext_user_id))
         if not row:
             current_app.logger.warning("chat actor load failed for ext_user_id=%s", ext_user_id)
             return None
+        display_name = get_external_user_display_name(int(ext_user_id))
+        if int(row.get("chat_admin_alias") or 0) == 1:
+            current_app.logger.info(
+                "chat admin alias login ext_user_id=%s social_id=%s",
+                ext_user_id,
+                row.get("social_id"),
+            )
+            return {
+                "actor_type": "admin",
+                "actor_id": "admin",
+                "display_name": display_name,
+                "email": row.get("email"),
+                "is_chat_admin_alias": True,
+                "source_ext_user_id": int(row.get("id") or 0),
+                "source_social_id": row.get("social_id"),
+            }
         return {
             "actor_type": "line",
             "actor_id": str(row["id"]),
             "display_name": display_name,
             "email": row.get("email"),
+            "is_chat_admin_alias": False,
         }
 
     return None
@@ -5743,7 +5789,7 @@ def index():
         abort(403)
     events = _accessible_events(actor)
     dm_inbox_items: list[dict[str, Any]] = []
-    if actor.get("actor_type") == "admin" and _ensure_chat_dm_schema():
+    if _is_chat_admin_actor(actor) and _ensure_chat_dm_schema():
         actor_key = get_chat_actor_key(actor) or "admin:1"
         dm_inbox_items = _build_admin_dm_inbox_items(actor_key)
     return render_template(
@@ -5794,7 +5840,7 @@ def dm_entry():
 def dm_inbox():
     actor = get_chat_actor()
     actor_key = _get_dm_actor_key(actor)
-    if not actor or not actor_key or actor.get("actor_type") != "admin":
+    if not actor or not actor_key or not _is_chat_admin_actor(actor):
         abort(403)
     if not _ensure_chat_dm_schema():
         abort(500)
@@ -5808,7 +5854,7 @@ def dm_inbox():
 def dm_open_line(line_user_id: int):
     actor = get_chat_actor()
     actor_key = _get_dm_actor_key(actor)
-    if not actor or not actor_key or actor.get("actor_type") != "admin":
+    if not actor or not actor_key or not _is_chat_admin_actor(actor):
         abort(403)
     if line_user_id <= 0:
         abort(404)
@@ -5846,7 +5892,7 @@ def dm_room(uuid: str):
     return render_template(
         "chat/room.html",
         actor=actor,
-        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
+        chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
         current_user_id=_canonical_read_actor_key_from_actor(actor),
         event={"id": 0, "title": "DM"},
         messages=messages,
@@ -6061,7 +6107,7 @@ def dm_delete_message(message_id: int):
             return jsonify({"ok": True, "message_id": message_id})
 
         can_delete = False
-        if actor.get("actor_type") == "admin":
+        if _is_chat_admin_actor(actor):
             can_delete = True
         elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
             can_delete = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
@@ -6142,7 +6188,7 @@ def dm_edit_message(message_id: int):
             return jsonify({"ok": False, "error": "削除済みメッセージは編集できません"}), 403
 
         can_edit = False
-        if actor.get("actor_type") == "admin":
+        if _is_chat_admin_actor(actor):
             can_edit = True
         elif str(row.get("sender_actor_key") or "") == actor_key and isinstance(row.get("created_at"), datetime):
             can_edit = row["created_at"] + timedelta(hours=12) >= datetime.utcnow()
@@ -6213,7 +6259,7 @@ def dm_api_seen():
 @chat_bp.get("/dm/settings")
 def dm_settings_get():
     actor = get_chat_actor()
-    if not actor or actor.get("actor_type") != "admin":
+    if not actor or not _is_chat_admin_actor(actor):
         abort(403)
     return render_template(
         "chat/dm_settings.html",
@@ -6228,7 +6274,7 @@ def dm_settings_get():
 @chat_bp.post("/dm/settings")
 def dm_settings_post():
     actor = get_chat_actor()
-    if not actor or actor.get("actor_type") != "admin":
+    if not actor or not _is_chat_admin_actor(actor):
         abort(403)
     token = (request.form.get("csrf_token") or "").strip()
     if token != session.get("chat_csrf"):
@@ -6346,7 +6392,7 @@ def room(event_id: int):
     return render_template(
         "chat/room.html",
         actor=actor,
-        chat_read_front_debug_enabled=actor.get("actor_type") == "admin",
+        chat_read_front_debug_enabled=_is_chat_admin_actor(actor),
         current_user_id=current_user_id,
         event=event,
         messages=messages,
@@ -7899,6 +7945,12 @@ def chat_connect():
             join_room(f"mfu_user:{mfu_username}")
         except Exception:
             current_app.logger.warning("chat socket mfu_user join failed user=%s", mfu_username, exc_info=True)
+
+    if actor and actor.get("is_chat_admin_alias"):
+        try:
+            join_room("mfu_user:admin")
+        except Exception:
+            current_app.logger.warning("chat socket mfu_user join failed for alias ext_user_id=%s", actor.get("source_ext_user_id"), exc_info=True)
     return True
 
 @socketio.on("chat_join")
