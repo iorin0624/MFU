@@ -54,6 +54,9 @@
 
     let pollTimer = null;
     let pollingDisabled = false;
+    const notificationScope = {{ (notification_scope|default('external'))|tojson }};
+    const notificationApiMap = {{ (notification_api_map|default({}))|tojson }};
+    const unreadApiUrl = notificationApiMap.unread_count || '/external-login/api/notifications/unread-count';
 
     const toSafeCount = (rawCount) => {
       const count = Number(rawCount ?? 0);
@@ -85,7 +88,7 @@
     const updateBadge = async () => {
       if (pollingDisabled) return;
       try {
-        const res = await fetch('/external-login/api/notifications/unread-count', { credentials: 'same-origin', cache: 'no-store' });
+        const res = await fetch(unreadApiUrl, { credentials: 'same-origin', cache: 'no-store' });
         if (res.status === 401) {
           pollingDisabled = true;
           stopPolling();
@@ -96,7 +99,7 @@
           return;
         }
         const data = await res.json();
-        await applyCount(data?.count ?? 0);
+        await applyCount((data?.count ?? data?.unread_count ?? 0));
       } catch (_e) {
         // noop
       }
@@ -123,7 +126,10 @@
         startPolling();
       });
       socket.on('notif_unread', (data) => {
-        applyCount(data?.count ?? 0);
+        const payloadScope = data?.scope || 'external';
+        if (notificationScope === 'mfu' && payloadScope !== 'mfu') return;
+        if (notificationScope === 'external' && payloadScope === 'mfu') return;
+        applyCount((data?.count ?? data?.unread_count ?? 0));
       });
     } else {
       startPolling();

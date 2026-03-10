@@ -1,8 +1,11 @@
 const SW_VERSION = '2026-03-04-01';
 const BADGE_SYNC_MESSAGE = 'SYNC_BADGE';
 
-function badgeApiUrl() {
-  return new URL('/external-login/api/notifications/unread-count', self.location.origin).toString();
+function badgeApiUrl(overridePath) {
+  const path = (typeof overridePath === 'string' && overridePath.trim())
+    ? overridePath.trim()
+    : '/external-login/api/notifications/unread-count';
+  return new URL(path, self.location.origin).toString();
 }
 
 async function setBadgeSafe(count) {
@@ -30,9 +33,9 @@ async function clearBadgeSafe() {
   }
 }
 
-async function syncBadgeFromApi() {
+async function syncBadgeFromApi(overridePath) {
   try {
-    const res = await fetch(badgeApiUrl(), {
+    const res = await fetch(badgeApiUrl(overridePath), {
       method: 'GET',
       credentials: 'include',
       cache: 'no-store',
@@ -45,7 +48,7 @@ async function syncBadgeFromApi() {
       return;
     }
     const data = await res.json().catch(() => ({}));
-    const count = Number(data?.count ?? 0);
+    const count = Number(data?.count ?? data?.unread_count ?? 0);
     if (Number.isFinite(count) && count > 0) {
       await setBadgeSafe(count);
       return;
@@ -179,5 +182,5 @@ self.addEventListener('notificationclick', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event?.data?.type !== BADGE_SYNC_MESSAGE) return;
-  event.waitUntil(syncBadgeFromApi());
+  event.waitUntil(syncBadgeFromApi(event?.data?.badgeApiUrl));
 });

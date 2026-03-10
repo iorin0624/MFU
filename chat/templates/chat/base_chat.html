@@ -13,7 +13,7 @@
 
 
     (() => {
-      const BADGE_API_URL = '/external-login/api/notifications/unread-count';
+      const BADGE_API_URL = {{ ((notification_api_map.unread_count if notification_api_map else '/external-login/api/notifications/unread-count'))|tojson }};
       const SW_SYNC_TYPE = 'SYNC_BADGE';
       const toSafeCount = (rawCount) => {
         const value = Number(rawCount ?? 0);
@@ -49,7 +49,7 @@
       function notifySwToSyncBadge() {
         try {
           if (navigator.serviceWorker?.controller) {
-            navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
+            navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE, badgeApiUrl: BADGE_API_URL });
           }
         } catch (e) {
           console.debug('[badge] notify sw failed', e);
@@ -66,7 +66,7 @@
           }
           if (!res.ok) return null;
           const data = await res.json().catch(() => ({}));
-          const count = toSafeCount(data?.count ?? 0);
+          const count = toSafeCount((data?.count ?? data?.unread_count ?? 0));
           if (count > 0) {
             await setAppBadgeSafe(count);
           } else {
