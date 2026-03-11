@@ -30,10 +30,10 @@
 <script>
   (() => {
     const cfg = window.MFU_NOTIFICATION_CONFIG || {};
-    const urls = cfg.urls || {};
     const scope = cfg.scope || '{{ notification_scope or "external" }}';
+    const apiMap = cfg.urls || cfg || {};
 
-    if (!urls.list || !urls.readOneBase || !urls.readAll || !urls.updates) {
+    if (!apiMap.list || !(apiMap.readOneBase || apiMap.read) || !(apiMap.readAll || apiMap.read_all) || !apiMap.updates) {
       console.warn('[notifications] invalid config', cfg);
       return;
     }
@@ -50,7 +50,33 @@
     let loading = false;
     let pollingTimer = null;
     let lastId = 0;
+    let currentUnreadCount = 0;
     const knownIds = new Set();
+
+    const getListUrl = () => apiMap.list;
+    const getUpdatesUrl = () => apiMap.updates;
+    const getReadAllUrl = () => apiMap.readAll || apiMap.read_all;
+    const getUnreadCountUrl = () => apiMap.unreadCount || apiMap.unread_count;
+    const getReadUrl = (id) => {
+      if (apiMap.readOneBase) return `${apiMap.readOneBase}/${id}/read`;
+      if (apiMap.read) return String(apiMap.read).replace('{id}', id);
+      return '';
+    };
+
+    const updateEmptyState = () => {
+      const hasItems = listEl.children.length > 0;
+      emptyEl.classList.toggle('d-none', hasItems);
+      loadMoreBtn.classList.toggle('d-none', !hasNext);
+    };
+
+    const removeItemById = (id) => {
+      const target = listEl.querySelector(`[data-notification-id="${id}"]`);
+      if (!target) return false;
+      target.remove();
+      knownIds.delete(id);
+      updateEmptyState();
+      return true;
+    };
 
     const escapeHtml = (value) => {
       const div = document.createElement('div');
@@ -79,6 +105,7 @@
     const createItem = (item) => {
       const a = document.createElement('a');
       a.href = '#';
+      a.dataset.notificationId = String(item.id);
       const isRead = !!(item.read_at || item.is_read);
       a.className = `list-group-item list-group-item-action ${isRead ? '' : 'list-group-item-warning'}`;
       a.innerHTML = `
@@ -94,11 +121,16 @@
       a.addEventListener('click', async (e) => {
         e.preventDefault();
         try {
-          const res = await fetch(`${urls.readOneBase}/${item.id}/read`, {
+          const res = await fetch(getReadUrl(item.id), {
             method: 'POST',
             credentials: 'same-origin',
           });
           if (res.ok) {
+            if (onlyUnread.checked && removeItemById(item.id)) {
+              console.debug('[notifications] unread item removed after read', { id: item.id, scope });
+            }
+            currentUnreadCount = Math.max(0, Number(currentUnreadCount || 0) - 1);
+            await applyCounts(currentUnreadCount);
             await syncAppBadgeSafe();
           }
         } catch (_e) {
@@ -122,6 +154,7 @@
     };
 
     const applyCounts = async (count) => {
+      currentUnreadCount = Number(count || 0);
       updateNavBadge(count);
       if (count > 0) {
         if (typeof window.setAppBadgeSafe === 'function') await window.setAppBadgeSafe(count);
@@ -138,7 +171,7 @@
         knownIds.add(item.id);
         listEl.insertBefore(createItem(item), listEl.firstChild);
       }
-      emptyEl.classList.toggle('d-none', listEl.children.length > 0);
+      updateEmptyState();
     };
 
     const renderItems = (items, append = false) => {
@@ -151,9 +184,7 @@
         knownIds.add(item.id);
         listEl.appendChild(createItem(item));
       });
-      const hasItems = listEl.children.length > 0;
-      emptyEl.classList.toggle('d-none', hasItems);
-      loadMoreBtn.classList.toggle('d-none', !hasNext);
+      updateEmptyState();
 
       if (!append) {
         const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
@@ -166,7 +197,7 @@
       loading = true;
       try {
         const unread = onlyUnread.checked ? '1' : '0';
-        const res = await fetch(`${urls.list}?unread=${unread}&page=${page}`, {
+        const res = await fetch(`${getListUrl()}?unread=${unread}&page=${page}`, {
           credentials: 'same-origin',
           cache: 'no-store',
         });
@@ -174,6 +205,9 @@
         const data = await res.json();
         hasNext = !!data?.pagination?.has_next;
         renderItems(data.items || [], append);
+        if (Number.isFinite(Number(data?.unread_count))) {
+          await applyCounts(Number(data.unread_count));
+        }
         if (!append) {
           await syncAppBadgeSafe();
         }
@@ -182,11 +216,28 @@
       }
     };
 
+    const refreshUnreadCount = async () => {
+      const unreadCountUrl = getUnreadCountUrl();
+      if (!unreadCountUrl) return;
+      try {
+        const res = await fetch(unreadCountUrl, {
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const count = Number(data?.unread_count ?? data?.count ?? 0);
+        await applyCounts(count);
+      } catch (_e) {
+        // noop
+      }
+    };
+
     const pollUpdatesOnce = async () => {
       if (document.hidden) return;
       if (onlyUnread.checked) return;
       try {
-        const res = await fetch(`${urls.updates}?since_id=${lastId}&limit=50`, {
+        const res = await fetch(`${getUpdatesUrl()}?since_id=${lastId}&limit=50&unread=0`, {
           credentials: 'same-origin',
           cache: 'no-store',
         });
@@ -235,7 +286,7 @@
     markAllReadBtn.addEventListener('click', async () => {
       markAllReadBtn.disabled = true;
       try {
-        const res = await fetch(urls.readAll, {
+        const res = await fetch(getReadAllUrl(), {
           method: 'POST',
           credentials: 'same-origin',
         });
@@ -243,9 +294,17 @@
           await window.clearAppBadgeSafe();
           if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
         }
+        if (res.ok && onlyUnread.checked) {
+          listEl.innerHTML = '';
+          knownIds.clear();
+          hasNext = false;
+          updateEmptyState();
+          await applyCounts(0);
+        }
         page = 1;
         await load({ append: false });
         await pollUpdatesOnce();
+        await refreshUnreadCount();
         await syncAppBadgeSafe();
       } finally {
         markAllReadBtn.disabled = false;
@@ -275,6 +334,7 @@
     load({ append: false }).then(async () => {
       startPolling();
       await pollUpdatesOnce();
+      await refreshUnreadCount();
       await syncAppBadgeSafe();
     });
   })();
