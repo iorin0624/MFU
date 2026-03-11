@@ -1827,6 +1827,23 @@ def _build_admin_logs_html(args_dict: dict) -> str:
         "/tickets/api/zip/",
         "/tickets/api/files/",
         "/apple-touch-icon",
+        "/external-login/api/notifications/",
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/chat/api/room-presence/ping",
+        "/api/mfu-notifications/unread-count",
+        "/chat/api/room-presence/enter",
+        "/chat/api/push/bootstrap ",
+        "/external-login/api/events/chat-unread-counts",
+        "/chat/api/",
+        "/external-login/api/notifications",
+#        "",
+#        "",
+#        "",
+#        "",
+#        "",
+#        "",
+
     ]
     EXCLUDE_PATH_SQL_LIKES = []
     for p in EXCLUDE_PATH_PREFIXES:
@@ -3080,7 +3097,7 @@ def before_every_request():
                 threading.Thread(target=auto_end_maintenance).start()
                 return "🌀 メンテナンス解除中...", 503
 
-        if session.get("user") != "admin" and not request.path.startswith(("/login", "/static", "/favicon", "/api")):
+        if session.get("user") != "admin" and not request.path.startswith(("/login", "/static", "/favicon", "/api", "/payout")):
             return render_template("maintenance.html", until_time=until_time), 503
 
     # アプリ内ブラウザ（LINE/X/Instagram）への警告

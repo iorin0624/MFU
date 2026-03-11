@@ -1,61 +1,8 @@
 diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 2d5c8d6b508de378928c3b70731910075108f812..06c79aaa5d2e6d0ab70a0b3bb83f5256ff2ab286 100644
+index 06c79aaa5d2e6d0ab70a0b3bb83f5256ff2ab286..17ca8cf3a8c29ae29f3edc655c95f94befb7fae2 100644
 --- a/external_login_user/notifications.py
 +++ b/external_login_user/notifications.py
-@@ -1,33 +1,33 @@
- from __future__ import annotations
- 
- from datetime import datetime, timezone
- from time import perf_counter
- from typing import Any
- from urllib.parse import parse_qs, urlparse
- 
--from flask import Blueprint, abort, current_app, jsonify, render_template, request, session
-+from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
- 
- from . import bp
- from .utils import _require_ext_login
- from app.utils.db import get_db
- 
- try:
-     from app.chat.socketio_ext import socketio
- except Exception:  # pragma: no cover
-     socketio = None
- 
- 
- _READ_NOTIFICATIONS_KEEP_LIMIT = 30
- mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
- 
- def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
-     if int(ext_user_id or 0) <= 0:
-         return None
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-               FROM external_login_user
-              WHERE id=%s
-@@ -44,50 +44,102 @@ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | Non
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str | None]:
-     username = str(session.get("user") or "").strip()
-     if username:
-         role = "admin" if username == "admin" else "acl"
-         return username, role
- 
-     ext_user_id = int(session.get("ext_user_id") or 0)
-     if ext_user_id <= 0:
-         return None, None
-     alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-     if not alias_row:
-         return None, None
-     current_app.logger.info(
+@@ -62,50 +62,57 @@ def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str |
          "mfu notifications admin alias ext_user_id=%s social_id=%s",
          ext_user_id,
          alias_row.get("social_id"),
@@ -63,102 +10,57 @@ index 2d5c8d6b508de378928c3b70731910075108f812..06c79aaa5d2e6d0ab70a0b3bb83f5256
      return "admin", "alias"
  
  
-+def _resolve_notification_scope_for_session() -> str | None:
-+    if str(session.get("user") or "").strip():
-+        return "mfu"
-+
-+    ext_user_id = int(session.get("ext_user_id") or 0)
-+    if ext_user_id <= 0:
-+        return None
-+
-+    alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-+    if alias_row:
-+        return "mfu"
-+    return "external"
-+
-+
-+def _is_notification_scope_mfu() -> bool:
-+    return _resolve_notification_scope_for_session() == "mfu"
-+
-+
-+def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
-+    scope = _resolve_notification_scope_for_session()
-+    if scope == "external":
-+        return {
-+            "scope": "external",
-+            "urls": {
-+                "list": "/external-login/api/notifications",
-+                "unreadCount": "/external-login/api/notifications/unread-count",
-+                "updates": "/external-login/api/notifications/updates",
-+                "readOneBase": "/external-login/api/notifications",
-+                "readAll": "/external-login/api/notifications/read-all",
-+            },
-+        }
-+    if scope == "mfu":
-+        return {
-+            "scope": "mfu",
-+            "urls": {
-+                "list": "/api/mfu-notifications",
-+                "unreadCount": "/api/mfu-notifications/unread-count",
-+                "updates": "/api/mfu-notifications/updates",
-+                "readOneBase": "/api/mfu-notifications",
-+                "readAll": "/api/mfu-notifications/read-all",
-+            },
-+        }
-+    return None
-+
-+
-+@bp.app_context_processor
-+def _inject_notification_ui_config() -> dict[str, Any]:
-+    return {
-+        "notification_config": _resolve_notification_api_mode_for_session(),
-+    }
-+
-+
- def _is_mfu_notification_user(username: str) -> bool:
-     name = (username or "").strip()
-     if not name:
-         return False
-     if name == "admin":
-         return True
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT 1 FROM mfu_event_admin_acl WHERE username=%s LIMIT 1", (name,))
-         return bool(cur.fetchone())
-     except Exception:
-         return False
-     finally:
-         cur.close()
-         db.close()
+ def _resolve_notification_scope_for_session() -> str | None:
+     if str(session.get("user") or "").strip():
+         return "mfu"
+ 
+     ext_user_id = int(session.get("ext_user_id") or 0)
+     if ext_user_id <= 0:
+         return None
+ 
+     alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
+     if alias_row:
+         return "mfu"
+     return "external"
  
  
- def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
-     username, role = _resolve_mfu_notification_recipient_for_session()
-     if not username:
-         current_app.logger.info("mfu notification guard denied reason=login_required")
-         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
-     if not _is_mfu_notification_user(username):
-         current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
-@@ -630,62 +682,96 @@ def create_notification_mfu(
-                         "id": latest_id,
-                         "kind": kind,
-                         "title": title,
-                         "body": body,
-                         "target_url": target_url,
-                         "sender_label": sender_label,
-                         "room_type": room_type_value,
-                         "room_id": room_id_value,
-                         "read_at": None,
-                         "created_at": _now_utc(),
-                     })},
-                     room=f"mfu_user:{recipient}",
-                 )
-         return inserted
-     except Exception:
-         db.rollback()
-         current_app.logger.warning("create_notification_mfu failed username=%s", recipient, exc_info=True)
-         return False
+ def _is_notification_scope_mfu() -> bool:
+     return _resolve_notification_scope_for_session() == "mfu"
+ 
+ 
++def _to_unread_only(value: Any, *, default: bool = False) -> bool:
++    unread_arg = str(value or "").strip().lower()
++    if not unread_arg:
++        return bool(default)
++    return unread_arg in {"1", "true", "yes", "on"}
++
++
+ def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
+     scope = _resolve_notification_scope_for_session()
+     if scope == "external":
+         return {
+             "scope": "external",
+             "urls": {
+                 "list": "/external-login/api/notifications",
+                 "unreadCount": "/external-login/api/notifications/unread-count",
+                 "updates": "/external-login/api/notifications/updates",
+                 "readOneBase": "/external-login/api/notifications",
+                 "readAll": "/external-login/api/notifications/read-all",
+             },
+         }
+     if scope == "mfu":
+         return {
+             "scope": "mfu",
+             "urls": {
+                 "list": "/api/mfu-notifications",
+                 "unreadCount": "/api/mfu-notifications/unread-count",
+                 "updates": "/api/mfu-notifications/updates",
+                 "readOneBase": "/api/mfu-notifications",
+                 "readAll": "/api/mfu-notifications/read-all",
+             },
+         }
+     return None
+@@ -700,175 +707,175 @@ def create_notification_mfu(
      finally:
          cur.close()
          db.close()
@@ -166,57 +68,55 @@ index 2d5c8d6b508de378928c3b70731910075108f812..06c79aaa5d2e6d0ab70a0b3bb83f5256
  
  @bp.get("/notifications")
  def notifications_page():
--    guard = _require_ext_login()
--    if guard:
--        return guard
--    return render_template("notifications.html")
-+    return redirect("/notifications")
-+
-+
-+@mfu_notifications_bp.get("/notifications")
-+def notifications_unified_page():
-+    _ensure_notification_schema()
-+    scope = _resolve_notification_scope_for_session()
-+    if scope == "external":
-+        guard = _require_ext_login()
-+        if guard:
-+            return guard
-+    elif scope == "mfu":
-+        username, error = _require_mfu_admin_acl()
-+        if error:
-+            return error
-+    else:
-+        return jsonify({"ok": False, "reason": "login_required"}), 401
-+
-+    return render_template(
-+        "notifications.html",
-+        notification_scope=scope,
-+        notification_api_map=_resolve_notification_api_mode_for_session(),
-+    )
+     return redirect("/notifications")
+ 
+ 
+ @mfu_notifications_bp.get("/notifications")
+ def notifications_unified_page():
+     _ensure_notification_schema()
+     scope = _resolve_notification_scope_for_session()
+     if scope == "external":
+         guard = _require_ext_login()
+         if guard:
+             return guard
+     elif scope == "mfu":
+         username, error = _require_mfu_admin_acl()
+         if error:
+             return error
+     else:
+         return jsonify({"ok": False, "reason": "login_required"}), 401
+ 
++    current_app.logger.info("notifications page render scope=%s", scope)
+     return render_template(
+         "notifications.html",
+         notification_scope=scope,
+         notification_api_map=_resolve_notification_api_mode_for_session(),
+     )
  
  
  @mfu_notifications_bp.get("/mfu-notifications")
  def mfu_notifications_page():
-+    _ensure_notification_schema()
+     _ensure_notification_schema()
      username, error = _require_mfu_admin_acl()
      if error:
          return error
--    return render_template("mfu_notifications.html", mfu_notification_user=username)
-+    return render_template(
-+        "notifications.html",
-+        notification_scope="mfu",
-+        notification_api_map={
-+            "scope": "mfu",
-+            "urls": {
-+                "list": "/api/mfu-notifications",
-+                "unreadCount": "/api/mfu-notifications/unread-count",
-+                "updates": "/api/mfu-notifications/updates",
-+                "readOneBase": "/api/mfu-notifications",
-+                "readAll": "/api/mfu-notifications/read-all",
-+            },
-+        },
-+        mfu_notification_user=username,
-+    )
++    current_app.logger.info("notifications page render scope=%s user=%s", "mfu", username)
+     return render_template(
+         "notifications.html",
+         notification_scope="mfu",
+-        notification_api_map={
+-            "scope": "mfu",
+-            "urls": {
+-                "list": "/api/mfu-notifications",
+-                "unreadCount": "/api/mfu-notifications/unread-count",
+-                "updates": "/api/mfu-notifications/updates",
+-                "readOneBase": "/api/mfu-notifications",
+-                "readAll": "/api/mfu-notifications/read-all",
+-            },
+-        },
++        notification_api_map=_resolve_notification_api_mode_for_session(),
+         mfu_notification_user=username,
+     )
  
  
  @mfu_notifications_bp.get("/api/mfu-notifications/unread-count")
@@ -228,12 +128,15 @@ index 2d5c8d6b508de378928c3b70731910075108f812..06c79aaa5d2e6d0ab70a0b3bb83f5256
      return jsonify({"ok": True, "unread_count": _compute_unread_count_mfu(username)})
  
  
- def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0) -> tuple[list[dict[str, Any]], int | None]:
+-def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0) -> tuple[list[dict[str, Any]], int | None]:
++def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0, unread_only: bool = False) -> tuple[list[dict[str, Any]], int | None]:
      db = get_db()
      cur = db.cursor(dictionary=True)
      try:
          where_sql = "user_kind='mfu' AND recipient_key=%s"
          params: list[Any] = [recipient]
++        if unread_only:
++            where_sql += " AND read_at IS NULL"
          if since_id > 0:
              where_sql += " AND id > %s"
              params.append(int(since_id))
@@ -242,407 +145,213 @@ index 2d5c8d6b508de378928c3b70731910075108f812..06c79aaa5d2e6d0ab70a0b3bb83f5256
              order_sql = "ORDER BY id DESC"
          cur.execute(
              f"""
-diff --git a/external_login_user/template/_extlogin_nav.html b/external_login_user/template/_extlogin_nav.html
-index 624652cc58a4dd2f4e6679b216edb6ef880cb94f..97ae1cad4716c034a2bfc2d41ab319ce68a024de 100644
---- a/external_login_user/template/_extlogin_nav.html
-+++ b/external_login_user/template/_extlogin_nav.html
-@@ -1,81 +1,89 @@
- <nav class="navbar navbar-expand-lg bg-white border-bottom">
-   <div class="container-fluid">
-     <a class="navbar-brand" href="/external-login/">MFU</a>
- 
-     <div class="d-flex align-items-center gap-2 ms-auto">
--      <a class="nav-link position-relative p-2" href="/external-login/notifications" aria-label="通知" id="navNotifBell">
-+      <a class="nav-link position-relative p-2" href="/notifications" aria-label="通知" id="navNotifBell">
-         <span class="fs-5">🔔</span>
-         <span id="navNotifBadge"
-               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none">0</span>
-       </a>
- 
-       <button class="navbar-toggler" type="button"
-               data-bs-toggle="collapse" data-bs-target="#extNavCollapse"
-               aria-controls="extNavCollapse" aria-expanded="false" aria-label="メニュー">
-         <span class="navbar-toggler-icon"></span>
-       </button>
-     </div>
- 
-     <div class="collapse navbar-collapse" id="extNavCollapse">
-       <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-         <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
-         <li class="nav-item"><a class="nav-link" href="/chat/dm">管理者DM</a></li>
-       </ul>
-     </div>
-   </div>
- </nav>
- 
-+<script>
-+  window.MFU_NOTIFICATION_CONFIG = Object.assign(
-+    {},
-+    window.MFU_NOTIFICATION_CONFIG || {},
-+    {{ (notification_config or {})|tojson }}
-+  );
-+</script>
- <script defer src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
- <script>
-   (() => {
--    const BADGE_API_URL = '/external-login/api/notifications/unread-count';
-+    const cfg = window.MFU_NOTIFICATION_CONFIG || {};
-+    const BADGE_API_URL = (cfg.urls || {}).unreadCount || '/external-login/api/notifications/unread-count';
-     const SW_SYNC_TYPE = 'SYNC_BADGE';
- 
-     const toSafeCount = (rawCount) => {
-       const value = Number(rawCount ?? 0);
-       if (!Number.isFinite(value)) return 0;
-       return Math.max(0, Math.floor(value));
-     };
+             SELECT id, kind, title, body, target_url, sender_label, room_type, room_id,
+                    chat_room_id, created_at, read_at
+               FROM mfu_notifications
+              WHERE {where_sql}
+              {order_sql}
+              LIMIT %s
+             """,
+             tuple(params + [int(limit)]),
+         )
+         rows = cur.fetchall() or []
+         items = [_serialize_mfu_notification_item(r) for r in rows]
+         if since_id <= 0:
+             items = sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)
+         latest_id = max((int(x.get("id") or 0) for x in items), default=0) or None
+         return items, latest_id
+     finally:
+         cur.close()
+         db.close()
  
  
-     const emitUnreadChanged = (rawCount) => {
-       try {
-         window.dispatchEvent(new CustomEvent('external:notif_unread', {
-           detail: { count: toSafeCount(rawCount) },
-         }));
-       } catch (_e) {
-         // noop
-       }
-     };
+ @mfu_notifications_bp.get("/api/mfu-notifications")
+ def api_mfu_notifications_list():
+     _ensure_notification_schema()
+     username, error = _require_mfu_admin_acl()
+     if error:
+         return error
+-    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0)
++    unread_only = _to_unread_only(request.args.get("unread"), default=False)
++    current_app.logger.info("mfu notifications list user=%s unread_only=%s", username, unread_only)
++    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0, unread_only=unread_only)
+     return jsonify({
+         "ok": True,
+         "items": items,
+         "unread_count": _compute_unread_count_mfu(username),
+         "latest_id": latest_id,
++        "pagination": {"has_next": False},
+     })
  
-     const updateNavBadge = (rawCount) => {
-       const badge = document.getElementById('navNotifBadge');
-       if (!badge) return;
-       const count = toSafeCount(rawCount);
-       if (count > 0) {
--        badge.textContent = String(Math.min(count, 99));
-+        badge.textContent = count > 99 ? '99+' : String(count);
-         badge.classList.remove('d-none');
-         return;
-       }
-       badge.textContent = '0';
-       badge.classList.add('d-none');
-     };
  
-     async function setAppBadgeSafe(rawCount) {
-       const count = toSafeCount(rawCount);
-       if (count <= 0) {
-         await clearAppBadgeSafe();
-         return;
-       }
-       try {
-         if (typeof navigator.setAppBadge === 'function') {
-           await navigator.setAppBadge(count);
-         }
-       } catch (e) {
-         console.debug('[badge] setAppBadge failed', e);
-       }
-     }
+ @mfu_notifications_bp.get("/api/mfu-notifications/updates")
+ def api_mfu_notifications_updates():
+     _ensure_notification_schema()
+     username, error = _require_mfu_admin_acl()
+     if error:
+         return error
+     since_id = max(int(request.args.get("since_id") or 0), 0)
+-    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id)
++    unread_only = _to_unread_only(request.args.get("unread"), default=False)
++    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id, unread_only=unread_only)
+     return jsonify({
+         "ok": True,
+         "items": items,
+         "unread_count": _compute_unread_count_mfu(username),
+         "latest_id": latest_id or since_id,
+     })
  
-     async function clearAppBadgeSafe() {
-       try {
-         if (typeof navigator.clearAppBadge === 'function') {
-@@ -87,51 +95,51 @@
-     }
  
-     function notifySwToSyncBadge() {
-       try {
-         if (navigator.serviceWorker?.controller) {
-           navigator.serviceWorker.controller.postMessage({ type: SW_SYNC_TYPE });
-         }
-       } catch (e) {
-         console.debug('[badge] notify sw failed', e);
-       }
-     }
+ @mfu_notifications_bp.post("/api/mfu-notifications/<int:notification_id>/read")
+ def api_mfu_notifications_mark_read(notification_id: int):
+     _ensure_notification_schema()
+     username, error = _require_mfu_admin_acl()
+     if error:
+         return error
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=COALESCE(read_at, %s)
+              WHERE id=%s AND user_kind='mfu' AND recipient_key=%s
+             """,
+             (datetime.utcnow(), int(notification_id), username),
+         )
+         db.commit()
+         if int(cur.rowcount or 0) == 0:
+             abort(404)
+         _emit_notif_unread_mfu(username, reason="read", latest_id=notification_id)
++        current_app.logger.info("notification mark-read success notification_id=%s scope=%s user=%s", notification_id, "mfu", username)
+         return jsonify({"ok": True})
+     finally:
+         cur.close()
+         db.close()
  
-     async function syncAppBadge() {
-       try {
-         const res = await fetch(BADGE_API_URL, { credentials: 'same-origin', cache: 'no-store' });
-         if (res.status === 401) {
-           updateNavBadge(0);
-           await clearAppBadgeSafe();
-           notifySwToSyncBadge();
-           return 0;
-         }
-         if (!res.ok) {
-           return null;
-         }
-         const data = await res.json().catch(() => ({}));
--        const count = toSafeCount(data?.count ?? 0);
-+        const count = toSafeCount(data?.count ?? data?.unread_count ?? 0);
-         updateNavBadge(count);
-         emitUnreadChanged(count);
-         if (count > 0) {
-           await setAppBadgeSafe(count);
-         } else {
-           await clearAppBadgeSafe();
-         }
-         notifySwToSyncBadge();
-         return count;
-       } catch (e) {
-         console.debug('[badge] sync failed', e);
-         return null;
-       }
-     }
  
-     window.setAppBadgeSafe = setAppBadgeSafe;
-     window.clearAppBadgeSafe = clearAppBadgeSafe;
-     window.syncAppBadge = syncAppBadge;
-     window.notifySwToSyncBadge = notifySwToSyncBadge;
-     window.updateExternalNavNotifBadge = updateNavBadge;
+ @mfu_notifications_bp.post("/api/mfu-notifications/read-all")
+ def api_mfu_notifications_mark_all_read():
+     _ensure_notification_schema()
+     username, error = _require_mfu_admin_acl()
+     if error:
+         return error
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=%s
+              WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
+             """,
+             (datetime.utcnow(), username),
+         )
+         updated = int(cur.rowcount or 0)
+         db.commit()
+@@ -888,52 +895,51 @@ def api_notifications_unread_count():
+         resp.status_code = 401
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
  
-     document.addEventListener('DOMContentLoaded', () => {
-       if (!document.getElementById('navNotifBadge')) return;
+     try:
+         count = _compute_unread_count_external(uid)
+         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
+         resp = jsonify({"count": count})
+         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+         resp.headers["Pragma"] = "no-cache"
+         return resp
+     except Exception:
+         current_app.logger.warning("notifications unread-count failed user_id=%s", uid, exc_info=True)
+         raise
  
-       let pollTimer = null;
-diff --git a/external_login_user/template/notifications.html b/external_login_user/template/notifications.html
-index e2617d1bb32eaf56321bf2805a575bd895a300a8..8b9cc34b66c25d2f84005a3c43ca7d809e9c651d 100644
---- a/external_login_user/template/notifications.html
-+++ b/external_login_user/template/notifications.html
-@@ -1,105 +1,122 @@
- {% extends "base_extlogin.html" %}
- {% block title %}通知一覧 | MFU{% endblock %}
  
- {% block content %}
- <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1 class="h4 mb-0">通知一覧</h1>
-   <div class="d-flex gap-2">
-     <div class="form-check form-switch">
-       <input class="form-check-input" type="checkbox" id="onlyUnread" checked>
-       <label class="form-check-label" for="onlyUnread">未読のみ</label>
-     </div>
-     <button id="refreshBtn" class="btn btn-outline-primary btn-sm">更新</button>
-     <button id="markAllReadBtn" class="btn btn-outline-secondary btn-sm">すべて既読にする</button>
-   </div>
- </div>
+ @bp.get("/api/notifications")
+ def api_notifications_list():
+     guard = _require_ext_login()
+     if guard:
+         return guard
  
- <div id="notificationList" class="list-group"></div>
- <div id="emptyState" class="text-muted py-5 text-center d-none">通知はありません。</div>
- <div class="d-flex justify-content-center mt-3">
-   <button id="loadMoreBtn" class="btn btn-outline-primary d-none">もっと見る</button>
- </div>
+     uid = int(session.get("ext_user_id") or 0)
+     _ensure_notification_schema()
+-    unread_arg = (request.args.get("unread") or "").strip().lower()
+-    unread_only = unread_arg not in {"0", "false", "no", "off"}
++    unread_only = _to_unread_only(request.args.get("unread"), default=True)
+     page = max(int(request.args.get("page") or 1), 1)
+     per_page = 20
+     offset = (page - 1) * per_page
  
-+<script>
-+  window.MFU_NOTIFICATION_CONFIG = Object.assign(
-+    {},
-+    window.MFU_NOTIFICATION_CONFIG || {},
-+    {{ (notification_api_map or notification_config or {})|tojson }}
-+  );
-+</script>
- <script>
-   (() => {
-+    const cfg = window.MFU_NOTIFICATION_CONFIG || {};
-+    const urls = cfg.urls || {};
-+    const scope = cfg.scope || '{{ notification_scope or "external" }}';
-+
-+    if (!urls.list || !urls.readOneBase || !urls.readAll || !urls.updates) {
-+      console.warn('[notifications] invalid config', cfg);
-+      return;
-+    }
-+
-     const listEl = document.getElementById('notificationList');
-     const emptyEl = document.getElementById('emptyState');
-     const loadMoreBtn = document.getElementById('loadMoreBtn');
-     const markAllReadBtn = document.getElementById('markAllReadBtn');
-     const refreshBtn = document.getElementById('refreshBtn');
-     const onlyUnread = document.getElementById('onlyUnread');
+     where = ["user_kind='external'", "user_id=%s"]
+     params: list[Any] = [uid]
+     if unread_only:
+         where.append("read_at IS NULL")
  
-     let page = 1;
-     let hasNext = false;
-     let loading = false;
-     let pollingTimer = null;
-     let lastId = 0;
-     const knownIds = new Set();
+     where_sql = " AND ".join(where)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         room_cache: dict[str, tuple[int, str]] = {}
+         cur.execute(
+             f"""
+             SELECT id, kind, title, body, target_url, event_id, created_at, read_at
+                  , chat_event_id, chat_room_id
+               FROM mfu_notifications
+              WHERE {where_sql}
+              ORDER BY created_at DESC, id DESC
+              LIMIT %s OFFSET %s
+             """,
+             tuple(params + [per_page, offset]),
+         )
+@@ -1109,50 +1115,51 @@ def api_notifications_updates():
+ @bp.post("/api/notifications/<int:notification_id>/read")
+ def api_notifications_mark_read(notification_id: int):
+     guard = _require_ext_login()
+     if guard:
+         return guard
  
-     const escapeHtml = (value) => {
-       const div = document.createElement('div');
-       div.textContent = value || '';
-       return div.innerHTML;
-     };
+     uid = int(session.get("ext_user_id") or 0)
+     _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=COALESCE(read_at, %s)
+              WHERE id=%s
+                AND user_kind='external'
+                AND user_id=%s
+             """,
+             (datetime.utcnow(), notification_id, uid),
+         )
+         db.commit()
+         if cur.rowcount == 0:
+             abort(404)
+         _emit_notif_unread(uid, reason="read")
++        current_app.logger.info("notification mark-read success notification_id=%s scope=%s user_id=%s", notification_id, "external", uid)
+         return jsonify({"ok": True})
+     finally:
+         cur.close()
+         db.close()
  
-     const formatDate = (iso) => {
-       if (!iso) return '';
-       const d = new Date(iso);
-       if (Number.isNaN(d.getTime())) return '';
  
-       const parts = new Intl.DateTimeFormat('ja-JP', {
-         timeZone: 'Asia/Tokyo',
-         year: 'numeric',
-         month: 'numeric',
-         day: 'numeric',
-         hour: 'numeric',
-         minute: '2-digit',
-         hour12: false,
-       }).formatToParts(d);
-       const getPart = (type) => parts.find((p) => p.type === type)?.value || '';
-       return `${getPart('year')}/${getPart('month')}/${getPart('day')} ${getPart('hour')}:${getPart('minute')}`;
-     };
+ @bp.post("/api/notifications/read-all")
+ def api_notifications_mark_all_read():
+     guard = _require_ext_login()
+     if guard:
+         return guard
  
-     const createItem = (item) => {
-       const a = document.createElement('a');
-       a.href = '#';
--      a.className = `list-group-item list-group-item-action ${item.read_at ? '' : 'list-group-item-warning'}`;
-+      const isRead = !!(item.read_at || item.is_read);
-+      a.className = `list-group-item list-group-item-action ${isRead ? '' : 'list-group-item-warning'}`;
-       a.innerHTML = `
-         <div class="d-flex w-100 justify-content-between align-items-start">
-           <div class="me-3">
-             <h2 class="h6 mb-1">${escapeHtml(item.title || 'お知らせ')}</h2>
-             <p class="mb-1">${escapeHtml(item.body || '')}</p>
-             <small class="text-muted">${formatDate(item.created_at)}</small>
-           </div>
--          <span class="badge ${item.read_at ? 'bg-secondary' : 'bg-danger'}">${item.read_at ? '既読' : '未読'}</span>
-+          <span class="badge ${isRead ? 'bg-secondary' : 'bg-danger'}">${isRead ? '既読' : '未読'}</span>
-         </div>
-       `;
-       a.addEventListener('click', async (e) => {
-         e.preventDefault();
-         try {
--          const res = await fetch(`/external-login/api/notifications/${item.id}/read`, {
-+          const res = await fetch(`${urls.readOneBase}/${item.id}/read`, {
-             method: 'POST',
-             credentials: 'same-origin',
-           });
-           if (res.ok) {
-             await syncAppBadgeSafe();
-           }
-         } catch (_e) {
-           // noop
-         }
-         window.location.assign(item.target_url || '/external-login/');
-       });
-       return a;
-     };
- 
-     const updateNavBadge = (count) => {
-       if (typeof window.updateExternalNavNotifBadge === 'function') {
-         window.updateExternalNavNotifBadge(count);
-       }
-     };
- 
-     const syncAppBadgeSafe = async () => {
-       if (typeof window.syncAppBadge === 'function') {
-         await window.syncAppBadge();
-       }
-     };
-@@ -127,120 +144,120 @@
-     const renderItems = (items, append = false) => {
-       if (!append) {
-         listEl.innerHTML = '';
-         knownIds.clear();
-       }
-       items.forEach((item) => {
-         if (!item || !item.id || knownIds.has(item.id)) return;
-         knownIds.add(item.id);
-         listEl.appendChild(createItem(item));
-       });
-       const hasItems = listEl.children.length > 0;
-       emptyEl.classList.toggle('d-none', hasItems);
-       loadMoreBtn.classList.toggle('d-none', !hasNext);
- 
-       if (!append) {
-         const latest = items.reduce((max, item) => Math.max(max, Number(item?.id || 0)), 0);
-         lastId = Math.max(lastId, latest);
-       }
-     };
- 
-     const load = async ({ append = false } = {}) => {
-       if (loading) return;
-       loading = true;
-       try {
-         const unread = onlyUnread.checked ? '1' : '0';
--        const res = await fetch(`/external-login/api/notifications?unread=${unread}&page=${page}`, {
-+        const res = await fetch(`${urls.list}?unread=${unread}&page=${page}`, {
-           credentials: 'same-origin',
-           cache: 'no-store',
-         });
-         if (!res.ok) throw new Error('failed to load notifications');
-         const data = await res.json();
-         hasNext = !!data?.pagination?.has_next;
-         renderItems(data.items || [], append);
-         if (!append) {
-           await syncAppBadgeSafe();
-         }
-       } finally {
-         loading = false;
-       }
-     };
- 
-     const pollUpdatesOnce = async () => {
-       if (document.hidden) return;
-       if (onlyUnread.checked) return;
-       try {
--        const res = await fetch(`/external-login/api/notifications/updates?since_id=${lastId}&limit=50`, {
-+        const res = await fetch(`${urls.updates}?since_id=${lastId}&limit=50`, {
-           credentials: 'same-origin',
-           cache: 'no-store',
-         });
-         if (!res.ok) return;
-         const data = await res.json();
-         prependNewItems(data.items || []);
-         lastId = Math.max(lastId, Number(data?.latest_id || 0));
-         await applyCounts(Number(data?.unread_count ?? 0));
-       } catch (_e) {
-         // noop
-       }
-     };
- 
-     const stopPolling = () => {
-       if (pollingTimer) {
-         window.clearInterval(pollingTimer);
-         pollingTimer = null;
-       }
-     };
- 
-     const startPolling = () => {
-       stopPolling();
-       if (document.hidden || onlyUnread.checked) return;
-       pollingTimer = window.setInterval(pollUpdatesOnce, 2000);
-     };
- 
-     onlyUnread.addEventListener('change', async () => {
-       page = 1;
-       await load({ append: false });
-       startPolling();
-     });
- 
-     loadMoreBtn.addEventListener('click', async () => {
-       if (!hasNext) return;
-       page += 1;
-       await load({ append: true });
-     });
- 
-     refreshBtn.addEventListener('click', async () => {
-       page = 1;
-       await load({ append: false });
-       await pollUpdatesOnce();
-       await syncAppBadgeSafe();
-     });
- 
-     markAllReadBtn.addEventListener('click', async () => {
-       markAllReadBtn.disabled = true;
-       try {
--        const res = await fetch('/external-login/api/notifications/read-all', {
-+        const res = await fetch(urls.readAll, {
-           method: 'POST',
-           credentials: 'same-origin',
-         });
-         if (res.ok && typeof window.clearAppBadgeSafe === 'function') {
-           await window.clearAppBadgeSafe();
-           if (typeof window.notifySwToSyncBadge === 'function') window.notifySwToSyncBadge();
-         }
-         page = 1;
-         await load({ append: false });
-         await pollUpdatesOnce();
-         await syncAppBadgeSafe();
-       } finally {
-         markAllReadBtn.disabled = false;
-       }
-     });
- 
-     const refreshCurrentHead = async () => {
-       await pollUpdatesOnce();
-     };
- 
-     document.addEventListener('visibilitychange', () => {
-       if (document.hidden) {
-         stopPolling();
-         return;
-       }
+     uid = int(session.get("ext_user_id") or 0)
+     _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=%s
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND read_at IS NULL
+             """,

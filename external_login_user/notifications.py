@@ -84,6 +84,13 @@ def _is_notification_scope_mfu() -> bool:
     return _resolve_notification_scope_for_session() == "mfu"
 
 
+def _to_unread_only(value: Any, *, default: bool = False) -> bool:
+    unread_arg = str(value or "").strip().lower()
+    if not unread_arg:
+        return bool(default)
+    return unread_arg in {"1", "true", "yes", "on"}
+
+
 def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
     scope = _resolve_notification_scope_for_session()
     if scope == "external":
@@ -722,6 +729,7 @@ def notifications_unified_page():
     else:
         return jsonify({"ok": False, "reason": "login_required"}), 401
 
+    current_app.logger.info("notifications page render scope=%s", scope)
     return render_template(
         "notifications.html",
         notification_scope=scope,
@@ -735,19 +743,11 @@ def mfu_notifications_page():
     username, error = _require_mfu_admin_acl()
     if error:
         return error
+    current_app.logger.info("notifications page render scope=%s user=%s", "mfu", username)
     return render_template(
         "notifications.html",
         notification_scope="mfu",
-        notification_api_map={
-            "scope": "mfu",
-            "urls": {
-                "list": "/api/mfu-notifications",
-                "unreadCount": "/api/mfu-notifications/unread-count",
-                "updates": "/api/mfu-notifications/updates",
-                "readOneBase": "/api/mfu-notifications",
-                "readAll": "/api/mfu-notifications/read-all",
-            },
-        },
+        notification_api_map=_resolve_notification_api_mode_for_session(),
         mfu_notification_user=username,
     )
 
@@ -761,12 +761,14 @@ def api_mfu_notifications_unread_count():
     return jsonify({"ok": True, "unread_count": _compute_unread_count_mfu(username)})
 
 
-def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0) -> tuple[list[dict[str, Any]], int | None]:
+def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0, unread_only: bool = False) -> tuple[list[dict[str, Any]], int | None]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         where_sql = "user_kind='mfu' AND recipient_key=%s"
         params: list[Any] = [recipient]
+        if unread_only:
+            where_sql += " AND read_at IS NULL"
         if since_id > 0:
             where_sql += " AND id > %s"
             params.append(int(since_id))
@@ -801,12 +803,15 @@ def api_mfu_notifications_list():
     username, error = _require_mfu_admin_acl()
     if error:
         return error
-    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0)
+    unread_only = _to_unread_only(request.args.get("unread"), default=False)
+    current_app.logger.info("mfu notifications list user=%s unread_only=%s", username, unread_only)
+    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0, unread_only=unread_only)
     return jsonify({
         "ok": True,
         "items": items,
         "unread_count": _compute_unread_count_mfu(username),
         "latest_id": latest_id,
+        "pagination": {"has_next": False},
     })
 
 
@@ -817,7 +822,8 @@ def api_mfu_notifications_updates():
     if error:
         return error
     since_id = max(int(request.args.get("since_id") or 0), 0)
-    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id)
+    unread_only = _to_unread_only(request.args.get("unread"), default=False)
+    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id, unread_only=unread_only)
     return jsonify({
         "ok": True,
         "items": items,
@@ -847,6 +853,7 @@ def api_mfu_notifications_mark_read(notification_id: int):
         if int(cur.rowcount or 0) == 0:
             abort(404)
         _emit_notif_unread_mfu(username, reason="read", latest_id=notification_id)
+        current_app.logger.info("notification mark-read success notification_id=%s scope=%s user=%s", notification_id, "mfu", username)
         return jsonify({"ok": True})
     finally:
         cur.close()
@@ -910,8 +917,7 @@ def api_notifications_list():
 
     uid = int(session.get("ext_user_id") or 0)
     _ensure_notification_schema()
-    unread_arg = (request.args.get("unread") or "").strip().lower()
-    unread_only = unread_arg not in {"0", "false", "no", "off"}
+    unread_only = _to_unread_only(request.args.get("unread"), default=True)
     page = max(int(request.args.get("page") or 1), 1)
     per_page = 20
     offset = (page - 1) * per_page
@@ -1131,6 +1137,7 @@ def api_notifications_mark_read(notification_id: int):
         if cur.rowcount == 0:
             abort(404)
         _emit_notif_unread(uid, reason="read")
+        current_app.logger.info("notification mark-read success notification_id=%s scope=%s user_id=%s", notification_id, "external", uid)
         return jsonify({"ok": True})
     finally:
         cur.close()

@@ -88,6 +88,85 @@ def _normalize_external_url(raw: str | None) -> str | None:
     return f"https://{url}"
 
 
+def _is_chat_admin_alias_ext_user(ext_user_id: int) -> bool:
+    if int(ext_user_id or 0) <= 0:
+        return False
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT COALESCE(chat_admin_alias, 0) AS chat_admin_alias FROM external_login_user WHERE id=%s LIMIT 1",
+            (int(ext_user_id),),
+        )
+        row = cur.fetchone() or {}
+        return int(row.get("chat_admin_alias") or 0) == 1
+    except Exception:
+        return False
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+
+def _load_event_chat_unread_counts(*, event_ids: list[int], ext_user_id: int, use_mfu_admin_scope: bool = False) -> dict[int, int]:
+    if not event_ids:
+        return {}
+
+    counts: dict[int, int] = {}
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        placeholders = ",".join(["%s"] * len(event_ids))
+        if use_mfu_admin_scope:
+            current_app.logger.info("event chat unread counts scope=mfu_admin_alias ext_user_id=%s events=%s", ext_user_id, len(event_ids))
+            cur.execute(
+                f"""
+                SELECT target_url
+                  FROM mfu_notifications
+                 WHERE user_kind='mfu'
+                   AND recipient_key='admin'
+                   AND kind='event_chat'
+                   AND read_at IS NULL
+                   AND target_url LIKE '/chat/events/%'
+                """
+            )
+            for row in (cur.fetchall() or []):
+                target_url = str((row or {}).get("target_url") or "")
+                m = re.search(r"/chat/events/(\d+)", target_url)
+                if not m:
+                    continue
+                event_id = int(m.group(1) or 0)
+                if event_id > 0 and event_id in event_ids:
+                    counts[event_id] = int(counts.get(event_id, 0)) + 1
+            return counts
+
+        cur.execute(
+            f"""
+            SELECT
+              COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
+              COUNT(*) AS unread_count
+            FROM mfu_notifications
+            WHERE user_kind='external'
+              AND user_id=%s
+              AND kind='chat_message'
+              AND read_at IS NULL
+              AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
+            GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
+            """,
+            (int(ext_user_id), *event_ids),
+        )
+        for row in (cur.fetchall() or []):
+            event_id = int(row.get("event_id") or 0)
+            if event_id > 0:
+                counts[event_id] = int(row.get("unread_count") or 0)
+        current_app.logger.info("event chat unread counts scope=external ext_user_id=%s events=%s", ext_user_id, len(event_ids))
+        return counts
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+
 
 
 def _mfu_event_has_deleted_at_column() -> bool:
@@ -960,34 +1039,13 @@ def index():
         event_unread_counts: dict[int, int] = {}
         if raws:
             event_ids = [int(r["id"]) for r in raws if r.get("id")]
+            use_mfu_admin_scope = _is_chat_admin_alias_ext_user(int(me.get("id") or 0))
             if event_ids:
-                db2 = get_db(); cur2 = db2.cursor(dictionary=True)
-                try:
-                    placeholders = ",".join(["%s"] * len(event_ids))
-                    cur2.execute(
-                        f"""
-                        SELECT
-                          COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
-                          COUNT(*) AS unread_count
-                        FROM mfu_notifications
-                        WHERE user_kind='external'
-                          AND user_id=%s
-                          AND kind='chat_message'
-                          AND read_at IS NULL
-                          AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
-                        GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
-                        """,
-                        (me["id"], *event_ids),
-                    )
-                    for row in (cur2.fetchall() or []):
-                        event_id = int(row.get("event_id") or 0)
-                        if event_id > 0:
-                            event_unread_counts[event_id] = int(row.get("unread_count") or 0)
-                finally:
-                    try:
-                        cur2.close(); db2.close()
-                    except Exception:
-                        pass
+                event_unread_counts = _load_event_chat_unread_counts(
+                    event_ids=event_ids,
+                    ext_user_id=int(me.get("id") or 0),
+                    use_mfu_admin_scope=use_mfu_admin_scope,
+                )
 
         from datetime import datetime as _dt
         now = _dt.now()
@@ -1099,47 +1157,29 @@ def api_event_chat_unread_counts():
     # 重複除去 + 件数上限
     event_ids = list(dict.fromkeys(event_ids))[:200]
 
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        if event_ids:
-            placeholders = ",".join(["%s"] * len(event_ids))
-            cur.execute(
-                f"""
-                SELECT
-                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
-                  COUNT(*) AS unread_count
-                FROM mfu_notifications
-                WHERE user_kind='external'
-                  AND user_id=%s
-                  AND kind='chat_message'
-                  AND read_at IS NULL
-                  AND COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) IN ({placeholders})
-                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
-                """,
-                (me["id"], *event_ids),
-            )
-        else:
+    # event_ids が未指定なら、参加中イベントで限定して返す（既存UI用途）
+    if not event_ids:
+        db = get_db(); cur = db.cursor(dictionary=True)
+        try:
             cur.execute(
                 """
-                SELECT
-                  COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0)) AS event_id,
-                  COUNT(*) AS unread_count
-                FROM mfu_notifications
-                WHERE user_kind='external'
-                  AND user_id=%s
-                  AND kind='chat_message'
-                  AND read_at IS NULL
-                GROUP BY COALESCE(NULLIF(chat_event_id, 0), NULLIF(event_id, 0))
+                SELECT DISTINCT event_id
+                  FROM mfu_event_member
+                 WHERE user_id=%s
                 """,
-                (me["id"],),
+                (int(me["id"]),),
             )
-        counts = {}
-        for row in (cur.fetchall() or []):
-            event_id = int(row.get("event_id") or 0)
-            if event_id > 0:
-                counts[str(event_id)] = int(row.get("unread_count") or 0)
-    finally:
-        cur.close(); db.close()
+            event_ids = [int((r or {}).get("event_id") or 0) for r in (cur.fetchall() or []) if int((r or {}).get("event_id") or 0) > 0]
+        finally:
+            cur.close(); db.close()
+
+    use_mfu_admin_scope = _is_chat_admin_alias_ext_user(int(me.get("id") or 0))
+    raw_counts = _load_event_chat_unread_counts(
+        event_ids=event_ids,
+        ext_user_id=int(me.get("id") or 0),
+        use_mfu_admin_scope=use_mfu_admin_scope,
+    )
+    counts = {str(k): int(v) for k, v in raw_counts.items()}
 
     return jsonify({"ok": True, "counts": counts})
 
