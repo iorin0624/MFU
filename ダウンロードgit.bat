@@ -1,126 +1,137 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal EnableExtensions EnableDelayedExpansion
 
-REM =========================
-REM 設定
-REM =========================
+set "SCRIPT_VERSION=20260314a"
 set "HOST=192.168.103.16"
 set "USER=root"
 set "REMOTE_DIR=/mnt/mfu/app"
-
-REM Git作業フォルダ（ここがGitリポジトリであること）
-set "DEST=Y:\01マイドキュメント\GitHub\MFU.2"
-
-REM scp一時作業（ASCIIのみ）
 set "TMP=C:\mfu_tmp_dl"
-
-REM Gitコミットメッセージ
 set "MSG=sync from 103.16 (/mnt/mfu/app)"
-
-REM SSH/SCPオプション（初回はknown_hosts登録、以後無言）
+set "BRANCH=main"
 set "SSHOPTS=-o StrictHostKeyChecking=accept-new"
 
-echo [INFO] HOST=%HOST% USER=%USER%
+echo [INFO] SCRIPT_VERSION=%SCRIPT_VERSION%
+
+set "DEST="
+set "SCRIPT_DIR=%~dp0"
+if "%SCRIPT_DIR:~-1%"=="\" set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+
+if exist "%SCRIPT_DIR%\.git\" set "DEST=%SCRIPT_DIR%"
+if not defined DEST if exist "%CD%\.git\" set "DEST=%CD%"
+
+if not defined DEST (
+  echo [ERROR] DEST not detected
+  echo [HINT] Put this bat in the repo root, or run it from the repo root
+  goto FAIL
+)
+
+echo [INFO] HOST=%HOST%
+echo [INFO] USER=%USER%
 echo [INFO] REMOTE_DIR=%REMOTE_DIR%
-echo [INFO] DEST="%DEST%"
-echo [INFO] TMP ="%TMP%"
+echo [INFO] DEST=%DEST%
+echo [INFO] TMP=%TMP%
 echo.
 
-REM =========================
-REM 事前チェック
-REM =========================
-if not exist "%DEST%" (
-  echo [ERROR] DEST が存在しません: "%DEST%"
+where scp >nul 2>&1 || (
+  echo [ERROR] scp not found
+  goto FAIL
+)
+where ssh >nul 2>&1 || (
+  echo [ERROR] ssh not found
+  goto FAIL
+)
+where git >nul 2>&1 || (
+  echo [ERROR] git not found
+  goto FAIL
+)
+where robocopy >nul 2>&1 || (
+  echo [ERROR] robocopy not found
   goto FAIL
 )
 
-where scp >nul 2>&1 || (echo [ERROR] scp がありません & goto FAIL)
-where ssh >nul 2>&1 || (echo [ERROR] ssh がありません & goto FAIL)
-where git >nul 2>&1 || (echo [ERROR] git がありません（Git for Windows入れて） & goto FAIL)
-
-REM Gitリポジトリ確認
 if not exist "%DEST%\.git" (
-  echo [ERROR] "%DEST%" はGitリポジトリではありません（.git が無い）
+  echo [ERROR] DEST is not a git repository
   goto FAIL
 )
 
-REM =========================
-REM 1) TMP 初期化
-REM =========================
 if exist "%TMP%\" rmdir /S /Q "%TMP%" >nul 2>&1
-mkdir "%TMP%" >nul 2>&1 || (echo [ERROR] TMP作成失敗 & goto FAIL)
+mkdir "%TMP%" >nul 2>&1 || (
+  echo [ERROR] TMP create failed
+  goto FAIL
+)
 
-REM =========================
-REM 2) scp で /mnt/mfu/app をTMPへDL
-REM =========================
-echo [STEP] Downloading to TMP...
+echo [STEP] Download to TMP
 scp %SSHOPTS% -r %USER%@%HOST%:%REMOTE_DIR% "%TMP%"
 if errorlevel 1 (
-  echo [ERROR] scp 失敗
+  echo [ERROR] scp failed
   goto FAIL
 )
 
 if not exist "%TMP%\app\" (
-  echo [ERROR] DL後に "%TMP%\app" が見つかりません
+  echo [ERROR] TMP\app not found after scp
   goto FAIL
 )
 
-REM =========================
-REM 3) app中身をDEST直下へ展開（MOVE）
-REM =========================
-echo [STEP] Flatten into DEST...
-robocopy "%TMP%\app" "%DEST%" /E /MOVE >nul
+echo [STEP] Copy app into DEST
+robocopy "%TMP%\app" "%DEST%" /E /R:1 /W:1 /COPY:DAT /DCOPY:DAT /NFL /NDL /NJH /NJS /NP >nul
 set "RC=%ERRORLEVEL%"
+echo [INFO] robocopy rc=%RC%
 if %RC% GEQ 8 (
-  echo [ERROR] robocopy 失敗 errorlevel=%RC%
+  echo [ERROR] robocopy failed
   goto FAIL
 )
 
-REM TMP掃除
-rmdir /S /Q "%TMP%" >nul 2>&1
+if exist "%TMP%\" rmdir /S /Q "%TMP%" >nul 2>&1
 
-REM =========================
-REM 4) Git add/commit/push
-REM =========================
-echo [STEP] Git add/commit/push...
+echo [STEP] Git add/commit/pull/push
 pushd "%DEST%"
-
-REM 念のため .env などを誤コミットしない（既に.gitignoreで管理推奨）
-REM ここでは強制除外はしない。必要なら指示して。
-
-git status --porcelain >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] git status 失敗（リポジトリ壊れ/権限/パス）
-  popd
+  echo [ERROR] pushd failed
   goto FAIL
 )
 
-REM 変更をステージ
 git add -A
 if errorlevel 1 (
-  echo [ERROR] git add 失敗
+  echo [ERROR] git add failed
   popd
   goto FAIL
 )
 
-REM 変更が無ければコミットしない
-for /f %%A in ('git status --porcelain') do set "HAVECHG=1"
-if not defined HAVECHG (
-  echo [INFO] 変更なし：commit/pushはスキップ
+for /r "%DEST%" %%F in (.env) do (
+  set "ENVABS=%%~fF"
+  set "RELPATH=!ENVABS:%DEST%\=!"
+  set "RELPATH=!RELPATH:\=/!"
+  if defined RELPATH (
+    echo [INFO] exclude .env : !RELPATH!
+    git restore --staged -- "!RELPATH!" >nul 2>&1
+    if errorlevel 1 git reset -q HEAD -- "!RELPATH!" >nul 2>&1
+  )
+)
+
+git diff --cached --quiet
+if not errorlevel 1 (
+  echo [INFO] no staged changes
   popd
   goto OK
 )
 
 git commit -m "%MSG%"
 if errorlevel 1 (
-  echo [ERROR] git commit 失敗（user.name/email未設定や認証が原因のこと多い）
+  echo [ERROR] git commit failed
   popd
   goto FAIL
 )
 
-git push
+git -c rebase.autoStash=true pull --rebase origin %BRANCH%
 if errorlevel 1 (
-  echo [ERROR] git push 失敗（GitHub認証/権限/リモート設定確認）
+  echo [ERROR] git pull --rebase failed
+  popd
+  goto FAIL
+)
+
+git push origin %BRANCH%
+if errorlevel 1 (
+  echo [ERROR] git push failed
   popd
   goto FAIL
 )
@@ -130,14 +141,15 @@ goto OK
 
 :OK
 echo.
-echo [OK] Download -> Flatten -> GitHub push 完了
+echo [OK] completed
+echo [OK] local copy keeps .env, GitHub excludes .env
 echo.
 pause
 exit /b 0
 
 :FAIL
 echo.
-echo [FAIL] 途中で失敗しました。上のエラー行が原因です。
+echo [FAIL] stopped due to error above
 echo.
 pause
 exit /b 1
