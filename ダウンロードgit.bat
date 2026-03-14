@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "SCRIPT_VERSION=20260314a"
+set "SCRIPT_VERSION=20260314b"
 set "HOST=192.168.103.16"
 set "USER=root"
 set "REMOTE_DIR=/mnt/mfu/app"
@@ -98,13 +98,18 @@ if errorlevel 1 (
 )
 
 for /r "%DEST%" %%F in (.env) do (
-  set "ENVABS=%%~fF"
-  set "RELPATH=!ENVABS:%DEST%\=!"
-  set "RELPATH=!RELPATH:\=/!"
-  if defined RELPATH (
-    echo [INFO] exclude .env : !RELPATH!
-    git restore --staged -- "!RELPATH!" >nul 2>&1
-    if errorlevel 1 git reset -q HEAD -- "!RELPATH!" >nul 2>&1
+  if exist "%%~fF" (
+    set "ENVABS=%%~fF"
+    set "CHECK_GIT=!ENVABS:\.git\=!"
+    if /I "!CHECK_GIT!"=="!ENVABS!" (
+      set "RELPATH=!ENVABS:%DEST%\=!"
+      set "RELPATH=!RELPATH:\=/!"
+      if defined RELPATH (
+        echo [INFO] exclude .env : !RELPATH!
+        git restore --staged -- "!RELPATH!" >nul 2>&1
+        if errorlevel 1 git reset -q HEAD -- "!RELPATH!" >nul 2>&1
+      )
+    )
   )
 )
 
