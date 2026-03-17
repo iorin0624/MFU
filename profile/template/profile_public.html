@@ -17,14 +17,40 @@
     {% if profile.intro_text %}
       <section class="mb-4">
         <h3 class="h5">自己紹介</h3>
-        <p class="mb-0">{{ profile.intro_text | e | replace('\n', '<br>') | safe }}</p>
+        <p class="mb-0" style="white-space: pre-line;">{{ profile.intro_text
+          | replace('<br />', '\n')
+          | replace('<br/>', '\n')
+          | replace('<br>', '\n')
+          | replace('<BR />', '\n')
+          | replace('<BR/>', '\n')
+          | replace('<BR>', '\n')
+          | replace('&lt;br /&gt;', '\n')
+          | replace('&lt;br/&gt;', '\n')
+          | replace('&lt;br&gt;', '\n')
+          | replace('&lt;BR /&gt;', '\n')
+          | replace('&lt;BR/&gt;', '\n')
+          | replace('&lt;BR&gt;', '\n')
+          | e }}</p>
       </section>
     {% endif %}
 
     {% if profile.request_notes_text %}
       <section class="mb-4">
         <h3 class="h5">撮影依頼案内</h3>
-        <p class="mb-0">{{ profile.request_notes_text | e | replace('\n', '<br>') | safe }}</p>
+        <p class="mb-0" style="white-space: pre-line;">{{ profile.request_notes_text
+          | replace('<br />', '\n')
+          | replace('<br/>', '\n')
+          | replace('<br>', '\n')
+          | replace('<BR />', '\n')
+          | replace('<BR/>', '\n')
+          | replace('<BR>', '\n')
+          | replace('&lt;br /&gt;', '\n')
+          | replace('&lt;br/&gt;', '\n')
+          | replace('&lt;br&gt;', '\n')
+          | replace('&lt;BR /&gt;', '\n')
+          | replace('&lt;BR/&gt;', '\n')
+          | replace('&lt;BR&gt;', '\n')
+          | e }}</p>
       </section>
     {% endif %}
 
