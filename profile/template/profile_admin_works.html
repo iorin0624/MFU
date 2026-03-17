@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}知っている作品一覧管理{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 980px;">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 mb-0">知っている作品一覧管理</h1>
+    <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('profile.admin_profile_edit') }}">プロフィール本文編集へ戻る</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-header">新規追加</div>
+    <div class="card-body">
+      <form method="post" action="{{ url_for('profile.admin_profile_works_add') }}" class="row g-2">
+        <div class="col-md-3">
+          <input class="form-control" name="category_name" placeholder="カテゴリ名" required>
+        </div>
+        <div class="col-md-4">
+          <input class="form-control" name="item_name" placeholder="作品名" required>
+        </div>
+        <div class="col-md-2">
+          <input class="form-control" type="number" name="category_sort" value="0" placeholder="カテゴリ順">
+        </div>
+        <div class="col-md-2">
+          <input class="form-control" type="number" name="item_sort" value="0" placeholder="作品順">
+        </div>
+        <div class="col-md-1 d-grid">
+          <button class="btn btn-primary" type="submit">追加</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card shadow-sm">
+    <div class="card-header">一覧</div>
+    <div class="table-responsive">
+      <table class="table table-sm table-striped mb-0">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>カテゴリ名</th>
+            <th>作品名</th>
+            <th>カテゴリ順</th>
+            <th>作品順</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in works %}
+            <tr>
+              <form method="post" action="{{ url_for('profile.admin_profile_works_update', work_id=row.id) }}">
+                <td>{{ row.id }}</td>
+                <td><input class="form-control form-control-sm" name="category_name" value="{{ row.category_name }}" required></td>
+                <td><input class="form-control form-control-sm" name="item_name" value="{{ row.item_name }}" required></td>
+                <td><input class="form-control form-control-sm" type="number" name="category_sort" value="{{ row.category_sort }}"></td>
+                <td><input class="form-control form-control-sm" type="number" name="item_sort" value="{{ row.item_sort }}"></td>
+                <td class="text-nowrap">
+                  <button class="btn btn-sm btn-outline-primary" type="submit">更新</button>
+              </form>
+                  <form method="post" action="{{ url_for('profile.admin_profile_works_delete', work_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
+                    <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+                  </form>
+                </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="text-center text-muted py-3">まだ作品が登録されていません。</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

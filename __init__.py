@@ -3369,5 +3369,8 @@ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
 from app.chat import chat_bp
 app.register_blueprint(chat_bp)
 
+from app.profile import profile_bp
+app.register_blueprint(profile_bp)
+
 from app.bank_account import register_bank_account
 register_bank_account(app)
