@@ -1,357 +1,124 @@
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 06c79aaa5d2e6d0ab70a0b3bb83f5256ff2ab286..17ca8cf3a8c29ae29f3edc655c95f94befb7fae2 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -62,50 +62,57 @@ def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str |
-         "mfu notifications admin alias ext_user_id=%s social_id=%s",
-         ext_user_id,
-         alias_row.get("social_id"),
-     )
-     return "admin", "alias"
+diff --git a/s_u_calendar/routes.py b/s_u_calendar/routes.py
+index 08b988c6aa3ad3b73d129409211b51f524849c44..a74999f7d29ff854c50ce36f4860d5029f4aad92 100644
+--- a/s_u_calendar/routes.py
++++ b/s_u_calendar/routes.py
+@@ -90,114 +90,114 @@ def _fetch_days(db, start_d: date, end_d: date, public_only: bool = True):
+     # dict: 'YYYY-MM-DD' -> row
+     return {r["day_date"].strftime("%Y-%m-%d"): r for r in rows}
  
- 
- def _resolve_notification_scope_for_session() -> str | None:
-     if str(session.get("user") or "").strip():
-         return "mfu"
- 
-     ext_user_id = int(session.get("ext_user_id") or 0)
-     if ext_user_id <= 0:
-         return None
- 
-     alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-     if alias_row:
-         return "mfu"
-     return "external"
- 
- 
- def _is_notification_scope_mfu() -> bool:
-     return _resolve_notification_scope_for_session() == "mfu"
- 
- 
-+def _to_unread_only(value: Any, *, default: bool = False) -> bool:
-+    unread_arg = str(value or "").strip().lower()
-+    if not unread_arg:
-+        return bool(default)
-+    return unread_arg in {"1", "true", "yes", "on"}
-+
-+
- def _resolve_notification_api_mode_for_session() -> dict[str, Any] | None:
-     scope = _resolve_notification_scope_for_session()
-     if scope == "external":
-         return {
-             "scope": "external",
-             "urls": {
-                 "list": "/external-login/api/notifications",
-                 "unreadCount": "/external-login/api/notifications/unread-count",
-                 "updates": "/external-login/api/notifications/updates",
-                 "readOneBase": "/external-login/api/notifications",
-                 "readAll": "/external-login/api/notifications/read-all",
-             },
-         }
-     if scope == "mfu":
-         return {
-             "scope": "mfu",
-             "urls": {
-                 "list": "/api/mfu-notifications",
-                 "unreadCount": "/api/mfu-notifications/unread-count",
-                 "updates": "/api/mfu-notifications/updates",
-                 "readOneBase": "/api/mfu-notifications",
-                 "readAll": "/api/mfu-notifications/read-all",
-             },
-         }
-     return None
-@@ -700,175 +707,175 @@ def create_notification_mfu(
-     finally:
-         cur.close()
-         db.close()
- 
- 
- @bp.get("/notifications")
- def notifications_page():
-     return redirect("/notifications")
- 
- 
- @mfu_notifications_bp.get("/notifications")
- def notifications_unified_page():
-     _ensure_notification_schema()
-     scope = _resolve_notification_scope_for_session()
-     if scope == "external":
-         guard = _require_ext_login()
-         if guard:
-             return guard
-     elif scope == "mfu":
-         username, error = _require_mfu_admin_acl()
-         if error:
-             return error
-     else:
-         return jsonify({"ok": False, "reason": "login_required"}), 401
- 
-+    current_app.logger.info("notifications page render scope=%s", scope)
-     return render_template(
-         "notifications.html",
-         notification_scope=scope,
-         notification_api_map=_resolve_notification_api_mode_for_session(),
-     )
- 
- 
- @mfu_notifications_bp.get("/mfu-notifications")
- def mfu_notifications_page():
-     _ensure_notification_schema()
-     username, error = _require_mfu_admin_acl()
-     if error:
-         return error
-+    current_app.logger.info("notifications page render scope=%s user=%s", "mfu", username)
-     return render_template(
-         "notifications.html",
-         notification_scope="mfu",
--        notification_api_map={
--            "scope": "mfu",
--            "urls": {
--                "list": "/api/mfu-notifications",
--                "unreadCount": "/api/mfu-notifications/unread-count",
--                "updates": "/api/mfu-notifications/updates",
--                "readOneBase": "/api/mfu-notifications",
--                "readAll": "/api/mfu-notifications/read-all",
--            },
--        },
-+        notification_api_map=_resolve_notification_api_mode_for_session(),
-         mfu_notification_user=username,
-     )
- 
- 
- @mfu_notifications_bp.get("/api/mfu-notifications/unread-count")
- def api_mfu_notifications_unread_count():
-     _ensure_notification_schema()
-     username, error = _require_mfu_admin_acl()
-     if error:
-         return error
-     return jsonify({"ok": True, "unread_count": _compute_unread_count_mfu(username)})
- 
- 
--def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0) -> tuple[list[dict[str, Any]], int | None]:
-+def _fetch_mfu_notifications(recipient: str, *, limit: int = 20, since_id: int = 0, unread_only: bool = False) -> tuple[list[dict[str, Any]], int | None]:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
+ def _log_admin(db, ip: str, text: str):
+     """既存 logs テーブルを想定。無ければ無視してもOK。"""
      try:
-         where_sql = "user_kind='mfu' AND recipient_key=%s"
-         params: list[Any] = [recipient]
-+        if unread_only:
-+            where_sql += " AND read_at IS NULL"
-         if since_id > 0:
-             where_sql += " AND id > %s"
-             params.append(int(since_id))
-             order_sql = "ORDER BY id ASC"
-         else:
-             order_sql = "ORDER BY id DESC"
-         cur.execute(
-             f"""
-             SELECT id, kind, title, body, target_url, sender_label, room_type, room_id,
-                    chat_room_id, created_at, read_at
-               FROM mfu_notifications
-              WHERE {where_sql}
-              {order_sql}
-              LIMIT %s
-             """,
-             tuple(params + [int(limit)]),
-         )
-         rows = cur.fetchall() or []
-         items = [_serialize_mfu_notification_item(r) for r in rows]
-         if since_id <= 0:
-             items = sorted(items, key=lambda x: int(x.get("id") or 0), reverse=True)
-         latest_id = max((int(x.get("id") or 0) for x in items), default=0) or None
-         return items, latest_id
-     finally:
-         cur.close()
-         db.close()
- 
- 
- @mfu_notifications_bp.get("/api/mfu-notifications")
- def api_mfu_notifications_list():
-     _ensure_notification_schema()
-     username, error = _require_mfu_admin_acl()
-     if error:
-         return error
--    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0)
-+    unread_only = _to_unread_only(request.args.get("unread"), default=False)
-+    current_app.logger.info("mfu notifications list user=%s unread_only=%s", username, unread_only)
-+    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=0, unread_only=unread_only)
-     return jsonify({
-         "ok": True,
-         "items": items,
-         "unread_count": _compute_unread_count_mfu(username),
-         "latest_id": latest_id,
-+        "pagination": {"has_next": False},
-     })
- 
- 
- @mfu_notifications_bp.get("/api/mfu-notifications/updates")
- def api_mfu_notifications_updates():
-     _ensure_notification_schema()
-     username, error = _require_mfu_admin_acl()
-     if error:
-         return error
-     since_id = max(int(request.args.get("since_id") or 0), 0)
--    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id)
-+    unread_only = _to_unread_only(request.args.get("unread"), default=False)
-+    items, latest_id = _fetch_mfu_notifications(username, limit=20, since_id=since_id, unread_only=unread_only)
-     return jsonify({
-         "ok": True,
-         "items": items,
-         "unread_count": _compute_unread_count_mfu(username),
-         "latest_id": latest_id or since_id,
-     })
- 
- 
- @mfu_notifications_bp.post("/api/mfu-notifications/<int:notification_id>/read")
- def api_mfu_notifications_mark_read(notification_id: int):
-     _ensure_notification_schema()
-     username, error = _require_mfu_admin_acl()
-     if error:
-         return error
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             UPDATE mfu_notifications
-                SET read_at=COALESCE(read_at, %s)
-              WHERE id=%s AND user_kind='mfu' AND recipient_key=%s
-             """,
-             (datetime.utcnow(), int(notification_id), username),
-         )
+         cur = db.cursor()
+         cur.execute("INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)", (ip, f"[SUCAL] {text}"))
          db.commit()
-         if int(cur.rowcount or 0) == 0:
-             abort(404)
-         _emit_notif_unread_mfu(username, reason="read", latest_id=notification_id)
-+        current_app.logger.info("notification mark-read success notification_id=%s scope=%s user=%s", notification_id, "mfu", username)
-         return jsonify({"ok": True})
-     finally:
          cur.close()
-         db.close()
- 
- 
- @mfu_notifications_bp.post("/api/mfu-notifications/read-all")
- def api_mfu_notifications_mark_all_read():
-     _ensure_notification_schema()
-     username, error = _require_mfu_admin_acl()
-     if error:
-         return error
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             UPDATE mfu_notifications
-                SET read_at=%s
-              WHERE user_kind='mfu' AND recipient_key=%s AND read_at IS NULL
-             """,
-             (datetime.utcnow(), username),
-         )
-         updated = int(cur.rowcount or 0)
-         db.commit()
-@@ -888,52 +895,51 @@ def api_notifications_unread_count():
-         resp.status_code = 401
-         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-         resp.headers["Pragma"] = "no-cache"
-         return resp
- 
-     try:
-         count = _compute_unread_count_external(uid)
-         current_app.logger.info("notifications unread-count user_id=%s read_at_is_null=true count=%s", uid, count)
-         resp = jsonify({"count": count})
-         resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-         resp.headers["Pragma"] = "no-cache"
-         return resp
      except Exception:
-         current_app.logger.warning("notifications unread-count failed user_id=%s", uid, exc_info=True)
-         raise
+         current_app.logger.warning("write [SUCAL] log failed", exc_info=True)
  
  
- @bp.get("/api/notifications")
- def api_notifications_list():
-     guard = _require_ext_login()
-     if guard:
-         return guard
+ def _to_year_month(year: int, month: int) -> str:
+     return f"{year:04d}-{month:02d}"
  
-     uid = int(session.get("ext_user_id") or 0)
-     _ensure_notification_schema()
--    unread_arg = (request.args.get("unread") or "").strip().lower()
--    unread_only = unread_arg not in {"0", "false", "no", "off"}
-+    unread_only = _to_unread_only(request.args.get("unread"), default=True)
-     page = max(int(request.args.get("page") or 1), 1)
-     per_page = 20
-     offset = (page - 1) * per_page
  
-     where = ["user_kind='external'", "user_id=%s"]
-     params: list[Any] = [uid]
-     if unread_only:
-         where.append("read_at IS NULL")
- 
-     where_sql = " AND ".join(where)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         room_cache: dict[str, tuple[int, str]] = {}
-         cur.execute(
-             f"""
-             SELECT id, kind, title, body, target_url, event_id, created_at, read_at
-                  , chat_event_id, chat_room_id
-               FROM mfu_notifications
-              WHERE {where_sql}
-              ORDER BY created_at DESC, id DESC
-              LIMIT %s OFFSET %s
-             """,
-             tuple(params + [per_page, offset]),
-         )
-@@ -1109,50 +1115,51 @@ def api_notifications_updates():
- @bp.post("/api/notifications/<int:notification_id>/read")
- def api_notifications_mark_read(notification_id: int):
-     guard = _require_ext_login()
-     if guard:
-         return guard
- 
-     uid = int(session.get("ext_user_id") or 0)
-     _ensure_notification_schema()
-     db = get_db()
+ def _ensure_su_calendar_month_flags_table(db) -> None:
      cur = db.cursor()
      try:
          cur.execute(
              """
-             UPDATE mfu_notifications
-                SET read_at=COALESCE(read_at, %s)
-              WHERE id=%s
-                AND user_kind='external'
-                AND user_id=%s
-             """,
-             (datetime.utcnow(), notification_id, uid),
+             CREATE TABLE IF NOT EXISTS su_calendar_month_flags (
+               id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+-              year_month CHAR(7) NOT NULL,
++              `year_month` CHAR(7) NOT NULL,
+               show_closed_notice TINYINT(1) NOT NULL DEFAULT 0,
+               created_at DATETIME NULL,
+               updated_at DATETIME NULL,
+               PRIMARY KEY (id),
+-              UNIQUE KEY uq_su_calendar_month_flags_year_month (year_month)
++              UNIQUE KEY uq_su_calendar_month_flags_year_month (`year_month`)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
          )
          db.commit()
-         if cur.rowcount == 0:
-             abort(404)
-         _emit_notif_unread(uid, reason="read")
-+        current_app.logger.info("notification mark-read success notification_id=%s scope=%s user_id=%s", notification_id, "external", uid)
-         return jsonify({"ok": True})
      finally:
          cur.close()
-         db.close()
  
  
- @bp.post("/api/notifications/read-all")
- def api_notifications_mark_all_read():
-     guard = _require_ext_login()
-     if guard:
-         return guard
+ @s_u_calendar_bp.before_request
+ def _auto_apply_su_calendar_sql():
+     """SUCカレンダーアクセス時に月フラグテーブルを自動作成（初回のみ）。"""
+     if request.blueprint != "s_u_calendar":
+         return
  
-     uid = int(session.get("ext_user_id") or 0)
-     _ensure_notification_schema()
+     if current_app.extensions.get("sucal_schema_ready"):
+         return
+ 
+     try:
+         db = get_db()
+         _ensure_su_calendar_month_flags_table(db)
+         current_app.extensions["sucal_schema_ready"] = True
+     except Exception:
+         current_app.logger.warning("[SUCAL] ensure month flag table failed", exc_info=True)
+ 
+ 
+ def get_su_calendar_month_flag(year: int, month: int) -> dict | None:
      db = get_db()
+     _ensure_su_calendar_month_flags_table(db)
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+-            SELECT id, year_month, show_closed_notice, created_at, updated_at
++            SELECT id, `year_month`, show_closed_notice, created_at, updated_at
+               FROM su_calendar_month_flags
+-             WHERE year_month=%s
++             WHERE `year_month`=%s
+              LIMIT 1
+             """,
+             (_to_year_month(year, month),),
+         )
+         return cur.fetchone()
+     finally:
+         cur.close()
+ 
+ 
+ def is_su_calendar_closed_notice_enabled(year: int, month: int) -> bool:
+     rec = get_su_calendar_month_flag(year, month)
+     return bool(rec and rec.get("show_closed_notice") == 1)
+ 
+ 
+ def upsert_su_calendar_month_flag(year: int, month: int, show_closed_notice: bool) -> None:
+     db = get_db()
+     _ensure_su_calendar_month_flags_table(db)
      cur = db.cursor()
      try:
          cur.execute(
              """
-             UPDATE mfu_notifications
-                SET read_at=%s
-              WHERE user_kind='external'
-                AND user_id=%s
-                AND read_at IS NULL
+             INSERT INTO su_calendar_month_flags
+-                (year_month, show_closed_notice, created_at, updated_at)
++                (`year_month`, show_closed_notice, created_at, updated_at)
+             VALUES (%s, %s, NOW(), NOW())
+             ON DUPLICATE KEY UPDATE
+                 show_closed_notice=VALUES(show_closed_notice),
+                 updated_at=NOW()
              """,
+             (_to_year_month(year, month), 1 if show_closed_notice else 0),
+         )
+         db.commit()
+     finally:
+         cur.close()
+ # -----------------------------------------------------------------------------
+ 
+ 
+ # ---- 日本の祝日ユーティリティ（API優先、jpholidayはフォールバック） ----------
+ import time
+ from calendar import monthrange as _monthrange
+ 
+ # 依存は任意。requests が無ければ urllib を使う
+ try:
+     import requests as _requests
+ except Exception:
+     _requests = None
+ 
+ from urllib.request import urlopen as _urlopen
+ from urllib.error import URLError as _URLError, HTTPError as _HTTPError

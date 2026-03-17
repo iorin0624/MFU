@@ -23,6 +23,10 @@
   .sync .btn:disabled { opacity:.5; cursor:not-allowed; }
   .sync .hint { font-size:12px; color:#666; }
 
+  .month-flag { padding:12px 16px; border-bottom:1px solid #eee; background:#fff; }
+  .month-flag .desc { font-size:12px; color:#666; margin-top:4px; }
+  .month-flag form { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+
   /* 7列グリッド（日曜はじまりの空白も埋める） */
   .grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:6px; padding:10px; }
   .w { font-size:12px; color:#666; text-align:center; }
@@ -95,6 +99,16 @@
   </div>
 </div>
 <!-- ▲ Outlook同期バー -->
+
+<div class="month-flag">
+  <form method="post" action="{{ url_for('s_u_calendar.admin_upsert_month_flag') }}">
+    <input type="hidden" name="year" value="{{ year }}">
+    <input type="hidden" name="month" value="{{ month }}">
+    <label><input type="checkbox" name="show_closed_notice" value="1" {{ "checked" if show_closed_notice else "" }}> 利用者向け案内表示</label>
+    <button type="submit">保存</button>
+  </form>
+  <div class="desc">ONのとき、利用者側に「この月の撮影予定の追加は行っていません。」を表示します。</div>
+</div>
 
 <div class="grid">
   {# 曜日ヘッダ：日→土 #}

@@ -99,6 +99,93 @@ def _log_admin(db, ip: str, text: str):
         cur.close()
     except Exception:
         current_app.logger.warning("write [SUCAL] log failed", exc_info=True)
+
+
+def _to_year_month(year: int, month: int) -> str:
+    return f"{year:04d}-{month:02d}"
+
+
+def _ensure_su_calendar_month_flags_table(db) -> None:
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS su_calendar_month_flags (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+              `year_month` CHAR(7) NOT NULL,
+              show_closed_notice TINYINT(1) NOT NULL DEFAULT 0,
+              created_at DATETIME NULL,
+              updated_at DATETIME NULL,
+              PRIMARY KEY (id),
+              UNIQUE KEY uq_su_calendar_month_flags_year_month (`year_month`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        db.commit()
+    finally:
+        cur.close()
+
+
+@s_u_calendar_bp.before_request
+def _auto_apply_su_calendar_sql():
+    """SUCカレンダーアクセス時に月フラグテーブルを自動作成（初回のみ）。"""
+    if request.blueprint != "s_u_calendar":
+        return
+
+    if current_app.extensions.get("sucal_schema_ready"):
+        return
+
+    try:
+        db = get_db()
+        _ensure_su_calendar_month_flags_table(db)
+        current_app.extensions["sucal_schema_ready"] = True
+    except Exception:
+        current_app.logger.warning("[SUCAL] ensure month flag table failed", exc_info=True)
+
+
+def get_su_calendar_month_flag(year: int, month: int) -> dict | None:
+    db = get_db()
+    _ensure_su_calendar_month_flags_table(db)
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, `year_month`, show_closed_notice, created_at, updated_at
+              FROM su_calendar_month_flags
+             WHERE `year_month`=%s
+             LIMIT 1
+            """,
+            (_to_year_month(year, month),),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+
+
+def is_su_calendar_closed_notice_enabled(year: int, month: int) -> bool:
+    rec = get_su_calendar_month_flag(year, month)
+    return bool(rec and rec.get("show_closed_notice") == 1)
+
+
+def upsert_su_calendar_month_flag(year: int, month: int, show_closed_notice: bool) -> None:
+    db = get_db()
+    _ensure_su_calendar_month_flags_table(db)
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO su_calendar_month_flags
+                (`year_month`, show_closed_notice, created_at, updated_at)
+            VALUES (%s, %s, NOW(), NOW())
+            ON DUPLICATE KEY UPDATE
+                show_closed_notice=VALUES(show_closed_notice),
+                updated_at=NOW()
+            """,
+            (_to_year_month(year, month), 1 if show_closed_notice else 0),
+        )
+        db.commit()
+    finally:
+        cur.close()
 # -----------------------------------------------------------------------------
 
 
@@ -362,6 +449,7 @@ def calendar_month():
 
     db = get_db()
     rows = _fetch_days(db, start_d, end_d, public_only=True)  # key: 'YYYY-MM-DD'
+    show_closed_notice = is_su_calendar_closed_notice_enabled(year, month)
 
     # 前後月
     py, pm = _adjacent_month(year, month, -1)
@@ -395,7 +483,8 @@ def calendar_month():
         days=days,                                # ← テンプレ側はこれを回す
         prev_year=py, prev_month=pm,
         next_year=ny, next_month=nm,
-        today=date.today()
+        today=date.today(),
+        show_closed_notice=show_closed_notice,
     )
 
 @s_u_calendar_bp.route("/mini", methods=["GET"])
@@ -490,6 +579,7 @@ def admin_index():
 
     db = get_db()
     rows = _fetch_days(db, start_d, end_d, public_only=False)  # dict
+    show_closed_notice = is_su_calendar_closed_notice_enabled(year, month)
 
     py, pm = _adjacent_month(year, month, -1)
     ny, nm = _adjacent_month(year, month, +1)
@@ -520,8 +610,23 @@ def admin_index():
         days=days,                  # ← これを回す
         prev_year=py, prev_month=pm,
         next_year=ny, next_month=nm,
-        today=date.today()
+        today=date.today(),
+        show_closed_notice=show_closed_notice,
     )
+
+
+@s_u_calendar_bp.route("/admin/month_flag", methods=["POST"])
+@admin_required
+def admin_upsert_month_flag():
+    year = int(request.form.get("year", 0))
+    month = int(request.form.get("month", 0))
+    if not (1 <= month <= 12 and 1 <= year <= 9999):
+        abort(400)
+
+    show_closed_notice = (request.form.get("show_closed_notice") == "1")
+    upsert_su_calendar_month_flag(year, month, show_closed_notice)
+    flash("利用者向け案内表示を更新しました。")
+    return redirect(url_for("s_u_calendar.admin_index", year=year, month=month))
 
 # === 1) 個別日付 更新/作成（フォームPOST） ================================
 @s_u_calendar_bp.route("/admin/day", methods=["POST"])
@@ -1205,5 +1310,4 @@ def admin_api_sync_outlook_6m():
         "last_sync_at": last_sync_at_str,
         "last_sync_range": f"{start_d.strftime(fmt)}..{end_d.strftime(fmt)}"
     }), 200
-
 
