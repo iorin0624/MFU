@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}プロフィール管理{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 900px;">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 mb-0">プロフィール管理</h1>
+    <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('profile.admin_profile_works') }}">知っている作品一覧を編集</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <form method="post" action="{{ url_for('profile.admin_profile_edit') }}" class="card card-body shadow-sm">
+    <div class="mb-3">
+      <label class="form-label">ページタイトル</label>
+      <input class="form-control" name="page_title" value="{{ profile.page_title or '' }}" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">表示名</label>
+      <input class="form-control" name="display_name" value="{{ profile.display_name or '' }}" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">サブタイトル</label>
+      <input class="form-control" name="subtitle" value="{{ profile.subtitle or '' }}">
+    </div>
+    <div class="mb-3">
+      <label class="form-label">自己紹介文</label>
+      <textarea class="form-control" name="intro_text" rows="5">{{ profile.intro_text or '' }}</textarea>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">撮影依頼案内</label>
+      <textarea class="form-control" name="request_notes_text" rows="5">{{ profile.request_notes_text or '' }}</textarea>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">X URL</label>
+      <input class="form-control" name="x_url" value="{{ profile.x_url or '' }}" placeholder="https://...">
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Instagram URL</label>
+      <input class="form-control" name="instagram_url" value="{{ profile.instagram_url or '' }}" placeholder="https://...">
+    </div>
+    <div class="mb-3">
+      <label class="form-label">ポートフォリオ URL</label>
+      <input class="form-control" name="portfolio_url" value="{{ profile.portfolio_url or '' }}" placeholder="https://...">
+    </div>
+
+    <div class="form-check mb-2">
+      <input class="form-check-input" type="checkbox" name="is_public" id="is_public" value="1" {% if profile.is_public %}checked{% endif %}>
+      <label class="form-check-label" for="is_public">公開する</label>
+    </div>
+    <div class="form-check mb-2">
+      <input class="form-check-input" type="checkbox" name="show_known_works" id="show_known_works" value="1" {% if profile.show_known_works %}checked{% endif %}>
+      <label class="form-check-label" for="show_known_works">知っている作品一覧を表示する</label>
+    </div>
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="checkbox" name="show_sns_links" id="show_sns_links" value="1" {% if profile.show_sns_links %}checked{% endif %}>
+      <label class="form-check-label" for="show_sns_links">SNS/ポートフォリオリンクを表示する</label>
+    </div>
+
+    <div>
+      <button class="btn btn-primary" type="submit">保存する</button>
+    </div>
+  </form>
+</div>
+{% endblock %}
