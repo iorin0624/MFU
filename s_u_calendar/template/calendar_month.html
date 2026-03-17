@@ -15,6 +15,11 @@
     a.nav { text-decoration:none; padding:8px 12px; border:1px solid #ddd; border-radius:8px; color:#333; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     h1 { font-size:18px; margin:0; }
 
+    .month-notice {
+      margin:10px; padding:10px 12px; border:1px solid #e6d7a6; border-radius:8px;
+      background:#fff9e8; color:#5b4b17; font-size:14px;
+    }
+
     /* 7列グリッド（はみ出し防止） */
     .grid { display:grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap:6px; padding:10px; }
     .w { font-size:12px; color:#666; text-align:center; }
@@ -90,6 +95,10 @@
     <h1>{{ year }}年{{ "%02d"|format(month) }}月</h1>
     <a class="nav" href="{{ url_for('s_u_calendar.calendar_month', year=next_year, month=next_month) }}">次の月 〉</a>
   </header>
+
+  {% if show_closed_notice %}
+  <div class="month-notice">この月の撮影予定の追加は行っていません。</div>
+  {% endif %}
 
   <div class="grid">
     {# 曜日ヘッダ：日→土 #}
