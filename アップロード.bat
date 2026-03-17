@@ -1,5 +1,5 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal EnableExtensions EnableDelayedExpansion
 
 REM ===== 接続先 =====
 set "HOST=192.168.103.16"
@@ -40,6 +40,13 @@ if errorlevel 1 (
   exit /b 3
 )
 
+REM ===== アップロード確認 =====
+choice /C YN /N /M "[CONFIRM] %USER%@%HOST%:%DEST% へアップロードしますか？ [Y/N]: "
+if errorlevel 2 (
+  echo [CANCEL] アップロードを中止しました
+  exit /b 0
+)
+
 REM ===== TMP 初期化 =====
 if exist "%TMP%\" (
   echo [STEP] Cleanup TMP...
@@ -52,20 +59,27 @@ if errorlevel 1 (
 )
 
 REM ===== SRC -> TMP へコピー（除外あり）=====
-REM 注意: .env は送らない（危険）
-echo [STEP] Stage files to TMP (exclude .env, __pycache__, *.pyc, .git)...
+REM .env は含める
+REM 除外: .git / __pycache__ / *.pyc / *.bat / *.cmd
+echo [STEP] Stage files to TMP (include .env / exclude .git, __pycache__, *.pyc, *.bat, *.cmd)...
 robocopy "%SRC%" "%TMP%" /E ^
   /XD ".git" "__pycache__" ^
-  /XF ".env" "*.pyc" >nul
+  /XF "*.pyc" "*.bat" "*.cmd" >nul
 set "RC=%ERRORLEVEL%"
 if %RC% GEQ 8 (
   echo [ERROR] robocopy 失敗 errorlevel=%RC%
   exit /b 10
 )
 
-REM ===== アップロード（中身だけ）=====
+if not exist "%TMP%\.env" (
+  echo [WARN] .env not found in TMP
+) else (
+  echo [INFO] .env staged in TMP
+)
+
+REM ===== アップロード（中身だけ。dotfile対応）=====
 echo [STEP] Uploading to server...
-scp %SSHOPTS% -r "%TMP%\*" %USER%@%HOST%:%DEST%/
+scp %SSHOPTS% -r "%TMP%\." %USER%@%HOST%:%DEST%/
 if errorlevel 1 (
   echo [ERROR] scp 失敗（鍵認証が未設定だと BatchMode で失敗します）
   exit /b 20
@@ -74,10 +88,7 @@ if errorlevel 1 (
 REM ===== TMP掃除 =====
 rmdir /S /Q "%TMP%" >nul 2>&1
 
-echo [OK] Upload
-
+echo [OK] Upload complete
 pause
 
 exit /b 0
-
-
