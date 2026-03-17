@@ -3372,5 +3372,8 @@ app.register_blueprint(chat_bp)
 from app.profile import profile_bp
 app.register_blueprint(profile_bp)
 
+from app.fare import fare_bp
+app.register_blueprint(fare_bp)
+
 from app.bank_account import register_bank_account
 register_bank_account(app)

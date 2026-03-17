@@ -1,56 +1,464 @@
-diff --git a/profile/routes.py b/profile/routes.py
-index 3af8adfb5b3dfa5955fc58e30eb346b659bace36..7211a3ae9e73695639327272a495f75a8f5d427b 100644
---- a/profile/routes.py
-+++ b/profile/routes.py
-@@ -37,50 +37,51 @@ def _as_int(name: str, default: int = 0) -> int:
- def _clean_text(name: str, required: bool = False, limit: int | None = None) -> tuple[str | None, str | None]:
-     value = (request.form.get(name) or "").strip()
-     if required and not value:
-         return None, f"{name} は必須です。"
-     if limit is not None and len(value) > limit:
-         return None, f"{name} は{limit}文字以内で入力してください。"
-     return (value or None), None
+diff --git a/__init__.py b/__init__.py
+index b0091f003c2cc571ad6857d47e3c9ebcc69beb03..e6704cc5d345174d3f236312f672364de5301fab 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -3350,27 +3350,30 @@ app.register_blueprint(receipts_bp)
  
+ from app.records import records_api_bp, records_bp
+ app.register_blueprint(records_bp, url_prefix="/records")
+ app.register_blueprint(records_api_bp)
  
- def _clean_url(name: str) -> tuple[str | None, str | None]:
-     value = (request.form.get(name) or "").strip()
-     if not value:
-         return None, None
-     parsed = urlparse(value)
-     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-         return None, f"{name} は http:// または https:// のURLを入力してください。"
-     if len(value) > 500:
-         return None, f"{name} は500文字以内で入力してください。"
-     return value, None
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
  
+ from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
+ from app.external_login_user.sw_blueprint import sw_bp
+ from app.external_login_user.notifications import mfu_notifications_bp
+ init_line_oauth(app)
+ app.register_blueprint(ext_login_bp, url_prefix="/external-login")
+ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
+ app.register_blueprint(sw_bp)
+ app.register_blueprint(mfu_notifications_bp)
  
- def _normalize_plain_text_for_display(value: str | None) -> str | None:
-     if value is None:
-         return None
-     normalized = re.sub(r"(?i)<br\s*/?>", "\n", value)
-+    normalized = re.sub(r"(?i)&lt;br\s*/?&gt;", "\n", normalized)
-     return normalized.replace("\r\n", "\n").replace("\r", "\n")
+ from app.s_u_calendar.routes import s_u_calendar_bp
+ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
  
- def _group_known_works(rows: list[dict]) -> list[dict]:
-     grouped: list[dict] = []
-     seen: dict[str, dict] = {}
-     for row in rows:
-         key = row["category_name"]
-         if key not in seen:
-             bucket = {
-                 "category_name": row["category_name"],
-                 "category_sort": row["category_sort"],
-                 "items": [],
-             }
-             seen[key] = bucket
-             grouped.append(bucket)
-         seen[key]["items"].append(row)
-     return grouped
+ from app.chat import chat_bp
+ app.register_blueprint(chat_bp)
  
+ from app.profile import profile_bp
+ app.register_blueprint(profile_bp)
  
- @profile_bp.get("/profile")
- def profile_public():
-     profile = get_main_profile()
-     if not profile or int(profile.get("is_public") or 0) != 1:
-         abort(404)
- 
++from app.fare import fare_bp
++app.register_blueprint(fare_bp)
++
+ from app.bank_account import register_bank_account
+ register_bank_account(app)
+diff --git a/fare/__init__.py b/fare/__init__.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..527257e09860b8980bc8456bad20ec22009b0ba5
+--- /dev/null
++++ b/fare/__init__.py
+@@ -0,0 +1,5 @@
++from flask import Blueprint
++
++fare_bp = Blueprint("fare", __name__, template_folder="template")
++
++from . import routes  # noqa: E402,F401
+diff --git a/fare/routes.py b/fare/routes.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3433ca6e18c39cfeefd9fdfe09a5096d53cb0d3
+--- /dev/null
++++ b/fare/routes.py
+@@ -0,0 +1,86 @@
++from __future__ import annotations
++
++from datetime import date
++
++from flask import current_app, render_template, request
++
++from . import fare_bp
++from .services import (
++    DEFAULT_FROM_PLACE,
++    FareEstimateError,
++    build_yahoo_transit_url,
++    calculate_total_fare,
++    fetch_transit_html,
++    parse_route1_fare,
++    validate_destination,
++    validate_parking_fee,
++    validate_target_date,
++)
++
++
++DEFAULT_ERROR_MESSAGE = "現在、交通費概算を取得できません。時間をおいてお試しください。"
++INPUT_ERROR_MESSAGE = "概算交通費を取得できませんでした。到着地点または日付をご確認ください。"
++
++
++@fare_bp.route("/fare-estimate", methods=["GET", "POST"])
++def fare_estimate():
++    today = date.today()
++    form_data = {
++        "destination": "",
++        "target_date": today.isoformat(),
++        "parking_fee": "",
++    }
++    result = None
++    error_message = None
++
++    if request.method == "POST":
++        form_data["destination"] = request.form.get("destination", "")
++        form_data["target_date"] = request.form.get("target_date", today.isoformat())
++        form_data["parking_fee"] = request.form.get("parking_fee", "")
++
++        try:
++            destination = validate_destination(form_data["destination"])
++            target_date = validate_target_date(form_data["target_date"])
++            parking_fee = validate_parking_fee(form_data["parking_fee"])
++
++            yahoo_url = build_yahoo_transit_url(DEFAULT_FROM_PLACE, destination, target_date)
++            html = fetch_transit_html(yahoo_url)
++            one_way_fare = parse_route1_fare(html)
++            fares = calculate_total_fare(one_way_fare, parking_fee)
++
++            result = {
++                "from_place": DEFAULT_FROM_PLACE,
++                "destination": destination,
++                "target_date": target_date.isoformat(),
++                **fares,
++            }
++        except FareEstimateError as exc:
++            message = str(exc)
++            if message in {
++                "到着地点を入力してください。",
++                "利用日を正しく入力してください。",
++                "駐輪場代は0以上の数値で入力してください。",
++            } or message.endswith("文字以内で入力してください。"):
++                error_message = message
++            else:
++                current_app.logger.warning(
++                    "[fare_estimate] fare parsing failed destination=%s date=%s reason=%s",
++                    form_data["destination"],
++                    form_data["target_date"],
++                    message,
++                )
++                error_message = INPUT_ERROR_MESSAGE
++        except Exception as exc:
++            current_app.logger.exception(
++                "[fare_estimate] fetch failed destination=%s date=%s",
++                form_data["destination"],
++                form_data["target_date"],
++            )
++            error_message = DEFAULT_ERROR_MESSAGE
++
++    return render_template(
++        "fare_estimate.html",
++        form_data=form_data,
++        result=result,
++        error_message=error_message,
++    )
+diff --git a/fare/services.py b/fare/services.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..606c541d45d7c0c3aae9d3a7b3fed62e5b8c0479
+--- /dev/null
++++ b/fare/services.py
+@@ -0,0 +1,199 @@
++from __future__ import annotations
++
++import re
++from datetime import date, datetime
++from decimal import Decimal, InvalidOperation
++from urllib.parse import urlencode
++from urllib.request import Request, urlopen
++
++
++try:
++    import requests as _requests
++except Exception:
++    _requests = None
++
++
++YAHOO_TRANSIT_BASE_URL = "https://transit.yahoo.co.jp/search/result"
++DEFAULT_FROM_PLACE = "五井"
++ROUTE_TIME_HOUR = "11"
++ROUTE_TIME_M1 = "0"
++ROUTE_TIME_M2 = "0"
++REQUEST_TIMEOUT_SECONDS = 10
++MAX_DESTINATION_LENGTH = 120
++MAX_PARKING_FEE = 1_000_000
++
++
++class FareEstimateError(Exception):
++    """交通費概算の取得/計算で利用者に通知するエラー。"""
++
++
++def build_yahoo_transit_url(from_place: str, to_place: str, target_date: date) -> str:
++    params = {
++        "from": from_place,
++        "to": to_place,
++        "fromgid": "",
++        "togid": "",
++        "flatlon": "",
++        "tlatlon": "",
++        "via": "",
++        "viacode": "",
++        "y": f"{target_date.year:04d}",
++        "m": f"{target_date.month:02d}",
++        "d": f"{target_date.day:02d}",
++        "hh": ROUTE_TIME_HOUR,
++        "m1": ROUTE_TIME_M1,
++        "m2": ROUTE_TIME_M2,
++        "type": "4",
++        "ticket": "ic",
++        "expkind": "1",
++        "userpass": "1",
++        "ws": "3",
++        "s": "0",
++        "al": "1",
++        "shin": "1",
++        "ex": "0",
++        "hb": "1",
++        "lb": "1",
++        "sr": "1",
++    }
++    return f"{YAHOO_TRANSIT_BASE_URL}?{urlencode(params)}"
++
++
++def fetch_transit_html(url: str, timeout: int = REQUEST_TIMEOUT_SECONDS) -> str:
++    user_agent = "Mozilla/5.0 (compatible; MFU fare-estimate/1.0)"
++
++    if _requests is not None:
++        response = _requests.get(url, timeout=timeout, headers={"User-Agent": user_agent})
++        response.raise_for_status()
++        response.encoding = response.encoding or "utf-8"
++        return response.text
++
++    req = Request(url, headers={"User-Agent": user_agent})
++    with urlopen(req, timeout=timeout) as resp:
++        body = resp.read().decode("utf-8", errors="ignore")
++    return body
++
++
++def parse_route1_fare(html: str) -> int:
++    if not html:
++        raise FareEstimateError("empty_html")
++
++    route1_block = _extract_route1_block(html)
++    fare = _extract_fare_from_text(route1_block)
++    if fare is None:
++        fare = _extract_fare_from_text(html)
++
++    if fare is None:
++        raise FareEstimateError("fare_not_found")
++    return fare
++
++
++def calculate_total_fare(one_way_fare: int, parking_fee: int) -> dict[str, int]:
++    round_trip_fare = one_way_fare * 2
++    return {
++        "one_way_fare": one_way_fare,
++        "round_trip_fare": round_trip_fare,
++        "parking_fee": parking_fee,
++        "total_fare": round_trip_fare + parking_fee,
++    }
++
++
++def validate_destination(value: str | None) -> str:
++    destination = (value or "").strip()
++    if not destination:
++        raise FareEstimateError("到着地点を入力してください。")
++    if len(destination) > MAX_DESTINATION_LENGTH:
++        raise FareEstimateError(f"到着地点は{MAX_DESTINATION_LENGTH}文字以内で入力してください。")
++    return destination
++
++
++def validate_target_date(value: str | None) -> date:
++    if not value:
++        raise FareEstimateError("利用日を正しく入力してください。")
++
++    try:
++        return datetime.strptime(value, "%Y-%m-%d").date()
++    except ValueError as exc:
++        raise FareEstimateError("利用日を正しく入力してください。") from exc
++
++
++def validate_parking_fee(value: str | None) -> int:
++    raw = (value or "").strip()
++    if raw == "":
++        raise FareEstimateError("駐輪場代は0以上の数値で入力してください。")
++
++    try:
++        parking = int(Decimal(raw))
++    except (InvalidOperation, ValueError) as exc:
++        raise FareEstimateError("駐輪場代は0以上の数値で入力してください。") from exc
++
++    if parking < 0 or parking > MAX_PARKING_FEE:
++        raise FareEstimateError("駐輪場代は0以上の数値で入力してください。")
++    return parking
++
++
++def _extract_route1_block(html: str) -> str:
++    patterns = [
++        r'(?is)(<li[^>]+id="route01".*?</li>)',
++        r'(?is)(<section[^>]+id="route01".*?</section>)',
++        r'(?is)(<div[^>]+id="route01".*?</div>)',
++        r'(?is)(<li[^>]+data-route="1".*?</li>)',
++        r'(?is)(<li[^>]+data-routeno="1".*?</li>)',
++    ]
++    for pattern in patterns:
++        matched = re.search(pattern, html)
++        if matched:
++            return matched.group(1)
++    return html
++
++
++def _extract_fare_from_text(text: str) -> int | None:
++    cleaned = _normalize_html_text(text)
++    patterns = [
++        r"IC(?:\s*優先)?[:：]\s*([0-9][0-9,]*)円",
++        r"運賃[:：]\s*([0-9][0-9,]*)円",
++        r"片道[:：]\s*([0-9][0-9,]*)円",
++        r"([0-9][0-9,]*)円",
++    ]
++
++    for pattern in patterns:
++        matched = re.search(pattern, cleaned)
++        if matched:
++            return _parse_yen(matched.group(1))
++
++    state_json = _extract_json_from_state(text)
++    if state_json is not None:
++        fares = re.findall(r'"(?:fare|fareIc|icFare|ic)"\s*:\s*"?([0-9][0-9,]*)"?', state_json)
++        for fare in fares:
++            parsed = _parse_yen(fare)
++            if parsed is not None:
++                return parsed
++
++    return None
++
++
++def _normalize_html_text(text: str) -> str:
++    without_tag = re.sub(r"<[^>]+>", " ", text)
++    return re.sub(r"\s+", " ", without_tag)
++
++
++def _extract_json_from_state(text: str) -> str | None:
++    for key in ("__NEXT_DATA__", "__PRELOADED_STATE__"):
++        pattern = rf'(?is)<script[^>]*id="{key}"[^>]*>(.*?)</script>'
++        matched = re.search(pattern, text)
++        if matched:
++            return matched.group(1)
++
++    pattern = r'(?is)window\.__INITIAL_STATE__\s*=\s*(\{.*?\});'
++    matched = re.search(pattern, text)
++    if matched:
++        return matched.group(1)
++    return None
++
++
++def _parse_yen(raw: str) -> int | None:
++    normalized = raw.replace(",", "")
++    if not normalized.isdigit():
++        return None
++    value = int(normalized)
++    return value if value >= 0 else None
+diff --git a/fare/template/fare_estimate.html b/fare/template/fare_estimate.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9f3d3487fbcf73e6daab89742de6de83c1b95b2
+--- /dev/null
++++ b/fare/template/fare_estimate.html
+@@ -0,0 +1,62 @@
++{% extends "base.html" %}
++
++{% block title %}交通費概算計算 | MFU{% endblock %}
++
++{% block content %}
++<div class="row justify-content-center">
++  <div class="col-12 col-lg-8">
++    <div class="card shadow-sm mb-4">
++      <div class="card-body">
++        <h1 class="h4 mb-3">交通費概算計算</h1>
++        <p class="text-muted">到着地点・利用日・駐輪場代を入力すると、概算交通費を表示します。</p>
++
++        {% if error_message %}
++          <div class="alert alert-danger" role="alert">{{ error_message }}</div>
++        {% endif %}
++
++        <form method="post" novalidate>
++          <div class="mb-3">
++            <label for="destination" class="form-label">到着地点</label>
++            <input type="text" class="form-control" id="destination" name="destination" maxlength="120" required
++                   placeholder="例: 新宿 / 横浜駅 / 東京都新宿区西新宿2-8-1"
++                   value="{{ form_data.destination }}">
++          </div>
++
++          <div class="mb-3">
++            <label for="target_date" class="form-label">利用日</label>
++            <input type="date" class="form-control" id="target_date" name="target_date" required
++                   value="{{ form_data.target_date }}">
++          </div>
++
++          <div class="mb-3">
++            <label for="parking_fee" class="form-label">駐輪場代（円）</label>
++            <input type="number" class="form-control" id="parking_fee" name="parking_fee" required min="0" step="1"
++                   placeholder="例: 100"
++                   value="{{ form_data.parking_fee }}">
++          </div>
++
++          <button type="submit" class="btn btn-primary w-100">概算を計算</button>
++        </form>
++      </div>
++    </div>
++
++    {% if result %}
++      <div class="card shadow-sm mb-4">
++        <div class="card-body">
++          <h2 class="h5 mb-3">計算結果</h2>
++          <dl class="row mb-0">
++            <dt class="col-5">出発地点</dt><dd class="col-7">{{ result.from_place }}</dd>
++            <dt class="col-5">到着地点</dt><dd class="col-7">{{ result.destination }}</dd>
++            <dt class="col-5">利用日</dt><dd class="col-7">{{ result.target_date }}</dd>
++            <dt class="col-5">片道運賃</dt><dd class="col-7">{{ "{:,.0f}".format(result.one_way_fare) }} 円</dd>
++            <dt class="col-5">往復運賃</dt><dd class="col-7">{{ "{:,.0f}".format(result.round_trip_fare) }} 円</dd>
++            <dt class="col-5">駐輪場代</dt><dd class="col-7">{{ "{:,.0f}".format(result.parking_fee) }} 円</dd>
++            <dt class="col-5 fw-bold">概算交通費合計</dt><dd class="col-7 fw-bold">{{ "{:,.0f}".format(result.total_fare) }} 円</dd>
++          </dl>
++          <p class="small text-muted mt-3 mb-0">※表示金額は概算です。正式な交通費は、依頼内容確定後に請求書でご案内します。</p>
++        </div>
++      </div>
++    {% endif %}
++  </div>
++</div>
++{% endblock %}
+diff --git a/tests/test_fare_services.py b/tests/test_fare_services.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..06dd6766884425de7007bad280fe3cc3c0801365
+--- /dev/null
++++ b/tests/test_fare_services.py
+@@ -0,0 +1,47 @@
++import unittest
++from datetime import date
++import importlib.util
++from pathlib import Path
++
++MODULE_PATH = Path(__file__).resolve().parents[1] / "fare" / "services.py"
++spec = importlib.util.spec_from_file_location("fare_services", MODULE_PATH)
++fare_services = importlib.util.module_from_spec(spec)
++assert spec and spec.loader
++spec.loader.exec_module(fare_services)
++
++
++class FareServiceTest(unittest.TestCase):
++    def test_build_yahoo_url_contains_fixed_params(self):
++        url = fare_services.build_yahoo_transit_url("五井", "新宿", date(2026, 3, 18))
++        self.assertIn("from=%E4%BA%94%E4%BA%95", url)
++        self.assertIn("to=%E6%96%B0%E5%AE%BF", url)
++        self.assertIn("y=2026", url)
++        self.assertIn("m=03", url)
++        self.assertIn("d=18", url)
++        self.assertIn("hh=11", url)
++        self.assertIn("ex=0", url)
++
++    def test_parse_route1_fare_prefers_ic_label(self):
++        html = '<section id="route01"><p>IC優先：1,234円</p></section><section id="route02"><p>IC優先：999円</p></section>'
++        self.assertEqual(fare_services.parse_route1_fare(html), 1234)
++
++    def test_parse_route1_fare_fallback_any_fare(self):
++        html = '<html><body><div>運賃：560円</div></body></html>'
++        self.assertEqual(fare_services.parse_route1_fare(html), 560)
++
++    def test_calculate_total_fare(self):
++        result = fare_services.calculate_total_fare(560, 150)
++        self.assertEqual(result["round_trip_fare"], 1120)
++        self.assertEqual(result["total_fare"], 1270)
++
++    def test_validate_input_errors(self):
++        with self.assertRaises(fare_services.FareEstimateError):
++            fare_services.validate_destination("   ")
++        with self.assertRaises(fare_services.FareEstimateError):
++            fare_services.validate_target_date("2026-99-99")
++        with self.assertRaises(fare_services.FareEstimateError):
++            fare_services.validate_parking_fee("-1")
++
++
++if __name__ == "__main__":
++    unittest.main()
