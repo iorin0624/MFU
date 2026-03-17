@@ -58,9 +58,14 @@ def _clean_url(name: str) -> tuple[str | None, str | None]:
 def _normalize_plain_text_for_display(value: str | None) -> str | None:
     if value is None:
         return None
-    normalized = re.sub(r"(?i)<br\s*/?>", "\n", value)
-    normalized = re.sub(r"(?i)&lt;br\s*/?&gt;", "\n", normalized)
+
+    normalized = value
+    normalized = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", normalized)
+    normalized = re.sub(r"(?i)&lt;\s*br\s*/?\s*&gt;", "\n", normalized)
+    normalized = re.sub(r"(?i)&amp;lt;\s*br\s*/?\s*&amp;gt;", "\n", normalized)
+
     return normalized.replace("\r\n", "\n").replace("\r", "\n")
+
 
 def _group_known_works(rows: list[dict]) -> list[dict]:
     grouped: list[dict] = []
@@ -116,8 +121,11 @@ def admin_profile_edit():
             flash(err, "danger")
             return redirect(url_for("profile.admin_profile_edit"))
 
-        intro_text = (request.form.get("intro_text") or "").strip() or None
-        request_notes_text = (request.form.get("request_notes_text") or "").strip() or None
+        intro_text_raw = (request.form.get("intro_text") or "").strip()
+        request_notes_text_raw = (request.form.get("request_notes_text") or "").strip()
+
+        intro_text = _normalize_plain_text_for_display(intro_text_raw) or None
+        request_notes_text = _normalize_plain_text_for_display(request_notes_text_raw) or None
 
         x_url, err = _clean_url("x_url")
         if err:
@@ -153,6 +161,11 @@ def admin_profile_edit():
         return redirect(url_for("profile.admin_profile_edit"))
 
     profile = get_main_profile()
+    if profile:
+        profile = dict(profile)
+        profile["intro_text"] = _normalize_plain_text_for_display(profile.get("intro_text"))
+        profile["request_notes_text"] = _normalize_plain_text_for_display(profile.get("request_notes_text"))
+
     return render_template("profile_admin_edit.html", profile=profile)
 
 
