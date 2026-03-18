@@ -85,6 +85,30 @@ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
 UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
 tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
 
+INAPP_BROWSER_WARNING_ENABLED_KEY = "inapp_browser_warning_enabled"
+INAPP_BROWSER_KEYWORDS_KEY = "inapp_browser_keywords"
+INAPP_BROWSER_REFERRER_PREFIXES_KEY = "inapp_browser_referrer_prefixes"
+INAPP_BROWSER_SKIP_PATHS_KEY = "inapp_browser_skip_paths"
+INAPP_BROWSER_DEFAULT_ENABLED = "1"
+INAPP_BROWSER_DEFAULT_KEYWORDS = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
+INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES = ["https://t.co/"]
+INAPP_BROWSER_DEFAULT_SKIP_PATHS = [
+    "/static",
+    "/favicon",
+    "/api",
+    "/admin",
+    "/maintenance",
+    "/suc",
+    "/external-login/",
+    "/e/",
+]
+INAPP_BROWSER_SETTINGS_DEFAULTS = {
+    INAPP_BROWSER_WARNING_ENABLED_KEY: INAPP_BROWSER_DEFAULT_ENABLED,
+    INAPP_BROWSER_KEYWORDS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_KEYWORDS),
+    INAPP_BROWSER_REFERRER_PREFIXES_KEY: "\n".join(INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES),
+    INAPP_BROWSER_SKIP_PATHS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_SKIP_PATHS),
+}
+
 # =====================================
 # 🚀 Flask アプリ構成
 # =====================================
@@ -250,6 +274,85 @@ def is_maintenance_mode():
     row = cursor.fetchone()
     db.close()
     return row and row["value"] == "on"
+
+def _normalize_multiline_list(lines):
+    normalized = []
+    seen = set()
+    for line in lines or []:
+        item = (line or "").strip()
+        if not item:
+            continue
+        dedupe_key = item.lower()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(item)
+    return normalized
+
+
+def _serialize_multiline_setting(lines):
+    return "\n".join(_normalize_multiline_list(lines))
+
+
+def _ensure_inapp_browser_settings_defaults():
+    db = get_db()
+    cursor = db.cursor()
+    created = False
+    try:
+        for key, default_value in INAPP_BROWSER_SETTINGS_DEFAULTS.items():
+            cursor.execute(
+                "INSERT IGNORE INTO settings (`key`, `value`) VALUES (%s, %s)",
+                (key, default_value),
+            )
+            created = created or bool(cursor.rowcount)
+        if created:
+            db.commit()
+    finally:
+        db.close()
+
+
+def _get_setting_value(key, default=None):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        cursor.execute("SELECT `value` FROM settings WHERE `key` = %s", (key,))
+        row = cursor.fetchone()
+        if not row:
+            return default
+        value = row.get("value")
+        return default if value is None else value
+    finally:
+        db.close()
+
+
+def _get_multiline_setting_list(key, default_list):
+    value = _get_setting_value(key)
+    if value is None or not str(value).strip():
+        return _normalize_multiline_list(default_list)
+    return _normalize_multiline_list(str(value).splitlines())
+
+
+def _is_inapp_browser_request(req):
+    skip_paths = _get_multiline_setting_list(INAPP_BROWSER_SKIP_PATHS_KEY, INAPP_BROWSER_DEFAULT_SKIP_PATHS)
+    if any(req.path.startswith(path) for path in skip_paths):
+        return False
+
+    ua = (req.headers.get("User-Agent") or "").lower()
+    referer = (req.headers.get("Referer") or "").lower()
+    keywords = _get_multiline_setting_list(INAPP_BROWSER_KEYWORDS_KEY, INAPP_BROWSER_DEFAULT_KEYWORDS)
+    referrer_prefixes = _get_multiline_setting_list(
+        INAPP_BROWSER_REFERRER_PREFIXES_KEY,
+        INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES,
+    )
+
+    if any(keyword.lower() in ua for keyword in keywords):
+        return True
+
+    if any(referer.startswith(prefix.lower()) for prefix in referrer_prefixes):
+        return True
+
+    return req.cookies.get("InAppView") == "1"
+
 
 def write_login_log(username, ip, tag="LOGIN"):
     db = get_db()
@@ -2726,6 +2829,65 @@ def admin_maintenance():
 # =======================================
 # 管理: 再起動
 # =======================================
+@app.route("/admin/settings/inapp-browser", methods=["GET", "POST"])
+@admin_required
+def admin_inapp_browser_settings():
+    _ensure_inapp_browser_settings_defaults()
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+
+    def _save_inapp_browser_settings(payload):
+        for key, value in payload.items():
+            cursor.execute(
+                "REPLACE INTO settings (`key`, `value`) VALUES (%s, %s)",
+                (key, value),
+            )
+
+    if request.method == "POST":
+        action = request.form.get("action") or "save"
+        if action == "reset":
+            _save_inapp_browser_settings(INAPP_BROWSER_SETTINGS_DEFAULTS)
+            db.commit()
+            db.close()
+            flash("アプリ内ブラウザ警告設定を初期値に戻しました。", "success")
+            return redirect(url_for("admin_inapp_browser_settings"))
+
+        payload = {
+            INAPP_BROWSER_WARNING_ENABLED_KEY: "1" if request.form.get("inapp_browser_warning_enabled") else "0",
+            INAPP_BROWSER_KEYWORDS_KEY: _serialize_multiline_setting(
+                (request.form.get("inapp_browser_keywords") or "").splitlines()
+            ),
+            INAPP_BROWSER_REFERRER_PREFIXES_KEY: _serialize_multiline_setting(
+                (request.form.get("inapp_browser_referrer_prefixes") or "").splitlines()
+            ),
+            INAPP_BROWSER_SKIP_PATHS_KEY: _serialize_multiline_setting(
+                (request.form.get("inapp_browser_skip_paths") or "").splitlines()
+            ),
+        }
+        _save_inapp_browser_settings(payload)
+        db.commit()
+        db.close()
+        flash("アプリ内ブラウザ警告設定を更新しました。", "success")
+        return redirect(url_for("admin_inapp_browser_settings"))
+
+    current_settings = {}
+    for key, default_value in INAPP_BROWSER_SETTINGS_DEFAULTS.items():
+        cursor.execute("SELECT `value` FROM settings WHERE `key` = %s", (key,))
+        row = cursor.fetchone() or {}
+        value = row.get("value")
+        current_settings[key] = default_value if value is None else value
+
+    db.close()
+    return render_template(
+        "admin_inapp_browser_settings.html",
+        current_settings=current_settings,
+        default_enabled=INAPP_BROWSER_DEFAULT_ENABLED,
+        default_keywords_text=INAPP_BROWSER_SETTINGS_DEFAULTS[INAPP_BROWSER_KEYWORDS_KEY],
+        default_referrer_prefixes_text=INAPP_BROWSER_SETTINGS_DEFAULTS[INAPP_BROWSER_REFERRER_PREFIXES_KEY],
+        default_skip_paths_text=INAPP_BROWSER_SETTINGS_DEFAULTS[INAPP_BROWSER_SKIP_PATHS_KEY],
+    )
+
+
 @app.route("/admin/restart", methods=["POST"])
 @admin_required
 def admin_restart():
@@ -3102,22 +3264,13 @@ def before_every_request():
 
     # アプリ内ブラウザ（LINE/X/Instagram）への警告
     if "user" not in session:
-        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc","/external-login/","/e/",)
-        if not any(request.path.startswith(p) for p in skip_paths):
-            ua = request.headers.get("User-Agent", "")
-            ref = request.headers.get("Referer", "")
-
-            #元コード↓
-            inapp_keywords = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
-            #inapp_keywords = ["Instagram", "Twitter", "FBAN", "FBAV"]
-            inapp = any(k in ua for k in inapp_keywords)
-
-            # 👇 X (旧Twitter) のアプリ内ブラウザは UA では判定できないので Ref で判定
-            if ref.startswith("https://t.co/"):
-                inapp = True
-
-            if inapp or request.cookies.get("InAppView") == "1":
-                return render_template("inapp_warning.html"), 200
+        _ensure_inapp_browser_settings_defaults()
+        warning_enabled = str(
+            _get_setting_value(INAPP_BROWSER_WARNING_ENABLED_KEY, INAPP_BROWSER_DEFAULT_ENABLED)
+            or INAPP_BROWSER_DEFAULT_ENABLED
+        ).strip()
+        if warning_enabled == "1" and _is_inapp_browser_request(request):
+            return render_template("inapp_warning.html"), 200
 
 @app.after_request
 def finalize_response(response):
