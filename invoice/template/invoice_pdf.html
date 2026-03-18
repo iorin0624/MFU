@@ -43,7 +43,7 @@
     .title-row {
       display: table;
       width: 100%;
-      margin-bottom: 9mm;
+      margin-bottom: 6mm;
     }
 
     .title-cell,
@@ -75,7 +75,7 @@
     .meta-table td,
     .summary-table th,
     .summary-table td {
-      padding: 2.5mm 2.8mm;
+      padding: 2.2mm 2.6mm;
       border: 0.3mm solid var(--border-color);
       vertical-align: top;
     }
@@ -83,7 +83,8 @@
     .meta-table th,
     .section-title,
     .summary-table th,
-    .items-table thead th {
+    .items-table thead th,
+    .party-title {
       font-family: var(--invoice-font-bold), sans-serif;
       font-weight: 700;
       background: var(--fill-soft);
@@ -95,68 +96,60 @@
       text-align: left;
     }
 
+    /* ==================== ここが修正箇所 ==================== */
     .party-row {
-      display: table;
-      width: 100%;
-      table-layout: fixed;
-      margin-bottom: 7mm;
+      display: flex;
+      gap: 4mm;
+      margin-bottom: 3.5mm;           /* 4.5mm → 3.5mm */
     }
 
     .party-block {
-      display: table-cell;
-      width: 50%;
-      vertical-align: top;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
     }
 
-    .party-block + .party-block {
-      padding-left: 5mm;
-    }
-
-    .section-title {
-      padding: 2.2mm 2.8mm;
+    .party-title {
+      padding: 1mm 2mm;               /* 1.2mm → 1mm */
       border: 0.3mm solid var(--border-color);
       border-bottom: none;
+      font-size: 8.5pt;               /* 8.8pt → 8.5pt */
+      line-height: 1.2;
     }
 
-    .block-body {
-      min-height: 36mm;
-      padding: 3mm;
+    .party-body {
+      padding: 1.2mm 2mm;             /* 1.8mm → 1.2mm */
       border: 0.3mm solid var(--border-color);
-    }
-
-    .multiline-text {
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
+      font-size: 9pt;                 /* 9.2pt → 9pt */
+      line-height: 1.32;
+      flex-grow: 1;
     }
 
     .line {
-      margin: 0 0 1.5mm;
-    }
-
-    .line:last-child {
-      margin-bottom: 0;
+      margin: 0 0 0.5mm;              /* 0.7mm → 0.5mm */
     }
 
     .subject-block {
-      margin-bottom: 6mm;
+      margin-bottom: 3.7mm;           /* 4.5mm → 3.7mm */
     }
 
     .subject-line {
-      padding: 3mm;
+      padding: 2.4mm 2.6mm;
       border: 0.3mm solid var(--border-color);
-      font-size: 10.5pt;
+      font-size: 10pt;
     }
 
     .amount-box {
-      margin-bottom: 7mm;
-      padding: 4mm 4.5mm;
+      margin-bottom: 4.2mm;           /* 5mm → 4.2mm */
+      padding: 3.2mm 4mm;
       border: 0.45mm solid var(--border-color);
       background: var(--accent-fill);
     }
+    /* ==================== ここまで修正 ==================== */
 
     .amount-label {
-      margin-bottom: 1.5mm;
+      margin-bottom: 1mm;
       color: var(--muted-color);
       font-family: var(--invoice-font-bold), sans-serif;
       font-weight: 700;
@@ -167,18 +160,19 @@
       font-size: 15pt;
       font-weight: 700;
       text-align: right;
+      line-height: 1.2;
     }
 
     .items-table {
       width: 100%;
       border-collapse: collapse;
       table-layout: fixed;
-      margin-bottom: 5mm;
+      margin-bottom: 4mm;
     }
 
     .items-table th,
     .items-table td {
-      padding: 2.5mm 2.2mm;
+      padding: 2.2mm 2mm;
       border: 0.3mm solid var(--border-color);
       vertical-align: top;
       overflow-wrap: break-word;
@@ -212,7 +206,9 @@
     .summary-wrap {
       width: 43%;
       margin-left: auto;
-      margin-bottom: 7mm;
+      margin-bottom: 5mm;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     .summary-table td {
@@ -236,14 +232,17 @@
       display: table-cell;
       width: 50%;
       vertical-align: top;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     .note-bank-block + .note-bank-block {
-      padding-left: 5mm;
+      padding-left: 4mm;
     }
   </style>
 </head>
 <body>
+  <!-- ここから下は全く変更なし（元のテンプレートと同じ） -->
   <div class="page">
     <div class="title-row">
       <div class="title-cell">
@@ -267,16 +266,16 @@
 
     <div class="party-row">
       <section class="party-block">
-        <div class="section-title">宛先</div>
-        <div class="block-body multiline-text">
+        <div class="party-title">宛先</div>
+        <div class="party-body multiline-text">
           {% for line in pdf.contact_lines %}
           <p class="line">{{ line }}</p>
           {% endfor %}
         </div>
       </section>
       <section class="party-block">
-        <div class="section-title">発行者</div>
-        <div class="block-body multiline-text">
+        <div class="party-title">発行者</div>
+        <div class="party-body multiline-text">
           {% for line in pdf.issuer_lines %}
           <p class="line">{{ line }}</p>
           {% endfor %}
