@@ -32,6 +32,10 @@
           <input class="form-control" name="issuer_phone" value="{{ form_data.issuer_phone or '' }}">
         </div>
         <div class="col-md-4">
+          <label class="form-label">メールアドレス</label>
+          <input class="form-control" type="email" name="issuer_email" value="{{ form_data.issuer_email or '' }}">
+        </div>
+        <div class="col-md-4">
           <label class="form-label">並び順</label>
           <input class="form-control" type="number" step="1" name="sort_order" value="{{ form_data.sort_order or '0' }}">
         </div>

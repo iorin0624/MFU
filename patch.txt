@@ -1,264 +1,1790 @@
-diff --git a/invoice/template/invoice_detail.html b/invoice/template/invoice_detail.html
-index 87fe3e36f66386f4b30db4260d9213030009b7e8..f423bf7b5d2f64a4f9daca88e731829d3ec882f7 100644
---- a/invoice/template/invoice_detail.html
-+++ b/invoice/template/invoice_detail.html
+diff --git a/docs/sql/20260318_invoice_tables.sql b/docs/sql/20260318_invoice_tables.sql
+index b2f5ee02c62ec5d0eceb72e2b4a9daf63785acf3..84f3d359c117c7e870c59e7471d2f1c92e1050d3 100644
+--- a/docs/sql/20260318_invoice_tables.sql
++++ b/docs/sql/20260318_invoice_tables.sql
+@@ -18,92 +18,94 @@ CREATE TABLE IF NOT EXISTS invoice_contacts (
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
+ CREATE TABLE IF NOT EXISTS invoice_headers (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     invoice_no VARCHAR(32) NOT NULL,
+     issue_date DATE NOT NULL,
+     due_date DATE NOT NULL,
+     contact_id INT NULL,
+     contact_name_snapshot VARCHAR(191) NOT NULL,
+     contact_department_snapshot VARCHAR(191) NULL,
+     contact_person_snapshot VARCHAR(191) NULL,
+     contact_honorific_snapshot VARCHAR(32) NULL,
+     contact_email_snapshot VARCHAR(255) NULL,
+     contact_postal_code_snapshot VARCHAR(32) NULL,
+     contact_address1_snapshot VARCHAR(255) NULL,
+     contact_address2_snapshot VARCHAR(255) NULL,
+     contact_phone_snapshot VARCHAR(64) NULL,
+     subject VARCHAR(255) NOT NULL,
+     note TEXT NULL,
+     bank_info TEXT NULL,
+     issuer_name VARCHAR(191) NOT NULL,
+     issuer_postal_code VARCHAR(32) NULL,
+     issuer_address1 VARCHAR(255) NULL,
+     issuer_address2 VARCHAR(255) NULL,
+     issuer_phone VARCHAR(64) NULL,
++    issuer_email VARCHAR(255) NULL,
+     subtotal_yen INT NOT NULL DEFAULT 0,
+     tax_yen INT NOT NULL DEFAULT 0,
+     total_yen INT NOT NULL DEFAULT 0,
+     tax_mode VARCHAR(16) NOT NULL DEFAULT 'external',
+     status VARCHAR(16) NOT NULL DEFAULT 'draft',
+     pdf_generated_at DATETIME NULL,
+     pdf_storage_path VARCHAR(512) NULL,
+     mailed_at DATETIME NULL,
+     freee_exported_at DATETIME NULL,
+     created_at DATETIME NOT NULL,
+     updated_at DATETIME NOT NULL,
+     UNIQUE KEY uniq_invoice_headers_invoice_no (invoice_no),
+     INDEX idx_invoice_headers_issue_date (issue_date),
+     INDEX idx_invoice_headers_due_date (due_date),
+     INDEX idx_invoice_headers_status (status),
+     INDEX idx_invoice_headers_contact_name (contact_name_snapshot)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
+ CREATE TABLE IF NOT EXISTS invoice_items (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     invoice_id INT NOT NULL,
+     sort_order INT NOT NULL DEFAULT 0,
+     item_name VARCHAR(255) NOT NULL,
+     quantity DECIMAL(12,2) NOT NULL DEFAULT 1.00,
+     unit_name VARCHAR(32) NULL,
+     unit_price_yen INT NOT NULL DEFAULT 0,
+     line_total_yen INT NOT NULL DEFAULT 0,
+     tax_category VARCHAR(64) NULL,
+     created_at DATETIME NOT NULL,
+     updated_at DATETIME NOT NULL,
+     INDEX idx_invoice_items_invoice_id (invoice_id),
+     INDEX idx_invoice_items_sort_order (sort_order)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
+ CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     template_name VARCHAR(255) NOT NULL,
+     issuer_name VARCHAR(191) NOT NULL,
+     issuer_postal_code VARCHAR(32) NULL,
+     issuer_address1 VARCHAR(255) NULL,
+     issuer_address2 VARCHAR(255) NULL,
+     issuer_phone VARCHAR(64) NULL,
++    issuer_email VARCHAR(255) NULL,
+     bank_info TEXT NULL,
+     note TEXT NULL,
+     sort_order INT NOT NULL DEFAULT 0,
+     is_default TINYINT(1) NOT NULL DEFAULT 0,
+     created_at DATETIME NOT NULL,
+     updated_at DATETIME NOT NULL,
+     INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
+     INDEX idx_invoice_issuer_templates_is_default (is_default, id)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
+ CREATE TABLE IF NOT EXISTS invoice_mail_logs (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     invoice_id INT NOT NULL,
+     to_email VARCHAR(512) NOT NULL,
+     cc_email VARCHAR(512) NULL,
+     bcc_email VARCHAR(512) NULL,
+     subject VARCHAR(255) NOT NULL,
+     body TEXT NULL,
+     attachment_filename VARCHAR(255) NULL,
+     sent_at DATETIME NULL,
+     status VARCHAR(32) NOT NULL,
+     error_message TEXT NULL,
+     created_at DATETIME NOT NULL,
+     INDEX idx_invoice_mail_logs_invoice_id (invoice_id),
+     INDEX idx_invoice_mail_logs_sent_at (sent_at)
+diff --git a/invoice/mail.py b/invoice/mail.py
+index 8f1941d2176ad2fffb1faec4985b1835c9f7a028..1b47377ede554183a055ab2d1579867714ed6384 100644
+--- a/invoice/mail.py
++++ b/invoice/mail.py
+@@ -1,49 +1,51 @@
+ from __future__ import annotations
+ 
+ from email.header import Header
+ from email.mime.application import MIMEApplication
+ from email.mime.multipart import MIMEMultipart
+ from email.mime.text import MIMEText
+ from email.utils import formataddr, formatdate
+ 
+ from app.utils.mail import send_mime
+ 
+ from .services import log_mail_result, mark_invoice_mailed
+ from .utils import now_jst, split_emails
+ 
+ 
+ def send_invoice_mail(invoice: dict, *, to_email: str, cc_email: str | None, bcc_email: str | None, subject: str, body: str, attachment_filename: str, pdf_bytes: bytes) -> None:
+     msg = MIMEMultipart()
+     msg["Subject"] = subject
+     msg["From"] = formataddr((str(Header(invoice.get("issuer_name") or "MFU", "utf-8")), "noreply@mail.iori0624.jp"))
+     msg["To"] = ", ".join(split_emails(to_email))
+     if cc_email:
+         msg["Cc"] = ", ".join(split_emails(cc_email))
+     if bcc_email:
+         msg["Bcc"] = ", ".join(split_emails(bcc_email))
+-    msg["Reply-To"] = invoice.get("contact_email_snapshot") or "admin@mail.iori0624.jp"
++    reply_to = (invoice.get("issuer_email") or "").strip()
++    if reply_to:
++        msg["Reply-To"] = reply_to
+     msg["Date"] = formatdate(localtime=True)
+     msg.attach(MIMEText(body, "plain", "utf-8"))
+ 
+     part = MIMEApplication(pdf_bytes, _subtype="pdf")
+     part.add_header("Content-Disposition", "attachment", filename=str(Header(attachment_filename, "utf-8")))
+     msg.attach(part)
+ 
+     try:
+         send_mime(msg)
+         sent_at = now_jst()
+         mark_invoice_mailed(int(invoice["id"]))
+         log_mail_result(
+             int(invoice["id"]),
+             to_email=to_email,
+             cc_email=cc_email,
+             bcc_email=bcc_email,
+             subject=subject,
+             body=body,
+             attachment_filename=attachment_filename,
+             status="sent",
+             sent_at=sent_at,
+         )
+     except Exception as exc:
+         log_mail_result(
+             int(invoice["id"]),
+diff --git a/invoice/routes.py b/invoice/routes.py
+index e18af2196d1a7e8de9ff954386d572ee9193607b..52a931cdc4777936463954938931bda8a0599f4e 100644
+--- a/invoice/routes.py
++++ b/invoice/routes.py
 @@ -1,39 +1,40 @@
+ from __future__ import annotations
+ 
+ import threading
+ from functools import wraps
+ 
+ from flask import flash, redirect, render_template, request, send_file, session, url_for
+ 
+ from . import invoice_bp
+ from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
+ from .mail import send_invoice_mail
+ from .pdf import generate_invoice_pdf
+ from .services import (
+     InvoiceValidationError,
+     apply_issuer_template_to_form_data,
++    build_default_invoice_mail_body,
+     build_issuer_template_form_data,
+     build_fuel_cost_helper,
+     build_invoice_form_data,
+     create_issuer_template,
+     delete_contact,
+     delete_issuer_template,
+     duplicate_invoice,
+     ensure_invoice_schema,
+     fetch_contacts,
+     get_default_issuer_template,
+     get_contact,
+     get_invoice,
+     get_issuer_template_by_id,
+     list_invoices,
+     list_issuer_templates,
+     log_csv_export,
+     mark_invoice_issued,
+     parse_invoice_items,
+     save_contact,
+     save_invoice,
+     set_default_issuer_template,
+     update_issuer_template,
+     update_invoice_status,
+ )
+ from .utils import (
+@@ -309,96 +310,107 @@ def invoice_edit(invoice_id: int):
+ @invoice_bp.post("/<int:invoice_id>/duplicate")
+ @login_required
+ def invoice_duplicate(invoice_id: int):
+     try:
+         new_id = duplicate_invoice(invoice_id)
+         flash("請求書を複製しました。", "success")
+         return redirect(url_for("invoice.invoice_detail", invoice_id=new_id))
+     except InvoiceValidationError as exc:
+         flash(str(exc), "warning")
+         return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ 
+ 
+ @invoice_bp.get("/<int:invoice_id>")
+ @login_required
+ def invoice_detail(invoice_id: int):
+     invoice = get_invoice(invoice_id)
+     if not invoice:
+         flash("請求書が見つかりません。", "warning")
+         return redirect(url_for("invoice.invoice_list"))
+     return render_template(
+         "invoice_detail.html",
+         invoice=invoice,
+         status_labels=STATUS_LABELS,
+         tax_mode_labels=TAX_MODE_LABELS,
+         default_mail_subject=build_mail_subject(invoice.get("issue_date")),
+-        default_mail_body="いつもお世話になっております。\n\n請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
++        default_mail_body=build_default_invoice_mail_body(invoice),
+         mail_to_default=invoice.get("contact_email_snapshot") or "",
+     )
+ 
+ 
+ @invoice_bp.post("/<int:invoice_id>/issue")
+ @login_required
+ def invoice_issue(invoice_id: int):
+     mark_invoice_issued(invoice_id)
+     flash("請求書を発行済みに更新しました。", "success")
+     return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ 
+ 
+ @invoice_bp.post("/<int:invoice_id>/status")
+ @login_required
+ def invoice_update_status(invoice_id: int):
+     status = request.form.get("status") or "draft"
+     update_invoice_status(invoice_id, status)
+     flash("ステータスを更新しました。", "success")
+     return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ 
+ 
+ @invoice_bp.get("/<int:invoice_id>/pdf")
+ @login_required
+ def invoice_pdf(invoice_id: int):
+     invoice = get_invoice(invoice_id)
+     if not invoice:
+         flash("請求書が見つかりません。", "warning")
+         return redirect(url_for("invoice.invoice_list"))
+     pdf_path, visible_name, _ = generate_invoice_pdf(invoice)
+     return send_file(pdf_path, as_attachment=True, download_name=visible_name, mimetype="application/pdf")
+ 
+ 
+ @invoice_bp.route("/<int:invoice_id>/mail", methods=["GET", "POST"])
+ @login_required
+ def invoice_mail(invoice_id: int):
+     invoice = get_invoice(invoice_id)
+     if not invoice:
+         flash("請求書が見つかりません。", "warning")
+         return redirect(url_for("invoice.invoice_list"))
++    mail_context = dict(invoice)
++    if invoice.get("contact_id"):
++        contact = get_contact(int(invoice["contact_id"]))
++        if contact:
++            mail_context.update(
++                {
++                    "contact_name": contact.get("name"),
++                    "contact_person": contact.get("contact_name"),
++                    "honorific": contact.get("honorific"),
++                }
++            )
+     initial = {
+         "to_email": invoice.get("contact_email_snapshot") or "",
+-        "cc_email": "",
++        "cc_email": invoice.get("issuer_email") or "",
+         "bcc_email": "",
+         "subject": build_mail_subject(invoice.get("issue_date")),
+-        "body": "いつもお世話になっております。\n\n請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
++        "body": build_default_invoice_mail_body(mail_context),
+     }
+     if request.method == "POST":
+         to_email = (request.form.get("to_email") or "").strip()
+         cc_email = (request.form.get("cc_email") or "").strip()
+         bcc_email = (request.form.get("bcc_email") or "").strip()
+         subject = (request.form.get("subject") or "").strip()
+         body = request.form.get("body") or ""
+         if not to_email:
+             flash("宛先メールアドレスを入力してください。", "warning")
+             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
+         if request.form.get("confirm_send") != "yes":
+             flash("送信前確認にチェックを入れてください。", "warning")
+             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
+         try:
+             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
+             send_invoice_mail(
+                 invoice,
+                 to_email=to_email,
+                 cc_email=cc_email or None,
+                 bcc_email=bcc_email or None,
+                 subject=subject,
+                 body=body,
+                 attachment_filename=attachment_name,
+                 pdf_bytes=pdf_bytes,
+             )
+@@ -428,82 +440,84 @@ def invoice_freee_csv(invoice_id: int):
+         log_csv_export(invoice_id, f"freee_invoice_{invoice.get('invoice_no')}.csv", status="failed", error_message=str(exc))
+         flash(f"freee CSV の出力に失敗しました: {exc}", "danger")
+         return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ 
+ 
+ @invoice_bp.get("/<int:invoice_id>/mail/new")
+ @login_required
+ def invoice_mail_redirect(invoice_id: int):
+     return redirect(url_for("invoice.invoice_mail", invoice_id=invoice_id))
+ 
+ 
+ def _normalized_invoice_form(form):
+     return _FormProxy({
+         "contact_id": form.get("contact_id"),
+         "issue_date": parse_date(form.get("issue_date")),
+         "due_date": parse_date(form.get("due_date")),
+         "subject": form.get("subject"),
+         "note": form.get("note"),
+         "bank_info": form.get("bank_info"),
+         "issuer_template_id": form.get("issuer_template_id"),
+         "issuer_name": form.get("issuer_name"),
+         "issuer_postal_code": form.get("issuer_postal_code"),
+         "issuer_address1": form.get("issuer_address1"),
+         "issuer_address2": form.get("issuer_address2"),
+         "issuer_phone": form.get("issuer_phone"),
++        "issuer_email": form.get("issuer_email"),
+         "tax_mode": form.get("tax_mode"),
+         "status": form.get("status") or "draft",
+         "getlist": form.getlist,
+     })
+ 
+ 
+ class _FormProxy(dict):
+     def getlist(self, key):
+         getter = super().get("getlist")
+         if callable(getter):
+             return getter(key)
+         value = super().get(key, [])
+         return value if isinstance(value, list) else [value]
+ 
+ 
+ 
+ def _posted_invoice_form_data(form, base=None):
+     base = base or {}
+     data = dict(base)
+     data.update({
+         "contact_id": form.get("contact_id"),
+         "issue_date": form.get("issue_date"),
+         "due_date": form.get("due_date"),
+         "subject": form.get("subject"),
+         "note": form.get("note"),
+         "bank_info": form.get("bank_info"),
+         "issuer_template_id": form.get("issuer_template_id"),
+         "issuer_name": form.get("issuer_name"),
+         "issuer_postal_code": form.get("issuer_postal_code"),
+         "issuer_address1": form.get("issuer_address1"),
+         "issuer_address2": form.get("issuer_address2"),
+         "issuer_phone": form.get("issuer_phone"),
++        "issuer_email": form.get("issuer_email"),
+         "tax_mode": form.get("tax_mode"),
+         "status": form.get("status") or "draft",
+     })
+     proxy = _FormProxy({"getlist": form.getlist})
+     try:
+         items = parse_invoice_items(proxy)
+         data["items"] = [
+             {
+                 "row_type": item.row_type,
+                 "item_name": item.item_name,
+                 "memo_text": item.memo_text,
+                 "quantity": str(item.quantity),
+                 "unit_name": item.unit_name,
+                 "unit_price_yen": str(item.unit_price_yen),
+                 "line_total_yen": str(item.line_total_yen),
+                 "tax_category": item.tax_category,
+             }
+             for item in items
+         ]
+     except Exception:
+         row_types = form.getlist("row_type[]")
+         item_names = form.getlist("item_name[]")
+         memo_texts = form.getlist("memo_text[]")
+         quantities = form.getlist("quantity[]")
+         unit_names = form.getlist("unit_name[]")
+diff --git a/invoice/services.py b/invoice/services.py
+index f698591c6efda85ca8f6c18da584e5554a7a7f3d..d940fa0f14116076b78315966c3fdfdc146314b4 100644
+--- a/invoice/services.py
++++ b/invoice/services.py
+@@ -61,106 +61,110 @@ class InvoiceItemInput:
+     @property
+     def line_total_yen(self) -> int:
+         return self.base_amount_yen
+ 
+ 
+ class InvoiceValidationError(ValueError):
+     pass
+ 
+ 
+ def normalize_multiline_text(value: Any) -> str | None:
+     text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+     return text or None
+ 
+ 
+ def _issuer_template_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
+     if not row:
+         return None
+     return {
+         "id": row.get("id"),
+         "template_name": row.get("template_name") or "",
+         "issuer_name": row.get("issuer_name") or "",
+         "issuer_postal_code": row.get("issuer_postal_code") or "",
+         "issuer_address1": row.get("issuer_address1") or "",
+         "issuer_address2": row.get("issuer_address2") or "",
+         "issuer_phone": row.get("issuer_phone") or "",
++        "issuer_email": row.get("issuer_email") or "",
+         "bank_info": row.get("bank_info") or "",
+         "note": row.get("note") or "",
+         "sort_order": int(row.get("sort_order") or 0),
+         "is_default": bool(row.get("is_default")),
+     }
+ 
+ 
+ def list_issuer_templates() -> list[dict[str, Any]]:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT *
+             FROM invoice_issuer_templates
+             ORDER BY sort_order ASC, id ASC
+             """
+         )
+         return [_issuer_template_to_dict(row) for row in cur.fetchall()]
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def ensure_invoice_issuer_templates_table(cur=None) -> None:
+     should_close = cur is None
+     db = None
+     if cur is None:
+         db = get_db()
+         cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 template_name VARCHAR(255) NOT NULL,
+                 issuer_name VARCHAR(191) NOT NULL,
+                 issuer_postal_code VARCHAR(32) NULL,
+                 issuer_address1 VARCHAR(255) NULL,
+                 issuer_address2 VARCHAR(255) NULL,
+                 issuer_phone VARCHAR(64) NULL,
++                issuer_email VARCHAR(255) NULL,
+                 bank_info TEXT NULL,
+                 note TEXT NULL,
+                 sort_order INT NOT NULL DEFAULT 0,
+                 is_default TINYINT(1) NOT NULL DEFAULT 0,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
+                 INDEX idx_invoice_issuer_templates_is_default (is_default, id)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         if not _column_exists(cur, "invoice_issuer_templates", "bank_info"):
+             cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN bank_info TEXT NULL AFTER issuer_phone")
+         if not _column_exists(cur, "invoice_issuer_templates", "note"):
+             cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN note TEXT NULL AFTER bank_info")
++        if not _column_exists(cur, "invoice_issuer_templates", "issuer_email"):
++            cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN issuer_email VARCHAR(255) NULL AFTER issuer_phone")
+         if should_close and db is not None:
+             db.commit()
+     finally:
+         if should_close:
+             cur.close()
+             db.close()
+ 
+ 
+ def get_default_issuer_template() -> dict[str, Any] | None:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT *
+             FROM invoice_issuer_templates
+             WHERE is_default = 1
+             ORDER BY sort_order ASC, id ASC
+             LIMIT 1
+             """
+         )
+         return _issuer_template_to_dict(cur.fetchone())
+     finally:
+         cur.close()
+         db.close()
+@@ -179,179 +183,185 @@ def get_issuer_template_by_id(template_id: int) -> dict[str, Any] | None:
+         cur.close()
+         db.close()
+ 
+ 
+ def _parse_issuer_template_form(form: dict[str, Any]) -> dict[str, Any]:
+     template_name = (form.get("template_name") or "").strip()
+     issuer_name = (form.get("issuer_name") or "").strip()
+     sort_order_raw = (form.get("sort_order") or "0").strip()
+ 
+     if not template_name:
+         raise InvoiceValidationError("テンプレート名を入力してください。")
+     if not issuer_name:
+         raise InvoiceValidationError("発行者名を入力してください。")
+     try:
+         sort_order = int(sort_order_raw or "0")
+     except (TypeError, ValueError) as exc:
+         raise InvoiceValidationError("並び順は数値で入力してください。") from exc
+ 
+     return {
+         "template_name": template_name,
+         "issuer_name": issuer_name,
+         "issuer_postal_code": (form.get("issuer_postal_code") or "").strip() or None,
+         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
+         "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
+         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
++        "issuer_email": (form.get("issuer_email") or "").strip() or None,
+         "bank_info": normalize_multiline_text(form.get("bank_info")),
+         "note": normalize_multiline_text(form.get("note")),
+         "sort_order": sort_order,
+         "is_default": 1 if str(form.get("is_default") or "").lower() in {"1", "true", "on", "yes"} else 0,
+     }
+ 
+ 
+ def build_issuer_template_form_data(template: dict[str, Any] | None = None) -> dict[str, Any]:
+     data = {
+         "template_name": "",
+         "issuer_name": "",
+         "issuer_postal_code": "",
+         "issuer_address1": "",
+         "issuer_address2": "",
+         "issuer_phone": "",
++        "issuer_email": "",
+         "bank_info": "",
+         "note": "",
+         "sort_order": "0",
+         "is_default": "",
+     }
+     if not template:
+         return data
+     data.update(
+         {
+             "template_name": template.get("template_name") or "",
+             "issuer_name": template.get("issuer_name") or "",
+             "issuer_postal_code": template.get("issuer_postal_code") or "",
+             "issuer_address1": template.get("issuer_address1") or "",
+             "issuer_address2": template.get("issuer_address2") or "",
+             "issuer_phone": template.get("issuer_phone") or "",
++            "issuer_email": template.get("issuer_email") or "",
+             "bank_info": template.get("bank_info") or "",
+             "note": template.get("note") or "",
+             "sort_order": str(int(template.get("sort_order") or 0)),
+             "is_default": "1" if template.get("is_default") else "",
+         }
+     )
+     return data
+ 
+ 
+ def set_default_issuer_template(template_id: int) -> None:
+     now = now_jst()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         ensure_invoice_issuer_templates_table(cur)
+         cur.execute("UPDATE invoice_issuer_templates SET is_default = 0, updated_at = %s WHERE is_default = 1", (now,))
+         cur.execute(
+             "UPDATE invoice_issuer_templates SET is_default = 1, updated_at = %s WHERE id = %s",
+             (now, template_id),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def create_issuer_template(form: dict[str, Any]) -> int:
+     payload = _parse_issuer_template_form(form)
+     now = now_jst()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         ensure_invoice_issuer_templates_table(cur)
+         if payload["is_default"]:
+             cur.execute("UPDATE invoice_issuer_templates SET is_default = 0, updated_at = %s WHERE is_default = 1", (now,))
+         cur.execute(
+             """
+             INSERT INTO invoice_issuer_templates (
+                 template_name, issuer_name, issuer_postal_code, issuer_address1,
+-                issuer_address2, issuer_phone, bank_info, note, sort_order, is_default, created_at, updated_at
+-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
++                issuer_address2, issuer_phone, issuer_email, bank_info, note, sort_order, is_default, created_at, updated_at
++            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             """,
+             (
+                 payload["template_name"],
+                 payload["issuer_name"],
+                 payload["issuer_postal_code"],
+                 payload["issuer_address1"],
+                 payload["issuer_address2"],
+                 payload["issuer_phone"],
++                payload["issuer_email"],
+                 payload["bank_info"],
+                 payload["note"],
+                 payload["sort_order"],
+                 payload["is_default"],
+                 now,
+                 now,
+             ),
+         )
+         db.commit()
+         return int(cur.lastrowid)
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def update_issuer_template(template_id: int, form: dict[str, Any]) -> None:
+     payload = _parse_issuer_template_form(form)
+     now = now_jst()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         ensure_invoice_issuer_templates_table(cur)
+         if payload["is_default"]:
+             cur.execute(
+                 "UPDATE invoice_issuer_templates SET is_default = 0, updated_at = %s WHERE is_default = 1 AND id <> %s",
+                 (now, template_id),
+             )
+         cur.execute(
+             """
+             UPDATE invoice_issuer_templates
+             SET template_name = %s,
+                 issuer_name = %s,
+                 issuer_postal_code = %s,
+                 issuer_address1 = %s,
+                 issuer_address2 = %s,
+                 issuer_phone = %s,
++                issuer_email = %s,
+                 bank_info = %s,
+                 note = %s,
+                 sort_order = %s,
+                 is_default = %s,
+                 updated_at = %s
+             WHERE id = %s
+             """,
+             (
+                 payload["template_name"],
+                 payload["issuer_name"],
+                 payload["issuer_postal_code"],
+                 payload["issuer_address1"],
+                 payload["issuer_address2"],
+                 payload["issuer_phone"],
++                payload["issuer_email"],
+                 payload["bank_info"],
+                 payload["note"],
+                 payload["sort_order"],
+                 payload["is_default"],
+                 now,
+                 template_id,
+             ),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def delete_issuer_template(template_id: int) -> None:
+     db = get_db()
+     cur = db.cursor()
+     try:
+         ensure_invoice_issuer_templates_table(cur)
+         cur.execute("DELETE FROM invoice_issuer_templates WHERE id = %s", (template_id,))
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+@@ -432,50 +442,82 @@ def build_fuel_cost_helper() -> dict[str, Any]:
+ 
+     return {
+         "available": True,
+         "message": "",
+         "trip_km": format_quantity(trip_km),
+         "liters": format_quantity(liters),
+         "yen_per_liter": str(int(to_decimal(yen_per_liter))),
+         "yen_per_km": yen_per_km,
+         "item_name": "ガソリン代",
+         "quantity": "1",
+         "unit_name": "km",
+         "tax_category": DEFAULT_TAX_CATEGORY,
+     }
+ 
+ 
+ def _column_exists(cur, table_name: str, column_name: str) -> bool:
+     cur.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (column_name,))
+     return cur.fetchone() is not None
+ 
+ 
+ def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
+     if not _column_exists(cur, "invoice_items", column_name):
+         cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
+ 
+ 
++def build_invoice_mail_recipient_label(
++    contact_name: Any,
++    contact_person: Any,
++    honorific: Any,
++) -> str:
++    company_name = str(contact_name or "").strip()
++    person_name = str(contact_person or "").strip()
++    suffix = str(honorific or "").strip()
++
++    if company_name and person_name:
++        return f"{company_name}　{person_name}{suffix}"
++    if company_name:
++        return f"{company_name}{suffix}"
++    if person_name:
++        return f"{person_name}{suffix}"
++    return "お客様"
++
++
++def build_default_invoice_mail_body(invoice_data: dict[str, Any]) -> str:
++    recipient_label = build_invoice_mail_recipient_label(
++        invoice_data.get("contact_name_snapshot") or invoice_data.get("contact_name"),
++        invoice_data.get("contact_person_snapshot") or invoice_data.get("contact_person"),
++        invoice_data.get("contact_honorific_snapshot") or invoice_data.get("honorific"),
++    )
++    issuer_name = (invoice_data.get("issuer_name") or "").strip() or "請求元"
++    return (
++        f"いつもお世話になっております、{recipient_label}\n"
++        f"{issuer_name}です。\n\n"
++        "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。"
++    )
++
++
+ def ensure_invoice_schema() -> None:
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_contacts (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 name VARCHAR(191) NOT NULL,
+                 department_name VARCHAR(191) NULL,
+                 contact_name VARCHAR(191) NULL,
+                 honorific VARCHAR(32) NULL,
+                 email VARCHAR(255) NULL,
+                 postal_code VARCHAR(32) NULL,
+                 address1 VARCHAR(255) NULL,
+                 address2 VARCHAR(255) NULL,
+                 phone VARCHAR(64) NULL,
+                 freee_partner_name VARCHAR(191) NULL,
+                 default_due_days INT NULL,
+                 note TEXT NULL,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 INDEX idx_invoice_contacts_name (name)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+@@ -483,92 +525,95 @@ def ensure_invoice_schema() -> None:
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_headers (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 invoice_no VARCHAR(32) NOT NULL,
+                 issue_date DATE NOT NULL,
+                 due_date DATE NOT NULL,
+                 contact_id INT NULL,
+                 contact_name_snapshot VARCHAR(191) NOT NULL,
+                 contact_department_snapshot VARCHAR(191) NULL,
+                 contact_person_snapshot VARCHAR(191) NULL,
+                 contact_honorific_snapshot VARCHAR(32) NULL,
+                 contact_email_snapshot VARCHAR(255) NULL,
+                 contact_postal_code_snapshot VARCHAR(32) NULL,
+                 contact_address1_snapshot VARCHAR(255) NULL,
+                 contact_address2_snapshot VARCHAR(255) NULL,
+                 contact_phone_snapshot VARCHAR(64) NULL,
+                 subject VARCHAR(255) NOT NULL,
+                 note TEXT NULL,
+                 bank_info TEXT NULL,
+                 issuer_name VARCHAR(191) NOT NULL,
+                 issuer_postal_code VARCHAR(32) NULL,
+                 issuer_address1 VARCHAR(255) NULL,
+                 issuer_address2 VARCHAR(255) NULL,
+                 issuer_phone VARCHAR(64) NULL,
++                issuer_email VARCHAR(255) NULL,
+                 subtotal_yen INT NOT NULL DEFAULT 0,
+                 tax_yen INT NOT NULL DEFAULT 0,
+                 total_yen INT NOT NULL DEFAULT 0,
+                 tax_mode VARCHAR(16) NOT NULL DEFAULT 'external',
+                 status VARCHAR(16) NOT NULL DEFAULT 'draft',
+                 pdf_generated_at DATETIME NULL,
+                 pdf_storage_path VARCHAR(512) NULL,
+                 mailed_at DATETIME NULL,
+                 freee_exported_at DATETIME NULL,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 UNIQUE KEY uniq_invoice_headers_invoice_no (invoice_no),
+                 INDEX idx_invoice_headers_issue_date (issue_date),
+                 INDEX idx_invoice_headers_due_date (due_date),
+                 INDEX idx_invoice_headers_status (status),
+                 INDEX idx_invoice_headers_contact_name (contact_name_snapshot)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_items (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 invoice_id INT NOT NULL,
+                 sort_order INT NOT NULL DEFAULT 0,
+                 row_type VARCHAR(16) NOT NULL DEFAULT 'normal',
+                 item_name VARCHAR(255) NOT NULL,
+                 memo_text TEXT NULL,
+                 quantity DECIMAL(12,2) NOT NULL DEFAULT 1.00,
+                 unit_name VARCHAR(32) NULL,
+                 unit_price_yen INT NOT NULL DEFAULT 0,
+                 line_total_yen INT NOT NULL DEFAULT 0,
+                 tax_category VARCHAR(64) NULL,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 INDEX idx_invoice_items_invoice_id (invoice_id),
+                 INDEX idx_invoice_items_sort_order (sort_order)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
+         _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
++        if not _column_exists(cur, "invoice_headers", "issuer_email"):
++            cur.execute("ALTER TABLE invoice_headers ADD COLUMN issuer_email VARCHAR(255) NULL AFTER issuer_phone")
+         ensure_invoice_issuer_templates_table(cur)
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 invoice_id INT NOT NULL,
+                 to_email VARCHAR(512) NOT NULL,
+                 cc_email VARCHAR(512) NULL,
+                 bcc_email VARCHAR(512) NULL,
+                 subject VARCHAR(255) NOT NULL,
+                 body TEXT NULL,
+                 attachment_filename VARCHAR(255) NULL,
+                 sent_at DATETIME NULL,
+                 status VARCHAR(32) NOT NULL,
+                 error_message TEXT NULL,
+                 created_at DATETIME NOT NULL,
+                 INDEX idx_invoice_mail_logs_invoice_id (invoice_id),
+                 INDEX idx_invoice_mail_logs_sent_at (sent_at)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_csv_logs (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+@@ -824,50 +869,51 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
+         raise InvoiceValidationError("請求日を入力してください。")
+     if not due:
+         due = default_due_date(issue, contact.get("default_due_days"))
+     tax_mode = normalize_tax_mode(form.get("tax_mode"))
+     totals = calculate_invoice_totals(items, tax_mode)
+     subject = (form.get("subject") or "").strip()
+     if not subject:
+         raise InvoiceValidationError("件名を入力してください。")
+     issuer_name = (form.get("issuer_name") or "").strip()
+     if not issuer_name:
+         raise InvoiceValidationError("発行者名を入力してください。")
+     snapshot = _snapshot_contact(contact)
+     payload = {
+         "issue_date": issue,
+         "due_date": due,
+         "contact_id": contact.get("id"),
+         **snapshot,
+         "subject": subject,
+         "note": normalize_multiline_text(form.get("note")),
+         "bank_info": normalize_multiline_text(form.get("bank_info")),
+         "issuer_name": issuer_name,
+         "issuer_postal_code": (form.get("issuer_postal_code") or "").strip() or None,
+         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
+         "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
+         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
++        "issuer_email": (form.get("issuer_email") or "").strip() or None,
+         **totals,
+         "tax_mode": tax_mode,
+         "status": normalize_status(form.get("status") or "draft"),
+     }
+     return payload
+ 
+ 
+ def serialize_invoice_item(item: InvoiceItemInput, tax_mode: str) -> dict[str, Any]:
+     line_amounts = item.line_amounts(tax_mode)
+     return {
+         "row_type": item.row_type,
+         "item_name": item.item_name,
+         "memo_text": item.memo_text,
+         "quantity": str(item.quantity),
+         "unit_name": item.unit_name,
+         "unit_price_yen": str(item.unit_price_yen),
+         "line_subtotal_yen": line_amounts["line_subtotal_yen"],
+         "line_tax_yen": line_amounts["line_tax_yen"],
+         "line_total_yen": line_amounts["line_total_yen"],
+         "tax_category": normalize_tax_category(item.tax_category),
+         "tax_category_label": TAX_CATEGORY_LABELS[normalize_tax_category(item.tax_category)],
+         "sort_order": item.sort_order,
+     }
+ 
+ 
+@@ -959,105 +1005,106 @@ def save_invoice(invoice_id: int | None, form) -> int:
+     try:
+         if invoice_id:
+             cur.execute(
+                 """
+                 UPDATE invoice_headers
+                 SET issue_date=%s,
+                     due_date=%s,
+                     contact_id=%s,
+                     contact_name_snapshot=%s,
+                     contact_department_snapshot=%s,
+                     contact_person_snapshot=%s,
+                     contact_honorific_snapshot=%s,
+                     contact_email_snapshot=%s,
+                     contact_postal_code_snapshot=%s,
+                     contact_address1_snapshot=%s,
+                     contact_address2_snapshot=%s,
+                     contact_phone_snapshot=%s,
+                     subject=%s,
+                     note=%s,
+                     bank_info=%s,
+                     issuer_name=%s,
+                     issuer_postal_code=%s,
+                     issuer_address1=%s,
+                     issuer_address2=%s,
+                     issuer_phone=%s,
++                    issuer_email=%s,
+                     subtotal_yen=%s,
+                     tax_yen=%s,
+                     total_yen=%s,
+                     tax_mode=%s,
+                     status=%s,
+                     updated_at=%s
+                 WHERE id=%s
+                 """,
+                 (
+                     payload["issue_date"], payload["due_date"], payload["contact_id"],
+                     payload["contact_name_snapshot"], payload["contact_department_snapshot"],
+                     payload["contact_person_snapshot"], payload["contact_honorific_snapshot"],
+                     payload["contact_email_snapshot"], payload["contact_postal_code_snapshot"],
+                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"],
+                     payload["contact_phone_snapshot"], payload["subject"], payload["note"],
+                     payload["bank_info"], payload["issuer_name"], payload["issuer_postal_code"],
+-                    payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"],
++                    payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"],
+                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"],
+                     payload["tax_mode"], payload["status"], now, invoice_id,
+                 ),
+             )
+             cur.execute("DELETE FROM invoice_items WHERE invoice_id = %s", (invoice_id,))
+         else:
+             invoice_no = _next_invoice_no(cur, payload["issue_date"])
+             cur.execute(
+                 """
+                 INSERT INTO invoice_headers (
+                     invoice_no, issue_date, due_date, contact_id,
+                     contact_name_snapshot, contact_department_snapshot, contact_person_snapshot,
+                     contact_honorific_snapshot, contact_email_snapshot, contact_postal_code_snapshot,
+                     contact_address1_snapshot, contact_address2_snapshot, contact_phone_snapshot,
+                     subject, note, bank_info,
+-                    issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone,
++                    issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email,
+                     subtotal_yen, tax_yen, total_yen, tax_mode, status,
+                     pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
+                     created_at, updated_at
+                 ) VALUES (
+                     %s, %s, %s, %s,
+                     %s, %s, %s,
+                     %s, %s, %s,
+                     %s, %s, %s,
+                     %s, %s, %s,
+-                    %s, %s, %s, %s, %s,
++                    %s, %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s,
+                     NULL, NULL, NULL, NULL,
+                     %s, %s
+                 )
+                 """,
+                 (
+                     invoice_no, payload["issue_date"], payload["due_date"], payload["contact_id"],
+                     payload["contact_name_snapshot"], payload["contact_department_snapshot"], payload["contact_person_snapshot"],
+                     payload["contact_honorific_snapshot"], payload["contact_email_snapshot"], payload["contact_postal_code_snapshot"],
+                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"], payload["contact_phone_snapshot"],
+                     payload["subject"], payload["note"], payload["bank_info"],
+-                    payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"],
++                    payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"],
+                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"], payload["tax_mode"], "draft",
+                     now, now,
+                 ),
+             )
+             invoice_id = int(cur.lastrowid)
+         cur.executemany(
+             """
+             INSERT INTO invoice_items (
+                 invoice_id, sort_order, row_type, item_name, memo_text, quantity, unit_name,
+                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
+             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             """,
+             [
+                 (
+                     invoice_id,
+                     item.sort_order,
+                     item.row_type,
+                     item.item_name or "",
+                     item.memo_text or None,
+                     item.quantity,
+                     item.unit_name or None,
+                     item.unit_price_yen,
+                     item.line_amounts(payload["tax_mode"])["line_total_yen"],
+                     item.tax_category,
+                     now,
+@@ -1156,73 +1203,73 @@ def get_invoice(invoice_id: int) -> dict[str, Any] | None:
+         )
+         invoice["csv_logs"] = cur.fetchall()
+         return invoice
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def duplicate_invoice(invoice_id: int) -> int:
+     original = get_invoice(invoice_id)
+     if not original:
+         raise InvoiceValidationError("複製元の請求書が見つかりません。")
+     db = get_db()
+     cur = db.cursor()
+     now = now_jst()
+     try:
+         new_invoice_no = _next_invoice_no(cur, original["issue_date"])
+         cur.execute(
+             """
+             INSERT INTO invoice_headers (
+                 invoice_no, issue_date, due_date, contact_id,
+                 contact_name_snapshot, contact_department_snapshot, contact_person_snapshot,
+                 contact_honorific_snapshot, contact_email_snapshot, contact_postal_code_snapshot,
+                 contact_address1_snapshot, contact_address2_snapshot, contact_phone_snapshot,
+                 subject, note, bank_info,
+-                issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone,
++                issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email,
+                 subtotal_yen, tax_yen, total_yen, tax_mode, status,
+                 pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
+                 created_at, updated_at
+             ) VALUES (
+                 %s, %s, %s, %s,
+                 %s, %s, %s,
+                 %s, %s, %s,
+                 %s, %s, %s,
+                 %s, %s, %s,
+-                %s, %s, %s, %s, %s,
++                %s, %s, %s, %s, %s, %s,
+                 %s, %s, %s, %s, %s,
+                 NULL, NULL, NULL, NULL,
+                 %s, %s
+             )
+             """,
+             (
+                 new_invoice_no, original["issue_date"], original["due_date"], original.get("contact_id"),
+                 original.get("contact_name_snapshot"), original.get("contact_department_snapshot"), original.get("contact_person_snapshot"),
+                 original.get("contact_honorific_snapshot"), original.get("contact_email_snapshot"), original.get("contact_postal_code_snapshot"),
+                 original.get("contact_address1_snapshot"), original.get("contact_address2_snapshot"), original.get("contact_phone_snapshot"),
+                 original.get("subject"), original.get("note"), original.get("bank_info"),
+-                original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"),
++                original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"), original.get("issuer_email"),
+                 original.get("subtotal_yen"), original.get("tax_yen"), original.get("total_yen"), original.get("tax_mode"), "draft",
+                 now, now,
+             ),
+         )
+         new_id = int(cur.lastrowid)
+         cur.executemany(
+             """
+             INSERT INTO invoice_items (
+                 invoice_id, sort_order, row_type, item_name, memo_text, quantity, unit_name,
+                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
+             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             """,
+             [
+                 (
+                     new_id,
+                     item.get("sort_order") or 0,
+                     normalize_row_type(item.get("row_type")),
+                     item.get("item_name") or "",
+                     (item.get("memo_text") or "").strip() or None,
+                     item.get("quantity"),
+                     item.get("unit_name"),
+                     item.get("unit_price_yen") or 0,
+                     item.get("line_total_yen") or 0,
+                     normalize_tax_category(item.get("tax_category")),
+                     now,
+@@ -1331,50 +1378,51 @@ def log_csv_export(invoice_id: int, filename: str, *, status: str, error_message
+                 invoice_id, filename, exported_at, status, error_message, created_at
+             ) VALUES (%s, %s, %s, %s, %s, %s)
+             """,
+             (invoice_id, filename, now, status, error_message, now),
+         )
+         if status == "success":
+             cur.execute(
+                 "UPDATE invoice_headers SET freee_exported_at=%s, updated_at=%s WHERE id=%s",
+                 (now, now, invoice_id),
+             )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, Any]:
+     if not invoice:
+         today = now_jst().date()
+         return {
+             "issue_date": format_ymd(today),
+             "due_date": format_ymd(today),
+             "tax_mode": "external",
+             "status": "draft",
+             "issuer_template_id": "",
++            "issuer_email": "",
+             "items": [
+                 {
+                     "row_type": ROW_TYPE_NORMAL,
+                     "item_name": "",
+                     "memo_text": "",
+                     "quantity": "1.00",
+                     "unit_name": "式",
+                     "unit_price_yen": "0",
+                     "line_total_yen": "0",
+                     "tax_category": DEFAULT_TAX_CATEGORY,
+                 }
+             ],
+         }
+     data = dict(invoice)
+     data["issue_date"] = format_ymd(invoice.get("issue_date"))
+     data["due_date"] = format_ymd(invoice.get("due_date"))
+     if not data.get("items"):
+         data["items"] = []
+     for item in data["items"]:
+         item["row_type"] = normalize_row_type(item.get("row_type"))
+         item["memo_text"] = (item.get("memo_text") or "").strip()
+         item["quantity"] = str(item.get("quantity") or "1.00")
+         item["unit_price_yen"] = str(item.get("unit_price_yen") or 0)
+         item["line_total_yen"] = str(item.get("line_total_yen") or 0)
+         item["tax_category"] = normalize_tax_category(item.get("tax_category"))
+diff --git a/invoice/template/invoice_form.html b/invoice/template/invoice_form.html
+index bb56edb0b2199a4a09b66808f0650d0bcc03632e..b0eccc02f16d377589535c0b7fbddedf108e3353 100644
+--- a/invoice/template/invoice_form.html
++++ b/invoice/template/invoice_form.html
+@@ -25,50 +25,51 @@
+               {% for contact in contacts %}
+               <option value="{{ contact.id }}" {% if (form_data.contact_id|string) == (contact.id|string) %}selected{% endif %} data-due-days="{{ contact.default_due_days or 30 }}">{{ contact.name }}{% if contact.contact_name %} / {{ contact.contact_name }}{% endif %}</option>
+               {% endfor %}
+             </select>
+           </div>
+           <div class="col-md-3"><label class="form-label">請求日 *</label><input class="form-control" type="date" name="issue_date" value="{{ form_data.issue_date }}" required></div>
+           <div class="col-md-3"><label class="form-label">支払期限 *</label><input class="form-control" type="date" name="due_date" value="{{ form_data.due_date }}" required></div>
+           <div class="col-md-8"><label class="form-label">件名 *</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}" required></div>
+           <div class="col-md-4"><label class="form-label">税モード</label><select class="form-select" name="tax_mode" id="taxMode">{% for value, label in tax_mode_labels.items() %}<option value="{{ value }}" {% if form_data.tax_mode == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+           <div class="col-12">
+             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+               <label class="form-label mb-0">発行者テンプレート</label>
+               <a class="small" href="{{ url_for('invoice.issuer_template_list') }}">発行者テンプレート管理</a>
+             </div>
+             <select class="form-select" name="issuer_template_id" id="issuerTemplateSelect">
+               <option value="">選択してください</option>
+               {% for template in issuer_templates %}
+               <option value="{{ template.id }}" {% if (form_data.issuer_template_id|string) == (template.id|string) %}selected{% endif %}>{{ template.template_name }}{% if template.is_default %}（デフォルト）{% endif %}</option>
+               {% endfor %}
+             </select>
+             <div class="form-text">選択したテンプレートの内容で発行者欄を上書きします。反映後も手動編集できます。</div>
+           </div>
+           <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" id="issuerNameInput" value="{{ form_data.issuer_name or '' }}" required></div>
+           <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" id="issuerPostalCodeInput" value="{{ form_data.issuer_postal_code or '' }}"></div>
+           <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" id="issuerPhoneInput" value="{{ form_data.issuer_phone or '' }}"></div>
++          <div class="col-md-6"><label class="form-label">発行者メールアドレス</label><input class="form-control" type="email" name="issuer_email" id="issuerEmailInput" value="{{ form_data.issuer_email or '' }}"></div>
+           <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" id="issuerAddress1Input" value="{{ form_data.issuer_address1 or '' }}"></div>
+           <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" id="issuerAddress2Input" value="{{ form_data.issuer_address2 or '' }}"></div>
+           <div class="col-12"><label class="form-label">備考</label><textarea class="form-control" name="note" id="noteInput" rows="4">{{ form_data.note or '' }}</textarea></div>
+           <div class="col-12"><label class="form-label">振込先</label><textarea class="form-control" name="bank_info" id="bankInfoInput" rows="4">{{ form_data.bank_info or '' }}</textarea></div>
+           {% if mode == 'edit' %}
+           <div class="col-md-4"><label class="form-label">ステータス</label><select class="form-select" name="status">{% for value, label in status_labels.items() %}<option value="{{ value }}" {% if form_data.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+           {% endif %}
+         </div>
+       </div></div>
+       <div class="card shadow-sm"><div class="card-body">
+         <div class="border rounded p-3 mb-3">
+           <h2 class="h6 mb-2">ガソリン代入力補助</h2>
+           {% if fuel_cost_helper and fuel_cost_helper.available %}
+           <dl class="row small mb-3">
+             <dt class="col-sm-4 mb-1">最新トリップ</dt>
+             <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.trip_km }} km</dd>
+             <dt class="col-sm-4 mb-1">最新給油量</dt>
+             <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.liters }} L</dd>
+             <dt class="col-sm-4 mb-1">最新単価</dt>
+             <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.yen_per_liter }} 円/L</dd>
+             <dt class="col-sm-4 mb-0">計算単価</dt>
+             <dd class="col-sm-8 mb-0 fw-semibold">{{ fuel_cost_helper.yen_per_km }} 円/km</dd>
+           </dl>
+           <button
+             type="button"
+@@ -225,50 +226,51 @@
+     <td>
+       <div class="invoice-row-actions">
+         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+       </div>
+     </td>
+   </tr>
+ </template>
+ {% endblock %}
+ {% block body_extra %}
+ <script>
+ (() => {
+   const tableBody = document.querySelector('#itemTable tbody');
+   const normalTemplate = document.getElementById('normalRowTemplate');
+   const memoTemplate = document.getElementById('memoRowTemplate');
+   const taxMode = document.getElementById('taxMode');
+   const issuerTemplateSelect = document.getElementById('issuerTemplateSelect');
+   const issuerTemplates = {{ issuer_templates|tojson }};
+   const issuerFieldMap = {
+     issuer_name: document.getElementById('issuerNameInput'),
+     issuer_postal_code: document.getElementById('issuerPostalCodeInput'),
+     issuer_address1: document.getElementById('issuerAddress1Input'),
+     issuer_address2: document.getElementById('issuerAddress2Input'),
+     issuer_phone: document.getElementById('issuerPhoneInput'),
++    issuer_email: document.getElementById('issuerEmailInput'),
+     bank_info: document.getElementById('bankInfoInput'),
+     note: document.getElementById('noteInput'),
+   };
+   const TAX_RATES = { tax10: 0.10, tax8: 0.08, nontax: 0 };
+   const fmt = (num) => `¥${Math.round(num || 0).toLocaleString('ja-JP')}`;
+ 
+   const calculateLineAmounts = (baseAmount, mode, taxCategory) => {
+     const amount = Math.round(Number.isFinite(baseAmount) ? baseAmount : 0);
+     const rate = TAX_RATES[taxCategory] ?? TAX_RATES.tax10;
+     if (mode === 'external') {
+       const tax = Math.round(amount * rate);
+       return { subtotal: amount, tax, total: amount + tax };
+     }
+     if (mode === 'internal') {
+       const tax = rate === 0 ? 0 : Math.round(amount - (amount / (1 + rate)));
+       return { subtotal: amount - tax, tax, total: amount };
+     }
+     return { subtotal: amount, tax: 0, total: amount };
+   };
+ 
+   const recalc = () => {
+     let subtotal = 0;
+     let tax10 = 0;
+     let tax8 = 0;
+     let total = 0;
+diff --git a/invoice/template/invoice_mail_form.html b/invoice/template/invoice_mail_form.html
+index d0964dc62488b308b29be4a2d5cfa979e50d8d92..616227bfb68c89a6939288c87ba9c96e6260bd01 100644
+--- a/invoice/template/invoice_mail_form.html
++++ b/invoice/template/invoice_mail_form.html
+@@ -1,36 +1,37 @@
  {% extends "base.html" %}
- {% block title %}請求書詳細{% endblock %}
- {% block head_extra %}
- <style>
-   .multiline-text { white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
- </style>
+ {% block title %}請求書メール送信{% endblock %}
+ {% block content %}
+ <h1 class="mb-3">請求書メール送信</h1>
+ <div class="row g-3">
+   <div class="col-lg-8">
+     <form method="post" class="card shadow-sm"><div class="card-body">
+       <div class="row g-3">
+         <div class="col-12"><label class="form-label">宛先 *</label><input class="form-control" type="email" name="to_email" value="{{ form_data.to_email or '' }}" required></div>
+         <div class="col-md-6"><label class="form-label">Cc</label><input class="form-control" name="cc_email" value="{{ form_data.cc_email or '' }}"></div>
+         <div class="col-md-6"><label class="form-label">Bcc</label><input class="form-control" name="bcc_email" value="{{ form_data.bcc_email or '' }}"></div>
++        <div class="col-12"><div class="form-text mt-0">送信元は <code>noreply@mail.iori0624.jp</code> 固定です。発行者メールアドレスがある場合、Reply-To に自動設定されます。</div></div>
+         <div class="col-12"><label class="form-label">件名</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}"></div>
+         <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
+         <div class="col-12 form-check">
+           <input class="form-check-input" type="checkbox" value="yes" id="confirmSend" name="confirm_send">
+           <label class="form-check-label" for="confirmSend">送信前に内容を確認しました</label>
+         </div>
+       </div>
+       <div class="mt-3 d-flex gap-2">
+         <button class="btn btn-primary" type="submit" onclick="return confirm('請求書PDFを添付して送信します。よろしいですか？');">送信する</button>
+         <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_detail', invoice_id=invoice.id) }}">戻る</a>
+       </div>
+     </div></form>
+   </div>
+   <div class="col-lg-4">
+     <div class="card shadow-sm"><div class="card-body">
+       <h2 class="h5">送信対象</h2>
+       <ul class="small mb-0">
+         <li>請求書番号: {{ invoice.invoice_no }}</li>
+         <li>請求先: {{ invoice.contact_name_snapshot }}</li>
+         <li>請求日: {{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }}</li>
+         <li>PDF名: {{ invoice.issuer_name }}_{{ invoice.issue_date.year if invoice.issue_date }}年{{ invoice.issue_date.month if invoice.issue_date }}月{{ invoice.issue_date.day if invoice.issue_date }}日.pdf</li>
+       </ul>
+     </div></div>
+   </div>
+ </div>
+diff --git a/invoice/template/issuer_template_form.html b/invoice/template/issuer_template_form.html
+index 756cd3c794b4fcde0d0bfc87dbb7622aee264809..bde8263a72e43261e08b415a6df2d19a862ca6dd 100644
+--- a/invoice/template/issuer_template_form.html
++++ b/invoice/template/issuer_template_form.html
+@@ -9,50 +9,54 @@
+   <div class="d-flex gap-2">
+     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.issuer_template_list') }}">一覧へ戻る</a>
+   </div>
+ </div>
+ 
+ <form method="post">
+   <div class="card shadow-sm">
+     <div class="card-body">
+       <div class="row g-3">
+         <div class="col-md-6">
+           <label class="form-label">テンプレート名 *</label>
+           <input class="form-control" name="template_name" value="{{ form_data.template_name or '' }}" required>
+         </div>
+         <div class="col-md-6">
+           <label class="form-label">発行者名 *</label>
+           <input class="form-control" name="issuer_name" value="{{ form_data.issuer_name or '' }}" required>
+         </div>
+         <div class="col-md-4">
+           <label class="form-label">郵便番号</label>
+           <input class="form-control" name="issuer_postal_code" value="{{ form_data.issuer_postal_code or '' }}">
+         </div>
+         <div class="col-md-4">
+           <label class="form-label">電話番号</label>
+           <input class="form-control" name="issuer_phone" value="{{ form_data.issuer_phone or '' }}">
+         </div>
++        <div class="col-md-4">
++          <label class="form-label">メールアドレス</label>
++          <input class="form-control" type="email" name="issuer_email" value="{{ form_data.issuer_email or '' }}">
++        </div>
+         <div class="col-md-4">
+           <label class="form-label">並び順</label>
+           <input class="form-control" type="number" step="1" name="sort_order" value="{{ form_data.sort_order or '0' }}">
+         </div>
+         <div class="col-md-6">
+           <label class="form-label">住所1</label>
+           <input class="form-control" name="issuer_address1" value="{{ form_data.issuer_address1 or '' }}">
+         </div>
+         <div class="col-md-6">
+           <label class="form-label">住所2</label>
+           <input class="form-control" name="issuer_address2" value="{{ form_data.issuer_address2 or '' }}">
+         </div>
+         <div class="col-12">
+           <label class="form-label">振込先</label>
+           <textarea class="form-control" name="bank_info" rows="4">{{ form_data.bank_info or '' }}</textarea>
+         </div>
+         <div class="col-12">
+           <label class="form-label">備考</label>
+           <textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea>
+         </div>
+         <div class="col-12">
+           <div class="form-check">
+             <input class="form-check-input" type="checkbox" value="1" id="isDefaultInput" name="is_default" {% if form_data.is_default %}checked{% endif %}>
+             <label class="form-check-label" for="isDefaultInput">このテンプレートをデフォルトにする</label>
+           </div>
+diff --git a/invoice/template/issuer_templates.html b/invoice/template/issuer_templates.html
+index 42d8de73739d536f439b4b484c2b26073df9d59f..a3f281a06ea934ea81ab1c18e92818ba9f601bbf 100644
+--- a/invoice/template/issuer_templates.html
++++ b/invoice/template/issuer_templates.html
+@@ -16,79 +16,81 @@
  {% endblock %}
  {% block content %}
  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
    <div>
-     <h1 class="mb-1">{{ invoice.invoice_no }}</h1>
-     <div class="text-muted">{{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }} / {{ invoice.contact_name_snapshot }}</div>
+     <h1 class="mb-1">発行者テンプレート管理</h1>
+     <div class="text-muted">請求書フォームで使う発行者情報テンプレートを管理します。</div>
    </div>
-   <div class="d-flex gap-2 flex-wrap">
-+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">一覧に戻る</a>
-     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_edit', invoice_id=invoice.id) }}">編集</a>
-     <a class="btn btn-outline-dark" href="{{ url_for('invoice.invoice_pdf', invoice_id=invoice.id) }}">PDFダウンロード</a>
-     <a class="btn btn-outline-primary" href="{{ url_for('invoice.invoice_mail', invoice_id=invoice.id) }}">メール送信</a>
-     <a class="btn btn-outline-success" href="{{ url_for('invoice.invoice_freee_csv', invoice_id=invoice.id) }}">freee CSV</a>
+   <div class="d-flex gap-2">
+     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">請求書一覧へ</a>
+     <a class="btn btn-primary" href="{{ url_for('invoice.issuer_template_new') }}">新規作成</a>
    </div>
  </div>
- <div class="row g-3 mb-3">
-   <div class="col-lg-8">
-     <div class="card shadow-sm"><div class="card-body">
-       <div class="d-flex justify-content-between align-items-start mb-3">
-         <div>
-           <h2 class="h5">基本情報</h2>
-           <p class="mb-1">件名: {{ invoice.subject }}</p>
-           <p class="mb-1">支払期限: {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date }}</p>
-           <p class="mb-0">税モード: {{ invoice.tax_mode|invoice_tax_mode_label }}</p>
-         </div>
-         <span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span>
-       </div>
-       <div class="row g-3">
-         <div class="col-md-6">
-           <h3 class="h6">宛先</h3>
-           <div>〒{{ invoice.contact_postal_code_snapshot or '' }}</div>
-           <div>{{ invoice.contact_address1_snapshot or '' }}</div>
-           <div>{{ invoice.contact_address2_snapshot or '' }}</div>
-           <div>{{ invoice.contact_name_snapshot }} {{ invoice.contact_department_snapshot or '' }} {{ invoice.contact_person_snapshot or '' }} {{ invoice.contact_honorific_snapshot or '' }}</div>
-diff --git a/invoice/template/invoice_pdf.html b/invoice/template/invoice_pdf.html
-index dcffa1b449e9db1c6fe7f9abf0f6a105608d8d5b..8eb8c3d6a42d375a6eb0a5387b0ba739d17a5f49 100644
---- a/invoice/template/invoice_pdf.html
-+++ b/invoice/template/invoice_pdf.html
-@@ -1,42 +1,40 @@
- <!doctype html>
- <html lang="ja">
- <head>
-   <meta charset="utf-8">
-   <title>{{ pdf.title }}</title>
-   <style>
-     @page {
-       size: A4 portrait;
-       margin: 16mm 15mm 18mm;
-     }
  
-     :root {
-       --text-color: #222;
--      --muted-color: #666;
-       --border-color: #777;
-       --fill-soft: #f5f5f5;
--      --accent-fill: #faf7ef;
-     }
- 
-     html, body {
-       margin: 0;
-       padding: 0;
-       color: var(--text-color);
-       font-family: var(--invoice-font-regular), sans-serif;
-       font-size: 10pt;
-       font-weight: 400;
-       line-height: 1.35;
-       letter-spacing: 0;
-       -webkit-font-smoothing: antialiased;
-       font-kerning: normal;
-       text-rendering: geometricPrecision;
-     }
- 
-     * {
-       box-sizing: border-box;
-     }
- 
-     .page {
-       width: 100%;
-     }
- 
-     .title-row {
-@@ -131,114 +129,92 @@
-       word-break: break-word;
-       overflow-wrap: break-word;
-     }
- 
-     .party-body .line {
-       display: block;
-       margin: 0;
-       padding: 0;
-       line-height: 1.16;
-     }
- 
-     .party-body .line + .line {
-       margin-top: 0.5mm;
-     }
- 
-     .subject-block {
-       margin-bottom: 3.2mm;
-     }
- 
-     .subject-line {
-       padding: 2mm 2.4mm;
-       border: 0.3mm solid var(--border-color);
-       font-size: 10pt;
-     }
- 
--    .amount-box {
--      margin-bottom: 3.6mm;
--      padding: 2.8mm 3.6mm;
--      border: 0.45mm solid var(--border-color);
--      background: var(--accent-fill);
--    }
--
--    .amount-label {
--      margin-bottom: 0.8mm;
--      color: var(--muted-color);
--      font-family: var(--invoice-font-bold), sans-serif;
--      font-weight: 700;
--    }
--
--    .amount-value {
--      font-family: var(--invoice-font-bold), sans-serif;
--      font-size: 15pt;
--      font-weight: 700;
--      text-align: right;
--      line-height: 1.2;
--    }
--
-     .items-table {
-       width: 100%;
-       border-collapse: collapse;
-       table-layout: fixed;
-       margin-bottom: 4mm;
-     }
- 
-     .items-table th,
-     .items-table td {
-       padding: 2mm 2mm;
-       border: 0.3mm solid var(--border-color);
-       vertical-align: top;
-       overflow-wrap: break-word;
-       word-break: break-word;
-     }
- 
-     .items-table thead th {
-       text-align: left;
-     }
- 
-     .items-table col.col-item   { width: 46%; }
-     .items-table col.col-qty    { width: 10%; }
-     .items-table col.col-unit   { width: 10%; }
-     .items-table col.col-price  { width: 16%; }
-     .items-table col.col-total  { width: 18%; }
- 
-     .text-right {
-       text-align: right;
-       white-space: nowrap;
-     }
- 
-     .text-center {
-       text-align: center;
-       white-space: nowrap;
-     }
- 
-     .item-name {
-       white-space: normal;
-     }
- 
-     .memo-row td {
--      color: var(--muted-color);
-+      color: var(--text-color);
-       background: #fcfcfc;
-     }
- 
-     .memo-cell {
-       text-align: left;
-       white-space: normal;
-       padding: 2.1mm 2.2mm;
-     }
- 
-     .summary-wrap {
-       width: 43%;
-       margin-left: auto;
-       margin-bottom: 4.2mm;
-       page-break-inside: avoid;
-       break-inside: avoid;
-     }
- 
-     .summary-table td {
-       text-align: right;
-       white-space: nowrap;
-     }
- 
-     .summary-table tr.total th,
-     .summary-table tr.total td {
-       font-family: var(--invoice-font-bold), sans-serif;
-@@ -300,55 +276,50 @@
- 
-     <div class="party-row">
-       <section class="party-block">
-         <div class="party-title">宛先</div>
-         <div class="party-body">
-           {% for line in pdf.contact_lines %}
-           <div class="line">{{ line }}</div>
-           {% endfor %}
-         </div>
-       </section>
-       <section class="party-block right">
-         <div class="party-title">発行者</div>
-         <div class="party-body">
-           {% for line in pdf.issuer_lines %}
-           <div class="line">{{ line }}</div>
-           {% endfor %}
-         </div>
-       </section>
-     </div>
- 
-     <section class="subject-block">
-       <div class="section-title">件名</div>
-       <div class="subject-line multiline-text">{{ pdf.subject }}</div>
-     </section>
- 
--    <section class="amount-box">
--      <div class="amount-label">ご請求金額</div>
--      <div class="amount-value">{{ pdf.total_yen_label }}</div>
--    </section>
--
-     <table class="items-table">
-       <colgroup>
-         <col class="col-item">
-         <col class="col-qty">
-         <col class="col-unit">
-         <col class="col-price">
-         <col class="col-total">
-       </colgroup>
-       <thead>
-         <tr>
-           <th>品名</th>
-           <th class="text-center">数量</th>
-           <th class="text-center">単位</th>
-           <th class="text-right">単価</th>
-           <th class="text-right">金額</th>
-         </tr>
-       </thead>
-       <tbody>
-         {% for item in pdf.line_items %}
-           {% if item.row_type == 'memo' %}
-           <tr class="memo-row">
-             <td colspan="5" class="memo-cell">
-               {{ item.memo_text or item.item_name }}
+ <div class="card shadow-sm">
+   <div class="card-body">
+     <div class="table-responsive">
+       <table class="table table-striped table-hover align-middle">
+         <thead>
+           <tr>
+             <th>テンプレート名</th>
+             <th>発行者名</th>
+             <th>郵便番号</th>
+             <th>住所1</th>
+             <th>住所2</th>
+             <th>電話番号</th>
++            <th>メールアドレス</th>
+             <th>振込先</th>
+             <th>備考</th>
+             <th class="text-end">並び順</th>
+             <th>デフォルト</th>
+             <th>操作</th>
+           </tr>
+         </thead>
+         <tbody>
+           {% for template in issuer_templates %}
+           <tr>
+             <td>{{ template.template_name }}</td>
+             <td>{{ template.issuer_name }}</td>
+             <td>{{ template.issuer_postal_code or '' }}</td>
+             <td>{{ template.issuer_address1 or '' }}</td>
+             <td>{{ template.issuer_address2 or '' }}</td>
+             <td>{{ template.issuer_phone or '' }}</td>
++            <td>{{ template.issuer_email or '' }}</td>
+             <td><div class="multiline-truncate">{{ template.bank_info or '' }}</div></td>
+             <td><div class="multiline-truncate">{{ template.note or '' }}</div></td>
+             <td class="text-end">{{ template.sort_order }}</td>
+             <td>
+               {% if template.is_default %}
+               <span class="badge text-bg-primary">デフォルト</span>
+               {% else %}
+               <span class="text-muted">—</span>
+               {% endif %}
+             </td>
+             <td>
+               <div class="d-flex flex-wrap gap-2">
+                 <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice.issuer_template_edit', template_id=template.id) }}">編集</a>
+                 {% if not template.is_default %}
+                 <form method="post" action="{{ url_for('invoice.issuer_template_default', template_id=template.id) }}">
+                   <button class="btn btn-sm btn-outline-primary" type="submit">デフォルト化</button>
+                 </form>
+                 {% endif %}
+                 <form method="post" action="{{ url_for('invoice.issuer_template_delete', template_id=template.id) }}" onsubmit="return confirm('この発行者テンプレートを削除しますか？');">
+                   <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+                 </form>
+               </div>
              </td>
            </tr>
+           {% else %}
+           <tr>
+-            <td colspan="11" class="text-center py-4">
++            <td colspan="12" class="text-center py-4">
+               <div class="text-muted mb-2">発行者テンプレートはまだありません。</div>
+               <a class="btn btn-sm btn-primary" href="{{ url_for('invoice.issuer_template_new') }}">最初のテンプレートを作成</a>
+             </td>
+           </tr>
+           {% endfor %}
+         </tbody>
+       </table>
+     </div>
+   </div>
+ </div>
+ {% endblock %}
+diff --git a/invoice/utils.py b/invoice/utils.py
+index c1e96d1dafad8d183ddeeaf0b255dd3436e06d3b..2d4379d2dc0d4b50c214b03087813295739c8090 100644
+--- a/invoice/utils.py
++++ b/invoice/utils.py
+@@ -34,50 +34,51 @@ STATUS_BADGES = {
+     "draft": "bg-secondary",
+     "issued": "bg-primary",
+     "mailed": "bg-info text-dark",
+     "paid": "bg-success",
+     "cancelled": "bg-danger",
+ }
+ 
+ TAX_MODE_LABELS = {
+     "external": "外税",
+     "internal": "内税",
+     "none": "税なし",
+ }
+ 
+ FREEE_TAX_MODE_MAP = {
+     "external": "外税",
+     "internal": "内税",
+     "none": "対象外",
+ }
+ 
+ ISSUER_TEMPLATE_FIELDS = (
+     "issuer_name",
+     "issuer_postal_code",
+     "issuer_address1",
+     "issuer_address2",
+     "issuer_phone",
++    "issuer_email",
+     "bank_info",
+     "note",
+ )
+ 
+ 
+ def now_jst() -> datetime:
+     return datetime.now(JST).replace(tzinfo=None)
+ 
+ 
+ def parse_date(value: str | None) -> date | None:
+     if not value:
+         return None
+     try:
+         return datetime.strptime(str(value), "%Y-%m-%d").date()
+     except ValueError:
+         return None
+ 
+ 
+ def format_ymd(value: date | datetime | None, *, slash: bool = False) -> str:
+     if not value:
+         return ""
+     if isinstance(value, datetime):
+         value = value.date()
+     return value.strftime("%Y/%m/%d" if slash else "%Y-%m-%d")
+ 
+diff --git a/tests/test_invoice_issuer_templates.py b/tests/test_invoice_issuer_templates.py
+index e901e19b02bb3acf3c36c7e72f2c282087673477..7fc4109c6ac9bb48698236359864c6497ab446cb 100644
+--- a/tests/test_invoice_issuer_templates.py
++++ b/tests/test_invoice_issuer_templates.py
+@@ -25,107 +25,141 @@ def load_invoice_services_module():
+     utils_spec = importlib.util.spec_from_file_location("invoice.utils", repo_root / "invoice" / "utils.py")
+     utils_module = importlib.util.module_from_spec(utils_spec)
+     assert utils_spec and utils_spec.loader
+     sys.modules["invoice.utils"] = utils_module
+     utils_spec.loader.exec_module(utils_module)
+ 
+     services_spec = importlib.util.spec_from_file_location("invoice.services", repo_root / "invoice" / "services.py")
+     services_module = importlib.util.module_from_spec(services_spec)
+     assert services_spec and services_spec.loader
+     sys.modules["invoice.services"] = services_module
+     services_spec.loader.exec_module(services_module)
+     return services_module
+ 
+ 
+ invoice_services = load_invoice_services_module()
+ 
+ 
+ class InvoiceIssuerTemplateTest(unittest.TestCase):
+     def test_apply_issuer_template_to_form_data_overwrites_target_fields_only(self):
+         form_data = {
+             "issuer_name": "old name",
+             "issuer_postal_code": "111-1111",
+             "issuer_address1": "old address1",
+             "issuer_address2": "old address2",
+             "issuer_phone": "0000",
++            "issuer_email": "old@example.com",
+             "bank_info": "旧振込先",
+             "note": "旧備考",
+             "subject": "keep",
+         }
+         template = {
+             "id": 5,
+             "issuer_name": "new name",
+             "issuer_postal_code": "222-2222",
+             "issuer_address1": "new address1",
+             "issuer_address2": "new address2",
+             "issuer_phone": "9999",
++            "issuer_email": "new@example.com",
+             "bank_info": "銀行A\n支店B",
+             "note": "1行目\n2行目",
+         }
+ 
+         result = invoice_services.apply_issuer_template_to_form_data(form_data, template)
+ 
+         self.assertIs(result, form_data)
+         self.assertEqual(result["issuer_template_id"], "5")
+         self.assertEqual(result["issuer_name"], "new name")
+         self.assertEqual(result["issuer_postal_code"], "222-2222")
+         self.assertEqual(result["issuer_address1"], "new address1")
+         self.assertEqual(result["issuer_address2"], "new address2")
+         self.assertEqual(result["issuer_phone"], "9999")
++        self.assertEqual(result["issuer_email"], "new@example.com")
+         self.assertEqual(result["bank_info"], "銀行A\n支店B")
+         self.assertEqual(result["note"], "1行目\n2行目")
+         self.assertEqual(result["subject"], "keep")
+ 
+     def test_build_invoice_form_data_for_new_invoice_has_template_selector_state(self):
+         form_data = invoice_services.build_invoice_form_data()
+ 
+         self.assertEqual(form_data["issuer_template_id"], "")
+         self.assertEqual(form_data["items"][0]["row_type"], "normal")
+ 
+     def test_build_issuer_template_form_data_has_defaults(self):
+         form_data = invoice_services.build_issuer_template_form_data()
+ 
+         self.assertEqual(form_data["template_name"], "")
+         self.assertEqual(form_data["issuer_name"], "")
++        self.assertEqual(form_data["issuer_email"], "")
+         self.assertEqual(form_data["bank_info"], "")
+         self.assertEqual(form_data["note"], "")
+         self.assertEqual(form_data["sort_order"], "0")
+         self.assertEqual(form_data["is_default"], "")
+ 
+     def test_normalize_multiline_text_preserves_internal_newlines(self):
+         result = invoice_services.normalize_multiline_text("\n  1行目\r\n2行目\r3行目  \n")
+ 
+         self.assertEqual(result, "1行目\n2行目\n3行目")
+ 
+     def test_parse_issuer_template_form_validates_required_fields_and_sort_order(self):
+         with self.assertRaises(invoice_services.InvoiceValidationError):
+             invoice_services._parse_issuer_template_form({"template_name": "", "issuer_name": "発行者", "sort_order": "0"})
+         with self.assertRaises(invoice_services.InvoiceValidationError):
+             invoice_services._parse_issuer_template_form({"template_name": "名称", "issuer_name": "", "sort_order": "0"})
+         with self.assertRaises(invoice_services.InvoiceValidationError):
+             invoice_services._parse_issuer_template_form({"template_name": "名称", "issuer_name": "発行者", "sort_order": "abc"})
+ 
+         payload = invoice_services._parse_issuer_template_form(
+             {
+                 "template_name": "事業用住所",
+                 "issuer_name": "テスト発行者",
+                 "issuer_postal_code": "123-4567",
+                 "issuer_address1": "東京都",
+                 "issuer_address2": "テストビル",
+                 "issuer_phone": "03-0000-0000",
++                "issuer_email": "issuer@example.com",
+                 "bank_info": "\n三菱UFJ銀行\n渋谷支店\n",
+                 "note": "備考1\r\n備考2",
+                 "sort_order": "10",
+                 "is_default": "1",
+             }
+         )
+ 
+         self.assertEqual(payload["template_name"], "事業用住所")
+         self.assertEqual(payload["issuer_name"], "テスト発行者")
++        self.assertEqual(payload["issuer_email"], "issuer@example.com")
+         self.assertEqual(payload["bank_info"], "三菱UFJ銀行\n渋谷支店")
+         self.assertEqual(payload["note"], "備考1\n備考2")
+         self.assertEqual(payload["sort_order"], 10)
+         self.assertEqual(payload["is_default"], 1)
+ 
++    def test_build_invoice_mail_recipient_label_uses_full_width_space_and_suffix_once(self):
++        result = invoice_services.build_invoice_mail_recipient_label("株式会社サンプル", "山田太郎", "様")
++        self.assertEqual(result, "株式会社サンプル　山田太郎様")
++
++    def test_build_invoice_mail_recipient_label_handles_missing_parts(self):
++        self.assertEqual(invoice_services.build_invoice_mail_recipient_label("株式会社サンプル", "", "御中"), "株式会社サンプル御中")
++        self.assertEqual(invoice_services.build_invoice_mail_recipient_label("", "山田太郎", "様"), "山田太郎様")
++        self.assertEqual(invoice_services.build_invoice_mail_recipient_label("", "", ""), "お客様")
++
++    def test_build_default_invoice_mail_body_prefers_snapshots(self):
++        body = invoice_services.build_default_invoice_mail_body(
++            {
++                "contact_name_snapshot": "テスト株式会社",
++                "contact_person_snapshot": "テスト太郎",
++                "contact_honorific_snapshot": "様",
++                "contact_name": "fallback company",
++                "contact_person": "fallback person",
++                "honorific": "御中",
++                "issuer_name": "いおりん写真室（小松　伊織）",
++            }
++        )
++        self.assertEqual(
++            body,
++            "いつもお世話になっております、テスト株式会社　テスト太郎様\n"
++            "いおりん写真室（小松　伊織）です。\n\n"
++            "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
++        )
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/tests/test_invoice_mail.py b/tests/test_invoice_mail.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..27c64d7eb8dc6e2180e8b3cfaef67e801eb94f56
+--- /dev/null
++++ b/tests/test_invoice_mail.py
+@@ -0,0 +1,115 @@
++import importlib.util
++import sys
++import types
++import unittest
++from email import message_from_string
++from pathlib import Path
++from unittest.mock import patch
++
++
++def load_invoice_mail_module():
++    repo_root = Path(__file__).resolve().parents[1]
++
++    app_module = types.ModuleType("app")
++    app_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_module = types.ModuleType("app.utils")
++    app_utils_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_mail_module = types.ModuleType("app.utils.mail")
++    app_utils_mail_module.send_mime = lambda msg: None
++    sys.modules["app"] = app_module
++    sys.modules["app.utils"] = app_utils_module
++    sys.modules["app.utils.mail"] = app_utils_mail_module
++
++    invoice_package = types.ModuleType("invoice")
++    invoice_package.__path__ = [str(repo_root / "invoice")]  # type: ignore[attr-defined]
++    sys.modules["invoice"] = invoice_package
++
++    utils_spec = importlib.util.spec_from_file_location("invoice.utils", repo_root / "invoice" / "utils.py")
++    utils_module = importlib.util.module_from_spec(utils_spec)
++    assert utils_spec and utils_spec.loader
++    sys.modules["invoice.utils"] = utils_module
++    utils_spec.loader.exec_module(utils_module)
++
++    services_module = types.ModuleType("invoice.services")
++    services_module.log_mail_result = lambda *args, **kwargs: None
++    services_module.mark_invoice_mailed = lambda invoice_id: None
++    sys.modules["invoice.services"] = services_module
++
++    mail_spec = importlib.util.spec_from_file_location("invoice.mail", repo_root / "invoice" / "mail.py")
++    mail_module = importlib.util.module_from_spec(mail_spec)
++    assert mail_spec and mail_spec.loader
++    sys.modules["invoice.mail"] = mail_module
++    mail_spec.loader.exec_module(mail_module)
++    return mail_module
++
++
++invoice_mail = load_invoice_mail_module()
++
++
++class InvoiceMailTest(unittest.TestCase):
++    def test_send_invoice_mail_uses_issuer_email_for_reply_to(self):
++        captured = {}
++
++        def fake_send_mime(msg):
++            captured["msg"] = msg
++
++        with (
++            patch.object(invoice_mail, "send_mime", side_effect=fake_send_mime),
++            patch.object(invoice_mail, "mark_invoice_mailed"),
++            patch.object(invoice_mail, "log_mail_result"),
++        ):
++            invoice_mail.send_invoice_mail(
++                {
++                    "id": 1,
++                    "issuer_name": "いおりん写真室",
++                    "issuer_email": "issuer@example.com",
++                    "contact_email_snapshot": "contact@example.com",
++                },
++                to_email="to@example.com",
++                cc_email="cc@example.com",
++                bcc_email=None,
++                subject="件名",
++                body="本文",
++                attachment_filename="invoice.pdf",
++                pdf_bytes=b"%PDF-1.4",
++            )
++
++        raw = captured["msg"].as_string()
++        parsed = message_from_string(raw)
++        self.assertIn("noreply@mail.iori0624.jp", parsed["From"])
++        self.assertEqual(parsed["Reply-To"], "issuer@example.com")
++        self.assertEqual(parsed["Cc"], "cc@example.com")
++
++    def test_send_invoice_mail_skips_reply_to_when_issuer_email_is_blank(self):
++        captured = {}
++
++        def fake_send_mime(msg):
++            captured["msg"] = msg
++
++        with (
++            patch.object(invoice_mail, "send_mime", side_effect=fake_send_mime),
++            patch.object(invoice_mail, "mark_invoice_mailed"),
++            patch.object(invoice_mail, "log_mail_result"),
++        ):
++            invoice_mail.send_invoice_mail(
++                {
++                    "id": 2,
++                    "issuer_name": "いおりん写真室",
++                    "issuer_email": "",
++                },
++                to_email="to@example.com",
++                cc_email=None,
++                bcc_email=None,
++                subject="件名",
++                body="本文",
++                attachment_filename="invoice.pdf",
++                pdf_bytes=b"%PDF-1.4",
++            )
++
++        raw = captured["msg"].as_string()
++        parsed = message_from_string(raw)
++        self.assertIsNone(parsed["Reply-To"])
++
++
++if __name__ == "__main__":
++    unittest.main()

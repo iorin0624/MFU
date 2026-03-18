@@ -12,6 +12,7 @@ from .pdf import generate_invoice_pdf
 from .services import (
     InvoiceValidationError,
     apply_issuer_template_to_form_data,
+    build_default_invoice_mail_body,
     build_issuer_template_form_data,
     build_fuel_cost_helper,
     build_invoice_form_data,
@@ -331,7 +332,7 @@ def invoice_detail(invoice_id: int):
         status_labels=STATUS_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         default_mail_subject=build_mail_subject(invoice.get("issue_date")),
-        default_mail_body="いつもお世話になっております。\n\n請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
+        default_mail_body=build_default_invoice_mail_body(invoice),
         mail_to_default=invoice.get("contact_email_snapshot") or "",
     )
 
@@ -371,12 +372,23 @@ def invoice_mail(invoice_id: int):
     if not invoice:
         flash("請求書が見つかりません。", "warning")
         return redirect(url_for("invoice.invoice_list"))
+    mail_context = dict(invoice)
+    if invoice.get("contact_id"):
+        contact = get_contact(int(invoice["contact_id"]))
+        if contact:
+            mail_context.update(
+                {
+                    "contact_name": contact.get("name"),
+                    "contact_person": contact.get("contact_name"),
+                    "honorific": contact.get("honorific"),
+                }
+            )
     initial = {
         "to_email": invoice.get("contact_email_snapshot") or "",
-        "cc_email": "",
+        "cc_email": invoice.get("issuer_email") or "",
         "bcc_email": "",
         "subject": build_mail_subject(invoice.get("issue_date")),
-        "body": "いつもお世話になっております。\n\n請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
+        "body": build_default_invoice_mail_body(mail_context),
     }
     if request.method == "POST":
         to_email = (request.form.get("to_email") or "").strip()
@@ -450,6 +462,7 @@ def _normalized_invoice_form(form):
         "issuer_address1": form.get("issuer_address1"),
         "issuer_address2": form.get("issuer_address2"),
         "issuer_phone": form.get("issuer_phone"),
+        "issuer_email": form.get("issuer_email"),
         "tax_mode": form.get("tax_mode"),
         "status": form.get("status") or "draft",
         "getlist": form.getlist,
@@ -482,6 +495,7 @@ def _posted_invoice_form_data(form, base=None):
         "issuer_address1": form.get("issuer_address1"),
         "issuer_address2": form.get("issuer_address2"),
         "issuer_phone": form.get("issuer_phone"),
+        "issuer_email": form.get("issuer_email"),
         "tax_mode": form.get("tax_mode"),
         "status": form.get("status") or "draft",
     })

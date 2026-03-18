@@ -83,6 +83,7 @@ def _issuer_template_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | Non
         "issuer_address1": row.get("issuer_address1") or "",
         "issuer_address2": row.get("issuer_address2") or "",
         "issuer_phone": row.get("issuer_phone") or "",
+        "issuer_email": row.get("issuer_email") or "",
         "bank_info": row.get("bank_info") or "",
         "note": row.get("note") or "",
         "sort_order": int(row.get("sort_order") or 0),
@@ -124,6 +125,7 @@ def ensure_invoice_issuer_templates_table(cur=None) -> None:
                 issuer_address1 VARCHAR(255) NULL,
                 issuer_address2 VARCHAR(255) NULL,
                 issuer_phone VARCHAR(64) NULL,
+                issuer_email VARCHAR(255) NULL,
                 bank_info TEXT NULL,
                 note TEXT NULL,
                 sort_order INT NOT NULL DEFAULT 0,
@@ -139,6 +141,8 @@ def ensure_invoice_issuer_templates_table(cur=None) -> None:
             cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN bank_info TEXT NULL AFTER issuer_phone")
         if not _column_exists(cur, "invoice_issuer_templates", "note"):
             cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN note TEXT NULL AFTER bank_info")
+        if not _column_exists(cur, "invoice_issuer_templates", "issuer_email"):
+            cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN issuer_email VARCHAR(255) NULL AFTER issuer_phone")
         if should_close and db is not None:
             db.commit()
     finally:
@@ -201,6 +205,7 @@ def _parse_issuer_template_form(form: dict[str, Any]) -> dict[str, Any]:
         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
         "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
+        "issuer_email": (form.get("issuer_email") or "").strip() or None,
         "bank_info": normalize_multiline_text(form.get("bank_info")),
         "note": normalize_multiline_text(form.get("note")),
         "sort_order": sort_order,
@@ -216,6 +221,7 @@ def build_issuer_template_form_data(template: dict[str, Any] | None = None) -> d
         "issuer_address1": "",
         "issuer_address2": "",
         "issuer_phone": "",
+        "issuer_email": "",
         "bank_info": "",
         "note": "",
         "sort_order": "0",
@@ -231,6 +237,7 @@ def build_issuer_template_form_data(template: dict[str, Any] | None = None) -> d
             "issuer_address1": template.get("issuer_address1") or "",
             "issuer_address2": template.get("issuer_address2") or "",
             "issuer_phone": template.get("issuer_phone") or "",
+            "issuer_email": template.get("issuer_email") or "",
             "bank_info": template.get("bank_info") or "",
             "note": template.get("note") or "",
             "sort_order": str(int(template.get("sort_order") or 0)),
@@ -270,8 +277,8 @@ def create_issuer_template(form: dict[str, Any]) -> int:
             """
             INSERT INTO invoice_issuer_templates (
                 template_name, issuer_name, issuer_postal_code, issuer_address1,
-                issuer_address2, issuer_phone, bank_info, note, sort_order, is_default, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                issuer_address2, issuer_phone, issuer_email, bank_info, note, sort_order, is_default, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 payload["template_name"],
@@ -280,6 +287,7 @@ def create_issuer_template(form: dict[str, Any]) -> int:
                 payload["issuer_address1"],
                 payload["issuer_address2"],
                 payload["issuer_phone"],
+                payload["issuer_email"],
                 payload["bank_info"],
                 payload["note"],
                 payload["sort_order"],
@@ -316,6 +324,7 @@ def update_issuer_template(template_id: int, form: dict[str, Any]) -> None:
                 issuer_address1 = %s,
                 issuer_address2 = %s,
                 issuer_phone = %s,
+                issuer_email = %s,
                 bank_info = %s,
                 note = %s,
                 sort_order = %s,
@@ -330,6 +339,7 @@ def update_issuer_template(template_id: int, form: dict[str, Any]) -> None:
                 payload["issuer_address1"],
                 payload["issuer_address2"],
                 payload["issuer_phone"],
+                payload["issuer_email"],
                 payload["bank_info"],
                 payload["note"],
                 payload["sort_order"],
@@ -454,6 +464,38 @@ def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
         cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
 
 
+def build_invoice_mail_recipient_label(
+    contact_name: Any,
+    contact_person: Any,
+    honorific: Any,
+) -> str:
+    company_name = str(contact_name or "").strip()
+    person_name = str(contact_person or "").strip()
+    suffix = str(honorific or "").strip()
+
+    if company_name and person_name:
+        return f"{company_name}　{person_name}{suffix}"
+    if company_name:
+        return f"{company_name}{suffix}"
+    if person_name:
+        return f"{person_name}{suffix}"
+    return "お客様"
+
+
+def build_default_invoice_mail_body(invoice_data: dict[str, Any]) -> str:
+    recipient_label = build_invoice_mail_recipient_label(
+        invoice_data.get("contact_name_snapshot") or invoice_data.get("contact_name"),
+        invoice_data.get("contact_person_snapshot") or invoice_data.get("contact_person"),
+        invoice_data.get("contact_honorific_snapshot") or invoice_data.get("honorific"),
+    )
+    issuer_name = (invoice_data.get("issuer_name") or "").strip() or "請求元"
+    return (
+        f"いつもお世話になっております、{recipient_label}\n"
+        f"{issuer_name}です。\n\n"
+        "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。"
+    )
+
+
 def ensure_invoice_schema() -> None:
     db = get_db()
     cur = db.cursor()
@@ -505,6 +547,7 @@ def ensure_invoice_schema() -> None:
                 issuer_address1 VARCHAR(255) NULL,
                 issuer_address2 VARCHAR(255) NULL,
                 issuer_phone VARCHAR(64) NULL,
+                issuer_email VARCHAR(255) NULL,
                 subtotal_yen INT NOT NULL DEFAULT 0,
                 tax_yen INT NOT NULL DEFAULT 0,
                 total_yen INT NOT NULL DEFAULT 0,
@@ -547,6 +590,8 @@ def ensure_invoice_schema() -> None:
         )
         _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
         _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
+        if not _column_exists(cur, "invoice_headers", "issuer_email"):
+            cur.execute("ALTER TABLE invoice_headers ADD COLUMN issuer_email VARCHAR(255) NULL AFTER issuer_phone")
         ensure_invoice_issuer_templates_table(cur)
         cur.execute(
             """
@@ -846,6 +891,7 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
         "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
+        "issuer_email": (form.get("issuer_email") or "").strip() or None,
         **totals,
         "tax_mode": tax_mode,
         "status": normalize_status(form.get("status") or "draft"),
@@ -981,6 +1027,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     issuer_address1=%s,
                     issuer_address2=%s,
                     issuer_phone=%s,
+                    issuer_email=%s,
                     subtotal_yen=%s,
                     tax_yen=%s,
                     total_yen=%s,
@@ -997,7 +1044,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"],
                     payload["contact_phone_snapshot"], payload["subject"], payload["note"],
                     payload["bank_info"], payload["issuer_name"], payload["issuer_postal_code"],
-                    payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"],
+                    payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"],
                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"],
                     payload["tax_mode"], payload["status"], now, invoice_id,
                 ),
@@ -1013,7 +1060,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     contact_honorific_snapshot, contact_email_snapshot, contact_postal_code_snapshot,
                     contact_address1_snapshot, contact_address2_snapshot, contact_phone_snapshot,
                     subject, note, bank_info,
-                    issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone,
+                    issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email,
                     subtotal_yen, tax_yen, total_yen, tax_mode, status,
                     pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
                     created_at, updated_at
@@ -1023,7 +1070,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s,
-                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     NULL, NULL, NULL, NULL,
                     %s, %s
@@ -1035,7 +1082,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     payload["contact_honorific_snapshot"], payload["contact_email_snapshot"], payload["contact_postal_code_snapshot"],
                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"], payload["contact_phone_snapshot"],
                     payload["subject"], payload["note"], payload["bank_info"],
-                    payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"],
+                    payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"],
                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"], payload["tax_mode"], "draft",
                     now, now,
                 ),
@@ -1178,7 +1225,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 contact_honorific_snapshot, contact_email_snapshot, contact_postal_code_snapshot,
                 contact_address1_snapshot, contact_address2_snapshot, contact_phone_snapshot,
                 subject, note, bank_info,
-                issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone,
+                issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email,
                 subtotal_yen, tax_yen, total_yen, tax_mode, status,
                 pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
                 created_at, updated_at
@@ -1188,7 +1235,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s,
-                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 NULL, NULL, NULL, NULL,
                 %s, %s
@@ -1200,7 +1247,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 original.get("contact_honorific_snapshot"), original.get("contact_email_snapshot"), original.get("contact_postal_code_snapshot"),
                 original.get("contact_address1_snapshot"), original.get("contact_address2_snapshot"), original.get("contact_phone_snapshot"),
                 original.get("subject"), original.get("note"), original.get("bank_info"),
-                original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"),
+                original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"), original.get("issuer_email"),
                 original.get("subtotal_yen"), original.get("tax_yen"), original.get("total_yen"), original.get("tax_mode"), "draft",
                 now, now,
             ),
@@ -1353,6 +1400,7 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
             "tax_mode": "external",
             "status": "draft",
             "issuer_template_id": "",
+            "issuer_email": "",
             "items": [
                 {
                     "row_type": ROW_TYPE_NORMAL,

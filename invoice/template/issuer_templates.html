@@ -38,6 +38,7 @@
             <th>住所1</th>
             <th>住所2</th>
             <th>電話番号</th>
+            <th>メールアドレス</th>
             <th>振込先</th>
             <th>備考</th>
             <th class="text-end">並び順</th>
@@ -54,6 +55,7 @@
             <td>{{ template.issuer_address1 or '' }}</td>
             <td>{{ template.issuer_address2 or '' }}</td>
             <td>{{ template.issuer_phone or '' }}</td>
+            <td>{{ template.issuer_email or '' }}</td>
             <td><div class="multiline-truncate">{{ template.bank_info or '' }}</div></td>
             <td><div class="multiline-truncate">{{ template.note or '' }}</div></td>
             <td class="text-end">{{ template.sort_order }}</td>
@@ -80,7 +82,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="11" class="text-center py-4">
+            <td colspan="12" class="text-center py-4">
               <div class="text-muted mb-2">発行者テンプレートはまだありません。</div>
               <a class="btn btn-sm btn-primary" href="{{ url_for('invoice.issuer_template_new') }}">最初のテンプレートを作成</a>
             </td>

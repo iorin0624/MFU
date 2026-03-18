@@ -47,6 +47,7 @@
           <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" id="issuerNameInput" value="{{ form_data.issuer_name or '' }}" required></div>
           <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" id="issuerPostalCodeInput" value="{{ form_data.issuer_postal_code or '' }}"></div>
           <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" id="issuerPhoneInput" value="{{ form_data.issuer_phone or '' }}"></div>
+          <div class="col-md-6"><label class="form-label">発行者メールアドレス</label><input class="form-control" type="email" name="issuer_email" id="issuerEmailInput" value="{{ form_data.issuer_email or '' }}"></div>
           <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" id="issuerAddress1Input" value="{{ form_data.issuer_address1 or '' }}"></div>
           <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" id="issuerAddress2Input" value="{{ form_data.issuer_address2 or '' }}"></div>
           <div class="col-12"><label class="form-label">備考</label><textarea class="form-control" name="note" id="noteInput" rows="4">{{ form_data.note or '' }}</textarea></div>
@@ -247,6 +248,7 @@
     issuer_address1: document.getElementById('issuerAddress1Input'),
     issuer_address2: document.getElementById('issuerAddress2Input'),
     issuer_phone: document.getElementById('issuerPhoneInput'),
+    issuer_email: document.getElementById('issuerEmailInput'),
     bank_info: document.getElementById('bankInfoInput'),
     note: document.getElementById('noteInput'),
   };
