@@ -9,6 +9,7 @@ from typing import Any
 from flask import current_app, render_template
 
 from .services import mark_invoice_pdf_generated
+from .services import normalize_multiline_text
 from .utils import (
     ensure_dir,
     format_currency_yen,
@@ -202,8 +203,8 @@ def _build_pdf_context(invoice: dict[str, Any]) -> dict[str, Any]:
         "tax_8_yen_label": format_currency_yen(invoice.get("tax_8_yen")),
         "tax_yen_label": format_currency_yen(invoice.get("tax_yen")),
         "total_yen_label": format_currency_yen(invoice.get("total_yen")),
-        "note": (invoice.get("note") or "").strip(),
-        "bank_info": (invoice.get("bank_info") or "").strip(),
+        "note": normalize_multiline_text(invoice.get("note")) or "",
+        "bank_info": normalize_multiline_text(invoice.get("bank_info")) or "",
     }
 
 

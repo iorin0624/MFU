@@ -75,6 +75,45 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
         self.assertEqual(form_data["issuer_template_id"], "")
         self.assertEqual(form_data["items"][0]["row_type"], "normal")
 
+    def test_build_issuer_template_form_data_has_defaults(self):
+        form_data = invoice_services.build_issuer_template_form_data()
+
+        self.assertEqual(form_data["template_name"], "")
+        self.assertEqual(form_data["issuer_name"], "")
+        self.assertEqual(form_data["sort_order"], "0")
+        self.assertEqual(form_data["is_default"], "")
+
+    def test_normalize_multiline_text_preserves_internal_newlines(self):
+        result = invoice_services.normalize_multiline_text("\n  1行目\r\n2行目\r3行目  \n")
+
+        self.assertEqual(result, "1行目\n2行目\n3行目")
+
+    def test_parse_issuer_template_form_validates_required_fields_and_sort_order(self):
+        with self.assertRaises(invoice_services.InvoiceValidationError):
+            invoice_services._parse_issuer_template_form({"template_name": "", "issuer_name": "発行者", "sort_order": "0"})
+        with self.assertRaises(invoice_services.InvoiceValidationError):
+            invoice_services._parse_issuer_template_form({"template_name": "名称", "issuer_name": "", "sort_order": "0"})
+        with self.assertRaises(invoice_services.InvoiceValidationError):
+            invoice_services._parse_issuer_template_form({"template_name": "名称", "issuer_name": "発行者", "sort_order": "abc"})
+
+        payload = invoice_services._parse_issuer_template_form(
+            {
+                "template_name": "事業用住所",
+                "issuer_name": "テスト発行者",
+                "issuer_postal_code": "123-4567",
+                "issuer_address1": "東京都",
+                "issuer_address2": "テストビル",
+                "issuer_phone": "03-0000-0000",
+                "sort_order": "10",
+                "is_default": "1",
+            }
+        )
+
+        self.assertEqual(payload["template_name"], "事業用住所")
+        self.assertEqual(payload["issuer_name"], "テスト発行者")
+        self.assertEqual(payload["sort_order"], 10)
+        self.assertEqual(payload["is_default"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

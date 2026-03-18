@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}発行者テンプレート管理{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="mb-1">発行者テンプレート管理</h1>
+    <div class="text-muted">請求書フォームで使う発行者情報テンプレートを管理します。</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">請求書一覧へ</a>
+    <a class="btn btn-primary" href="{{ url_for('invoice.issuer_template_new') }}">新規作成</a>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-striped table-hover align-middle">
+        <thead>
+          <tr>
+            <th>テンプレート名</th>
+            <th>発行者名</th>
+            <th>郵便番号</th>
+            <th>住所1</th>
+            <th>住所2</th>
+            <th>電話番号</th>
+            <th class="text-end">並び順</th>
+            <th>デフォルト</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for template in issuer_templates %}
+          <tr>
+            <td>{{ template.template_name }}</td>
+            <td>{{ template.issuer_name }}</td>
+            <td>{{ template.issuer_postal_code or '' }}</td>
+            <td>{{ template.issuer_address1 or '' }}</td>
+            <td>{{ template.issuer_address2 or '' }}</td>
+            <td>{{ template.issuer_phone or '' }}</td>
+            <td class="text-end">{{ template.sort_order }}</td>
+            <td>
+              {% if template.is_default %}
+              <span class="badge text-bg-primary">デフォルト</span>
+              {% else %}
+              <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="d-flex flex-wrap gap-2">
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice.issuer_template_edit', template_id=template.id) }}">編集</a>
+                {% if not template.is_default %}
+                <form method="post" action="{{ url_for('invoice.issuer_template_default', template_id=template.id) }}">
+                  <button class="btn btn-sm btn-outline-primary" type="submit">デフォルト化</button>
+                </form>
+                {% endif %}
+                <form method="post" action="{{ url_for('invoice.issuer_template_delete', template_id=template.id) }}" onsubmit="return confirm('この発行者テンプレートを削除しますか？');">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="9" class="text-center py-4">
+              <div class="text-muted mb-2">発行者テンプレートはまだありません。</div>
+              <a class="btn btn-sm btn-primary" href="{{ url_for('invoice.issuer_template_new') }}">最初のテンプレートを作成</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
