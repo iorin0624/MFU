@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from urllib.parse import urlparse
 
 from flask import abort, flash, redirect, render_template, request, url_for
@@ -9,6 +7,7 @@ from flask import abort, flash, redirect, render_template, request, url_for
 from app import admin_required
 
 from . import profile_bp
+from .formatting import linkify_plain_text_for_display, normalize_plain_text_for_display
 from .services import (
     add_known_work,
     create_default_main_profile_if_missing,
@@ -55,17 +54,6 @@ def _clean_url(name: str) -> tuple[str | None, str | None]:
     return value, None
 
 
-def _normalize_plain_text_for_display(value: str | None) -> str | None:
-    if value is None:
-        return None
-
-    normalized = value
-    normalized = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", normalized)
-    normalized = re.sub(r"(?i)&lt;\s*br\s*/?\s*&gt;", "\n", normalized)
-    normalized = re.sub(r"(?i)&amp;lt;\s*br\s*/?\s*&amp;gt;", "\n", normalized)
-
-    return normalized.replace("\r\n", "\n").replace("\r", "\n")
-
 
 def _group_known_works(rows: list[dict]) -> list[dict]:
     grouped: list[dict] = []
@@ -94,8 +82,8 @@ def profile_public():
     grouped_works = _group_known_works(works)
 
     profile_view = dict(profile)
-    profile_view["intro_text"] = _normalize_plain_text_for_display(profile.get("intro_text"))
-    profile_view["request_notes_text"] = _normalize_plain_text_for_display(profile.get("request_notes_text"))
+    profile_view["intro_text"] = linkify_plain_text_for_display(profile.get("intro_text"))
+    profile_view["request_notes_text"] = linkify_plain_text_for_display(profile.get("request_notes_text"))
 
     return render_template("profile_public.html", profile=profile_view, grouped_works=grouped_works)
 
@@ -124,8 +112,8 @@ def admin_profile_edit():
         intro_text_raw = (request.form.get("intro_text") or "").strip()
         request_notes_text_raw = (request.form.get("request_notes_text") or "").strip()
 
-        intro_text = _normalize_plain_text_for_display(intro_text_raw) or None
-        request_notes_text = _normalize_plain_text_for_display(request_notes_text_raw) or None
+        intro_text = normalize_plain_text_for_display(intro_text_raw) or None
+        request_notes_text = normalize_plain_text_for_display(request_notes_text_raw) or None
 
         x_url, err = _clean_url("x_url")
         if err:
@@ -163,8 +151,8 @@ def admin_profile_edit():
     profile = get_main_profile()
     if profile:
         profile = dict(profile)
-        profile["intro_text"] = _normalize_plain_text_for_display(profile.get("intro_text"))
-        profile["request_notes_text"] = _normalize_plain_text_for_display(profile.get("request_notes_text"))
+        profile["intro_text"] = normalize_plain_text_for_display(profile.get("intro_text"))
+        profile["request_notes_text"] = normalize_plain_text_for_display(profile.get("request_notes_text"))
 
     return render_template("profile_admin_edit.html", profile=profile)
 

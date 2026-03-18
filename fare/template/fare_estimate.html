@@ -1,62 +1,63 @@
-{% extends "base.html" %}
-
-{% block title %}交通費概算計算 | MFU{% endblock %}
-
-{% block content %}
-<div class="row justify-content-center">
-  <div class="col-12 col-lg-8">
-    <div class="card shadow-sm mb-4">
-      <div class="card-body">
-        <h1 class="h4 mb-3">交通費概算計算</h1>
-        <p class="text-muted">到着地点・利用日・駐輪場代を入力すると、概算交通費を表示します。</p>
-
-        {% if error_message %}
-          <div class="alert alert-danger" role="alert">{{ error_message }}</div>
-        {% endif %}
-
-        <form method="post" novalidate>
-          <div class="mb-3">
-            <label for="destination" class="form-label">到着地点</label>
-            <input type="text" class="form-control" id="destination" name="destination" maxlength="120" required
-                   placeholder="例: 新宿 / 横浜駅 / 東京都新宿区西新宿2-8-1"
-                   value="{{ form_data.destination }}">
-          </div>
-
-          <div class="mb-3">
-            <label for="target_date" class="form-label">利用日</label>
-            <input type="date" class="form-control" id="target_date" name="target_date" required
-                   value="{{ form_data.target_date }}">
-          </div>
-
-          <div class="mb-3">
-            <label for="parking_fee" class="form-label">駐輪場代（円）</label>
-            <input type="number" class="form-control" id="parking_fee" name="parking_fee" required min="0" step="1"
-                   placeholder="例: 100"
-                   value="{{ form_data.parking_fee }}">
-          </div>
-
-          <button type="submit" class="btn btn-primary w-100">概算を計算</button>
-        </form>
-      </div>
-    </div>
-
-    {% if result %}
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>交通費概算計算 | MFU</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+<div class="container py-4">
+  <div class="row justify-content-center">
+    <div class="col-12 col-lg-8">
       <div class="card shadow-sm mb-4">
         <div class="card-body">
-          <h2 class="h5 mb-3">計算結果</h2>
-          <dl class="row mb-0">
-            <dt class="col-5">出発地点</dt><dd class="col-7">{{ result.from_place }}</dd>
-            <dt class="col-5">到着地点</dt><dd class="col-7">{{ result.destination }}</dd>
-            <dt class="col-5">利用日</dt><dd class="col-7">{{ result.target_date }}</dd>
-            <dt class="col-5">片道運賃</dt><dd class="col-7">{{ "{:,.0f}".format(result.one_way_fare) }} 円</dd>
-            <dt class="col-5">往復運賃</dt><dd class="col-7">{{ "{:,.0f}".format(result.round_trip_fare) }} 円</dd>
-            <dt class="col-5">駐輪場代</dt><dd class="col-7">{{ "{:,.0f}".format(result.parking_fee) }} 円</dd>
-            <dt class="col-5 fw-bold">概算交通費合計</dt><dd class="col-7 fw-bold">{{ "{:,.0f}".format(result.total_fare) }} 円</dd>
-          </dl>
-          <p class="small text-muted mt-3 mb-0">※表示金額は概算です。正式な交通費は、依頼内容確定後に請求書でご案内します。</p>
+          <h1 class="h4 mb-3">交通費概算計算</h1>
+          <p class="text-muted">到着地点・利用日を入力すると、概算交通費を表示します。</p>
+
+          {% if error_message %}
+            <div class="alert alert-danger" role="alert">{{ error_message }}</div>
+          {% endif %}
+
+          <form method="post" novalidate>
+            <div class="mb-3">
+              <label for="destination" class="form-label">到着地点</label>
+              <input type="text" class="form-control" id="destination" name="destination" maxlength="120" required
+                     placeholder="例: 新宿 / 横浜駅 / 東京都新宿区西新宿2-8-1"
+                     value="{{ form_data.destination }}">
+            </div>
+
+            <div class="mb-3">
+              <label for="target_date" class="form-label">利用日</label>
+              <input type="date" class="form-control" id="target_date" name="target_date" required
+                     value="{{ form_data.target_date }}">
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100">概算を計算</button>
+          </form>
         </div>
       </div>
-    {% endif %}
+
+      {% if result %}
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h5 mb-3">計算結果</h2>
+            <dl class="row mb-0">
+              <dt class="col-5">到着地点</dt><dd class="col-7">{{ result.destination }}</dd>
+              <dt class="col-5">利用日</dt><dd class="col-7">{{ result.target_date }}</dd>
+              <dt class="col-5">片道運賃</dt><dd class="col-7">{{ "{:,.0f}".format(result.one_way_fare) }} 円</dd>
+              <dt class="col-5">往復運賃</dt><dd class="col-7">{{ "{:,.0f}".format(result.round_trip_fare) }} 円</dd>
+              <dt class="col-5">駐輪場代</dt><dd class="col-7">{{ "{:,.0f}".format(result.parking_fee) }} 円</dd>
+              <dt class="col-5 fw-bold">概算交通費合計</dt><dd class="col-7 fw-bold">{{ "{:,.0f}".format(result.total_fare) }} 円</dd>
+            </dl>
+            <p class="small text-muted mt-3 mb-0">※表示金額は概算です。正式な交通費は、依頼内容確定後に請求書でご案内します。</p>
+          </div>
+        </div>
+      {% endif %}
+    </div>
   </div>
 </div>
-{% endblock %}
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

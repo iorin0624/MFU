@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 from datetime import date
+from functools import wraps
 
-from flask import current_app, render_template, request
+from flask import current_app, flash, redirect, render_template, request, session, url_for
 
 from . import fare_bp
 from .services import (
-    DEFAULT_FROM_PLACE,
     FareEstimateError,
     build_yahoo_transit_url,
     calculate_total_fare,
+    create_default_fare_estimate_setting_if_missing,
     fetch_transit_html,
+    get_fare_estimate_setting,
     parse_route1_fare,
+    update_fare_estimate_setting,
     validate_destination,
+    validate_from_place,
     validate_parking_fee,
     validate_target_date,
 )
@@ -22,34 +26,49 @@ DEFAULT_ERROR_MESSAGE = "現在、交通費概算を取得できません。時�
 INPUT_ERROR_MESSAGE = "概算交通費を取得できませんでした。到着地点または日付をご確認ください。"
 
 
+try:
+    from app import admin_required  # type: ignore
+except Exception:
+    def admin_required(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if session.get("user") != "admin":
+                return "管理者のみアクセス可能", 403
+            return func(*args, **kwargs)
+
+        return wrapper
+
+
 @fare_bp.route("/fare-estimate", methods=["GET", "POST"])
 def fare_estimate():
     today = date.today()
     form_data = {
         "destination": "",
         "target_date": today.isoformat(),
-        "parking_fee": "",
     }
     result = None
     error_message = None
 
+    try:
+        setting = get_fare_estimate_setting()
+    except Exception:
+        current_app.logger.exception("[fare_estimate] setting fetch failed")
+        setting = {"from_place": "五井", "parking_fee": 100}
+
     if request.method == "POST":
         form_data["destination"] = request.form.get("destination", "")
         form_data["target_date"] = request.form.get("target_date", today.isoformat())
-        form_data["parking_fee"] = request.form.get("parking_fee", "")
 
         try:
             destination = validate_destination(form_data["destination"])
             target_date = validate_target_date(form_data["target_date"])
-            parking_fee = validate_parking_fee(form_data["parking_fee"])
 
-            yahoo_url = build_yahoo_transit_url(DEFAULT_FROM_PLACE, destination, target_date)
+            yahoo_url = build_yahoo_transit_url(str(setting["from_place"]), destination, target_date)
             html = fetch_transit_html(yahoo_url)
             one_way_fare = parse_route1_fare(html)
-            fares = calculate_total_fare(one_way_fare, parking_fee)
+            fares = calculate_total_fare(one_way_fare, int(setting["parking_fee"]))
 
             result = {
-                "from_place": DEFAULT_FROM_PLACE,
                 "destination": destination,
                 "target_date": target_date.isoformat(),
                 **fares,
@@ -59,7 +78,6 @@ def fare_estimate():
             if message in {
                 "到着地点を入力してください。",
                 "利用日を正しく入力してください。",
-                "駐輪場代は0以上の数値で入力してください。",
             } or message.endswith("文字以内で入力してください。"):
                 error_message = message
             else:
@@ -70,7 +88,7 @@ def fare_estimate():
                     message,
                 )
                 error_message = INPUT_ERROR_MESSAGE
-        except Exception as exc:
+        except Exception:
             current_app.logger.exception(
                 "[fare_estimate] fetch failed destination=%s date=%s",
                 form_data["destination"],
@@ -84,3 +102,33 @@ def fare_estimate():
         result=result,
         error_message=error_message,
     )
+
+
+@fare_bp.route("/admin/fare-estimate", methods=["GET", "POST"])
+@admin_required
+def admin_fare_estimate():
+    create_default_fare_estimate_setting_if_missing()
+    setting = get_fare_estimate_setting()
+
+    form_data = {
+        "from_place": str(setting["from_place"]),
+        "parking_fee": str(setting["parking_fee"]),
+    }
+
+    if request.method == "POST":
+        form_data["from_place"] = request.form.get("from_place", "")
+        form_data["parking_fee"] = request.form.get("parking_fee", "")
+
+        try:
+            from_place = validate_from_place(form_data["from_place"])
+            parking_fee = validate_parking_fee(form_data["parking_fee"])
+            update_fare_estimate_setting(from_place, parking_fee)
+            flash("交通費概算設定を更新しました。", "success")
+            return redirect(url_for("fare.admin_fare_estimate"))
+        except FareEstimateError as exc:
+            flash(str(exc), "danger")
+        except Exception:
+            current_app.logger.exception("[fare_estimate_admin] setting update failed")
+            flash("設定の更新に失敗しました。", "danger")
+
+    return render_template("admin_fare_estimate.html", form_data=form_data)

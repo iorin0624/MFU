@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode
@@ -21,6 +22,8 @@ ROUTE_TIME_M2 = "0"
 REQUEST_TIMEOUT_SECONDS = 10
 MAX_DESTINATION_LENGTH = 120
 MAX_PARKING_FEE = 1_000_000
+MAX_FROM_PLACE_LENGTH = 120
+DEFAULT_PARKING_FEE = 100
 
 
 class FareEstimateError(Exception):
@@ -78,10 +81,12 @@ def parse_route1_fare(html: str) -> int:
     if not html:
         raise FareEstimateError("empty_html")
 
+    total_price = _extract_total_price_from_next_data(html)
+    if total_price is not None:
+        return total_price
+
     route1_block = _extract_route1_block(html)
-    fare = _extract_fare_from_text(route1_block)
-    if fare is None:
-        fare = _extract_fare_from_text(html)
+    fare = _extract_fare_from_route1_summary(route1_block)
 
     if fare is None:
         raise FareEstimateError("fare_not_found")
@@ -132,6 +137,80 @@ def validate_parking_fee(value: str | None) -> int:
     return parking
 
 
+def validate_from_place(value: str | None) -> str:
+    from_place = (value or "").strip()
+    if not from_place:
+        raise FareEstimateError("出発駅を入力してください。")
+    if len(from_place) > MAX_FROM_PLACE_LENGTH:
+        raise FareEstimateError(f"出発駅は{MAX_FROM_PLACE_LENGTH}文字以内で入力してください。")
+    return from_place
+
+
+def create_default_fare_estimate_setting_if_missing() -> None:
+    db = _get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fare_estimate_setting (
+              id INT NOT NULL AUTO_INCREMENT,
+              from_place VARCHAR(120) NOT NULL,
+              parking_fee INT NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute("SELECT id FROM fare_estimate_setting ORDER BY id ASC LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                "INSERT INTO fare_estimate_setting (from_place, parking_fee) VALUES (%s, %s)",
+                (DEFAULT_FROM_PLACE, DEFAULT_PARKING_FEE),
+            )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def get_fare_estimate_setting() -> dict[str, int | str]:
+    create_default_fare_estimate_setting_if_missing()
+    db = _get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "SELECT id, from_place, parking_fee FROM fare_estimate_setting ORDER BY id ASC LIMIT 1"
+        )
+        row = cur.fetchone()
+        if not row:
+            raise FareEstimateError("fare_estimate_setting_not_found")
+        return {
+            "id": int(row[0]),
+            "from_place": row[1],
+            "parking_fee": int(row[2]),
+        }
+    finally:
+        cur.close()
+        db.close()
+
+
+def update_fare_estimate_setting(from_place: str, parking_fee: int) -> None:
+    create_default_fare_estimate_setting_if_missing()
+    db = _get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE fare_estimate_setting SET from_place=%s, parking_fee=%s ORDER BY id ASC LIMIT 1",
+            (from_place, parking_fee),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
 def _extract_route1_block(html: str) -> str:
     patterns = [
         r'(?is)(<li[^>]+id="route01".*?</li>)',
@@ -147,27 +226,18 @@ def _extract_route1_block(html: str) -> str:
     return html
 
 
-def _extract_fare_from_text(text: str) -> int | None:
+def _extract_fare_from_route1_summary(text: str) -> int | None:
     cleaned = _normalize_html_text(text)
     patterns = [
         r"IC(?:\s*優先)?[:：]\s*([0-9][0-9,]*)円",
         r"運賃[:：]\s*([0-9][0-9,]*)円",
-        r"片道[:：]\s*([0-9][0-9,]*)円",
-        r"([0-9][0-9,]*)円",
+        r"\bfare\b\s*[:：]?\s*([0-9][0-9,]*)円",
     ]
 
     for pattern in patterns:
         matched = re.search(pattern, cleaned)
         if matched:
             return _parse_yen(matched.group(1))
-
-    state_json = _extract_json_from_state(text)
-    if state_json is not None:
-        fares = re.findall(r'"(?:fare|fareIc|icFare|ic)"\s*:\s*"?([0-9][0-9,]*)"?', state_json)
-        for fare in fares:
-            parsed = _parse_yen(fare)
-            if parsed is not None:
-                return parsed
 
     return None
 
@@ -177,18 +247,34 @@ def _normalize_html_text(text: str) -> str:
     return re.sub(r"\s+", " ", without_tag)
 
 
-def _extract_json_from_state(text: str) -> str | None:
-    for key in ("__NEXT_DATA__", "__PRELOADED_STATE__"):
-        pattern = rf'(?is)<script[^>]*id="{key}"[^>]*>(.*?)</script>'
-        matched = re.search(pattern, text)
-        if matched:
-            return matched.group(1)
+def _extract_total_price_from_next_data(html: str) -> int | None:
+    pattern = r'(?is)<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>'
+    matched = re.search(pattern, html)
+    if not matched:
+        return None
 
-    pattern = r'(?is)window\.__INITIAL_STATE__\s*=\s*(\{.*?\});'
-    matched = re.search(pattern, text)
-    if matched:
-        return matched.group(1)
-    return None
+    try:
+        payload = json.loads(matched.group(1))
+    except json.JSONDecodeError:
+        return None
+
+    try:
+        total_price = payload["props"]["pageProps"]["naviSearchParam"]["featureInfoList"][0]["summaryInfo"]["totalPrice"]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+    return _parse_yen(str(total_price))
+
+
+def _get_db():
+    try:
+        from app import get_db as app_get_db  # type: ignore
+
+        return app_get_db()
+    except Exception:
+        from app.utils.db import get_db  # type: ignore
+
+        return get_db()
 
 
 def _parse_yen(raw: str) -> int | None:

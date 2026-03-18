@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}交通費概算設定 | 管理者 | MFU{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-12 col-lg-7">
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <h1 class="h4 mb-3">交通費概算設定</h1>
+        <p class="text-muted">依頼者向け概算計算で利用する出発駅・駐輪場代を設定します。</p>
+
+        <form method="post" novalidate>
+          <div class="mb-3">
+            <label for="from_place" class="form-label">出発駅</label>
+            <input type="text" class="form-control" id="from_place" name="from_place" maxlength="120" required
+                   value="{{ form_data.from_place }}">
+          </div>
+
+          <div class="mb-3">
+            <label for="parking_fee" class="form-label">駐輪場代（円）</label>
+            <input type="number" class="form-control" id="parking_fee" name="parking_fee" required min="0" step="1"
+                   value="{{ form_data.parking_fee }}">
+          </div>
+
+          <button type="submit" class="btn btn-primary">設定を保存</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
