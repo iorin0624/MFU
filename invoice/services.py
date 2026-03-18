@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from typing import Any
 
 from app.utils.db import get_db
@@ -14,6 +14,7 @@ from .utils import (
     TAX_CATEGORY_LABELS,
     calculate_line_amounts,
     default_due_date,
+    format_quantity,
     format_ymd,
     normalize_row_type,
     normalize_status,
@@ -63,6 +64,85 @@ class InvoiceItemInput:
 
 class InvoiceValidationError(ValueError):
     pass
+
+
+def get_latest_bike_fuel_log() -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, fill_date, created_at, trip_km, liters, yen_per_liter
+            FROM bike_fuel_log
+            ORDER BY fill_date DESC, created_at DESC, id DESC
+            LIMIT 1
+            """
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter) -> int:
+    trip_km_dec = to_decimal(trip_km)
+    liters_dec = to_decimal(liters)
+    yen_per_liter_dec = to_decimal(yen_per_liter)
+    if trip_km_dec <= 0:
+        raise ValueError("trip_km must be greater than zero")
+    if liters_dec <= 0:
+        raise ValueError("liters must be greater than zero")
+    if yen_per_liter_dec <= 0:
+        raise ValueError("yen_per_liter must be greater than zero")
+    yen_per_km = (yen_per_liter_dec * liters_dec) / trip_km_dec
+    return int(yen_per_km.quantize(Decimal("1"), rounding=ROUND_CEILING))
+
+
+def build_fuel_cost_helper() -> dict[str, Any]:
+    unavailable = {
+        "available": False,
+        "message": "最新の燃費記録から単価を計算できません",
+        "trip_km": "",
+        "liters": "",
+        "yen_per_liter": "",
+        "yen_per_km": None,
+        "item_name": "ガソリン代",
+        "quantity": "1",
+        "unit_name": "km",
+        "tax_category": DEFAULT_TAX_CATEGORY,
+    }
+    try:
+        latest = get_latest_bike_fuel_log()
+    except Exception:
+        return unavailable
+    if not latest:
+        return unavailable
+
+    trip_km = latest.get("trip_km")
+    liters = latest.get("liters")
+    yen_per_liter = latest.get("yen_per_liter")
+    try:
+        yen_per_km = calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter)
+    except (ArithmeticError, ValueError):
+        return {
+            **unavailable,
+            "trip_km": format_quantity(trip_km),
+            "liters": format_quantity(liters),
+            "yen_per_liter": str(int(to_decimal(yen_per_liter))) if yen_per_liter not in (None, "") else "",
+        }
+
+    return {
+        "available": True,
+        "message": "",
+        "trip_km": format_quantity(trip_km),
+        "liters": format_quantity(liters),
+        "yen_per_liter": str(int(to_decimal(yen_per_liter))),
+        "yen_per_km": yen_per_km,
+        "item_name": "ガソリン代",
+        "quantity": "1",
+        "unit_name": "km",
+        "tax_category": DEFAULT_TAX_CATEGORY,
+    }
 
 
 def _column_exists(cur, table_name: str, column_name: str) -> bool:
