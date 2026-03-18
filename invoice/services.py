@@ -8,10 +8,16 @@ from typing import Any
 from app.utils.db import get_db
 
 from .utils import (
-    calculate_tax,
+    DEFAULT_TAX_CATEGORY,
+    ROW_TYPE_MEMO,
+    ROW_TYPE_NORMAL,
+    TAX_CATEGORY_LABELS,
+    calculate_line_amounts,
     default_due_date,
     format_ymd,
+    normalize_row_type,
     normalize_status,
+    normalize_tax_category,
     normalize_tax_mode,
     now_jst,
     quantize_quantity,
@@ -22,20 +28,51 @@ from .utils import (
 
 @dataclass
 class InvoiceItemInput:
-    item_name: str
-    quantity: Decimal
-    unit_name: str
-    unit_price_yen: int
-    tax_category: str
-    sort_order: int
+    item_name: str = ""
+    quantity: Decimal = Decimal("0")
+    unit_name: str = ""
+    unit_price_yen: int = 0
+    tax_category: str = DEFAULT_TAX_CATEGORY
+    sort_order: int = 0
+    row_type: str = ROW_TYPE_NORMAL
+    memo_text: str = ""
+
+    @property
+    def base_amount_yen(self) -> int:
+        return quantize_yen(self.quantity * Decimal(self.unit_price_yen))
+
+    @property
+    def is_memo(self) -> bool:
+        return self.row_type == ROW_TYPE_MEMO
+
+    def line_amounts(self, tax_mode: str) -> dict[str, int]:
+        if self.is_memo:
+            return {
+                "tax_category": DEFAULT_TAX_CATEGORY,
+                "tax_rate": Decimal("0"),
+                "line_subtotal_yen": 0,
+                "line_tax_yen": 0,
+                "line_total_yen": 0,
+            }
+        return calculate_line_amounts(self.base_amount_yen, tax_mode, self.tax_category)
 
     @property
     def line_total_yen(self) -> int:
-        return quantize_yen(self.quantity * Decimal(self.unit_price_yen))
+        return self.base_amount_yen
 
 
 class InvoiceValidationError(ValueError):
     pass
+
+
+def _column_exists(cur, table_name: str, column_name: str) -> bool:
+    cur.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (column_name,))
+    return cur.fetchone() is not None
+
+
+def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
+    if not _column_exists(cur, "invoice_items", column_name):
+        cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
 
 
 def ensure_invoice_schema() -> None:
@@ -114,7 +151,9 @@ def ensure_invoice_schema() -> None:
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 invoice_id INT NOT NULL,
                 sort_order INT NOT NULL DEFAULT 0,
+                row_type VARCHAR(16) NOT NULL DEFAULT 'normal',
                 item_name VARCHAR(255) NOT NULL,
+                memo_text TEXT NULL,
                 quantity DECIMAL(12,2) NOT NULL DEFAULT 1.00,
                 unit_name VARCHAR(32) NULL,
                 unit_price_yen INT NOT NULL DEFAULT 0,
@@ -127,6 +166,8 @@ def ensure_invoice_schema() -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
+        _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
@@ -292,20 +333,48 @@ def _snapshot_contact(contact: dict[str, Any]) -> dict[str, Any]:
 
 
 def parse_invoice_items(form) -> list[InvoiceItemInput]:
+    row_types = form.getlist("row_type[]") if hasattr(form, "getlist") else form.get("row_type[]", [])
     names = form.getlist("item_name[]") if hasattr(form, "getlist") else form.get("item_name[]", [])
+    memo_texts = form.getlist("memo_text[]") if hasattr(form, "getlist") else form.get("memo_text[]", [])
     quantities = form.getlist("quantity[]") if hasattr(form, "getlist") else form.get("quantity[]", [])
     unit_names = form.getlist("unit_name[]") if hasattr(form, "getlist") else form.get("unit_name[]", [])
     prices = form.getlist("unit_price_yen[]") if hasattr(form, "getlist") else form.get("unit_price_yen[]", [])
     tax_categories = form.getlist("tax_category[]") if hasattr(form, "getlist") else form.get("tax_category[]", [])
 
     items: list[InvoiceItemInput] = []
-    row_count = max(len(names), len(quantities), len(unit_names), len(prices), len(tax_categories))
+    row_count = max(
+        len(row_types),
+        len(names),
+        len(memo_texts),
+        len(quantities),
+        len(unit_names),
+        len(prices),
+        len(tax_categories),
+    )
     for index in range(row_count):
+        row_type = normalize_row_type(row_types[index] if index < len(row_types) else ROW_TYPE_NORMAL)
         name = (names[index] if index < len(names) else "").strip()
+        memo_text = (memo_texts[index] if index < len(memo_texts) else "").strip()
         quantity_raw = quantities[index] if index < len(quantities) else ""
         unit_name = (unit_names[index] if index < len(unit_names) else "").strip()
         price_raw = prices[index] if index < len(prices) else ""
-        tax_category = (tax_categories[index] if index < len(tax_categories) else "課税").strip() or "課税"
+        tax_category = normalize_tax_category(
+            (tax_categories[index] if index < len(tax_categories) else DEFAULT_TAX_CATEGORY).strip() or DEFAULT_TAX_CATEGORY
+        )
+
+        if row_type == ROW_TYPE_MEMO:
+            if not memo_text:
+                continue
+            items.append(
+                InvoiceItemInput(
+                    row_type=ROW_TYPE_MEMO,
+                    memo_text=memo_text,
+                    sort_order=index,
+                    tax_category=DEFAULT_TAX_CATEGORY,
+                )
+            )
+            continue
+
         if not any([name, quantity_raw, unit_name, price_raw]):
             continue
         quantity = quantize_quantity(to_decimal(quantity_raw, "0"))
@@ -324,6 +393,8 @@ def parse_invoice_items(form) -> list[InvoiceItemInput]:
                 unit_price_yen=unit_price,
                 tax_category=tax_category,
                 sort_order=index,
+                row_type=ROW_TYPE_NORMAL,
+                memo_text="",
             )
         )
     if not items:
@@ -331,14 +402,37 @@ def parse_invoice_items(form) -> list[InvoiceItemInput]:
     return items
 
 
-def calculate_invoice_totals(items: list[InvoiceItemInput], tax_mode: str) -> dict[str, int]:
-    subtotal = sum(item.line_total_yen for item in items)
+def summarize_invoice_totals(items: list[InvoiceItemInput], tax_mode: str) -> dict[str, int]:
+    subtotal = 0
+    tax_10 = 0
+    tax_8 = 0
+    total = 0
     tax_mode = normalize_tax_mode(tax_mode)
-    tax = calculate_tax(subtotal, tax_mode)
-    total = subtotal if tax_mode == "internal" else subtotal + tax
-    if total <= 0:
+    for item in items:
+        if item.is_memo:
+            continue
+        line_amounts = item.line_amounts(tax_mode)
+        subtotal += line_amounts["line_subtotal_yen"]
+        total += line_amounts["line_total_yen"]
+        if line_amounts["tax_category"] == "tax8":
+            tax_8 += line_amounts["line_tax_yen"]
+        else:
+            tax_10 += line_amounts["line_tax_yen"]
+    tax = tax_10 + tax_8
+    return {
+        "subtotal_yen": subtotal,
+        "tax_10_yen": tax_10,
+        "tax_8_yen": tax_8,
+        "tax_yen": tax,
+        "total_yen": total,
+    }
+
+
+def calculate_invoice_totals(items: list[InvoiceItemInput], tax_mode: str) -> dict[str, int]:
+    totals = summarize_invoice_totals(items, tax_mode)
+    if totals["total_yen"] <= 0:
         raise InvoiceValidationError("合計金額は0円より大きくしてください。")
-    return {"subtotal_yen": subtotal, "tax_yen": tax, "total_yen": total}
+    return totals
 
 
 def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceItemInput]) -> dict[str, Any]:
@@ -377,6 +471,55 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
         "status": normalize_status(form.get("status") or "draft"),
     }
     return payload
+
+
+def serialize_invoice_item(item: InvoiceItemInput, tax_mode: str) -> dict[str, Any]:
+    line_amounts = item.line_amounts(tax_mode)
+    return {
+        "row_type": item.row_type,
+        "item_name": item.item_name,
+        "memo_text": item.memo_text,
+        "quantity": str(item.quantity),
+        "unit_name": item.unit_name,
+        "unit_price_yen": str(item.unit_price_yen),
+        "line_subtotal_yen": line_amounts["line_subtotal_yen"],
+        "line_tax_yen": line_amounts["line_tax_yen"],
+        "line_total_yen": line_amounts["line_total_yen"],
+        "tax_category": normalize_tax_category(item.tax_category),
+        "tax_category_label": TAX_CATEGORY_LABELS[normalize_tax_category(item.tax_category)],
+        "sort_order": item.sort_order,
+    }
+
+
+def _hydrate_invoice_item(item: dict[str, Any], tax_mode: str) -> dict[str, Any]:
+    row_type = normalize_row_type(item.get("row_type"))
+    tax_category = normalize_tax_category(item.get("tax_category"))
+    quantity = quantize_quantity(to_decimal(item.get("quantity"), "0"))
+    unit_price_yen = quantize_yen(to_decimal(item.get("unit_price_yen"), "0"))
+    base_amount_yen = quantize_yen(quantity * Decimal(unit_price_yen))
+    line_amounts = (
+        {
+            "line_subtotal_yen": 0,
+            "line_tax_yen": 0,
+            "line_total_yen": 0,
+        }
+        if row_type == ROW_TYPE_MEMO
+        else calculate_line_amounts(base_amount_yen, tax_mode, tax_category)
+    )
+    hydrated = dict(item)
+    hydrated.update(
+        {
+            "row_type": row_type,
+            "memo_text": (item.get("memo_text") or "").strip(),
+            "quantity": quantity,
+            "unit_price_yen": unit_price_yen,
+            "base_amount_yen": base_amount_yen,
+            "tax_category": tax_category,
+            "tax_category_label": TAX_CATEGORY_LABELS[tax_category],
+            **line_amounts,
+        }
+    )
+    return hydrated
 
 
 def _next_invoice_no(cur, issue_date: date) -> str:
@@ -521,19 +664,21 @@ def save_invoice(invoice_id: int | None, form) -> int:
         cur.executemany(
             """
             INSERT INTO invoice_items (
-                invoice_id, sort_order, item_name, quantity, unit_name,
+                invoice_id, sort_order, row_type, item_name, memo_text, quantity, unit_name,
                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
                     invoice_id,
                     item.sort_order,
-                    item.item_name,
+                    item.row_type,
+                    item.item_name or "",
+                    item.memo_text or None,
                     item.quantity,
                     item.unit_name or None,
                     item.unit_price_yen,
-                    item.line_total_yen,
+                    item.line_amounts(payload["tax_mode"])["line_total_yen"],
                     item.tax_category,
                     now,
                     now,
@@ -603,7 +748,23 @@ def get_invoice(invoice_id: int) -> dict[str, Any] | None:
             "SELECT * FROM invoice_items WHERE invoice_id = %s ORDER BY sort_order ASC, id ASC",
             (invoice_id,),
         )
-        invoice["items"] = cur.fetchall()
+        invoice["items"] = [
+            _hydrate_invoice_item(item, invoice.get("tax_mode") or "external")
+            for item in cur.fetchall()
+        ]
+        invoice.update(summarize_invoice_totals([
+            InvoiceItemInput(
+                row_type=item.get("row_type") or ROW_TYPE_NORMAL,
+                item_name=item.get("item_name") or "",
+                memo_text=item.get("memo_text") or "",
+                quantity=to_decimal(item.get("quantity"), "0"),
+                unit_name=item.get("unit_name") or "",
+                unit_price_yen=int(item.get("unit_price_yen") or 0),
+                tax_category=item.get("tax_category") or DEFAULT_TAX_CATEGORY,
+                sort_order=int(item.get("sort_order") or 0),
+            )
+            for item in invoice["items"]
+        ], invoice.get("tax_mode") or "external"))
         cur.execute(
             "SELECT * FROM invoice_mail_logs WHERE invoice_id = %s ORDER BY created_at DESC, id DESC",
             (invoice_id,),
@@ -668,20 +829,22 @@ def duplicate_invoice(invoice_id: int) -> int:
         cur.executemany(
             """
             INSERT INTO invoice_items (
-                invoice_id, sort_order, item_name, quantity, unit_name,
+                invoice_id, sort_order, row_type, item_name, memo_text, quantity, unit_name,
                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             [
                 (
                     new_id,
                     item.get("sort_order") or 0,
-                    item.get("item_name"),
+                    normalize_row_type(item.get("row_type")),
+                    item.get("item_name") or "",
+                    (item.get("memo_text") or "").strip() or None,
                     item.get("quantity"),
                     item.get("unit_name"),
                     item.get("unit_price_yen") or 0,
                     item.get("line_total_yen") or 0,
-                    item.get("tax_category"),
+                    normalize_tax_category(item.get("tax_category")),
                     now,
                     now,
                 )
@@ -811,12 +974,14 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
             "status": "draft",
             "items": [
                 {
+                    "row_type": ROW_TYPE_NORMAL,
                     "item_name": "",
+                    "memo_text": "",
                     "quantity": "1.00",
                     "unit_name": "式",
                     "unit_price_yen": "0",
                     "line_total_yen": "0",
-                    "tax_category": "課税",
+                    "tax_category": DEFAULT_TAX_CATEGORY,
                 }
             ],
         }
@@ -826,7 +991,10 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
     if not data.get("items"):
         data["items"] = []
     for item in data["items"]:
+        item["row_type"] = normalize_row_type(item.get("row_type"))
+        item["memo_text"] = (item.get("memo_text") or "").strip()
         item["quantity"] = str(item.get("quantity") or "1.00")
         item["unit_price_yen"] = str(item.get("unit_price_yen") or 0)
         item["line_total_yen"] = str(item.get("line_total_yen") or 0)
+        item["tax_category"] = normalize_tax_category(item.get("tax_category"))
     return data

@@ -162,8 +162,22 @@ def _build_issuer_lines(invoice: dict[str, Any]) -> list[str]:
 def _build_item_rows(invoice: dict[str, Any]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for item in invoice.get("items", []):
+        row_type = item.get("row_type") or "normal"
+        if row_type == "memo":
+            rows.append(
+                {
+                    "row_type": "memo",
+                    "item_name": (item.get("memo_text") or "").strip(),
+                    "quantity": "",
+                    "unit_name": "",
+                    "unit_price_yen": "",
+                    "line_total_yen": "",
+                }
+            )
+            continue
         rows.append(
             {
+                "row_type": "normal",
                 "item_name": (item.get("item_name") or "").strip(),
                 "quantity": format_quantity(item.get("quantity")),
                 "unit_name": (item.get("unit_name") or "").strip(),
@@ -184,6 +198,8 @@ def _build_pdf_context(invoice: dict[str, Any]) -> dict[str, Any]:
         "issuer_lines": _build_issuer_lines(invoice),
         "line_items": _build_item_rows(invoice),
         "subtotal_yen_label": format_currency_yen(invoice.get("subtotal_yen")),
+        "tax_10_yen_label": format_currency_yen(invoice.get("tax_10_yen")),
+        "tax_8_yen_label": format_currency_yen(invoice.get("tax_8_yen")),
         "tax_yen_label": format_currency_yen(invoice.get("tax_yen")),
         "total_yen_label": format_currency_yen(invoice.get("total_yen")),
         "note": (invoice.get("note") or "").strip(),
