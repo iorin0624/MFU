@@ -44,6 +44,33 @@
         </div>
       </div></div>
       <div class="card shadow-sm"><div class="card-body">
+        <div class="border rounded p-3 mb-3">
+          <h2 class="h6 mb-2">ガソリン代入力補助</h2>
+          {% if fuel_cost_helper and fuel_cost_helper.available %}
+          <dl class="row small mb-3">
+            <dt class="col-sm-4 mb-1">最新トリップ</dt>
+            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.trip_km }} km</dd>
+            <dt class="col-sm-4 mb-1">最新給油量</dt>
+            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.liters }} L</dd>
+            <dt class="col-sm-4 mb-1">最新単価</dt>
+            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.yen_per_liter }} 円/L</dd>
+            <dt class="col-sm-4 mb-0">計算単価</dt>
+            <dd class="col-sm-8 mb-0 fw-semibold">{{ fuel_cost_helper.yen_per_km }} 円/km</dd>
+          </dl>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-primary"
+            id="addFuelCostRow"
+            data-item-name="{{ fuel_cost_helper.item_name }}"
+            data-quantity="{{ fuel_cost_helper.quantity }}"
+            data-unit-name="{{ fuel_cost_helper.unit_name }}"
+            data-unit-price-yen="{{ fuel_cost_helper.yen_per_km }}"
+            data-tax-category="{{ fuel_cost_helper.tax_category }}"
+          >この値で明細追加</button>
+          {% else %}
+          <p class="text-muted mb-0">{{ (fuel_cost_helper and fuel_cost_helper.message) or '最新の燃費記録から単価を計算できません' }}</p>
+          {% endif %}
+        </div>
         <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
           <h2 class="h5 mb-0">明細</h2>
           <div class="d-flex gap-2 flex-wrap">
@@ -65,7 +92,7 @@
                   <input type="hidden" name="quantity[]" value="{{ item.quantity or '' }}" class="item-quantity-input">
                   <input type="hidden" name="unit_name[]" value="{{ item.unit_name or '' }}" class="item-unit-input">
                   <input type="hidden" name="unit_price_yen[]" value="{{ item.unit_price_yen or '' }}" class="item-price-input">
-                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or 'tax10' }}" class="item-tax-category-input">
+                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or default_tax_category }}" class="item-tax-category-input">
                   <div class="invoice-memo-label mb-1">メモ</div>
                   <input class="form-control memo-text-input" name="memo_text[]" value="{{ item.memo_text or item.item_name or '' }}" placeholder="メモを入力してください">
                   {% else %}
@@ -100,7 +127,7 @@
                   {% else %}
                   <select class="form-select item-tax-category-input" name="tax_category[]">
                     {% for value, label in tax_category_labels.items() %}
-                    <option value="{{ value }}" {% if (item.tax_category or 'tax10') == value %}selected{% endif %}>{{ label }}</option>
+                    <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
                     {% endfor %}
                   </select>
                   {% endif %}
@@ -151,7 +178,7 @@
     <td>
       <select class="form-select item-tax-category-input" name="tax_category[]">
         {% for value, label in tax_category_labels.items() %}
-        <option value="{{ value }}" {% if value == 'tax10' %}selected{% endif %}>{{ label }}</option>
+        <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
     </td>
@@ -173,7 +200,7 @@
       <input type="hidden" name="quantity[]" value="" class="item-quantity-input">
       <input type="hidden" name="unit_name[]" value="" class="item-unit-input">
       <input type="hidden" name="unit_price_yen[]" value="" class="item-price-input">
-      <input type="hidden" name="tax_category[]" value="tax10" class="item-tax-category-input">
+      <input type="hidden" name="tax_category[]" value="{{ default_tax_category }}" class="item-tax-category-input">
       <div class="invoice-memo-label mb-1">メモ</div>
       <input class="form-control memo-text-input" name="memo_text[]" placeholder="メモを入力してください">
     </td>
@@ -253,13 +280,41 @@
     document.getElementById('totalText').textContent = fmt(total);
   };
 
-  const appendRow = (template) => {
-    tableBody.appendChild(template.content.firstElementChild.cloneNode(true));
+  const appendRow = (template, initialValues = {}) => {
+    const row = template.content.firstElementChild.cloneNode(true);
+    if ((row.dataset.rowType || 'normal') === 'normal') {
+      if (initialValues.item_name !== undefined) {
+        row.querySelector('.item-name-input').value = initialValues.item_name;
+      }
+      if (initialValues.quantity !== undefined) {
+        row.querySelector('.item-quantity-input').value = initialValues.quantity;
+      }
+      if (initialValues.unit_name !== undefined) {
+        row.querySelector('.item-unit-input').value = initialValues.unit_name;
+      }
+      if (initialValues.unit_price_yen !== undefined) {
+        row.querySelector('.item-price-input').value = initialValues.unit_price_yen;
+      }
+      if (initialValues.tax_category !== undefined) {
+        row.querySelector('.item-tax-category-input').value = initialValues.tax_category;
+      }
+    }
+    tableBody.appendChild(row);
     recalc();
   };
 
   document.getElementById('addItemRow')?.addEventListener('click', () => appendRow(normalTemplate));
   document.getElementById('addMemoRow')?.addEventListener('click', () => appendRow(memoTemplate));
+  document.getElementById('addFuelCostRow')?.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    appendRow(normalTemplate, {
+      item_name: button.dataset.itemName || '',
+      quantity: button.dataset.quantity || '1',
+      unit_name: button.dataset.unitName || 'km',
+      unit_price_yen: button.dataset.unitPriceYen || '0',
+      tax_category: button.dataset.taxCategory || '{{ default_tax_category }}',
+    });
+  });
   tableBody.addEventListener('input', recalc);
   tableBody.addEventListener('change', recalc);
   tableBody.addEventListener('click', (event) => {

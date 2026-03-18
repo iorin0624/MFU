@@ -1,101 +1,12 @@
-diff --git a/invoice/pdf.py b/invoice/pdf.py
-index 3e2b0f5b108e9681134b4cd20835572227b0f7c8..b62f954c79a86b0feec50a91101dfaa6e043298b 100644
---- a/invoice/pdf.py
-+++ b/invoice/pdf.py
-@@ -140,72 +140,88 @@ def _build_contact_lines(invoice: dict[str, Any]) -> list[str]:
-     if invoice.get("contact_phone_snapshot"):
-         lines.append(f"TEL: {invoice['contact_phone_snapshot']}")
-     return lines
- 
- 
- def _build_issuer_lines(invoice: dict[str, Any]) -> list[str]:
-     lines: list[str] = []
-     for key in ("issuer_name",):
-         value = (invoice.get(key) or "").strip()
-         if value:
-             lines.append(value)
-     if invoice.get("issuer_postal_code"):
-         lines.append(f"〒{invoice['issuer_postal_code']}")
-     for key in ("issuer_address1", "issuer_address2"):
-         value = (invoice.get(key) or "").strip()
-         if value:
-             lines.append(value)
-     if invoice.get("issuer_phone"):
-         lines.append(f"TEL: {invoice['issuer_phone']}")
-     return lines
- 
- 
- def _build_item_rows(invoice: dict[str, Any]) -> list[dict[str, str]]:
-     rows: list[dict[str, str]] = []
-     for item in invoice.get("items", []):
-+        row_type = item.get("row_type") or "normal"
-+        if row_type == "memo":
-+            rows.append(
-+                {
-+                    "row_type": "memo",
-+                    "item_name": (item.get("memo_text") or "").strip(),
-+                    "quantity": "",
-+                    "unit_name": "",
-+                    "unit_price_yen": "",
-+                    "line_total_yen": "",
-+                }
-+            )
-+            continue
-         rows.append(
-             {
-+                "row_type": "normal",
-                 "item_name": (item.get("item_name") or "").strip(),
-                 "quantity": format_quantity(item.get("quantity")),
-                 "unit_name": (item.get("unit_name") or "").strip(),
-                 "unit_price_yen": format_currency_yen(item.get("unit_price_yen")),
-                 "line_total_yen": format_currency_yen(item.get("line_total_yen")),
-             }
-         )
-     return rows
- 
- 
- def _build_pdf_context(invoice: dict[str, Any]) -> dict[str, Any]:
-     return {
-         "title": "請求書",
-         "invoice_no": invoice.get("invoice_no") or "",
-         "issue_date_label": format_jp_date(invoice.get("issue_date")),
-         "subject": (invoice.get("subject") or "").strip(),
-         "contact_lines": _build_contact_lines(invoice),
-         "issuer_lines": _build_issuer_lines(invoice),
-         "line_items": _build_item_rows(invoice),
-         "subtotal_yen_label": format_currency_yen(invoice.get("subtotal_yen")),
-+        "tax_10_yen_label": format_currency_yen(invoice.get("tax_10_yen")),
-+        "tax_8_yen_label": format_currency_yen(invoice.get("tax_8_yen")),
-         "tax_yen_label": format_currency_yen(invoice.get("tax_yen")),
-         "total_yen_label": format_currency_yen(invoice.get("total_yen")),
-         "note": (invoice.get("note") or "").strip(),
-         "bank_info": (invoice.get("bank_info") or "").strip(),
-     }
- 
- 
- def _build_font_css(regular_path: Path, bold_path: Path) -> str:
-     return f"""
-     @font-face {{
-       font-family: 'InvoicePdfRegular';
-       src: url('{regular_path.as_uri()}');
-       font-weight: 400;
-       font-style: normal;
-     }}
-     @font-face {{
-       font-family: 'InvoicePdfBold';
-       src: url('{bold_path.as_uri()}');
-       font-weight: 700;
-       font-style: normal;
-     }}
-     :root {{
-       --invoice-font-regular: 'InvoicePdfRegular';
-       --invoice-font-bold: 'InvoicePdfBold';
-     }}
 diff --git a/invoice/routes.py b/invoice/routes.py
-index b3be4bbc77965b0d2988c03d91fa9c567f2a7a50..2f60a48a4c31c25b1e4f76125981bf741d17d9ff 100644
+index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5bdc55dc4 100644
 --- a/invoice/routes.py
 +++ b/invoice/routes.py
-@@ -5,52 +5,55 @@ from functools import wraps
+@@ -1,38 +1,39 @@
+ from __future__ import annotations
+ 
+ import threading
+ from functools import wraps
  
  from flask import flash, redirect, render_template, request, send_file, session, url_for
  
@@ -105,6 +16,7 @@ index b3be4bbc77965b0d2988c03d91fa9c567f2a7a50..2f60a48a4c31c25b1e4f76125981bf74
  from .pdf import generate_invoice_pdf
  from .services import (
      InvoiceValidationError,
++    build_fuel_cost_helper,
      build_invoice_form_data,
      delete_contact,
      duplicate_invoice,
@@ -121,37 +33,16 @@ index b3be4bbc77965b0d2988c03d91fa9c567f2a7a50..2f60a48a4c31c25b1e4f76125981bf74
      update_invoice_status,
  )
  from .utils import (
-+    DEFAULT_TAX_CATEGORY,
-+    ROW_TYPE_NORMAL,
+     DEFAULT_TAX_CATEGORY,
+     ROW_TYPE_NORMAL,
      STATUS_BADGES,
      STATUS_LABELS,
-+    TAX_CATEGORY_LABELS,
+     TAX_CATEGORY_LABELS,
      TAX_MODE_LABELS,
      build_mail_subject,
      default_due_date,
      format_ymd,
-     now_jst,
-     parse_date,
- )
- 
- _schema_lock = threading.Lock()
- _schema_ready = False
- 
- 
- def login_required(view):
-     @wraps(view)
-     def wrapper(*args, **kwargs):
-         if not session.get("user"):
-             flash("ログインが必要です。", "warning")
-             return redirect(url_for("login"))
-         return view(*args, **kwargs)
- 
-     return wrapper
- 
- 
- @invoice_bp.before_app_request
- def _ensure_schema_once() -> None:
-@@ -157,77 +160,79 @@ def contact_delete(contact_id: int):
+@@ -160,78 +161,82 @@ def contact_delete(contact_id: int):
  
  
  @invoice_bp.route("/new", methods=["GET", "POST"])
@@ -177,7 +68,9 @@ index b3be4bbc77965b0d2988c03d91fa9c567f2a7a50..2f60a48a4c31c25b1e4f76125981bf74
          "invoice_form.html",
          form_data=form_data,
          contacts=contacts,
-+        tax_category_labels=TAX_CATEGORY_LABELS,
++        fuel_cost_helper=build_fuel_cost_helper(),
++        default_tax_category=DEFAULT_TAX_CATEGORY,
+         tax_category_labels=TAX_CATEGORY_LABELS,
          tax_mode_labels=TAX_MODE_LABELS,
          status_labels=STATUS_LABELS,
          mode="new",
@@ -205,7 +98,9 @@ index b3be4bbc77965b0d2988c03d91fa9c567f2a7a50..2f60a48a4c31c25b1e4f76125981bf74
          "invoice_form.html",
          form_data=form_data,
          contacts=contacts,
-+        tax_category_labels=TAX_CATEGORY_LABELS,
++        fuel_cost_helper=build_fuel_cost_helper(),
++        default_tax_category=DEFAULT_TAX_CATEGORY,
+         tax_category_labels=TAX_CATEGORY_LABELS,
          tax_mode_labels=TAX_MODE_LABELS,
          status_labels=STATUS_LABELS,
          invoice=invoice,
@@ -230,123 +125,33 @@ index b3be4bbc77965b0d2988c03d91fa9c567f2a7a50..2f60a48a4c31c25b1e4f76125981bf74
  def invoice_detail(invoice_id: int):
      invoice = get_invoice(invoice_id)
      if not invoice:
-         flash("請求書が見つかりません。", "warning")
-@@ -373,53 +378,76 @@ class _FormProxy(dict):
- 
- 
- def _posted_invoice_form_data(form, base=None):
-     base = base or {}
-     data = dict(base)
-     data.update({
-         "contact_id": form.get("contact_id"),
-         "issue_date": form.get("issue_date"),
-         "due_date": form.get("due_date"),
-         "subject": form.get("subject"),
-         "note": form.get("note"),
-         "bank_info": form.get("bank_info"),
-         "issuer_name": form.get("issuer_name"),
-         "issuer_postal_code": form.get("issuer_postal_code"),
-         "issuer_address1": form.get("issuer_address1"),
-         "issuer_address2": form.get("issuer_address2"),
-         "issuer_phone": form.get("issuer_phone"),
-         "tax_mode": form.get("tax_mode"),
-         "status": form.get("status") or "draft",
-     })
-     proxy = _FormProxy({"getlist": form.getlist})
-     try:
-         items = parse_invoice_items(proxy)
-         data["items"] = [
-             {
-+                "row_type": item.row_type,
-                 "item_name": item.item_name,
-+                "memo_text": item.memo_text,
-                 "quantity": str(item.quantity),
-                 "unit_name": item.unit_name,
-                 "unit_price_yen": str(item.unit_price_yen),
-                 "line_total_yen": str(item.line_total_yen),
-                 "tax_category": item.tax_category,
-             }
-             for item in items
-         ]
-     except Exception:
-+        row_types = form.getlist("row_type[]")
-+        item_names = form.getlist("item_name[]")
-+        memo_texts = form.getlist("memo_text[]")
-+        quantities = form.getlist("quantity[]")
-+        unit_names = form.getlist("unit_name[]")
-+        unit_prices = form.getlist("unit_price_yen[]")
-+        tax_categories = form.getlist("tax_category[]")
-+        row_count = max(
-+            len(row_types),
-+            len(item_names),
-+            len(memo_texts),
-+            len(quantities),
-+            len(unit_names),
-+            len(unit_prices),
-+            len(tax_categories),
-+        )
-         data["items"] = [
-             {
--                "item_name": item_name,
--                "quantity": quantity,
--                "unit_name": unit_name,
--                "unit_price_yen": unit_price,
-+                "row_type": (row_types[index] if index < len(row_types) else ROW_TYPE_NORMAL) or ROW_TYPE_NORMAL,
-+                "item_name": item_names[index] if index < len(item_names) else "",
-+                "memo_text": memo_texts[index] if index < len(memo_texts) else "",
-+                "quantity": quantities[index] if index < len(quantities) else "",
-+                "unit_name": unit_names[index] if index < len(unit_names) else "",
-+                "unit_price_yen": unit_prices[index] if index < len(unit_prices) else "",
-                 "line_total_yen": "0",
--                "tax_category": tax_category,
-+                "tax_category": (tax_categories[index] if index < len(tax_categories) else DEFAULT_TAX_CATEGORY) or DEFAULT_TAX_CATEGORY,
-             }
--            for item_name, quantity, unit_name, unit_price, tax_category in zip(
--                form.getlist("item_name[]"),
--                form.getlist("quantity[]"),
--                form.getlist("unit_name[]"),
--                form.getlist("unit_price_yen[]"),
--                form.getlist("tax_category[]"),
--            )
--        ] or [{"item_name": "", "quantity": "1.00", "unit_name": "式", "unit_price_yen": "0", "line_total_yen": "0", "tax_category": "課税"}]
-+            for index in range(row_count)
-+        ] or [{
-+            "row_type": ROW_TYPE_NORMAL,
-+            "item_name": "",
-+            "memo_text": "",
-+            "quantity": "1.00",
-+            "unit_name": "式",
-+            "unit_price_yen": "0",
-+            "line_total_yen": "0",
-+            "tax_category": DEFAULT_TAX_CATEGORY,
-+        }]
-     return data
 diff --git a/invoice/services.py b/invoice/services.py
-index 243292b47bda34aa2894ff81634122645295b7c7..7395f0e03944bf58b06e374fc7791f5ad06a9bff 100644
+index 7395f0e03944bf58b06e374fc7791f5ad06a9bff..20c249aa46cf8377a8b9f519bc978a479f80b3e7 100644
 --- a/invoice/services.py
 +++ b/invoice/services.py
-@@ -1,65 +1,102 @@
+@@ -1,41 +1,42 @@
  from __future__ import annotations
  
  from dataclasses import dataclass
  from datetime import date
- from decimal import Decimal
+-from decimal import Decimal
++from decimal import Decimal, ROUND_CEILING
  from typing import Any
  
  from app.utils.db import get_db
  
  from .utils import (
--    calculate_tax,
-+    DEFAULT_TAX_CATEGORY,
-+    ROW_TYPE_MEMO,
-+    ROW_TYPE_NORMAL,
-+    TAX_CATEGORY_LABELS,
-+    calculate_line_amounts,
+     DEFAULT_TAX_CATEGORY,
+     ROW_TYPE_MEMO,
+     ROW_TYPE_NORMAL,
+     TAX_CATEGORY_LABELS,
+     calculate_line_amounts,
      default_due_date,
++    format_quantity,
      format_ymd,
-+    normalize_row_type,
+     normalize_row_type,
      normalize_status,
-+    normalize_tax_category,
+     normalize_tax_category,
      normalize_tax_mode,
      now_jst,
      quantize_quantity,
@@ -357,60 +162,132 @@ index 243292b47bda34aa2894ff81634122645295b7c7..7395f0e03944bf58b06e374fc7791f5a
  
  @dataclass
  class InvoiceItemInput:
--    item_name: str
--    quantity: Decimal
--    unit_name: str
--    unit_price_yen: int
--    tax_category: str
--    sort_order: int
-+    item_name: str = ""
-+    quantity: Decimal = Decimal("0")
-+    unit_name: str = ""
-+    unit_price_yen: int = 0
-+    tax_category: str = DEFAULT_TAX_CATEGORY
-+    sort_order: int = 0
-+    row_type: str = ROW_TYPE_NORMAL
-+    memo_text: str = ""
+     item_name: str = ""
+     quantity: Decimal = Decimal("0")
+     unit_name: str = ""
+     unit_price_yen: int = 0
+     tax_category: str = DEFAULT_TAX_CATEGORY
+     sort_order: int = 0
+     row_type: str = ROW_TYPE_NORMAL
+     memo_text: str = ""
  
      @property
--    def line_total_yen(self) -> int:
-+    def base_amount_yen(self) -> int:
-         return quantize_yen(self.quantity * Decimal(self.unit_price_yen))
+     def base_amount_yen(self) -> int:
+@@ -43,50 +44,129 @@ class InvoiceItemInput:
  
-+    @property
-+    def is_memo(self) -> bool:
-+        return self.row_type == ROW_TYPE_MEMO
-+
-+    def line_amounts(self, tax_mode: str) -> dict[str, int]:
-+        if self.is_memo:
-+            return {
-+                "tax_category": DEFAULT_TAX_CATEGORY,
-+                "tax_rate": Decimal("0"),
-+                "line_subtotal_yen": 0,
-+                "line_tax_yen": 0,
-+                "line_total_yen": 0,
-+            }
-+        return calculate_line_amounts(self.base_amount_yen, tax_mode, self.tax_category)
-+
-+    @property
-+    def line_total_yen(self) -> int:
-+        return self.base_amount_yen
-+
+     @property
+     def is_memo(self) -> bool:
+         return self.row_type == ROW_TYPE_MEMO
+ 
+     def line_amounts(self, tax_mode: str) -> dict[str, int]:
+         if self.is_memo:
+             return {
+                 "tax_category": DEFAULT_TAX_CATEGORY,
+                 "tax_rate": Decimal("0"),
+                 "line_subtotal_yen": 0,
+                 "line_tax_yen": 0,
+                 "line_total_yen": 0,
+             }
+         return calculate_line_amounts(self.base_amount_yen, tax_mode, self.tax_category)
+ 
+     @property
+     def line_total_yen(self) -> int:
+         return self.base_amount_yen
+ 
  
  class InvoiceValidationError(ValueError):
      pass
  
  
-+def _column_exists(cur, table_name: str, column_name: str) -> bool:
-+    cur.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (column_name,))
-+    return cur.fetchone() is not None
++def get_latest_bike_fuel_log() -> dict[str, Any] | None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT id, fill_date, created_at, trip_km, liters, yen_per_liter
++            FROM bike_fuel_log
++            ORDER BY fill_date DESC, created_at DESC, id DESC
++            LIMIT 1
++            """
++        )
++        return cur.fetchone()
++    finally:
++        cur.close()
++        db.close()
 +
 +
-+def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
-+    if not _column_exists(cur, "invoice_items", column_name):
-+        cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
++def calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter) -> int:
++    trip_km_dec = to_decimal(trip_km)
++    liters_dec = to_decimal(liters)
++    yen_per_liter_dec = to_decimal(yen_per_liter)
++    if trip_km_dec <= 0:
++        raise ValueError("trip_km must be greater than zero")
++    if liters_dec <= 0:
++        raise ValueError("liters must be greater than zero")
++    if yen_per_liter_dec <= 0:
++        raise ValueError("yen_per_liter must be greater than zero")
++    yen_per_km = (yen_per_liter_dec * liters_dec) / trip_km_dec
++    return int(yen_per_km.quantize(Decimal("1"), rounding=ROUND_CEILING))
 +
 +
++def build_fuel_cost_helper() -> dict[str, Any]:
++    unavailable = {
++        "available": False,
++        "message": "最新の燃費記録から単価を計算できません",
++        "trip_km": "",
++        "liters": "",
++        "yen_per_liter": "",
++        "yen_per_km": None,
++        "item_name": "ガソリン代",
++        "quantity": "1",
++        "unit_name": "km",
++        "tax_category": DEFAULT_TAX_CATEGORY,
++    }
++    try:
++        latest = get_latest_bike_fuel_log()
++    except Exception:
++        return unavailable
++    if not latest:
++        return unavailable
++
++    trip_km = latest.get("trip_km")
++    liters = latest.get("liters")
++    yen_per_liter = latest.get("yen_per_liter")
++    try:
++        yen_per_km = calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter)
++    except (ArithmeticError, ValueError):
++        return {
++            **unavailable,
++            "trip_km": format_quantity(trip_km),
++            "liters": format_quantity(liters),
++            "yen_per_liter": str(int(to_decimal(yen_per_liter))) if yen_per_liter not in (None, "") else "",
++        }
++
++    return {
++        "available": True,
++        "message": "",
++        "trip_km": format_quantity(trip_km),
++        "liters": format_quantity(liters),
++        "yen_per_liter": str(int(to_decimal(yen_per_liter))),
++        "yen_per_km": yen_per_km,
++        "item_name": "ガソリン代",
++        "quantity": "1",
++        "unit_name": "km",
++        "tax_category": DEFAULT_TAX_CATEGORY,
++    }
++
++
+ def _column_exists(cur, table_name: str, column_name: str) -> bool:
+     cur.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (column_name,))
+     return cur.fetchone() is not None
+ 
+ 
+ def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
+     if not _column_exists(cur, "invoice_items", column_name):
+         cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
+ 
+ 
  def ensure_invoice_schema() -> None:
      db = get_db()
      cur = db.cursor()
@@ -426,702 +303,11 @@ index 243292b47bda34aa2894ff81634122645295b7c7..7395f0e03944bf58b06e374fc7791f5a
                  email VARCHAR(255) NULL,
                  postal_code VARCHAR(32) NULL,
                  address1 VARCHAR(255) NULL,
-                 address2 VARCHAR(255) NULL,
-                 phone VARCHAR(64) NULL,
-                 freee_partner_name VARCHAR(191) NULL,
-                 default_due_days INT NULL,
-                 note TEXT NULL,
-                 created_at DATETIME NOT NULL,
-                 updated_at DATETIME NOT NULL,
-                 INDEX idx_invoice_contacts_name (name)
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-@@ -92,63 +129,67 @@ def ensure_invoice_schema() -> None:
-                 subtotal_yen INT NOT NULL DEFAULT 0,
-                 tax_yen INT NOT NULL DEFAULT 0,
-                 total_yen INT NOT NULL DEFAULT 0,
-                 tax_mode VARCHAR(16) NOT NULL DEFAULT 'external',
-                 status VARCHAR(16) NOT NULL DEFAULT 'draft',
-                 pdf_generated_at DATETIME NULL,
-                 pdf_storage_path VARCHAR(512) NULL,
-                 mailed_at DATETIME NULL,
-                 freee_exported_at DATETIME NULL,
-                 created_at DATETIME NOT NULL,
-                 updated_at DATETIME NOT NULL,
-                 UNIQUE KEY uniq_invoice_headers_invoice_no (invoice_no),
-                 INDEX idx_invoice_headers_issue_date (issue_date),
-                 INDEX idx_invoice_headers_due_date (due_date),
-                 INDEX idx_invoice_headers_status (status),
-                 INDEX idx_invoice_headers_contact_name (contact_name_snapshot)
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         cur.execute(
-             """
-             CREATE TABLE IF NOT EXISTS invoice_items (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 invoice_id INT NOT NULL,
-                 sort_order INT NOT NULL DEFAULT 0,
-+                row_type VARCHAR(16) NOT NULL DEFAULT 'normal',
-                 item_name VARCHAR(255) NOT NULL,
-+                memo_text TEXT NULL,
-                 quantity DECIMAL(12,2) NOT NULL DEFAULT 1.00,
-                 unit_name VARCHAR(32) NULL,
-                 unit_price_yen INT NOT NULL DEFAULT 0,
-                 line_total_yen INT NOT NULL DEFAULT 0,
-                 tax_category VARCHAR(64) NULL,
-                 created_at DATETIME NOT NULL,
-                 updated_at DATETIME NOT NULL,
-                 INDEX idx_invoice_items_invoice_id (invoice_id),
-                 INDEX idx_invoice_items_sort_order (sort_order)
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-+        _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
-+        _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
-         cur.execute(
-             """
-             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 invoice_id INT NOT NULL,
-                 to_email VARCHAR(512) NOT NULL,
-                 cc_email VARCHAR(512) NULL,
-                 bcc_email VARCHAR(512) NULL,
-                 subject VARCHAR(255) NOT NULL,
-                 body TEXT NULL,
-                 attachment_filename VARCHAR(255) NULL,
-                 sent_at DATETIME NULL,
-                 status VARCHAR(32) NOT NULL,
-                 error_message TEXT NULL,
-                 created_at DATETIME NOT NULL,
-                 INDEX idx_invoice_mail_logs_invoice_id (invoice_id),
-                 INDEX idx_invoice_mail_logs_sent_at (sent_at)
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         cur.execute(
-             """
-             CREATE TABLE IF NOT EXISTS invoice_csv_logs (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 invoice_id INT NOT NULL,
-@@ -270,137 +311,239 @@ def delete_contact(contact_id: int) -> None:
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute("DELETE FROM invoice_contacts WHERE id = %s", (contact_id,))
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _snapshot_contact(contact: dict[str, Any]) -> dict[str, Any]:
-     return {
-         "contact_name_snapshot": contact.get("name") or "",
-         "contact_department_snapshot": contact.get("department_name") or None,
-         "contact_person_snapshot": contact.get("contact_name") or None,
-         "contact_honorific_snapshot": contact.get("honorific") or None,
-         "contact_email_snapshot": contact.get("email") or None,
-         "contact_postal_code_snapshot": contact.get("postal_code") or None,
-         "contact_address1_snapshot": contact.get("address1") or None,
-         "contact_address2_snapshot": contact.get("address2") or None,
-         "contact_phone_snapshot": contact.get("phone") or None,
-     }
- 
- 
- def parse_invoice_items(form) -> list[InvoiceItemInput]:
-+    row_types = form.getlist("row_type[]") if hasattr(form, "getlist") else form.get("row_type[]", [])
-     names = form.getlist("item_name[]") if hasattr(form, "getlist") else form.get("item_name[]", [])
-+    memo_texts = form.getlist("memo_text[]") if hasattr(form, "getlist") else form.get("memo_text[]", [])
-     quantities = form.getlist("quantity[]") if hasattr(form, "getlist") else form.get("quantity[]", [])
-     unit_names = form.getlist("unit_name[]") if hasattr(form, "getlist") else form.get("unit_name[]", [])
-     prices = form.getlist("unit_price_yen[]") if hasattr(form, "getlist") else form.get("unit_price_yen[]", [])
-     tax_categories = form.getlist("tax_category[]") if hasattr(form, "getlist") else form.get("tax_category[]", [])
- 
-     items: list[InvoiceItemInput] = []
--    row_count = max(len(names), len(quantities), len(unit_names), len(prices), len(tax_categories))
-+    row_count = max(
-+        len(row_types),
-+        len(names),
-+        len(memo_texts),
-+        len(quantities),
-+        len(unit_names),
-+        len(prices),
-+        len(tax_categories),
-+    )
-     for index in range(row_count):
-+        row_type = normalize_row_type(row_types[index] if index < len(row_types) else ROW_TYPE_NORMAL)
-         name = (names[index] if index < len(names) else "").strip()
-+        memo_text = (memo_texts[index] if index < len(memo_texts) else "").strip()
-         quantity_raw = quantities[index] if index < len(quantities) else ""
-         unit_name = (unit_names[index] if index < len(unit_names) else "").strip()
-         price_raw = prices[index] if index < len(prices) else ""
--        tax_category = (tax_categories[index] if index < len(tax_categories) else "課税").strip() or "課税"
-+        tax_category = normalize_tax_category(
-+            (tax_categories[index] if index < len(tax_categories) else DEFAULT_TAX_CATEGORY).strip() or DEFAULT_TAX_CATEGORY
-+        )
-+
-+        if row_type == ROW_TYPE_MEMO:
-+            if not memo_text:
-+                continue
-+            items.append(
-+                InvoiceItemInput(
-+                    row_type=ROW_TYPE_MEMO,
-+                    memo_text=memo_text,
-+                    sort_order=index,
-+                    tax_category=DEFAULT_TAX_CATEGORY,
-+                )
-+            )
-+            continue
-+
-         if not any([name, quantity_raw, unit_name, price_raw]):
-             continue
-         quantity = quantize_quantity(to_decimal(quantity_raw, "0"))
-         unit_price = quantize_yen(to_decimal(price_raw, "0"))
-         if not name:
-             raise InvoiceValidationError(f"明細{index + 1}行目の商品名を入力してください。")
-         if quantity <= 0:
-             raise InvoiceValidationError(f"明細{index + 1}行目の数量は0より大きい値を入力してください。")
-         if unit_price < 0:
-             raise InvoiceValidationError(f"明細{index + 1}行目の単価が不正です。")
-         items.append(
-             InvoiceItemInput(
-                 item_name=name,
-                 quantity=quantity,
-                 unit_name=unit_name,
-                 unit_price_yen=unit_price,
-                 tax_category=tax_category,
-                 sort_order=index,
-+                row_type=ROW_TYPE_NORMAL,
-+                memo_text="",
-             )
-         )
-     if not items:
-         raise InvoiceValidationError("明細を1行以上入力してください。")
-     return items
- 
- 
--def calculate_invoice_totals(items: list[InvoiceItemInput], tax_mode: str) -> dict[str, int]:
--    subtotal = sum(item.line_total_yen for item in items)
-+def summarize_invoice_totals(items: list[InvoiceItemInput], tax_mode: str) -> dict[str, int]:
-+    subtotal = 0
-+    tax_10 = 0
-+    tax_8 = 0
-+    total = 0
-     tax_mode = normalize_tax_mode(tax_mode)
--    tax = calculate_tax(subtotal, tax_mode)
--    total = subtotal if tax_mode == "internal" else subtotal + tax
--    if total <= 0:
-+    for item in items:
-+        if item.is_memo:
-+            continue
-+        line_amounts = item.line_amounts(tax_mode)
-+        subtotal += line_amounts["line_subtotal_yen"]
-+        total += line_amounts["line_total_yen"]
-+        if line_amounts["tax_category"] == "tax8":
-+            tax_8 += line_amounts["line_tax_yen"]
-+        else:
-+            tax_10 += line_amounts["line_tax_yen"]
-+    tax = tax_10 + tax_8
-+    return {
-+        "subtotal_yen": subtotal,
-+        "tax_10_yen": tax_10,
-+        "tax_8_yen": tax_8,
-+        "tax_yen": tax,
-+        "total_yen": total,
-+    }
-+
-+
-+def calculate_invoice_totals(items: list[InvoiceItemInput], tax_mode: str) -> dict[str, int]:
-+    totals = summarize_invoice_totals(items, tax_mode)
-+    if totals["total_yen"] <= 0:
-         raise InvoiceValidationError("合計金額は0円より大きくしてください。")
--    return {"subtotal_yen": subtotal, "tax_yen": tax, "total_yen": total}
-+    return totals
- 
- 
- def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceItemInput]) -> dict[str, Any]:
-     issue_date = form.get("issue_date")
-     due_date = form.get("due_date")
-     issue = issue_date if isinstance(issue_date, date) else None
-     due = due_date if isinstance(due_date, date) else None
-     if not issue:
-         raise InvoiceValidationError("請求日を入力してください。")
-     if not due:
-         due = default_due_date(issue, contact.get("default_due_days"))
-     tax_mode = normalize_tax_mode(form.get("tax_mode"))
-     totals = calculate_invoice_totals(items, tax_mode)
-     subject = (form.get("subject") or "").strip()
-     if not subject:
-         raise InvoiceValidationError("件名を入力してください。")
-     issuer_name = (form.get("issuer_name") or "").strip()
-     if not issuer_name:
-         raise InvoiceValidationError("発行者名を入力してください。")
-     snapshot = _snapshot_contact(contact)
-     payload = {
-         "issue_date": issue,
-         "due_date": due,
-         "contact_id": contact.get("id"),
-         **snapshot,
-         "subject": subject,
-         "note": (form.get("note") or "").strip() or None,
-         "bank_info": (form.get("bank_info") or "").strip() or None,
-         "issuer_name": issuer_name,
-         "issuer_postal_code": (form.get("issuer_postal_code") or "").strip() or None,
-         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
-         "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
-         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
-         **totals,
-         "tax_mode": tax_mode,
-         "status": normalize_status(form.get("status") or "draft"),
-     }
-     return payload
- 
- 
-+def serialize_invoice_item(item: InvoiceItemInput, tax_mode: str) -> dict[str, Any]:
-+    line_amounts = item.line_amounts(tax_mode)
-+    return {
-+        "row_type": item.row_type,
-+        "item_name": item.item_name,
-+        "memo_text": item.memo_text,
-+        "quantity": str(item.quantity),
-+        "unit_name": item.unit_name,
-+        "unit_price_yen": str(item.unit_price_yen),
-+        "line_subtotal_yen": line_amounts["line_subtotal_yen"],
-+        "line_tax_yen": line_amounts["line_tax_yen"],
-+        "line_total_yen": line_amounts["line_total_yen"],
-+        "tax_category": normalize_tax_category(item.tax_category),
-+        "tax_category_label": TAX_CATEGORY_LABELS[normalize_tax_category(item.tax_category)],
-+        "sort_order": item.sort_order,
-+    }
-+
-+
-+def _hydrate_invoice_item(item: dict[str, Any], tax_mode: str) -> dict[str, Any]:
-+    row_type = normalize_row_type(item.get("row_type"))
-+    tax_category = normalize_tax_category(item.get("tax_category"))
-+    quantity = quantize_quantity(to_decimal(item.get("quantity"), "0"))
-+    unit_price_yen = quantize_yen(to_decimal(item.get("unit_price_yen"), "0"))
-+    base_amount_yen = quantize_yen(quantity * Decimal(unit_price_yen))
-+    line_amounts = (
-+        {
-+            "line_subtotal_yen": 0,
-+            "line_tax_yen": 0,
-+            "line_total_yen": 0,
-+        }
-+        if row_type == ROW_TYPE_MEMO
-+        else calculate_line_amounts(base_amount_yen, tax_mode, tax_category)
-+    )
-+    hydrated = dict(item)
-+    hydrated.update(
-+        {
-+            "row_type": row_type,
-+            "memo_text": (item.get("memo_text") or "").strip(),
-+            "quantity": quantity,
-+            "unit_price_yen": unit_price_yen,
-+            "base_amount_yen": base_amount_yen,
-+            "tax_category": tax_category,
-+            "tax_category_label": TAX_CATEGORY_LABELS[tax_category],
-+            **line_amounts,
-+        }
-+    )
-+    return hydrated
-+
-+
- def _next_invoice_no(cur, issue_date: date) -> str:
-     prefix = f"INV-{issue_date.strftime('%Y%m')}-"
-     lock_name = f"invoice_no_{issue_date.strftime('%Y%m')}"
-     cur.execute("SELECT GET_LOCK(%s, 10)", (lock_name,))
-     lock_row = cur.fetchone()
-     lock_val = lock_row[0] if isinstance(lock_row, tuple) else next(iter(lock_row.values()))
-     if int(lock_val or 0) != 1:
-         raise InvoiceValidationError("請求書番号の採番ロック取得に失敗しました。しばらく待って再試行してください。")
-     cur.execute(
-         """
-         SELECT invoice_no
-         FROM invoice_headers
-         WHERE invoice_no LIKE %s
-         ORDER BY invoice_no DESC
-         LIMIT 1
-         """,
-         (f"{prefix}%",),
-     )
-     row = cur.fetchone()
-     last_seq = 0
-     if row:
-         invoice_no = row[0] if isinstance(row, tuple) else row.get("invoice_no")
-         try:
-             last_seq = int(str(invoice_no).split("-")[-1])
-         except (TypeError, ValueError):
-@@ -499,63 +642,65 @@ def save_invoice(invoice_id: int | None, form) -> int:
-                     %s, %s, %s,
-                     %s, %s, %s,
-                     %s, %s, %s,
-                     %s, %s, %s,
-                     %s, %s, %s, %s, %s,
-                     %s, %s, %s, %s, %s,
-                     NULL, NULL, NULL, NULL,
-                     %s, %s
-                 )
-                 """,
-                 (
-                     invoice_no, payload["issue_date"], payload["due_date"], payload["contact_id"],
-                     payload["contact_name_snapshot"], payload["contact_department_snapshot"], payload["contact_person_snapshot"],
-                     payload["contact_honorific_snapshot"], payload["contact_email_snapshot"], payload["contact_postal_code_snapshot"],
-                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"], payload["contact_phone_snapshot"],
-                     payload["subject"], payload["note"], payload["bank_info"],
-                     payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"],
-                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"], payload["tax_mode"], "draft",
-                     now, now,
-                 ),
-             )
-             invoice_id = int(cur.lastrowid)
-         cur.executemany(
-             """
-             INSERT INTO invoice_items (
--                invoice_id, sort_order, item_name, quantity, unit_name,
-+                invoice_id, sort_order, row_type, item_name, memo_text, quantity, unit_name,
-                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
--            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-             """,
-             [
-                 (
-                     invoice_id,
-                     item.sort_order,
--                    item.item_name,
-+                    item.row_type,
-+                    item.item_name or "",
-+                    item.memo_text or None,
-                     item.quantity,
-                     item.unit_name or None,
-                     item.unit_price_yen,
--                    item.line_total_yen,
-+                    item.line_amounts(payload["tax_mode"])["line_total_yen"],
-                     item.tax_category,
-                     now,
-                     now,
-                 )
-                 for item in items
-             ],
-         )
-         _release_invoice_lock(cur, payload["issue_date"])
-         db.commit()
-         return int(invoice_id)
-     except Exception:
-         try:
-             _release_invoice_lock(cur, payload["issue_date"])
-         except Exception:
-             pass
-         db.rollback()
-         raise
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def list_invoices(*, q: str = "", status: str = "", start: str = "", end: str = "") -> list[dict[str, Any]]:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-@@ -581,51 +726,67 @@ def list_invoices(*, q: str = "", status: str = "", start: str = "", end: str =
-             SELECT *
-             FROM invoice_headers
-             {where_sql}
-             ORDER BY issue_date DESC, id DESC
-             """,
-             params,
-         )
-         return cur.fetchall()
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def get_invoice(invoice_id: int) -> dict[str, Any] | None:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT * FROM invoice_headers WHERE id = %s", (invoice_id,))
-         invoice = cur.fetchone()
-         if not invoice:
-             return None
-         cur.execute(
-             "SELECT * FROM invoice_items WHERE invoice_id = %s ORDER BY sort_order ASC, id ASC",
-             (invoice_id,),
-         )
--        invoice["items"] = cur.fetchall()
-+        invoice["items"] = [
-+            _hydrate_invoice_item(item, invoice.get("tax_mode") or "external")
-+            for item in cur.fetchall()
-+        ]
-+        invoice.update(summarize_invoice_totals([
-+            InvoiceItemInput(
-+                row_type=item.get("row_type") or ROW_TYPE_NORMAL,
-+                item_name=item.get("item_name") or "",
-+                memo_text=item.get("memo_text") or "",
-+                quantity=to_decimal(item.get("quantity"), "0"),
-+                unit_name=item.get("unit_name") or "",
-+                unit_price_yen=int(item.get("unit_price_yen") or 0),
-+                tax_category=item.get("tax_category") or DEFAULT_TAX_CATEGORY,
-+                sort_order=int(item.get("sort_order") or 0),
-+            )
-+            for item in invoice["items"]
-+        ], invoice.get("tax_mode") or "external"))
-         cur.execute(
-             "SELECT * FROM invoice_mail_logs WHERE invoice_id = %s ORDER BY created_at DESC, id DESC",
-             (invoice_id,),
-         )
-         invoice["mail_logs"] = cur.fetchall()
-         cur.execute(
-             "SELECT * FROM invoice_csv_logs WHERE invoice_id = %s ORDER BY created_at DESC, id DESC",
-             (invoice_id,),
-         )
-         invoice["csv_logs"] = cur.fetchall()
-         return invoice
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def duplicate_invoice(invoice_id: int) -> int:
-     original = get_invoice(invoice_id)
-     if not original:
-         raise InvoiceValidationError("複製元の請求書が見つかりません。")
-     db = get_db()
-     cur = db.cursor()
-     now = now_jst()
-     try:
-         new_invoice_no = _next_invoice_no(cur, original["issue_date"])
-@@ -646,64 +807,66 @@ def duplicate_invoice(invoice_id: int) -> int:
-                 %s, %s, %s,
-                 %s, %s, %s,
-                 %s, %s, %s,
-                 %s, %s, %s,
-                 %s, %s, %s, %s, %s,
-                 %s, %s, %s, %s, %s,
-                 NULL, NULL, NULL, NULL,
-                 %s, %s
-             )
-             """,
-             (
-                 new_invoice_no, original["issue_date"], original["due_date"], original.get("contact_id"),
-                 original.get("contact_name_snapshot"), original.get("contact_department_snapshot"), original.get("contact_person_snapshot"),
-                 original.get("contact_honorific_snapshot"), original.get("contact_email_snapshot"), original.get("contact_postal_code_snapshot"),
-                 original.get("contact_address1_snapshot"), original.get("contact_address2_snapshot"), original.get("contact_phone_snapshot"),
-                 original.get("subject"), original.get("note"), original.get("bank_info"),
-                 original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"),
-                 original.get("subtotal_yen"), original.get("tax_yen"), original.get("total_yen"), original.get("tax_mode"), "draft",
-                 now, now,
-             ),
-         )
-         new_id = int(cur.lastrowid)
-         cur.executemany(
-             """
-             INSERT INTO invoice_items (
--                invoice_id, sort_order, item_name, quantity, unit_name,
-+                invoice_id, sort_order, row_type, item_name, memo_text, quantity, unit_name,
-                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
--            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-             """,
-             [
-                 (
-                     new_id,
-                     item.get("sort_order") or 0,
--                    item.get("item_name"),
-+                    normalize_row_type(item.get("row_type")),
-+                    item.get("item_name") or "",
-+                    (item.get("memo_text") or "").strip() or None,
-                     item.get("quantity"),
-                     item.get("unit_name"),
-                     item.get("unit_price_yen") or 0,
-                     item.get("line_total_yen") or 0,
--                    item.get("tax_category"),
-+                    normalize_tax_category(item.get("tax_category")),
-                     now,
-                     now,
-                 )
-                 for item in original.get("items", [])
-             ],
-         )
-         _release_invoice_lock(cur, original["issue_date"])
-         db.commit()
-         return new_id
-     except Exception:
-         try:
-             _release_invoice_lock(cur, original["issue_date"])
-         except Exception:
-             pass
-         db.rollback()
-         raise
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def update_invoice_status(invoice_id: int, status: str) -> None:
-     status = normalize_status(status)
-     now = now_jst()
-     db = get_db()
-@@ -789,44 +952,49 @@ def log_csv_export(invoice_id: int, filename: str, *, status: str, error_message
-             ) VALUES (%s, %s, %s, %s, %s, %s)
-             """,
-             (invoice_id, filename, now, status, error_message, now),
-         )
-         if status == "success":
-             cur.execute(
-                 "UPDATE invoice_headers SET freee_exported_at=%s, updated_at=%s WHERE id=%s",
-                 (now, now, invoice_id),
-             )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, Any]:
-     if not invoice:
-         today = now_jst().date()
-         return {
-             "issue_date": format_ymd(today),
-             "due_date": format_ymd(today),
-             "tax_mode": "external",
-             "status": "draft",
-             "items": [
-                 {
-+                    "row_type": ROW_TYPE_NORMAL,
-                     "item_name": "",
-+                    "memo_text": "",
-                     "quantity": "1.00",
-                     "unit_name": "式",
-                     "unit_price_yen": "0",
-                     "line_total_yen": "0",
--                    "tax_category": "課税",
-+                    "tax_category": DEFAULT_TAX_CATEGORY,
-                 }
-             ],
-         }
-     data = dict(invoice)
-     data["issue_date"] = format_ymd(invoice.get("issue_date"))
-     data["due_date"] = format_ymd(invoice.get("due_date"))
-     if not data.get("items"):
-         data["items"] = []
-     for item in data["items"]:
-+        item["row_type"] = normalize_row_type(item.get("row_type"))
-+        item["memo_text"] = (item.get("memo_text") or "").strip()
-         item["quantity"] = str(item.get("quantity") or "1.00")
-         item["unit_price_yen"] = str(item.get("unit_price_yen") or 0)
-         item["line_total_yen"] = str(item.get("line_total_yen") or 0)
-+        item["tax_category"] = normalize_tax_category(item.get("tax_category"))
-     return data
-diff --git a/invoice/template/invoice_detail.html b/invoice/template/invoice_detail.html
-index 25fe3894c2841764aef093695dd88f8a241e5039..af5f8adfaa10dc37b04410cfc7d00c160d0fa605 100644
---- a/invoice/template/invoice_detail.html
-+++ b/invoice/template/invoice_detail.html
-@@ -24,65 +24,75 @@
-           <p class="mb-0">税モード: {{ invoice.tax_mode|invoice_tax_mode_label }}</p>
-         </div>
-         <span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span>
-       </div>
-       <div class="row g-3">
-         <div class="col-md-6">
-           <h3 class="h6">宛先</h3>
-           <div>〒{{ invoice.contact_postal_code_snapshot or '' }}</div>
-           <div>{{ invoice.contact_address1_snapshot or '' }}</div>
-           <div>{{ invoice.contact_address2_snapshot or '' }}</div>
-           <div>{{ invoice.contact_name_snapshot }} {{ invoice.contact_department_snapshot or '' }} {{ invoice.contact_person_snapshot or '' }} {{ invoice.contact_honorific_snapshot or '' }}</div>
-           <div>{{ invoice.contact_email_snapshot or '' }}</div>
-         </div>
-         <div class="col-md-6">
-           <h3 class="h6">発行者</h3>
-           <div>{{ invoice.issuer_name }}</div>
-           <div>〒{{ invoice.issuer_postal_code or '' }}</div>
-           <div>{{ invoice.issuer_address1 or '' }}</div>
-           <div>{{ invoice.issuer_address2 or '' }}</div>
-           <div>{{ invoice.issuer_phone or '' }}</div>
-         </div>
-       </div>
-       <hr>
-       <div class="table-responsive">
-         <table class="table table-sm align-middle">
--          <thead><tr><th>品目</th><th>数量</th><th>単位</th><th class="text-end">単価</th><th class="text-end">金額</th></tr></thead>
-+          <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th class="text-end">単価</th><th class="text-end">金額</th></tr></thead>
-           <tbody>
-             {% for item in invoice["items"] %}
-             <tr>
-+              {% if item.row_type == 'memo' %}
-+              <td class="text-muted">{{ item.memo_text }}</td>
-+              <td class="text-muted">—</td>
-+              <td class="text-muted">—</td>
-+              <td class="text-muted text-end">—</td>
-+              <td class="text-muted text-end">—</td>
-+              {% else %}
-               <td>{{ item.item_name }}</td>
-               <td>{{ item.quantity }}</td>
-               <td>{{ item.unit_name }}</td>
-               <td class="text-end">¥{{ item.unit_price_yen|yen }}</td>
-               <td class="text-end">¥{{ item.line_total_yen|yen }}</td>
-+              {% endif %}
-             </tr>
-             {% endfor %}
-           </tbody>
-           <tfoot>
-             <tr><th colspan="4" class="text-end">小計</th><th class="text-end">¥{{ invoice.subtotal_yen|yen }}</th></tr>
--            <tr><th colspan="4" class="text-end">消費税</th><th class="text-end">¥{{ invoice.tax_yen|yen }}</th></tr>
-+            <tr><th colspan="4" class="text-end">消費税10%</th><th class="text-end">¥{{ invoice.tax_10_yen|yen }}</th></tr>
-+            <tr><th colspan="4" class="text-end">消費税8%</th><th class="text-end">¥{{ invoice.tax_8_yen|yen }}</th></tr>
-+            <tr><th colspan="4" class="text-end">消費税合計</th><th class="text-end">¥{{ invoice.tax_yen|yen }}</th></tr>
-             <tr><th colspan="4" class="text-end">合計</th><th class="text-end">¥{{ invoice.total_yen|yen }}</th></tr>
-           </tfoot>
-         </table>
-       </div>
-       <div class="row g-3 mt-1">
-         <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light">{{ invoice.note or '（未入力）' }}</div></div>
-         <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light">{{ invoice.bank_info or '（未入力）' }}</div></div>
-       </div>
-     </div></div>
-   </div>
-   <div class="col-lg-4">
-     <div class="card shadow-sm mb-3"><div class="card-body">
-       <h2 class="h5">操作</h2>
-       <div class="d-grid gap-2">
-         <form method="post" action="{{ url_for('invoice.invoice_issue', invoice_id=invoice.id) }}"><button class="btn btn-outline-primary w-100" type="submit">発行済みにする</button></form>
-         <form method="post" action="{{ url_for('invoice.invoice_duplicate', invoice_id=invoice.id) }}" onsubmit="return confirm('この請求書を複製しますか？');"><button class="btn btn-outline-secondary w-100" type="submit">複製</button></form>
-       </div>
-       <hr>
-       <form method="post" action="{{ url_for('invoice.invoice_update_status', invoice_id=invoice.id) }}">
-         <label class="form-label">ステータス変更</label>
-         <div class="d-flex gap-2">
-           <select class="form-select" name="status">{% for value, label in status_labels.items() %}<option value="{{ value }}" {% if invoice.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
-           <button class="btn btn-primary" type="submit">更新</button>
-         </div>
-       </form>
 diff --git a/invoice/template/invoice_form.html b/invoice/template/invoice_form.html
-index 6994710390f615efd25a203c8cf6e98349e8ca8c..46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e 100644
+index 46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e..61a7dfe6889525c0ba191b7892ccf5d3f581a0b9 100644
 --- a/invoice/template/invoice_form.html
 +++ b/invoice/template/invoice_form.html
-@@ -1,136 +1,294 @@
- {% extends "base.html" %}
- {% block title %}請求書{{ '編集' if mode == 'edit' else '新規作成' }}{% endblock %}
- {% block head_extra %}
- <style>
-   .invoice-sticky-summary { position: sticky; top: 1rem; }
--  .invoice-item-table input { min-width: 90px; }
-+  .invoice-item-table input, .invoice-item-table select { min-width: 90px; }
-+  .invoice-row-actions { display: flex; flex-direction: column; gap: .35rem; }
-+  .invoice-row-actions .btn { white-space: nowrap; }
-+  .invoice-item-row.memo-row td { background: #fcfcfc; }
-+  .invoice-memo-label { font-size: .875rem; color: #6c757d; }
- </style>
- {% endblock %}
- {% block content %}
- <h1 class="mb-3">請求書{{ '編集' if mode == 'edit' else '新規作成' }}</h1>
- <form method="post" id="invoiceForm">
-   <div class="row g-3">
-     <div class="col-lg-8">
-       <div class="card shadow-sm mb-3"><div class="card-body">
-         <h2 class="h5">基本情報</h2>
-         <div class="row g-3">
-           <div class="col-md-6">
+@@ -22,180 +22,207 @@
              <label class="form-label">請求先 *</label>
              <select class="form-select" name="contact_id" required>
                <option value="">選択してください</option>
@@ -1147,86 +333,104 @@ index 6994710390f615efd25a203c8cf6e98349e8ca8c..46fdc5a25e15ceb7469f4b02ddc1e367
          </div>
        </div></div>
        <div class="card shadow-sm"><div class="card-body">
--        <div class="d-flex justify-content-between align-items-center mb-2">
-+        <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
++        <div class="border rounded p-3 mb-3">
++          <h2 class="h6 mb-2">ガソリン代入力補助</h2>
++          {% if fuel_cost_helper and fuel_cost_helper.available %}
++          <dl class="row small mb-3">
++            <dt class="col-sm-4 mb-1">最新トリップ</dt>
++            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.trip_km }} km</dd>
++            <dt class="col-sm-4 mb-1">最新給油量</dt>
++            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.liters }} L</dd>
++            <dt class="col-sm-4 mb-1">最新単価</dt>
++            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.yen_per_liter }} 円/L</dd>
++            <dt class="col-sm-4 mb-0">計算単価</dt>
++            <dd class="col-sm-8 mb-0 fw-semibold">{{ fuel_cost_helper.yen_per_km }} 円/km</dd>
++          </dl>
++          <button
++            type="button"
++            class="btn btn-sm btn-outline-primary"
++            id="addFuelCostRow"
++            data-item-name="{{ fuel_cost_helper.item_name }}"
++            data-quantity="{{ fuel_cost_helper.quantity }}"
++            data-unit-name="{{ fuel_cost_helper.unit_name }}"
++            data-unit-price-yen="{{ fuel_cost_helper.yen_per_km }}"
++            data-tax-category="{{ fuel_cost_helper.tax_category }}"
++          >この値で明細追加</button>
++          {% else %}
++          <p class="text-muted mb-0">{{ (fuel_cost_helper and fuel_cost_helper.message) or '最新の燃費記録から単価を計算できません' }}</p>
++          {% endif %}
++        </div>
+         <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
            <h2 class="h5 mb-0">明細</h2>
--          <button type="button" class="btn btn-sm btn-outline-secondary" id="addItemRow">行追加</button>
-+          <div class="d-flex gap-2 flex-wrap">
-+            <button type="button" class="btn btn-sm btn-outline-secondary" id="addItemRow">明細行を追加</button>
-+            <button type="button" class="btn btn-sm btn-outline-secondary" id="addMemoRow">メモ行を追加</button>
-+          </div>
+           <div class="d-flex gap-2 flex-wrap">
+             <button type="button" class="btn btn-sm btn-outline-secondary" id="addItemRow">明細行を追加</button>
+             <button type="button" class="btn btn-sm btn-outline-secondary" id="addMemoRow">メモ行を追加</button>
+           </div>
          </div>
          <div class="table-responsive">
            <table class="table align-middle invoice-item-table" id="itemTable">
--            <thead><tr><th>品目 *</th><th>数量 *</th><th>単位</th><th>単価 *</th><th>税区分</th><th>金額</th><th></th></tr></thead>
-+            <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th>単価</th><th>税区分</th><th>金額</th><th></th></tr></thead>
+             <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th>単価</th><th>税区分</th><th>金額</th><th></th></tr></thead>
              <tbody>
                {% for item in form_data["items"] %}
--              <tr>
--                <td><input class="form-control" name="item_name[]" value="{{ item.item_name or '' }}" required></td>
--                <td><input class="form-control item-quantity" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required></td>
--                <td><input class="form-control" name="unit_name[]" value="{{ item.unit_name or '式' }}"></td>
--                <td><input class="form-control item-price" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required></td>
--                <td><input class="form-control" name="tax_category[]" value="{{ item.tax_category or '課税' }}"></td>
--                <td class="item-line-total text-end">0</td>
--                <td><button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button></td>
-+              {% set row_type = item.row_type or 'normal' %}
-+              <tr class="invoice-item-row{% if row_type == 'memo' %} memo-row{% endif %}" data-row-type="{{ row_type }}">
-+                <td>
-+                  <input type="hidden" name="row_type[]" value="{{ row_type }}" class="row-type-input">
-+                  {% if row_type == 'memo' %}
-+                  <input type="hidden" name="item_name[]" value="{{ item.item_name or '' }}" class="item-name-input">
-+                  <input type="hidden" name="quantity[]" value="{{ item.quantity or '' }}" class="item-quantity-input">
-+                  <input type="hidden" name="unit_name[]" value="{{ item.unit_name or '' }}" class="item-unit-input">
-+                  <input type="hidden" name="unit_price_yen[]" value="{{ item.unit_price_yen or '' }}" class="item-price-input">
-+                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or 'tax10' }}" class="item-tax-category-input">
-+                  <div class="invoice-memo-label mb-1">メモ</div>
-+                  <input class="form-control memo-text-input" name="memo_text[]" value="{{ item.memo_text or item.item_name or '' }}" placeholder="メモを入力してください">
-+                  {% else %}
-+                  <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
-+                  <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
-+                  {% endif %}
-+                </td>
-+                <td>
-+                  {% if row_type == 'memo' %}
-+                  <span class="text-muted">—</span>
-+                  {% else %}
-+                  <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
-+                  {% endif %}
-+                </td>
-+                <td>
-+                  {% if row_type == 'memo' %}
-+                  <span class="text-muted">—</span>
-+                  {% else %}
-+                  <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
-+                  {% endif %}
-+                </td>
-+                <td>
-+                  {% if row_type == 'memo' %}
-+                  <span class="text-muted">—</span>
-+                  {% else %}
-+                  <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
-+                  {% endif %}
-+                </td>
-+                <td>
-+                  {% if row_type == 'memo' %}
-+                  <span class="text-muted">—</span>
-+                  {% else %}
-+                  <select class="form-select item-tax-category-input" name="tax_category[]">
-+                    {% for value, label in tax_category_labels.items() %}
-+                    <option value="{{ value }}" {% if (item.tax_category or 'tax10') == value %}selected{% endif %}>{{ label }}</option>
-+                    {% endfor %}
-+                  </select>
-+                  {% endif %}
-+                </td>
-+                <td class="item-line-total text-end">¥0</td>
-+                <td>
-+                  <div class="invoice-row-actions">
-+                    <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
-+                    <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
-+                    <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
-+                  </div>
-+                </td>
+               {% set row_type = item.row_type or 'normal' %}
+               <tr class="invoice-item-row{% if row_type == 'memo' %} memo-row{% endif %}" data-row-type="{{ row_type }}">
+                 <td>
+                   <input type="hidden" name="row_type[]" value="{{ row_type }}" class="row-type-input">
+                   {% if row_type == 'memo' %}
+                   <input type="hidden" name="item_name[]" value="{{ item.item_name or '' }}" class="item-name-input">
+                   <input type="hidden" name="quantity[]" value="{{ item.quantity or '' }}" class="item-quantity-input">
+                   <input type="hidden" name="unit_name[]" value="{{ item.unit_name or '' }}" class="item-unit-input">
+                   <input type="hidden" name="unit_price_yen[]" value="{{ item.unit_price_yen or '' }}" class="item-price-input">
+-                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or 'tax10' }}" class="item-tax-category-input">
++                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or default_tax_category }}" class="item-tax-category-input">
+                   <div class="invoice-memo-label mb-1">メモ</div>
+                   <input class="form-control memo-text-input" name="memo_text[]" value="{{ item.memo_text or item.item_name or '' }}" placeholder="メモを入力してください">
+                   {% else %}
+                   <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
+                   <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
+                   {% endif %}
+                 </td>
+                 <td>
+                   {% if row_type == 'memo' %}
+                   <span class="text-muted">—</span>
+                   {% else %}
+                   <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
+                   {% endif %}
+                 </td>
+                 <td>
+                   {% if row_type == 'memo' %}
+                   <span class="text-muted">—</span>
+                   {% else %}
+                   <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
+                   {% endif %}
+                 </td>
+                 <td>
+                   {% if row_type == 'memo' %}
+                   <span class="text-muted">—</span>
+                   {% else %}
+                   <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
+                   {% endif %}
+                 </td>
+                 <td>
+                   {% if row_type == 'memo' %}
+                   <span class="text-muted">—</span>
+                   {% else %}
+                   <select class="form-select item-tax-category-input" name="tax_category[]">
+                     {% for value, label in tax_category_labels.items() %}
+-                    <option value="{{ value }}" {% if (item.tax_category or 'tax10') == value %}selected{% endif %}>{{ label }}</option>
++                    <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
+                     {% endfor %}
+                   </select>
+                   {% endif %}
+                 </td>
+                 <td class="item-line-total text-end">¥0</td>
+                 <td>
+                   <div class="invoice-row-actions">
+                     <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+                     <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+                     <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+                   </div>
+                 </td>
                </tr>
                {% endfor %}
              </tbody>
@@ -1239,10 +443,9 @@ index 6994710390f615efd25a203c8cf6e98349e8ca8c..46fdc5a25e15ceb7469f4b02ddc1e367
          <h2 class="h5">集計</h2>
          <dl class="row mb-0">
            <dt class="col-6">小計</dt><dd class="col-6 text-end" id="subtotalText">¥0</dd>
--          <dt class="col-6">消費税</dt><dd class="col-6 text-end" id="taxText">¥0</dd>
-+          <dt class="col-6">消費税10%</dt><dd class="col-6 text-end" id="tax10Text">¥0</dd>
-+          <dt class="col-6">消費税8%</dt><dd class="col-6 text-end" id="tax8Text">¥0</dd>
-+          <dt class="col-6">消費税合計</dt><dd class="col-6 text-end" id="taxText">¥0</dd>
+           <dt class="col-6">消費税10%</dt><dd class="col-6 text-end" id="tax10Text">¥0</dd>
+           <dt class="col-6">消費税8%</dt><dd class="col-6 text-end" id="tax8Text">¥0</dd>
+           <dt class="col-6">消費税合計</dt><dd class="col-6 text-end" id="taxText">¥0</dd>
            <dt class="col-6">合計</dt><dd class="col-6 text-end fw-bold" id="totalText">¥0</dd>
          </dl>
          <div class="mt-3 d-grid gap-2">
@@ -1253,66 +456,59 @@ index 6994710390f615efd25a203c8cf6e98349e8ca8c..46fdc5a25e15ceb7469f4b02ddc1e367
      </div>
    </div>
  </form>
--<template id="itemRowTemplate">
--  <tr>
--    <td><input class="form-control" name="item_name[]" required></td>
--    <td><input class="form-control item-quantity" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required></td>
--    <td><input class="form-control" name="unit_name[]" value="式"></td>
--    <td><input class="form-control item-price" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></td>
--    <td><input class="form-control" name="tax_category[]" value="課税"></td>
--    <td class="item-line-total text-end">0</td>
--    <td><button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button></td>
-+<template id="normalRowTemplate">
-+  <tr class="invoice-item-row" data-row-type="normal">
-+    <td>
-+      <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
-+      <input class="form-control item-name-input" name="item_name[]" required>
-+      <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
-+    </td>
-+    <td><input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required></td>
-+    <td><input class="form-control item-unit-input" name="unit_name[]" value="式"></td>
-+    <td><input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></td>
-+    <td>
-+      <select class="form-select item-tax-category-input" name="tax_category[]">
-+        {% for value, label in tax_category_labels.items() %}
-+        <option value="{{ value }}" {% if value == 'tax10' %}selected{% endif %}>{{ label }}</option>
-+        {% endfor %}
-+      </select>
-+    </td>
-+    <td class="item-line-total text-end">¥0</td>
-+    <td>
-+      <div class="invoice-row-actions">
-+        <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
-+        <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
-+        <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
-+      </div>
-+    </td>
-+  </tr>
-+</template>
-+<template id="memoRowTemplate">
-+  <tr class="invoice-item-row memo-row" data-row-type="memo">
-+    <td>
-+      <input type="hidden" name="row_type[]" value="memo" class="row-type-input">
-+      <input type="hidden" name="item_name[]" value="" class="item-name-input">
-+      <input type="hidden" name="quantity[]" value="" class="item-quantity-input">
-+      <input type="hidden" name="unit_name[]" value="" class="item-unit-input">
-+      <input type="hidden" name="unit_price_yen[]" value="" class="item-price-input">
-+      <input type="hidden" name="tax_category[]" value="tax10" class="item-tax-category-input">
-+      <div class="invoice-memo-label mb-1">メモ</div>
-+      <input class="form-control memo-text-input" name="memo_text[]" placeholder="メモを入力してください">
-+    </td>
-+    <td><span class="text-muted">—</span></td>
-+    <td><span class="text-muted">—</span></td>
-+    <td><span class="text-muted">—</span></td>
-+    <td><span class="text-muted">—</span></td>
-+    <td class="item-line-total text-end">—</td>
-+    <td>
-+      <div class="invoice-row-actions">
-+        <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
-+        <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
-+        <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
-+      </div>
-+    </td>
+ <template id="normalRowTemplate">
+   <tr class="invoice-item-row" data-row-type="normal">
+     <td>
+       <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
+       <input class="form-control item-name-input" name="item_name[]" required>
+       <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
+     </td>
+     <td><input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required></td>
+     <td><input class="form-control item-unit-input" name="unit_name[]" value="式"></td>
+     <td><input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></td>
+     <td>
+       <select class="form-select item-tax-category-input" name="tax_category[]">
+         {% for value, label in tax_category_labels.items() %}
+-        <option value="{{ value }}" {% if value == 'tax10' %}selected{% endif %}>{{ label }}</option>
++        <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
+         {% endfor %}
+       </select>
+     </td>
+     <td class="item-line-total text-end">¥0</td>
+     <td>
+       <div class="invoice-row-actions">
+         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+       </div>
+     </td>
+   </tr>
+ </template>
+ <template id="memoRowTemplate">
+   <tr class="invoice-item-row memo-row" data-row-type="memo">
+     <td>
+       <input type="hidden" name="row_type[]" value="memo" class="row-type-input">
+       <input type="hidden" name="item_name[]" value="" class="item-name-input">
+       <input type="hidden" name="quantity[]" value="" class="item-quantity-input">
+       <input type="hidden" name="unit_name[]" value="" class="item-unit-input">
+       <input type="hidden" name="unit_price_yen[]" value="" class="item-price-input">
+-      <input type="hidden" name="tax_category[]" value="tax10" class="item-tax-category-input">
++      <input type="hidden" name="tax_category[]" value="{{ default_tax_category }}" class="item-tax-category-input">
+       <div class="invoice-memo-label mb-1">メモ</div>
+       <input class="form-control memo-text-input" name="memo_text[]" placeholder="メモを入力してください">
+     </td>
+     <td><span class="text-muted">—</span></td>
+     <td><span class="text-muted">—</span></td>
+     <td><span class="text-muted">—</span></td>
+     <td><span class="text-muted">—</span></td>
+     <td class="item-line-total text-end">—</td>
+     <td>
+       <div class="invoice-row-actions">
+         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+       </div>
+     </td>
    </tr>
  </template>
  {% endblock %}
@@ -1320,412 +516,172 @@ index 6994710390f615efd25a203c8cf6e98349e8ca8c..46fdc5a25e15ceb7469f4b02ddc1e367
  <script>
  (() => {
    const tableBody = document.querySelector('#itemTable tbody');
--  const template = document.getElementById('itemRowTemplate');
-+  const normalTemplate = document.getElementById('normalRowTemplate');
-+  const memoTemplate = document.getElementById('memoRowTemplate');
+   const normalTemplate = document.getElementById('normalRowTemplate');
+   const memoTemplate = document.getElementById('memoRowTemplate');
    const taxMode = document.getElementById('taxMode');
--  const fmt = (num) => `¥${Math.round(num).toLocaleString('ja-JP')}`;
--  const calc = () => {
-+  const TAX_RATES = { tax10: 0.10, tax8: 0.08, nontax: 0 };
-+  const fmt = (num) => `¥${Math.round(num || 0).toLocaleString('ja-JP')}`;
-+
-+  const calculateLineAmounts = (baseAmount, mode, taxCategory) => {
-+    const amount = Math.round(Number.isFinite(baseAmount) ? baseAmount : 0);
-+    const rate = TAX_RATES[taxCategory] ?? TAX_RATES.tax10;
-+    if (mode === 'external') {
-+      const tax = Math.round(amount * rate);
-+      return { subtotal: amount, tax, total: amount + tax };
-+    }
-+    if (mode === 'internal') {
-+      const tax = rate === 0 ? 0 : Math.round(amount - (amount / (1 + rate)));
-+      return { subtotal: amount - tax, tax, total: amount };
-+    }
-+    return { subtotal: amount, tax: 0, total: amount };
-+  };
-+
-+  const recalc = () => {
-     let subtotal = 0;
--    tableBody.querySelectorAll('tr').forEach((row) => {
--      const qty = parseFloat(row.querySelector('.item-quantity')?.value || '0');
--      const price = parseFloat(row.querySelector('.item-price')?.value || '0');
--      const line = Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
--      subtotal += line;
--      const target = row.querySelector('.item-line-total');
--      if (target) target.textContent = fmt(line);
-+    let tax10 = 0;
-+    let tax8 = 0;
-+    let total = 0;
-+
-+    tableBody.querySelectorAll('tr.invoice-item-row').forEach((row) => {
-+      const rowType = row.dataset.rowType || 'normal';
-+      const lineCell = row.querySelector('.item-line-total');
-+      if (rowType === 'memo') {
-+        if (lineCell) lineCell.textContent = '—';
-+        return;
-+      }
-+
-+      const qty = parseFloat(row.querySelector('.item-quantity-input')?.value || '0');
-+      const price = parseFloat(row.querySelector('.item-price-input')?.value || '0');
-+      const baseAmount = Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
-+      const taxCategory = row.querySelector('.item-tax-category-input')?.value || 'tax10';
-+      const lineAmounts = calculateLineAmounts(baseAmount, taxMode.value, taxCategory);
-+      subtotal += lineAmounts.subtotal;
-+      total += lineAmounts.total;
-+      if (taxCategory === 'tax8') {
-+        tax8 += lineAmounts.tax;
-+      } else if (taxCategory === 'tax10') {
-+        tax10 += lineAmounts.tax;
-+      }
-+      if (lineCell) lineCell.textContent = fmt(lineAmounts.total);
+@@ -231,57 +258,85 @@
+       }
+ 
+       const qty = parseFloat(row.querySelector('.item-quantity-input')?.value || '0');
+       const price = parseFloat(row.querySelector('.item-price-input')?.value || '0');
+       const baseAmount = Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
+       const taxCategory = row.querySelector('.item-tax-category-input')?.value || 'tax10';
+       const lineAmounts = calculateLineAmounts(baseAmount, taxMode.value, taxCategory);
+       subtotal += lineAmounts.subtotal;
+       total += lineAmounts.total;
+       if (taxCategory === 'tax8') {
+         tax8 += lineAmounts.tax;
+       } else if (taxCategory === 'tax10') {
+         tax10 += lineAmounts.tax;
+       }
+       if (lineCell) lineCell.textContent = fmt(lineAmounts.total);
      });
--    let tax = 0;
--    if (taxMode.value === 'external') tax = Math.round(subtotal * 0.1);
--    if (taxMode.value === 'internal') tax = Math.round(subtotal - subtotal / 1.1);
--    const total = taxMode.value === 'internal' ? subtotal : subtotal + tax;
-+
-+    const tax = tax10 + tax8;
+ 
+     const tax = tax10 + tax8;
      document.getElementById('subtotalText').textContent = fmt(subtotal);
-+    document.getElementById('tax10Text').textContent = fmt(tax10);
-+    document.getElementById('tax8Text').textContent = fmt(tax8);
+     document.getElementById('tax10Text').textContent = fmt(tax10);
+     document.getElementById('tax8Text').textContent = fmt(tax8);
      document.getElementById('taxText').textContent = fmt(tax);
      document.getElementById('totalText').textContent = fmt(total);
    };
--  document.getElementById('addItemRow').addEventListener('click', () => {
-+
-+  const appendRow = (template) => {
-     tableBody.appendChild(template.content.firstElementChild.cloneNode(true));
--    calc();
--  });
--  tableBody.addEventListener('input', calc);
--  tableBody.addEventListener('click', (e) => {
--    if (e.target.classList.contains('item-remove')) {
--      if (tableBody.querySelectorAll('tr').length <= 1) return;
--      e.target.closest('tr').remove();
--      calc();
-+    recalc();
-+  };
-+
-+  document.getElementById('addItemRow')?.addEventListener('click', () => appendRow(normalTemplate));
-+  document.getElementById('addMemoRow')?.addEventListener('click', () => appendRow(memoTemplate));
-+  tableBody.addEventListener('input', recalc);
-+  tableBody.addEventListener('change', recalc);
-+  tableBody.addEventListener('click', (event) => {
-+    const button = event.target.closest('button');
-+    if (!button) return;
-+    const row = button.closest('tr.invoice-item-row');
-+    if (!row) return;
-+
-+    if (button.classList.contains('item-remove')) {
-+      row.remove();
-+      recalc();
-+      return;
+ 
+-  const appendRow = (template) => {
+-    tableBody.appendChild(template.content.firstElementChild.cloneNode(true));
++  const appendRow = (template, initialValues = {}) => {
++    const row = template.content.firstElementChild.cloneNode(true);
++    if ((row.dataset.rowType || 'normal') === 'normal') {
++      if (initialValues.item_name !== undefined) {
++        row.querySelector('.item-name-input').value = initialValues.item_name;
++      }
++      if (initialValues.quantity !== undefined) {
++        row.querySelector('.item-quantity-input').value = initialValues.quantity;
++      }
++      if (initialValues.unit_name !== undefined) {
++        row.querySelector('.item-unit-input').value = initialValues.unit_name;
++      }
++      if (initialValues.unit_price_yen !== undefined) {
++        row.querySelector('.item-price-input').value = initialValues.unit_price_yen;
++      }
++      if (initialValues.tax_category !== undefined) {
++        row.querySelector('.item-tax-category-input').value = initialValues.tax_category;
++      }
 +    }
-+
-+    if (button.classList.contains('move-up')) {
-+      const prev = row.previousElementSibling;
-+      if (prev) tableBody.insertBefore(row, prev);
-+      recalc();
-+      return;
-+    }
-+
-+    if (button.classList.contains('move-down')) {
-+      const next = row.nextElementSibling;
-+      if (next) tableBody.insertBefore(next, row);
-+      recalc();
-     }
-   });
--  taxMode?.addEventListener('change', calc);
--  calc();
-+  taxMode?.addEventListener('change', recalc);
-+  recalc();
- })();
- </script>
- {% endblock %}
-diff --git a/invoice/template/invoice_pdf.html b/invoice/template/invoice_pdf.html
-index ea8e776fada71ca6c8fe3d8538019b1f91368424..27dc3456ec67397311823ddb8bbf271d55c2675e 100644
---- a/invoice/template/invoice_pdf.html
-+++ b/invoice/template/invoice_pdf.html
-@@ -181,50 +181,55 @@
++    tableBody.appendChild(row);
+     recalc();
+   };
  
-     .items-table thead th {
-       text-align: left;
-     }
+   document.getElementById('addItemRow')?.addEventListener('click', () => appendRow(normalTemplate));
+   document.getElementById('addMemoRow')?.addEventListener('click', () => appendRow(memoTemplate));
++  document.getElementById('addFuelCostRow')?.addEventListener('click', (event) => {
++    const button = event.currentTarget;
++    appendRow(normalTemplate, {
++      item_name: button.dataset.itemName || '',
++      quantity: button.dataset.quantity || '1',
++      unit_name: button.dataset.unitName || 'km',
++      unit_price_yen: button.dataset.unitPriceYen || '0',
++      tax_category: button.dataset.taxCategory || '{{ default_tax_category }}',
++    });
++  });
+   tableBody.addEventListener('input', recalc);
+   tableBody.addEventListener('change', recalc);
+   tableBody.addEventListener('click', (event) => {
+     const button = event.target.closest('button');
+     if (!button) return;
+     const row = button.closest('tr.invoice-item-row');
+     if (!row) return;
  
-     .items-table col.col-item   { width: 46%; }
-     .items-table col.col-qty    { width: 10%; }
-     .items-table col.col-unit   { width: 10%; }
-     .items-table col.col-price  { width: 16%; }
-     .items-table col.col-total  { width: 18%; }
- 
-     .text-right {
-       text-align: right;
-       white-space: nowrap;
+     if (button.classList.contains('item-remove')) {
+       row.remove();
+       recalc();
+       return;
      }
  
-     .text-center {
-       text-align: center;
-       white-space: nowrap;
+     if (button.classList.contains('move-up')) {
+       const prev = row.previousElementSibling;
+       if (prev) tableBody.insertBefore(row, prev);
+       recalc();
+       return;
      }
  
-     .item-name {
-       white-space: normal;
-     }
- 
-+    .memo-row td {
-+      color: var(--muted-color);
-+      background: #fcfcfc;
-+    }
-+
-     .summary-wrap {
-       width: 43%;
-       margin-left: auto;
-       margin-bottom: 5mm;
-       page-break-inside: avoid;
-       break-inside: avoid;
-     }
- 
-     .summary-table td {
-       text-align: right;
-       white-space: nowrap;
-     }
- 
-     .summary-table tr.total th,
-     .summary-table tr.total td {
-       font-family: var(--invoice-font-bold), sans-serif;
-       font-weight: 700;
-     }
- 
-     .note-bank-row {
-       display: table;
-       width: 100%;
-       table-layout: fixed;
-     }
- 
-@@ -290,68 +295,76 @@
- 
-     <section class="amount-box">
-       <div class="amount-label">ご請求金額</div>
-       <div class="amount-value">{{ pdf.total_yen_label }}</div>
-     </section>
- 
-     <table class="items-table">
-       <colgroup>
-         <col class="col-item">
-         <col class="col-qty">
-         <col class="col-unit">
-         <col class="col-price">
-         <col class="col-total">
-       </colgroup>
-       <thead>
-         <tr>
-           <th>品名</th>
-           <th class="text-center">数量</th>
-           <th class="text-center">単位</th>
-           <th class="text-right">単価</th>
-           <th class="text-right">金額</th>
-         </tr>
-       </thead>
-       <tbody>
-         {% for item in pdf.line_items %}
--        <tr>
-+        <tr{% if item.row_type == 'memo' %} class="memo-row"{% endif %}>
-           <td class="item-name">{{ item.item_name }}</td>
-           <td class="text-center">{{ item.quantity }}</td>
-           <td class="text-center">{{ item.unit_name }}</td>
-           <td class="text-right">{{ item.unit_price_yen }}</td>
-           <td class="text-right">{{ item.line_total_yen }}</td>
-         </tr>
-         {% endfor %}
-       </tbody>
-     </table>
- 
-     <div class="summary-wrap">
-       <table class="summary-table">
-         <tbody>
-           <tr>
-             <th>小計</th>
-             <td>{{ pdf.subtotal_yen_label }}</td>
-           </tr>
-           <tr>
--            <th>消費税</th>
-+            <th>消費税10%</th>
-+            <td>{{ pdf.tax_10_yen_label }}</td>
-+          </tr>
-+          <tr>
-+            <th>消費税8%</th>
-+            <td>{{ pdf.tax_8_yen_label }}</td>
-+          </tr>
-+          <tr>
-+            <th>消費税合計</th>
-             <td>{{ pdf.tax_yen_label }}</td>
-           </tr>
-           <tr class="total">
-             <th>合計</th>
-             <td>{{ pdf.total_yen_label }}</td>
-           </tr>
-         </tbody>
-       </table>
-     </div>
- 
-     <div class="note-bank-row">
-       <section class="note-bank-block">
-         <div class="section-title">備考</div>
-         <div class="block-body multiline-text">{{ pdf.note }}</div>
-       </section>
-       <section class="note-bank-block">
-         <div class="section-title">振込先</div>
-         <div class="block-body multiline-text">{{ pdf.bank_info }}</div>
-       </section>
-     </div>
-   </div>
- </body>
--</html>
-\ No newline at end of file
-+</html>
-diff --git a/invoice/utils.py b/invoice/utils.py
-index 8df309f9afecae80de83f849d4e310bac7c2cda3..1827d76152c5d4f038038b55b633e6a3be7b106c 100644
---- a/invoice/utils.py
-+++ b/invoice/utils.py
-@@ -1,34 +1,48 @@
- from __future__ import annotations
- 
- import os
- import re
- from datetime import date, datetime, timedelta, timezone
- from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
- 
- JST = timezone(timedelta(hours=9))
- TAX_RATE = Decimal("0.10")
-+TAX_CATEGORY_RATES = {
-+    "tax10": Decimal("0.10"),
-+    "tax8": Decimal("0.08"),
-+    "nontax": Decimal("0"),
-+}
-+TAX_CATEGORY_LABELS = {
-+    "tax10": "課税10%",
-+    "tax8": "課税8%",
-+    "nontax": "非課税",
-+}
-+DEFAULT_TAX_CATEGORY = "tax10"
-+ROW_TYPE_NORMAL = "normal"
-+ROW_TYPE_MEMO = "memo"
-+ROW_TYPE_VALUES = (ROW_TYPE_NORMAL, ROW_TYPE_MEMO)
- 
- STATUS_LABELS = {
-     "draft": "下書き",
-     "issued": "発行済み",
-     "mailed": "送付済み",
-     "paid": "入金済み",
-     "cancelled": "取消",
- }
- 
- STATUS_BADGES = {
-     "draft": "bg-secondary",
-     "issued": "bg-primary",
-     "mailed": "bg-info text-dark",
-     "paid": "bg-success",
-     "cancelled": "bg-danger",
- }
- 
- TAX_MODE_LABELS = {
-     "external": "外税",
-     "internal": "内税",
-     "none": "税なし",
- }
- 
- FREEE_TAX_MODE_MAP = {
-     "external": "外税",
-@@ -101,50 +115,93 @@ def visible_pdf_filename(issuer_name: str | None, issue_date: date | datetime |
- def internal_pdf_filename(invoice_id: int, generated_at: datetime | None = None) -> str:
-     ts = (generated_at or now_jst()).strftime("%Y%m%d%H%M%S")
-     return f"invoice_{invoice_id}_{ts}.pdf"
- 
- 
- def to_decimal(value, default: str = "0") -> Decimal:
-     if value is None or value == "":
-         return Decimal(default)
-     if isinstance(value, Decimal):
-         return value
-     try:
-         text = str(value).replace(",", "").strip()
-         return Decimal(text or default)
-     except (InvalidOperation, ValueError):
-         return Decimal(default)
- 
- 
- def quantize_quantity(value: Decimal) -> Decimal:
-     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
- 
- 
- def quantize_yen(value: Decimal) -> int:
-     return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
- 
- 
-+def normalize_tax_category(tax_category: str | None) -> str:
-+    return tax_category if tax_category in TAX_CATEGORY_RATES else DEFAULT_TAX_CATEGORY
+     if (button.classList.contains('move-down')) {
+       const next = row.nextElementSibling;
+       if (next) tableBody.insertBefore(next, row);
+       recalc();
+diff --git a/tests/test_invoice_fuel_helper.py b/tests/test_invoice_fuel_helper.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d7da301d7f766c5d08b3c1e15d12ad681699991
+--- /dev/null
++++ b/tests/test_invoice_fuel_helper.py
+@@ -0,0 +1,72 @@
++import importlib.util
++import sys
++import types
++import unittest
++from pathlib import Path
 +
 +
-+def normalize_row_type(row_type: str | None) -> str:
-+    return row_type if row_type in ROW_TYPE_VALUES else ROW_TYPE_NORMAL
++def load_invoice_services_module():
++    repo_root = Path(__file__).resolve().parents[1]
++
++    app_module = types.ModuleType("app")
++    app_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_module = types.ModuleType("app.utils")
++    app_utils_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_db_module = types.ModuleType("app.utils.db")
++    app_utils_db_module.get_db = lambda: None
++    sys.modules["app"] = app_module
++    sys.modules["app.utils"] = app_utils_module
++    sys.modules["app.utils.db"] = app_utils_db_module
++
++    invoice_package = types.ModuleType("invoice")
++    invoice_package.__path__ = [str(repo_root / "invoice")]  # type: ignore[attr-defined]
++    sys.modules["invoice"] = invoice_package
++
++    utils_spec = importlib.util.spec_from_file_location("invoice.utils", repo_root / "invoice" / "utils.py")
++    utils_module = importlib.util.module_from_spec(utils_spec)
++    assert utils_spec and utils_spec.loader
++    sys.modules["invoice.utils"] = utils_module
++    utils_spec.loader.exec_module(utils_module)
++
++    services_spec = importlib.util.spec_from_file_location("invoice.services", repo_root / "invoice" / "services.py")
++    services_module = importlib.util.module_from_spec(services_spec)
++    assert services_spec and services_spec.loader
++    sys.modules["invoice.services"] = services_module
++    services_spec.loader.exec_module(services_module)
++    return services_module
 +
 +
-+def tax_rate_for_category(tax_category: str | None) -> Decimal:
-+    return TAX_CATEGORY_RATES[normalize_tax_category(tax_category)]
++invoice_services = load_invoice_services_module()
 +
 +
-+def calculate_line_amounts(base_amount: int, tax_mode: str, tax_category: str | None) -> dict[str, int]:
-+    amount_dec = Decimal(base_amount)
-+    normalized_tax_mode = normalize_tax_mode(tax_mode)
-+    normalized_tax_category = normalize_tax_category(tax_category)
-+    tax_rate = tax_rate_for_category(normalized_tax_category)
++class InvoiceFuelHelperTest(unittest.TestCase):
++    def test_calculate_yen_per_km_uses_decimal_ceiling(self):
++        self.assertEqual(invoice_services.calculate_yen_per_km_from_fuel_log("100", "3", "170"), 6)
++        self.assertEqual(invoice_services.calculate_yen_per_km_from_fuel_log("34", "1", "170"), 5)
 +
-+    if normalized_tax_mode == "external":
-+        line_subtotal = base_amount
-+        line_tax = quantize_yen(amount_dec * tax_rate)
-+        line_total = line_subtotal + line_tax
-+    elif normalized_tax_mode == "internal":
-+        line_total = base_amount
-+        if tax_rate == 0:
-+            line_tax = 0
-+        else:
-+            line_tax = quantize_yen(amount_dec - (amount_dec / (Decimal("1.0") + tax_rate)))
-+        line_subtotal = line_total - line_tax
-+    else:
-+        line_subtotal = base_amount
-+        line_tax = 0
-+        line_total = base_amount
++    def test_calculate_yen_per_km_rejects_invalid_values(self):
++        with self.assertRaises(ValueError):
++            invoice_services.calculate_yen_per_km_from_fuel_log("0", "3", "170")
++        with self.assertRaises(ValueError):
++            invoice_services.calculate_yen_per_km_from_fuel_log("100", "-1", "170")
++        with self.assertRaises(ValueError):
++            invoice_services.calculate_yen_per_km_from_fuel_log("100", "3", "")
 +
-+    return {
-+        "tax_category": normalized_tax_category,
-+        "tax_rate": tax_rate,
-+        "line_subtotal_yen": line_subtotal,
-+        "line_tax_yen": line_tax,
-+        "line_total_yen": line_total,
-+    }
++    def test_build_fuel_cost_helper_returns_unavailable_for_invalid_latest_record(self):
++        original = invoice_services.get_latest_bike_fuel_log
++        try:
++            invoice_services.get_latest_bike_fuel_log = lambda: {
++                "trip_km": "0",
++                "liters": "3.2",
++                "yen_per_liter": "180",
++            }
++            helper = invoice_services.build_fuel_cost_helper()
++        finally:
++            invoice_services.get_latest_bike_fuel_log = original
++
++        self.assertFalse(helper["available"])
++        self.assertEqual(helper["message"], "最新の燃費記録から単価を計算できません")
 +
 +
- def calculate_tax(subtotal: int, tax_mode: str) -> int:
-     subtotal_dec = Decimal(subtotal)
-     if tax_mode == "external":
-         return quantize_yen(subtotal_dec * TAX_RATE)
-     if tax_mode == "internal":
-         included = subtotal_dec - (subtotal_dec / (Decimal("1.0") + TAX_RATE))
-         return quantize_yen(included)
-     return 0
- 
- 
- def normalize_status(status: str | None) -> str:
-     return status if status in STATUS_LABELS else "draft"
- 
- 
- def normalize_tax_mode(tax_mode: str | None) -> str:
-     return tax_mode if tax_mode in TAX_MODE_LABELS else "external"
- 
- 
- def default_due_date(issue_date: date, due_days: int | None) -> date:
-     return issue_date + timedelta(days=int(due_days or 30))
- 
- 
- def split_emails(value: str | None) -> list[str]:
-     if not value:
-         return []
++if __name__ == "__main__":
++    unittest.main()

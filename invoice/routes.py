@@ -11,6 +11,7 @@ from .mail import send_invoice_mail
 from .pdf import generate_invoice_pdf
 from .services import (
     InvoiceValidationError,
+    build_fuel_cost_helper,
     build_invoice_form_data,
     delete_contact,
     duplicate_invoice,
@@ -182,6 +183,8 @@ def invoice_new():
         "invoice_form.html",
         form_data=form_data,
         contacts=contacts,
+        fuel_cost_helper=build_fuel_cost_helper(),
+        default_tax_category=DEFAULT_TAX_CATEGORY,
         tax_category_labels=TAX_CATEGORY_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         status_labels=STATUS_LABELS,
@@ -210,6 +213,8 @@ def invoice_edit(invoice_id: int):
         "invoice_form.html",
         form_data=form_data,
         contacts=contacts,
+        fuel_cost_helper=build_fuel_cost_helper(),
+        default_tax_category=DEFAULT_TAX_CATEGORY,
         tax_category_labels=TAX_CATEGORY_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         status_labels=STATUS_LABELS,
