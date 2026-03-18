@@ -1,8 +1,79 @@
+diff --git a/docs/sql/20260318_invoice_tables.sql b/docs/sql/20260318_invoice_tables.sql
+index 8607ec4f3a24f9f93f1e88ebc5ff1fc0d35ec87d..68b00c8040e2eebda190cc0c2929deabf0c335a0 100644
+--- a/docs/sql/20260318_invoice_tables.sql
++++ b/docs/sql/20260318_invoice_tables.sql
+@@ -52,50 +52,66 @@ CREATE TABLE IF NOT EXISTS invoice_headers (
+     created_at DATETIME NOT NULL,
+     updated_at DATETIME NOT NULL,
+     UNIQUE KEY uniq_invoice_headers_invoice_no (invoice_no),
+     INDEX idx_invoice_headers_issue_date (issue_date),
+     INDEX idx_invoice_headers_due_date (due_date),
+     INDEX idx_invoice_headers_status (status),
+     INDEX idx_invoice_headers_contact_name (contact_name_snapshot)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
+ CREATE TABLE IF NOT EXISTS invoice_items (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     invoice_id INT NOT NULL,
+     sort_order INT NOT NULL DEFAULT 0,
+     item_name VARCHAR(255) NOT NULL,
+     quantity DECIMAL(12,2) NOT NULL DEFAULT 1.00,
+     unit_name VARCHAR(32) NULL,
+     unit_price_yen INT NOT NULL DEFAULT 0,
+     line_total_yen INT NOT NULL DEFAULT 0,
+     tax_category VARCHAR(64) NULL,
+     created_at DATETIME NOT NULL,
+     updated_at DATETIME NOT NULL,
+     INDEX idx_invoice_items_invoice_id (invoice_id),
+     INDEX idx_invoice_items_sort_order (sort_order)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
++CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
++    id INT AUTO_INCREMENT PRIMARY KEY,
++    template_name VARCHAR(255) NOT NULL,
++    issuer_name VARCHAR(191) NOT NULL,
++    issuer_postal_code VARCHAR(32) NULL,
++    issuer_address1 VARCHAR(255) NULL,
++    issuer_address2 VARCHAR(255) NULL,
++    issuer_phone VARCHAR(64) NULL,
++    sort_order INT NOT NULL DEFAULT 0,
++    is_default TINYINT(1) NOT NULL DEFAULT 0,
++    created_at DATETIME NOT NULL,
++    updated_at DATETIME NOT NULL,
++    INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
++    INDEX idx_invoice_issuer_templates_is_default (is_default, id)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
++
+ CREATE TABLE IF NOT EXISTS invoice_mail_logs (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     invoice_id INT NOT NULL,
+     to_email VARCHAR(512) NOT NULL,
+     cc_email VARCHAR(512) NULL,
+     bcc_email VARCHAR(512) NULL,
+     subject VARCHAR(255) NOT NULL,
+     body TEXT NULL,
+     attachment_filename VARCHAR(255) NULL,
+     sent_at DATETIME NULL,
+     status VARCHAR(32) NOT NULL,
+     error_message TEXT NULL,
+     created_at DATETIME NOT NULL,
+     INDEX idx_invoice_mail_logs_invoice_id (invoice_id),
+     INDEX idx_invoice_mail_logs_sent_at (sent_at)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+ 
+ CREATE TABLE IF NOT EXISTS invoice_csv_logs (
+     id INT AUTO_INCREMENT PRIMARY KEY,
+     invoice_id INT NOT NULL,
+     filename VARCHAR(255) NOT NULL,
+     exported_at DATETIME NOT NULL,
+     status VARCHAR(32) NOT NULL,
+     error_message TEXT NULL,
+     created_at DATETIME NOT NULL,
 diff --git a/invoice/routes.py b/invoice/routes.py
-index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5bdc55dc4 100644
+index 10269d057d82ff2d2900faa83276b6a5bdc55dc4..598bc8d160014fe3e679ac8e1698b67c9fb1bfea 100644
 --- a/invoice/routes.py
 +++ b/invoice/routes.py
-@@ -1,38 +1,39 @@
+@@ -1,47 +1,50 @@
  from __future__ import annotations
  
  import threading
@@ -16,15 +87,18 @@ index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5
  from .pdf import generate_invoice_pdf
  from .services import (
      InvoiceValidationError,
-+    build_fuel_cost_helper,
++    apply_issuer_template_to_form_data,
+     build_fuel_cost_helper,
      build_invoice_form_data,
      delete_contact,
      duplicate_invoice,
      ensure_invoice_schema,
      fetch_contacts,
++    get_default_issuer_template,
      get_contact,
      get_invoice,
      list_invoices,
++    list_issuer_templates,
      log_csv_export,
      mark_invoice_issued,
      parse_invoice_items,
@@ -42,20 +116,58 @@ index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5
      build_mail_subject,
      default_due_date,
      format_ymd,
-@@ -160,78 +161,82 @@ def contact_delete(contact_id: int):
+     now_jst,
+     parse_date,
+ )
+ 
+ _schema_lock = threading.Lock()
+ _schema_ready = False
+ 
+ 
+@@ -142,99 +145,107 @@ def contact_edit(contact_id: int):
+         flash("請求先が見つかりません。", "warning")
+         return redirect(url_for("invoice.contact_list"))
+     if request.method == "POST":
+         try:
+             save_contact(contact_id, request.form)
+             flash("請求先を更新しました。", "success")
+             return redirect(url_for("invoice.contact_edit", contact_id=contact_id))
+         except InvoiceValidationError as exc:
+             flash(str(exc), "warning")
+             contact = {**contact, **request.form}
+     return render_template("invoice_contact_form.html", form_data=contact, mode="edit", contact=contact)
+ 
+ 
+ @invoice_bp.post("/contacts/<int:contact_id>/delete")
+ @login_required
+ def contact_delete(contact_id: int):
+     delete_contact(contact_id)
+     flash("請求先を削除しました。", "success")
+     return redirect(url_for("invoice.contact_list"))
  
  
  @invoice_bp.route("/new", methods=["GET", "POST"])
  @login_required
  def invoice_new():
      contacts = fetch_contacts()
++    issuer_templates = list_issuer_templates()
++    default_issuer_template = get_default_issuer_template()
      form_data = build_invoice_form_data()
-     if request.method == "GET" and contacts:
-         first_contact = contacts[0]
-         form_data["contact_id"] = first_contact["id"]
-         due_date = default_due_date(now_jst().date(), first_contact.get("default_due_days"))
-         form_data["due_date"] = format_ymd(due_date)
-         form_data["contact_email_snapshot"] = first_contact.get("email")
+-    if request.method == "GET" and contacts:
+-        first_contact = contacts[0]
+-        form_data["contact_id"] = first_contact["id"]
+-        due_date = default_due_date(now_jst().date(), first_contact.get("default_due_days"))
+-        form_data["due_date"] = format_ymd(due_date)
+-        form_data["contact_email_snapshot"] = first_contact.get("email")
++    if request.method == "GET":
++        if contacts:
++            first_contact = contacts[0]
++            form_data["contact_id"] = first_contact["id"]
++            due_date = default_due_date(now_jst().date(), first_contact.get("default_due_days"))
++            form_data["due_date"] = format_ymd(due_date)
++            form_data["contact_email_snapshot"] = first_contact.get("email")
++        if default_issuer_template:
++            form_data = apply_issuer_template_to_form_data(form_data, default_issuer_template)
      if request.method == "POST":
          try:
              invoice_id = save_invoice(None, _normalized_invoice_form(request.form))
@@ -68,8 +180,9 @@ index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5
          "invoice_form.html",
          form_data=form_data,
          contacts=contacts,
-+        fuel_cost_helper=build_fuel_cost_helper(),
-+        default_tax_category=DEFAULT_TAX_CATEGORY,
++        issuer_templates=issuer_templates,
+         fuel_cost_helper=build_fuel_cost_helper(),
+         default_tax_category=DEFAULT_TAX_CATEGORY,
          tax_category_labels=TAX_CATEGORY_LABELS,
          tax_mode_labels=TAX_MODE_LABELS,
          status_labels=STATUS_LABELS,
@@ -85,6 +198,7 @@ index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5
          flash("請求書が見つかりません。", "warning")
          return redirect(url_for("invoice.invoice_list"))
      contacts = fetch_contacts()
++    issuer_templates = list_issuer_templates()
      form_data = build_invoice_form_data(invoice)
      if request.method == "POST":
          try:
@@ -98,8 +212,9 @@ index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5
          "invoice_form.html",
          form_data=form_data,
          contacts=contacts,
-+        fuel_cost_helper=build_fuel_cost_helper(),
-+        default_tax_category=DEFAULT_TAX_CATEGORY,
++        issuer_templates=issuer_templates,
+         fuel_cost_helper=build_fuel_cost_helper(),
+         default_tax_category=DEFAULT_TAX_CATEGORY,
          tax_category_labels=TAX_CATEGORY_LABELS,
          tax_mode_labels=TAX_MODE_LABELS,
          status_labels=STATUS_LABELS,
@@ -123,31 +238,113 @@ index 2f60a48a4c31c25b1e4f76125981bf741d17d9ff..10269d057d82ff2d2900faa83276b6a5
  @invoice_bp.get("/<int:invoice_id>")
  @login_required
  def invoice_detail(invoice_id: int):
-     invoice = get_invoice(invoice_id)
-     if not invoice:
+@@ -339,81 +350,83 @@ def invoice_freee_csv(invoice_id: int):
+     try:
+         csv_bytes, filename = build_invoice_freee_csv(invoice)
+         log_csv_export(invoice_id, filename, status="success")
+         response = build_invoice_freee_csv_response(invoice)
+         return response
+     except Exception as exc:
+         log_csv_export(invoice_id, f"freee_invoice_{invoice.get('invoice_no')}.csv", status="failed", error_message=str(exc))
+         flash(f"freee CSV の出力に失敗しました: {exc}", "danger")
+         return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ 
+ 
+ @invoice_bp.get("/<int:invoice_id>/mail/new")
+ @login_required
+ def invoice_mail_redirect(invoice_id: int):
+     return redirect(url_for("invoice.invoice_mail", invoice_id=invoice_id))
+ 
+ 
+ def _normalized_invoice_form(form):
+     return _FormProxy({
+         "contact_id": form.get("contact_id"),
+         "issue_date": parse_date(form.get("issue_date")),
+         "due_date": parse_date(form.get("due_date")),
+         "subject": form.get("subject"),
+         "note": form.get("note"),
+         "bank_info": form.get("bank_info"),
++        "issuer_template_id": form.get("issuer_template_id"),
+         "issuer_name": form.get("issuer_name"),
+         "issuer_postal_code": form.get("issuer_postal_code"),
+         "issuer_address1": form.get("issuer_address1"),
+         "issuer_address2": form.get("issuer_address2"),
+         "issuer_phone": form.get("issuer_phone"),
+         "tax_mode": form.get("tax_mode"),
+         "status": form.get("status") or "draft",
+         "getlist": form.getlist,
+     })
+ 
+ 
+ class _FormProxy(dict):
+     def getlist(self, key):
+         getter = super().get("getlist")
+         if callable(getter):
+             return getter(key)
+         value = super().get(key, [])
+         return value if isinstance(value, list) else [value]
+ 
+ 
+ 
+ def _posted_invoice_form_data(form, base=None):
+     base = base or {}
+     data = dict(base)
+     data.update({
+         "contact_id": form.get("contact_id"),
+         "issue_date": form.get("issue_date"),
+         "due_date": form.get("due_date"),
+         "subject": form.get("subject"),
+         "note": form.get("note"),
+         "bank_info": form.get("bank_info"),
++        "issuer_template_id": form.get("issuer_template_id"),
+         "issuer_name": form.get("issuer_name"),
+         "issuer_postal_code": form.get("issuer_postal_code"),
+         "issuer_address1": form.get("issuer_address1"),
+         "issuer_address2": form.get("issuer_address2"),
+         "issuer_phone": form.get("issuer_phone"),
+         "tax_mode": form.get("tax_mode"),
+         "status": form.get("status") or "draft",
+     })
+     proxy = _FormProxy({"getlist": form.getlist})
+     try:
+         items = parse_invoice_items(proxy)
+         data["items"] = [
+             {
+                 "row_type": item.row_type,
+                 "item_name": item.item_name,
+                 "memo_text": item.memo_text,
+                 "quantity": str(item.quantity),
+                 "unit_name": item.unit_name,
+                 "unit_price_yen": str(item.unit_price_yen),
+                 "line_total_yen": str(item.line_total_yen),
+                 "tax_category": item.tax_category,
+             }
+             for item in items
+         ]
+     except Exception:
 diff --git a/invoice/services.py b/invoice/services.py
-index 7395f0e03944bf58b06e374fc7791f5ad06a9bff..20c249aa46cf8377a8b9f519bc978a479f80b3e7 100644
+index 20c249aa46cf8377a8b9f519bc978a479f80b3e7..7175ee521ea58ae85211a178197637646cb77b62 100644
 --- a/invoice/services.py
 +++ b/invoice/services.py
-@@ -1,41 +1,42 @@
+@@ -1,36 +1,37 @@
  from __future__ import annotations
  
  from dataclasses import dataclass
  from datetime import date
--from decimal import Decimal
-+from decimal import Decimal, ROUND_CEILING
+ from decimal import Decimal, ROUND_CEILING
  from typing import Any
  
  from app.utils.db import get_db
  
  from .utils import (
      DEFAULT_TAX_CATEGORY,
++    ISSUER_TEMPLATE_FIELDS,
      ROW_TYPE_MEMO,
      ROW_TYPE_NORMAL,
      TAX_CATEGORY_LABELS,
      calculate_line_amounts,
      default_due_date,
-+    format_quantity,
+     format_quantity,
      format_ymd,
      normalize_row_type,
      normalize_status,
@@ -167,13 +364,7 @@ index 7395f0e03944bf58b06e374fc7791f5ad06a9bff..20c249aa46cf8377a8b9f519bc978a47
      unit_name: str = ""
      unit_price_yen: int = 0
      tax_category: str = DEFAULT_TAX_CATEGORY
-     sort_order: int = 0
-     row_type: str = ROW_TYPE_NORMAL
-     memo_text: str = ""
- 
-     @property
-     def base_amount_yen(self) -> int:
-@@ -43,50 +44,129 @@ class InvoiceItemInput:
+@@ -44,50 +45,125 @@ class InvoiceItemInput:
  
      @property
      def is_memo(self) -> bool:
@@ -199,115 +390,340 @@ index 7395f0e03944bf58b06e374fc7791f5ad06a9bff..20c249aa46cf8377a8b9f519bc978a47
      pass
  
  
-+def get_latest_bike_fuel_log() -> dict[str, Any] | None:
++def _issuer_template_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
++    if not row:
++        return None
++    return {
++        "id": row.get("id"),
++        "template_name": row.get("template_name") or "",
++        "issuer_name": row.get("issuer_name") or "",
++        "issuer_postal_code": row.get("issuer_postal_code") or "",
++        "issuer_address1": row.get("issuer_address1") or "",
++        "issuer_address2": row.get("issuer_address2") or "",
++        "issuer_phone": row.get("issuer_phone") or "",
++        "sort_order": int(row.get("sort_order") or 0),
++        "is_default": bool(row.get("is_default")),
++    }
++
++
++def list_issuer_templates() -> list[dict[str, Any]]:
 +    db = get_db()
 +    cur = db.cursor(dictionary=True)
 +    try:
 +        cur.execute(
 +            """
-+            SELECT id, fill_date, created_at, trip_km, liters, yen_per_liter
-+            FROM bike_fuel_log
-+            ORDER BY fill_date DESC, created_at DESC, id DESC
-+            LIMIT 1
++            SELECT *
++            FROM invoice_issuer_templates
++            ORDER BY sort_order ASC, id ASC
 +            """
 +        )
-+        return cur.fetchone()
++        return [_issuer_template_to_dict(row) for row in cur.fetchall()]
 +    finally:
 +        cur.close()
 +        db.close()
 +
 +
-+def calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter) -> int:
-+    trip_km_dec = to_decimal(trip_km)
-+    liters_dec = to_decimal(liters)
-+    yen_per_liter_dec = to_decimal(yen_per_liter)
-+    if trip_km_dec <= 0:
-+        raise ValueError("trip_km must be greater than zero")
-+    if liters_dec <= 0:
-+        raise ValueError("liters must be greater than zero")
-+    if yen_per_liter_dec <= 0:
-+        raise ValueError("yen_per_liter must be greater than zero")
-+    yen_per_km = (yen_per_liter_dec * liters_dec) / trip_km_dec
-+    return int(yen_per_km.quantize(Decimal("1"), rounding=ROUND_CEILING))
-+
-+
-+def build_fuel_cost_helper() -> dict[str, Any]:
-+    unavailable = {
-+        "available": False,
-+        "message": "最新の燃費記録から単価を計算できません",
-+        "trip_km": "",
-+        "liters": "",
-+        "yen_per_liter": "",
-+        "yen_per_km": None,
-+        "item_name": "ガソリン代",
-+        "quantity": "1",
-+        "unit_name": "km",
-+        "tax_category": DEFAULT_TAX_CATEGORY,
-+    }
++def get_default_issuer_template() -> dict[str, Any] | None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
 +    try:
-+        latest = get_latest_bike_fuel_log()
-+    except Exception:
-+        return unavailable
-+    if not latest:
-+        return unavailable
++        cur.execute(
++            """
++            SELECT *
++            FROM invoice_issuer_templates
++            WHERE is_default = 1
++            ORDER BY sort_order ASC, id ASC
++            LIMIT 1
++            """
++        )
++        return _issuer_template_to_dict(cur.fetchone())
++    finally:
++        cur.close()
++        db.close()
 +
-+    trip_km = latest.get("trip_km")
-+    liters = latest.get("liters")
-+    yen_per_liter = latest.get("yen_per_liter")
++
++def get_issuer_template_by_id(template_id: int) -> dict[str, Any] | None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
 +    try:
-+        yen_per_km = calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter)
-+    except (ArithmeticError, ValueError):
-+        return {
-+            **unavailable,
-+            "trip_km": format_quantity(trip_km),
-+            "liters": format_quantity(liters),
-+            "yen_per_liter": str(int(to_decimal(yen_per_liter))) if yen_per_liter not in (None, "") else "",
-+        }
-+
-+    return {
-+        "available": True,
-+        "message": "",
-+        "trip_km": format_quantity(trip_km),
-+        "liters": format_quantity(liters),
-+        "yen_per_liter": str(int(to_decimal(yen_per_liter))),
-+        "yen_per_km": yen_per_km,
-+        "item_name": "ガソリン代",
-+        "quantity": "1",
-+        "unit_name": "km",
-+        "tax_category": DEFAULT_TAX_CATEGORY,
-+    }
++        cur.execute(
++            "SELECT * FROM invoice_issuer_templates WHERE id = %s",
++            (template_id,),
++        )
++        return _issuer_template_to_dict(cur.fetchone())
++    finally:
++        cur.close()
++        db.close()
 +
 +
- def _column_exists(cur, table_name: str, column_name: str) -> bool:
-     cur.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (column_name,))
-     return cur.fetchone() is not None
- 
- 
- def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
-     if not _column_exists(cur, "invoice_items", column_name):
-         cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
- 
- 
- def ensure_invoice_schema() -> None:
++def apply_issuer_template_to_form_data(form_data: dict[str, Any], template: dict[str, Any] | None) -> dict[str, Any]:
++    if not template:
++        return form_data
++    for field_name in ISSUER_TEMPLATE_FIELDS:
++        form_data[field_name] = template.get(field_name) or ""
++    form_data["issuer_template_id"] = str(template.get("id") or "")
++    return form_data
++
++
+ def get_latest_bike_fuel_log() -> dict[str, Any] | None:
      db = get_db()
-     cur = db.cursor()
+     cur = db.cursor(dictionary=True)
      try:
          cur.execute(
              """
-             CREATE TABLE IF NOT EXISTS invoice_contacts (
+             SELECT id, fill_date, created_at, trip_km, liters, yen_per_liter
+             FROM bike_fuel_log
+             ORDER BY fill_date DESC, created_at DESC, id DESC
+             LIMIT 1
+             """
+         )
+         return cur.fetchone()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def calculate_yen_per_km_from_fuel_log(trip_km, liters, yen_per_liter) -> int:
+     trip_km_dec = to_decimal(trip_km)
+     liters_dec = to_decimal(liters)
+     yen_per_liter_dec = to_decimal(yen_per_liter)
+     if trip_km_dec <= 0:
+         raise ValueError("trip_km must be greater than zero")
+     if liters_dec <= 0:
+@@ -226,50 +302,69 @@ def ensure_invoice_schema() -> None:
+             """
+         )
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_items (
                  id INT AUTO_INCREMENT PRIMARY KEY,
-                 name VARCHAR(191) NOT NULL,
-                 department_name VARCHAR(191) NULL,
-                 contact_name VARCHAR(191) NULL,
-                 honorific VARCHAR(32) NULL,
-                 email VARCHAR(255) NULL,
-                 postal_code VARCHAR(32) NULL,
-                 address1 VARCHAR(255) NULL,
+                 invoice_id INT NOT NULL,
+                 sort_order INT NOT NULL DEFAULT 0,
+                 row_type VARCHAR(16) NOT NULL DEFAULT 'normal',
+                 item_name VARCHAR(255) NOT NULL,
+                 memo_text TEXT NULL,
+                 quantity DECIMAL(12,2) NOT NULL DEFAULT 1.00,
+                 unit_name VARCHAR(32) NULL,
+                 unit_price_yen INT NOT NULL DEFAULT 0,
+                 line_total_yen INT NOT NULL DEFAULT 0,
+                 tax_category VARCHAR(64) NULL,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 INDEX idx_invoice_items_invoice_id (invoice_id),
+                 INDEX idx_invoice_items_sort_order (sort_order)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
+         _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
++        cur.execute(
++            """
++            CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
++                id INT AUTO_INCREMENT PRIMARY KEY,
++                template_name VARCHAR(255) NOT NULL,
++                issuer_name VARCHAR(191) NOT NULL,
++                issuer_postal_code VARCHAR(32) NULL,
++                issuer_address1 VARCHAR(255) NULL,
++                issuer_address2 VARCHAR(255) NULL,
++                issuer_phone VARCHAR(64) NULL,
++                sort_order INT NOT NULL DEFAULT 0,
++                is_default TINYINT(1) NOT NULL DEFAULT 0,
++                created_at DATETIME NOT NULL,
++                updated_at DATETIME NOT NULL,
++                INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
++                INDEX idx_invoice_issuer_templates_is_default (is_default, id)
++            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
++            """
++        )
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 invoice_id INT NOT NULL,
+                 to_email VARCHAR(512) NOT NULL,
+                 cc_email VARCHAR(512) NULL,
+                 bcc_email VARCHAR(512) NULL,
+                 subject VARCHAR(255) NOT NULL,
+                 body TEXT NULL,
+                 attachment_filename VARCHAR(255) NULL,
+                 sent_at DATETIME NULL,
+                 status VARCHAR(32) NOT NULL,
+                 error_message TEXT NULL,
+                 created_at DATETIME NOT NULL,
+                 INDEX idx_invoice_mail_logs_invoice_id (invoice_id),
+                 INDEX idx_invoice_mail_logs_sent_at (sent_at)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         cur.execute(
+             """
+             CREATE TABLE IF NOT EXISTS invoice_csv_logs (
+                 id INT AUTO_INCREMENT PRIMARY KEY,
+                 invoice_id INT NOT NULL,
+@@ -1030,51 +1125,53 @@ def log_csv_export(invoice_id: int, filename: str, *, status: str, error_message
+             INSERT INTO invoice_csv_logs (
+                 invoice_id, filename, exported_at, status, error_message, created_at
+             ) VALUES (%s, %s, %s, %s, %s, %s)
+             """,
+             (invoice_id, filename, now, status, error_message, now),
+         )
+         if status == "success":
+             cur.execute(
+                 "UPDATE invoice_headers SET freee_exported_at=%s, updated_at=%s WHERE id=%s",
+                 (now, now, invoice_id),
+             )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, Any]:
+     if not invoice:
+         today = now_jst().date()
+         return {
+             "issue_date": format_ymd(today),
+             "due_date": format_ymd(today),
+             "tax_mode": "external",
+             "status": "draft",
++            "issuer_template_id": "",
+             "items": [
+                 {
+                     "row_type": ROW_TYPE_NORMAL,
+                     "item_name": "",
+                     "memo_text": "",
+                     "quantity": "1.00",
+                     "unit_name": "式",
+                     "unit_price_yen": "0",
+                     "line_total_yen": "0",
+                     "tax_category": DEFAULT_TAX_CATEGORY,
+                 }
+             ],
+         }
+     data = dict(invoice)
+     data["issue_date"] = format_ymd(invoice.get("issue_date"))
+     data["due_date"] = format_ymd(invoice.get("due_date"))
+     if not data.get("items"):
+         data["items"] = []
+     for item in data["items"]:
+         item["row_type"] = normalize_row_type(item.get("row_type"))
+         item["memo_text"] = (item.get("memo_text") or "").strip()
+         item["quantity"] = str(item.get("quantity") or "1.00")
+         item["unit_price_yen"] = str(item.get("unit_price_yen") or 0)
+         item["line_total_yen"] = str(item.get("line_total_yen") or 0)
+         item["tax_category"] = normalize_tax_category(item.get("tax_category"))
++    data["issuer_template_id"] = str(data.get("issuer_template_id") or "")
+     return data
+diff --git a/invoice/template/invoice_detail.html b/invoice/template/invoice_detail.html
+index af5f8adfaa10dc37b04410cfc7d00c160d0fa605..87fe3e36f66386f4b30db4260d9213030009b7e8 100644
+--- a/invoice/template/invoice_detail.html
++++ b/invoice/template/invoice_detail.html
+@@ -1,27 +1,32 @@
+ {% extends "base.html" %}
+ {% block title %}請求書詳細{% endblock %}
++{% block head_extra %}
++<style>
++  .multiline-text { white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
++</style>
++{% endblock %}
+ {% block content %}
+ <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+   <div>
+     <h1 class="mb-1">{{ invoice.invoice_no }}</h1>
+     <div class="text-muted">{{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }} / {{ invoice.contact_name_snapshot }}</div>
+   </div>
+   <div class="d-flex gap-2 flex-wrap">
+     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_edit', invoice_id=invoice.id) }}">編集</a>
+     <a class="btn btn-outline-dark" href="{{ url_for('invoice.invoice_pdf', invoice_id=invoice.id) }}">PDFダウンロード</a>
+     <a class="btn btn-outline-primary" href="{{ url_for('invoice.invoice_mail', invoice_id=invoice.id) }}">メール送信</a>
+     <a class="btn btn-outline-success" href="{{ url_for('invoice.invoice_freee_csv', invoice_id=invoice.id) }}">freee CSV</a>
+   </div>
+ </div>
+ <div class="row g-3 mb-3">
+   <div class="col-lg-8">
+     <div class="card shadow-sm"><div class="card-body">
+       <div class="d-flex justify-content-between align-items-start mb-3">
+         <div>
+           <h2 class="h5">基本情報</h2>
+           <p class="mb-1">件名: {{ invoice.subject }}</p>
+           <p class="mb-1">支払期限: {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date }}</p>
+           <p class="mb-0">税モード: {{ invoice.tax_mode|invoice_tax_mode_label }}</p>
+         </div>
+         <span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span>
+       </div>
+@@ -54,52 +59,52 @@
+               <td class="text-muted">{{ item.memo_text }}</td>
+               <td class="text-muted">—</td>
+               <td class="text-muted">—</td>
+               <td class="text-muted text-end">—</td>
+               <td class="text-muted text-end">—</td>
+               {% else %}
+               <td>{{ item.item_name }}</td>
+               <td>{{ item.quantity }}</td>
+               <td>{{ item.unit_name }}</td>
+               <td class="text-end">¥{{ item.unit_price_yen|yen }}</td>
+               <td class="text-end">¥{{ item.line_total_yen|yen }}</td>
+               {% endif %}
+             </tr>
+             {% endfor %}
+           </tbody>
+           <tfoot>
+             <tr><th colspan="4" class="text-end">小計</th><th class="text-end">¥{{ invoice.subtotal_yen|yen }}</th></tr>
+             <tr><th colspan="4" class="text-end">消費税10%</th><th class="text-end">¥{{ invoice.tax_10_yen|yen }}</th></tr>
+             <tr><th colspan="4" class="text-end">消費税8%</th><th class="text-end">¥{{ invoice.tax_8_yen|yen }}</th></tr>
+             <tr><th colspan="4" class="text-end">消費税合計</th><th class="text-end">¥{{ invoice.tax_yen|yen }}</th></tr>
+             <tr><th colspan="4" class="text-end">合計</th><th class="text-end">¥{{ invoice.total_yen|yen }}</th></tr>
+           </tfoot>
+         </table>
+       </div>
+       <div class="row g-3 mt-1">
+-        <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light">{{ invoice.note or '（未入力）' }}</div></div>
+-        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light">{{ invoice.bank_info or '（未入力）' }}</div></div>
++        <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.note or '（未入力）' }}</div></div>
++        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.bank_info or '（未入力）' }}</div></div>
+       </div>
+     </div></div>
+   </div>
+   <div class="col-lg-4">
+     <div class="card shadow-sm mb-3"><div class="card-body">
+       <h2 class="h5">操作</h2>
+       <div class="d-grid gap-2">
+         <form method="post" action="{{ url_for('invoice.invoice_issue', invoice_id=invoice.id) }}"><button class="btn btn-outline-primary w-100" type="submit">発行済みにする</button></form>
+         <form method="post" action="{{ url_for('invoice.invoice_duplicate', invoice_id=invoice.id) }}" onsubmit="return confirm('この請求書を複製しますか？');"><button class="btn btn-outline-secondary w-100" type="submit">複製</button></form>
+       </div>
+       <hr>
+       <form method="post" action="{{ url_for('invoice.invoice_update_status', invoice_id=invoice.id) }}">
+         <label class="form-label">ステータス変更</label>
+         <div class="d-flex gap-2">
+           <select class="form-select" name="status">{% for value, label in status_labels.items() %}<option value="{{ value }}" {% if invoice.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+           <button class="btn btn-primary" type="submit">更新</button>
+         </div>
+       </form>
+       <hr>
+       <ul class="list-unstyled small mb-0">
+         <li>PDF生成日: {{ invoice.pdf_generated_at.strftime('%Y-%m-%d %H:%M') if invoice.pdf_generated_at else '未生成' }}</li>
+         <li>メール送付日: {{ invoice.mailed_at.strftime('%Y-%m-%d %H:%M') if invoice.mailed_at else '未送付' }}</li>
+         <li>freee出力日: {{ invoice.freee_exported_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_exported_at else '未出力' }}</li>
+       </ul>
+     </div></div>
 diff --git a/invoice/template/invoice_form.html b/invoice/template/invoice_form.html
-index 46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e..61a7dfe6889525c0ba191b7892ccf5d3f581a0b9 100644
+index 61a7dfe6889525c0ba191b7892ccf5d3f581a0b9..ef36981e1b38213538e66ffb01f7c4683add85ec 100644
 --- a/invoice/template/invoice_form.html
 +++ b/invoice/template/invoice_form.html
-@@ -22,180 +22,207 @@
+@@ -9,55 +9,65 @@
+   .invoice-item-row.memo-row td { background: #fcfcfc; }
+   .invoice-memo-label { font-size: .875rem; color: #6c757d; }
+ </style>
+ {% endblock %}
+ {% block content %}
+ <h1 class="mb-3">請求書{{ '編集' if mode == 'edit' else '新規作成' }}</h1>
+ <form method="post" id="invoiceForm">
+   <div class="row g-3">
+     <div class="col-lg-8">
+       <div class="card shadow-sm mb-3"><div class="card-body">
+         <h2 class="h5">基本情報</h2>
+         <div class="row g-3">
+           <div class="col-md-6">
              <label class="form-label">請求先 *</label>
              <select class="form-select" name="contact_id" required>
                <option value="">選択してください</option>
@@ -320,11 +736,26 @@ index 46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e..61a7dfe6889525c0ba191b7892ccf5d3
            <div class="col-md-3"><label class="form-label">支払期限 *</label><input class="form-control" type="date" name="due_date" value="{{ form_data.due_date }}" required></div>
            <div class="col-md-8"><label class="form-label">件名 *</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}" required></div>
            <div class="col-md-4"><label class="form-label">税モード</label><select class="form-select" name="tax_mode" id="taxMode">{% for value, label in tax_mode_labels.items() %}<option value="{{ value }}" {% if form_data.tax_mode == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-           <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" value="{{ form_data.issuer_name or '' }}" required></div>
-           <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" value="{{ form_data.issuer_postal_code or '' }}"></div>
-           <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" value="{{ form_data.issuer_phone or '' }}"></div>
-           <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" value="{{ form_data.issuer_address1 or '' }}"></div>
-           <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" value="{{ form_data.issuer_address2 or '' }}"></div>
+-          <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" value="{{ form_data.issuer_name or '' }}" required></div>
+-          <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" value="{{ form_data.issuer_postal_code or '' }}"></div>
+-          <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" value="{{ form_data.issuer_phone or '' }}"></div>
+-          <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" value="{{ form_data.issuer_address1 or '' }}"></div>
+-          <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" value="{{ form_data.issuer_address2 or '' }}"></div>
++          <div class="col-12">
++            <label class="form-label">発行者テンプレート</label>
++            <select class="form-select" name="issuer_template_id" id="issuerTemplateSelect">
++              <option value="">選択してください</option>
++              {% for template in issuer_templates %}
++              <option value="{{ template.id }}" {% if (form_data.issuer_template_id|string) == (template.id|string) %}selected{% endif %}>{{ template.template_name }}{% if template.is_default %}（デフォルト）{% endif %}</option>
++              {% endfor %}
++            </select>
++            <div class="form-text">選択したテンプレートの内容で発行者欄を上書きします。反映後も手動編集できます。</div>
++          </div>
++          <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" id="issuerNameInput" value="{{ form_data.issuer_name or '' }}" required></div>
++          <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" id="issuerPostalCodeInput" value="{{ form_data.issuer_postal_code or '' }}"></div>
++          <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" id="issuerPhoneInput" value="{{ form_data.issuer_phone or '' }}"></div>
++          <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" id="issuerAddress1Input" value="{{ form_data.issuer_address1 or '' }}"></div>
++          <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" id="issuerAddress2Input" value="{{ form_data.issuer_address2 or '' }}"></div>
            <div class="col-12"><label class="form-label">備考</label><textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea></div>
            <div class="col-12"><label class="form-label">振込先</label><textarea class="form-control" name="bank_info" rows="4">{{ form_data.bank_info or '' }}</textarea></div>
            {% if mode == 'edit' %}
@@ -333,167 +764,24 @@ index 46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e..61a7dfe6889525c0ba191b7892ccf5d3
          </div>
        </div></div>
        <div class="card shadow-sm"><div class="card-body">
-+        <div class="border rounded p-3 mb-3">
-+          <h2 class="h6 mb-2">ガソリン代入力補助</h2>
-+          {% if fuel_cost_helper and fuel_cost_helper.available %}
-+          <dl class="row small mb-3">
-+            <dt class="col-sm-4 mb-1">最新トリップ</dt>
-+            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.trip_km }} km</dd>
-+            <dt class="col-sm-4 mb-1">最新給油量</dt>
-+            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.liters }} L</dd>
-+            <dt class="col-sm-4 mb-1">最新単価</dt>
-+            <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.yen_per_liter }} 円/L</dd>
-+            <dt class="col-sm-4 mb-0">計算単価</dt>
-+            <dd class="col-sm-8 mb-0 fw-semibold">{{ fuel_cost_helper.yen_per_km }} 円/km</dd>
-+          </dl>
-+          <button
-+            type="button"
-+            class="btn btn-sm btn-outline-primary"
-+            id="addFuelCostRow"
-+            data-item-name="{{ fuel_cost_helper.item_name }}"
-+            data-quantity="{{ fuel_cost_helper.quantity }}"
-+            data-unit-name="{{ fuel_cost_helper.unit_name }}"
-+            data-unit-price-yen="{{ fuel_cost_helper.yen_per_km }}"
-+            data-tax-category="{{ fuel_cost_helper.tax_category }}"
-+          >この値で明細追加</button>
-+          {% else %}
-+          <p class="text-muted mb-0">{{ (fuel_cost_helper and fuel_cost_helper.message) or '最新の燃費記録から単価を計算できません' }}</p>
-+          {% endif %}
-+        </div>
-         <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
-           <h2 class="h5 mb-0">明細</h2>
-           <div class="d-flex gap-2 flex-wrap">
-             <button type="button" class="btn btn-sm btn-outline-secondary" id="addItemRow">明細行を追加</button>
-             <button type="button" class="btn btn-sm btn-outline-secondary" id="addMemoRow">メモ行を追加</button>
-           </div>
-         </div>
-         <div class="table-responsive">
-           <table class="table align-middle invoice-item-table" id="itemTable">
-             <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th>単価</th><th>税区分</th><th>金額</th><th></th></tr></thead>
-             <tbody>
-               {% for item in form_data["items"] %}
-               {% set row_type = item.row_type or 'normal' %}
-               <tr class="invoice-item-row{% if row_type == 'memo' %} memo-row{% endif %}" data-row-type="{{ row_type }}">
-                 <td>
-                   <input type="hidden" name="row_type[]" value="{{ row_type }}" class="row-type-input">
-                   {% if row_type == 'memo' %}
-                   <input type="hidden" name="item_name[]" value="{{ item.item_name or '' }}" class="item-name-input">
-                   <input type="hidden" name="quantity[]" value="{{ item.quantity or '' }}" class="item-quantity-input">
-                   <input type="hidden" name="unit_name[]" value="{{ item.unit_name or '' }}" class="item-unit-input">
-                   <input type="hidden" name="unit_price_yen[]" value="{{ item.unit_price_yen or '' }}" class="item-price-input">
--                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or 'tax10' }}" class="item-tax-category-input">
-+                  <input type="hidden" name="tax_category[]" value="{{ item.tax_category or default_tax_category }}" class="item-tax-category-input">
-                   <div class="invoice-memo-label mb-1">メモ</div>
-                   <input class="form-control memo-text-input" name="memo_text[]" value="{{ item.memo_text or item.item_name or '' }}" placeholder="メモを入力してください">
-                   {% else %}
-                   <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
-                   <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
-                   {% endif %}
-                 </td>
-                 <td>
-                   {% if row_type == 'memo' %}
-                   <span class="text-muted">—</span>
-                   {% else %}
-                   <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
-                   {% endif %}
-                 </td>
-                 <td>
-                   {% if row_type == 'memo' %}
-                   <span class="text-muted">—</span>
-                   {% else %}
-                   <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
-                   {% endif %}
-                 </td>
-                 <td>
-                   {% if row_type == 'memo' %}
-                   <span class="text-muted">—</span>
-                   {% else %}
-                   <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
-                   {% endif %}
-                 </td>
-                 <td>
-                   {% if row_type == 'memo' %}
-                   <span class="text-muted">—</span>
-                   {% else %}
-                   <select class="form-select item-tax-category-input" name="tax_category[]">
-                     {% for value, label in tax_category_labels.items() %}
--                    <option value="{{ value }}" {% if (item.tax_category or 'tax10') == value %}selected{% endif %}>{{ label }}</option>
-+                    <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
-                     {% endfor %}
-                   </select>
-                   {% endif %}
-                 </td>
-                 <td class="item-line-total text-end">¥0</td>
-                 <td>
-                   <div class="invoice-row-actions">
-                     <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
-                     <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
-                     <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
-                   </div>
-                 </td>
-               </tr>
-               {% endfor %}
-             </tbody>
-           </table>
-         </div>
-       </div></div>
-     </div>
-     <div class="col-lg-4">
-       <div class="card shadow-sm invoice-sticky-summary"><div class="card-body">
-         <h2 class="h5">集計</h2>
-         <dl class="row mb-0">
-           <dt class="col-6">小計</dt><dd class="col-6 text-end" id="subtotalText">¥0</dd>
-           <dt class="col-6">消費税10%</dt><dd class="col-6 text-end" id="tax10Text">¥0</dd>
-           <dt class="col-6">消費税8%</dt><dd class="col-6 text-end" id="tax8Text">¥0</dd>
-           <dt class="col-6">消費税合計</dt><dd class="col-6 text-end" id="taxText">¥0</dd>
-           <dt class="col-6">合計</dt><dd class="col-6 text-end fw-bold" id="totalText">¥0</dd>
-         </dl>
-         <div class="mt-3 d-grid gap-2">
-           <button class="btn btn-primary" type="submit">保存</button>
-           <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">一覧へ戻る</a>
-         </div>
-       </div></div>
-     </div>
-   </div>
- </form>
- <template id="normalRowTemplate">
-   <tr class="invoice-item-row" data-row-type="normal">
-     <td>
-       <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
-       <input class="form-control item-name-input" name="item_name[]" required>
-       <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
-     </td>
-     <td><input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required></td>
-     <td><input class="form-control item-unit-input" name="unit_name[]" value="式"></td>
-     <td><input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></td>
-     <td>
-       <select class="form-select item-tax-category-input" name="tax_category[]">
-         {% for value, label in tax_category_labels.items() %}
--        <option value="{{ value }}" {% if value == 'tax10' %}selected{% endif %}>{{ label }}</option>
-+        <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
-         {% endfor %}
-       </select>
-     </td>
-     <td class="item-line-total text-end">¥0</td>
-     <td>
-       <div class="invoice-row-actions">
-         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
-         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
-         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
-       </div>
-     </td>
-   </tr>
- </template>
- <template id="memoRowTemplate">
-   <tr class="invoice-item-row memo-row" data-row-type="memo">
-     <td>
-       <input type="hidden" name="row_type[]" value="memo" class="row-type-input">
-       <input type="hidden" name="item_name[]" value="" class="item-name-input">
-       <input type="hidden" name="quantity[]" value="" class="item-quantity-input">
-       <input type="hidden" name="unit_name[]" value="" class="item-unit-input">
-       <input type="hidden" name="unit_price_yen[]" value="" class="item-price-input">
--      <input type="hidden" name="tax_category[]" value="tax10" class="item-tax-category-input">
-+      <input type="hidden" name="tax_category[]" value="{{ default_tax_category }}" class="item-tax-category-input">
+         <div class="border rounded p-3 mb-3">
+           <h2 class="h6 mb-2">ガソリン代入力補助</h2>
+           {% if fuel_cost_helper and fuel_cost_helper.available %}
+           <dl class="row small mb-3">
+             <dt class="col-sm-4 mb-1">最新トリップ</dt>
+             <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.trip_km }} km</dd>
+             <dt class="col-sm-4 mb-1">最新給油量</dt>
+             <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.liters }} L</dd>
+             <dt class="col-sm-4 mb-1">最新単価</dt>
+             <dd class="col-sm-8 mb-1">{{ fuel_cost_helper.yen_per_liter }} 円/L</dd>
+             <dt class="col-sm-4 mb-0">計算単価</dt>
+             <dd class="col-sm-8 mb-0 fw-semibold">{{ fuel_cost_helper.yen_per_km }} 円/km</dd>
+           </dl>
+           <button
+             type="button"
+             class="btn btn-sm btn-outline-primary"
+             id="addFuelCostRow"
+@@ -204,50 +214,59 @@
        <div class="invoice-memo-label mb-1">メモ</div>
        <input class="form-control memo-text-input" name="memo_text[]" placeholder="メモを入力してください">
      </td>
@@ -519,69 +807,94 @@ index 46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e..61a7dfe6889525c0ba191b7892ccf5d3
    const normalTemplate = document.getElementById('normalRowTemplate');
    const memoTemplate = document.getElementById('memoRowTemplate');
    const taxMode = document.getElementById('taxMode');
-@@ -231,57 +258,85 @@
-       }
++  const issuerTemplateSelect = document.getElementById('issuerTemplateSelect');
++  const issuerTemplates = {{ issuer_templates|tojson }};
++  const issuerFieldMap = {
++    issuer_name: document.getElementById('issuerNameInput'),
++    issuer_postal_code: document.getElementById('issuerPostalCodeInput'),
++    issuer_address1: document.getElementById('issuerAddress1Input'),
++    issuer_address2: document.getElementById('issuerAddress2Input'),
++    issuer_phone: document.getElementById('issuerPhoneInput'),
++  };
+   const TAX_RATES = { tax10: 0.10, tax8: 0.08, nontax: 0 };
+   const fmt = (num) => `¥${Math.round(num || 0).toLocaleString('ja-JP')}`;
  
-       const qty = parseFloat(row.querySelector('.item-quantity-input')?.value || '0');
-       const price = parseFloat(row.querySelector('.item-price-input')?.value || '0');
-       const baseAmount = Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
-       const taxCategory = row.querySelector('.item-tax-category-input')?.value || 'tax10';
-       const lineAmounts = calculateLineAmounts(baseAmount, taxMode.value, taxCategory);
-       subtotal += lineAmounts.subtotal;
-       total += lineAmounts.total;
-       if (taxCategory === 'tax8') {
-         tax8 += lineAmounts.tax;
-       } else if (taxCategory === 'tax10') {
-         tax10 += lineAmounts.tax;
-       }
-       if (lineCell) lineCell.textContent = fmt(lineAmounts.total);
-     });
- 
-     const tax = tax10 + tax8;
-     document.getElementById('subtotalText').textContent = fmt(subtotal);
-     document.getElementById('tax10Text').textContent = fmt(tax10);
-     document.getElementById('tax8Text').textContent = fmt(tax8);
-     document.getElementById('taxText').textContent = fmt(tax);
-     document.getElementById('totalText').textContent = fmt(total);
+   const calculateLineAmounts = (baseAmount, mode, taxCategory) => {
+     const amount = Math.round(Number.isFinite(baseAmount) ? baseAmount : 0);
+     const rate = TAX_RATES[taxCategory] ?? TAX_RATES.tax10;
+     if (mode === 'external') {
+       const tax = Math.round(amount * rate);
+       return { subtotal: amount, tax, total: amount + tax };
+     }
+     if (mode === 'internal') {
+       const tax = rate === 0 ? 0 : Math.round(amount - (amount / (1 + rate)));
+       return { subtotal: amount - tax, tax, total: amount };
+     }
+     return { subtotal: amount, tax: 0, total: amount };
    };
  
--  const appendRow = (template) => {
--    tableBody.appendChild(template.content.firstElementChild.cloneNode(true));
-+  const appendRow = (template, initialValues = {}) => {
-+    const row = template.content.firstElementChild.cloneNode(true);
-+    if ((row.dataset.rowType || 'normal') === 'normal') {
-+      if (initialValues.item_name !== undefined) {
-+        row.querySelector('.item-name-input').value = initialValues.item_name;
-+      }
-+      if (initialValues.quantity !== undefined) {
-+        row.querySelector('.item-quantity-input').value = initialValues.quantity;
-+      }
-+      if (initialValues.unit_name !== undefined) {
-+        row.querySelector('.item-unit-input').value = initialValues.unit_name;
-+      }
-+      if (initialValues.unit_price_yen !== undefined) {
-+        row.querySelector('.item-price-input').value = initialValues.unit_price_yen;
-+      }
-+      if (initialValues.tax_category !== undefined) {
-+        row.querySelector('.item-tax-category-input').value = initialValues.tax_category;
-+      }
-+    }
-+    tableBody.appendChild(row);
+   const recalc = () => {
+     let subtotal = 0;
+     let tax10 = 0;
+     let tax8 = 0;
+     let total = 0;
+ 
+     tableBody.querySelectorAll('tr.invoice-item-row').forEach((row) => {
+       const rowType = row.dataset.rowType || 'normal';
+@@ -281,50 +300,66 @@
+   };
+ 
+   const appendRow = (template, initialValues = {}) => {
+     const row = template.content.firstElementChild.cloneNode(true);
+     if ((row.dataset.rowType || 'normal') === 'normal') {
+       if (initialValues.item_name !== undefined) {
+         row.querySelector('.item-name-input').value = initialValues.item_name;
+       }
+       if (initialValues.quantity !== undefined) {
+         row.querySelector('.item-quantity-input').value = initialValues.quantity;
+       }
+       if (initialValues.unit_name !== undefined) {
+         row.querySelector('.item-unit-input').value = initialValues.unit_name;
+       }
+       if (initialValues.unit_price_yen !== undefined) {
+         row.querySelector('.item-price-input').value = initialValues.unit_price_yen;
+       }
+       if (initialValues.tax_category !== undefined) {
+         row.querySelector('.item-tax-category-input').value = initialValues.tax_category;
+       }
+     }
+     tableBody.appendChild(row);
      recalc();
    };
  
++  const applyIssuerTemplate = (templateId) => {
++    const selectedId = String(templateId || '');
++    const template = issuerTemplates.find((item) => String(item.id) === selectedId);
++    if (!template) {
++      return;
++    }
++    Object.entries(issuerFieldMap).forEach(([fieldName, input]) => {
++      if (!input) return;
++      input.value = template[fieldName] || '';
++    });
++  };
++
++  issuerTemplateSelect?.addEventListener('change', (event) => {
++    applyIssuerTemplate(event.currentTarget.value);
++  });
++
    document.getElementById('addItemRow')?.addEventListener('click', () => appendRow(normalTemplate));
    document.getElementById('addMemoRow')?.addEventListener('click', () => appendRow(memoTemplate));
-+  document.getElementById('addFuelCostRow')?.addEventListener('click', (event) => {
-+    const button = event.currentTarget;
-+    appendRow(normalTemplate, {
-+      item_name: button.dataset.itemName || '',
-+      quantity: button.dataset.quantity || '1',
-+      unit_name: button.dataset.unitName || 'km',
-+      unit_price_yen: button.dataset.unitPriceYen || '0',
-+      tax_category: button.dataset.taxCategory || '{{ default_tax_category }}',
-+    });
-+  });
+   document.getElementById('addFuelCostRow')?.addEventListener('click', (event) => {
+     const button = event.currentTarget;
+     appendRow(normalTemplate, {
+       item_name: button.dataset.itemName || '',
+       quantity: button.dataset.quantity || '1',
+       unit_name: button.dataset.unitName || 'km',
+       unit_price_yen: button.dataset.unitPriceYen || '0',
+       tax_category: button.dataset.taxCategory || '{{ default_tax_category }}',
+     });
+   });
    tableBody.addEventListener('input', recalc);
    tableBody.addEventListener('change', recalc);
    tableBody.addEventListener('click', (event) => {
@@ -595,24 +908,136 @@ index 46fdc5a25e15ceb7469f4b02ddc1e36715f4ca2e..61a7dfe6889525c0ba191b7892ccf5d3
        recalc();
        return;
      }
- 
-     if (button.classList.contains('move-up')) {
-       const prev = row.previousElementSibling;
-       if (prev) tableBody.insertBefore(row, prev);
-       recalc();
-       return;
+diff --git a/invoice/template/invoice_pdf.html b/invoice/template/invoice_pdf.html
+index 06945f348bcaf5de4fcbbbfd95e29bd64ce64182..3bf267481d690c79d6931fc22d68ba8b38b259a3 100644
+--- a/invoice/template/invoice_pdf.html
++++ b/invoice/template/invoice_pdf.html
+@@ -232,50 +232,56 @@
      }
  
-     if (button.classList.contains('move-down')) {
-       const next = row.nextElementSibling;
-       if (next) tableBody.insertBefore(next, row);
-       recalc();
-diff --git a/tests/test_invoice_fuel_helper.py b/tests/test_invoice_fuel_helper.py
+     .note-bank-row {
+       display: table;
+       width: 100%;
+       table-layout: fixed;
+     }
+ 
+     .note-bank-block {
+       display: table-cell;
+       width: 50%;
+       vertical-align: top;
+       page-break-inside: avoid;
+       break-inside: avoid;
+     }
+ 
+     .note-bank-block + .note-bank-block {
+       padding-left: 4mm;
+     }
+ 
+     .block-body {
+       padding: 2.2mm 2.6mm;
+       border: 0.3mm solid var(--border-color);
+       min-height: 18mm;
+     }
++
++    .multiline-text {
++      white-space: pre-wrap;
++      word-break: break-word;
++      overflow-wrap: break-word;
++    }
+   </style>
+ </head>
+ <body>
+   <div class="page">
+     <div class="title-row">
+       <div class="title-cell">
+         <h1 class="title">{{ pdf.title }}</h1>
+       </div>
+       <div class="meta-cell">
+         <table class="meta-table">
+           <tbody>
+             <tr>
+               <th>請求日</th>
+               <td>{{ pdf.issue_date_label }}</td>
+             </tr>
+             <tr>
+               <th>請求書番号</th>
+               <td>{{ pdf.invoice_no }}</td>
+             </tr>
+           </tbody>
+         </table>
+       </div>
+     </div>
+ 
+     <div class="party-row">
+diff --git a/invoice/utils.py b/invoice/utils.py
+index 1827d76152c5d4f038038b55b633e6a3be7b106c..d37033cb2df1888bbea5d594700afd1ef4094418 100644
+--- a/invoice/utils.py
++++ b/invoice/utils.py
+@@ -28,50 +28,58 @@ STATUS_LABELS = {
+     "mailed": "送付済み",
+     "paid": "入金済み",
+     "cancelled": "取消",
+ }
+ 
+ STATUS_BADGES = {
+     "draft": "bg-secondary",
+     "issued": "bg-primary",
+     "mailed": "bg-info text-dark",
+     "paid": "bg-success",
+     "cancelled": "bg-danger",
+ }
+ 
+ TAX_MODE_LABELS = {
+     "external": "外税",
+     "internal": "内税",
+     "none": "税なし",
+ }
+ 
+ FREEE_TAX_MODE_MAP = {
+     "external": "外税",
+     "internal": "内税",
+     "none": "対象外",
+ }
+ 
++ISSUER_TEMPLATE_FIELDS = (
++    "issuer_name",
++    "issuer_postal_code",
++    "issuer_address1",
++    "issuer_address2",
++    "issuer_phone",
++)
++
+ 
+ def now_jst() -> datetime:
+     return datetime.now(JST).replace(tzinfo=None)
+ 
+ 
+ def parse_date(value: str | None) -> date | None:
+     if not value:
+         return None
+     try:
+         return datetime.strptime(str(value), "%Y-%m-%d").date()
+     except ValueError:
+         return None
+ 
+ 
+ def format_ymd(value: date | datetime | None, *, slash: bool = False) -> str:
+     if not value:
+         return ""
+     if isinstance(value, datetime):
+         value = value.date()
+     return value.strftime("%Y/%m/%d" if slash else "%Y-%m-%d")
+ 
+ 
+ def format_jp_date(value: date | datetime | None) -> str:
+     if not value:
+         return ""
+diff --git a/tests/test_invoice_issuer_templates.py b/tests/test_invoice_issuer_templates.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7d7da301d7f766c5d08b3c1e15d12ad681699991
+index 0000000000000000000000000000000000000000..ace17903c482d2f2efeb58e4b576841d1d67bdde
 --- /dev/null
-+++ b/tests/test_invoice_fuel_helper.py
-@@ -0,0 +1,72 @@
++++ b/tests/test_invoice_issuer_templates.py
+@@ -0,0 +1,80 @@
 +import importlib.util
 +import sys
 +import types
@@ -654,33 +1079,41 @@ index 0000000000000000000000000000000000000000..7d7da301d7f766c5d08b3c1e15d12ad6
 +invoice_services = load_invoice_services_module()
 +
 +
-+class InvoiceFuelHelperTest(unittest.TestCase):
-+    def test_calculate_yen_per_km_uses_decimal_ceiling(self):
-+        self.assertEqual(invoice_services.calculate_yen_per_km_from_fuel_log("100", "3", "170"), 6)
-+        self.assertEqual(invoice_services.calculate_yen_per_km_from_fuel_log("34", "1", "170"), 5)
++class InvoiceIssuerTemplateTest(unittest.TestCase):
++    def test_apply_issuer_template_to_form_data_overwrites_target_fields_only(self):
++        form_data = {
++            "issuer_name": "old name",
++            "issuer_postal_code": "111-1111",
++            "issuer_address1": "old address1",
++            "issuer_address2": "old address2",
++            "issuer_phone": "0000",
++            "subject": "keep",
++        }
++        template = {
++            "id": 5,
++            "issuer_name": "new name",
++            "issuer_postal_code": "222-2222",
++            "issuer_address1": "new address1",
++            "issuer_address2": "new address2",
++            "issuer_phone": "9999",
++        }
 +
-+    def test_calculate_yen_per_km_rejects_invalid_values(self):
-+        with self.assertRaises(ValueError):
-+            invoice_services.calculate_yen_per_km_from_fuel_log("0", "3", "170")
-+        with self.assertRaises(ValueError):
-+            invoice_services.calculate_yen_per_km_from_fuel_log("100", "-1", "170")
-+        with self.assertRaises(ValueError):
-+            invoice_services.calculate_yen_per_km_from_fuel_log("100", "3", "")
++        result = invoice_services.apply_issuer_template_to_form_data(form_data, template)
 +
-+    def test_build_fuel_cost_helper_returns_unavailable_for_invalid_latest_record(self):
-+        original = invoice_services.get_latest_bike_fuel_log
-+        try:
-+            invoice_services.get_latest_bike_fuel_log = lambda: {
-+                "trip_km": "0",
-+                "liters": "3.2",
-+                "yen_per_liter": "180",
-+            }
-+            helper = invoice_services.build_fuel_cost_helper()
-+        finally:
-+            invoice_services.get_latest_bike_fuel_log = original
++        self.assertIs(result, form_data)
++        self.assertEqual(result["issuer_template_id"], "5")
++        self.assertEqual(result["issuer_name"], "new name")
++        self.assertEqual(result["issuer_postal_code"], "222-2222")
++        self.assertEqual(result["issuer_address1"], "new address1")
++        self.assertEqual(result["issuer_address2"], "new address2")
++        self.assertEqual(result["issuer_phone"], "9999")
++        self.assertEqual(result["subject"], "keep")
 +
-+        self.assertFalse(helper["available"])
-+        self.assertEqual(helper["message"], "最新の燃費記録から単価を計算できません")
++    def test_build_invoice_form_data_for_new_invoice_has_template_selector_state(self):
++        form_data = invoice_services.build_invoice_form_data()
++
++        self.assertEqual(form_data["issuer_template_id"], "")
++        self.assertEqual(form_data["items"][0]["row_type"], "normal")
 +
 +
 +if __name__ == "__main__":

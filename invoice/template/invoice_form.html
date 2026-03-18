@@ -31,11 +31,21 @@
           <div class="col-md-3"><label class="form-label">支払期限 *</label><input class="form-control" type="date" name="due_date" value="{{ form_data.due_date }}" required></div>
           <div class="col-md-8"><label class="form-label">件名 *</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}" required></div>
           <div class="col-md-4"><label class="form-label">税モード</label><select class="form-select" name="tax_mode" id="taxMode">{% for value, label in tax_mode_labels.items() %}<option value="{{ value }}" {% if form_data.tax_mode == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-          <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" value="{{ form_data.issuer_name or '' }}" required></div>
-          <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" value="{{ form_data.issuer_postal_code or '' }}"></div>
-          <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" value="{{ form_data.issuer_phone or '' }}"></div>
-          <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" value="{{ form_data.issuer_address1 or '' }}"></div>
-          <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" value="{{ form_data.issuer_address2 or '' }}"></div>
+          <div class="col-12">
+            <label class="form-label">発行者テンプレート</label>
+            <select class="form-select" name="issuer_template_id" id="issuerTemplateSelect">
+              <option value="">選択してください</option>
+              {% for template in issuer_templates %}
+              <option value="{{ template.id }}" {% if (form_data.issuer_template_id|string) == (template.id|string) %}selected{% endif %}>{{ template.template_name }}{% if template.is_default %}（デフォルト）{% endif %}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">選択したテンプレートの内容で発行者欄を上書きします。反映後も手動編集できます。</div>
+          </div>
+          <div class="col-md-6"><label class="form-label">発行者名 *</label><input class="form-control" name="issuer_name" id="issuerNameInput" value="{{ form_data.issuer_name or '' }}" required></div>
+          <div class="col-md-3"><label class="form-label">発行者郵便番号</label><input class="form-control" name="issuer_postal_code" id="issuerPostalCodeInput" value="{{ form_data.issuer_postal_code or '' }}"></div>
+          <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" id="issuerPhoneInput" value="{{ form_data.issuer_phone or '' }}"></div>
+          <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" id="issuerAddress1Input" value="{{ form_data.issuer_address1 or '' }}"></div>
+          <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" id="issuerAddress2Input" value="{{ form_data.issuer_address2 or '' }}"></div>
           <div class="col-12"><label class="form-label">備考</label><textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea></div>
           <div class="col-12"><label class="form-label">振込先</label><textarea class="form-control" name="bank_info" rows="4">{{ form_data.bank_info or '' }}</textarea></div>
           {% if mode == 'edit' %}
@@ -226,6 +236,15 @@
   const normalTemplate = document.getElementById('normalRowTemplate');
   const memoTemplate = document.getElementById('memoRowTemplate');
   const taxMode = document.getElementById('taxMode');
+  const issuerTemplateSelect = document.getElementById('issuerTemplateSelect');
+  const issuerTemplates = {{ issuer_templates|tojson }};
+  const issuerFieldMap = {
+    issuer_name: document.getElementById('issuerNameInput'),
+    issuer_postal_code: document.getElementById('issuerPostalCodeInput'),
+    issuer_address1: document.getElementById('issuerAddress1Input'),
+    issuer_address2: document.getElementById('issuerAddress2Input'),
+    issuer_phone: document.getElementById('issuerPhoneInput'),
+  };
   const TAX_RATES = { tax10: 0.10, tax8: 0.08, nontax: 0 };
   const fmt = (num) => `¥${Math.round(num || 0).toLocaleString('ja-JP')}`;
 
@@ -302,6 +321,22 @@
     tableBody.appendChild(row);
     recalc();
   };
+
+  const applyIssuerTemplate = (templateId) => {
+    const selectedId = String(templateId || '');
+    const template = issuerTemplates.find((item) => String(item.id) === selectedId);
+    if (!template) {
+      return;
+    }
+    Object.entries(issuerFieldMap).forEach(([fieldName, input]) => {
+      if (!input) return;
+      input.value = template[fieldName] || '';
+    });
+  };
+
+  issuerTemplateSelect?.addEventListener('change', (event) => {
+    applyIssuerTemplate(event.currentTarget.value);
+  });
 
   document.getElementById('addItemRow')?.addEventListener('click', () => appendRow(normalTemplate));
   document.getElementById('addMemoRow')?.addEventListener('click', () => appendRow(memoTemplate));

@@ -50,6 +50,14 @@ FREEE_TAX_MODE_MAP = {
     "none": "対象外",
 }
 
+ISSUER_TEMPLATE_FIELDS = (
+    "issuer_name",
+    "issuer_postal_code",
+    "issuer_address1",
+    "issuer_address2",
+    "issuer_phone",
+)
+
 
 def now_jst() -> datetime:
     return datetime.now(JST).replace(tzinfo=None)

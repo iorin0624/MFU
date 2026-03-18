@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block title %}請求書詳細{% endblock %}
+{% block head_extra %}
+<style>
+  .multiline-text { white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word; }
+</style>
+{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
@@ -76,8 +81,8 @@
         </table>
       </div>
       <div class="row g-3 mt-1">
-        <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light">{{ invoice.note or '（未入力）' }}</div></div>
-        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light">{{ invoice.bank_info or '（未入力）' }}</div></div>
+        <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.note or '（未入力）' }}</div></div>
+        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.bank_info or '（未入力）' }}</div></div>
       </div>
     </div></div>
   </div>

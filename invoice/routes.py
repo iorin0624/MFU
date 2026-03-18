@@ -11,15 +11,18 @@ from .mail import send_invoice_mail
 from .pdf import generate_invoice_pdf
 from .services import (
     InvoiceValidationError,
+    apply_issuer_template_to_form_data,
     build_fuel_cost_helper,
     build_invoice_form_data,
     delete_contact,
     duplicate_invoice,
     ensure_invoice_schema,
     fetch_contacts,
+    get_default_issuer_template,
     get_contact,
     get_invoice,
     list_invoices,
+    list_issuer_templates,
     log_csv_export,
     mark_invoice_issued,
     parse_invoice_items,
@@ -164,13 +167,18 @@ def contact_delete(contact_id: int):
 @login_required
 def invoice_new():
     contacts = fetch_contacts()
+    issuer_templates = list_issuer_templates()
+    default_issuer_template = get_default_issuer_template()
     form_data = build_invoice_form_data()
-    if request.method == "GET" and contacts:
-        first_contact = contacts[0]
-        form_data["contact_id"] = first_contact["id"]
-        due_date = default_due_date(now_jst().date(), first_contact.get("default_due_days"))
-        form_data["due_date"] = format_ymd(due_date)
-        form_data["contact_email_snapshot"] = first_contact.get("email")
+    if request.method == "GET":
+        if contacts:
+            first_contact = contacts[0]
+            form_data["contact_id"] = first_contact["id"]
+            due_date = default_due_date(now_jst().date(), first_contact.get("default_due_days"))
+            form_data["due_date"] = format_ymd(due_date)
+            form_data["contact_email_snapshot"] = first_contact.get("email")
+        if default_issuer_template:
+            form_data = apply_issuer_template_to_form_data(form_data, default_issuer_template)
     if request.method == "POST":
         try:
             invoice_id = save_invoice(None, _normalized_invoice_form(request.form))
@@ -183,6 +191,7 @@ def invoice_new():
         "invoice_form.html",
         form_data=form_data,
         contacts=contacts,
+        issuer_templates=issuer_templates,
         fuel_cost_helper=build_fuel_cost_helper(),
         default_tax_category=DEFAULT_TAX_CATEGORY,
         tax_category_labels=TAX_CATEGORY_LABELS,
@@ -200,6 +209,7 @@ def invoice_edit(invoice_id: int):
         flash("請求書が見つかりません。", "warning")
         return redirect(url_for("invoice.invoice_list"))
     contacts = fetch_contacts()
+    issuer_templates = list_issuer_templates()
     form_data = build_invoice_form_data(invoice)
     if request.method == "POST":
         try:
@@ -213,6 +223,7 @@ def invoice_edit(invoice_id: int):
         "invoice_form.html",
         form_data=form_data,
         contacts=contacts,
+        issuer_templates=issuer_templates,
         fuel_cost_helper=build_fuel_cost_helper(),
         default_tax_category=DEFAULT_TAX_CATEGORY,
         tax_category_labels=TAX_CATEGORY_LABELS,
@@ -361,6 +372,7 @@ def _normalized_invoice_form(form):
         "subject": form.get("subject"),
         "note": form.get("note"),
         "bank_info": form.get("bank_info"),
+        "issuer_template_id": form.get("issuer_template_id"),
         "issuer_name": form.get("issuer_name"),
         "issuer_postal_code": form.get("issuer_postal_code"),
         "issuer_address1": form.get("issuer_address1"),
@@ -392,6 +404,7 @@ def _posted_invoice_form_data(form, base=None):
         "subject": form.get("subject"),
         "note": form.get("note"),
         "bank_info": form.get("bank_info"),
+        "issuer_template_id": form.get("issuer_template_id"),
         "issuer_name": form.get("issuer_name"),
         "issuer_postal_code": form.get("issuer_postal_code"),
         "issuer_address1": form.get("issuer_address1"),

@@ -9,6 +9,7 @@ from app.utils.db import get_db
 
 from .utils import (
     DEFAULT_TAX_CATEGORY,
+    ISSUER_TEMPLATE_FIELDS,
     ROW_TYPE_MEMO,
     ROW_TYPE_NORMAL,
     TAX_CATEGORY_LABELS,
@@ -64,6 +65,81 @@ class InvoiceItemInput:
 
 class InvoiceValidationError(ValueError):
     pass
+
+
+def _issuer_template_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "id": row.get("id"),
+        "template_name": row.get("template_name") or "",
+        "issuer_name": row.get("issuer_name") or "",
+        "issuer_postal_code": row.get("issuer_postal_code") or "",
+        "issuer_address1": row.get("issuer_address1") or "",
+        "issuer_address2": row.get("issuer_address2") or "",
+        "issuer_phone": row.get("issuer_phone") or "",
+        "sort_order": int(row.get("sort_order") or 0),
+        "is_default": bool(row.get("is_default")),
+    }
+
+
+def list_issuer_templates() -> list[dict[str, Any]]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM invoice_issuer_templates
+            ORDER BY sort_order ASC, id ASC
+            """
+        )
+        return [_issuer_template_to_dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
+        db.close()
+
+
+def get_default_issuer_template() -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM invoice_issuer_templates
+            WHERE is_default = 1
+            ORDER BY sort_order ASC, id ASC
+            LIMIT 1
+            """
+        )
+        return _issuer_template_to_dict(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def get_issuer_template_by_id(template_id: int) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT * FROM invoice_issuer_templates WHERE id = %s",
+            (template_id,),
+        )
+        return _issuer_template_to_dict(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def apply_issuer_template_to_form_data(form_data: dict[str, Any], template: dict[str, Any] | None) -> dict[str, Any]:
+    if not template:
+        return form_data
+    for field_name in ISSUER_TEMPLATE_FIELDS:
+        form_data[field_name] = template.get(field_name) or ""
+    form_data["issuer_template_id"] = str(template.get("id") or "")
+    return form_data
 
 
 def get_latest_bike_fuel_log() -> dict[str, Any] | None:
@@ -248,6 +324,25 @@ def ensure_invoice_schema() -> None:
         )
         _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
         _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                template_name VARCHAR(255) NOT NULL,
+                issuer_name VARCHAR(191) NOT NULL,
+                issuer_postal_code VARCHAR(32) NULL,
+                issuer_address1 VARCHAR(255) NULL,
+                issuer_address2 VARCHAR(255) NULL,
+                issuer_phone VARCHAR(64) NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                is_default TINYINT(1) NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
+                INDEX idx_invoice_issuer_templates_is_default (is_default, id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
@@ -1052,6 +1147,7 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
             "due_date": format_ymd(today),
             "tax_mode": "external",
             "status": "draft",
+            "issuer_template_id": "",
             "items": [
                 {
                     "row_type": ROW_TYPE_NORMAL,
@@ -1077,4 +1173,5 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
         item["unit_price_yen"] = str(item.get("unit_price_yen") or 0)
         item["line_total_yen"] = str(item.get("line_total_yen") or 0)
         item["tax_category"] = normalize_tax_category(item.get("tax_category"))
+    data["issuer_template_id"] = str(data.get("issuer_template_id") or "")
     return data
