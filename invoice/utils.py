@@ -7,6 +7,20 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 JST = timezone(timedelta(hours=9))
 TAX_RATE = Decimal("0.10")
+TAX_CATEGORY_RATES = {
+    "tax10": Decimal("0.10"),
+    "tax8": Decimal("0.08"),
+    "nontax": Decimal("0"),
+}
+TAX_CATEGORY_LABELS = {
+    "tax10": "課税10%",
+    "tax8": "課税8%",
+    "nontax": "非課税",
+}
+DEFAULT_TAX_CATEGORY = "tax10"
+ROW_TYPE_NORMAL = "normal"
+ROW_TYPE_MEMO = "memo"
+ROW_TYPE_VALUES = (ROW_TYPE_NORMAL, ROW_TYPE_MEMO)
 
 STATUS_LABELS = {
     "draft": "下書き",
@@ -121,6 +135,49 @@ def quantize_quantity(value: Decimal) -> Decimal:
 
 def quantize_yen(value: Decimal) -> int:
     return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def normalize_tax_category(tax_category: str | None) -> str:
+    return tax_category if tax_category in TAX_CATEGORY_RATES else DEFAULT_TAX_CATEGORY
+
+
+def normalize_row_type(row_type: str | None) -> str:
+    return row_type if row_type in ROW_TYPE_VALUES else ROW_TYPE_NORMAL
+
+
+def tax_rate_for_category(tax_category: str | None) -> Decimal:
+    return TAX_CATEGORY_RATES[normalize_tax_category(tax_category)]
+
+
+def calculate_line_amounts(base_amount: int, tax_mode: str, tax_category: str | None) -> dict[str, int]:
+    amount_dec = Decimal(base_amount)
+    normalized_tax_mode = normalize_tax_mode(tax_mode)
+    normalized_tax_category = normalize_tax_category(tax_category)
+    tax_rate = tax_rate_for_category(normalized_tax_category)
+
+    if normalized_tax_mode == "external":
+        line_subtotal = base_amount
+        line_tax = quantize_yen(amount_dec * tax_rate)
+        line_total = line_subtotal + line_tax
+    elif normalized_tax_mode == "internal":
+        line_total = base_amount
+        if tax_rate == 0:
+            line_tax = 0
+        else:
+            line_tax = quantize_yen(amount_dec - (amount_dec / (Decimal("1.0") + tax_rate)))
+        line_subtotal = line_total - line_tax
+    else:
+        line_subtotal = base_amount
+        line_tax = 0
+        line_total = base_amount
+
+    return {
+        "tax_category": normalized_tax_category,
+        "tax_rate": tax_rate,
+        "line_subtotal_yen": line_subtotal,
+        "line_tax_yen": line_tax,
+        "line_total_yen": line_total,
+    }
 
 
 def calculate_tax(subtotal: int, tax_mode: str) -> int:

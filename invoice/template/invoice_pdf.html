@@ -203,6 +203,11 @@
       white-space: normal;
     }
 
+    .memo-row td {
+      color: var(--muted-color);
+      background: #fcfcfc;
+    }
+
     .summary-wrap {
       width: 43%;
       margin-left: auto;
@@ -312,7 +317,7 @@
       </thead>
       <tbody>
         {% for item in pdf.line_items %}
-        <tr>
+        <tr{% if item.row_type == 'memo' %} class="memo-row"{% endif %}>
           <td class="item-name">{{ item.item_name }}</td>
           <td class="text-center">{{ item.quantity }}</td>
           <td class="text-center">{{ item.unit_name }}</td>
@@ -331,7 +336,15 @@
             <td>{{ pdf.subtotal_yen_label }}</td>
           </tr>
           <tr>
-            <th>消費税</th>
+            <th>消費税10%</th>
+            <td>{{ pdf.tax_10_yen_label }}</td>
+          </tr>
+          <tr>
+            <th>消費税8%</th>
+            <td>{{ pdf.tax_8_yen_label }}</td>
+          </tr>
+          <tr>
+            <th>消費税合計</th>
             <td>{{ pdf.tax_yen_label }}</td>
           </tr>
           <tr class="total">

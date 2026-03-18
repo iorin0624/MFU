@@ -27,8 +27,11 @@ from .services import (
     update_invoice_status,
 )
 from .utils import (
+    DEFAULT_TAX_CATEGORY,
+    ROW_TYPE_NORMAL,
     STATUS_BADGES,
     STATUS_LABELS,
+    TAX_CATEGORY_LABELS,
     TAX_MODE_LABELS,
     build_mail_subject,
     default_due_date,
@@ -179,6 +182,7 @@ def invoice_new():
         "invoice_form.html",
         form_data=form_data,
         contacts=contacts,
+        tax_category_labels=TAX_CATEGORY_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         status_labels=STATUS_LABELS,
         mode="new",
@@ -206,6 +210,7 @@ def invoice_edit(invoice_id: int):
         "invoice_form.html",
         form_data=form_data,
         contacts=contacts,
+        tax_category_labels=TAX_CATEGORY_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         status_labels=STATUS_LABELS,
         invoice=invoice,
@@ -395,7 +400,9 @@ def _posted_invoice_form_data(form, base=None):
         items = parse_invoice_items(proxy)
         data["items"] = [
             {
+                "row_type": item.row_type,
                 "item_name": item.item_name,
+                "memo_text": item.memo_text,
                 "quantity": str(item.quantity),
                 "unit_name": item.unit_name,
                 "unit_price_yen": str(item.unit_price_yen),
@@ -405,21 +412,42 @@ def _posted_invoice_form_data(form, base=None):
             for item in items
         ]
     except Exception:
+        row_types = form.getlist("row_type[]")
+        item_names = form.getlist("item_name[]")
+        memo_texts = form.getlist("memo_text[]")
+        quantities = form.getlist("quantity[]")
+        unit_names = form.getlist("unit_name[]")
+        unit_prices = form.getlist("unit_price_yen[]")
+        tax_categories = form.getlist("tax_category[]")
+        row_count = max(
+            len(row_types),
+            len(item_names),
+            len(memo_texts),
+            len(quantities),
+            len(unit_names),
+            len(unit_prices),
+            len(tax_categories),
+        )
         data["items"] = [
             {
-                "item_name": item_name,
-                "quantity": quantity,
-                "unit_name": unit_name,
-                "unit_price_yen": unit_price,
+                "row_type": (row_types[index] if index < len(row_types) else ROW_TYPE_NORMAL) or ROW_TYPE_NORMAL,
+                "item_name": item_names[index] if index < len(item_names) else "",
+                "memo_text": memo_texts[index] if index < len(memo_texts) else "",
+                "quantity": quantities[index] if index < len(quantities) else "",
+                "unit_name": unit_names[index] if index < len(unit_names) else "",
+                "unit_price_yen": unit_prices[index] if index < len(unit_prices) else "",
                 "line_total_yen": "0",
-                "tax_category": tax_category,
+                "tax_category": (tax_categories[index] if index < len(tax_categories) else DEFAULT_TAX_CATEGORY) or DEFAULT_TAX_CATEGORY,
             }
-            for item_name, quantity, unit_name, unit_price, tax_category in zip(
-                form.getlist("item_name[]"),
-                form.getlist("quantity[]"),
-                form.getlist("unit_name[]"),
-                form.getlist("unit_price_yen[]"),
-                form.getlist("tax_category[]"),
-            )
-        ] or [{"item_name": "", "quantity": "1.00", "unit_name": "式", "unit_price_yen": "0", "line_total_yen": "0", "tax_category": "課税"}]
+            for index in range(row_count)
+        ] or [{
+            "row_type": ROW_TYPE_NORMAL,
+            "item_name": "",
+            "memo_text": "",
+            "quantity": "1.00",
+            "unit_name": "式",
+            "unit_price_yen": "0",
+            "line_total_yen": "0",
+            "tax_category": DEFAULT_TAX_CATEGORY,
+        }]
     return data

@@ -46,21 +46,31 @@
       <hr>
       <div class="table-responsive">
         <table class="table table-sm align-middle">
-          <thead><tr><th>品目</th><th>数量</th><th>単位</th><th class="text-end">単価</th><th class="text-end">金額</th></tr></thead>
+          <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th class="text-end">単価</th><th class="text-end">金額</th></tr></thead>
           <tbody>
             {% for item in invoice["items"] %}
             <tr>
+              {% if item.row_type == 'memo' %}
+              <td class="text-muted">{{ item.memo_text }}</td>
+              <td class="text-muted">—</td>
+              <td class="text-muted">—</td>
+              <td class="text-muted text-end">—</td>
+              <td class="text-muted text-end">—</td>
+              {% else %}
               <td>{{ item.item_name }}</td>
               <td>{{ item.quantity }}</td>
               <td>{{ item.unit_name }}</td>
               <td class="text-end">¥{{ item.unit_price_yen|yen }}</td>
               <td class="text-end">¥{{ item.line_total_yen|yen }}</td>
+              {% endif %}
             </tr>
             {% endfor %}
           </tbody>
           <tfoot>
             <tr><th colspan="4" class="text-end">小計</th><th class="text-end">¥{{ invoice.subtotal_yen|yen }}</th></tr>
-            <tr><th colspan="4" class="text-end">消費税</th><th class="text-end">¥{{ invoice.tax_yen|yen }}</th></tr>
+            <tr><th colspan="4" class="text-end">消費税10%</th><th class="text-end">¥{{ invoice.tax_10_yen|yen }}</th></tr>
+            <tr><th colspan="4" class="text-end">消費税8%</th><th class="text-end">¥{{ invoice.tax_8_yen|yen }}</th></tr>
+            <tr><th colspan="4" class="text-end">消費税合計</th><th class="text-end">¥{{ invoice.tax_yen|yen }}</th></tr>
             <tr><th colspan="4" class="text-end">合計</th><th class="text-end">¥{{ invoice.total_yen|yen }}</th></tr>
           </tfoot>
         </table>
