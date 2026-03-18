@@ -47,6 +47,7 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
             "issuer_address1": "old address1",
             "issuer_address2": "old address2",
             "issuer_phone": "0000",
+            "issuer_email": "old@example.com",
             "bank_info": "旧振込先",
             "note": "旧備考",
             "subject": "keep",
@@ -58,6 +59,7 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
             "issuer_address1": "new address1",
             "issuer_address2": "new address2",
             "issuer_phone": "9999",
+            "issuer_email": "new@example.com",
             "bank_info": "銀行A\n支店B",
             "note": "1行目\n2行目",
         }
@@ -71,6 +73,7 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
         self.assertEqual(result["issuer_address1"], "new address1")
         self.assertEqual(result["issuer_address2"], "new address2")
         self.assertEqual(result["issuer_phone"], "9999")
+        self.assertEqual(result["issuer_email"], "new@example.com")
         self.assertEqual(result["bank_info"], "銀行A\n支店B")
         self.assertEqual(result["note"], "1行目\n2行目")
         self.assertEqual(result["subject"], "keep")
@@ -86,6 +89,7 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
 
         self.assertEqual(form_data["template_name"], "")
         self.assertEqual(form_data["issuer_name"], "")
+        self.assertEqual(form_data["issuer_email"], "")
         self.assertEqual(form_data["bank_info"], "")
         self.assertEqual(form_data["note"], "")
         self.assertEqual(form_data["sort_order"], "0")
@@ -112,6 +116,7 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
                 "issuer_address1": "東京都",
                 "issuer_address2": "テストビル",
                 "issuer_phone": "03-0000-0000",
+                "issuer_email": "issuer@example.com",
                 "bank_info": "\n三菱UFJ銀行\n渋谷支店\n",
                 "note": "備考1\r\n備考2",
                 "sort_order": "10",
@@ -121,10 +126,39 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
 
         self.assertEqual(payload["template_name"], "事業用住所")
         self.assertEqual(payload["issuer_name"], "テスト発行者")
+        self.assertEqual(payload["issuer_email"], "issuer@example.com")
         self.assertEqual(payload["bank_info"], "三菱UFJ銀行\n渋谷支店")
         self.assertEqual(payload["note"], "備考1\n備考2")
         self.assertEqual(payload["sort_order"], 10)
         self.assertEqual(payload["is_default"], 1)
+
+    def test_build_invoice_mail_recipient_label_uses_full_width_space_and_suffix_once(self):
+        result = invoice_services.build_invoice_mail_recipient_label("株式会社サンプル", "山田太郎", "様")
+        self.assertEqual(result, "株式会社サンプル　山田太郎様")
+
+    def test_build_invoice_mail_recipient_label_handles_missing_parts(self):
+        self.assertEqual(invoice_services.build_invoice_mail_recipient_label("株式会社サンプル", "", "御中"), "株式会社サンプル御中")
+        self.assertEqual(invoice_services.build_invoice_mail_recipient_label("", "山田太郎", "様"), "山田太郎様")
+        self.assertEqual(invoice_services.build_invoice_mail_recipient_label("", "", ""), "お客様")
+
+    def test_build_default_invoice_mail_body_prefers_snapshots(self):
+        body = invoice_services.build_default_invoice_mail_body(
+            {
+                "contact_name_snapshot": "テスト株式会社",
+                "contact_person_snapshot": "テスト太郎",
+                "contact_honorific_snapshot": "様",
+                "contact_name": "fallback company",
+                "contact_person": "fallback person",
+                "honorific": "御中",
+                "issuer_name": "いおりん写真室（小松　伊織）",
+            }
+        )
+        self.assertEqual(
+            body,
+            "いつもお世話になっております、テスト株式会社　テスト太郎様\n"
+            "いおりん写真室（小松　伊織）です。\n\n"
+            "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
+        )
 
 
 if __name__ == "__main__":

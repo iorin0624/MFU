@@ -21,7 +21,9 @@ def send_invoice_mail(invoice: dict, *, to_email: str, cc_email: str | None, bcc
         msg["Cc"] = ", ".join(split_emails(cc_email))
     if bcc_email:
         msg["Bcc"] = ", ".join(split_emails(bcc_email))
-    msg["Reply-To"] = invoice.get("contact_email_snapshot") or "admin@mail.iori0624.jp"
+    reply_to = (invoice.get("issuer_email") or "").strip()
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg["Date"] = formatdate(localtime=True)
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
