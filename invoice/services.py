@@ -67,6 +67,11 @@ class InvoiceValidationError(ValueError):
     pass
 
 
+def normalize_multiline_text(value: Any) -> str | None:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return text or None
+
+
 def _issuer_template_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
@@ -100,6 +105,40 @@ def list_issuer_templates() -> list[dict[str, Any]]:
         db.close()
 
 
+def ensure_invoice_issuer_templates_table(cur=None) -> None:
+    should_close = cur is None
+    db = None
+    if cur is None:
+        db = get_db()
+        cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                template_name VARCHAR(255) NOT NULL,
+                issuer_name VARCHAR(191) NOT NULL,
+                issuer_postal_code VARCHAR(32) NULL,
+                issuer_address1 VARCHAR(255) NULL,
+                issuer_address2 VARCHAR(255) NULL,
+                issuer_phone VARCHAR(64) NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                is_default TINYINT(1) NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
+                INDEX idx_invoice_issuer_templates_is_default (is_default, id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        if should_close and db is not None:
+            db.commit()
+    finally:
+        if should_close:
+            cur.close()
+            db.close()
+
+
 def get_default_issuer_template() -> dict[str, Any] | None:
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -128,6 +167,170 @@ def get_issuer_template_by_id(template_id: int) -> dict[str, Any] | None:
             (template_id,),
         )
         return _issuer_template_to_dict(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def _parse_issuer_template_form(form: dict[str, Any]) -> dict[str, Any]:
+    template_name = (form.get("template_name") or "").strip()
+    issuer_name = (form.get("issuer_name") or "").strip()
+    sort_order_raw = (form.get("sort_order") or "0").strip()
+
+    if not template_name:
+        raise InvoiceValidationError("テンプレート名を入力してください。")
+    if not issuer_name:
+        raise InvoiceValidationError("発行者名を入力してください。")
+    try:
+        sort_order = int(sort_order_raw or "0")
+    except (TypeError, ValueError) as exc:
+        raise InvoiceValidationError("並び順は数値で入力してください。") from exc
+
+    return {
+        "template_name": template_name,
+        "issuer_name": issuer_name,
+        "issuer_postal_code": (form.get("issuer_postal_code") or "").strip() or None,
+        "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
+        "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
+        "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
+        "sort_order": sort_order,
+        "is_default": 1 if str(form.get("is_default") or "").lower() in {"1", "true", "on", "yes"} else 0,
+    }
+
+
+def build_issuer_template_form_data(template: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = {
+        "template_name": "",
+        "issuer_name": "",
+        "issuer_postal_code": "",
+        "issuer_address1": "",
+        "issuer_address2": "",
+        "issuer_phone": "",
+        "sort_order": "0",
+        "is_default": "",
+    }
+    if not template:
+        return data
+    data.update(
+        {
+            "template_name": template.get("template_name") or "",
+            "issuer_name": template.get("issuer_name") or "",
+            "issuer_postal_code": template.get("issuer_postal_code") or "",
+            "issuer_address1": template.get("issuer_address1") or "",
+            "issuer_address2": template.get("issuer_address2") or "",
+            "issuer_phone": template.get("issuer_phone") or "",
+            "sort_order": str(int(template.get("sort_order") or 0)),
+            "is_default": "1" if template.get("is_default") else "",
+        }
+    )
+    return data
+
+
+def set_default_issuer_template(template_id: int) -> None:
+    now = now_jst()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        ensure_invoice_issuer_templates_table(cur)
+        cur.execute("UPDATE invoice_issuer_templates SET is_default = 0, updated_at = %s WHERE is_default = 1", (now,))
+        cur.execute(
+            "UPDATE invoice_issuer_templates SET is_default = 1, updated_at = %s WHERE id = %s",
+            (now, template_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def create_issuer_template(form: dict[str, Any]) -> int:
+    payload = _parse_issuer_template_form(form)
+    now = now_jst()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        ensure_invoice_issuer_templates_table(cur)
+        if payload["is_default"]:
+            cur.execute("UPDATE invoice_issuer_templates SET is_default = 0, updated_at = %s WHERE is_default = 1", (now,))
+        cur.execute(
+            """
+            INSERT INTO invoice_issuer_templates (
+                template_name, issuer_name, issuer_postal_code, issuer_address1,
+                issuer_address2, issuer_phone, sort_order, is_default, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                payload["template_name"],
+                payload["issuer_name"],
+                payload["issuer_postal_code"],
+                payload["issuer_address1"],
+                payload["issuer_address2"],
+                payload["issuer_phone"],
+                payload["sort_order"],
+                payload["is_default"],
+                now,
+                now,
+            ),
+        )
+        db.commit()
+        return int(cur.lastrowid)
+    finally:
+        cur.close()
+        db.close()
+
+
+def update_issuer_template(template_id: int, form: dict[str, Any]) -> None:
+    payload = _parse_issuer_template_form(form)
+    now = now_jst()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        ensure_invoice_issuer_templates_table(cur)
+        if payload["is_default"]:
+            cur.execute(
+                "UPDATE invoice_issuer_templates SET is_default = 0, updated_at = %s WHERE is_default = 1 AND id <> %s",
+                (now, template_id),
+            )
+        cur.execute(
+            """
+            UPDATE invoice_issuer_templates
+            SET template_name = %s,
+                issuer_name = %s,
+                issuer_postal_code = %s,
+                issuer_address1 = %s,
+                issuer_address2 = %s,
+                issuer_phone = %s,
+                sort_order = %s,
+                is_default = %s,
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (
+                payload["template_name"],
+                payload["issuer_name"],
+                payload["issuer_postal_code"],
+                payload["issuer_address1"],
+                payload["issuer_address2"],
+                payload["issuer_phone"],
+                payload["sort_order"],
+                payload["is_default"],
+                now,
+                template_id,
+            ),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def delete_issuer_template(template_id: int) -> None:
+    db = get_db()
+    cur = db.cursor()
+    try:
+        ensure_invoice_issuer_templates_table(cur)
+        cur.execute("DELETE FROM invoice_issuer_templates WHERE id = %s", (template_id,))
+        db.commit()
     finally:
         cur.close()
         db.close()
@@ -324,25 +527,7 @@ def ensure_invoice_schema() -> None:
         )
         _ensure_invoice_item_column(cur, "row_type", "row_type VARCHAR(16) NOT NULL DEFAULT 'normal' AFTER sort_order")
         _ensure_invoice_item_column(cur, "memo_text", "memo_text TEXT NULL AFTER item_name")
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                template_name VARCHAR(255) NOT NULL,
-                issuer_name VARCHAR(191) NOT NULL,
-                issuer_postal_code VARCHAR(32) NULL,
-                issuer_address1 VARCHAR(255) NULL,
-                issuer_address2 VARCHAR(255) NULL,
-                issuer_phone VARCHAR(64) NULL,
-                sort_order INT NOT NULL DEFAULT 0,
-                is_default TINYINT(1) NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
-                INDEX idx_invoice_issuer_templates_is_default (is_default, id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        )
+        ensure_invoice_issuer_templates_table(cur)
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
@@ -634,8 +819,8 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
         "contact_id": contact.get("id"),
         **snapshot,
         "subject": subject,
-        "note": (form.get("note") or "").strip() or None,
-        "bank_info": (form.get("bank_info") or "").strip() or None,
+        "note": normalize_multiline_text(form.get("note")),
+        "bank_info": normalize_multiline_text(form.get("bank_info")),
         "issuer_name": issuer_name,
         "issuer_postal_code": (form.get("issuer_postal_code") or "").strip() or None,
         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,

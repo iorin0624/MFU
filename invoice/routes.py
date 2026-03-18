@@ -12,15 +12,19 @@ from .pdf import generate_invoice_pdf
 from .services import (
     InvoiceValidationError,
     apply_issuer_template_to_form_data,
+    build_issuer_template_form_data,
     build_fuel_cost_helper,
     build_invoice_form_data,
+    create_issuer_template,
     delete_contact,
+    delete_issuer_template,
     duplicate_invoice,
     ensure_invoice_schema,
     fetch_contacts,
     get_default_issuer_template,
     get_contact,
     get_invoice,
+    get_issuer_template_by_id,
     list_invoices,
     list_issuer_templates,
     log_csv_export,
@@ -28,6 +32,8 @@ from .services import (
     parse_invoice_items,
     save_contact,
     save_invoice,
+    set_default_issuer_template,
+    update_issuer_template,
     update_invoice_status,
 )
 from .utils import (
@@ -114,6 +120,72 @@ def invoice_list():
         end=end,
         status_labels=STATUS_LABELS,
     )
+
+
+@invoice_bp.get("/issuer-templates")
+@login_required
+def issuer_template_list():
+    return render_template("issuer_templates.html", issuer_templates=list_issuer_templates())
+
+
+@invoice_bp.route("/issuer-templates/new", methods=["GET", "POST"])
+@login_required
+def issuer_template_new():
+    form_data = build_issuer_template_form_data()
+    if request.method == "POST":
+        form_data = build_issuer_template_form_data(request.form)
+        try:
+            template_id = create_issuer_template(request.form)
+            flash("発行者テンプレートを登録しました。", "success")
+            return redirect(url_for("invoice.issuer_template_edit", template_id=template_id))
+        except InvoiceValidationError as exc:
+            flash(str(exc), "warning")
+    return render_template("issuer_template_form.html", form_data=form_data, mode="new")
+
+
+@invoice_bp.route("/issuer-templates/<int:template_id>/edit", methods=["GET", "POST"])
+@login_required
+def issuer_template_edit(template_id: int):
+    template = get_issuer_template_by_id(template_id)
+    if not template:
+        flash("発行者テンプレートが見つかりません。", "warning")
+        return redirect(url_for("invoice.issuer_template_list"))
+
+    form_data = build_issuer_template_form_data(template)
+    if request.method == "POST":
+        form_data = build_issuer_template_form_data(request.form)
+        try:
+            update_issuer_template(template_id, request.form)
+            flash("発行者テンプレートを更新しました。", "success")
+            return redirect(url_for("invoice.issuer_template_edit", template_id=template_id))
+        except InvoiceValidationError as exc:
+            flash(str(exc), "warning")
+    return render_template(
+        "issuer_template_form.html",
+        form_data=form_data,
+        mode="edit",
+        issuer_template=template,
+    )
+
+
+@invoice_bp.post("/issuer-templates/<int:template_id>/delete")
+@login_required
+def issuer_template_delete(template_id: int):
+    delete_issuer_template(template_id)
+    flash("発行者テンプレートを削除しました。", "success")
+    return redirect(url_for("invoice.issuer_template_list"))
+
+
+@invoice_bp.post("/issuer-templates/<int:template_id>/default")
+@login_required
+def issuer_template_default(template_id: int):
+    template = get_issuer_template_by_id(template_id)
+    if not template:
+        flash("発行者テンプレートが見つかりません。", "warning")
+        return redirect(url_for("invoice.issuer_template_list"))
+    set_default_issuer_template(template_id)
+    flash("デフォルトテンプレートを更新しました。", "success")
+    return redirect(url_for("invoice.issuer_template_list"))
 
 
 @invoice_bp.get("/contacts")
