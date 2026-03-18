@@ -2,10 +2,39 @@
 
 {% block title %}メール送信ログ | MFU{% endblock %}
 
+{% macro submit_badge(status) -%}
+  {% if status == 'sent' %}
+    <span class="badge bg-success">sent</span>
+  {% elif status == 'queued' %}
+    <span class="badge bg-secondary">queued</span>
+  {% elif status == 'partial' %}
+    <span class="badge bg-warning text-dark">partial</span>
+  {% else %}
+    <span class="badge bg-danger">failed</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro delivery_badge(status) -%}
+  {% if status == 'sent' %}
+    <span class="badge bg-success">sent</span>
+  {% elif status == 'partial' %}
+    <span class="badge bg-info text-dark">partial</span>
+  {% elif status == 'bounced' or status == 'failed' %}
+    <span class="badge bg-danger">{{ status }}</span>
+  {% elif status == 'deferred' %}
+    <span class="badge bg-warning text-dark">deferred</span>
+  {% elif status == 'queued' %}
+    <span class="badge bg-secondary">queued</span>
+  {% else %}
+    <span class="badge bg-light text-dark border">unknown</span>
+  {% endif %}
+{%- endmacro %}
+
 {% block content %}
 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 gap-2">
   <div>
     <h2 class="mb-0">📧 メール送信ログ（配送結果）</h2>
+    <div class="text-muted small mt-1">親1メールを維持しつつ、宛先別の配送明細を確認できます。</div>
     <div id="mail-delivery-refresh-status" class="text-muted small mt-1" aria-live="polite"></div>
   </div>
   <div class="d-flex align-items-center gap-2">
@@ -22,6 +51,7 @@
       <option value="all" {% if cur == 'all' %}selected{% endif %}>すべて</option>
       <option value="queued" {% if cur == 'queued' %}selected{% endif %}>queued</option>
       <option value="sent" {% if cur == 'sent' %}selected{% endif %}>sent</option>
+      <option value="partial" {% if cur == 'partial' %}selected{% endif %}>partial</option>
       <option value="deferred" {% if cur == 'deferred' %}selected{% endif %}>deferred</option>
       <option value="bounced" {% if cur == 'bounced' %}selected{% endif %}>bounced</option>
       <option value="unknown" {% if cur == 'unknown' %}selected{% endif %}>unknown</option>
@@ -52,58 +82,101 @@
         <th>Message-ID</th>
         <th>送信結果</th>
         <th>配送結果</th>
+        <th>集計</th>
         <th>詳細</th>
-        <th>Queue-ID</th>
         <th>最終チェック</th>
+        <th>明細</th>
       </tr>
     </thead>
     <tbody>
       {% for row in rows %}
+      {% set detail_id = 'mail-delivery-detail-' ~ row.id %}
       <tr data-submit-ts="{{ row.submit_at_ts or '' }}" data-delivery-status="{{ row.last_delivery_status or '' }}">
         <td class="text-nowrap">{{ row.submit_at }}</td>
-        <td>{{ row.to_addresses or '-' }}</td>
+        <td>
+          <div>{{ row.to_addresses or '-' }}</div>
+          <div class="small text-muted">{{ row.recipient_count or 0 }} 宛先</div>
+        </td>
         <td>{{ row.subject or '-' }}</td>
         <td class="text-break small">{{ row.message_id }}</td>
         <td>
-          {% if row.submit_status == 'sent' %}
-            <span class="badge bg-success">sent</span>
-          {% elif row.submit_status == 'queued' %}
-            <span class="badge bg-secondary">queued</span>
-          {% else %}
-            <span class="badge bg-danger">failed</span>
-          {% endif %}
+          {{ submit_badge(row.submit_status) }}
         </td>
         <td>
-          {% set status = row.last_delivery_status %}
-          {% if status == 'sent' %}
-            <span class="badge bg-success">sent</span>
-          {% elif status == 'bounced' %}
-            <span class="badge bg-danger">bounced</span>
-          {% elif status == 'deferred' %}
-            <span class="badge bg-warning text-dark">deferred</span>
-          {% elif status == 'queued' %}
-            <span class="badge bg-secondary">queued</span>
-          {% elif status == 'failed' %}
-            <span class="badge bg-dark">failed</span>
-          {% else %}
-            <span class="badge bg-light text-dark border">unknown</span>
+          {{ delivery_badge(row.last_delivery_status) }}
+          {% if row.last_delivery_status == 'partial' %}
+            <div class="small text-muted mt-1">一部成功／一部未達</div>
           {% endif %}
+        </td>
+        <td class="small text-nowrap">
+          <div>成功: {{ row.success_count or 0 }}</div>
+          <div>遅延: {{ row.deferred_count or 0 }}</div>
+          <div>失敗: {{ row.failure_count or 0 }}</div>
+          <div>確認中: {{ row.queued_count or 0 }}</div>
         </td>
         <td>
           {% if row.last_delivery_detail %}
-            <span class="text-truncate d-inline-block" style="max-width: 180px;" data-bs-toggle="tooltip" title="{{ row.last_delivery_detail | e }}">
+            <span class="text-truncate d-inline-block" style="max-width: 220px;" data-bs-toggle="tooltip" title="{{ row.last_delivery_detail | e }}">
               {{ row.last_delivery_detail }}
             </span>
           {% else %}
             <span class="text-muted">-</span>
           {% endif %}
         </td>
-        <td class="text-nowrap">{{ row.last_delivery_queue_id or '-' }}</td>
         <td class="text-nowrap">{{ row.last_delivery_checked_at or '-' }}</td>
+        <td class="text-nowrap">
+          {% if row.recipient_rows %}
+            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#{{ detail_id }}" aria-expanded="false" aria-controls="{{ detail_id }}">
+              宛先別詳細
+            </button>
+          {% else %}
+            <span class="text-muted small">未作成</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr class="collapse-row">
+        <td colspan="10" class="p-0 border-0">
+          <div class="collapse" id="{{ detail_id }}">
+            <div class="card card-body border-top-0 rounded-0">
+              {% if row.recipient_rows %}
+              <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr>
+                      <th>recipient</th>
+                      <th>type</th>
+                      <th>submit_status</th>
+                      <th>delivery_status</th>
+                      <th>delivery_detail</th>
+                      <th>queue_id</th>
+                      <th>checked_at</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for recipient in row.recipient_rows %}
+                    <tr>
+                      <td class="text-break">{{ recipient.recipient }}</td>
+                      <td><span class="badge bg-light text-dark border text-uppercase">{{ recipient.recipient_type }}</span></td>
+                      <td>{{ submit_badge(recipient.submit_status) }}</td>
+                      <td>{{ delivery_badge(recipient.delivery_status) }}</td>
+                      <td class="small text-break">{{ recipient.delivery_detail or '-' }}</td>
+                      <td class="small text-nowrap">{{ recipient.delivery_queue_id or '-' }}</td>
+                      <td class="small text-nowrap">{{ recipient.delivery_checked_at or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% else %}
+              <div class="text-muted small">宛先別明細はまだありません。必要に応じてバックフィルを実行してください。</div>
+              {% endif %}
+            </div>
+          </div>
+        </td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="9" class="text-center text-muted">該当データがありません。</td>
+        <td colspan="10" class="text-center text-muted">該当データがありません。</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -164,7 +237,7 @@
         }
         const result = await response.json();
         if (refreshStatus) {
-          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
+          refreshStatus.textContent = `更新完了: ${result.updated || 0} 宛先（確認 ${result.checked || 0} 宛先 / ${result.messages || 0} メール）`;
         }
         window.location.reload();
       } catch (error) {
@@ -184,7 +257,7 @@
     }
 
     const rows = Array.from(document.querySelectorAll('tbody tr[data-submit-ts]'));
-    const pendingStatuses = new Set(['queued', 'deferred', 'unknown']);
+    const pendingStatuses = new Set(['queued', 'deferred', 'unknown', 'partial']);
     const pendingRows = rows.filter((row) => pendingStatuses.has(row.dataset.deliveryStatus || ''));
     if (pendingRows.length > 0) {
       const latestSubmit = pendingRows.reduce((maxValue, row) => {

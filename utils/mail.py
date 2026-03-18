@@ -258,10 +258,16 @@ def send_mime(
     else:
         msg["X-MFU-Mail-ID"] = mfu_mail_uuid
 
-    rcpts: list[str] = []
-    for h in ("To", "Cc", "Bcc"):
-        if msg.get(h):
-            rcpts.extend(addr for _, addr in getaddresses([msg.get(h)]) if addr)
+    to_rcpts = [
+        addr.strip() for _, addr in getaddresses([msg.get("To")]) if addr and addr.strip()
+    ] if msg.get("To") else []
+    cc_rcpts = [
+        addr.strip() for _, addr in getaddresses([msg.get("Cc")]) if addr and addr.strip()
+    ] if msg.get("Cc") else []
+    bcc_rcpts = [
+        addr.strip() for _, addr in getaddresses([msg.get("Bcc")]) if addr and addr.strip()
+    ] if msg.get("Bcc") else []
+    rcpts: list[str] = [*to_rcpts, *cc_rcpts, *bcc_rcpts]
 
     if "Bcc" in msg:
         del msg["Bcc"]
@@ -306,7 +312,9 @@ def send_mime(
             record_mail_submission(
                 mfu_mail_uuid=mfu_mail_uuid,
                 message_id=message_id,
-                to_addresses=", ".join(rcpts),
+                to_addresses=to_rcpts,
+                cc_addresses=cc_rcpts,
+                bcc_addresses=bcc_rcpts,
                 subject=subj or "",
                 submit_status="queued",
                 last_delivery_status="queued",
@@ -331,7 +339,9 @@ def send_mime(
                 record_mail_submission(
                     mfu_mail_uuid=mfu_mail_uuid,
                     message_id=message_id,
-                    to_addresses=", ".join(rcpts),
+                    to_addresses=to_rcpts,
+                    cc_addresses=cc_rcpts,
+                    bcc_addresses=bcc_rcpts,
                     subject=subj or "",
                     submit_status="failed",
                     last_delivery_status="failed",
@@ -349,7 +359,9 @@ def send_mime(
                 record_mail_submission(
                     mfu_mail_uuid=mfu_mail_uuid,
                     message_id=message_id,
-                    to_addresses=", ".join(rcpts),
+                    to_addresses=to_rcpts,
+                    cc_addresses=cc_rcpts,
+                    bcc_addresses=bcc_rcpts,
                     subject=subj or "",
                     submit_status="failed",
                     last_delivery_status="failed",
