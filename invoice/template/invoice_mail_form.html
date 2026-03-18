@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}請求書メール送信{% endblock %}
+{% block content %}
+<h1 class="mb-3">請求書メール送信</h1>
+<div class="row g-3">
+  <div class="col-lg-8">
+    <form method="post" class="card shadow-sm"><div class="card-body">
+      <div class="row g-3">
+        <div class="col-12"><label class="form-label">宛先 *</label><input class="form-control" type="email" name="to_email" value="{{ form_data.to_email or '' }}" required></div>
+        <div class="col-md-6"><label class="form-label">Cc</label><input class="form-control" name="cc_email" value="{{ form_data.cc_email or '' }}"></div>
+        <div class="col-md-6"><label class="form-label">Bcc</label><input class="form-control" name="bcc_email" value="{{ form_data.bcc_email or '' }}"></div>
+        <div class="col-12"><label class="form-label">件名</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}"></div>
+        <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
+        <div class="col-12 form-check">
+          <input class="form-check-input" type="checkbox" value="yes" id="confirmSend" name="confirm_send">
+          <label class="form-check-label" for="confirmSend">送信前に内容を確認しました</label>
+        </div>
+      </div>
+      <div class="mt-3 d-flex gap-2">
+        <button class="btn btn-primary" type="submit" onclick="return confirm('請求書PDFを添付して送信します。よろしいですか？');">送信する</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_detail', invoice_id=invoice.id) }}">戻る</a>
+      </div>
+    </div></form>
+  </div>
+  <div class="col-lg-4">
+    <div class="card shadow-sm"><div class="card-body">
+      <h2 class="h5">送信対象</h2>
+      <ul class="small mb-0">
+        <li>請求書番号: {{ invoice.invoice_no }}</li>
+        <li>請求先: {{ invoice.contact_name_snapshot }}</li>
+        <li>請求日: {{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }}</li>
+        <li>PDF名: {{ invoice.issuer_name }}_{{ invoice.issue_date.year if invoice.issue_date }}年{{ invoice.issue_date.month if invoice.issue_date }}月{{ invoice.issue_date.day if invoice.issue_date }}日.pdf</li>
+      </ul>
+    </div></div>
+  </div>
+</div>
+{% endblock %}

@@ -3509,6 +3509,9 @@ from app.records import records_api_bp, records_bp
 app.register_blueprint(records_bp, url_prefix="/records")
 app.register_blueprint(records_api_bp)
 
+from app.invoice import invoice_bp
+app.register_blueprint(invoice_bp)
+
 from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
 
 from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth

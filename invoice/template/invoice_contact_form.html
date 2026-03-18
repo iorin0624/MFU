@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}請求先{{ '編集' if mode == 'edit' else '新規登録' }}{% endblock %}
+{% block content %}
+<h1 class="mb-3">請求先{{ '編集' if mode == 'edit' else '新規登録' }}</h1>
+<form method="post" class="card card-body shadow-sm">
+  <div class="row g-3">
+    <div class="col-md-6"><label class="form-label">取引先名 *</label><input class="form-control" name="name" value="{{ form_data.name or '' }}" required></div>
+    <div class="col-md-3"><label class="form-label">部署名</label><input class="form-control" name="department_name" value="{{ form_data.department_name or '' }}"></div>
+    <div class="col-md-3"><label class="form-label">担当者名</label><input class="form-control" name="contact_name" value="{{ form_data.contact_name or '' }}"></div>
+    <div class="col-md-2"><label class="form-label">敬称</label><input class="form-control" name="honorific" value="{{ form_data.honorific or '御中' }}"></div>
+    <div class="col-md-4"><label class="form-label">メール</label><input class="form-control" type="email" name="email" value="{{ form_data.email or '' }}"></div>
+    <div class="col-md-3"><label class="form-label">電話</label><input class="form-control" name="phone" value="{{ form_data.phone or '' }}"></div>
+    <div class="col-md-3"><label class="form-label">郵便番号</label><input class="form-control" name="postal_code" value="{{ form_data.postal_code or '' }}"></div>
+    <div class="col-md-6"><label class="form-label">住所1</label><input class="form-control" name="address1" value="{{ form_data.address1 or '' }}"></div>
+    <div class="col-md-6"><label class="form-label">住所2</label><input class="form-control" name="address2" value="{{ form_data.address2 or '' }}"></div>
+    <div class="col-md-4"><label class="form-label">freee取引先名</label><input class="form-control" name="freee_partner_name" value="{{ form_data.freee_partner_name or '' }}"></div>
+    <div class="col-md-3"><label class="form-label">標準支払期限(日数)</label><input class="form-control" type="number" name="default_due_days" value="{{ form_data.default_due_days or 30 }}"></div>
+    <div class="col-12"><label class="form-label">メモ</label><textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea></div>
+  </div>
+  <div class="mt-3 d-flex gap-2">
+    <button class="btn btn-primary" type="submit">保存</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.contact_list') }}">戻る</a>
+  </div>
+</form>
+{% endblock %}
