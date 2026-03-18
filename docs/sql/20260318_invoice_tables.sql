@@ -74,6 +74,22 @@ CREATE TABLE IF NOT EXISTS invoice_items (
     INDEX idx_invoice_items_sort_order (sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    template_name VARCHAR(255) NOT NULL,
+    issuer_name VARCHAR(191) NOT NULL,
+    issuer_postal_code VARCHAR(32) NULL,
+    issuer_address1 VARCHAR(255) NULL,
+    issuer_address2 VARCHAR(255) NULL,
+    issuer_phone VARCHAR(64) NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_default TINYINT(1) NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    INDEX idx_invoice_issuer_templates_sort_order (sort_order, id),
+    INDEX idx_invoice_issuer_templates_is_default (is_default, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS invoice_mail_logs (
     id INT AUTO_INCREMENT PRIMARY KEY,
     invoice_id INT NOT NULL,
