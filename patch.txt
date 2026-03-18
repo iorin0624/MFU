@@ -1,178 +1,57 @@
-diff --git a/invoice/services.py b/invoice/services.py
-index 53ccd213768d030f720e5dd8a1d2585f52c5fa96..243292b47bda34aa2894ff81634122645295b7c7 100644
---- a/invoice/services.py
-+++ b/invoice/services.py
-@@ -386,50 +386,55 @@ def _next_invoice_no(cur, issue_date: date) -> str:
-     lock_row = cur.fetchone()
-     lock_val = lock_row[0] if isinstance(lock_row, tuple) else next(iter(lock_row.values()))
-     if int(lock_val or 0) != 1:
-         raise InvoiceValidationError("請求書番号の採番ロック取得に失敗しました。しばらく待って再試行してください。")
-     cur.execute(
-         """
-         SELECT invoice_no
-         FROM invoice_headers
-         WHERE invoice_no LIKE %s
-         ORDER BY invoice_no DESC
-         LIMIT 1
-         """,
-         (f"{prefix}%",),
-     )
-     row = cur.fetchone()
-     last_seq = 0
-     if row:
-         invoice_no = row[0] if isinstance(row, tuple) else row.get("invoice_no")
-         try:
-             last_seq = int(str(invoice_no).split("-")[-1])
-         except (TypeError, ValueError):
-             last_seq = 0
-     return f"{prefix}{last_seq + 1:03d}"
+diff --git a/invoice/template/invoice_pdf.html b/invoice/template/invoice_pdf.html
+index 523d3890af46281ae8cf489c4e6018e35c01233b..b3c6bcf3b8b819e86d045c0fe8dc621b4f801409 100644
+--- a/invoice/template/invoice_pdf.html
++++ b/invoice/template/invoice_pdf.html
+@@ -290,51 +290,51 @@
+     </section>
  
+     <section class="amount-box">
+       <div class="amount-label">ご請求金額</div>
+       <div class="amount-value">{{ pdf.total_yen_label }}</div>
+     </section>
  
-+def _release_invoice_lock(cur, issue_date: date) -> None:
-+    cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{issue_date.strftime('%Y%m')}",))
-+    cur.fetchone()
-+
-+
- def save_invoice(invoice_id: int | None, form) -> int:
-     contact_id = int(form.get("contact_id") or 0)
-     if contact_id <= 0:
-         raise InvoiceValidationError("請求先を選択してください。")
-     contact = get_contact(contact_id)
-     if not contact:
-         raise InvoiceValidationError("選択した請求先が見つかりません。")
+     <table class="items-table">
+       <colgroup>
+         <col class="col-item">
+         <col class="col-qty">
+         <col class="col-unit">
+         <col class="col-price">
+         <col class="col-total">
+       </colgroup>
+       <thead>
+         <tr>
+           <th>品名</th>
+           <th class="text-center">数量</th>
+           <th class="text-center">単位</th>
+           <th class="text-right">単価</th>
+           <th class="text-right">金額</th>
+         </tr>
+       </thead>
+       <tbody>
+-        {% for item in pdf.items %}
++        {% for item in pdf.line_items %}
+         <tr>
+           <td class="item-name">{{ item.item_name }}</td>
+           <td class="text-center">{{ item.quantity }}</td>
+           <td class="text-center">{{ item.unit_name }}</td>
+           <td class="text-right">{{ item.unit_price_yen }}</td>
+           <td class="text-right">{{ item.line_total_yen }}</td>
+         </tr>
+         {% endfor %}
+       </tbody>
+     </table>
  
-     issue_date = form.get("issue_date")
-     due_date = form.get("due_date")
-     issue = issue_date if isinstance(issue_date, date) else None
-     due = due_date if isinstance(due_date, date) else None
-     if not issue:
-         raise InvoiceValidationError("請求日を入力してください。")
-     items = parse_invoice_items(form)
-     payload = _build_invoice_payload({**form, "issue_date": issue, "due_date": due}, contact, items)
-     now = now_jst()
- 
-     db = get_db()
-     cur = db.cursor()
-     try:
-         if invoice_id:
-             cur.execute(
-                 """
-                 UPDATE invoice_headers
-@@ -514,56 +519,56 @@ def save_invoice(invoice_id: int | None, form) -> int:
-             )
-             invoice_id = int(cur.lastrowid)
-         cur.executemany(
-             """
-             INSERT INTO invoice_items (
-                 invoice_id, sort_order, item_name, quantity, unit_name,
-                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
-             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-             """,
-             [
-                 (
-                     invoice_id,
-                     item.sort_order,
-                     item.item_name,
-                     item.quantity,
-                     item.unit_name or None,
-                     item.unit_price_yen,
-                     item.line_total_yen,
-                     item.tax_category,
-                     now,
-                     now,
-                 )
-                 for item in items
-             ],
-         )
--        cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{payload['issue_date'].strftime('%Y%m')}",))
-+        _release_invoice_lock(cur, payload["issue_date"])
-         db.commit()
-         return int(invoice_id)
-     except Exception:
-         try:
--            cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{payload['issue_date'].strftime('%Y%m')}",))
-+            _release_invoice_lock(cur, payload["issue_date"])
-         except Exception:
-             pass
-         db.rollback()
-         raise
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def list_invoices(*, q: str = "", status: str = "", start: str = "", end: str = "") -> list[dict[str, Any]]:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         where: list[str] = []
-         params: list[Any] = []
-         if q:
-             like = f"%{q}%"
-             where.append("(invoice_no LIKE %s OR contact_name_snapshot LIKE %s OR subject LIKE %s)")
-             params.extend([like, like, like])
-         if status:
-             where.append("status = %s")
-             params.append(status)
-         if start:
-             where.append("issue_date >= %s")
-             params.append(start)
-@@ -661,56 +666,56 @@ def duplicate_invoice(invoice_id: int) -> int:
-         )
-         new_id = int(cur.lastrowid)
-         cur.executemany(
-             """
-             INSERT INTO invoice_items (
-                 invoice_id, sort_order, item_name, quantity, unit_name,
-                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
-             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-             """,
-             [
-                 (
-                     new_id,
-                     item.get("sort_order") or 0,
-                     item.get("item_name"),
-                     item.get("quantity"),
-                     item.get("unit_name"),
-                     item.get("unit_price_yen") or 0,
-                     item.get("line_total_yen") or 0,
-                     item.get("tax_category"),
-                     now,
-                     now,
-                 )
-                 for item in original.get("items", [])
-             ],
-         )
--        cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{original['issue_date'].strftime('%Y%m')}",))
-+        _release_invoice_lock(cur, original["issue_date"])
-         db.commit()
-         return new_id
-     except Exception:
-         try:
--            cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{original['issue_date'].strftime('%Y%m')}",))
-+            _release_invoice_lock(cur, original["issue_date"])
-         except Exception:
-             pass
-         db.rollback()
-         raise
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def update_invoice_status(invoice_id: int, status: str) -> None:
-     status = normalize_status(status)
-     now = now_jst()
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             "UPDATE invoice_headers SET status=%s, updated_at=%s WHERE id=%s",
-             (status, now, invoice_id),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
- 
+     <div class="summary-wrap">
+       <table class="summary-table">
+         <tbody>
+           <tr>
+             <th>小計</th>
+             <td>{{ pdf.subtotal_yen_label }}</td>
+           </tr>
+           <tr>
+             <th>消費税</th>
+             <td>{{ pdf.tax_yen_label }}</td>
+           </tr>
+           <tr class="total">
+             <th>合計</th>
+             <td>{{ pdf.total_yen_label }}</td>

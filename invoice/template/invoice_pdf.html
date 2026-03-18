@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{{ pdf.title }}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 16mm 15mm 18mm;
+    }
+
+    :root {
+      --text-color: #222;
+      --muted-color: #666;
+      --border-color: #777;
+      --border-light: #b9b9b9;
+      --fill-soft: #f5f5f5;
+      --accent-fill: #faf7ef;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      color: var(--text-color);
+      font-family: var(--invoice-font-regular), sans-serif;
+      font-size: 10pt;
+      font-weight: 400;
+      line-height: 1.45;
+      letter-spacing: 0;
+      -webkit-font-smoothing: antialiased;
+      font-kerning: normal;
+      text-rendering: geometricPrecision;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    .page {
+      width: 100%;
+    }
+
+    .title-row {
+      display: table;
+      width: 100%;
+      margin-bottom: 9mm;
+    }
+
+    .title-cell,
+    .meta-cell {
+      display: table-cell;
+      vertical-align: top;
+    }
+
+    .meta-cell {
+      width: 42%;
+    }
+
+    .title {
+      margin: 0;
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-size: 20pt;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .meta-table,
+    .summary-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .meta-table th,
+    .meta-table td,
+    .summary-table th,
+    .summary-table td {
+      padding: 2.5mm 2.8mm;
+      border: 0.3mm solid var(--border-color);
+      vertical-align: top;
+    }
+
+    .meta-table th,
+    .section-title,
+    .summary-table th,
+    .items-table thead th {
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-weight: 700;
+      background: var(--fill-soft);
+    }
+
+    .meta-table th,
+    .summary-table th {
+      width: 36%;
+      text-align: left;
+    }
+
+    .party-row {
+      display: table;
+      width: 100%;
+      table-layout: fixed;
+      margin-bottom: 7mm;
+    }
+
+    .party-block {
+      display: table-cell;
+      width: 50%;
+      vertical-align: top;
+    }
+
+    .party-block + .party-block {
+      padding-left: 5mm;
+    }
+
+    .section-title {
+      padding: 2.2mm 2.8mm;
+      border: 0.3mm solid var(--border-color);
+      border-bottom: none;
+    }
+
+    .block-body {
+      min-height: 36mm;
+      padding: 3mm;
+      border: 0.3mm solid var(--border-color);
+    }
+
+    .multiline-text {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .line {
+      margin: 0 0 1.5mm;
+    }
+
+    .line:last-child {
+      margin-bottom: 0;
+    }
+
+    .subject-block {
+      margin-bottom: 6mm;
+    }
+
+    .subject-line {
+      padding: 3mm;
+      border: 0.3mm solid var(--border-color);
+      font-size: 10.5pt;
+    }
+
+    .amount-box {
+      margin-bottom: 7mm;
+      padding: 4mm 4.5mm;
+      border: 0.45mm solid var(--border-color);
+      background: var(--accent-fill);
+    }
+
+    .amount-label {
+      margin-bottom: 1.5mm;
+      color: var(--muted-color);
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-weight: 700;
+    }
+
+    .amount-value {
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-size: 15pt;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .items-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      margin-bottom: 5mm;
+    }
+
+    .items-table th,
+    .items-table td {
+      padding: 2.5mm 2.2mm;
+      border: 0.3mm solid var(--border-color);
+      vertical-align: top;
+      overflow-wrap: break-word;
+      word-break: break-word;
+    }
+
+    .items-table thead th {
+      text-align: left;
+    }
+
+    .items-table col.col-item   { width: 46%; }
+    .items-table col.col-qty    { width: 10%; }
+    .items-table col.col-unit   { width: 10%; }
+    .items-table col.col-price  { width: 16%; }
+    .items-table col.col-total  { width: 18%; }
+
+    .text-right {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .text-center {
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .item-name {
+      white-space: normal;
+    }
+
+    .summary-wrap {
+      width: 43%;
+      margin-left: auto;
+      margin-bottom: 7mm;
+    }
+
+    .summary-table td {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .summary-table tr.total th,
+    .summary-table tr.total td {
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-weight: 700;
+    }
+
+    .note-bank-row {
+      display: table;
+      width: 100%;
+      table-layout: fixed;
+    }
+
+    .note-bank-block {
+      display: table-cell;
+      width: 50%;
+      vertical-align: top;
+    }
+
+    .note-bank-block + .note-bank-block {
+      padding-left: 5mm;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="title-row">
+      <div class="title-cell">
+        <h1 class="title">{{ pdf.title }}</h1>
+      </div>
+      <div class="meta-cell">
+        <table class="meta-table">
+          <tbody>
+            <tr>
+              <th>請求日</th>
+              <td>{{ pdf.issue_date_label }}</td>
+            </tr>
+            <tr>
+              <th>請求書番号</th>
+              <td>{{ pdf.invoice_no }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="party-row">
+      <section class="party-block">
+        <div class="section-title">宛先</div>
+        <div class="block-body multiline-text">
+          {% for line in pdf.contact_lines %}
+          <p class="line">{{ line }}</p>
+          {% endfor %}
+        </div>
+      </section>
+      <section class="party-block">
+        <div class="section-title">発行者</div>
+        <div class="block-body multiline-text">
+          {% for line in pdf.issuer_lines %}
+          <p class="line">{{ line }}</p>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+
+    <section class="subject-block">
+      <div class="section-title">件名</div>
+      <div class="subject-line multiline-text">{{ pdf.subject }}</div>
+    </section>
+
+    <section class="amount-box">
+      <div class="amount-label">ご請求金額</div>
+      <div class="amount-value">{{ pdf.total_yen_label }}</div>
+    </section>
+
+    <table class="items-table">
+      <colgroup>
+        <col class="col-item">
+        <col class="col-qty">
+        <col class="col-unit">
+        <col class="col-price">
+        <col class="col-total">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>品名</th>
+          <th class="text-center">数量</th>
+          <th class="text-center">単位</th>
+          <th class="text-right">単価</th>
+          <th class="text-right">金額</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in pdf.line_items %}
+        <tr>
+          <td class="item-name">{{ item.item_name }}</td>
+          <td class="text-center">{{ item.quantity }}</td>
+          <td class="text-center">{{ item.unit_name }}</td>
+          <td class="text-right">{{ item.unit_price_yen }}</td>
+          <td class="text-right">{{ item.line_total_yen }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="summary-wrap">
+      <table class="summary-table">
+        <tbody>
+          <tr>
+            <th>小計</th>
+            <td>{{ pdf.subtotal_yen_label }}</td>
+          </tr>
+          <tr>
+            <th>消費税</th>
+            <td>{{ pdf.tax_yen_label }}</td>
+          </tr>
+          <tr class="total">
+            <th>合計</th>
+            <td>{{ pdf.total_yen_label }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note-bank-row">
+      <section class="note-bank-block">
+        <div class="section-title">備考</div>
+        <div class="block-body multiline-text">{{ pdf.note }}</div>
+      </section>
+      <section class="note-bank-block">
+        <div class="section-title">振込先</div>
+        <div class="block-body multiline-text">{{ pdf.bank_info }}</div>
+      </section>
+    </div>
+  </div>
+</body>
+</html>
