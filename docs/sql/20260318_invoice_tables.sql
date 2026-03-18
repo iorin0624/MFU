@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS invoice_issuer_templates (
     issuer_address1 VARCHAR(255) NULL,
     issuer_address2 VARCHAR(255) NULL,
     issuer_phone VARCHAR(64) NULL,
+    bank_info TEXT NULL,
+    note TEXT NULL,
     sort_order INT NOT NULL DEFAULT 0,
     is_default TINYINT(1) NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL,

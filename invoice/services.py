@@ -83,6 +83,8 @@ def _issuer_template_to_dict(row: dict[str, Any] | None) -> dict[str, Any] | Non
         "issuer_address1": row.get("issuer_address1") or "",
         "issuer_address2": row.get("issuer_address2") or "",
         "issuer_phone": row.get("issuer_phone") or "",
+        "bank_info": row.get("bank_info") or "",
+        "note": row.get("note") or "",
         "sort_order": int(row.get("sort_order") or 0),
         "is_default": bool(row.get("is_default")),
     }
@@ -122,6 +124,8 @@ def ensure_invoice_issuer_templates_table(cur=None) -> None:
                 issuer_address1 VARCHAR(255) NULL,
                 issuer_address2 VARCHAR(255) NULL,
                 issuer_phone VARCHAR(64) NULL,
+                bank_info TEXT NULL,
+                note TEXT NULL,
                 sort_order INT NOT NULL DEFAULT 0,
                 is_default TINYINT(1) NOT NULL DEFAULT 0,
                 created_at DATETIME NOT NULL,
@@ -131,6 +135,10 @@ def ensure_invoice_issuer_templates_table(cur=None) -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        if not _column_exists(cur, "invoice_issuer_templates", "bank_info"):
+            cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN bank_info TEXT NULL AFTER issuer_phone")
+        if not _column_exists(cur, "invoice_issuer_templates", "note"):
+            cur.execute("ALTER TABLE invoice_issuer_templates ADD COLUMN note TEXT NULL AFTER bank_info")
         if should_close and db is not None:
             db.commit()
     finally:
@@ -193,6 +201,8 @@ def _parse_issuer_template_form(form: dict[str, Any]) -> dict[str, Any]:
         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
         "issuer_address2": (form.get("issuer_address2") or "").strip() or None,
         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
+        "bank_info": normalize_multiline_text(form.get("bank_info")),
+        "note": normalize_multiline_text(form.get("note")),
         "sort_order": sort_order,
         "is_default": 1 if str(form.get("is_default") or "").lower() in {"1", "true", "on", "yes"} else 0,
     }
@@ -206,6 +216,8 @@ def build_issuer_template_form_data(template: dict[str, Any] | None = None) -> d
         "issuer_address1": "",
         "issuer_address2": "",
         "issuer_phone": "",
+        "bank_info": "",
+        "note": "",
         "sort_order": "0",
         "is_default": "",
     }
@@ -219,6 +231,8 @@ def build_issuer_template_form_data(template: dict[str, Any] | None = None) -> d
             "issuer_address1": template.get("issuer_address1") or "",
             "issuer_address2": template.get("issuer_address2") or "",
             "issuer_phone": template.get("issuer_phone") or "",
+            "bank_info": template.get("bank_info") or "",
+            "note": template.get("note") or "",
             "sort_order": str(int(template.get("sort_order") or 0)),
             "is_default": "1" if template.get("is_default") else "",
         }
@@ -256,8 +270,8 @@ def create_issuer_template(form: dict[str, Any]) -> int:
             """
             INSERT INTO invoice_issuer_templates (
                 template_name, issuer_name, issuer_postal_code, issuer_address1,
-                issuer_address2, issuer_phone, sort_order, is_default, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                issuer_address2, issuer_phone, bank_info, note, sort_order, is_default, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 payload["template_name"],
@@ -266,6 +280,8 @@ def create_issuer_template(form: dict[str, Any]) -> int:
                 payload["issuer_address1"],
                 payload["issuer_address2"],
                 payload["issuer_phone"],
+                payload["bank_info"],
+                payload["note"],
                 payload["sort_order"],
                 payload["is_default"],
                 now,
@@ -300,6 +316,8 @@ def update_issuer_template(template_id: int, form: dict[str, Any]) -> None:
                 issuer_address1 = %s,
                 issuer_address2 = %s,
                 issuer_phone = %s,
+                bank_info = %s,
+                note = %s,
                 sort_order = %s,
                 is_default = %s,
                 updated_at = %s
@@ -312,6 +330,8 @@ def update_issuer_template(template_id: int, form: dict[str, Any]) -> None:
                 payload["issuer_address1"],
                 payload["issuer_address2"],
                 payload["issuer_phone"],
+                payload["bank_info"],
+                payload["note"],
                 payload["sort_order"],
                 payload["is_default"],
                 now,

@@ -1,5 +1,19 @@
 {% extends "base.html" %}
 {% block title %}発行者テンプレート管理{% endblock %}
+{% block head_extra %}
+<style>
+  .multiline-truncate {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-width: 280px;
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
@@ -24,6 +38,8 @@
             <th>住所1</th>
             <th>住所2</th>
             <th>電話番号</th>
+            <th>振込先</th>
+            <th>備考</th>
             <th class="text-end">並び順</th>
             <th>デフォルト</th>
             <th>操作</th>
@@ -38,6 +54,8 @@
             <td>{{ template.issuer_address1 or '' }}</td>
             <td>{{ template.issuer_address2 or '' }}</td>
             <td>{{ template.issuer_phone or '' }}</td>
+            <td><div class="multiline-truncate">{{ template.bank_info or '' }}</div></td>
+            <td><div class="multiline-truncate">{{ template.note or '' }}</div></td>
             <td class="text-end">{{ template.sort_order }}</td>
             <td>
               {% if template.is_default %}
@@ -62,7 +80,7 @@
           </tr>
           {% else %}
           <tr>
-            <td colspan="9" class="text-center py-4">
+            <td colspan="11" class="text-center py-4">
               <div class="text-muted mb-2">発行者テンプレートはまだありません。</div>
               <a class="btn btn-sm btn-primary" href="{{ url_for('invoice.issuer_template_new') }}">最初のテンプレートを作成</a>
             </td>

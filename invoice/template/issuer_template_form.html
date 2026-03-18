@@ -4,7 +4,7 @@
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <div>
     <h1 class="mb-1">発行者テンプレート{{ '編集' if mode == 'edit' else '新規作成' }}</h1>
-    <div class="text-muted">請求書フォームへ反映する発行者情報を登録します。</div>
+    <div class="text-muted">請求書フォームへ反映する発行者情報・振込先・備考を登録します。</div>
   </div>
   <div class="d-flex gap-2">
     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.issuer_template_list') }}">一覧へ戻る</a>
@@ -42,6 +42,14 @@
         <div class="col-md-6">
           <label class="form-label">住所2</label>
           <input class="form-control" name="issuer_address2" value="{{ form_data.issuer_address2 or '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label">振込先</label>
+          <textarea class="form-control" name="bank_info" rows="4">{{ form_data.bank_info or '' }}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label">備考</label>
+          <textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea>
         </div>
         <div class="col-12">
           <div class="form-check">

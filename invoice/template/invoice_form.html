@@ -49,8 +49,8 @@
           <div class="col-md-3"><label class="form-label">発行者電話</label><input class="form-control" name="issuer_phone" id="issuerPhoneInput" value="{{ form_data.issuer_phone or '' }}"></div>
           <div class="col-md-6"><label class="form-label">発行者住所1</label><input class="form-control" name="issuer_address1" id="issuerAddress1Input" value="{{ form_data.issuer_address1 or '' }}"></div>
           <div class="col-md-6"><label class="form-label">発行者住所2</label><input class="form-control" name="issuer_address2" id="issuerAddress2Input" value="{{ form_data.issuer_address2 or '' }}"></div>
-          <div class="col-12"><label class="form-label">備考</label><textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea></div>
-          <div class="col-12"><label class="form-label">振込先</label><textarea class="form-control" name="bank_info" rows="4">{{ form_data.bank_info or '' }}</textarea></div>
+          <div class="col-12"><label class="form-label">備考</label><textarea class="form-control" name="note" id="noteInput" rows="4">{{ form_data.note or '' }}</textarea></div>
+          <div class="col-12"><label class="form-label">振込先</label><textarea class="form-control" name="bank_info" id="bankInfoInput" rows="4">{{ form_data.bank_info or '' }}</textarea></div>
           {% if mode == 'edit' %}
           <div class="col-md-4"><label class="form-label">ステータス</label><select class="form-select" name="status">{% for value, label in status_labels.items() %}<option value="{{ value }}" {% if form_data.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
           {% endif %}
@@ -247,6 +247,8 @@
     issuer_address1: document.getElementById('issuerAddress1Input'),
     issuer_address2: document.getElementById('issuerAddress2Input'),
     issuer_phone: document.getElementById('issuerPhoneInput'),
+    bank_info: document.getElementById('bankInfoInput'),
+    note: document.getElementById('noteInput'),
   };
   const TAX_RATES = { tax10: 0.10, tax8: 0.08, nontax: 0 };
   const fmt = (num) => `¥${Math.round(num || 0).toLocaleString('ja-JP')}`;
