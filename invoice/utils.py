@@ -66,6 +66,21 @@ def format_jp_date(value: date | datetime | None) -> str:
     return f"{value.year}年{value.month}月{value.day}日"
 
 
+def format_currency_yen(value: int | Decimal | str | None) -> str:
+    amount = int(to_decimal(value))
+    return f"¥{amount:,}"
+
+
+def format_quantity(value: Decimal | int | float | str | None) -> str:
+    if value is None or value == "":
+        return ""
+    dec = quantize_quantity(to_decimal(value))
+    text = format(dec, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
 def sanitize_filename_component(value: str | None) -> str:
     text = (value or "").strip()
     text = re.sub(r'[\\/:*?"<>|]+', "_", text)
