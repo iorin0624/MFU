@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from datetime import datetime, timedelta
 
@@ -14,6 +15,9 @@ DEFAULT_MESSAGE_ID_DOMAIN = "mail.iori0624.jp"
 DEFAULT_POLL_LIMIT_HOURS = 24
 DEFAULT_HTTP_TIMEOUT_SEC = 30
 MAX_HTTP_TIMEOUT_SEC = 120
+SUCCESS_STATUSES = {"sent", "delivered", "success", "ok"}
+SUCCESS_DETAIL_PATTERNS = ("250", "2.0.0", "2.0.0 ok", "queued as", "status=sent")
+QUEUED_AS_PATTERN = re.compile(r"queued\s+as\s+([A-Z0-9._-]+)", re.IGNORECASE)
 
 
 def _get_config_value(name: str, default, *legacy_names: str):
@@ -253,6 +257,51 @@ def build_mail_delivery_display(
     return display, message_ja
 
 
+def _extract_queue_id(detail: str | None) -> str | None:
+    if not detail:
+        return None
+    match = QUEUED_AS_PATTERN.search(str(detail))
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _has_successful_delivery_detail(detail: str | None) -> bool:
+    if not detail:
+        return False
+    detail_lower = str(detail).lower()
+    return any(pattern in detail_lower for pattern in SUCCESS_DETAIL_PATTERNS)
+
+
+def _normalize_delivery_status(
+    status: str | None,
+    detail: str | None,
+    queue_id: str | None,
+) -> tuple[str, str | None, str | None]:
+    """
+    Normalize Postfix API results to app-level statuses so that
+    "queued + 250 OK" responses are stored as successful delivery.
+    """
+    status_norm = (status or "").strip().lower()
+    detail_text = None if detail is None else str(detail)
+    queue_id_text = None if queue_id in (None, "") else str(queue_id)
+
+    if not queue_id_text:
+        queue_id_text = _extract_queue_id(detail_text)
+
+    if status_norm in SUCCESS_STATUSES:
+        return "sent", detail_text, queue_id_text
+    if status_norm == "queued" and _has_successful_delivery_detail(detail_text):
+        return "sent", detail_text, queue_id_text
+    if status_norm in ("deferred", "bounced", "failed"):
+        return status_norm, detail_text, queue_id_text
+    if _has_successful_delivery_detail(detail_text):
+        return "sent", detail_text, queue_id_text
+    if status_norm == "queued":
+        return "queued", detail_text, queue_id_text
+    return "unknown", detail_text, queue_id_text
+
+
 def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
     cutoff = datetime.now() - timedelta(hours=limit_hours)
     db = get_db()
@@ -262,7 +311,8 @@ def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
         SELECT id, message_id, last_delivery_status, submit_at
           FROM mfu_mail_delivery_log
          WHERE submit_status IN ('queued', 'sent')
-           AND last_delivery_status NOT IN ('sent', 'bounced')
+           -- Successful / terminal results should not be polled again.
+           AND last_delivery_status NOT IN ('sent', 'delivered', 'bounced', 'failed')
            AND submit_at >= %s
          ORDER BY submit_at ASC
          LIMIT %s
@@ -423,11 +473,11 @@ def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = N
             )
             continue
 
-        status = str(payload.get("status") or "unknown")
-        detail = payload.get("detail")
-        queue_id = payload.get("queue_id")
-        if status not in ("sent", "deferred", "bounced", "queued", "unknown", "failed"):
-            status = "unknown"
+        status, detail, queue_id = _normalize_delivery_status(
+            payload.get("status"),
+            payload.get("detail"),
+            payload.get("queue_id"),
+        )
 
         _update_delivery_row(
             row_id=row_id,
