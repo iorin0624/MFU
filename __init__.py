@@ -2651,7 +2651,7 @@ def admin_mail_delivery_logs():
     ensure_mail_delivery_schema()
 
     status = (request.args.get("status") or "all").strip().lower()
-    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
+    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed", "partial"):
         status = "all"
 
     search = (request.args.get("q") or "").strip()
@@ -2666,37 +2666,90 @@ def admin_mail_delivery_logs():
         page = 1
     offset = (page - 1) * per_page
 
-    where_sql = "WHERE 1=1"
+    where_clauses = ["1=1"]
     params: list = []
     if status != "all":
-        where_sql += " AND last_delivery_status = %s"
+        where_clauses.append("l.last_delivery_status = %s")
         params.append(status)
     if search:
-        where_sql += " AND (message_id LIKE %s OR mfu_mail_uuid LIKE %s OR subject LIKE %s OR to_addresses LIKE %s)"
         like = f"%{search}%"
-        params.extend([like, like, like, like])
+        where_clauses.append(
+            "("             "l.message_id LIKE %s OR l.mfu_mail_uuid LIKE %s OR l.subject LIKE %s OR l.to_addresses LIKE %s "             "OR EXISTS (SELECT 1 FROM mfu_mail_delivery_recipients AS sr WHERE sr.mail_log_id = l.id AND sr.recipient LIKE %s)"             ")"
+        )
+        params.extend([like, like, like, like, like])
+    where_sql = "WHERE " + " AND ".join(where_clauses)
 
     db = get_db()
     cur = db.cursor(dictionary=True)
     cur.execute(
         f"""
-        SELECT id, mfu_mail_uuid, message_id, to_addresses, subject, submit_status, submit_at,
-               last_delivery_status, last_delivery_detail, last_delivery_queue_id,
-               last_delivery_checked_at
-          FROM mfu_mail_delivery_log
+        SELECT l.id,
+               l.mfu_mail_uuid,
+               l.message_id,
+               l.to_addresses,
+               l.subject,
+               l.submit_status,
+               l.submit_at,
+               l.last_delivery_status,
+               l.last_delivery_detail,
+               l.last_delivery_queue_id,
+               l.last_delivery_checked_at,
+               COALESCE(rs.recipient_count, 0) AS recipient_count,
+               COALESCE(rs.success_count, 0) AS success_count,
+               COALESCE(rs.failure_count, 0) AS failure_count,
+               COALESCE(rs.deferred_count, 0) AS deferred_count,
+               COALESCE(rs.queued_count, 0) AS queued_count
+          FROM mfu_mail_delivery_log AS l
+          LEFT JOIN (
+                SELECT mail_log_id,
+                       COUNT(*) AS recipient_count,
+                       SUM(CASE WHEN delivery_status = 'sent' THEN 1 ELSE 0 END) AS success_count,
+                       SUM(CASE WHEN delivery_status IN ('bounced', 'failed') THEN 1 ELSE 0 END) AS failure_count,
+                       SUM(CASE WHEN delivery_status = 'deferred' THEN 1 ELSE 0 END) AS deferred_count,
+                       SUM(CASE WHEN delivery_status IN ('queued', 'unknown') THEN 1 ELSE 0 END) AS queued_count
+                  FROM mfu_mail_delivery_recipients
+                 GROUP BY mail_log_id
+          ) AS rs
+            ON rs.mail_log_id = l.id
           {where_sql}
-         ORDER BY submit_at DESC, id DESC
+         ORDER BY l.submit_at DESC, l.id DESC
          LIMIT %s OFFSET %s
         """,
         (*params, per_page, offset),
     )
     rows = cur.fetchall() or []
+    row_ids = [row["id"] for row in rows if row.get("id")]
+    recipient_map = {}
+    if row_ids:
+        placeholders = ", ".join(["%s"] * len(row_ids))
+        cur.execute(
+            f"""
+            SELECT mail_log_id,
+                   recipient,
+                   recipient_type,
+                   submit_status,
+                   delivery_status,
+                   delivery_detail,
+                   delivery_queue_id,
+                   delivery_checked_at
+              FROM mfu_mail_delivery_recipients
+             WHERE mail_log_id IN ({placeholders})
+             ORDER BY mail_log_id ASC, FIELD(recipient_type, 'to', 'cc', 'bcc'), id ASC
+            """,
+            row_ids,
+        )
+        recipient_rows = cur.fetchall() or []
+        recipient_map = {}
+        for recipient_row in recipient_rows:
+            recipient_map.setdefault(recipient_row["mail_log_id"], []).append(recipient_row)
+
     for row in rows:
         submit_at = row.get("submit_at")
         row["submit_at_ts"] = int(submit_at.timestamp()) if submit_at else None
+        row["recipient_rows"] = recipient_map.get(row["id"], [])
 
     cur.execute(
-        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",
+        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log AS l {where_sql}",
         params,
     )
     total = (cur.fetchone() or {}).get("cnt", 0)
