@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}請求先アドレス帳{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <h1 class="mb-0">請求先アドレス帳</h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">請求書一覧へ</a>
+    <a class="btn btn-primary" href="{{ url_for('invoice.contact_new') }}">新規登録</a>
+  </div>
+</div>
+<form class="row g-2 mb-3" method="get">
+  <div class="col-md-4"><input class="form-control" type="text" name="q" value="{{ q }}" placeholder="会社名・担当者名・メール"></div>
+  <div class="col-md-4 d-flex gap-2">
+    <button class="btn btn-outline-primary" type="submit">検索</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.contact_list') }}">リセット</a>
+  </div>
+</form>
+<div class="table-responsive">
+<table class="table table-striped align-middle">
+  <thead><tr><th>取引先名</th><th>担当者</th><th>メール</th><th>住所</th><th>freee取引先名</th><th>操作</th></tr></thead>
+  <tbody>
+    {% for contact in contacts %}
+    <tr>
+      <td>{{ contact.name }}</td>
+      <td>{{ contact.contact_name }} {{ contact.honorific or '' }}</td>
+      <td>{{ contact.email }}</td>
+      <td>〒{{ contact.postal_code or '' }}<br>{{ contact.address1 or '' }} {{ contact.address2 or '' }}</td>
+      <td>{{ contact.freee_partner_name }}</td>
+      <td class="d-flex gap-2 flex-wrap">
+        <a class="btn btn-sm btn-outline-primary" href="{{ url_for('invoice.contact_edit', contact_id=contact.id) }}">編集</a>
+        <form method="post" action="{{ url_for('invoice.contact_delete', contact_id=contact.id) }}" onsubmit="return confirm('この請求先を削除しますか？');">
+          <button class="btn btn-sm btn-outline-danger">削除</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="text-muted">請求先はまだありません。</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

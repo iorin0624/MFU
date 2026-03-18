@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}請求書詳細{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="mb-1">{{ invoice.invoice_no }}</h1>
+    <div class="text-muted">{{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }} / {{ invoice.contact_name_snapshot }}</div>
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_edit', invoice_id=invoice.id) }}">編集</a>
+    <a class="btn btn-outline-dark" href="{{ url_for('invoice.invoice_pdf', invoice_id=invoice.id) }}">PDFダウンロード</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('invoice.invoice_mail', invoice_id=invoice.id) }}">メール送信</a>
+    <a class="btn btn-outline-success" href="{{ url_for('invoice.invoice_freee_csv', invoice_id=invoice.id) }}">freee CSV</a>
+  </div>
+</div>
+<div class="row g-3 mb-3">
+  <div class="col-lg-8">
+    <div class="card shadow-sm"><div class="card-body">
+      <div class="d-flex justify-content-between align-items-start mb-3">
+        <div>
+          <h2 class="h5">基本情報</h2>
+          <p class="mb-1">件名: {{ invoice.subject }}</p>
+          <p class="mb-1">支払期限: {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date }}</p>
+          <p class="mb-0">税モード: {{ invoice.tax_mode|invoice_tax_mode_label }}</p>
+        </div>
+        <span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <h3 class="h6">宛先</h3>
+          <div>〒{{ invoice.contact_postal_code_snapshot or '' }}</div>
+          <div>{{ invoice.contact_address1_snapshot or '' }}</div>
+          <div>{{ invoice.contact_address2_snapshot or '' }}</div>
+          <div>{{ invoice.contact_name_snapshot }} {{ invoice.contact_department_snapshot or '' }} {{ invoice.contact_person_snapshot or '' }} {{ invoice.contact_honorific_snapshot or '' }}</div>
+          <div>{{ invoice.contact_email_snapshot or '' }}</div>
+        </div>
+        <div class="col-md-6">
+          <h3 class="h6">発行者</h3>
+          <div>{{ invoice.issuer_name }}</div>
+          <div>〒{{ invoice.issuer_postal_code or '' }}</div>
+          <div>{{ invoice.issuer_address1 or '' }}</div>
+          <div>{{ invoice.issuer_address2 or '' }}</div>
+          <div>{{ invoice.issuer_phone or '' }}</div>
+        </div>
+      </div>
+      <hr>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead><tr><th>品目</th><th>数量</th><th>単位</th><th class="text-end">単価</th><th class="text-end">金額</th></tr></thead>
+          <tbody>
+            {% for item in invoice["items"] %}
+            <tr>
+              <td>{{ item.item_name }}</td>
+              <td>{{ item.quantity }}</td>
+              <td>{{ item.unit_name }}</td>
+              <td class="text-end">¥{{ item.unit_price_yen|yen }}</td>
+              <td class="text-end">¥{{ item.line_total_yen|yen }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+          <tfoot>
+            <tr><th colspan="4" class="text-end">小計</th><th class="text-end">¥{{ invoice.subtotal_yen|yen }}</th></tr>
+            <tr><th colspan="4" class="text-end">消費税</th><th class="text-end">¥{{ invoice.tax_yen|yen }}</th></tr>
+            <tr><th colspan="4" class="text-end">合計</th><th class="text-end">¥{{ invoice.total_yen|yen }}</th></tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="row g-3 mt-1">
+        <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light">{{ invoice.note or '（未入力）' }}</div></div>
+        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light">{{ invoice.bank_info or '（未入力）' }}</div></div>
+      </div>
+    </div></div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card shadow-sm mb-3"><div class="card-body">
+      <h2 class="h5">操作</h2>
+      <div class="d-grid gap-2">
+        <form method="post" action="{{ url_for('invoice.invoice_issue', invoice_id=invoice.id) }}"><button class="btn btn-outline-primary w-100" type="submit">発行済みにする</button></form>
+        <form method="post" action="{{ url_for('invoice.invoice_duplicate', invoice_id=invoice.id) }}" onsubmit="return confirm('この請求書を複製しますか？');"><button class="btn btn-outline-secondary w-100" type="submit">複製</button></form>
+      </div>
+      <hr>
+      <form method="post" action="{{ url_for('invoice.invoice_update_status', invoice_id=invoice.id) }}">
+        <label class="form-label">ステータス変更</label>
+        <div class="d-flex gap-2">
+          <select class="form-select" name="status">{% for value, label in status_labels.items() %}<option value="{{ value }}" {% if invoice.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+          <button class="btn btn-primary" type="submit">更新</button>
+        </div>
+      </form>
+      <hr>
+      <ul class="list-unstyled small mb-0">
+        <li>PDF生成日: {{ invoice.pdf_generated_at.strftime('%Y-%m-%d %H:%M') if invoice.pdf_generated_at else '未生成' }}</li>
+        <li>メール送付日: {{ invoice.mailed_at.strftime('%Y-%m-%d %H:%M') if invoice.mailed_at else '未送付' }}</li>
+        <li>freee出力日: {{ invoice.freee_exported_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_exported_at else '未出力' }}</li>
+      </ul>
+    </div></div>
+    <div class="card shadow-sm mb-3"><div class="card-body">
+      <h2 class="h5">送信履歴</h2>
+      <div class="small">
+        {% for log in invoice.mail_logs %}
+        <div class="border rounded p-2 mb-2">
+          <div class="fw-bold">{{ log.subject }}</div>
+          <div>宛先: {{ log.to_email }}</div>
+          <div>状態: {{ log.status }}</div>
+          <div>送信日時: {{ log.sent_at.strftime('%Y-%m-%d %H:%M') if log.sent_at else '未送信' }}</div>
+          {% if log.error_message %}<div class="text-danger">{{ log.error_message }}</div>{% endif %}
+        </div>
+        {% else %}
+        <div class="text-muted">履歴はまだありません。</div>
+        {% endfor %}
+      </div>
+    </div></div>
+    <div class="card shadow-sm"><div class="card-body">
+      <h2 class="h5">CSV出力履歴</h2>
+      <div class="small">
+        {% for log in invoice.csv_logs %}
+        <div class="border rounded p-2 mb-2">
+          <div>{{ log.filename }}</div>
+          <div>状態: {{ log.status }}</div>
+          <div>出力日時: {{ log.exported_at.strftime('%Y-%m-%d %H:%M') if log.exported_at else '' }}</div>
+          {% if log.error_message %}<div class="text-danger">{{ log.error_message }}</div>{% endif %}
+        </div>
+        {% else %}
+        <div class="text-muted">履歴はまだありません。</div>
+        {% endfor %}
+      </div>
+    </div></div>
+  </div>
+</div>
+{% endblock %}

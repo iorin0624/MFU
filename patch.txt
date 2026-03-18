@@ -1,530 +1,178 @@
-diff --git a/__init__.py b/__init__.py
-index e6704cc5d345174d3f236312f672364de5301fab..314abcad2cf23be85e4e083b0d2e35a0ee145453 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -63,50 +63,74 @@ from app.utils.upload_security import (
-     validate_upload_file,
- )
- from app.utils.image import save_as_jpeg
- from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
- from app.utils.message import generate_message
- from app.utils.storage_info import get_storage_info
- from app.utils.thumbs import enqueue_thumb_job
- from app.utils.totp_util import get_totp_status
- from app.utils.whois_util import get_netinfo
- from app.albums import album_bp
- from app.receipts import receipts_bp
- from app.utils.mail import send_mail
- from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
- from app.chat.socketio_ext import socketio
+diff --git a/invoice/services.py b/invoice/services.py
+index 53ccd213768d030f720e5dd8a1d2585f52c5fa96..243292b47bda34aa2894ff81634122645295b7c7 100644
+--- a/invoice/services.py
++++ b/invoice/services.py
+@@ -386,50 +386,55 @@ def _next_invoice_no(cur, issue_date: date) -> str:
+     lock_row = cur.fetchone()
+     lock_val = lock_row[0] if isinstance(lock_row, tuple) else next(iter(lock_row.values()))
+     if int(lock_val or 0) != 1:
+         raise InvoiceValidationError("請求書番号の採番ロック取得に失敗しました。しばらく待って再試行してください。")
+     cur.execute(
+         """
+         SELECT invoice_no
+         FROM invoice_headers
+         WHERE invoice_no LIKE %s
+         ORDER BY invoice_no DESC
+         LIMIT 1
+         """,
+         (f"{prefix}%",),
+     )
+     row = cur.fetchone()
+     last_seq = 0
+     if row:
+         invoice_no = row[0] if isinstance(row, tuple) else row.get("invoice_no")
+         try:
+             last_seq = int(str(invoice_no).split("-")[-1])
+         except (TypeError, ValueError):
+             last_seq = 0
+     return f"{prefix}{last_seq + 1:03d}"
  
- # =====================================
- # 🌏 タイムゾーン・定数
- # =====================================
- JST = timezone(timedelta(hours=9))
- APP_DIR = os.path.abspath(os.path.dirname(__file__))
- BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
- STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
- UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
- tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
  
-+INAPP_BROWSER_WARNING_ENABLED_KEY = "inapp_browser_warning_enabled"
-+INAPP_BROWSER_KEYWORDS_KEY = "inapp_browser_keywords"
-+INAPP_BROWSER_REFERRER_PREFIXES_KEY = "inapp_browser_referrer_prefixes"
-+INAPP_BROWSER_SKIP_PATHS_KEY = "inapp_browser_skip_paths"
-+INAPP_BROWSER_DEFAULT_ENABLED = "1"
-+INAPP_BROWSER_DEFAULT_KEYWORDS = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
-+INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES = ["https://t.co/"]
-+INAPP_BROWSER_DEFAULT_SKIP_PATHS = [
-+    "/static",
-+    "/favicon",
-+    "/api",
-+    "/admin",
-+    "/maintenance",
-+    "/suc",
-+    "/external-login/",
-+    "/e/",
-+]
-+INAPP_BROWSER_SETTINGS_DEFAULTS = {
-+    INAPP_BROWSER_WARNING_ENABLED_KEY: INAPP_BROWSER_DEFAULT_ENABLED,
-+    INAPP_BROWSER_KEYWORDS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_KEYWORDS),
-+    INAPP_BROWSER_REFERRER_PREFIXES_KEY: "\n".join(INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES),
-+    INAPP_BROWSER_SKIP_PATHS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_SKIP_PATHS),
-+}
++def _release_invoice_lock(cur, issue_date: date) -> None:
++    cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{issue_date.strftime('%Y%m')}",))
++    cur.fetchone()
 +
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
- )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
++
+ def save_invoice(invoice_id: int | None, form) -> int:
+     contact_id = int(form.get("contact_id") or 0)
+     if contact_id <= 0:
+         raise InvoiceValidationError("請求先を選択してください。")
+     contact = get_contact(contact_id)
+     if not contact:
+         raise InvoiceValidationError("選択した請求先が見つかりません。")
  
+     issue_date = form.get("issue_date")
+     due_date = form.get("due_date")
+     issue = issue_date if isinstance(issue_date, date) else None
+     due = due_date if isinstance(due_date, date) else None
+     if not issue:
+         raise InvoiceValidationError("請求日を入力してください。")
+     items = parse_invoice_items(form)
+     payload = _build_invoice_payload({**form, "issue_date": issue, "due_date": due}, contact, items)
+     now = now_jst()
  
- @app.get("/manifest.webmanifest")
- def root_manifest():
-     resp = jsonify(
-         {
-             "name": "MFU",
-             "short_name": "MFU",
-             "start_url": "/external-login/",
-             "scope": "/",
-             "display": "standalone",
-             "background_color": "#ffffff",
-             "theme_color": "#0d6efd",
-             "icons": [],
-         }
-@@ -229,50 +253,129 @@ def delayed_restart():
-         time.sleep(2)
-         print("[delayed_restart] 📤 systemctl restart 実行中...")
-         result = subprocess.run(
-             ["sudo", "systemctl", "restart", "mfu.service"],
-             check=True,
-             capture_output=True,
-             text=True,
+     db = get_db()
+     cur = db.cursor()
+     try:
+         if invoice_id:
+             cur.execute(
+                 """
+                 UPDATE invoice_headers
+@@ -514,56 +519,56 @@ def save_invoice(invoice_id: int | None, form) -> int:
+             )
+             invoice_id = int(cur.lastrowid)
+         cur.executemany(
+             """
+             INSERT INTO invoice_items (
+                 invoice_id, sort_order, item_name, quantity, unit_name,
+                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
+             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             """,
+             [
+                 (
+                     invoice_id,
+                     item.sort_order,
+                     item.item_name,
+                     item.quantity,
+                     item.unit_name or None,
+                     item.unit_price_yen,
+                     item.line_total_yen,
+                     item.tax_category,
+                     now,
+                     now,
+                 )
+                 for item in items
+             ],
          )
-         print("[delayed_restart] ✅ 再起動成功")
-         print("[stdout]", result.stdout)
-         print("[stderr]", result.stderr)
-     except subprocess.CalledProcessError as e:
-         print("[delayed_restart] ❌ 再起動失敗（subprocess.CalledProcessError）")
-         print("[stderr]", e.stderr)
-     except Exception as e:
-         print(f"[delayed_restart] ❌ 再起動中に予期せぬエラー: {e}")
- 
- def is_maintenance_mode():
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
-     cursor.execute("SELECT value FROM settings WHERE `key` = 'maintenance_mode'")
-     row = cursor.fetchone()
-     db.close()
-     return row and row["value"] == "on"
- 
-+def _normalize_multiline_list(lines):
-+    normalized = []
-+    seen = set()
-+    for line in lines or []:
-+        item = (line or "").strip()
-+        if not item:
-+            continue
-+        dedupe_key = item.lower()
-+        if dedupe_key in seen:
-+            continue
-+        seen.add(dedupe_key)
-+        normalized.append(item)
-+    return normalized
-+
-+
-+def _serialize_multiline_setting(lines):
-+    return "\n".join(_normalize_multiline_list(lines))
-+
-+
-+def _ensure_inapp_browser_settings_defaults():
-+    db = get_db()
-+    cursor = db.cursor()
-+    created = False
-+    try:
-+        for key, default_value in INAPP_BROWSER_SETTINGS_DEFAULTS.items():
-+            cursor.execute(
-+                "INSERT IGNORE INTO settings (`key`, `value`) VALUES (%s, %s)",
-+                (key, default_value),
-+            )
-+            created = created or bool(cursor.rowcount)
-+        if created:
-+            db.commit()
-+    finally:
-+        db.close()
-+
-+
-+def _get_setting_value(key, default=None):
-+    db = get_db()
-+    cursor = db.cursor(dictionary=True)
-+    try:
-+        cursor.execute("SELECT `value` FROM settings WHERE `key` = %s", (key,))
-+        row = cursor.fetchone()
-+        if not row:
-+            return default
-+        value = row.get("value")
-+        return default if value is None else value
-+    finally:
-+        db.close()
-+
-+
-+def _get_multiline_setting_list(key, default_list):
-+    value = _get_setting_value(key)
-+    if value is None or not str(value).strip():
-+        return _normalize_multiline_list(default_list)
-+    return _normalize_multiline_list(str(value).splitlines())
-+
-+
-+def _is_inapp_browser_request(req):
-+    skip_paths = _get_multiline_setting_list(INAPP_BROWSER_SKIP_PATHS_KEY, INAPP_BROWSER_DEFAULT_SKIP_PATHS)
-+    if any(req.path.startswith(path) for path in skip_paths):
-+        return False
-+
-+    ua = (req.headers.get("User-Agent") or "").lower()
-+    referer = (req.headers.get("Referer") or "").lower()
-+    keywords = _get_multiline_setting_list(INAPP_BROWSER_KEYWORDS_KEY, INAPP_BROWSER_DEFAULT_KEYWORDS)
-+    referrer_prefixes = _get_multiline_setting_list(
-+        INAPP_BROWSER_REFERRER_PREFIXES_KEY,
-+        INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES,
-+    )
-+
-+    if any(keyword.lower() in ua for keyword in keywords):
-+        return True
-+
-+    if any(referer.startswith(prefix.lower()) for prefix in referrer_prefixes):
-+        return True
-+
-+    return req.cookies.get("InAppView") == "1"
-+
-+
- def write_login_log(username, ip, tag="LOGIN"):
-     db = get_db()
-     cursor = db.cursor()
-     cursor.execute(
-         "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
-         (ip, f"[{tag}] ユーザー: {username} がログインしました"),
-     )
-     db.commit()
-     db.close()
- 
- def get_vcgencmd_info():
-     """
-     RPi専用の vcgencmd が無い環境（x86等）でも落ちずに情報を返す互換関数。
-     優先: vcgencmd → psutil + lm-sensors の順。
-     戻り値のキーは既存互換（temperature/voltage/throttled/clock）。
-     """
-     def run(cmd):
+-        cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{payload['issue_date'].strftime('%Y%m')}",))
++        _release_invoice_lock(cur, payload["issue_date"])
+         db.commit()
+         return int(invoice_id)
+     except Exception:
          try:
-             return subprocess.check_output(["vcgencmd"] + cmd.split(), timeout=2).decode().strip()
+-            cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{payload['issue_date'].strftime('%Y%m')}",))
++            _release_invoice_lock(cur, payload["issue_date"])
          except Exception:
-             return None
- 
-     # まず Raspberry Pi (vcgencmd) を試す
-     t = run("measure_temp")
-     if t is not None:
-@@ -2704,50 +2807,109 @@ def admin_maintenance():
-         except:
              pass
+         db.rollback()
+         raise
+     finally:
+         cur.close()
+         db.close()
  
-     db.close()
+ 
+ def list_invoices(*, q: str = "", status: str = "", start: str = "", end: str = "") -> list[dict[str, Any]]:
      db = get_db()
-     cursor = db.cursor(dictionary=True)
-     cursor.execute("SELECT `value` FROM settings WHERE `key` = 'square_env_payment'")
-     square_env_payment_val = (cursor.fetchone() or {}).get("value")
-     cursor.execute("SELECT `value` FROM settings WHERE `key` = 'square_env_external'")
-     square_env_external_val = (cursor.fetchone() or {}).get("value")
-     db.close()
-     fallback_square_env = os.environ.get("SQUARE_ENV", "SANDBOX")
-     current_square_env_payment = (square_env_payment_val or fallback_square_env).upper()
-     current_square_env_external = (square_env_external_val or fallback_square_env).upper()
-     return render_template(
-         "admin_maintenance.html",
-         current_mode=current_mode,
-         current_until=current_until,
-         current_square_env_payment=current_square_env_payment,
-         current_square_env_external=current_square_env_external,
-     )
- 
- # =======================================
- # 管理: 再起動
- # =======================================
-+@app.route("/admin/settings/inapp-browser", methods=["GET", "POST"])
-+@admin_required
-+def admin_inapp_browser_settings():
-+    _ensure_inapp_browser_settings_defaults()
-+    db = get_db()
-+    cursor = db.cursor(dictionary=True)
-+
-+    def _save_inapp_browser_settings(payload):
-+        for key, value in payload.items():
-+            cursor.execute(
-+                "REPLACE INTO settings (`key`, `value`) VALUES (%s, %s)",
-+                (key, value),
-+            )
-+
-+    if request.method == "POST":
-+        action = request.form.get("action") or "save"
-+        if action == "reset":
-+            _save_inapp_browser_settings(INAPP_BROWSER_SETTINGS_DEFAULTS)
-+            db.commit()
-+            db.close()
-+            flash("アプリ内ブラウザ警告設定を初期値に戻しました。", "success")
-+            return redirect(url_for("admin_inapp_browser_settings"))
-+
-+        payload = {
-+            INAPP_BROWSER_WARNING_ENABLED_KEY: "1" if request.form.get("inapp_browser_warning_enabled") else "0",
-+            INAPP_BROWSER_KEYWORDS_KEY: _serialize_multiline_setting(
-+                (request.form.get("inapp_browser_keywords") or "").splitlines()
-+            ),
-+            INAPP_BROWSER_REFERRER_PREFIXES_KEY: _serialize_multiline_setting(
-+                (request.form.get("inapp_browser_referrer_prefixes") or "").splitlines()
-+            ),
-+            INAPP_BROWSER_SKIP_PATHS_KEY: _serialize_multiline_setting(
-+                (request.form.get("inapp_browser_skip_paths") or "").splitlines()
-+            ),
-+        }
-+        _save_inapp_browser_settings(payload)
-+        db.commit()
-+        db.close()
-+        flash("アプリ内ブラウザ警告設定を更新しました。", "success")
-+        return redirect(url_for("admin_inapp_browser_settings"))
-+
-+    current_settings = {}
-+    for key, default_value in INAPP_BROWSER_SETTINGS_DEFAULTS.items():
-+        cursor.execute("SELECT `value` FROM settings WHERE `key` = %s", (key,))
-+        row = cursor.fetchone() or {}
-+        value = row.get("value")
-+        current_settings[key] = default_value if value is None else value
-+
-+    db.close()
-+    return render_template(
-+        "admin_inapp_browser_settings.html",
-+        current_settings=current_settings,
-+        default_enabled=INAPP_BROWSER_DEFAULT_ENABLED,
-+        default_keywords_text=INAPP_BROWSER_SETTINGS_DEFAULTS[INAPP_BROWSER_KEYWORDS_KEY],
-+        default_referrer_prefixes_text=INAPP_BROWSER_SETTINGS_DEFAULTS[INAPP_BROWSER_REFERRER_PREFIXES_KEY],
-+        default_skip_paths_text=INAPP_BROWSER_SETTINGS_DEFAULTS[INAPP_BROWSER_SKIP_PATHS_KEY],
-+    )
-+
-+
- @app.route("/admin/restart", methods=["POST"])
- @admin_required
- def admin_restart():
-     threading.Thread(target=delayed_restart).start()
-     flash("サーバーの再起動を実行しました（約2秒後に反映されます）", "info")
-     return redirect(url_for("admin_maintenance"))
- 
- # =====================================
- # ⑤ テンプレ／モード
- # =====================================
- @app.route("/templates")
- def template_index():
-     if "user" not in session:
-         return redirect(url_for("login"))
- 
-     username = session["user"]
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
- 
-     templates = []
-     MODES = {}  # 参照のため空定義（別管理ならここは無視される）
-     for mode_key, mode_label in MODES.items():
-         cursor.execute("SELECT 1 FROM message_templates WHERE username = %s AND mode = %s", (username, mode_key))
-         exists = cursor.fetchone()
-         templates.append({"mode": mode_key, "label": mode_label, "exists": bool(exists)})
-@@ -3080,66 +3242,57 @@ def before_every_request():
-     until_time = None
-     if until_row and until_row["value"]:
+     cur = db.cursor(dictionary=True)
+     try:
+         where: list[str] = []
+         params: list[Any] = []
+         if q:
+             like = f"%{q}%"
+             where.append("(invoice_no LIKE %s OR contact_name_snapshot LIKE %s OR subject LIKE %s)")
+             params.extend([like, like, like])
+         if status:
+             where.append("status = %s")
+             params.append(status)
+         if start:
+             where.append("issue_date >= %s")
+             params.append(start)
+@@ -661,56 +666,56 @@ def duplicate_invoice(invoice_id: int) -> int:
+         )
+         new_id = int(cur.lastrowid)
+         cur.executemany(
+             """
+             INSERT INTO invoice_items (
+                 invoice_id, sort_order, item_name, quantity, unit_name,
+                 unit_price_yen, line_total_yen, tax_category, created_at, updated_at
+             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             """,
+             [
+                 (
+                     new_id,
+                     item.get("sort_order") or 0,
+                     item.get("item_name"),
+                     item.get("quantity"),
+                     item.get("unit_name"),
+                     item.get("unit_price_yen") or 0,
+                     item.get("line_total_yen") or 0,
+                     item.get("tax_category"),
+                     now,
+                     now,
+                 )
+                 for item in original.get("items", [])
+             ],
+         )
+-        cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{original['issue_date'].strftime('%Y%m')}",))
++        _release_invoice_lock(cur, original["issue_date"])
+         db.commit()
+         return new_id
+     except Exception:
          try:
-             utc_dt = dateutil_parser.isoparse(until_row["value"])
-             until_time = utc_dt.astimezone(JST)
-         except Exception as e:
-             app.logger.warning(f"[Timer Parse Error] {e}")
+-            cur.execute("SELECT RELEASE_LOCK(%s)", (f"invoice_no_{original['issue_date'].strftime('%Y%m')}",))
++            _release_invoice_lock(cur, original["issue_date"])
+         except Exception:
+             pass
+         db.rollback()
+         raise
+     finally:
+         cur.close()
+         db.close()
  
-     if mode and mode["value"] == "on":
-         now = datetime.utcnow().replace(tzinfo=timezone.utc)
-         if until_time and now >= until_time.astimezone(timezone.utc):
-             flag_path = "/tmp/mfu_restart.flag"
-             if os.path.exists(flag_path):
-                 os.remove(flag_path)
-                 threading.Thread(target=delayed_restart).start()
-                 return "🌀 自動再起動中...", 503
-             else:
-                 threading.Thread(target=auto_end_maintenance).start()
-                 return "🌀 メンテナンス解除中...", 503
  
-         if session.get("user") != "admin" and not request.path.startswith(("/login", "/static", "/favicon", "/api", "/payout")):
-             return render_template("maintenance.html", until_time=until_time), 503
- 
-     # アプリ内ブラウザ（LINE/X/Instagram）への警告
-     if "user" not in session:
--        skip_paths = ("/static", "/favicon", "/api", "/admin", "/maintenance", "/suc","/external-login/","/e/",)
--        if not any(request.path.startswith(p) for p in skip_paths):
--            ua = request.headers.get("User-Agent", "")
--            ref = request.headers.get("Referer", "")
--
--            #元コード↓
--            inapp_keywords = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
--            #inapp_keywords = ["Instagram", "Twitter", "FBAN", "FBAV"]
--            inapp = any(k in ua for k in inapp_keywords)
--
--            # 👇 X (旧Twitter) のアプリ内ブラウザは UA では判定できないので Ref で判定
--            if ref.startswith("https://t.co/"):
--                inapp = True
--
--            if inapp or request.cookies.get("InAppView") == "1":
--                return render_template("inapp_warning.html"), 200
-+        _ensure_inapp_browser_settings_defaults()
-+        warning_enabled = str(
-+            _get_setting_value(INAPP_BROWSER_WARNING_ENABLED_KEY, INAPP_BROWSER_DEFAULT_ENABLED)
-+            or INAPP_BROWSER_DEFAULT_ENABLED
-+        ).strip()
-+        if warning_enabled == "1" and _is_inapp_browser_request(request):
-+            return render_template("inapp_warning.html"), 200
- 
- @app.after_request
- def finalize_response(response):
-     # --- 1) No-Cache ヘッダ ---
+ def update_invoice_status(invoice_id: int, status: str) -> None:
+     status = normalize_status(status)
+     now = now_jst()
+     db = get_db()
+     cur = db.cursor()
      try:
-         if (request.endpoint or "") != "static":
-             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-             response.headers["Pragma"] = "no-cache"
-             response.headers["Expires"] = "0"
-     except Exception as e:
-         app.logger.warning(f"after_request(no-cache) failed: {e}")
+         cur.execute(
+             "UPDATE invoice_headers SET status=%s, updated_at=%s WHERE id=%s",
+             (status, now, invoice_id),
+         )
+         db.commit()
+     finally:
+         cur.close()
+         db.close()
  
-     # --- 2) アクセスログ（委譲） ---
-     try:
-         log_access(request, response, session, endpoint=request.endpoint)
-     except Exception as e:
-         app.logger.warning(f"log_access failed: {e}")
  
-     return response
- 
- # ─────────────────────────────────────────
- # 管理: ノードメトリクス集約表示（103.16 / 103.15）
- # ─────────────────────────────────────────
- @app.route("/admin/nodes")
- @admin_required
-diff --git a/templates/admin_inapp_browser_settings.html b/templates/admin_inapp_browser_settings.html
-new file mode 100644
-index 0000000000000000000000000000000000000000..7ea8451fdcfe7ba6df303ced757b755a3c40998d
---- /dev/null
-+++ b/templates/admin_inapp_browser_settings.html
-@@ -0,0 +1,79 @@
-+{% extends "base.html" %}
-+{% block title %}アプリ内ブラウザ警告設定{% endblock %}
-+{% block content %}
-+<div class="container" style="max-width: 860px;">
-+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
-+    <h2 class="mb-0">📱 アプリ内ブラウザ警告設定</h2>
-+    <div class="d-flex gap-2">
-+      <a href="{{ url_for('admin_maintenance') }}" class="btn btn-outline-secondary">メンテナンス設定へ</a>
-+    </div>
-+  </div>
-+
-+  {% with messages = get_flashed_messages(with_categories=true) %}
-+    {% if messages %}
-+      <div class="mb-3">
-+        {% for category, message in messages %}
-+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-+            {{ message }}
-+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="閉じる"></button>
-+          </div>
-+        {% endfor %}
-+      </div>
-+    {% endif %}
-+  {% endwith %}
-+
-+  <div class="alert alert-secondary small">
-+    <div class="fw-semibold mb-2">現在のデフォルト値</div>
-+    <ul class="mb-0 ps-3">
-+      <li>警告有効化: {{ 'ON' if default_enabled == '1' else 'OFF' }}</li>
-+      <li>UAキーワード: <code>{{ default_keywords_text.replace('\n', ', ') }}</code></li>
-+      <li>Refererプレフィックス: <code>{{ default_referrer_prefixes_text.replace('\n', ', ') }}</code></li>
-+      <li>対象外パス: <code>{{ default_skip_paths_text.replace('\n', ', ') }}</code></li>
-+    </ul>
-+  </div>
-+
-+  <form method="post" class="card shadow-sm border-0">
-+    <input type="hidden" name="action" value="save">
-+    <div class="card-body">
-+      <div class="form-check form-switch mb-4">
-+        <input
-+          class="form-check-input"
-+          type="checkbox"
-+          name="inapp_browser_warning_enabled"
-+          id="inappBrowserWarningEnabled"
-+          value="1"
-+          {% if current_settings.inapp_browser_warning_enabled == '1' %}checked{% endif %}
-+        >
-+        <label class="form-check-label" for="inappBrowserWarningEnabled">アプリ内ブラウザ警告を有効化する</label>
-+      </div>
-+
-+      <div class="mb-4">
-+        <label class="form-label" for="inappBrowserKeywords">UAキーワード一覧</label>
-+        <textarea class="form-control" id="inappBrowserKeywords" name="inapp_browser_keywords" rows="6" spellcheck="false">{{ current_settings.inapp_browser_keywords }}</textarea>
-+        <div class="form-text">1行1件で入力します。空行は無視され、保存時に前後空白と重複を自動整形します。</div>
-+      </div>
-+
-+      <div class="mb-4">
-+        <label class="form-label" for="inappBrowserReferrerPrefixes">Refererプレフィックス一覧</label>
-+        <textarea class="form-control" id="inappBrowserReferrerPrefixes" name="inapp_browser_referrer_prefixes" rows="4" spellcheck="false">{{ current_settings.inapp_browser_referrer_prefixes }}</textarea>
-+        <div class="form-text">1行1件で入力します。空行は無視され、比較は大文字小文字を区別しない形で行われます。</div>
-+      </div>
-+
-+      <div class="mb-3">
-+        <label class="form-label" for="inappBrowserSkipPaths">対象外パス一覧</label>
-+        <textarea class="form-control" id="inappBrowserSkipPaths" name="inapp_browser_skip_paths" rows="8" spellcheck="false">{{ current_settings.inapp_browser_skip_paths }}</textarea>
-+        <div class="form-text">1行1件で入力します。通常は <code>/</code> から始まるパスを想定しています。空行は無視され、重複は自動除去します。</div>
-+      </div>
-+    </div>
-+
-+    <div class="card-footer bg-white d-flex flex-wrap justify-content-end gap-2">
-+      <button type="submit" class="btn btn-primary">保存</button>
-+    </div>
-+  </form>
-+
-+  <form method="post" class="mt-3 text-end" onsubmit="return confirm('アプリ内ブラウザ警告設定を初期値に戻します。よろしいですか？');">
-+    <input type="hidden" name="action" value="reset">
-+    <button type="submit" class="btn btn-outline-warning">初期値に戻す</button>
-+  </form>
-+</div>
-+{% endblock %}
-diff --git a/templates/admin_maintenance.html b/templates/admin_maintenance.html
-index a70fa8b1fd3074f3c224d7432776da3df6eb7399..3b0d8ea2845c6d335b460604aece6f991f901932 100644
---- a/templates/admin_maintenance.html
-+++ b/templates/admin_maintenance.html
-@@ -1,30 +1,46 @@
- {% extends "base.html" %}
- {% block title %}メンテナンスモード設定{% endblock %}
- {% block content %}
- <div class="container" style="max-width: 600px;">
--  <h2 class="mb-4">🛠 メンテナンスモード設定</h2>
-+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
-+    <h2 class="mb-0">🛠 メンテナンスモード設定</h2>
-+    <a href="{{ url_for('admin_inapp_browser_settings') }}" class="btn btn-outline-secondary">アプリ内ブラウザ警告設定</a>
-+  </div>
-+
-+  {% with messages = get_flashed_messages(with_categories=true) %}
-+    {% if messages %}
-+      <div class="mb-3">
-+        {% for category, message in messages %}
-+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-+            {{ message }}
-+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="閉じる"></button>
-+          </div>
-+        {% endfor %}
-+      </div>
-+    {% endif %}
-+  {% endwith %}
- 
-   <form method="post">
-     <div class="form-check form-switch mb-3">
-       <input class="form-check-input" type="checkbox" name="maintenance_mode" id="toggleSwitch" value="on"
-              {% if current_mode == 'on' %}checked{% endif %}>
-       <label class="form-check-label" for="toggleSwitch">メンテナンスモードON/OFF</label>
-     </div>
- 
-     <div class="mb-3">
-       <label class="form-label">⏰ 終了予定日時（空欄＝無期限）</label>
-       <input type="datetime-local" name="maintenance_until" class="form-control"
-              value="{{ current_until }}">
-     </div>
- 
-     <div class="mb-3">
-       <label class="form-label">💳 Square 決済モード（/payment 系）</label>
-       <select name="square_env_payment" class="form-select">
-         <option value="SANDBOX" {% if current_square_env_payment == 'SANDBOX' %}selected{% endif %}>SANDBOX（テスト）</option>
-         <option value="PRODUCTION" {% if current_square_env_payment == 'PRODUCTION' %}selected{% endif %}>PRODUCTION（本番）</option>
-       </select>
-       <div class="form-text">/payment の API/SDK をこの環境で切り替えます。</div>
-     </div>
- 
-     <div class="mb-3">
-       <label class="form-label">💳 Square 決済モード（外部ログイン/カード登録）</label>
