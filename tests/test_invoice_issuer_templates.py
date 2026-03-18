@@ -47,6 +47,8 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
             "issuer_address1": "old address1",
             "issuer_address2": "old address2",
             "issuer_phone": "0000",
+            "bank_info": "旧振込先",
+            "note": "旧備考",
             "subject": "keep",
         }
         template = {
@@ -56,6 +58,8 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
             "issuer_address1": "new address1",
             "issuer_address2": "new address2",
             "issuer_phone": "9999",
+            "bank_info": "銀行A\n支店B",
+            "note": "1行目\n2行目",
         }
 
         result = invoice_services.apply_issuer_template_to_form_data(form_data, template)
@@ -67,6 +71,8 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
         self.assertEqual(result["issuer_address1"], "new address1")
         self.assertEqual(result["issuer_address2"], "new address2")
         self.assertEqual(result["issuer_phone"], "9999")
+        self.assertEqual(result["bank_info"], "銀行A\n支店B")
+        self.assertEqual(result["note"], "1行目\n2行目")
         self.assertEqual(result["subject"], "keep")
 
     def test_build_invoice_form_data_for_new_invoice_has_template_selector_state(self):
@@ -80,6 +86,8 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
 
         self.assertEqual(form_data["template_name"], "")
         self.assertEqual(form_data["issuer_name"], "")
+        self.assertEqual(form_data["bank_info"], "")
+        self.assertEqual(form_data["note"], "")
         self.assertEqual(form_data["sort_order"], "0")
         self.assertEqual(form_data["is_default"], "")
 
@@ -104,6 +112,8 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
                 "issuer_address1": "東京都",
                 "issuer_address2": "テストビル",
                 "issuer_phone": "03-0000-0000",
+                "bank_info": "\n三菱UFJ銀行\n渋谷支店\n",
+                "note": "備考1\r\n備考2",
                 "sort_order": "10",
                 "is_default": "1",
             }
@@ -111,6 +121,8 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
 
         self.assertEqual(payload["template_name"], "事業用住所")
         self.assertEqual(payload["issuer_name"], "テスト発行者")
+        self.assertEqual(payload["bank_info"], "三菱UFJ銀行\n渋谷支店")
+        self.assertEqual(payload["note"], "備考1\n備考2")
         self.assertEqual(payload["sort_order"], 10)
         self.assertEqual(payload["is_default"], 1)
 

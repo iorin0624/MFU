@@ -56,6 +56,8 @@ ISSUER_TEMPLATE_FIELDS = (
     "issuer_address1",
     "issuer_address2",
     "issuer_phone",
+    "bank_info",
+    "note",
 )
 
 
