@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS invoice_headers (
     issuer_address2 VARCHAR(255) NULL,
     issuer_phone VARCHAR(64) NULL,
     issuer_email VARCHAR(255) NULL,
+    issuer_template_id INT NULL,
     subtotal_yen INT NOT NULL DEFAULT 0,
     tax_yen INT NOT NULL DEFAULT 0,
     total_yen INT NOT NULL DEFAULT 0,
