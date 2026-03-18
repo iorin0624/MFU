@@ -30,7 +30,9 @@ from .services import (
     list_issuer_templates,
     log_csv_export,
     mark_invoice_issued,
+    merge_invoice_cc_emails,
     parse_invoice_items,
+    resolve_invoice_issuer_email,
     save_contact,
     save_invoice,
     set_default_issuer_template,
@@ -383,9 +385,10 @@ def invoice_mail(invoice_id: int):
                     "honorific": contact.get("honorific"),
                 }
             )
+    effective_issuer_email = resolve_invoice_issuer_email(invoice)
     initial = {
         "to_email": invoice.get("contact_email_snapshot") or "",
-        "cc_email": invoice.get("issuer_email") or "",
+        "cc_email": effective_issuer_email,
         "bcc_email": "",
         "subject": build_mail_subject(invoice.get("issue_date")),
         "body": build_default_invoice_mail_body(mail_context),
@@ -393,6 +396,7 @@ def invoice_mail(invoice_id: int):
     if request.method == "POST":
         to_email = (request.form.get("to_email") or "").strip()
         cc_email = (request.form.get("cc_email") or "").strip()
+        final_cc_email = merge_invoice_cc_emails(effective_issuer_email, cc_email)
         bcc_email = (request.form.get("bcc_email") or "").strip()
         subject = (request.form.get("subject") or "").strip()
         body = request.form.get("body") or ""
@@ -407,8 +411,9 @@ def invoice_mail(invoice_id: int):
             send_invoice_mail(
                 invoice,
                 to_email=to_email,
-                cc_email=cc_email or None,
+                cc_email=final_cc_email or None,
                 bcc_email=bcc_email or None,
+                reply_to_email=effective_issuer_email or None,
                 subject=subject,
                 body=body,
                 attachment_filename=attachment_name,

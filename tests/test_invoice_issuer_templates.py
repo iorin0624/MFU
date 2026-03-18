@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 def load_invoice_services_module():
@@ -159,6 +160,72 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
             "いおりん写真室（小松　伊織）です。\n\n"
             "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。",
         )
+
+    def test_resolve_invoice_issuer_email_prefers_invoice_header_value(self):
+        with patch.object(invoice_services, "get_issuer_template_by_id") as mocked:
+            result = invoice_services.resolve_invoice_issuer_email(
+                {
+                    "issuer_email": " stored@example.com ",
+                    "issuer_template_id": "5",
+                }
+            )
+
+        self.assertEqual(result, "stored@example.com")
+        mocked.assert_not_called()
+
+    def test_resolve_invoice_issuer_email_falls_back_to_selected_template(self):
+        with patch.object(
+            invoice_services,
+            "get_issuer_template_by_id",
+            return_value={"issuer_email": " template@example.com "},
+        ) as mocked:
+            result = invoice_services.resolve_invoice_issuer_email(
+                {
+                    "issuer_email": "   ",
+                    "issuer_template_id": "7",
+                }
+            )
+
+        self.assertEqual(result, "template@example.com")
+        mocked.assert_called_once_with(7)
+
+    def test_merge_invoice_cc_emails_keeps_issuer_first_and_deduplicates(self):
+        result = invoice_services.merge_invoice_cc_emails(
+            "issuer@example.com",
+            "extra@example.com, issuer@example.com; EXTRA@example.com",
+        )
+
+        self.assertEqual(result, "issuer@example.com, extra@example.com")
+
+    def test_build_invoice_payload_fills_issuer_email_from_selected_template(self):
+        with patch.object(
+            invoice_services,
+            "get_issuer_template_by_id",
+            return_value={"issuer_email": "template@example.com"},
+        ):
+            payload = invoice_services._build_invoice_payload(
+                {
+                    "issue_date": invoice_services.date(2026, 3, 18),
+                    "due_date": invoice_services.date(2026, 4, 17),
+                    "subject": "3月分ご請求",
+                    "issuer_name": "いおりん写真室",
+                    "issuer_email": " ",
+                    "issuer_template_id": "9",
+                    "tax_mode": "external",
+                    "status": "draft",
+                },
+                {"id": 3},
+                [
+                    invoice_services.InvoiceItemInput(
+                        item_name="撮影料",
+                        quantity=invoice_services.Decimal("1"),
+                        unit_price_yen=10000,
+                    )
+                ],
+            )
+
+        self.assertEqual(payload["issuer_template_id"], 9)
+        self.assertEqual(payload["issuer_email"], "template@example.com")
 
 
 if __name__ == "__main__":

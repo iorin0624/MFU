@@ -47,7 +47,7 @@ invoice_mail = load_invoice_mail_module()
 
 
 class InvoiceMailTest(unittest.TestCase):
-    def test_send_invoice_mail_uses_issuer_email_for_reply_to(self):
+    def test_send_invoice_mail_uses_explicit_reply_to_and_cc(self):
         captured = {}
 
         def fake_send_mime(msg):
@@ -62,12 +62,13 @@ class InvoiceMailTest(unittest.TestCase):
                 {
                     "id": 1,
                     "issuer_name": "いおりん写真室",
-                    "issuer_email": "issuer@example.com",
+                    "issuer_email": "ignored@example.com",
                     "contact_email_snapshot": "contact@example.com",
                 },
                 to_email="to@example.com",
-                cc_email="cc@example.com",
+                cc_email="issuer@example.com, cc@example.com",
                 bcc_email=None,
+                reply_to_email="issuer@example.com",
                 subject="件名",
                 body="本文",
                 attachment_filename="invoice.pdf",
@@ -78,9 +79,9 @@ class InvoiceMailTest(unittest.TestCase):
         parsed = message_from_string(raw)
         self.assertIn("noreply@mail.iori0624.jp", parsed["From"])
         self.assertEqual(parsed["Reply-To"], "issuer@example.com")
-        self.assertEqual(parsed["Cc"], "cc@example.com")
+        self.assertEqual(parsed["Cc"], "issuer@example.com, cc@example.com")
 
-    def test_send_invoice_mail_skips_reply_to_when_issuer_email_is_blank(self):
+    def test_send_invoice_mail_skips_reply_to_when_explicit_value_is_blank(self):
         captured = {}
 
         def fake_send_mime(msg):
@@ -95,11 +96,12 @@ class InvoiceMailTest(unittest.TestCase):
                 {
                     "id": 2,
                     "issuer_name": "いおりん写真室",
-                    "issuer_email": "",
+                    "issuer_email": "ignored@example.com",
                 },
                 to_email="to@example.com",
                 cc_email=None,
                 bcc_email=None,
+                reply_to_email=None,
                 subject="件名",
                 body="本文",
                 attachment_filename="invoice.pdf",

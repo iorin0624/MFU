@@ -12,7 +12,18 @@ from .services import log_mail_result, mark_invoice_mailed
 from .utils import now_jst, split_emails
 
 
-def send_invoice_mail(invoice: dict, *, to_email: str, cc_email: str | None, bcc_email: str | None, subject: str, body: str, attachment_filename: str, pdf_bytes: bytes) -> None:
+def send_invoice_mail(
+    invoice: dict,
+    *,
+    to_email: str,
+    cc_email: str | None,
+    bcc_email: str | None,
+    reply_to_email: str | None,
+    subject: str,
+    body: str,
+    attachment_filename: str,
+    pdf_bytes: bytes,
+) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = formataddr((str(Header(invoice.get("issuer_name") or "MFU", "utf-8")), "noreply@mail.iori0624.jp"))
@@ -21,9 +32,8 @@ def send_invoice_mail(invoice: dict, *, to_email: str, cc_email: str | None, bcc
         msg["Cc"] = ", ".join(split_emails(cc_email))
     if bcc_email:
         msg["Bcc"] = ", ".join(split_emails(bcc_email))
-    reply_to = (invoice.get("issuer_email") or "").strip()
-    if reply_to:
-        msg["Reply-To"] = reply_to
+    if reply_to_email:
+        msg["Reply-To"] = reply_to_email.strip()
     msg["Date"] = formatdate(localtime=True)
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
