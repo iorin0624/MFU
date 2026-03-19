@@ -1506,7 +1506,8 @@ def upload_child(album_id, child_id):
                 return True
 
             recipients = [r for r in rows if _is_kind_enabled(r)]
-            if not recipients:
+            should_send_admin_push = kind in ("upload", "process_done")
+            if not recipients and not should_send_admin_push:
                 current_app.logger.info(
                     "notify: skip no recipients kind=%s album_id=%s child_id=%s recipients_total=%s",
                     kind,
@@ -1580,6 +1581,12 @@ def upload_child(album_id, child_id):
             target_urls = _build_event_album_target_urls(event_id, album_id, child_id)
             absolute_target_url = target_urls["absolute_url"]
             relative_target_url = target_urls["relative_url"]
+            admin_target_url = url_for(
+                'album.view_child',
+                album_id=album_id,
+                child_id=child_id,
+                _external=False,
+            )
 
             if kind == "upload":
                 action = f"{len(saved_names or [])}件の写真/動画が追加されました"
@@ -1619,6 +1626,14 @@ def upload_child(album_id, child_id):
                 if kind == "process_done":
                     return f"album:{album_id}:{child_id}:process_done:{ext_user_id}:{process_done_state}"[:191]
                 return f"album:{album_id}:{child_id}:{kind}:{ext_user_id}"[:191]
+
+            def _build_admin_push_dedup_key() -> str:
+                if kind == "upload":
+                    bucket = cooldown_bucket if cooldown_bucket is not None else int(time.time()) // 300
+                    return f"album:{album_id}:{child_id}:upload:mfu:admin:{bucket}"[:191]
+                if kind == "process_done":
+                    return f"album:{album_id}:{child_id}:process_done:mfu:admin:{process_done_state}"[:191]
+                return f"album:{album_id}:{child_id}:{kind}:mfu:admin"[:191]
 
             try:
                 from app.utils.mail import send_mail  # 既存の mail.py を利用
@@ -1681,6 +1696,64 @@ def upload_child(album_id, child_id):
                         e,
                     )
 
+            admin_push_result = {
+                "attempted": False,
+                "ok": False,
+                "duplicate": False,
+                "in_app": "not_attempted",
+                "web_push": "not_attempted",
+                "failure": "",
+                "dedup_key": "",
+            }
+            if should_send_admin_push:
+                admin_push_result["attempted"] = True
+                admin_dedup_key = _build_admin_push_dedup_key()
+                admin_push_result["dedup_key"] = admin_dedup_key
+                try:
+                    push_result = send_push(
+                        recipient_type="mfu_username",
+                        recipient_value="admin",
+                        title=title,
+                        body=body_text,
+                        target_url=admin_target_url,
+                        kind=push_kind,
+                        sender_label="アルバム",
+                        dedup_key=admin_dedup_key,
+                        event_id=event_id,
+                        create_in_app=True,
+                        send_web_push=True,
+                    )
+                    delivery = push_result.get("delivery") or {}
+                    admin_push_result["ok"] = bool(push_result.get("created")) or bool(push_result.get("ok"))
+                    admin_push_result["duplicate"] = bool(push_result.get("duplicate"))
+                    admin_push_result["in_app"] = str(delivery.get("in_app") or "")
+                    admin_push_result["web_push"] = str(delivery.get("web_push") or "")
+                    if admin_push_result["ok"]:
+                        sent_ok = True
+                    current_app.logger.info(
+                        "notify admin push result admin_push_kind=%s album_id=%s child_id=%s admin_target_url=%s "
+                        "dedup_key=%s in_app=%s web_push=%s duplicate=%s ok=%s",
+                        kind,
+                        album_id,
+                        child_id,
+                        admin_target_url,
+                        admin_dedup_key,
+                        admin_push_result["in_app"],
+                        admin_push_result["web_push"],
+                        admin_push_result["duplicate"],
+                        admin_push_result["ok"],
+                    )
+                except Exception as e:
+                    admin_push_result["failure"] = str(e)
+                    current_app.logger.warning(
+                        "notify admin push failed admin_push_kind=%s album_id=%s child_id=%s admin_target_url=%s error=%s",
+                        kind,
+                        album_id,
+                        child_id,
+                        admin_target_url,
+                        e,
+                    )
+
             # ★クールタイム記録（uploadのみ・送信が1件以上成功時）
             if kind == "upload" and sent_ok:
                 try:
@@ -1694,7 +1767,9 @@ def upload_child(album_id, child_id):
 
             current_app.logger.info(
                 "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s mail_recipients_count=%s push_recipients_count=%s "
-                "relative_target_url=%s absolute_target_url=%s dedup_key_samples=%s dedup_key_count=%s mail_failed_count=%s push_failed_count=%s push_skipped_count=%s",
+                "relative_target_url=%s absolute_target_url=%s admin_target_url=%s dedup_key_samples=%s dedup_key_count=%s "
+                "mail_failed_count=%s push_failed_count=%s push_skipped_count=%s admin_push_attempted=%s admin_push_dedup_key=%s "
+                "admin_push_in_app=%s admin_push_web_push=%s admin_push_duplicate=%s admin_push_ok=%s admin_push_failure=%s",
                 kind,
                 album_id,
                 child_id,
@@ -1703,11 +1778,19 @@ def upload_child(album_id, child_id):
                 len(push_recipients),
                 relative_target_url,
                 absolute_target_url,
+                admin_target_url,
                 dedup_key_samples,
                 len(push_recipients),
                 mail_failed_count,
                 push_failed_count,
                 push_skipped_count,
+                admin_push_result["attempted"],
+                admin_push_result["dedup_key"],
+                admin_push_result["in_app"],
+                admin_push_result["web_push"],
+                admin_push_result["duplicate"],
+                admin_push_result["ok"],
+                admin_push_result["failure"],
             )
 
         except Exception as e:
