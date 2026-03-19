@@ -27,6 +27,7 @@
           <h2 class="h5">基本情報</h2>
           <p class="mb-1">件名: {{ invoice.subject }}</p>
           <p class="mb-1">支払期限: {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date }}</p>
+          <p class="mb-1">振込先表示方法: {{ bank_info_mode_labels.get(invoice.bank_info_mode, invoice.bank_info_mode) }}</p>
           <p class="mb-0">税モード: {{ invoice.tax_mode|invoice_tax_mode_label }}</p>
         </div>
         <span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span>
@@ -83,7 +84,7 @@
       </div>
       <div class="row g-3 mt-1">
         <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.note or '（未入力）' }}</div></div>
-        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.bank_info or '（未入力）' }}</div></div>
+        <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light multiline-text">{{ effective_bank_info or '（未入力）' }}</div></div>
       </div>
     </div></div>
   </div>

@@ -10,6 +10,9 @@
         <div class="col-md-6"><label class="form-label">Cc</label><input class="form-control" type="text" name="cc_email" value="{{ form_data.cc_email or '' }}"></div>
         <div class="col-md-6"><label class="form-label">Bcc</label><input class="form-control" name="bcc_email" value="{{ form_data.bcc_email or '' }}"></div>
         <div class="col-12"><div class="form-text mt-0">送信元は <code>noreply@mail.iori0624.jp</code> 固定です。発行者メールアドレスがある場合、Reply-To と Cc に自動設定されます。</div></div>
+        {% if invoice.bank_info_mode == 'payout_link' %}
+        <div class="col-12"><div class="alert alert-info py-2 mb-0">この請求書は送信時に振込先リンクが自動挿入されます。本文にリンクがなくても、送信直前にサーバー側で追記されます。</div></div>
+        {% endif %}
         <div class="col-12"><label class="form-label">件名</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}"></div>
         <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
         <div class="col-12 form-check">

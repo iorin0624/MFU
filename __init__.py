@@ -172,6 +172,9 @@ app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
 
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
+app.config["PAYOUT_TOKEN_API_URL"] = os.environ.get("PAYOUT_TOKEN_API_URL", "").strip()
+app.config["PAYOUT_TOKEN_API_KEY"] = os.environ.get("PAYOUT_TOKEN_API_KEY", "").strip()
+app.config["PAYOUT_PUBLIC_BASE_URL"] = os.environ.get("PAYOUT_PUBLIC_BASE_URL", "https://mfu.iori0624.jp").strip()
 
 # 既定ホワイトリスト（必要なら config で上書き）
 app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
