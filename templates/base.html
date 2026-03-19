@@ -199,7 +199,9 @@
       items.forEach((it) => {
         latestId = Math.max(latestId, Number(it.id || 0));
         const a = document.createElement('a');
-        a.href = it.target_url || '/';
+        const targetUrl = (typeof it?.target_url === 'string' && it.target_url.trim()) ? it.target_url.trim() : '/';
+        a.href = targetUrl;
+        a.dataset.targetUrl = targetUrl;
         a.className = 'mfu-notif-item' + (it.is_read ? '' : ' unread');
         a.innerHTML = `<div class="mfu-notif-item-title">${iconByKind(it.kind)} ${escapeHtml(it.title || 'お知らせ')}</div>
           <div class="mfu-notif-item-body">${escapeHtml(it.body || '')}</div>
@@ -207,7 +209,7 @@
         a.addEventListener('click', async (e) => {
           e.preventDefault();
           try { await fetch(`/api/mfu-notifications/${it.id}/read`, { method:'POST' }); } catch (_) {}
-          window.location.href = a.href;
+          window.location.href = a.dataset.targetUrl || '/';
         });
         fr.appendChild(a);
       });

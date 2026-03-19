@@ -99,11 +99,12 @@ self.addEventListener('push', (event) => {
 
   const title = payload.title || 'MFU';
   const body = payload.body || '新着通知があります';
-  const targetUrl = normalizeTargetUrl(payload.url, payload.event_id);
+  const rawTargetUrl = payload.target_url || payload.url;
+  const targetUrl = normalizeTargetUrl(rawTargetUrl, payload.event_id);
 
   const showPromise = self.registration.showNotification(title, {
     body,
-    data: { url: targetUrl },
+    data: { url: targetUrl, target_url: targetUrl },
   });
 
   const broadcastPromise = (async () => {
@@ -130,7 +131,9 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   let targetUrl = `${self.location.origin}/`;
   try {
-    targetUrl = normalizeTargetUrl(event.notification?.data?.url);
+    targetUrl = normalizeTargetUrl(
+      event.notification?.data?.target_url || event.notification?.data?.url
+    );
   } catch (_e) {
     targetUrl = `${self.location.origin}/`;
   }
