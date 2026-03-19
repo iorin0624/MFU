@@ -93,7 +93,7 @@
     </div>
   </div>
 
-  <div class="card">
+  <div class="card mb-4">
     <div class="card-header">4. パスワード変更</div>
     <div class="card-body">
       <p class="text-muted">現在の平文パスワードは表示できません。保存時にハッシュ化されます。</p>
@@ -112,6 +112,83 @@
           <button type="submit" class="btn btn-warning">パスワードを変更する</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">5. アクセストークン管理</div>
+    <div class="card-body">
+      <form method="post" class="row g-3 mb-4">
+        <input type="hidden" name="action" value="create_access_token">
+        <div class="col-md-9">
+          <label class="form-label">メモ（誰向けの token か必須）</label>
+          <input type="text" name="memo" class="form-control" maxlength="255" required placeholder="例: album → user123 向け一時発行">
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <button type="submit" class="btn btn-success w-100">トークンを発行</button>
+        </div>
+      </form>
+
+      {% if new_access_token %}
+        <div class="alert alert-warning">
+          <div class="fw-bold mb-2">この token はこの画面でしか表示されません。</div>
+          <div class="small text-muted mb-1">{{ new_access_token.memo }}</div>
+          <div class="input-group">
+            <input type="text" class="form-control font-monospace" value="{{ new_access_token.token }}" readonly>
+          </div>
+          <div class="form-text">識別表示: {{ new_access_token.token_preview }}</div>
+        </div>
+      {% endif %}
+
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr>
+              <th>アクセストークン</th>
+              <th>メモ</th>
+              <th>最終アクセス日時</th>
+              <th>最終アクセスIP</th>
+              <th>アクセス回数</th>
+              <th>発行元</th>
+              <th>連携アプリ</th>
+              <th>有効期限</th>
+              <th>作成日時</th>
+              <th>有効/無効</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if access_tokens %}
+              {% for token in access_tokens %}
+                <tr>
+                  <td class="font-monospace">{{ token.token_preview }}</td>
+                  <td>{{ token.memo }}</td>
+                  <td>{{ token.last_accessed_at or '-' }}</td>
+                  <td>{{ token.last_access_ip or '-' }}</td>
+                  <td>{{ token.access_count }}</td>
+                  <td>{{ token.issued_via }}</td>
+                  <td>{{ token.issued_by_app or '-' }}</td>
+                  <td>{{ token.expires_at or '-' }}</td>
+                  <td>{{ token.created_at }}</td>
+                  <td>
+                    <form method="post" class="d-inline">
+                      <input type="hidden" name="action" value="toggle_access_token">
+                      <input type="hidden" name="token_id" value="{{ token.id }}">
+                      <input type="hidden" name="is_active" value="{{ 0 if token.is_active else 1 }}">
+                      <button type="submit" class="btn btn-sm {{ 'btn-outline-danger' if token.is_active else 'btn-outline-success' }}">
+                        {{ '無効化' if token.is_active else '再有効化' }}
+                      </button>
+                    </form>
+                  </td>
+                </tr>
+              {% endfor %}
+            {% else %}
+              <tr>
+                <td colspan="10" class="text-muted">アクセストークンはまだありません。</td>
+              </tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
