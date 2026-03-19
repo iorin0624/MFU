@@ -4,11 +4,15 @@ import hashlib
 import secrets
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
+
+from flask import current_app, has_app_context, has_request_context, request
 
 TOKEN_PREFIX = "mfu_pat_"
 TOKEN_CORE_BYTES = 32
 TOKEN_PREVIEW_HEAD = 4
 TOKEN_PREVIEW_TAIL = 4
+DEFAULT_PAYOUT_PUBLIC_BASE_URL = "https://mfu.iori0624.jp"
 
 
 def _hash_secret(raw_value: str) -> str:
@@ -17,6 +21,26 @@ def _hash_secret(raw_value: str) -> str:
 
 def _build_token_preview(token_prefix: str, token_suffix: str) -> str:
     return f"{token_prefix}...{token_suffix}"
+
+
+def _resolve_public_base_url(external_base_url: str | None = None) -> str:
+    if external_base_url:
+        return external_base_url.rstrip("/")
+
+    config_base_url = current_app.config.get("PAYOUT_PUBLIC_BASE_URL") if has_app_context() else None
+    if config_base_url:
+        return str(config_base_url).rstrip("/")
+
+    if has_request_context():
+        return request.url_root.rstrip("/")
+
+    return DEFAULT_PAYOUT_PUBLIC_BASE_URL
+
+
+def build_payout_access_url(raw_token: str, external_base_url: str | None = None) -> str:
+    token = (raw_token or "").strip()
+    base_url = _resolve_public_base_url(external_base_url)
+    return f"{base_url}/payout?iv={quote(token, safe='')}"
 
 
 def generate_payout_access_token() -> tuple[str, str, str, str]:
@@ -90,6 +114,7 @@ def create_payout_access_token(
     created["token_prefix"] = token_prefix
     created["token_suffix"] = token_suffix
     created["token_preview"] = _build_token_preview(token_prefix, token_suffix)
+    created["access_url"] = build_payout_access_url(token)
     return created
 
 

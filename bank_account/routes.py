@@ -10,6 +10,7 @@ from app.utils.db import get_db
 
 from . import bank_account_bp
 from .token_service import (
+    build_payout_access_url,
     create_payout_access_token,
     get_payout_access_token_by_id,
     is_payout_access_token_usable,
@@ -47,12 +48,18 @@ def _clear_unlock_failure() -> None:
     session.pop("payout_unlock_lock_until", None)
 
 
-
-def _clear_payout_unlock_session(clear_failure: bool = False) -> None:
-    session.pop("payout_unlocked", None)
-    session.pop("payout_pwd_version", None)
+def _clear_payout_token_session() -> None:
+    if session.get("payout_auth_method") == "token":
+        session.pop("payout_unlocked", None)
     session.pop("payout_auth_method", None)
     session.pop("payout_token_id", None)
+
+
+
+def _clear_payout_auth_session(clear_failure: bool = False) -> None:
+    session.pop("payout_unlocked", None)
+    session.pop("payout_pwd_version", None)
+    _clear_payout_token_session()
     if clear_failure:
         _clear_unlock_failure()
 
@@ -67,7 +74,7 @@ def _is_password_unlocked(current_version: int) -> bool:
 
 
 
-def _is_token_unlocked(db) -> bool:
+def _is_token_session_unlocked(db) -> bool:
     if session.get("payout_unlocked") is not True:
         return False
     if session.get("payout_auth_method") != "token":
@@ -79,14 +86,14 @@ def _is_token_unlocked(db) -> bool:
 
     token_row = get_payout_access_token_by_id(db, int(token_id))
     if not is_payout_access_token_usable(token_row):
-        _clear_payout_unlock_session()
+        _clear_payout_token_session()
         return False
     return True
 
 
 
 def _is_any_payout_unlocked(db, current_version: int) -> bool:
-    return _is_password_unlocked(current_version) or _is_token_unlocked(db)
+    return _is_password_unlocked(current_version) or _is_token_session_unlocked(db)
 
 
 
@@ -106,6 +113,7 @@ def _set_new_access_token_notice(created: dict) -> None:
         "id": created.get("id"),
         "token": created.get("token"),
         "token_preview": created.get("token_preview"),
+        "access_url": created.get("access_url"),
         "memo": created.get("memo"),
         "created_at": created.get("created_at").strftime("%Y-%m-%d %H:%M:%S") if created.get("created_at") else None,
     }
@@ -113,14 +121,30 @@ def _set_new_access_token_notice(created: dict) -> None:
 
 @bank_account_bp.route("/payout")
 def payout_index():
+    iv = (request.args.get("iv") or "").strip()
     db = get_db()
     cursor = db.cursor(dictionary=True)
     try:
         settings = _get_settings(cursor)
         version = int(settings.get("payout_password_version") or 1)
 
+        if iv:
+            token_row = verify_payout_access_token(db, iv)
+            if token_row:
+                session["payout_unlocked"] = True
+                session["payout_auth_method"] = "token"
+                session["payout_token_id"] = int(token_row["id"])
+                session.pop("payout_pwd_version", None)
+                touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
+                _clear_unlock_failure()
+                return redirect(url_for("bank_account.payout_index"))
+
+            _clear_payout_token_session()
+            flash("アクセストークンが無効です。", "danger")
+            return redirect(url_for("bank_account.payout_unlock"))
+
         if not _is_any_payout_unlocked(db, version):
-            _clear_payout_unlock_session()
+            _clear_payout_auth_session()
             return redirect(
                 url_for(
                     "bank_account.payout_unlock",
@@ -171,62 +195,38 @@ def payout_unlock():
         settings = _get_settings(cursor)
         pwd_hash = settings.get("payout_password_hash")
         version = int(settings.get("payout_password_version") or 1)
-
         if request.method == "POST":
             if lock_remaining > 0:
                 flash(f"失敗回数が上限に達しました。約{lock_remaining // 60 + 1}分後に再試行してください。", "danger")
                 return redirect(url_for("bank_account.payout_unlock"))
 
             password = request.form.get("password") or ""
-            access_token = (request.form.get("access_token") or "").strip()
-
-            if password:
-                if not pwd_hash:
-                    flash("管理者がまだパスワードを設定していません。", "warning")
-                    return redirect(url_for("bank_account.payout_unlock"))
-
-                submitted = password.encode("utf-8")
-                stored = pwd_hash.encode("utf-8")
-                if bcrypt.checkpw(submitted, stored):
-                    session["payout_unlocked"] = True
-                    session["payout_pwd_version"] = version
-                    session["payout_auth_method"] = "password"
-                    session.pop("payout_token_id", None)
-                    _clear_unlock_failure()
-                    flash("振込先ページの閲覧を許可しました。", "success")
-                    return redirect(url_for("bank_account.payout_index"))
-
-                fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
-                session["payout_unlock_fail_count"] = fail_count
-                if fail_count >= MAX_UNLOCK_FAILURES:
-                    session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
-                    flash("失敗が10回に達したため、10分間ロックしました。", "danger")
-                else:
-                    flash(f"パスワードが違います。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
+            if not password:
+                flash("パスワードを入力してください。", "danger")
                 return redirect(url_for("bank_account.payout_unlock"))
 
-            if access_token:
-                token_row = verify_payout_access_token(db, access_token)
-                if token_row:
-                    session["payout_unlocked"] = True
-                    session["payout_auth_method"] = "token"
-                    session["payout_token_id"] = int(token_row["id"])
-                    session.pop("payout_pwd_version", None)
-                    touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
-                    _clear_unlock_failure()
-                    flash("アクセストークンで振込先ページの閲覧を許可しました。", "success")
-                    return redirect(url_for("bank_account.payout_index"))
-
-                fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
-                session["payout_unlock_fail_count"] = fail_count
-                if fail_count >= MAX_UNLOCK_FAILURES:
-                    session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
-                    flash("失敗が10回に達したため、10分間ロックしました。", "danger")
-                else:
-                    flash(f"アクセストークンが無効です。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
+            if not pwd_hash:
+                flash("管理者がまだパスワードを設定していません。", "warning")
                 return redirect(url_for("bank_account.payout_unlock"))
 
-            flash("パスワードまたはアクセストークンを入力してください。", "danger")
+            submitted = password.encode("utf-8")
+            stored = pwd_hash.encode("utf-8")
+            if bcrypt.checkpw(submitted, stored):
+                session["payout_unlocked"] = True
+                session["payout_pwd_version"] = version
+                session["payout_auth_method"] = "password"
+                session.pop("payout_token_id", None)
+                _clear_unlock_failure()
+                flash("振込先ページの閲覧を許可しました。", "success")
+                return redirect(url_for("bank_account.payout_index"))
+
+            fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
+            session["payout_unlock_fail_count"] = fail_count
+            if fail_count >= MAX_UNLOCK_FAILURES:
+                session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
+                flash("失敗が10回に達したため、10分間ロックしました。", "danger")
+            else:
+                flash(f"パスワードが違います。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
             return redirect(url_for("bank_account.payout_unlock"))
     finally:
         cursor.close()
@@ -242,7 +242,7 @@ def payout_unlock():
 
 @bank_account_bp.route("/payout/logout")
 def payout_logout():
-    _clear_payout_unlock_session(clear_failure=False)
+    _clear_payout_auth_session(clear_failure=False)
     flash("振込先ページの閲覧許可を解除しました。", "info")
     return redirect(url_for("bank_account.payout_unlock"))
 
@@ -392,6 +392,7 @@ def admin_payout():
                         issued_by_app=None,
                         created_by_admin=session.get("user") or "admin",
                     )
+                    created["access_url"] = build_payout_access_url(created.get("token") or "")
                     _set_new_access_token_notice(created)
                     flash("アクセストークンを作成しました。", "success")
 

@@ -131,8 +131,14 @@
 
       {% if new_access_token %}
         <div class="alert alert-warning">
-          <div class="fw-bold mb-2">この token はこの画面でしか表示されません。</div>
-          <div class="small text-muted mb-1">{{ new_access_token.memo }}</div>
+          <div class="fw-bold mb-2">このアクセストークンはこの画面でしか表示されません。</div>
+          <div class="small text-muted mb-2">{{ new_access_token.memo }}</div>
+          <label class="form-label mb-1">共有用アクセスURL</label>
+          <div class="input-group mb-2">
+            <input type="text" class="form-control font-monospace" value="{{ new_access_token.access_url }}" readonly>
+          </div>
+          <div class="form-text mb-3">このURLを相手に共有してください。アクセス時は <code>/payout?iv=...</code> で認証後、自動的に <code>/payout</code> へリダイレクトされます。</div>
+          <label class="form-label mb-1">トークン平文</label>
           <div class="input-group">
             <input type="text" class="form-control font-monospace" value="{{ new_access_token.token }}" readonly>
           </div>
