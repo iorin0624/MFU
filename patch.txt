@@ -1,2053 +1,1526 @@
-diff --git a/__init__.py b/__init__.py
-index fe5b3839170c8a17a2b6789c075f2853a80213ca..b41096e023c0852a1dba09410b5b8eab06f34654 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -2629,96 +2629,149 @@ def admin_logs_404_ban_settings():
-                 "ip_threshold": request.form.get("ip_threshold", ""),
-                 "cooldown_sec": request.form.get("cooldown_sec", ""),
-                 "ipv4_prefix": request.form.get("ipv4_prefix", "24"),
-             }
-             save_fw_404_settings(payload)
-             flash("404アクセスBAN判定の設定を更新しました。", "success")
-         except Exception as e:
-             flash(f"設定の更新に失敗しました: {e}", "danger")
-         return redirect(url_for("admin_logs_404_ban_settings"))
+diff --git a/docs/internal_push_api.md b/docs/internal_push_api.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..ccd55992e62c2a6718a3c942baac4160f48fd009
+--- /dev/null
++++ b/docs/internal_push_api.md
+@@ -0,0 +1,93 @@
++# Internal Push API
++
++## Python からの利用例
++
++```python
++from app.utils.push import send_push
++
++send_push(
++    recipient_type="external_user_id",
++    recipient_value=123,
++    title="写真アップロード完了",
++    body="アルバムに新しい写真が追加されました。",
++    target_url="/albums/123",
++    kind="album_upload_complete",
++    sender_label="アルバム機能",
++    dedup_key="album:123:upload_complete:user:123",
++)
++```
++
++## curl 例
++
++```bash
++curl -X POST 'https://mfu.iori0624.jp/api/internal/push/send' \
++  -H 'Content-Type: application/json' \
++  -H 'X-MFU-Internal-Key: YOUR_KEY' \
++  --data '{
++    "recipient_type":"external_user_id",
++    "recipient_value":123,
++    "title":"写真アップロード完了",
++    "body":"アルバムに新しい写真が追加されました。",
++    "target_url":"/albums/123",
++    "kind":"album_upload_complete",
++    "sender_label":"アルバム機能",
++    "dedup_key":"album:123:upload_complete:user:123",
++    "create_in_app":true,
++    "send_web_push":true
++  }'
++```
++
++## リクエスト仕様
++
++- `recipient_type`: 必須。`external_user_id` / `mfu_username` のみ。
++- `recipient_value`: 必須。`external_user_id` は整数、`mfu_username` は文字列。
++- `title`: 必須。
++- `body`: 任意。`null` は空文字へ正規化。
++- `target_url`: 必須。`/` 始まりの内部 URL のみ。
++- `kind`: 任意。未指定時は `general`。
++- `sender_label`: 任意。
++- `dedup_key`: 必須。191 文字以内。
++- `room_type`, `room_id`, `event_id`, `chat_event_id`, `chat_room_id`: 任意。
++- `create_in_app`: 任意。既定値 `true`。
++- `send_web_push`: 任意。既定値 `true`。
++
++## レスポンス例
++
++### 作成成功 + Push 送信成功
++
++```json
++{
++  "ok": true,
++  "created": true,
++  "duplicate": false,
++  "notification_id": 123,
++  "delivery": {
++    "in_app": "created",
++    "web_push": "sent"
++  }
++}
++```
++
++### dedup_key 重複
++
++```json
++{
++  "ok": true,
++  "created": false,
++  "duplicate": true,
++  "notification_id": null,
++  "delivery": {
++    "in_app": "duplicate",
++    "web_push": "skipped"
++  }
++}
++```
++
++## 手動確認の最小手順
++
++1. `MFU_INTERNAL_API_KEY` を設定してアプリを起動する。
++2. ブラウザで対象ユーザーの Push 購読を有効化する。
++3. 上記 curl 例で通知を送る。
++4. `/notifications` または `/mfu-notifications` で通知が見えることを確認する。
++5. 同じ `dedup_key` で再送し、二重作成されないことを確認する。
++6. `mfu_notification_deliveries` に `sent` / `failed` / `duplicate` / `skipped` が記録されることを確認する。
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index 17ca8cf3a8c29ae29f3edc655c95f94befb7fae2..e7d46af7b3b88c79ca1c9bf63b444dae462a9d94 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -1,47 +1,66 @@
+ from __future__ import annotations
  
-     settings = get_fw_404_settings()
-     return render_template("admin_404_ban_settings.html", settings=settings)
++import hashlib
++import hmac
++import os
+ from datetime import datetime, timezone
+ from time import perf_counter
+ from typing import Any
+ from urllib.parse import parse_qs, urlparse
+ 
+ from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
+ 
+ from . import bp
+ from .utils import _require_ext_login
+ from app.utils.db import get_db
+ 
+ try:
+     from app.chat.socketio_ext import socketio
+ except Exception:  # pragma: no cover
+     socketio = None
  
  
- # =======================================
- # 管理: メール送信ログ（配送結果）
- # =======================================
- @app.route("/admin/mail-delivery")
- @admin_required
- def admin_mail_delivery_logs():
-     from app.utils.mail_delivery import ensure_mail_delivery_schema
+ _READ_NOTIFICATIONS_KEEP_LIMIT = 30
+ mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
  
-     ensure_mail_delivery_schema()
- 
-     status = (request.args.get("status") or "all").strip().lower()
--    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed"):
-+    if status not in ("all", "sent", "bounced", "deferred", "unknown", "queued", "failed", "partial"):
-         status = "all"
- 
-     search = (request.args.get("q") or "").strip()
-     try:
-         per_page = int(request.args.get("limit", "200"))
-     except ValueError:
-         per_page = 200
-     per_page = max(20, min(500, per_page))
-     try:
-         page = max(1, int(request.args.get("page", "1")))
-     except ValueError:
-         page = 1
-     offset = (page - 1) * per_page
- 
--    where_sql = "WHERE 1=1"
-+    where_clauses = ["1=1"]
-     params: list = []
-     if status != "all":
--        where_sql += " AND last_delivery_status = %s"
-+        where_clauses.append("l.last_delivery_status = %s")
-         params.append(status)
-     if search:
--        where_sql += " AND (message_id LIKE %s OR mfu_mail_uuid LIKE %s OR subject LIKE %s OR to_addresses LIKE %s)"
-         like = f"%{search}%"
--        params.extend([like, like, like, like])
-+        where_clauses.append(
-+            "("             "l.message_id LIKE %s OR l.mfu_mail_uuid LIKE %s OR l.subject LIKE %s OR l.to_addresses LIKE %s "             "OR EXISTS (SELECT 1 FROM mfu_mail_delivery_recipients AS sr WHERE sr.mail_log_id = l.id AND sr.recipient LIKE %s)"             ")"
-+        )
-+        params.extend([like, like, like, like, like])
-+    where_sql = "WHERE " + " AND ".join(where_clauses)
- 
++
++def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
++    if str(user_kind) == "mfu":
++        return (recipient_key or "").strip()
++    return str(int(user_id or 0))
++
++
++def _notification_storage_user_id(user_kind: str, user_id: int, recipient_key: str | None = None) -> int:
++    if str(user_kind) != "mfu":
++        return int(user_id or 0)
++    recipient = (recipient_key or "").strip()
++    if not recipient:
++        return 0
++    digest = hashlib.sha1(recipient.encode("utf-8")).digest()
++    return int.from_bytes(digest[:8], "big", signed=False)
++
+ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
+     if int(ext_user_id or 0) <= 0:
+         return None
      db = get_db()
      cur = db.cursor(dictionary=True)
-     cur.execute(
-         f"""
--        SELECT id, mfu_mail_uuid, message_id, to_addresses, subject, submit_status, submit_at,
--               last_delivery_status, last_delivery_detail, last_delivery_queue_id,
--               last_delivery_checked_at
--          FROM mfu_mail_delivery_log
-+        SELECT l.id,
-+               l.mfu_mail_uuid,
-+               l.message_id,
-+               l.to_addresses,
-+               l.subject,
-+               l.submit_status,
-+               l.submit_at,
-+               l.last_delivery_status,
-+               l.last_delivery_detail,
-+               l.last_delivery_queue_id,
-+               l.last_delivery_checked_at,
-+               COALESCE(rs.recipient_count, 0) AS recipient_count,
-+               COALESCE(rs.success_count, 0) AS success_count,
-+               COALESCE(rs.failure_count, 0) AS failure_count,
-+               COALESCE(rs.deferred_count, 0) AS deferred_count,
-+               COALESCE(rs.queued_count, 0) AS queued_count
-+          FROM mfu_mail_delivery_log AS l
-+          LEFT JOIN (
-+                SELECT mail_log_id,
-+                       COUNT(*) AS recipient_count,
-+                       SUM(CASE WHEN delivery_status = 'sent' THEN 1 ELSE 0 END) AS success_count,
-+                       SUM(CASE WHEN delivery_status IN ('bounced', 'failed') THEN 1 ELSE 0 END) AS failure_count,
-+                       SUM(CASE WHEN delivery_status = 'deferred' THEN 1 ELSE 0 END) AS deferred_count,
-+                       SUM(CASE WHEN delivery_status IN ('queued', 'unknown') THEN 1 ELSE 0 END) AS queued_count
-+                  FROM mfu_mail_delivery_recipients
-+                 GROUP BY mail_log_id
-+          ) AS rs
-+            ON rs.mail_log_id = l.id
-           {where_sql}
--         ORDER BY submit_at DESC, id DESC
-+         ORDER BY l.submit_at DESC, l.id DESC
-          LIMIT %s OFFSET %s
-         """,
-         (*params, per_page, offset),
-     )
-     rows = cur.fetchall() or []
-+    row_ids = [row["id"] for row in rows if row.get("id")]
-+    recipient_map = {}
-+    if row_ids:
-+        placeholders = ", ".join(["%s"] * len(row_ids))
+     try:
+         cur.execute(
+             """
+             SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+               FROM external_login_user
+              WHERE id=%s
+              LIMIT 1
+             """,
+             (int(ext_user_id),),
+         )
+         row = cur.fetchone()
+         if not row:
+             return None
+         if int(row.get("chat_admin_alias") or 0) != 1:
+             return None
+         return row
+     finally:
+         cur.close()
+         db.close()
+ 
+@@ -330,73 +349,118 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
+   recipient_key VARCHAR(191) NULL,
+   kind VARCHAR(64) NOT NULL,
+   title VARCHAR(255) NOT NULL,
+   body TEXT NULL,
+   target_url VARCHAR(512) NOT NULL,
+   event_id BIGINT UNSIGNED NULL,
+   chat_event_id BIGINT UNSIGNED NULL,
+   chat_room_id VARCHAR(64) NULL,
+   room_type VARCHAR(32) NULL,
+   room_id VARCHAR(64) NULL,
+   sender_label VARCHAR(255) NULL,
+   created_at DATETIME NOT NULL,
+   read_at DATETIME NULL,
+   dedup_key VARCHAR(191) NOT NULL,
+   PRIMARY KEY (id),
+   UNIQUE KEY uq_mfu_notifications_dedup (user_kind, user_id, dedup_key),
+   KEY idx_mfu_notifications_unread (user_kind, user_id, read_at, created_at),
+   KEY idx_mfu_notifications_created (user_kind, user_id, created_at),
+   KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at),
+   KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind),
+   KEY idx_mfu_notifications_recipient_unread (user_kind, recipient_key, read_at, created_at),
+   KEY idx_mfu_notifications_recipient_created (user_kind, recipient_key, created_at)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
++_NOTIFICATION_DELIVERY_DDL = """
++CREATE TABLE IF NOT EXISTS mfu_notification_deliveries (
++  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
++  notification_id BIGINT UNSIGNED NULL,
++  dedup_key VARCHAR(191) NOT NULL,
++  recipient_type VARCHAR(32) NOT NULL,
++  recipient_value VARCHAR(191) NOT NULL,
++  channel VARCHAR(32) NOT NULL,
++  status VARCHAR(32) NOT NULL,
++  detail TEXT NULL,
++  created_at DATETIME NOT NULL,
++  sent_at DATETIME NULL,
++  PRIMARY KEY (id),
++  KEY idx_mfu_notification_deliveries_notification_id (notification_id),
++  KEY idx_mfu_notification_deliveries_dedup (dedup_key),
++  KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel),
++  KEY idx_mfu_notification_deliveries_created (created_at)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
++"""
++
++
++def _ensure_notification_delivery_schema(cur) -> None:
++    cur.execute(_NOTIFICATION_DELIVERY_DDL)
++    cur.execute("SHOW INDEX FROM mfu_notification_deliveries")
++    existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
++    index_map = {
++        "idx_mfu_notification_deliveries_notification_id": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_notification_id (notification_id)",
++        "idx_mfu_notification_deliveries_dedup": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_dedup (dedup_key)",
++        "idx_mfu_notification_deliveries_recipient": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel)",
++        "idx_mfu_notification_deliveries_created": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_created (created_at)",
++    }
++    for key_name, ddl in index_map.items():
++        if key_name not in existing_indexes:
++            cur.execute(ddl)
++
+ 
+ def _ensure_notification_schema() -> None:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(_NOTIFICATION_DDL)
++        _ensure_notification_delivery_schema(cur)
+ 
+         cur.execute("SHOW COLUMNS FROM mfu_notifications")
+         existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
+ 
+         if "chat_event_id" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_event_id BIGINT UNSIGNED NULL AFTER event_id")
+         if "chat_room_id" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_room_id VARCHAR(64) NULL AFTER chat_event_id")
+         if "recipient_key" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN recipient_key VARCHAR(191) NULL AFTER user_id")
+         if "room_type" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_type VARCHAR(32) NULL AFTER chat_room_id")
+         if "room_id" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_id VARCHAR(64) NULL AFTER room_type")
+         if "sender_label" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN sender_label VARCHAR(255) NULL AFTER room_id")
+ 
 +        cur.execute(
-+            f"""
-+            SELECT mail_log_id,
-+                   recipient,
-+                   recipient_type,
-+                   submit_status,
-+                   delivery_status,
-+                   delivery_detail,
-+                   delivery_queue_id,
-+                   delivery_checked_at
-+              FROM mfu_mail_delivery_recipients
-+             WHERE mail_log_id IN ({placeholders})
-+             ORDER BY mail_log_id ASC, FIELD(recipient_type, 'to', 'cc', 'bcc'), id ASC
-+            """,
-+            row_ids,
++            """
++            UPDATE mfu_notifications
++               SET recipient_key=CAST(user_id AS CHAR)
++             WHERE user_kind='external'
++               AND (recipient_key IS NULL OR recipient_key='')
++            """
 +        )
-+        recipient_rows = cur.fetchall() or []
-+        recipient_map = {}
-+        for recipient_row in recipient_rows:
-+            recipient_map.setdefault(recipient_row["mail_log_id"], []).append(recipient_row)
 +
-     for row in rows:
-         submit_at = row.get("submit_at")
-         row["submit_at_ts"] = int(submit_at.timestamp()) if submit_at else None
-+        row["recipient_rows"] = recipient_map.get(row["id"], [])
+         index_map = {
+             "idx_mfu_notifications_chat_room_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at)",
+             "idx_mfu_notifications_unread_kind": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_unread_kind (user_kind, user_id, read_at, kind)",
+             "idx_mfu_notifications_recipient_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_recipient_unread (user_kind, recipient_key, read_at, created_at)",
+             "idx_mfu_notifications_recipient_created": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_recipient_created (user_kind, recipient_key, created_at)",
+         }
+         cur.execute("SHOW INDEX FROM mfu_notifications")
+         existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
+         for key_name, ddl in index_map.items():
+             if key_name not in existing_indexes:
+                 cur.execute(ddl)
  
-     cur.execute(
--        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log {where_sql}",
-+        f"SELECT COUNT(*) AS cnt FROM mfu_mail_delivery_log AS l {where_sql}",
-         params,
-     )
-     total = (cur.fetchone() or {}).get("cnt", 0)
-     db.close()
+         last_id = 0
+         scanned_count = 0
+         updated_count = 0
+         skipped_count = 0
+         parse_failed_count = 0
+         while True:
+             cur.execute(
+                 """
+                 SELECT id, target_url, event_id
+                   FROM mfu_notifications
+                  WHERE kind='chat_message'
+                    AND (chat_room_id IS NULL OR chat_room_id='')
+                    AND id > %s
+@@ -449,124 +513,69 @@ def _ensure_notification_schema() -> None:
+         cur.close()
+         db.close()
  
-     total_pages = max(1, (total + per_page - 1) // per_page)
+ 
+ @bp.record_once
+ def _ensure_notification_table(state) -> None:
+     app = state.app
+     with app.app_context():
+         try:
+             _ensure_notification_schema()
+         except Exception:
+             app.logger.exception("ensure mfu_notifications failed")
+ 
+ 
+ def create_notification_external(
+     user_id: int,
+     kind: str,
+     title: str,
+     body: str,
+     target_url: str,
+     dedup_key: str,
+     event_id: int | None = None,
+     chat_event_id: int | None = None,
+     chat_room_id: str | None = None,
+ ) -> bool:
+-    _ensure_notification_schema()
+-    db = get_db()
+-    cur = db.cursor(dictionary=True)
+-    try:
+-        normalized_kind = (kind or "").strip() or "general"
+-        normalized_chat_room_id = str(chat_room_id).strip() if chat_room_id else None
+-        if normalized_kind == "chat_message" and not normalized_chat_room_id:
+-            current_app.logger.warning(
+-                "create_notification_external rejected: chat_message requires chat_room_id user_id=%s event_id=%s chat_event_id=%s dedup_key=%s",
+-                int(user_id),
+-                int(event_id) if event_id else None,
+-                int(chat_event_id) if chat_event_id else None,
+-                (dedup_key or "").strip()[:191],
+-            )
+-            return False
+-
+-        dedup = (dedup_key or "").strip()[:191]
+-        cur.execute(
+-            """
+-            SELECT id, created_at
+-              FROM mfu_notifications
+-             WHERE user_kind=%s AND user_id=%s AND dedup_key=%s
+-             LIMIT 1
+-            """,
+-            ("external", int(user_id), dedup),
+-        )
+-        existing = cur.fetchone()
+-
+-        cur.execute(
+-            """
+-            INSERT INTO mfu_notifications (
+-              user_kind, user_id, kind, title, body, target_url,
+-              event_id, chat_event_id, chat_room_id, dedup_key, created_at, read_at
+-            )
+-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+-            ON DUPLICATE KEY UPDATE id=id
+-            """,
+-            (
+-                "external",
+-                int(user_id),
+-                normalized_kind,
+-                (title or "").strip() or "お知らせ",
+-                (body or "").strip(),
+-                (target_url or "").strip() or "/external-login/",
+-                int(event_id) if event_id else None,
+-                int(chat_event_id) if chat_event_id else None,
+-                normalized_chat_room_id,
+-                dedup,
+-                datetime.utcnow(),
+-            ),
+-        )
+-        deleted_old_read = _prune_old_read_notifications(cur, int(user_id))
+-        inserted = cur.rowcount == 1
+-        latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
+-        db.commit()
+-        if inserted:
+-            _emit_notif_unread(int(user_id), reason="created", latest_id=latest_id)
+-        current_app.logger.info(
+-            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
+-            int(user_id),
+-            int(event_id) if event_id else None,
+-            normalized_kind,
+-            dedup,
+-            inserted,
+-            existing["id"] if existing else None,
+-            deleted_old_read,
++    result = create_notification_dispatch_result(
++        recipient_type="external_user_id",
++        recipient_value=int(user_id),
++        kind=kind,
++        title=title,
++        body=body,
++        target_url=target_url or "/external-login/",
++        dedup_key=dedup_key,
++        event_id=event_id,
++        chat_event_id=chat_event_id,
++        chat_room_id=chat_room_id,
++    )
++    if not result.get("ok"):
++        current_app.logger.warning(
++            "create_notification_external failed user_id=%s reason=%s",
++            user_id,
++            result.get("reason"),
+         )
+-        return inserted
+-    except Exception:
+-        current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
+-        return False
+-    finally:
+-        cur.close()
+-        db.close()
++    return bool(result.get("created"))
+ 
+ 
+ def _compute_unread_count_mfu(username: str) -> int:
+     recipient = (username or "").strip()
+     if not recipient:
+         return 0
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT COUNT(*) AS cnt
+               FROM mfu_notifications
+              WHERE user_kind='mfu'
+                AND recipient_key=%s
+                AND read_at IS NULL
+             """,
+             (recipient,),
+         )
+         return int((cur.fetchone() or {}).get("cnt") or 0)
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+@@ -593,144 +602,430 @@ def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int |
+         )
+ 
+ 
+ def _serialize_mfu_notification_item(row: dict[str, Any]) -> dict[str, Any]:
+     created_at = row.get("created_at")
+     if created_at and created_at.tzinfo is None:
+         created_at = created_at.replace(tzinfo=timezone.utc)
+     read_at = row.get("read_at")
+     if read_at and read_at.tzinfo is None:
+         read_at = read_at.replace(tzinfo=timezone.utc)
+     return {
+         "id": int(row.get("id") or 0),
+         "kind": row.get("kind") or "general",
+         "title": row.get("title") or "お知らせ",
+         "body": row.get("body") or "",
+         "target_url": row.get("target_url") or "/",
+         "sender_label": row.get("sender_label") or "",
+         "room_type": row.get("room_type") or "",
+         "room_id": row.get("room_id") or row.get("chat_room_id") or "",
+         "is_read": bool(read_at),
+         "created_at": created_at.isoformat() if created_at else None,
+         "relative_time": _relative_time_from(created_at),
+     }
+ 
+ 
+-def create_notification_mfu(
++def _emit_notif_new_mfu(
++    recipient: str,
+     *,
+-    recipient_username: str,
++    notification_id: int | None,
+     kind: str,
+     title: str,
+     body: str,
+     target_url: str,
+-    sender_label: str = "",
+-    room_type: str | None = None,
+-    room_id: str | None = None,
+-    dedup_key: str | None = None,
+-) -> bool:
+-    _ensure_notification_schema()
+-    recipient = (recipient_username or "").strip()
+-    if not recipient:
+-        return False
++    sender_label: str,
++    room_type: str | None,
++    room_id: str | None,
++) -> None:
++    if socketio is None or not recipient:
++        return
++    socketio.emit(
++        "notif_new",
++        {"item": _serialize_mfu_notification_item({
++            "id": notification_id,
++            "kind": kind,
++            "title": title,
++            "body": body,
++            "target_url": target_url,
++            "sender_label": sender_label,
++            "room_type": room_type,
++            "room_id": room_id,
++            "read_at": None,
++            "created_at": _now_utc(),
++        })},
++        room=f"mfu_user:{recipient}",
++    )
++
++
++def _record_notification_delivery(
++    *,
++    notification_id: int | None,
++    dedup_key: str,
++    recipient_type: str,
++    recipient_value: str | int,
++    channel: str,
++    status: str,
++    detail: str | None = None,
++    sent_at: datetime | None = None,
++) -> None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        _ensure_notification_delivery_schema(cur)
++        cur.execute(
++            """
++            INSERT INTO mfu_notification_deliveries (
++              notification_id, dedup_key, recipient_type, recipient_value,
++              channel, status, detail, created_at, sent_at
++            )
++            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
++            """,
++            (
++                int(notification_id) if notification_id else None,
++                (dedup_key or "").strip()[:191],
++                (recipient_type or "").strip()[:32],
++                str(recipient_value or "")[:191],
++                (channel or "").strip()[:32],
++                (status or "").strip()[:32],
++                (detail or "").strip()[:65535] or None,
++                datetime.utcnow(),
++                sent_at,
++            ),
++        )
++        db.commit()
++    except Exception:
++        db.rollback()
++        current_app.logger.warning(
++            "notification delivery log failed dedup_key=%s recipient_type=%s recipient_value=%s channel=%s status=%s",
++            (dedup_key or "").strip()[:191],
++            (recipient_type or "").strip()[:32],
++            str(recipient_value or "")[:191],
++            (channel or "").strip()[:32],
++            (status or "").strip()[:32],
++            exc_info=True,
++        )
++    finally:
++        cur.close()
++        db.close()
+ 
+-    dedup = ((dedup_key or "").strip() or f"mfu:{recipient}:{kind}:{hash((title, body, target_url))}")[:191]
+-    room_type_value = (room_type or "").strip() or None
+-    room_id_value = (room_id or "").strip() or None
+ 
++def _has_notification_delivery_attempt(
++    *,
++    dedup_key: str,
++    recipient_type: str,
++    recipient_value: str | int,
++    channel: str,
++) -> bool:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
++        _ensure_notification_delivery_schema(cur)
+         cur.execute(
+             """
+             SELECT id
+-              FROM mfu_notifications
+-             WHERE user_kind='mfu'
+-               AND recipient_key=%s
+-               AND dedup_key=%s
++              FROM mfu_notification_deliveries
++             WHERE dedup_key=%s
++               AND recipient_type=%s
++               AND recipient_value=%s
++               AND channel=%s
+              LIMIT 1
+             """,
+-            (recipient, dedup),
++            (
++                (dedup_key or "").strip()[:191],
++                (recipient_type or "").strip()[:32],
++                str(recipient_value or "")[:191],
++                (channel or "").strip()[:32],
++            ),
+         )
+-        if cur.fetchone():
+-            return False
++        return bool(cur.fetchone())
++    finally:
++        cur.close()
++        db.close()
++
++
++def _create_notification_core(
++    *,
++    user_kind: str,
++    user_id: int,
++    recipient_key: str | None,
++    kind: str,
++    title: str,
++    body: str,
++    target_url: str,
++    dedup_key: str,
++    event_id: int | None = None,
++    chat_event_id: int | None = None,
++    chat_room_id: str | None = None,
++    room_type: str | None = None,
++    room_id: str | None = None,
++    sender_label: str = "",
++) -> dict[str, Any]:
++    _ensure_notification_schema()
++    normalized_kind = (kind or "").strip() or "general"
++    normalized_recipient_key = _notification_recipient_key(user_kind, user_id, recipient_key)
++    storage_user_id = _notification_storage_user_id(user_kind, user_id, normalized_recipient_key)
++    normalized_chat_room_id = str(chat_room_id).strip()[:64] if chat_room_id else None
++    normalized_room_type = (room_type or "").strip()[:32] or None
++    normalized_room_id = (room_id or "").strip()[:64] or normalized_chat_room_id or None
++    normalized_sender_label = (sender_label or "").strip()[:255]
++    dedup = (dedup_key or "").strip()[:191]
++    if not dedup:
++        return {"ok": False, "reason": "dedup_key_required"}
++    if normalized_kind == "chat_message" and not normalized_chat_room_id:
++        return {"ok": False, "reason": "chat_room_id_required"}
+ 
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
+         cur.execute(
+             """
+             INSERT INTO mfu_notifications (
+               user_kind, user_id, recipient_key, kind, title, body, target_url,
+-              room_type, room_id, sender_label,
++              event_id, chat_event_id, chat_room_id, room_type, room_id, sender_label,
+               dedup_key, created_at, read_at
+             )
+-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
++            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
++            ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+             """,
+             (
+-                "mfu",
+-                0,
+-                recipient,
+-                (kind or "").strip() or "general",
+-                (title or "").strip() or "お知らせ",
+-                (body or "").strip()[:300],
++                user_kind,
++                storage_user_id,
++                normalized_recipient_key or None,
++                normalized_kind,
++                (title or "").strip()[:255] or "お知らせ",
++                (body or "").strip(),
+                 (target_url or "").strip() or "/",
+-                room_type_value,
+-                room_id_value,
+-                (sender_label or "").strip()[:255],
++                int(event_id) if event_id else None,
++                int(chat_event_id) if chat_event_id else None,
++                normalized_chat_room_id,
++                normalized_room_type,
++                normalized_room_id,
++                normalized_sender_label or None,
+                 dedup,
+                 datetime.utcnow(),
+             ),
+         )
+         inserted = cur.rowcount == 1
+-        latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
++        notification_id = int(cur.lastrowid) if cur.lastrowid else None
++        deleted_old_read = 0
++        if inserted and user_kind == "external":
++            deleted_old_read = _prune_old_read_notifications(cur, int(storage_user_id))
+         db.commit()
+         if inserted:
+-            _emit_notif_unread_mfu(recipient, reason="created", latest_id=latest_id)
+-            if socketio is not None:
+-                socketio.emit(
+-                    "notif_new",
+-                    {"item": _serialize_mfu_notification_item({
+-                        "id": latest_id,
+-                        "kind": kind,
+-                        "title": title,
+-                        "body": body,
+-                        "target_url": target_url,
+-                        "sender_label": sender_label,
+-                        "room_type": room_type_value,
+-                        "room_id": room_id_value,
+-                        "read_at": None,
+-                        "created_at": _now_utc(),
+-                    })},
+-                    room=f"mfu_user:{recipient}",
++            if user_kind == "external":
++                _emit_notif_unread(int(storage_user_id), reason="created", latest_id=notification_id)
++            elif user_kind == "mfu" and normalized_recipient_key:
++                _emit_notif_unread_mfu(normalized_recipient_key, reason="created", latest_id=notification_id)
++                _emit_notif_new_mfu(
++                    normalized_recipient_key,
++                    notification_id=notification_id,
++                    kind=normalized_kind,
++                    title=(title or "").strip()[:255] or "お知らせ",
++                    body=(body or "").strip(),
++                    target_url=(target_url or "").strip() or "/",
++                    sender_label=normalized_sender_label,
++                    room_type=normalized_room_type,
++                    room_id=normalized_room_id,
+                 )
+-        return inserted
++        current_app.logger.info(
++            "notifications core user_kind=%s recipient_key=%s storage_user_id=%s kind=%s dedup_key=%s inserted=%s notification_id=%s pruned_read=%s",
++            user_kind,
++            normalized_recipient_key,
++            storage_user_id,
++            normalized_kind,
++            dedup,
++            inserted,
++            notification_id,
++            deleted_old_read,
++        )
++        return {
++            "ok": True,
++            "created": inserted,
++            "duplicate": not inserted,
++            "notification_id": notification_id if inserted else None,
++            "existing_notification_id": notification_id if not inserted else None,
++            "user_kind": user_kind,
++            "recipient_key": normalized_recipient_key,
++            "storage_user_id": storage_user_id,
++        }
+     except Exception:
+         db.rollback()
+-        current_app.logger.warning("create_notification_mfu failed username=%s", recipient, exc_info=True)
+-        return False
++        current_app.logger.warning(
++            "create notification core failed user_kind=%s recipient_key=%s storage_user_id=%s kind=%s",
++            user_kind,
++            normalized_recipient_key,
++            storage_user_id,
++            normalized_kind,
++            exc_info=True,
++        )
++        return {"ok": False, "reason": "db_error"}
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
++def create_notification_dispatch_result(
++    *,
++    recipient_type: str,
++    recipient_value: str | int,
++    kind: str,
++    title: str,
++    body: str,
++    target_url: str,
++    dedup_key: str,
++    sender_label: str = "",
++    room_type: str | None = None,
++    room_id: str | None = None,
++    event_id: int | None = None,
++    chat_event_id: int | None = None,
++    chat_room_id: str | None = None,
++) -> dict[str, Any]:
++    if recipient_type == "external_user_id":
++        return _create_notification_core(
++            user_kind="external",
++            user_id=int(recipient_value),
++            recipient_key=str(int(recipient_value)),
++            kind=kind,
++            title=title,
++            body=body,
++            target_url=target_url,
++            dedup_key=dedup_key,
++            event_id=event_id,
++            chat_event_id=chat_event_id,
++            chat_room_id=chat_room_id,
++            room_type=room_type,
++            room_id=room_id,
++            sender_label=sender_label,
++        )
++    if recipient_type == "mfu_username":
++        return _create_notification_core(
++            user_kind="mfu",
++            user_id=0,
++            recipient_key=str(recipient_value or "").strip(),
++            kind=kind,
++            title=title,
++            body=body,
++            target_url=target_url,
++            dedup_key=dedup_key,
++            event_id=event_id,
++            chat_event_id=chat_event_id,
++            chat_room_id=chat_room_id,
++            room_type=room_type,
++            room_id=room_id,
++            sender_label=sender_label,
++        )
++    return {"ok": False, "reason": "unsupported_recipient_type"}
++
++
++def create_notification_mfu(
++    *,
++    recipient_username: str,
++    kind: str,
++    title: str,
++    body: str,
++    target_url: str,
++    sender_label: str = "",
++    room_type: str | None = None,
++    room_id: str | None = None,
++    dedup_key: str | None = None,
++) -> bool:
++    recipient = (recipient_username or "").strip()
++    if not recipient:
++        return False
++
++    dedup = ((dedup_key or "").strip() or f"mfu:{recipient}:{kind}:{hash((title, body, target_url))}")[:191]
++    result = create_notification_dispatch_result(
++        recipient_type="mfu_username",
++        recipient_value=recipient,
++        kind=kind,
++        title=title,
++        body=(body or "").strip()[:300],
++        target_url=(target_url or "").strip() or "/",
++        sender_label=(sender_label or "").strip()[:255],
++        room_type=(room_type or "").strip() or None,
++        room_id=(room_id or "").strip() or None,
++        dedup_key=dedup,
++    )
++    if not result.get("ok"):
++        current_app.logger.warning(
++            "create_notification_mfu failed username=%s reason=%s",
++            recipient,
++            result.get("reason"),
++        )
++    return bool(result.get("created"))
++
++
++def _require_internal_api_key() -> tuple[bool, Any | None]:
++    configured_key = str(os.getenv("MFU_INTERNAL_API_KEY") or "").strip()
++    if not configured_key:
++        return False, (jsonify({"ok": False, "reason": "server_not_configured"}), 503)
++    provided_key = str(request.headers.get("X-MFU-Internal-Key") or "").strip()
++    if not provided_key:
++        return False, (jsonify({"ok": False, "reason": "missing_internal_key"}), 401)
++    if not hmac.compare_digest(provided_key, configured_key):
++        return False, (jsonify({"ok": False, "reason": "invalid_internal_key"}), 403)
++    return True, None
++
++
++@mfu_notifications_bp.post("/api/internal/push/send")
++def api_internal_push_send():
++    allowed, error = _require_internal_api_key()
++    if not allowed:
++        return error
++
++    payload = request.get_json(silent=True) or {}
++    try:
++        from app.utils.push import PushDispatchError, send_push
++
++        result = send_push(
++            recipient_type=payload.get("recipient_type"),
++            recipient_value=payload.get("recipient_value"),
++            title=payload.get("title"),
++            body=payload.get("body"),
++            target_url=payload.get("target_url"),
++            kind=payload.get("kind", "general"),
++            sender_label=payload.get("sender_label"),
++            dedup_key=payload.get("dedup_key"),
++            room_type=payload.get("room_type"),
++            room_id=payload.get("room_id"),
++            event_id=payload.get("event_id"),
++            chat_event_id=payload.get("chat_event_id"),
++            chat_room_id=payload.get("chat_room_id"),
++            create_in_app=payload.get("create_in_app", True),
++            send_web_push=payload.get("send_web_push", True),
++        )
++        return jsonify(result)
++    except PushDispatchError as exc:
++        response = {"ok": False, "reason": exc.reason}
++        if exc.detail:
++            response["detail"] = exc.detail
++        return jsonify(response), int(exc.status_code)
++    except Exception:
++        current_app.logger.exception("internal push send failed")
++        return jsonify({"ok": False, "reason": "internal_error"}), 500
++
++
+ @bp.get("/notifications")
+ def notifications_page():
+     return redirect("/notifications")
+ 
+ 
+ @mfu_notifications_bp.get("/notifications")
+ def notifications_unified_page():
+     _ensure_notification_schema()
+     scope = _resolve_notification_scope_for_session()
+     if scope == "external":
+         guard = _require_ext_login()
+         if guard:
+             return guard
+     elif scope == "mfu":
+         username, error = _require_mfu_admin_acl()
+         if error:
+             return error
+     else:
+         return jsonify({"ok": False, "reason": "login_required"}), 401
+ 
+     current_app.logger.info("notifications page render scope=%s", scope)
      return render_template(
-         "admin_mail_delivery_logs.html",
-         rows=rows,
-         filters={
-             "status": status,
-             "q": search,
-             "limit": per_page,
-         },
-         page=page,
-         total_pages=total_pages,
-         total=total,
-     )
- 
- 
- @app.route("/admin/mail-delivery/refresh", methods=["POST"])
- @admin_required
- def admin_mail_delivery_refresh():
-     from app.utils.mail_delivery import poll_mail_delivery_statuses
- 
-diff --git a/templates/admin_mail_delivery_logs.html b/templates/admin_mail_delivery_logs.html
-index d0b17d371fcbb840fe7c7a5ad08417048f67c716..823487e6ce5b8cfa96be31223ec5cd3eec9536c5 100644
---- a/templates/admin_mail_delivery_logs.html
-+++ b/templates/admin_mail_delivery_logs.html
-@@ -1,131 +1,204 @@
- {% extends "base.html" %}
- 
- {% block title %}メール送信ログ | MFU{% endblock %}
- 
-+{% macro submit_badge(status) -%}
-+  {% if status == 'sent' %}
-+    <span class="badge bg-success">sent</span>
-+  {% elif status == 'queued' %}
-+    <span class="badge bg-secondary">queued</span>
-+  {% elif status == 'partial' %}
-+    <span class="badge bg-warning text-dark">partial</span>
-+  {% else %}
-+    <span class="badge bg-danger">failed</span>
-+  {% endif %}
-+{%- endmacro %}
-+
-+{% macro delivery_badge(status) -%}
-+  {% if status == 'sent' %}
-+    <span class="badge bg-success">sent</span>
-+  {% elif status == 'partial' %}
-+    <span class="badge bg-info text-dark">partial</span>
-+  {% elif status == 'bounced' or status == 'failed' %}
-+    <span class="badge bg-danger">{{ status }}</span>
-+  {% elif status == 'deferred' %}
-+    <span class="badge bg-warning text-dark">deferred</span>
-+  {% elif status == 'queued' %}
-+    <span class="badge bg-secondary">queued</span>
-+  {% else %}
-+    <span class="badge bg-light text-dark border">unknown</span>
-+  {% endif %}
-+{%- endmacro %}
-+
- {% block content %}
- <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 gap-2">
-   <div>
-     <h2 class="mb-0">📧 メール送信ログ（配送結果）</h2>
-+    <div class="text-muted small mt-1">親1メールを維持しつつ、宛先別の配送明細を確認できます。</div>
-     <div id="mail-delivery-refresh-status" class="text-muted small mt-1" aria-live="polite"></div>
-   </div>
-   <div class="d-flex align-items-center gap-2">
-     <span class="text-muted small">合計 {{ total }} 件</span>
-     <button class="btn btn-outline-primary btn-sm" type="button" id="mail-delivery-refresh">配送状況を更新</button>
-   </div>
- </div>
- 
- <form class="row g-2 align-items-end mb-3" method="get" action="{{ url_for('admin_mail_delivery_logs') }}">
-   <div class="col-sm-3">
-     <label class="form-label">配送ステータス</label>
-     <select class="form-select" name="status">
-       {% set cur = filters.status %}
-       <option value="all" {% if cur == 'all' %}selected{% endif %}>すべて</option>
-       <option value="queued" {% if cur == 'queued' %}selected{% endif %}>queued</option>
-       <option value="sent" {% if cur == 'sent' %}selected{% endif %}>sent</option>
-+      <option value="partial" {% if cur == 'partial' %}selected{% endif %}>partial</option>
-       <option value="deferred" {% if cur == 'deferred' %}selected{% endif %}>deferred</option>
-       <option value="bounced" {% if cur == 'bounced' %}selected{% endif %}>bounced</option>
-       <option value="unknown" {% if cur == 'unknown' %}selected{% endif %}>unknown</option>
-       <option value="failed" {% if cur == 'failed' %}selected{% endif %}>failed</option>
-     </select>
-   </div>
-   <div class="col-sm-5">
-     <label class="form-label">検索（宛先/件名/Message-ID）</label>
-     <input class="form-control" type="text" name="q" value="{{ filters.q or '' }}" placeholder="keyword">
-   </div>
-   <div class="col-sm-2">
-     <label class="form-label">件数</label>
-     <input class="form-control" type="number" name="limit" min="20" max="500" value="{{ filters.limit }}">
-   </div>
-   <div class="col-sm-2 d-flex gap-2">
-     <button class="btn btn-primary w-100" type="submit">適用</button>
-     <a class="btn btn-outline-secondary w-100" href="{{ url_for('admin_mail_delivery_logs') }}">リセット</a>
-   </div>
- </form>
- 
- <div class="table-responsive">
-   <table class="table table-striped table-hover align-middle">
-     <thead class="table-light">
-       <tr>
-         <th>送信日時</th>
-         <th>宛先</th>
-         <th>件名</th>
-         <th>Message-ID</th>
-         <th>送信結果</th>
-         <th>配送結果</th>
-+        <th>集計</th>
-         <th>詳細</th>
--        <th>Queue-ID</th>
-         <th>最終チェック</th>
-+        <th>明細</th>
-       </tr>
-     </thead>
-     <tbody>
-       {% for row in rows %}
-+      {% set detail_id = 'mail-delivery-detail-' ~ row.id %}
-       <tr data-submit-ts="{{ row.submit_at_ts or '' }}" data-delivery-status="{{ row.last_delivery_status or '' }}">
-         <td class="text-nowrap">{{ row.submit_at }}</td>
--        <td>{{ row.to_addresses or '-' }}</td>
-+        <td>
-+          <div>{{ row.to_addresses or '-' }}</div>
-+          <div class="small text-muted">{{ row.recipient_count or 0 }} 宛先</div>
-+        </td>
-         <td>{{ row.subject or '-' }}</td>
-         <td class="text-break small">{{ row.message_id }}</td>
-         <td>
--          {% if row.submit_status == 'sent' %}
--            <span class="badge bg-success">sent</span>
--          {% elif row.submit_status == 'queued' %}
--            <span class="badge bg-secondary">queued</span>
--          {% else %}
--            <span class="badge bg-danger">failed</span>
--          {% endif %}
-+          {{ submit_badge(row.submit_status) }}
-         </td>
-         <td>
--          {% set status = row.last_delivery_status %}
--          {% if status == 'sent' %}
--            <span class="badge bg-success">sent</span>
--          {% elif status == 'bounced' %}
--            <span class="badge bg-danger">bounced</span>
--          {% elif status == 'deferred' %}
--            <span class="badge bg-warning text-dark">deferred</span>
--          {% elif status == 'queued' %}
--            <span class="badge bg-secondary">queued</span>
--          {% elif status == 'failed' %}
--            <span class="badge bg-dark">failed</span>
--          {% else %}
--            <span class="badge bg-light text-dark border">unknown</span>
-+          {{ delivery_badge(row.last_delivery_status) }}
-+          {% if row.last_delivery_status == 'partial' %}
-+            <div class="small text-muted mt-1">一部成功／一部未達</div>
-           {% endif %}
-         </td>
-+        <td class="small text-nowrap">
-+          <div>成功: {{ row.success_count or 0 }}</div>
-+          <div>遅延: {{ row.deferred_count or 0 }}</div>
-+          <div>失敗: {{ row.failure_count or 0 }}</div>
-+          <div>確認中: {{ row.queued_count or 0 }}</div>
-+        </td>
-         <td>
-           {% if row.last_delivery_detail %}
--            <span class="text-truncate d-inline-block" style="max-width: 180px;" data-bs-toggle="tooltip" title="{{ row.last_delivery_detail | e }}">
-+            <span class="text-truncate d-inline-block" style="max-width: 220px;" data-bs-toggle="tooltip" title="{{ row.last_delivery_detail | e }}">
-               {{ row.last_delivery_detail }}
-             </span>
-           {% else %}
-             <span class="text-muted">-</span>
-           {% endif %}
-         </td>
--        <td class="text-nowrap">{{ row.last_delivery_queue_id or '-' }}</td>
-         <td class="text-nowrap">{{ row.last_delivery_checked_at or '-' }}</td>
-+        <td class="text-nowrap">
-+          {% if row.recipient_rows %}
-+            <button class="btn btn-outline-secondary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#{{ detail_id }}" aria-expanded="false" aria-controls="{{ detail_id }}">
-+              宛先別詳細
-+            </button>
-+          {% else %}
-+            <span class="text-muted small">未作成</span>
-+          {% endif %}
-+        </td>
-+      </tr>
-+      <tr class="collapse-row">
-+        <td colspan="10" class="p-0 border-0">
-+          <div class="collapse" id="{{ detail_id }}">
-+            <div class="card card-body border-top-0 rounded-0">
-+              {% if row.recipient_rows %}
-+              <div class="table-responsive">
-+                <table class="table table-sm align-middle mb-0">
-+                  <thead>
-+                    <tr>
-+                      <th>recipient</th>
-+                      <th>type</th>
-+                      <th>submit_status</th>
-+                      <th>delivery_status</th>
-+                      <th>delivery_detail</th>
-+                      <th>queue_id</th>
-+                      <th>checked_at</th>
-+                    </tr>
-+                  </thead>
-+                  <tbody>
-+                    {% for recipient in row.recipient_rows %}
-+                    <tr>
-+                      <td class="text-break">{{ recipient.recipient }}</td>
-+                      <td><span class="badge bg-light text-dark border text-uppercase">{{ recipient.recipient_type }}</span></td>
-+                      <td>{{ submit_badge(recipient.submit_status) }}</td>
-+                      <td>{{ delivery_badge(recipient.delivery_status) }}</td>
-+                      <td class="small text-break">{{ recipient.delivery_detail or '-' }}</td>
-+                      <td class="small text-nowrap">{{ recipient.delivery_queue_id or '-' }}</td>
-+                      <td class="small text-nowrap">{{ recipient.delivery_checked_at or '-' }}</td>
-+                    </tr>
-+                    {% endfor %}
-+                  </tbody>
-+                </table>
-+              </div>
-+              {% else %}
-+              <div class="text-muted small">宛先別明細はまだありません。必要に応じてバックフィルを実行してください。</div>
-+              {% endif %}
-+            </div>
-+          </div>
-+        </td>
-       </tr>
-       {% else %}
-       <tr>
--        <td colspan="9" class="text-center text-muted">該当データがありません。</td>
-+        <td colspan="10" class="text-center text-muted">該当データがありません。</td>
-       </tr>
-       {% endfor %}
-     </tbody>
-   </table>
- </div>
- 
- <nav aria-label="pagination" class="mt-3">
-   <ul class="pagination justify-content-center">
-     {% set prev_page = page - 1 %}
-     {% set next_page = page + 1 %}
-     <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-       <a class="page-link" href="{{ url_for('admin_mail_delivery_logs', page=prev_page, status=filters.status, q=filters.q, limit=filters.limit) }}">前へ</a>
-     </li>
-     <li class="page-item disabled"><span class="page-link">{{ page }} / {{ total_pages }}</span></li>
-     <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-       <a class="page-link" href="{{ url_for('admin_mail_delivery_logs', page=next_page, status=filters.status, q=filters.q, limit=filters.limit) }}">次へ</a>
-     </li>
-   </ul>
- </nav>
- {% endblock %}
- 
- {% block body_extra %}
- <script>
-   document.addEventListener('DOMContentLoaded', () => {
-     const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-@@ -142,66 +215,66 @@
-         return;
-       }
-       const defaultLabel = refreshButton.textContent;
-       refreshButton.disabled = true;
-       refreshButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>更新中...';
-       if (refreshStatus) {
-         refreshStatus.textContent = 'ラズパイから配送状況を取得しています...';
-       }
- 
-       const params = new URLSearchParams(window.location.search);
-       const limit = Number(params.get('limit')) || {{ filters.limit }};
-       const maxRows = Math.min(Math.max(limit, 20), 500);
-       const timeoutSec = 45;
-       try {
-         const response = await fetch('{{ url_for("admin_mail_delivery_refresh") }}?max_rows=' + maxRows + '&timeout_sec=' + timeoutSec, {
-           method: 'POST',
-           headers: {
-             'Content-Type': 'application/json'
-           },
-         });
-         if (!response.ok) {
-           throw new Error('refresh_failed');
-         }
-         const result = await response.json();
-         if (refreshStatus) {
--          refreshStatus.textContent = `更新完了: ${result.updated || 0} 件（確認 ${result.checked || 0} 件）`;
-+          refreshStatus.textContent = `更新完了: ${result.updated || 0} 宛先（確認 ${result.checked || 0} 宛先 / ${result.messages || 0} メール）`;
-         }
-         window.location.reload();
-       } catch (error) {
-         if (refreshStatus) {
-           refreshStatus.textContent = '更新に失敗しました。時間をおいて再試行してください。';
-         }
-       } finally {
-         refreshButton.disabled = false;
-         refreshButton.textContent = defaultLabel;
-       }
-     };
- 
-     if (refreshButton) {
-       refreshButton.addEventListener('click', async () => {
-         await runRefresh();
-       });
-     }
- 
-     const rows = Array.from(document.querySelectorAll('tbody tr[data-submit-ts]'));
--    const pendingStatuses = new Set(['queued', 'deferred', 'unknown']);
-+    const pendingStatuses = new Set(['queued', 'deferred', 'unknown', 'partial']);
-     const pendingRows = rows.filter((row) => pendingStatuses.has(row.dataset.deliveryStatus || ''));
-     if (pendingRows.length > 0) {
-       const latestSubmit = pendingRows.reduce((maxValue, row) => {
-         const ts = Number(row.dataset.submitTs || 0);
-         return Math.max(maxValue, ts);
-       }, 0);
-       if (latestSubmit > 0) {
-         const now = Math.floor(Date.now() / 1000);
-         const elapsedSec = now - latestSubmit;
-         if (elapsedSec <= 30) {
-           const delayMs = Math.max(0, (30 - elapsedSec) * 1000);
-           setTimeout(() => {
-             runRefresh();
-           }, delayMs);
-         }
-       }
-     }
-   });
- </script>
- {% endblock %}
-diff --git a/utils/backfill_mail_delivery_recipients.py b/utils/backfill_mail_delivery_recipients.py
-new file mode 100755
-index 0000000000000000000000000000000000000000..f65d873c074c85a70a0e5039ff66fc15ec7e25b1
+         "notifications.html",
+         notification_scope=scope,
+         notification_api_map=_resolve_notification_api_mode_for_session(),
+diff --git a/tests/test_internal_push_api.py b/tests/test_internal_push_api.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..10da7b90d287b8cf92dfb0c2e0bafdfaa9432c4b
 --- /dev/null
-+++ b/utils/backfill_mail_delivery_recipients.py
-@@ -0,0 +1,37 @@
-+#!/usr/bin/env python3
-+from __future__ import annotations
-+
-+import json
++++ b/tests/test_internal_push_api.py
+@@ -0,0 +1,176 @@
++import importlib.util
 +import os
 +import sys
-+from datetime import datetime
++import types
++import unittest
++from pathlib import Path
++from unittest.mock import patch
 +
-+from app import create_app
-+from app.utils.mail_delivery import backfill_mail_delivery_recipients_from_logs
++from flask import Blueprint, Flask
 +
 +
-+def main() -> int:
-+    max_rows_env = os.environ.get("MFU_MAIL_BACKFILL_MAX_ROWS")
-+    max_rows = int(max_rows_env) if max_rows_env else None
++class FakePushDispatchError(Exception):
++    def __init__(self, reason: str, *, status_code: int = 400, detail: str | None = None):
++        super().__init__(reason)
++        self.reason = reason
++        self.status_code = status_code
++        self.detail = detail
 +
-+    app = create_app()
-+    with app.app_context():
-+        summary = backfill_mail_delivery_recipients_from_logs(max_rows=max_rows)
 +
-+    payload = {
-+        "ts": datetime.now().isoformat(timespec="seconds"),
-+        "summary": summary,
-+    }
-+    print(json.dumps(payload, ensure_ascii=False))
-+    return 0
++class InternalPushApiTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        repo_root = Path(__file__).resolve().parents[1]
++
++        app_module = types.ModuleType("app")
++        app_module.__path__ = [str(repo_root)]  # type: ignore[attr-defined]
++        sys.modules["app"] = app_module
++
++        ext_pkg = types.ModuleType("app.external_login_user")
++        ext_pkg.__path__ = [str(repo_root / "external_login_user")]  # type: ignore[attr-defined]
++        ext_pkg.bp = Blueprint("external_login_user", __name__)
++        sys.modules["app.external_login_user"] = ext_pkg
++
++        ext_utils_module = types.ModuleType("app.external_login_user.utils")
++        ext_utils_module._require_ext_login = lambda: None
++        sys.modules["app.external_login_user.utils"] = ext_utils_module
++
++        app_utils_module = types.ModuleType("app.utils")
++        app_utils_module.__path__ = [str(repo_root / "utils")]  # type: ignore[attr-defined]
++        sys.modules["app.utils"] = app_utils_module
++
++        db_module = types.ModuleType("app.utils.db")
++        db_module.get_db = lambda: None
++        sys.modules["app.utils.db"] = db_module
++
++        push_module = types.ModuleType("app.utils.push")
++        push_module.PushDispatchError = FakePushDispatchError
++        push_module.send_push = lambda **kwargs: {"ok": True}
++        sys.modules["app.utils.push"] = push_module
++        cls.push_module = push_module
++
++        notif_spec = importlib.util.spec_from_file_location(
++            "app.external_login_user.notifications",
++            repo_root / "external_login_user" / "notifications.py",
++        )
++        notif_module = importlib.util.module_from_spec(notif_spec)
++        assert notif_spec and notif_spec.loader
++        sys.modules["app.external_login_user.notifications"] = notif_module
++        notif_spec.loader.exec_module(notif_module)
++        cls.notifications = notif_module
++
++    def setUp(self):
++        self.app = Flask(__name__)
++        self.app.secret_key = "test"
++        self.app.register_blueprint(self.notifications.mfu_notifications_bp)
++        self.client = self.app.test_client()
++
++    def test_internal_push_requires_api_key(self):
++        with patch.dict(os.environ, {"MFU_INTERNAL_API_KEY": "secret"}, clear=False):
++            res = self.client.post("/api/internal/push/send", json={})
++        self.assertEqual(res.status_code, 401)
++        self.assertEqual(res.get_json()["reason"], "missing_internal_key")
++
++    def test_internal_push_create_in_app_only(self):
++        captured = {}
++
++        def fake_send_push(**kwargs):
++            captured.update(kwargs)
++            return {
++                "ok": True,
++                "created": True,
++                "duplicate": False,
++                "notification_id": 101,
++                "delivery": {"in_app": "created", "web_push": "skipped"},
++            }
++
++        with (
++            patch.dict(os.environ, {"MFU_INTERNAL_API_KEY": "secret"}, clear=False),
++            patch.object(self.push_module, "send_push", side_effect=fake_send_push),
++        ):
++            res = self.client.post(
++                "/api/internal/push/send",
++                headers={"X-MFU-Internal-Key": "secret"},
++                json={
++                    "recipient_type": "external_user_id",
++                    "recipient_value": 123,
++                    "title": "写真アップロード完了",
++                    "body": "アルバムに新しい写真が追加されました。",
++                    "target_url": "/albums/123",
++                    "dedup_key": "album:123:upload_complete:user:123",
++                    "create_in_app": True,
++                    "send_web_push": False,
++                },
++            )
++        self.assertEqual(res.status_code, 200)
++        self.assertEqual(captured["recipient_type"], "external_user_id")
++        self.assertFalse(captured["send_web_push"])
++        self.assertEqual(res.get_json()["delivery"]["in_app"], "created")
++
++    def test_internal_push_web_push_result_passthrough(self):
++        with (
++            patch.dict(os.environ, {"MFU_INTERNAL_API_KEY": "secret"}, clear=False),
++            patch.object(
++                self.push_module,
++                "send_push",
++                return_value={
++                    "ok": True,
++                    "created": True,
++                    "duplicate": False,
++                    "notification_id": 202,
++                    "delivery": {"in_app": "created", "web_push": "sent"},
++                },
++            ),
++        ):
++            res = self.client.post(
++                "/api/internal/push/send",
++                headers={"X-MFU-Internal-Key": "secret"},
++                json={
++                    "recipient_type": "mfu_username",
++                    "recipient_value": "admin",
++                    "title": "管理通知",
++                    "body": "Pushあり",
++                    "target_url": "/mfu-notifications",
++                    "dedup_key": "admin:test:webpush",
++                    "create_in_app": True,
++                    "send_web_push": True,
++                },
++            )
++        self.assertEqual(res.status_code, 200)
++        self.assertEqual(res.get_json()["delivery"]["web_push"], "sent")
++
++    def test_internal_push_duplicate_passthrough(self):
++        with (
++            patch.dict(os.environ, {"MFU_INTERNAL_API_KEY": "secret"}, clear=False),
++            patch.object(
++                self.push_module,
++                "send_push",
++                return_value={
++                    "ok": True,
++                    "created": False,
++                    "duplicate": True,
++                    "notification_id": None,
++                    "delivery": {"in_app": "duplicate", "web_push": "skipped"},
++                },
++            ),
++        ):
++            res = self.client.post(
++                "/api/internal/push/send",
++                headers={"X-MFU-Internal-Key": "secret"},
++                json={
++                    "recipient_type": "external_user_id",
++                    "recipient_value": 123,
++                    "title": "重複通知",
++                    "body": "same",
++                    "target_url": "/albums/123",
++                    "dedup_key": "duplicate:key",
++                },
++            )
++        self.assertEqual(res.status_code, 200)
++        payload = res.get_json()
++        self.assertTrue(payload["duplicate"])
++        self.assertEqual(payload["delivery"]["in_app"], "duplicate")
 +
 +
 +if __name__ == "__main__":
-+    try:
-+        raise SystemExit(main())
-+    except Exception as exc:
-+        print(
-+            f"[backfill_mail_delivery_recipients] ERROR: {exc.__class__.__name__}: {exc}",
-+            file=sys.stderr,
-+        )
-+        raise
-diff --git a/utils/mail.py b/utils/mail.py
-index 37352ebc2d7f210466ddb38ed529cc4693a92e86..12e30c820743897ebd70266786d6c476857ea05d 100644
---- a/utils/mail.py
-+++ b/utils/mail.py
-@@ -236,131 +236,143 @@ def send_mime(
- ) -> None:
-     """構築済みのMIMEメッセージをそのまま送信（署名は追加しない）"""
-     log = logging.getLogger("mfu.smtp")
- 
-     def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
-         status = "OK" if ok else "NG"
-         s = f'送信{status}: to="{to_text}" subj="{subj}"'
-         if extra:
-             s += f" detail={extra}"
-         log.info(s)
-         print(f"[SMTP] {s}")
- 
-     envelope_from = parseaddr(msg.get("From", ""))[1] or "noreply@mail.iori0624.jp"
- 
-     mfu_mail_uuid, message_id = generate_message_id()
-     message_id_header = f"<{message_id}>"
-     if msg.get("Message-ID"):
-         msg.replace_header("Message-ID", message_id_header)
-     else:
-         msg["Message-ID"] = message_id_header
-     if msg.get("X-MFU-Mail-ID"):
-         msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
-     else:
-         msg["X-MFU-Mail-ID"] = mfu_mail_uuid
- 
--    rcpts: list[str] = []
--    for h in ("To", "Cc", "Bcc"):
--        if msg.get(h):
--            rcpts.extend(addr for _, addr in getaddresses([msg.get(h)]) if addr)
-+    to_rcpts = [
-+        addr.strip() for _, addr in getaddresses([msg.get("To")]) if addr and addr.strip()
-+    ] if msg.get("To") else []
-+    cc_rcpts = [
-+        addr.strip() for _, addr in getaddresses([msg.get("Cc")]) if addr and addr.strip()
-+    ] if msg.get("Cc") else []
-+    bcc_rcpts = [
-+        addr.strip() for _, addr in getaddresses([msg.get("Bcc")]) if addr and addr.strip()
-+    ] if msg.get("Bcc") else []
-+    rcpts: list[str] = [*to_rcpts, *cc_rcpts, *bcc_rcpts]
- 
-     if "Bcc" in msg:
-         del msg["Bcc"]
- 
-     subj = msg.get("Subject", "")
- 
-     if not rcpts:
-         _summary_log(False, "(none)", subj, "no recipients")
-         return
- 
-     if starttls is None:
-         starttls = (smtp_port == 587)
- 
-     smtp = None
-     sent_ok = False
-     try:
-         smtp = smtplib.SMTP(host=smtp_host, port=smtp_port, timeout=timeout)
-         if debug:
-             smtp.set_debuglevel(1)
- 
-         code, resp = smtp.ehlo()
-         if debug:
-             print("[SMTP] EHLO:", code, resp.decode() if isinstance(resp, bytes) else resp)
- 
-         if starttls:
-             code, resp = smtp.starttls(context=ssl.create_default_context())
-             if debug:
-                 print("[SMTP] STARTTLS:", code, resp.decode() if isinstance(resp, bytes) else resp)
-             code, resp = smtp.ehlo()
-             if debug:
-                 print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
- 
-         result = smtp.sendmail(envelope_from, rcpts, msg.as_string())
-         if result:
-             detail = "; ".join(f"{rcpt}:{info}" for rcpt, info in result.items())
-             _summary_log(False, ", ".join(rcpts), subj, detail)
-             raise smtplib.SMTPRecipientsRefused(result)
- 
-         sent_ok = True
-         _summary_log(True, ", ".join(rcpts), subj)
-         try:
-             record_mail_submission(
-                 mfu_mail_uuid=mfu_mail_uuid,
-                 message_id=message_id,
--                to_addresses=", ".join(rcpts),
-+                to_addresses=to_rcpts,
-+                cc_addresses=cc_rcpts,
-+                bcc_addresses=bcc_rcpts,
-                 subject=subj or "",
-                 submit_status="queued",
-                 last_delivery_status="queued",
-             )
-         except Exception:
-             log.warning("mail submission log failed", exc_info=True)
- 
-         try:
-             smtp.quit()
-         except Exception as e_quit:
-             if ignore_quit_errors and sent_ok:
-                 log.info(f"SMTP QUIT error ignored: {e_quit}")
-             else:
-                 raise
- 
-     except smtplib.SMTPException as e:
-         if sent_ok and ignore_quit_errors:
-             log.info(f"SMTP post-send error ignored: {e}")
-         else:
-             _summary_log(False, ", ".join(rcpts), subj, repr(e))
-             try:
-                 record_mail_submission(
-                     mfu_mail_uuid=mfu_mail_uuid,
-                     message_id=message_id,
--                    to_addresses=", ".join(rcpts),
-+                    to_addresses=to_rcpts,
-+                    cc_addresses=cc_rcpts,
-+                    bcc_addresses=bcc_rcpts,
-                     subject=subj or "",
-                     submit_status="failed",
-                     last_delivery_status="failed",
-                     last_delivery_detail=repr(e),
-                 )
-             except Exception:
-                 log.warning("mail submission log failed", exc_info=True)
-             raise
-     except Exception as e:
-         if sent_ok and ignore_quit_errors:
-             log.info(f"SMTP post-send generic error ignored: {e}")
-         else:
-             _summary_log(False, ", ".join(rcpts), subj, repr(e))
-             try:
-                 record_mail_submission(
-                     mfu_mail_uuid=mfu_mail_uuid,
-                     message_id=message_id,
--                    to_addresses=", ".join(rcpts),
-+                    to_addresses=to_rcpts,
-+                    cc_addresses=cc_rcpts,
-+                    bcc_addresses=bcc_rcpts,
-                     subject=subj or "",
-                     submit_status="failed",
-                     last_delivery_status="failed",
-                     last_delivery_detail=repr(e),
-                 )
-             except Exception:
-                 log.warning("mail submission log failed", exc_info=True)
-             raise
-     finally:
-         if smtp is not None:
-             try:
-                 smtp.close()
-             except Exception:
-                 pass
-diff --git a/utils/mail_delivery.py b/utils/mail_delivery.py
-index 7c0dcb2b2bb65db5c8ea7245bf892f46655dabad..e8a83f27ac34ecd084c169956c6cfd54954dc539 100644
---- a/utils/mail_delivery.py
-+++ b/utils/mail_delivery.py
-@@ -1,45 +1,53 @@
- from __future__ import annotations
- 
- import os
- import re
- import uuid
-+from collections import Counter, defaultdict
- from datetime import datetime, timedelta
-+from email.utils import getaddresses, parseaddr
++    unittest.main()
+diff --git a/utils/push.py b/utils/push.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..87b815161160ce6509def876f324aa5cdf49ef9d
+--- /dev/null
++++ b/utils/push.py
+@@ -0,0 +1,422 @@
++from __future__ import annotations
++
++import logging
++import os
++from dataclasses import dataclass
++from datetime import datetime
++from time import perf_counter
 +from typing import Any
- 
- import requests
- from flask import current_app
- 
- from app.utils.db import get_db
- 
- DEFAULT_POSTFIX_STATUS_API_BASE_URL = "http://192.168.103.15:18080"
- DEFAULT_MESSAGE_ID_DOMAIN = "mail.iori0624.jp"
- DEFAULT_POLL_LIMIT_HOURS = 24
- DEFAULT_HTTP_TIMEOUT_SEC = 30
- MAX_HTTP_TIMEOUT_SEC = 120
- SUCCESS_STATUSES = {"sent", "delivered", "success", "ok"}
-+FAILURE_STATUSES = {"failed", "bounced", "error"}
-+QUEUED_STATUSES = {"queued", "accepted", "unknown"}
- SUCCESS_DETAIL_PATTERNS = ("250", "2.0.0", "2.0.0 ok", "queued as", "status=sent")
- QUEUED_AS_PATTERN = re.compile(r"queued\s+as\s+([A-Z0-9._-]+)", re.IGNORECASE)
-+DERIVED_FROM_PARENT_MARKER = "derived_from_parent"
-+RECIPIENT_TYPE_LABELS = {"to": "To", "cc": "Cc", "bcc": "Bcc"}
-+RECIPIENT_TYPE_PRIORITY = ("to", "cc", "bcc")
- 
- 
- def _get_config_value(name: str, default, *legacy_names: str):
-     value = None
-     try:
-         value = current_app.config.get(name)
-     except Exception:
-         value = None
-     if value is None:
-         value = os.environ.get(name)
-     if value is None:
-         for legacy_name in legacy_names:
-             try:
-                 value = current_app.config.get(legacy_name)
-             except Exception:
-                 value = None
-             if value is None:
-                 value = os.environ.get(legacy_name)
-             if value is not None:
-                 break
-     return default if value is None else value
- 
- 
- def _clamp(value: str | None, max_len: int) -> str | None:
-     if value is None:
-@@ -53,439 +61,1168 @@ def ensure_mail_delivery_schema() -> None:
-     cur = db.cursor()
-     cur.execute(
-         """
-         CREATE TABLE IF NOT EXISTS mfu_mail_delivery_log (
-             id INT AUTO_INCREMENT PRIMARY KEY,
-             mfu_mail_uuid CHAR(36) NOT NULL,
-             message_id VARCHAR(255) NOT NULL,
-             to_addresses VARCHAR(1024) NULL,
-             subject VARCHAR(255) NULL,
-             submit_status VARCHAR(32) NOT NULL,
-             submit_at DATETIME NOT NULL,
-             last_delivery_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
-             last_delivery_detail VARCHAR(1000) NULL,
-             last_delivery_queue_id VARCHAR(64) NULL,
-             last_delivery_checked_at DATETIME NULL,
-             external_login_user_id BIGINT NULL,
-             mail_kind VARCHAR(64) NULL,
-             UNIQUE KEY uniq_message_id (message_id),
-             KEY idx_submit_at (submit_at),
-             KEY idx_last_delivery_status (last_delivery_status),
-             KEY idx_ext_user_submit (external_login_user_id, submit_at),
-             KEY idx_mail_kind_submit (mail_kind, submit_at)
-         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-         """
-     )
-+    cur.execute(
-+        """
-+        CREATE TABLE IF NOT EXISTS mfu_mail_delivery_recipients (
-+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-+            mail_log_id BIGINT NOT NULL,
-+            mfu_mail_uuid VARCHAR(64) NOT NULL,
-+            message_id VARCHAR(255) NOT NULL,
-+            recipient VARCHAR(255) NOT NULL,
-+            recipient_type VARCHAR(16) NOT NULL,
-+            submit_status VARCHAR(32) NOT NULL DEFAULT 'queued',
-+            delivery_status VARCHAR(32) NOT NULL DEFAULT 'unknown',
-+            delivery_detail VARCHAR(1000) NULL,
-+            delivery_queue_id VARCHAR(64) NULL,
-+            delivery_checked_at DATETIME NULL,
-+            created_at DATETIME NOT NULL,
-+            updated_at DATETIME NOT NULL,
-+            UNIQUE KEY uq_mail_recipient (message_id, recipient, recipient_type),
-+            KEY idx_mail_log_id (mail_log_id),
-+            KEY idx_message_id (message_id),
-+            KEY idx_delivery_status (delivery_status),
-+            KEY idx_recipient (recipient),
-+            KEY idx_checked_at (delivery_checked_at)
-+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+        """
++
++
++from app.utils.db import get_db
++
++
++_LOG = logging.getLogger("mfu.push")
++_ALLOWED_RECIPIENT_TYPES = {"external_user_id", "mfu_username"}
++_ALLOWED_BOOL_TRUE = {True, 1, "1", "true", "True", "yes", "on"}
++
++
++class PushDispatchError(Exception):
++    def __init__(self, reason: str, *, status_code: int = 400, detail: str | None = None):
++        super().__init__(reason)
++        self.reason = reason
++        self.status_code = status_code
++        self.detail = detail
++
++
++@dataclass(slots=True)
++class PushRequest:
++    recipient_type: str
++    recipient_value: str | int
++    title: str
++    body: str
++    target_url: str
++    kind: str
++    sender_label: str | None
++    dedup_key: str
++    room_type: str | None
++    room_id: str | None
++    event_id: int | None
++    chat_event_id: int | None
++    chat_room_id: str | None
++    create_in_app: bool
++    send_web_push: bool
++
++
++"""
++Push通知の共通ゲートウェイ。
++
++Python 呼び出し例:
++    from app.utils.push import send_push
++
++    send_push(
++        recipient_type="external_user_id",
++        recipient_value=123,
++        title="写真アップロード完了",
++        body="アルバムに新しい写真が追加されました。",
++        target_url="/albums/123",
++        kind="album_upload_complete",
++        sender_label="アルバム機能",
++        dedup_key="album:123:upload_complete:user:123",
 +    )
-     db.commit()
-     _ensure_mail_delivery_columns(cur)
-+    _ensure_mail_delivery_recipient_columns(cur)
-     db.commit()
-     db.close()
- 
- 
- def _ensure_mail_delivery_columns(cur) -> None:
-     cur.execute("SHOW COLUMNS FROM mfu_mail_delivery_log")
-     existing = {row[0] if isinstance(row, tuple) else row.get("Field") for row in cur.fetchall()}
-     cur.execute("SHOW INDEX FROM mfu_mail_delivery_log")
-     existing_indexes = {
-         row[2] if isinstance(row, tuple) else row.get("Key_name") for row in cur.fetchall()
-     }
-     if "external_login_user_id" not in existing:
-         cur.execute("ALTER TABLE mfu_mail_delivery_log ADD COLUMN external_login_user_id BIGINT NULL")
-     if "mail_kind" not in existing:
-         cur.execute("ALTER TABLE mfu_mail_delivery_log ADD COLUMN mail_kind VARCHAR(64) NULL")
-     if "idx_ext_user_submit" not in existing_indexes:
-         try:
-             cur.execute(
-                 "ALTER TABLE mfu_mail_delivery_log ADD KEY idx_ext_user_submit (external_login_user_id, submit_at)"
-             )
-         except Exception:
-             pass
-     if "idx_mail_kind_submit" not in existing_indexes:
-         try:
-             cur.execute("ALTER TABLE mfu_mail_delivery_log ADD KEY idx_mail_kind_submit (mail_kind, submit_at)")
-         except Exception:
-             pass
- 
- 
-+def _ensure_mail_delivery_recipient_columns(cur) -> None:
-+    cur.execute("SHOW COLUMNS FROM mfu_mail_delivery_recipients")
-+    existing = {row[0] if isinstance(row, tuple) else row.get("Field") for row in cur.fetchall()}
-+    cur.execute("SHOW INDEX FROM mfu_mail_delivery_recipients")
-+    existing_indexes = {
-+        row[2] if isinstance(row, tuple) else row.get("Key_name") for row in cur.fetchall()
-+    }
 +
-+    required_columns = {
-+        "mail_log_id": "BIGINT NOT NULL",
-+        "mfu_mail_uuid": "VARCHAR(64) NOT NULL",
-+        "message_id": "VARCHAR(255) NOT NULL",
-+        "recipient": "VARCHAR(255) NOT NULL",
-+        "recipient_type": "VARCHAR(16) NOT NULL",
-+        "submit_status": "VARCHAR(32) NOT NULL DEFAULT 'queued'",
-+        "delivery_status": "VARCHAR(32) NOT NULL DEFAULT 'unknown'",
-+        "delivery_detail": "VARCHAR(1000) NULL",
-+        "delivery_queue_id": "VARCHAR(64) NULL",
-+        "delivery_checked_at": "DATETIME NULL",
-+        "created_at": "DATETIME NOT NULL",
-+        "updated_at": "DATETIME NOT NULL",
-+    }
-+    for column_name, ddl in required_columns.items():
-+        if column_name not in existing:
-+            cur.execute(f"ALTER TABLE mfu_mail_delivery_recipients ADD COLUMN {column_name} {ddl}")
-+
-+    index_ddls = {
-+        "uq_mail_recipient": (
-+            "ALTER TABLE mfu_mail_delivery_recipients ADD UNIQUE KEY uq_mail_recipient "
-+            "(message_id, recipient, recipient_type)"
-+        ),
-+        "idx_mail_log_id": "ALTER TABLE mfu_mail_delivery_recipients ADD KEY idx_mail_log_id (mail_log_id)",
-+        "idx_message_id": "ALTER TABLE mfu_mail_delivery_recipients ADD KEY idx_message_id (message_id)",
-+        "idx_delivery_status": (
-+            "ALTER TABLE mfu_mail_delivery_recipients ADD KEY idx_delivery_status (delivery_status)"
-+        ),
-+        "idx_recipient": "ALTER TABLE mfu_mail_delivery_recipients ADD KEY idx_recipient (recipient)",
-+        "idx_checked_at": (
-+            "ALTER TABLE mfu_mail_delivery_recipients ADD KEY idx_checked_at (delivery_checked_at)"
-+        ),
-+    }
-+    for index_name, ddl in index_ddls.items():
-+        if index_name not in existing_indexes:
-+            try:
-+                cur.execute(ddl)
-+            except Exception:
-+                pass
++curl 例:
++    curl -X POST 'https://mfu.iori0624.jp/api/internal/push/send' \
++      -H 'Content-Type: application/json' \
++      -H 'X-MFU-Internal-Key: YOUR_KEY' \
++      --data '{
++        "recipient_type":"external_user_id",
++        "recipient_value":123,
++        "title":"写真アップロード完了",
++        "body":"アルバムに新しい写真が追加されました。",
++        "target_url":"/albums/123",
++        "kind":"album_upload_complete",
++        "sender_label":"アルバム機能",
++        "dedup_key":"album:123:upload_complete:user:123",
++        "create_in_app":true,
++        "send_web_push":true
++      }'
++"""
 +
 +
- def generate_message_id() -> tuple[str, str]:
-     mfu_mail_uuid = str(uuid.uuid4())
-     domain = _get_config_value(
-         "DEFAULT_MESSAGE_ID_DOMAIN",
-         DEFAULT_MESSAGE_ID_DOMAIN,
-         "MFU_MAIL_MESSAGE_ID_DOMAIN",
-     )
-     domain = (domain or DEFAULT_MESSAGE_ID_DOMAIN).strip() or DEFAULT_MESSAGE_ID_DOMAIN
-     message_id = f"{mfu_mail_uuid}@{domain}"
-     return mfu_mail_uuid, message_id
- 
- 
-+def _normalize_email_address(addr: str | None) -> str:
-+    if addr is None:
-+        return ""
-+    display_name, email_address = parseaddr(str(addr).strip())
-+    candidate = email_address or str(addr)
-+    candidate = candidate.strip().strip(",;")
-+    if not candidate and display_name:
-+        candidate = display_name.strip().strip(",;")
-+    return candidate.lower()
++def _normalize_bool(value: Any, *, default: bool) -> bool:
++    if value is None:
++        return default
++    if isinstance(value, bool):
++        return value
++    return value in _ALLOWED_BOOL_TRUE
 +
 +
-+def _coerce_recipient_values(addresses: list[str] | tuple[str, ...] | set[str] | str | None) -> list[str]:
-+    if not addresses:
-+        return []
-+
-+    raw_values: list[str] = []
-+    if isinstance(addresses, (list, tuple, set)):
-+        for value in addresses:
-+            if value is None:
-+                continue
-+            raw_values.append(str(value))
-+    else:
-+        raw_values.append(str(addresses))
-+
-+    parsed = getaddresses(raw_values)
-+    normalized: list[str] = []
-+    if parsed:
-+        for _, email_address in parsed:
-+            normalized_address = _normalize_email_address(email_address)
-+            if normalized_address:
-+                normalized.append(normalized_address)
-+
-+    if not normalized:
-+        for value in raw_values:
-+            normalized_address = _normalize_email_address(value)
-+            if normalized_address:
-+                normalized.append(normalized_address)
-+
++def _normalize_text(value: Any, *, default: str = "", limit: int | None = None) -> str:
++    normalized = str(value if value is not None else default).strip()
++    if not normalized and default:
++        normalized = str(default).strip()
++    if limit is not None:
++        normalized = normalized[:limit]
 +    return normalized
 +
 +
-+def _split_recipients(
-+    to_addrs: list[str] | tuple[str, ...] | set[str] | str | None,
-+    cc_addrs: list[str] | tuple[str, ...] | set[str] | str | None = None,
-+    bcc_addrs: list[str] | tuple[str, ...] | set[str] | str | None = None,
-+) -> list[dict[str, str]]:
-+    recipients: list[dict[str, str]] = []
-+    seen_global: set[str] = set()
-+
-+    for recipient_type, values in (
-+        ("to", to_addrs),
-+        ("cc", cc_addrs),
-+        ("bcc", bcc_addrs),
-+    ):
-+        seen_local: set[str] = set()
-+        for recipient in _coerce_recipient_values(values):
-+            if not recipient or recipient in seen_local:
-+                continue
-+            seen_local.add(recipient)
-+            if recipient in seen_global:
-+                continue
-+            seen_global.add(recipient)
-+            recipients.append({"recipient": recipient, "recipient_type": recipient_type})
-+
-+    return recipients
-+
-+
-+def _normalize_submit_status(status: str | None) -> str:
-+    status_norm = (status or "").strip().lower()
-+    if status_norm in SUCCESS_STATUSES:
-+        return "sent"
-+    if status_norm in FAILURE_STATUSES:
-+        return "failed"
-+    if status_norm in QUEUED_STATUSES:
-+        return "queued"
-+    if status_norm == "partial":
-+        return "partial"
-+    return "unknown"
-+
-+
-+def _normalize_delivery_status_value(status: str | None) -> str:
-+    status_norm = (status or "").strip().lower()
-+    if status_norm in SUCCESS_STATUSES:
-+        return "sent"
-+    if status_norm == "deferred":
-+        return "deferred"
-+    if status_norm == "bounced":
-+        return "bounced"
-+    if status_norm in ("failed", "error"):
-+        return "failed"
-+    if status_norm in QUEUED_STATUSES:
-+        return "queued"
-+    if status_norm == "partial":
-+        return "partial"
-+    return "unknown"
-+
-+
-+def _aggregate_submit_status(statuses: list[str]) -> str:
-+    normalized = [_normalize_submit_status(status) for status in statuses if status is not None]
-+    if not normalized:
-+        return "queued"
-+    unique_statuses = set(normalized)
-+    if unique_statuses == {"sent"}:
-+        return "sent"
-+    if any(status == "queued" for status in normalized):
-+        return "queued"
-+    if unique_statuses <= {"failed"}:
-+        return "failed"
-+    if "sent" in unique_statuses and "failed" in unique_statuses:
-+        return "partial"
-+    if len(unique_statuses) > 1:
-+        return "partial"
-+    return normalized[0]
-+
-+
-+def _aggregate_delivery_status(statuses: list[str]) -> str:
-+    normalized = [_normalize_delivery_status_value(status) for status in statuses if status is not None]
-+    if not normalized:
-+        return "queued"
-+    aggregated = {"failed" if status == "bounced" else status for status in normalized}
-+    if aggregated == {"sent"}:
-+        return "sent"
-+    if aggregated <= {"failed"}:
-+        return "failed"
-+    if aggregated == {"deferred"}:
-+        return "deferred"
-+    if aggregated <= {"queued", "unknown"}:
-+        return "queued"
-+    return "partial"
-+
-+
-+def _build_parent_delivery_detail(rows: list[dict[str, Any]]) -> str | None:
-+    if not rows:
++def _normalize_optional_int(value: Any, *, field_name: str) -> int | None:
++    if value in (None, "", 0, "0"):
 +        return None
++    try:
++        normalized = int(value)
++    except Exception as exc:
++        raise PushDispatchError(f"invalid_{field_name}", detail=str(exc)) from exc
++    if normalized <= 0:
++        raise PushDispatchError(f"invalid_{field_name}")
++    return normalized
 +
-+    counter = Counter(
-+        "failed" if _normalize_delivery_status_value(row.get("delivery_status")) == "bounced"
-+        else _normalize_delivery_status_value(row.get("delivery_status"))
-+        for row in rows
++
++def _normalize_recipient_value(recipient_type: str, recipient_value: Any) -> str | int:
++    if recipient_type == "external_user_id":
++        normalized = _normalize_optional_int(recipient_value, field_name="recipient_value")
++        if normalized is None:
++            raise PushDispatchError("recipient_value_required")
++        return normalized
++    normalized = _normalize_text(recipient_value, limit=191)
++    if not normalized:
++        raise PushDispatchError("recipient_value_required")
++    return normalized
++
++
++def _normalize_request(**kwargs: Any) -> PushRequest:
++    recipient_type = _normalize_text(kwargs.get("recipient_type"), limit=32)
++    if recipient_type not in _ALLOWED_RECIPIENT_TYPES:
++        raise PushDispatchError("unsupported_recipient_type")
++
++    recipient_value = _normalize_recipient_value(recipient_type, kwargs.get("recipient_value"))
++    title = _normalize_text(kwargs.get("title"), limit=255)
++    if not title:
++        raise PushDispatchError("title_required")
++    body = _normalize_text(kwargs.get("body") if kwargs.get("body") is not None else "", limit=1000)
++    target_url = _normalize_text(kwargs.get("target_url"), limit=512)
++    if not target_url:
++        raise PushDispatchError("target_url_required")
++    if not target_url.startswith("/") or target_url.startswith("//"):
++        raise PushDispatchError("invalid_target_url")
++    dedup_key = _normalize_text(kwargs.get("dedup_key"), limit=191)
++    if not dedup_key:
++        raise PushDispatchError("dedup_key_required")
++
++    create_in_app = _normalize_bool(kwargs.get("create_in_app"), default=True)
++    send_web_push = _normalize_bool(kwargs.get("send_web_push"), default=True)
++    if not create_in_app and not send_web_push:
++        raise PushDispatchError("at_least_one_channel_required")
++
++    kind = _normalize_text(kwargs.get("kind") or "general", limit=64) or "general"
++    sender_label = _normalize_text(kwargs.get("sender_label"), limit=255) or None
++    room_type = _normalize_text(kwargs.get("room_type"), limit=32) or None
++    room_id = _normalize_text(kwargs.get("room_id"), limit=64) or None
++    chat_room_id = _normalize_text(kwargs.get("chat_room_id"), limit=64) or None
++    event_id = _normalize_optional_int(kwargs.get("event_id"), field_name="event_id")
++    chat_event_id = _normalize_optional_int(kwargs.get("chat_event_id"), field_name="chat_event_id")
++
++    if kind == "chat_message" and not chat_room_id:
++        raise PushDispatchError("chat_room_id_required")
++    if kind == "chat_message" and not room_id:
++        room_id = chat_room_id
++
++    return PushRequest(
++        recipient_type=recipient_type,
++        recipient_value=recipient_value,
++        title=title,
++        body=body,
++        target_url=target_url,
++        kind=kind,
++        sender_label=sender_label,
++        dedup_key=dedup_key,
++        room_type=room_type,
++        room_id=room_id,
++        event_id=event_id,
++        chat_event_id=chat_event_id,
++        chat_room_id=chat_room_id,
++        create_in_app=create_in_app,
++        send_web_push=send_web_push,
 +    )
-+    counts_part = ", ".join(
-+        f"{status}={counter.get(status, 0)}" for status in ("sent", "deferred", "failed", "queued", "unknown")
-+    )
-+    issue_parts: list[str] = []
-+    for row in rows:
-+        status = _normalize_delivery_status_value(row.get("delivery_status"))
-+        if status == "sent":
-+            continue
-+        recipient_label = f"{RECIPIENT_TYPE_LABELS.get(row.get('recipient_type'), 'Rcpt')}:{row.get('recipient')}"
-+        detail = (row.get("delivery_detail") or "").strip()
-+        if detail:
-+            issue_parts.append(f"{recipient_label}({status}: {detail})")
-+        else:
-+            issue_parts.append(f"{recipient_label}({status})")
-+        if len(issue_parts) >= 3:
-+            break
-+
-+    summary = f"recipients={len(rows)}; {counts_part}"
-+    if issue_parts:
-+        summary += "; issues=" + " | ".join(issue_parts)
-+    return _clamp(summary, 1000)
 +
 +
-+def _recompute_mail_log_summary(mail_log_id: int) -> None:
++def _count_push_subscriptions(actor_type: str, actor_id: str) -> int:
 +    db = get_db()
 +    cur = db.cursor(dictionary=True)
 +    try:
-+        cur.execute(
-+            """
-+            SELECT submit_status,
-+                   delivery_status,
-+                   delivery_detail,
-+                   delivery_queue_id,
-+                   delivery_checked_at,
-+                   updated_at,
-+                   recipient,
-+                   recipient_type
-+              FROM mfu_mail_delivery_recipients
-+             WHERE mail_log_id = %s
-+             ORDER BY FIELD(recipient_type, 'to', 'cc', 'bcc'), id ASC
-+            """,
-+            (mail_log_id,),
-+        )
-+        rows = cur.fetchall() or []
-+        if not rows:
-+            return
-+
-+        submit_status = _aggregate_submit_status([row.get("submit_status") for row in rows])
-+        delivery_status = _aggregate_delivery_status([row.get("delivery_status") for row in rows])
-+        detail = _build_parent_delivery_detail(rows)
-+
-+        queue_id = None
-+        checked_at = None
-+        for row in sorted(
-+            rows,
-+            key=lambda row: row.get("delivery_checked_at") or row.get("updated_at") or datetime.min,
-+            reverse=True,
-+        ):
-+            if checked_at is None:
-+                checked_at = row.get("delivery_checked_at") or row.get("updated_at")
-+            if not queue_id and row.get("delivery_queue_id"):
-+                queue_id = row.get("delivery_queue_id")
-+            if queue_id and checked_at:
-+                break
-+
-+        cur2 = db.cursor()
-+        cur2.execute(
-+            """
-+            UPDATE mfu_mail_delivery_log
-+               SET submit_status = %s,
-+                   last_delivery_status = %s,
-+                   last_delivery_detail = %s,
-+                   last_delivery_queue_id = %s,
-+                   last_delivery_checked_at = %s
-+             WHERE id = %s
-+            """,
-+            (
-+                submit_status,
-+                delivery_status,
-+                _clamp(detail, 1000),
-+                _clamp(queue_id, 64),
-+                checked_at,
-+                mail_log_id,
-+            ),
-+        )
-+        db.commit()
-+    finally:
-+        db.close()
-+
-+
-+def _insert_or_update_delivery_recipients(
-+    *,
-+    mail_log_id: int,
-+    mfu_mail_uuid: str,
-+    message_id: str,
-+    recipients: list[dict[str, str]],
-+    submit_status: str = "queued",
-+    delivery_status: str = "unknown",
-+    delivery_detail: str | None = None,
-+    delivery_queue_id: str | None = None,
-+    delivery_checked_at: datetime | None = None,
-+) -> int:
-+    if not recipients:
-+        return 0
-+
-+    now = datetime.now()
-+    normalized_submit_status = _normalize_submit_status(submit_status)
-+    normalized_delivery_status = _normalize_delivery_status_value(delivery_status)
-+
-+    db = get_db()
-+    cur = db.cursor()
-+    inserted = 0
-+    try:
-+        for recipient_info in recipients:
-+            cur.execute(
-+                """
-+                INSERT INTO mfu_mail_delivery_recipients (
-+                    mail_log_id,
-+                    mfu_mail_uuid,
-+                    message_id,
-+                    recipient,
-+                    recipient_type,
-+                    submit_status,
-+                    delivery_status,
-+                    delivery_detail,
-+                    delivery_queue_id,
-+                    delivery_checked_at,
-+                    created_at,
-+                    updated_at
-+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-+                ON DUPLICATE KEY UPDATE
-+                    mail_log_id = VALUES(mail_log_id),
-+                    mfu_mail_uuid = VALUES(mfu_mail_uuid),
-+                    submit_status = VALUES(submit_status),
-+                    delivery_status = VALUES(delivery_status),
-+                    delivery_detail = VALUES(delivery_detail),
-+                    delivery_queue_id = VALUES(delivery_queue_id),
-+                    delivery_checked_at = VALUES(delivery_checked_at),
-+                    updated_at = VALUES(updated_at)
-+                """,
-+                (
-+                    mail_log_id,
-+                    mfu_mail_uuid,
-+                    message_id,
-+                    recipient_info["recipient"],
-+                    recipient_info["recipient_type"],
-+                    normalized_submit_status,
-+                    normalized_delivery_status,
-+                    _clamp(delivery_detail, 1000),
-+                    _clamp(delivery_queue_id, 64),
-+                    delivery_checked_at,
-+                    now,
-+                    now,
-+                ),
-+            )
-+            inserted += 1
-+        db.commit()
-+    finally:
-+        db.close()
-+
-+    return inserted
-+
-+
-+def record_mail_submission_recipients(
-+    *,
-+    mail_log_id: int,
-+    mfu_mail_uuid: str,
-+    message_id: str,
-+    to_addresses: list[str] | tuple[str, ...] | set[str] | str,
-+    cc_addresses: list[str] | tuple[str, ...] | set[str] | str | None = None,
-+    bcc_addresses: list[str] | tuple[str, ...] | set[str] | str | None = None,
-+    submit_status: str = "queued",
-+    delivery_status: str = "unknown",
-+    delivery_detail: str | None = None,
-+    delivery_queue_id: str | None = None,
-+    delivery_checked_at: datetime | None = None,
-+) -> int:
-+    recipients = _split_recipients(to_addresses, cc_addresses, bcc_addresses)
-+    if not recipients:
-+        return 0
-+
-+    inserted = _insert_or_update_delivery_recipients(
-+        mail_log_id=mail_log_id,
-+        mfu_mail_uuid=mfu_mail_uuid,
-+        message_id=message_id,
-+        recipients=recipients,
-+        submit_status=submit_status,
-+        delivery_status=delivery_status,
-+        delivery_detail=delivery_detail,
-+        delivery_queue_id=delivery_queue_id,
-+        delivery_checked_at=delivery_checked_at,
-+    )
-+    _recompute_mail_log_summary(mail_log_id)
-+    return inserted
-+
-+
- def record_mail_submission(
-     *,
-     mfu_mail_uuid: str,
-     message_id: str,
--    to_addresses: str,
-+    to_addresses: str | list[str] | tuple[str, ...] | set[str],
-     subject: str,
-     submit_status: str,
-     last_delivery_status: str,
-     last_delivery_detail: str | None = None,
-     external_login_user_id: int | None = None,
-     mail_kind: str | None = None,
--) -> None:
-+    cc_addresses: str | list[str] | tuple[str, ...] | set[str] | None = None,
-+    bcc_addresses: str | list[str] | tuple[str, ...] | set[str] | None = None,
-+) -> int:
-     ensure_mail_delivery_schema()
-     submit_at = datetime.now()
-+    if isinstance(to_addresses, str):
-+        to_address_text = to_addresses.strip()
-+    elif isinstance(to_addresses, (list, tuple, set)):
-+        to_address_text = ", ".join(str(address).strip() for address in to_addresses if str(address).strip())
-+    else:
-+        to_address_text = ""
-     db = get_db()
-     cur = db.cursor()
--    cur.execute(
--        """
--        INSERT INTO mfu_mail_delivery_log (
--            mfu_mail_uuid,
--            message_id,
--            to_addresses,
--            subject,
--            submit_status,
--            submit_at,
--            last_delivery_status,
--            last_delivery_detail,
--            last_delivery_queue_id,
--            last_delivery_checked_at,
--            external_login_user_id,
--            mail_kind
--        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s)
--        ON DUPLICATE KEY UPDATE
--            submit_status = VALUES(submit_status),
--            submit_at = VALUES(submit_at),
--            last_delivery_status = VALUES(last_delivery_status),
--            last_delivery_detail = VALUES(last_delivery_detail),
--            external_login_user_id = VALUES(external_login_user_id),
--            mail_kind = VALUES(mail_kind)
--        """,
--        (
--            mfu_mail_uuid,
--            message_id,
--            _clamp(to_addresses, 1024),
--            _clamp(subject, 255),
--            submit_status,
--            submit_at,
--            last_delivery_status,
--            _clamp(last_delivery_detail, 1000),
--            external_login_user_id,
--            _clamp(mail_kind, 64),
--        ),
-+    try:
-+        cur.execute(
-+            """
-+            INSERT INTO mfu_mail_delivery_log (
-+                id,
-+                mfu_mail_uuid,
-+                message_id,
-+                to_addresses,
-+                subject,
-+                submit_status,
-+                submit_at,
-+                last_delivery_status,
-+                last_delivery_detail,
-+                last_delivery_queue_id,
-+                last_delivery_checked_at,
-+                external_login_user_id,
-+                mail_kind
-+            ) VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, %s, %s)
-+            ON DUPLICATE KEY UPDATE
-+                id = LAST_INSERT_ID(id),
-+                submit_status = VALUES(submit_status),
-+                submit_at = VALUES(submit_at),
-+                last_delivery_status = VALUES(last_delivery_status),
-+                last_delivery_detail = VALUES(last_delivery_detail),
-+                external_login_user_id = VALUES(external_login_user_id),
-+                mail_kind = VALUES(mail_kind)
-+            """,
-+            (
-+                mfu_mail_uuid,
-+                message_id,
-+                _clamp(to_address_text, 1024),
-+                _clamp(subject, 255),
-+                _normalize_submit_status(submit_status),
-+                submit_at,
-+                _normalize_delivery_status_value(last_delivery_status),
-+                _clamp(last_delivery_detail, 1000),
-+                external_login_user_id,
-+                _clamp(mail_kind, 64),
-+            ),
-+        )
-+        mail_log_id = int(cur.lastrowid)
-+        db.commit()
-+    finally:
-+        db.close()
-+
-+    record_mail_submission_recipients(
-+        mail_log_id=mail_log_id,
-+        mfu_mail_uuid=mfu_mail_uuid,
-+        message_id=message_id,
-+        to_addresses=to_addresses,
-+        cc_addresses=cc_addresses,
-+        bcc_addresses=bcc_addresses,
-+        submit_status=submit_status,
-+        delivery_status=last_delivery_status,
-+        delivery_detail=last_delivery_detail,
-     )
--    db.commit()
--    db.close()
-+    return mail_log_id
- 
- 
- def fetch_latest_mail_delivery_for_external_user(
-     *,
-     external_login_user_id: int,
-     email: str,
-     mail_kind: str | None = None,
- ) -> dict | None:
-     ensure_mail_delivery_schema()
-+    email_normalized = _normalize_email_address(email)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
--        where_sql = "WHERE external_login_user_id = %s AND to_addresses LIKE %s"
--        params: list = [external_login_user_id, f"%{email}%"]
-+        where_sql = "WHERE l.external_login_user_id = %s AND (r.recipient = %s OR l.to_addresses LIKE %s)"
-+        params: list[Any] = [external_login_user_id, email_normalized, f"%{email}%"]
-         if mail_kind:
--            where_sql += " AND mail_kind = %s"
-+            where_sql += " AND l.mail_kind = %s"
-             params.append(mail_kind)
-         cur.execute(
-             f"""
--            SELECT mfu_mail_uuid,
--                   message_id,
--                   to_addresses,
--                   subject,
--                   submit_status,
--                   submit_at,
--                   last_delivery_status,
--                   last_delivery_detail,
--                   last_delivery_queue_id,
--                   last_delivery_checked_at,
--                   external_login_user_id,
--                   mail_kind
--              FROM mfu_mail_delivery_log
--              {where_sql}
--             ORDER BY submit_at DESC, id DESC
-+            SELECT l.id,
-+                   l.mfu_mail_uuid,
-+                   l.message_id,
-+                   l.to_addresses,
-+                   l.subject,
-+                   l.submit_status,
-+                   l.submit_at,
-+                   l.last_delivery_status,
-+                   l.last_delivery_detail,
-+                   l.last_delivery_queue_id,
-+                   l.last_delivery_checked_at,
-+                   l.external_login_user_id,
-+                   l.mail_kind
-+              FROM mfu_mail_delivery_log AS l
-+              LEFT JOIN mfu_mail_delivery_recipients AS r
-+                ON r.mail_log_id = l.id
-+             {where_sql}
-+             ORDER BY l.submit_at DESC, l.id DESC
-              LIMIT 1
-             """,
-             params,
-         )
--        return cur.fetchone()
-+        row = cur.fetchone()
-+        if not row:
-+            return None
-+
-+        cur.execute(
-+            """
-+            SELECT recipient,
-+                   recipient_type,
-+                   submit_status,
-+                   delivery_status,
-+                   delivery_detail,
-+                   delivery_queue_id,
-+                   delivery_checked_at
-+              FROM mfu_mail_delivery_recipients
-+             WHERE mail_log_id = %s
-+             ORDER BY FIELD(recipient_type, 'to', 'cc', 'bcc'), id ASC
-+            """,
-+            (row["id"],),
-+        )
-+        row["recipient_details"] = cur.fetchall() or []
-+        return row
-     finally:
-         try:
-             cur.close()
-             db.close()
-         except Exception:
-             pass
- 
- 
- def build_mail_delivery_display(
-     submit_status: str | None,
-     delivery_status: str | None,
- ) -> tuple[str, str | None]:
--    submit_status_norm = (submit_status or "").lower()
--    delivery_status_norm = (delivery_status or "").lower()
-+    submit_status_norm = _normalize_submit_status(submit_status)
-+    delivery_status_norm = _normalize_delivery_status_value(delivery_status)
- 
-     submit_map = {
--        "accepted": "送信受付済み",
-         "sent": "送信受付済み",
--        "success": "送信受付済み",
--        "queued": "送信受付済み",
-+        "queued": "送信受付中",
-         "failed": "送信失敗",
--        "error": "送信失敗",
-+        "partial": "一部送信失敗",
-+        "unknown": "送信状況不明",
-     }
-     delivery_map = {
-         "sent": "配信完了",
--        "delivered": "配信完了",
-         "bounced": "配信失敗（宛先不達の可能性）",
-         "failed": "配信失敗",
-         "deferred": "遅延中（再試行中）",
-         "queued": "確認中",
-         "unknown": "確認中",
-+        "partial": "一部成功／一部未達",
-     }
- 
-     submit_ja = submit_map.get(submit_status_norm, "未送信")
-     delivery_ja = delivery_map.get(delivery_status_norm, "確認中")
- 
-     display = f"{submit_ja}／配信状況：{delivery_ja}"
-     message_ja = None
-     if delivery_status_norm == "deferred":
-         message_ja = "配送が遅延しているため、再試行しています。"
-+    elif delivery_status_norm == "partial":
-+        message_ja = "宛先ごとに配送結果が分かれています。詳細をご確認ください。"
-     elif delivery_status_norm in ("bounced", "failed"):
-         message_ja = "宛先不達の可能性があります。メールアドレスをご確認ください。"
-     return display, message_ja
- 
- 
- def _extract_queue_id(detail: str | None) -> str | None:
-     if not detail:
-         return None
-     match = QUEUED_AS_PATTERN.search(str(detail))
-     if not match:
-         return None
-     return match.group(1)
- 
- 
- def _has_successful_delivery_detail(detail: str | None) -> bool:
-     if not detail:
-         return False
-     detail_lower = str(detail).lower()
-     return any(pattern in detail_lower for pattern in SUCCESS_DETAIL_PATTERNS)
- 
- 
- def _normalize_delivery_status(
-     status: str | None,
-     detail: str | None,
-     queue_id: str | None,
- ) -> tuple[str, str | None, str | None]:
-     """
-     Normalize Postfix API results to app-level statuses so that
-     "queued + 250 OK" responses are stored as successful delivery.
-     """
-     status_norm = (status or "").strip().lower()
-     detail_text = None if detail is None else str(detail)
-     queue_id_text = None if queue_id in (None, "") else str(queue_id)
- 
-     if not queue_id_text:
-         queue_id_text = _extract_queue_id(detail_text)
- 
-     if status_norm in SUCCESS_STATUSES:
-         return "sent", detail_text, queue_id_text
-     if status_norm == "queued" and _has_successful_delivery_detail(detail_text):
-         return "sent", detail_text, queue_id_text
-     if status_norm in ("deferred", "bounced", "failed"):
-         return status_norm, detail_text, queue_id_text
-     if _has_successful_delivery_detail(detail_text):
-         return "sent", detail_text, queue_id_text
-     if status_norm == "queued":
-         return "queued", detail_text, queue_id_text
-     return "unknown", detail_text, queue_id_text
- 
- 
--def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
-+def _fetch_recipient_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
-     cutoff = datetime.now() - timedelta(hours=limit_hours)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
--    cur.execute(
--        """
--        SELECT id, message_id, last_delivery_status, submit_at
--          FROM mfu_mail_delivery_log
--         WHERE submit_status IN ('queued', 'sent')
--           -- Successful / terminal results should not be polled again.
--           AND last_delivery_status NOT IN ('sent', 'delivered', 'bounced', 'failed')
--           AND submit_at >= %s
--         ORDER BY submit_at ASC
--         LIMIT %s
--        """,
--        (cutoff, max_rows),
--    )
--    rows = cur.fetchall() or []
--    db.close()
--    return rows
-+    try:
-+        cur.execute(
-+            """
-+            SELECT r.id,
-+                   r.mail_log_id,
-+                   r.message_id,
-+                   r.recipient,
-+                   r.recipient_type,
-+                   r.submit_status,
-+                   r.delivery_status,
-+                   r.delivery_checked_at,
-+                   l.submit_at
-+              FROM mfu_mail_delivery_recipients AS r
-+              JOIN mfu_mail_delivery_log AS l
-+                ON l.id = r.mail_log_id
-+             WHERE r.submit_status IN ('queued', 'sent')
-+               AND r.delivery_status NOT IN ('sent', 'bounced', 'failed')
-+               AND l.submit_at >= %s
-+             ORDER BY l.submit_at ASC, r.id ASC
-+             LIMIT %s
-+            """,
-+            (cutoff, max_rows),
-+        )
-+        return cur.fetchall() or []
-+    finally:
-+        db.close()
-+
-+
-+def _fetch_poll_targets(limit_hours: int, max_rows: int) -> list[dict]:
-+    recipients = _fetch_recipient_poll_targets(limit_hours=limit_hours, max_rows=max_rows)
-+    grouped: dict[int, dict[str, Any]] = {}
-+    for row in recipients:
-+        mail_log_id = int(row["mail_log_id"])
-+        if mail_log_id not in grouped:
-+            grouped[mail_log_id] = {
-+                "id": mail_log_id,
-+                "message_id": row.get("message_id"),
-+                "last_delivery_status": row.get("delivery_status"),
-+                "submit_at": row.get("submit_at"),
-+            }
-+    return list(grouped.values())
-+
-+
-+def _update_delivery_recipient_row(
-+    *,
-+    row_id: int,
-+    status: str,
-+    detail: str | None,
-+    queue_id: str | None,
-+    checked_at: datetime,
-+    submit_status: str | None = None,
-+) -> None:
-+    db = get_db()
-+    cur = db.cursor()
-+    try:
-+        if submit_status is None:
-+            cur.execute(
-+                """
-+                UPDATE mfu_mail_delivery_recipients
-+                   SET delivery_status = %s,
-+                       delivery_detail = %s,
-+                       delivery_queue_id = %s,
-+                       delivery_checked_at = %s,
-+                       updated_at = %s
-+                 WHERE id = %s
-+                """,
-+                (
-+                    _normalize_delivery_status_value(status),
-+                    _clamp(detail, 1000),
-+                    _clamp(queue_id, 64),
-+                    checked_at,
-+                    checked_at,
-+                    row_id,
-+                ),
-+            )
-+        else:
-+            cur.execute(
-+                """
-+                UPDATE mfu_mail_delivery_recipients
-+                   SET submit_status = %s,
-+                       delivery_status = %s,
-+                       delivery_detail = %s,
-+                       delivery_queue_id = %s,
-+                       delivery_checked_at = %s,
-+                       updated_at = %s
-+                 WHERE id = %s
-+                """,
-+                (
-+                    _normalize_submit_status(submit_status),
-+                    _normalize_delivery_status_value(status),
-+                    _clamp(detail, 1000),
-+                    _clamp(queue_id, 64),
-+                    checked_at,
-+                    checked_at,
-+                    row_id,
-+                ),
-+            )
-+        db.commit()
-+    finally:
-+        db.close()
-+
-+
-+def _touch_delivery_recipient_row(
-+    *,
-+    row_id: int,
-+    detail: str | None,
-+    checked_at: datetime,
-+) -> None:
-+    db = get_db()
-+    cur = db.cursor()
-+    try:
-+        cur.execute(
-+            """
-+            UPDATE mfu_mail_delivery_recipients
-+               SET delivery_detail = %s,
-+                   delivery_checked_at = %s,
-+                   updated_at = %s
-+             WHERE id = %s
-+            """,
-+            (
-+                _clamp(detail, 1000),
-+                checked_at,
-+                checked_at,
-+                row_id,
-+            ),
-+        )
-+        db.commit()
-+    finally:
-+        db.close()
- 
- 
- def _update_delivery_row(
-     *,
-     row_id: int,
-     status: str,
-     detail: str | None,
-     queue_id: str | None,
-     checked_at: datetime,
- ) -> None:
-     db = get_db()
-     cur = db.cursor()
--    cur.execute(
--        """
--        UPDATE mfu_mail_delivery_log
--           SET last_delivery_status = %s,
--               last_delivery_detail = %s,
--               last_delivery_queue_id = %s,
--               last_delivery_checked_at = %s
--         WHERE id = %s
--        """,
--        (
--            status,
--            _clamp(detail, 1000),
--            _clamp(queue_id, 64),
--            checked_at,
--            row_id,
--        ),
--    )
--    db.commit()
--    db.close()
-+    try:
-+        cur.execute(
-+            """
-+            UPDATE mfu_mail_delivery_log
-+               SET last_delivery_status = %s,
-+                   last_delivery_detail = %s,
-+                   last_delivery_queue_id = %s,
-+                   last_delivery_checked_at = %s
-+             WHERE id = %s
-+            """,
-+            (
-+                _normalize_delivery_status_value(status),
-+                _clamp(detail, 1000),
-+                _clamp(queue_id, 64),
-+                checked_at,
-+                row_id,
-+            ),
-+        )
-+        db.commit()
-+    finally:
-+        db.close()
- 
- 
- def _touch_delivery_row(
-     *,
-     row_id: int,
-     detail: str | None,
-     checked_at: datetime,
- ) -> None:
-     db = get_db()
-     cur = db.cursor()
--    cur.execute(
--        """
--        UPDATE mfu_mail_delivery_log
--           SET last_delivery_detail = %s,
--               last_delivery_checked_at = %s
--         WHERE id = %s
--        """,
--        (
--            _clamp(detail, 1000),
--            checked_at,
--            row_id,
--        ),
--    )
--    db.commit()
--    db.close()
-+    try:
-+        cur.execute(
-+            """
-+            UPDATE mfu_mail_delivery_log
-+               SET last_delivery_detail = %s,
-+                   last_delivery_checked_at = %s
-+             WHERE id = %s
-+            """,
-+            (
-+                _clamp(detail, 1000),
-+                checked_at,
-+                row_id,
-+            ),
-+        )
-+        db.commit()
-+    finally:
-+        db.close()
-+
-+
-+def _extract_recipient_status_payloads(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-+    candidate = None
-+    for key in ("recipients", "results", "statuses"):
-+        if isinstance(payload.get(key), (list, dict)):
-+            candidate = payload.get(key)
-+            break
-+
-+    if candidate is None:
-+        return {}
-+
-+    status_map: dict[str, dict[str, Any]] = {}
-+    if isinstance(candidate, dict):
-+        iterable = candidate.items()
-+    else:
-+        iterable = []
-+        for item in candidate:
-+            if not isinstance(item, dict):
-+                continue
-+            recipient = item.get("recipient") or item.get("email") or item.get("address")
-+            iterable.append((recipient, item))
-+
-+    for key, value in iterable:
-+        recipient = _normalize_email_address(key)
-+        if not recipient:
-+            continue
-+        if isinstance(value, dict):
-+            status_map[recipient] = {
-+                "status": value.get("status"),
-+                "detail": value.get("detail"),
-+                "queue_id": value.get("queue_id"),
-+            }
-+        else:
-+            status_map[recipient] = {"status": value, "detail": None, "queue_id": None}
-+
-+    return status_map
-+
-+
-+def _build_derived_detail(detail: str | None, recipient: str) -> str:
-+    pieces = [DERIVED_FROM_PARENT_MARKER, f"recipient={recipient}"]
-+    if detail:
-+        pieces.append(str(detail))
-+    return _clamp("; ".join(pieces), 1000) or DERIVED_FROM_PARENT_MARKER
-+
-+
-+def backfill_mail_delivery_recipients_from_logs(max_rows: int | None = None) -> dict[str, int]:
-+    ensure_mail_delivery_schema()
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    params: list[Any] = []
-+    limit_sql = ""
-+    if max_rows is not None:
-+        limit_sql = " LIMIT %s"
-+        params.append(int(max_rows))
-+
-+    try:
++        actor_ids = [str(actor_id)]
++        if actor_type == "admin":
++            actor_ids.extend(["admin", "1"])
++        actor_ids = list(dict.fromkeys([x for x in actor_ids if x]))
++        placeholders = ",".join(["%s"] * len(actor_ids))
 +        cur.execute(
 +            f"""
-+            SELECT l.id,
-+                   l.mfu_mail_uuid,
-+                   l.message_id,
-+                   l.to_addresses,
-+                   l.submit_status,
-+                   l.last_delivery_status,
-+                   l.last_delivery_detail,
-+                   l.last_delivery_queue_id,
-+                   l.last_delivery_checked_at
-+              FROM mfu_mail_delivery_log AS l
-+             WHERE NOT EXISTS (
-+                    SELECT 1
-+                      FROM mfu_mail_delivery_recipients AS r
-+                     WHERE r.mail_log_id = l.id
-+                  )
-+             ORDER BY l.id ASC
-+             {limit_sql}
++            SELECT COUNT(*) AS cnt
++              FROM chat_push_subscriptions
++             WHERE actor_type=%s AND actor_id IN ({placeholders})
 +            """,
-+            params,
++            (actor_type, *actor_ids),
 +        )
-+        rows = cur.fetchall() or []
++        return int((cur.fetchone() or {}).get("cnt") or 0)
++    except Exception:
++        return 0
 +    finally:
++        cur.close()
 +        db.close()
 +
-+    summary = {"checked": len(rows), "backfilled_logs": 0, "inserted_recipients": 0, "skipped": 0}
-+    for row in rows:
-+        recipients = _split_recipients(row.get("to_addresses"))
-+        if not recipients:
-+            summary["skipped"] += 1
-+            continue
-+        summary["inserted_recipients"] += _insert_or_update_delivery_recipients(
-+            mail_log_id=int(row["id"]),
-+            mfu_mail_uuid=row.get("mfu_mail_uuid") or "",
-+            message_id=row.get("message_id") or "",
-+            recipients=recipients,
-+            submit_status=row.get("submit_status") or "queued",
-+            delivery_status=row.get("last_delivery_status") or "unknown",
-+            delivery_detail=_build_derived_detail(row.get("last_delivery_detail") or "backfill_from_parent", "backfill"),
-+            delivery_queue_id=row.get("last_delivery_queue_id"),
-+            delivery_checked_at=row.get("last_delivery_checked_at"),
++
++def _resolve_push_actor(request_data: PushRequest) -> tuple[str, str]:
++    if request_data.recipient_type == "external_user_id":
++        return "line", str(request_data.recipient_value)
++    username = str(request_data.recipient_value)
++    return ("admin", username) if username == "admin" else ("acl", username)
++
++
++def _deliver_web_push(request_data: PushRequest, notification_id: int | None) -> tuple[str, str]:
++    try:
++        from app.chat import _send_push_to_actor  # type: ignore
++    except Exception:
++        return "failed", "chat_push_sender_unavailable"
++
++    actor_type, actor_id = _resolve_push_actor(request_data)
++    subscription_count = _count_push_subscriptions(actor_type, actor_id)
++    if subscription_count <= 0:
++        return "skipped", "no_subscriptions"
++
++    try:
++        import pywebpush  # noqa: F401
++    except Exception:
++        return "failed", "pywebpush_not_installed"
++
++    if not os.getenv("CHAT_VAPID_PUBLIC_KEY") or not os.getenv("CHAT_VAPID_PRIVATE_KEY"):
++        return "failed", "vapid_not_configured"
++
++    payload = {
++        "title": request_data.title,
++        "body": request_data.body,
++        "url": request_data.target_url,
++        "kind": request_data.kind,
++        "sender_label": request_data.sender_label or "",
++        "notification_id": notification_id,
++        "dedup_key": request_data.dedup_key,
++        "event_id": request_data.event_id,
++        "chat_event_id": request_data.chat_event_id,
++        "chat_room_id": request_data.chat_room_id,
++        "room_type": request_data.room_type,
++        "room_id": request_data.room_id,
++    }
++    metrics: dict[str, Any] = {}
++    sent_count = int(_send_push_to_actor(actor_type, actor_id, payload, metrics) or 0)
++    failure_count = int(metrics.get("failure_count", 0) or 0)
++    if sent_count > 0:
++        return "sent", f"subscriptions={subscription_count} sent={sent_count} failed={failure_count}"
++    return "failed", f"subscriptions={subscription_count} sent=0 failed={failure_count}"
++
++
++def send_push(
++    *,
++    recipient_type: str,
++    recipient_value: str | int,
++    title: str,
++    body: str,
++    target_url: str,
++    kind: str = "general",
++    sender_label: str | None = None,
++    dedup_key: str,
++    room_type: str | None = None,
++    room_id: str | None = None,
++    event_id: int | None = None,
++    chat_event_id: int | None = None,
++    chat_room_id: str | None = None,
++    create_in_app: bool = True,
++    send_web_push: bool = True,
++) -> dict[str, Any]:
++    from app.external_login_user.notifications import (
++        _has_notification_delivery_attempt,
++        _record_notification_delivery,
++        create_notification_dispatch_result,
++    )
++
++    started = perf_counter()
++    req = _normalize_request(
++        recipient_type=recipient_type,
++        recipient_value=recipient_value,
++        title=title,
++        body=body,
++        target_url=target_url,
++        kind=kind,
++        sender_label=sender_label,
++        dedup_key=dedup_key,
++        room_type=room_type,
++        room_id=room_id,
++        event_id=event_id,
++        chat_event_id=chat_event_id,
++        chat_room_id=chat_room_id,
++        create_in_app=create_in_app,
++        send_web_push=send_web_push,
++    )
++
++    result: dict[str, Any] = {
++        "ok": True,
++        "created": False,
++        "duplicate": False,
++        "notification_id": None,
++        "delivery": {"in_app": "skipped", "web_push": "skipped"},
++    }
++
++    if req.create_in_app:
++        create_result = create_notification_dispatch_result(
++            recipient_type=req.recipient_type,
++            recipient_value=req.recipient_value,
++            kind=req.kind,
++            title=req.title,
++            body=req.body,
++            target_url=req.target_url,
++            dedup_key=req.dedup_key,
++            sender_label=req.sender_label or "",
++            room_type=req.room_type,
++            room_id=req.room_id,
++            event_id=req.event_id,
++            chat_event_id=req.chat_event_id,
++            chat_room_id=req.chat_room_id,
 +        )
-+        _recompute_mail_log_summary(int(row["id"]))
-+        summary["backfilled_logs"] += 1
++        if not create_result.get("ok"):
++            raise PushDispatchError(str(create_result.get("reason") or "notification_create_failed"), status_code=500)
 +
-+    return summary
- 
- 
- def poll_mail_delivery_statuses(max_rows: int = 200, timeout_sec: int | None = None) -> dict:
-     ensure_mail_delivery_schema()
-     base_url = _get_config_value(
-         "DEFAULT_POSTFIX_STATUS_API_BASE_URL",
-         DEFAULT_POSTFIX_STATUS_API_BASE_URL,
-         "MFU_POSTFIX_STATUS_API_BASE_URL",
-     )
-     api_key = _get_config_value("MFU_POSTFIX_STATUS_API_KEY", "")
-     limit_hours = int(
-         _get_config_value(
-             "DEFAULT_POLL_LIMIT_HOURS",
-             DEFAULT_POLL_LIMIT_HOURS,
-             "MFU_MAIL_STATUS_POLL_LIMIT_HOURS",
-         )
-     )
-     if timeout_sec is None:
-         timeout_sec = int(
-             _get_config_value(
-                 "DEFAULT_HTTP_TIMEOUT_SEC",
-                 DEFAULT_HTTP_TIMEOUT_SEC,
-                 "MFU_MAIL_STATUS_HTTP_TIMEOUT_SEC",
-             )
-         )
-     timeout_sec = max(1, min(MAX_HTTP_TIMEOUT_SEC, int(timeout_sec)))
- 
-     base_url = (base_url or DEFAULT_POSTFIX_STATUS_API_BASE_URL).rstrip("/")
-     headers = {"X-API-Key": api_key} if api_key else {}
- 
--    rows = _fetch_poll_targets(limit_hours=limit_hours, max_rows=max_rows)
-+    rows = _fetch_recipient_poll_targets(limit_hours=limit_hours, max_rows=max_rows)
-     now = datetime.now()
--    summary = {"checked": 0, "updated": 0, "errors": 0}
-+    summary = {"checked": 0, "updated": 0, "errors": 0, "messages": 0}
- 
-+    rows_by_message_id: dict[str, list[dict[str, Any]]] = defaultdict(list)
-     for row in rows:
--        summary["checked"] += 1
--        message_id = row.get("message_id")
--        row_id = row.get("id")
--        if not message_id or not row_id:
--            continue
-+        if row.get("message_id"):
-+            rows_by_message_id[str(row["message_id"])].append(row)
- 
-+    for message_id, recipient_rows in rows_by_message_id.items():
-+        summary["messages"] += 1
-+        summary["checked"] += len(recipient_rows)
-         url = f"{base_url}/api/mail/status"
-+        mail_log_ids = {int(row["mail_log_id"]) for row in recipient_rows if row.get("mail_log_id")}
-+
-         try:
-             resp = requests.get(
-                 url,
-                 params={"message_id": message_id},
-                 headers=headers,
-                 timeout=timeout_sec,
-             )
-         except requests.Timeout:
-             retry_timeout = min(timeout_sec * 2, MAX_HTTP_TIMEOUT_SEC)
-             try:
-                 resp = requests.get(
-                     url,
-                     params={"message_id": message_id},
-                     headers=headers,
-                     timeout=retry_timeout,
-                 )
-             except requests.RequestException as exc:
--                summary["errors"] += 1
--                _touch_delivery_row(
--                    row_id=row_id,
-+                summary["errors"] += len(recipient_rows)
-+                for row in recipient_rows:
-+                    _touch_delivery_recipient_row(
-+                        row_id=int(row["id"]),
-+                        detail=f"poll_error: {exc.__class__.__name__}",
-+                        checked_at=now,
-+                    )
-+                for mail_log_id in mail_log_ids:
-+                    _recompute_mail_log_summary(mail_log_id)
-+                continue
-+        except requests.RequestException as exc:
-+            summary["errors"] += len(recipient_rows)
-+            for row in recipient_rows:
-+                _touch_delivery_recipient_row(
-+                    row_id=int(row["id"]),
-                     detail=f"poll_error: {exc.__class__.__name__}",
-                     checked_at=now,
-                 )
--                continue
--        except requests.RequestException as exc:
--            summary["errors"] += 1
--            _touch_delivery_row(
--                row_id=row_id,
--                detail=f"poll_error: {exc.__class__.__name__}",
--                checked_at=now,
--            )
-+            for mail_log_id in mail_log_ids:
-+                _recompute_mail_log_summary(mail_log_id)
-             continue
- 
-         if resp.status_code != 200:
--            summary["errors"] += 1
--            _touch_delivery_row(
--                row_id=row_id,
--                detail=f"poll_http_status: {resp.status_code}",
--                checked_at=now,
--            )
-+            summary["errors"] += len(recipient_rows)
-+            for row in recipient_rows:
-+                _touch_delivery_recipient_row(
-+                    row_id=int(row["id"]),
-+                    detail=f"poll_http_status: {resp.status_code}",
-+                    checked_at=now,
++        result["created"] = bool(create_result.get("created"))
++        result["duplicate"] = bool(create_result.get("duplicate"))
++        result["notification_id"] = create_result.get("notification_id")
++        result["delivery"]["in_app"] = "created" if create_result.get("created") else "duplicate"
++        _record_notification_delivery(
++            notification_id=result.get("notification_id") or create_result.get("existing_notification_id"),
++            dedup_key=req.dedup_key,
++            recipient_type=req.recipient_type,
++            recipient_value=req.recipient_value,
++            channel="in_app",
++            status="sent" if create_result.get("created") else "duplicate",
++            detail=f"kind={req.kind}",
++            sent_at=datetime.utcnow() if create_result.get("created") else None,
++        )
++        if create_result.get("duplicate"):
++            if req.send_web_push:
++                _record_notification_delivery(
++                    notification_id=create_result.get("existing_notification_id"),
++                    dedup_key=req.dedup_key,
++                    recipient_type=req.recipient_type,
++                    recipient_value=req.recipient_value,
++                    channel="web_push",
++                    status="skipped",
++                    detail="duplicate_notification",
 +                )
-+            for mail_log_id in mail_log_ids:
-+                _recompute_mail_log_summary(mail_log_id)
-             continue
- 
-         try:
-             payload = resp.json()
-         except ValueError:
--            summary["errors"] += 1
--            _touch_delivery_row(
--                row_id=row_id,
--                detail="poll_error: invalid_json",
--                checked_at=now,
--            )
-+            summary["errors"] += len(recipient_rows)
-+            for row in recipient_rows:
-+                _touch_delivery_recipient_row(
-+                    row_id=int(row["id"]),
-+                    detail="poll_error: invalid_json",
-+                    checked_at=now,
-+                )
-+            for mail_log_id in mail_log_ids:
-+                _recompute_mail_log_summary(mail_log_id)
-             continue
- 
--        status, detail, queue_id = _normalize_delivery_status(
--            payload.get("status"),
--            payload.get("detail"),
--            payload.get("queue_id"),
--        )
-+        recipient_payloads = _extract_recipient_status_payloads(payload if isinstance(payload, dict) else {})
-+        if recipient_payloads:
-+            for row in recipient_rows:
-+                recipient = _normalize_email_address(row.get("recipient"))
-+                status_payload = recipient_payloads.get(recipient)
-+                if not status_payload:
-+                    _touch_delivery_recipient_row(
-+                        row_id=int(row["id"]),
-+                        detail=f"poll_pending: recipient_not_returned; recipient={recipient}",
-+                        checked_at=now,
-+                    )
-+                    continue
-+                status, detail, queue_id = _normalize_delivery_status(
-+                    status_payload.get("status"),
-+                    status_payload.get("detail"),
-+                    status_payload.get("queue_id"),
-+                )
-+                _update_delivery_recipient_row(
-+                    row_id=int(row["id"]),
-+                    submit_status="sent",
-+                    status=status,
-+                    detail=detail,
-+                    queue_id=queue_id,
-+                    checked_at=now,
-+                )
-+                summary["updated"] += 1
-+        else:
-+            status, detail, queue_id = _normalize_delivery_status(
-+                payload.get("status") if isinstance(payload, dict) else None,
-+                payload.get("detail") if isinstance(payload, dict) else None,
-+                payload.get("queue_id") if isinstance(payload, dict) else None,
++            elapsed_ms = int((perf_counter() - started) * 1000)
++            _LOG.info(
++                "push dispatch recipient_type=%s recipient_value=%s kind=%s title=%s dedup_key=%s in_app=%s web_push=%s duplicate=%s notification_id=%s elapsed_ms=%s",
++                req.recipient_type,
++                req.recipient_value,
++                req.kind,
++                req.title,
++                req.dedup_key,
++                result["delivery"]["in_app"],
++                result["delivery"]["web_push"],
++                result["duplicate"],
++                result["notification_id"],
++                elapsed_ms,
 +            )
-+            for row in recipient_rows:
-+                _update_delivery_recipient_row(
-+                    row_id=int(row["id"]),
-+                    submit_status="sent",
-+                    status=status,
-+                    detail=_build_derived_detail(detail, _normalize_email_address(row.get("recipient"))),
-+                    queue_id=queue_id,
-+                    checked_at=now,
-+                )
-+                summary["updated"] += 1
- 
--        _update_delivery_row(
--            row_id=row_id,
--            status=status,
--            detail=detail,
--            queue_id=queue_id,
--            checked_at=now,
--        )
--        summary["updated"] += 1
-+        for mail_log_id in mail_log_ids:
-+            _recompute_mail_log_summary(mail_log_id)
- 
-     return summary
++            return result
++    elif req.send_web_push and _has_notification_delivery_attempt(
++        dedup_key=req.dedup_key,
++        recipient_type=req.recipient_type,
++        recipient_value=req.recipient_value,
++        channel="web_push",
++    ):
++        result["duplicate"] = True
++        _record_notification_delivery(
++            notification_id=None,
++            dedup_key=req.dedup_key,
++            recipient_type=req.recipient_type,
++            recipient_value=req.recipient_value,
++            channel="web_push",
++            status="duplicate",
++            detail="duplicate_web_push_only",
++        )
++        elapsed_ms = int((perf_counter() - started) * 1000)
++        _LOG.info(
++            "push dispatch recipient_type=%s recipient_value=%s kind=%s title=%s dedup_key=%s in_app=%s web_push=%s duplicate=%s notification_id=%s elapsed_ms=%s",
++            req.recipient_type,
++            req.recipient_value,
++            req.kind,
++            req.title,
++            req.dedup_key,
++            result["delivery"]["in_app"],
++            result["delivery"]["web_push"],
++            result["duplicate"],
++            result["notification_id"],
++            elapsed_ms,
++        )
++        return result
++
++    if req.send_web_push:
++        web_push_status, detail = _deliver_web_push(req, result.get("notification_id"))
++        result["delivery"]["web_push"] = web_push_status
++        _record_notification_delivery(
++            notification_id=result.get("notification_id"),
++            dedup_key=req.dedup_key,
++            recipient_type=req.recipient_type,
++            recipient_value=req.recipient_value,
++            channel="web_push",
++            status=web_push_status,
++            detail=detail,
++            sent_at=datetime.utcnow() if web_push_status == "sent" else None,
++        )
++
++    elapsed_ms = int((perf_counter() - started) * 1000)
++    _LOG.info(
++        "push dispatch recipient_type=%s recipient_value=%s kind=%s title=%s dedup_key=%s in_app=%s web_push=%s duplicate=%s notification_id=%s elapsed_ms=%s",
++        req.recipient_type,
++        req.recipient_value,
++        req.kind,
++        req.title,
++        req.dedup_key,
++        result["delivery"]["in_app"],
++        result["delivery"]["web_push"],
++        result["duplicate"],
++        result["notification_id"],
++        elapsed_ms,
++    )
++    return result

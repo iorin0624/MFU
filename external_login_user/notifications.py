@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -19,6 +22,22 @@ except Exception:  # pragma: no cover
 
 _READ_NOTIFICATIONS_KEEP_LIMIT = 30
 mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
+
+
+def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
+    if str(user_kind) == "mfu":
+        return (recipient_key or "").strip()
+    return str(int(user_id or 0))
+
+
+def _notification_storage_user_id(user_kind: str, user_id: int, recipient_key: str | None = None) -> int:
+    if str(user_kind) != "mfu":
+        return int(user_id or 0)
+    recipient = (recipient_key or "").strip()
+    if not recipient:
+        return 0
+    digest = hashlib.sha1(recipient.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
 
 def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
     if int(ext_user_id or 0) <= 0:
@@ -352,12 +371,48 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
+_NOTIFICATION_DELIVERY_DDL = """
+CREATE TABLE IF NOT EXISTS mfu_notification_deliveries (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  notification_id BIGINT UNSIGNED NULL,
+  dedup_key VARCHAR(191) NOT NULL,
+  recipient_type VARCHAR(32) NOT NULL,
+  recipient_value VARCHAR(191) NOT NULL,
+  channel VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  detail TEXT NULL,
+  created_at DATETIME NOT NULL,
+  sent_at DATETIME NULL,
+  PRIMARY KEY (id),
+  KEY idx_mfu_notification_deliveries_notification_id (notification_id),
+  KEY idx_mfu_notification_deliveries_dedup (dedup_key),
+  KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel),
+  KEY idx_mfu_notification_deliveries_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
+
+def _ensure_notification_delivery_schema(cur) -> None:
+    cur.execute(_NOTIFICATION_DELIVERY_DDL)
+    cur.execute("SHOW INDEX FROM mfu_notification_deliveries")
+    existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
+    index_map = {
+        "idx_mfu_notification_deliveries_notification_id": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_notification_id (notification_id)",
+        "idx_mfu_notification_deliveries_dedup": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_dedup (dedup_key)",
+        "idx_mfu_notification_deliveries_recipient": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel)",
+        "idx_mfu_notification_deliveries_created": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_created (created_at)",
+    }
+    for key_name, ddl in index_map.items():
+        if key_name not in existing_indexes:
+            cur.execute(ddl)
+
 
 def _ensure_notification_schema() -> None:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         cur.execute(_NOTIFICATION_DDL)
+        _ensure_notification_delivery_schema(cur)
 
         cur.execute("SHOW COLUMNS FROM mfu_notifications")
         existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
@@ -374,6 +429,15 @@ def _ensure_notification_schema() -> None:
             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_id VARCHAR(64) NULL AFTER room_type")
         if "sender_label" not in existing:
             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN sender_label VARCHAR(255) NULL AFTER room_id")
+
+        cur.execute(
+            """
+            UPDATE mfu_notifications
+               SET recipient_key=CAST(user_id AS CHAR)
+             WHERE user_kind='external'
+               AND (recipient_key IS NULL OR recipient_key='')
+            """
+        )
 
         index_map = {
             "idx_mfu_notifications_chat_room_unread": "ALTER TABLE mfu_notifications ADD KEY idx_mfu_notifications_chat_room_unread (user_kind, user_id, kind, chat_room_id, read_at)",
@@ -471,80 +535,25 @@ def create_notification_external(
     chat_event_id: int | None = None,
     chat_room_id: str | None = None,
 ) -> bool:
-    _ensure_notification_schema()
-    db = get_db()
-    cur = db.cursor(dictionary=True)
-    try:
-        normalized_kind = (kind or "").strip() or "general"
-        normalized_chat_room_id = str(chat_room_id).strip() if chat_room_id else None
-        if normalized_kind == "chat_message" and not normalized_chat_room_id:
-            current_app.logger.warning(
-                "create_notification_external rejected: chat_message requires chat_room_id user_id=%s event_id=%s chat_event_id=%s dedup_key=%s",
-                int(user_id),
-                int(event_id) if event_id else None,
-                int(chat_event_id) if chat_event_id else None,
-                (dedup_key or "").strip()[:191],
-            )
-            return False
-
-        dedup = (dedup_key or "").strip()[:191]
-        cur.execute(
-            """
-            SELECT id, created_at
-              FROM mfu_notifications
-             WHERE user_kind=%s AND user_id=%s AND dedup_key=%s
-             LIMIT 1
-            """,
-            ("external", int(user_id), dedup),
+    result = create_notification_dispatch_result(
+        recipient_type="external_user_id",
+        recipient_value=int(user_id),
+        kind=kind,
+        title=title,
+        body=body,
+        target_url=target_url or "/external-login/",
+        dedup_key=dedup_key,
+        event_id=event_id,
+        chat_event_id=chat_event_id,
+        chat_room_id=chat_room_id,
+    )
+    if not result.get("ok"):
+        current_app.logger.warning(
+            "create_notification_external failed user_id=%s reason=%s",
+            user_id,
+            result.get("reason"),
         )
-        existing = cur.fetchone()
-
-        cur.execute(
-            """
-            INSERT INTO mfu_notifications (
-              user_kind, user_id, kind, title, body, target_url,
-              event_id, chat_event_id, chat_room_id, dedup_key, created_at, read_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
-            ON DUPLICATE KEY UPDATE id=id
-            """,
-            (
-                "external",
-                int(user_id),
-                normalized_kind,
-                (title or "").strip() or "お知らせ",
-                (body or "").strip(),
-                (target_url or "").strip() or "/external-login/",
-                int(event_id) if event_id else None,
-                int(chat_event_id) if chat_event_id else None,
-                normalized_chat_room_id,
-                dedup,
-                datetime.utcnow(),
-            ),
-        )
-        deleted_old_read = _prune_old_read_notifications(cur, int(user_id))
-        inserted = cur.rowcount == 1
-        latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
-        db.commit()
-        if inserted:
-            _emit_notif_unread(int(user_id), reason="created", latest_id=latest_id)
-        current_app.logger.info(
-            "notifications insert user_id=%s event_id=%s kind=%s dedup_key=%s inserted=%s existing_id=%s pruned_read=%s",
-            int(user_id),
-            int(event_id) if event_id else None,
-            normalized_kind,
-            dedup,
-            inserted,
-            existing["id"] if existing else None,
-            deleted_old_read,
-        )
-        return inserted
-    except Exception:
-        current_app.logger.warning("create_notification_external failed user_id=%s", user_id, exc_info=True)
-        return False
-    finally:
-        cur.close()
-        db.close()
+    return bool(result.get("created"))
 
 
 def _compute_unread_count_mfu(username: str) -> int:
@@ -615,6 +624,298 @@ def _serialize_mfu_notification_item(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _emit_notif_new_mfu(
+    recipient: str,
+    *,
+    notification_id: int | None,
+    kind: str,
+    title: str,
+    body: str,
+    target_url: str,
+    sender_label: str,
+    room_type: str | None,
+    room_id: str | None,
+) -> None:
+    if socketio is None or not recipient:
+        return
+    socketio.emit(
+        "notif_new",
+        {"item": _serialize_mfu_notification_item({
+            "id": notification_id,
+            "kind": kind,
+            "title": title,
+            "body": body,
+            "target_url": target_url,
+            "sender_label": sender_label,
+            "room_type": room_type,
+            "room_id": room_id,
+            "read_at": None,
+            "created_at": _now_utc(),
+        })},
+        room=f"mfu_user:{recipient}",
+    )
+
+
+def _record_notification_delivery(
+    *,
+    notification_id: int | None,
+    dedup_key: str,
+    recipient_type: str,
+    recipient_value: str | int,
+    channel: str,
+    status: str,
+    detail: str | None = None,
+    sent_at: datetime | None = None,
+) -> None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        _ensure_notification_delivery_schema(cur)
+        cur.execute(
+            """
+            INSERT INTO mfu_notification_deliveries (
+              notification_id, dedup_key, recipient_type, recipient_value,
+              channel, status, detail, created_at, sent_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(notification_id) if notification_id else None,
+                (dedup_key or "").strip()[:191],
+                (recipient_type or "").strip()[:32],
+                str(recipient_value or "")[:191],
+                (channel or "").strip()[:32],
+                (status or "").strip()[:32],
+                (detail or "").strip()[:65535] or None,
+                datetime.utcnow(),
+                sent_at,
+            ),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        current_app.logger.warning(
+            "notification delivery log failed dedup_key=%s recipient_type=%s recipient_value=%s channel=%s status=%s",
+            (dedup_key or "").strip()[:191],
+            (recipient_type or "").strip()[:32],
+            str(recipient_value or "")[:191],
+            (channel or "").strip()[:32],
+            (status or "").strip()[:32],
+            exc_info=True,
+        )
+    finally:
+        cur.close()
+        db.close()
+
+
+def _has_notification_delivery_attempt(
+    *,
+    dedup_key: str,
+    recipient_type: str,
+    recipient_value: str | int,
+    channel: str,
+) -> bool:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        _ensure_notification_delivery_schema(cur)
+        cur.execute(
+            """
+            SELECT id
+              FROM mfu_notification_deliveries
+             WHERE dedup_key=%s
+               AND recipient_type=%s
+               AND recipient_value=%s
+               AND channel=%s
+             LIMIT 1
+            """,
+            (
+                (dedup_key or "").strip()[:191],
+                (recipient_type or "").strip()[:32],
+                str(recipient_value or "")[:191],
+                (channel or "").strip()[:32],
+            ),
+        )
+        return bool(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
+def _create_notification_core(
+    *,
+    user_kind: str,
+    user_id: int,
+    recipient_key: str | None,
+    kind: str,
+    title: str,
+    body: str,
+    target_url: str,
+    dedup_key: str,
+    event_id: int | None = None,
+    chat_event_id: int | None = None,
+    chat_room_id: str | None = None,
+    room_type: str | None = None,
+    room_id: str | None = None,
+    sender_label: str = "",
+) -> dict[str, Any]:
+    _ensure_notification_schema()
+    normalized_kind = (kind or "").strip() or "general"
+    normalized_recipient_key = _notification_recipient_key(user_kind, user_id, recipient_key)
+    storage_user_id = _notification_storage_user_id(user_kind, user_id, normalized_recipient_key)
+    normalized_chat_room_id = str(chat_room_id).strip()[:64] if chat_room_id else None
+    normalized_room_type = (room_type or "").strip()[:32] or None
+    normalized_room_id = (room_id or "").strip()[:64] or normalized_chat_room_id or None
+    normalized_sender_label = (sender_label or "").strip()[:255]
+    dedup = (dedup_key or "").strip()[:191]
+    if not dedup:
+        return {"ok": False, "reason": "dedup_key_required"}
+    if normalized_kind == "chat_message" and not normalized_chat_room_id:
+        return {"ok": False, "reason": "chat_room_id_required"}
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            INSERT INTO mfu_notifications (
+              user_kind, user_id, recipient_key, kind, title, body, target_url,
+              event_id, chat_event_id, chat_room_id, room_type, room_id, sender_label,
+              dedup_key, created_at, read_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
+            ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+            """,
+            (
+                user_kind,
+                storage_user_id,
+                normalized_recipient_key or None,
+                normalized_kind,
+                (title or "").strip()[:255] or "お知らせ",
+                (body or "").strip(),
+                (target_url or "").strip() or "/",
+                int(event_id) if event_id else None,
+                int(chat_event_id) if chat_event_id else None,
+                normalized_chat_room_id,
+                normalized_room_type,
+                normalized_room_id,
+                normalized_sender_label or None,
+                dedup,
+                datetime.utcnow(),
+            ),
+        )
+        inserted = cur.rowcount == 1
+        notification_id = int(cur.lastrowid) if cur.lastrowid else None
+        deleted_old_read = 0
+        if inserted and user_kind == "external":
+            deleted_old_read = _prune_old_read_notifications(cur, int(storage_user_id))
+        db.commit()
+        if inserted:
+            if user_kind == "external":
+                _emit_notif_unread(int(storage_user_id), reason="created", latest_id=notification_id)
+            elif user_kind == "mfu" and normalized_recipient_key:
+                _emit_notif_unread_mfu(normalized_recipient_key, reason="created", latest_id=notification_id)
+                _emit_notif_new_mfu(
+                    normalized_recipient_key,
+                    notification_id=notification_id,
+                    kind=normalized_kind,
+                    title=(title or "").strip()[:255] or "お知らせ",
+                    body=(body or "").strip(),
+                    target_url=(target_url or "").strip() or "/",
+                    sender_label=normalized_sender_label,
+                    room_type=normalized_room_type,
+                    room_id=normalized_room_id,
+                )
+        current_app.logger.info(
+            "notifications core user_kind=%s recipient_key=%s storage_user_id=%s kind=%s dedup_key=%s inserted=%s notification_id=%s pruned_read=%s",
+            user_kind,
+            normalized_recipient_key,
+            storage_user_id,
+            normalized_kind,
+            dedup,
+            inserted,
+            notification_id,
+            deleted_old_read,
+        )
+        return {
+            "ok": True,
+            "created": inserted,
+            "duplicate": not inserted,
+            "notification_id": notification_id if inserted else None,
+            "existing_notification_id": notification_id if not inserted else None,
+            "user_kind": user_kind,
+            "recipient_key": normalized_recipient_key,
+            "storage_user_id": storage_user_id,
+        }
+    except Exception:
+        db.rollback()
+        current_app.logger.warning(
+            "create notification core failed user_kind=%s recipient_key=%s storage_user_id=%s kind=%s",
+            user_kind,
+            normalized_recipient_key,
+            storage_user_id,
+            normalized_kind,
+            exc_info=True,
+        )
+        return {"ok": False, "reason": "db_error"}
+    finally:
+        cur.close()
+        db.close()
+
+
+def create_notification_dispatch_result(
+    *,
+    recipient_type: str,
+    recipient_value: str | int,
+    kind: str,
+    title: str,
+    body: str,
+    target_url: str,
+    dedup_key: str,
+    sender_label: str = "",
+    room_type: str | None = None,
+    room_id: str | None = None,
+    event_id: int | None = None,
+    chat_event_id: int | None = None,
+    chat_room_id: str | None = None,
+) -> dict[str, Any]:
+    if recipient_type == "external_user_id":
+        return _create_notification_core(
+            user_kind="external",
+            user_id=int(recipient_value),
+            recipient_key=str(int(recipient_value)),
+            kind=kind,
+            title=title,
+            body=body,
+            target_url=target_url,
+            dedup_key=dedup_key,
+            event_id=event_id,
+            chat_event_id=chat_event_id,
+            chat_room_id=chat_room_id,
+            room_type=room_type,
+            room_id=room_id,
+            sender_label=sender_label,
+        )
+    if recipient_type == "mfu_username":
+        return _create_notification_core(
+            user_kind="mfu",
+            user_id=0,
+            recipient_key=str(recipient_value or "").strip(),
+            kind=kind,
+            title=title,
+            body=body,
+            target_url=target_url,
+            dedup_key=dedup_key,
+            event_id=event_id,
+            chat_event_id=chat_event_id,
+            chat_room_id=chat_room_id,
+            room_type=room_type,
+            room_id=room_id,
+            sender_label=sender_label,
+        )
+    return {"ok": False, "reason": "unsupported_recipient_type"}
+
+
 def create_notification_mfu(
     *,
     recipient_username: str,
@@ -627,86 +928,80 @@ def create_notification_mfu(
     room_id: str | None = None,
     dedup_key: str | None = None,
 ) -> bool:
-    _ensure_notification_schema()
     recipient = (recipient_username or "").strip()
     if not recipient:
         return False
 
     dedup = ((dedup_key or "").strip() or f"mfu:{recipient}:{kind}:{hash((title, body, target_url))}")[:191]
-    room_type_value = (room_type or "").strip() or None
-    room_id_value = (room_id or "").strip() or None
+    result = create_notification_dispatch_result(
+        recipient_type="mfu_username",
+        recipient_value=recipient,
+        kind=kind,
+        title=title,
+        body=(body or "").strip()[:300],
+        target_url=(target_url or "").strip() or "/",
+        sender_label=(sender_label or "").strip()[:255],
+        room_type=(room_type or "").strip() or None,
+        room_id=(room_id or "").strip() or None,
+        dedup_key=dedup,
+    )
+    if not result.get("ok"):
+        current_app.logger.warning(
+            "create_notification_mfu failed username=%s reason=%s",
+            recipient,
+            result.get("reason"),
+        )
+    return bool(result.get("created"))
 
-    db = get_db()
-    cur = db.cursor(dictionary=True)
+
+def _require_internal_api_key() -> tuple[bool, Any | None]:
+    configured_key = str(os.getenv("MFU_INTERNAL_API_KEY") or "").strip()
+    if not configured_key:
+        return False, (jsonify({"ok": False, "reason": "server_not_configured"}), 503)
+    provided_key = str(request.headers.get("X-MFU-Internal-Key") or "").strip()
+    if not provided_key:
+        return False, (jsonify({"ok": False, "reason": "missing_internal_key"}), 401)
+    if not hmac.compare_digest(provided_key, configured_key):
+        return False, (jsonify({"ok": False, "reason": "invalid_internal_key"}), 403)
+    return True, None
+
+
+@mfu_notifications_bp.post("/api/internal/push/send")
+def api_internal_push_send():
+    allowed, error = _require_internal_api_key()
+    if not allowed:
+        return error
+
+    payload = request.get_json(silent=True) or {}
     try:
-        cur.execute(
-            """
-            SELECT id
-              FROM mfu_notifications
-             WHERE user_kind='mfu'
-               AND recipient_key=%s
-               AND dedup_key=%s
-             LIMIT 1
-            """,
-            (recipient, dedup),
-        )
-        if cur.fetchone():
-            return False
+        from app.utils.push import PushDispatchError, send_push
 
-        cur.execute(
-            """
-            INSERT INTO mfu_notifications (
-              user_kind, user_id, recipient_key, kind, title, body, target_url,
-              room_type, room_id, sender_label,
-              dedup_key, created_at, read_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)
-            """,
-            (
-                "mfu",
-                0,
-                recipient,
-                (kind or "").strip() or "general",
-                (title or "").strip() or "お知らせ",
-                (body or "").strip()[:300],
-                (target_url or "").strip() or "/",
-                room_type_value,
-                room_id_value,
-                (sender_label or "").strip()[:255],
-                dedup,
-                datetime.utcnow(),
-            ),
+        result = send_push(
+            recipient_type=payload.get("recipient_type"),
+            recipient_value=payload.get("recipient_value"),
+            title=payload.get("title"),
+            body=payload.get("body"),
+            target_url=payload.get("target_url"),
+            kind=payload.get("kind", "general"),
+            sender_label=payload.get("sender_label"),
+            dedup_key=payload.get("dedup_key"),
+            room_type=payload.get("room_type"),
+            room_id=payload.get("room_id"),
+            event_id=payload.get("event_id"),
+            chat_event_id=payload.get("chat_event_id"),
+            chat_room_id=payload.get("chat_room_id"),
+            create_in_app=payload.get("create_in_app", True),
+            send_web_push=payload.get("send_web_push", True),
         )
-        inserted = cur.rowcount == 1
-        latest_id = int(cur.lastrowid) if inserted and cur.lastrowid else None
-        db.commit()
-        if inserted:
-            _emit_notif_unread_mfu(recipient, reason="created", latest_id=latest_id)
-            if socketio is not None:
-                socketio.emit(
-                    "notif_new",
-                    {"item": _serialize_mfu_notification_item({
-                        "id": latest_id,
-                        "kind": kind,
-                        "title": title,
-                        "body": body,
-                        "target_url": target_url,
-                        "sender_label": sender_label,
-                        "room_type": room_type_value,
-                        "room_id": room_id_value,
-                        "read_at": None,
-                        "created_at": _now_utc(),
-                    })},
-                    room=f"mfu_user:{recipient}",
-                )
-        return inserted
+        return jsonify(result)
+    except PushDispatchError as exc:
+        response = {"ok": False, "reason": exc.reason}
+        if exc.detail:
+            response["detail"] = exc.detail
+        return jsonify(response), int(exc.status_code)
     except Exception:
-        db.rollback()
-        current_app.logger.warning("create_notification_mfu failed username=%s", recipient, exc_info=True)
-        return False
-    finally:
-        cur.close()
-        db.close()
+        current_app.logger.exception("internal push send failed")
+        return jsonify({"ok": False, "reason": "internal_error"}), 500
 
 
 @bp.get("/notifications")
