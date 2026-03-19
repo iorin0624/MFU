@@ -24,6 +24,11 @@
   <div class="card mb-4">
     <div class="card-header">2. PayPay編集</div>
     <div class="card-body">
+      {% if paypay_status and paypay_status.is_expired %}
+        <div class="alert alert-warning" role="alert">
+          このリンクは有効期限が切れているようです。お手数ですが、ご本人にご連絡ください。管理者画面でも期限切れとして表示しています。
+        </div>
+      {% endif %}
       <form method="post" class="row g-3">
         <input type="hidden" name="action" value="update_paypay">
         <div class="col-md-6">
@@ -44,6 +49,29 @@
           <button type="submit" class="btn btn-primary">PayPay設定を保存</button>
         </div>
       </form>
+      <hr>
+      <div class="row g-3 small">
+        <div class="col-md-4">
+          <div class="text-muted">リンク保存日時</div>
+          <div>{{ paypay_status.saved_at_display if paypay_status else '未設定' }}</div>
+        </div>
+        <div class="col-md-4">
+          <div class="text-muted">経過日数</div>
+          <div>{{ paypay_status.elapsed_days_display if paypay_status else '未設定' }}</div>
+        </div>
+        <div class="col-md-4">
+          <div class="text-muted">期限切れ判定</div>
+          <div>
+            {% if paypay_status and paypay_status.is_expired %}
+              <span class="badge text-bg-warning">期限切れ</span>
+            {% elif paypay_status and paypay_status.has_link and paypay_status.is_active %}
+              <span class="badge text-bg-success">有効</span>
+            {% else %}
+              <span class="badge text-bg-secondary">未設定 / 対象外</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

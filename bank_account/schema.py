@@ -66,10 +66,28 @@ def ensure_bank_account_schema() -> None:
                 paypay_send_id VARCHAR(100) NULL,
                 paypay_link VARCHAR(255) NULL,
                 is_active TINYINT NOT NULL DEFAULT 1,
+                paypay_link_saved_at DATETIME NULL,
+                paypay_link_expired_notified_at DATETIME NULL,
                 updated_at DATETIME NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        if not _column_exists(cursor, "mfu_payout_paypay", "paypay_link_saved_at"):
+            cursor.execute(
+                """
+                ALTER TABLE mfu_payout_paypay
+                ADD COLUMN paypay_link_saved_at DATETIME NULL
+                AFTER is_active
+                """
+            )
+        if not _column_exists(cursor, "mfu_payout_paypay", "paypay_link_expired_notified_at"):
+            cursor.execute(
+                """
+                ALTER TABLE mfu_payout_paypay
+                ADD COLUMN paypay_link_expired_notified_at DATETIME NULL
+                AFTER paypay_link_saved_at
+                """
+            )
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS mfu_payout_access_token (
@@ -119,8 +137,16 @@ def ensure_bank_account_schema() -> None:
         )
         cursor.execute(
             """
-            INSERT INTO mfu_payout_paypay (id, paypay_send_id, paypay_link, is_active, updated_at)
-            VALUES (1, NULL, NULL, 1, NOW())
+            INSERT INTO mfu_payout_paypay (
+                id,
+                paypay_send_id,
+                paypay_link,
+                is_active,
+                paypay_link_saved_at,
+                paypay_link_expired_notified_at,
+                updated_at
+            )
+            VALUES (1, NULL, NULL, 1, NULL, NULL, NOW())
             ON DUPLICATE KEY UPDATE id = id
             """
         )
