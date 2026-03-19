@@ -8,6 +8,7 @@ from app.utils.db import get_db
 
 from . import bank_account_bp
 from .token_service import (
+    build_payout_access_url,
     create_payout_access_token,
     touch_payout_token_api_client_usage,
     verify_payout_token_api_key,
@@ -72,6 +73,7 @@ def create_payout_access_token_api():
             created_by_admin=None,
             expires_at=expires_at,
         )
+        access_url = build_payout_access_url(created.get("token") or "")
         touch_payout_token_api_client_usage(db, int(client["id"]), ip_address)
 
         current_app.logger.info(
@@ -86,6 +88,7 @@ def create_payout_access_token_api():
                 "ok": True,
                 "token": created.get("token"),
                 "token_preview": created.get("token_preview"),
+                "access_url": access_url,
                 "token_id": created.get("id"),
                 "memo": created.get("memo"),
                 "issued_by_app": created.get("issued_by_app"),

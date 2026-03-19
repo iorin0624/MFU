@@ -22,7 +22,7 @@
 
     {% if not password_is_set %}
       <div class="alert alert-warning">
-        管理者が専用パスワードを未設定です。アクセストークンがある場合は下の token 欄で解除できます。
+        管理者が専用パスワードを未設定です。アクセストークンをお持ちの場合は、共有された専用URLからアクセスしてください。
       </div>
     {% endif %}
 
@@ -43,23 +43,7 @@
           autocomplete="current-password"
           {% if lock_remaining > 0 %}disabled{% endif %}
         >
-        <div class="form-text">パスワードが入力されている場合は、アクセストークンより優先して認証します。</div>
-      </div>
-
-      <div class="text-center text-muted small mb-3">または</div>
-
-      <div class="mb-3">
-        <label for="access_token" class="form-label">アクセストークンで解除</label>
-        <input
-          type="text"
-          class="form-control"
-          id="access_token"
-          name="access_token"
-          autocomplete="off"
-          placeholder="mfu_pat_..."
-          {% if lock_remaining > 0 %}disabled{% endif %}
-        >
-        <div class="form-text">管理画面または API で発行されたトークンを入力してください。</div>
+        <div class="form-text">アクセストークンをお持ちの場合は、共有された専用URLからアクセスしてください。</div>
       </div>
 
       <button type="submit" class="btn btn-primary" {% if lock_remaining > 0 %}disabled{% endif %}>解除する</button>

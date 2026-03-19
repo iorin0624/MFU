@@ -1,34 +1,8 @@
-diff --git a/bank_account/__init__.py b/bank_account/__init__.py
-index 248ed2e365e6c8f358063678de82c68dee71cd43..69e3d84602d81d81a17bd023921efa3ccae97e85 100644
---- a/bank_account/__init__.py
-+++ b/bank_account/__init__.py
-@@ -1,20 +1,21 @@
- from __future__ import annotations
- 
- from flask import Blueprint
- 
- from .schema import ensure_bank_account_schema
- 
- bank_account_bp = Blueprint(
-     "bank_account",
-     __name__,
-     template_folder="templates",
-     static_folder="static",
- )
- 
- 
- def register_bank_account(app) -> None:
-     ensure_bank_account_schema()
-     app.register_blueprint(bank_account_bp)
- 
- 
- from . import routes  # noqa: E402,F401
-+from . import token_api  # noqa: E402,F401
 diff --git a/bank_account/routes.py b/bank_account/routes.py
-index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9ba6457a5 100644
+index 9d06594cd7d3528030b76d24bf9c94f9ba6457a5..83a7030e49da304575c81168153c8560bd2df8bf 100644
 --- a/bank_account/routes.py
 +++ b/bank_account/routes.py
-@@ -1,172 +1,270 @@
+@@ -1,270 +1,270 @@
  from __future__ import annotations
  
  import time
@@ -40,19 +14,20 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
  from app.utils.db import get_db
  
  from . import bank_account_bp
-+from .token_service import (
-+    create_payout_access_token,
-+    get_payout_access_token_by_id,
-+    is_payout_access_token_usable,
-+    toggle_payout_access_token_active,
-+    touch_payout_access_token_usage,
-+    verify_payout_access_token,
-+)
+ from .token_service import (
++    build_payout_access_url,
+     create_payout_access_token,
+     get_payout_access_token_by_id,
+     is_payout_access_token_usable,
+     toggle_payout_access_token_active,
+     touch_payout_access_token_usage,
+     verify_payout_access_token,
+ )
  
  MAX_UNLOCK_FAILURES = 10
  LOCK_SECONDS = 10 * 60
-+NEW_ACCESS_TOKEN_SESSION_KEY = "payout_new_access_token"
-+
+ NEW_ACCESS_TOKEN_SESSION_KEY = "payout_new_access_token"
+ 
  
  
  def _get_settings(cursor):
@@ -72,100 +47,122 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
      }
  
  
-+
+ 
  def _clear_unlock_failure() -> None:
      session.pop("payout_unlock_fail_count", None)
      session.pop("payout_unlock_lock_until", None)
  
  
--def _is_unlocked(current_version: int) -> bool:
-+
-+def _clear_payout_unlock_session(clear_failure: bool = False) -> None:
-+    session.pop("payout_unlocked", None)
-+    session.pop("payout_pwd_version", None)
++def _clear_payout_token_session() -> None:
++    if session.get("payout_auth_method") == "token":
++        session.pop("payout_unlocked", None)
 +    session.pop("payout_auth_method", None)
 +    session.pop("payout_token_id", None)
-+    if clear_failure:
-+        _clear_unlock_failure()
 +
+ 
+-def _clear_payout_unlock_session(clear_failure: bool = False) -> None:
 +
-+
-+def _is_password_unlocked(current_version: int) -> bool:
++def _clear_payout_auth_session(clear_failure: bool = False) -> None:
+     session.pop("payout_unlocked", None)
+     session.pop("payout_pwd_version", None)
+-    session.pop("payout_auth_method", None)
+-    session.pop("payout_token_id", None)
++    _clear_payout_token_session()
+     if clear_failure:
+         _clear_unlock_failure()
+ 
+ 
+ 
+ def _is_password_unlocked(current_version: int) -> bool:
      return (
          session.get("payout_unlocked") is True
-+        and session.get("payout_auth_method") in (None, "password")
+         and session.get("payout_auth_method") in (None, "password")
          and session.get("payout_pwd_version") == current_version
      )
  
  
-+
-+def _is_token_unlocked(db) -> bool:
-+    if session.get("payout_unlocked") is not True:
-+        return False
-+    if session.get("payout_auth_method") != "token":
-+        return False
-+
-+    token_id = session.get("payout_token_id")
-+    if not token_id:
-+        return False
-+
-+    token_row = get_payout_access_token_by_id(db, int(token_id))
-+    if not is_payout_access_token_usable(token_row):
-+        _clear_payout_unlock_session()
-+        return False
-+    return True
-+
-+
-+
-+def _is_any_payout_unlocked(db, current_version: int) -> bool:
-+    return _is_password_unlocked(current_version) or _is_token_unlocked(db)
-+
-+
-+
-+def _client_ip() -> str | None:
-+    forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-+    return forwarded_for or request.remote_addr
-+
-+
-+
-+def _consume_new_access_token_notice() -> dict | None:
-+    return session.pop(NEW_ACCESS_TOKEN_SESSION_KEY, None)
-+
-+
-+
-+def _set_new_access_token_notice(created: dict) -> None:
-+    session[NEW_ACCESS_TOKEN_SESSION_KEY] = {
-+        "id": created.get("id"),
-+        "token": created.get("token"),
-+        "token_preview": created.get("token_preview"),
-+        "memo": created.get("memo"),
-+        "created_at": created.get("created_at").strftime("%Y-%m-%d %H:%M:%S") if created.get("created_at") else None,
-+    }
-+
-+
+ 
+-def _is_token_unlocked(db) -> bool:
++def _is_token_session_unlocked(db) -> bool:
+     if session.get("payout_unlocked") is not True:
+         return False
+     if session.get("payout_auth_method") != "token":
+         return False
+ 
+     token_id = session.get("payout_token_id")
+     if not token_id:
+         return False
+ 
+     token_row = get_payout_access_token_by_id(db, int(token_id))
+     if not is_payout_access_token_usable(token_row):
+-        _clear_payout_unlock_session()
++        _clear_payout_token_session()
+         return False
+     return True
+ 
+ 
+ 
+ def _is_any_payout_unlocked(db, current_version: int) -> bool:
+-    return _is_password_unlocked(current_version) or _is_token_unlocked(db)
++    return _is_password_unlocked(current_version) or _is_token_session_unlocked(db)
+ 
+ 
+ 
+ def _client_ip() -> str | None:
+     forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+     return forwarded_for or request.remote_addr
+ 
+ 
+ 
+ def _consume_new_access_token_notice() -> dict | None:
+     return session.pop(NEW_ACCESS_TOKEN_SESSION_KEY, None)
+ 
+ 
+ 
+ def _set_new_access_token_notice(created: dict) -> None:
+     session[NEW_ACCESS_TOKEN_SESSION_KEY] = {
+         "id": created.get("id"),
+         "token": created.get("token"),
+         "token_preview": created.get("token_preview"),
++        "access_url": created.get("access_url"),
+         "memo": created.get("memo"),
+         "created_at": created.get("created_at").strftime("%Y-%m-%d %H:%M:%S") if created.get("created_at") else None,
+     }
+ 
+ 
  @bank_account_bp.route("/payout")
  def payout_index():
++    iv = (request.args.get("iv") or "").strip()
      db = get_db()
      cursor = db.cursor(dictionary=True)
      try:
          settings = _get_settings(cursor)
          version = int(settings.get("payout_password_version") or 1)
  
--        if not settings.get("payout_password_hash"):
--            return redirect(url_for("bank_account.payout_unlock", setup_required=1))
--
--        if not _is_unlocked(version):
--            session.pop("payout_unlocked", None)
--            session.pop("payout_pwd_version", None)
--            return redirect(url_for("bank_account.payout_unlock"))
-+        if not _is_any_payout_unlocked(db, version):
-+            _clear_payout_unlock_session()
-+            return redirect(
-+                url_for(
-+                    "bank_account.payout_unlock",
-+                    setup_required=1 if not settings.get("payout_password_hash") else None,
-+                )
-+            )
++        if iv:
++            token_row = verify_payout_access_token(db, iv)
++            if token_row:
++                session["payout_unlocked"] = True
++                session["payout_auth_method"] = "token"
++                session["payout_token_id"] = int(token_row["id"])
++                session.pop("payout_pwd_version", None)
++                touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
++                _clear_unlock_failure()
++                return redirect(url_for("bank_account.payout_index"))
++
++            _clear_payout_token_session()
++            flash("アクセストークンが無効です。", "danger")
++            return redirect(url_for("bank_account.payout_unlock"))
++
+         if not _is_any_payout_unlocked(db, version):
+-            _clear_payout_unlock_session()
++            _clear_payout_auth_session()
+             return redirect(
+                 url_for(
+                     "bank_account.payout_unlock",
+                     setup_required=1 if not settings.get("payout_password_hash") else None,
+                 )
+             )
  
          cursor.execute(
              """
@@ -210,80 +207,84 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
          settings = _get_settings(cursor)
          pwd_hash = settings.get("payout_password_hash")
          version = int(settings.get("payout_password_version") or 1)
- 
+-
          if request.method == "POST":
              if lock_remaining > 0:
                  flash(f"失敗回数が上限に達しました。約{lock_remaining // 60 + 1}分後に再試行してください。", "danger")
                  return redirect(url_for("bank_account.payout_unlock"))
  
--            if not pwd_hash:
--                flash("管理者がまだパスワードを設定していません。", "warning")
-+            password = request.form.get("password") or ""
-+            access_token = (request.form.get("access_token") or "").strip()
-+
-+            if password:
-+                if not pwd_hash:
-+                    flash("管理者がまだパスワードを設定していません。", "warning")
-+                    return redirect(url_for("bank_account.payout_unlock"))
-+
-+                submitted = password.encode("utf-8")
-+                stored = pwd_hash.encode("utf-8")
-+                if bcrypt.checkpw(submitted, stored):
-+                    session["payout_unlocked"] = True
-+                    session["payout_pwd_version"] = version
-+                    session["payout_auth_method"] = "password"
-+                    session.pop("payout_token_id", None)
-+                    _clear_unlock_failure()
-+                    flash("振込先ページの閲覧を許可しました。", "success")
-+                    return redirect(url_for("bank_account.payout_index"))
-+
-+                fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
-+                session["payout_unlock_fail_count"] = fail_count
-+                if fail_count >= MAX_UNLOCK_FAILURES:
-+                    session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
-+                    flash("失敗が10回に達したため、10分間ロックしました。", "danger")
-+                else:
-+                    flash(f"パスワードが違います。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
-+                return redirect(url_for("bank_account.payout_unlock"))
-+
-+            if access_token:
-+                token_row = verify_payout_access_token(db, access_token)
-+                if token_row:
-+                    session["payout_unlocked"] = True
-+                    session["payout_auth_method"] = "token"
-+                    session["payout_token_id"] = int(token_row["id"])
-+                    session.pop("payout_pwd_version", None)
-+                    touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
-+                    _clear_unlock_failure()
-+                    flash("アクセストークンで振込先ページの閲覧を許可しました。", "success")
-+                    return redirect(url_for("bank_account.payout_index"))
-+
-+                fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
-+                session["payout_unlock_fail_count"] = fail_count
-+                if fail_count >= MAX_UNLOCK_FAILURES:
-+                    session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
-+                    flash("失敗が10回に達したため、10分間ロックしました。", "danger")
-+                else:
-+                    flash(f"アクセストークンが無効です。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
+             password = request.form.get("password") or ""
+-            access_token = (request.form.get("access_token") or "").strip()
+-
+-            if password:
+-                if not pwd_hash:
+-                    flash("管理者がまだパスワードを設定していません。", "warning")
+-                    return redirect(url_for("bank_account.payout_unlock"))
+-
+-                submitted = password.encode("utf-8")
+-                stored = pwd_hash.encode("utf-8")
+-                if bcrypt.checkpw(submitted, stored):
+-                    session["payout_unlocked"] = True
+-                    session["payout_pwd_version"] = version
+-                    session["payout_auth_method"] = "password"
+-                    session.pop("payout_token_id", None)
+-                    _clear_unlock_failure()
+-                    flash("振込先ページの閲覧を許可しました。", "success")
+-                    return redirect(url_for("bank_account.payout_index"))
+-
+-                fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
+-                session["payout_unlock_fail_count"] = fail_count
+-                if fail_count >= MAX_UNLOCK_FAILURES:
+-                    session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
+-                    flash("失敗が10回に達したため、10分間ロックしました。", "danger")
+-                else:
+-                    flash(f"パスワードが違います。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
++            if not password:
++                flash("パスワードを入力してください。", "danger")
                  return redirect(url_for("bank_account.payout_unlock"))
  
--            submitted = (request.form.get("password") or "").encode("utf-8")
--            stored = pwd_hash.encode("utf-8")
--            if submitted and bcrypt.checkpw(submitted, stored):
--                session["payout_unlocked"] = True
--                session["payout_pwd_version"] = version
--                _clear_unlock_failure()
--                flash("振込先ページの閲覧を許可しました。", "success")
--                return redirect(url_for("bank_account.payout_index"))
+-            if access_token:
+-                token_row = verify_payout_access_token(db, access_token)
+-                if token_row:
+-                    session["payout_unlocked"] = True
+-                    session["payout_auth_method"] = "token"
+-                    session["payout_token_id"] = int(token_row["id"])
+-                    session.pop("payout_pwd_version", None)
+-                    touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
+-                    _clear_unlock_failure()
+-                    flash("アクセストークンで振込先ページの閲覧を許可しました。", "success")
+-                    return redirect(url_for("bank_account.payout_index"))
 -
--            fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
--            session["payout_unlock_fail_count"] = fail_count
--            if fail_count >= MAX_UNLOCK_FAILURES:
--                session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
--                flash("失敗が10回に達したため、10分間ロックしました。", "danger")
--            else:
--                flash(f"パスワードが違います。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
-+            flash("パスワードまたはアクセストークンを入力してください。", "danger")
+-                fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
+-                session["payout_unlock_fail_count"] = fail_count
+-                if fail_count >= MAX_UNLOCK_FAILURES:
+-                    session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
+-                    flash("失敗が10回に達したため、10分間ロックしました。", "danger")
+-                else:
+-                    flash(f"アクセストークンが無効です。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
++            if not pwd_hash:
++                flash("管理者がまだパスワードを設定していません。", "warning")
+                 return redirect(url_for("bank_account.payout_unlock"))
+ 
+-            flash("パスワードまたはアクセストークンを入力してください。", "danger")
++            submitted = password.encode("utf-8")
++            stored = pwd_hash.encode("utf-8")
++            if bcrypt.checkpw(submitted, stored):
++                session["payout_unlocked"] = True
++                session["payout_pwd_version"] = version
++                session["payout_auth_method"] = "password"
++                session.pop("payout_token_id", None)
++                _clear_unlock_failure()
++                flash("振込先ページの閲覧を許可しました。", "success")
++                return redirect(url_for("bank_account.payout_index"))
++
++            fail_count = int(session.get("payout_unlock_fail_count") or 0) + 1
++            session["payout_unlock_fail_count"] = fail_count
++            if fail_count >= MAX_UNLOCK_FAILURES:
++                session["payout_unlock_lock_until"] = now_ts + LOCK_SECONDS
++                flash("失敗が10回に達したため、10分間ロックしました。", "danger")
++            else:
++                flash(f"パスワードが違います。（{fail_count}/{MAX_UNLOCK_FAILURES}）", "danger")
              return redirect(url_for("bank_account.payout_unlock"))
      finally:
          cursor.close()
@@ -299,9 +300,8 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
  
  @bank_account_bp.route("/payout/logout")
  def payout_logout():
--    session.pop("payout_unlocked", None)
--    session.pop("payout_pwd_version", None)
-+    _clear_payout_unlock_session(clear_failure=False)
+-    _clear_payout_unlock_session(clear_failure=False)
++    _clear_payout_auth_session(clear_failure=False)
      flash("振込先ページの閲覧許可を解除しました。", "info")
      return redirect(url_for("bank_account.payout_unlock"))
  
@@ -327,21 +327,7 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
                      (account_holder_name,),
                  )
                  db.commit()
-@@ -258,57 +356,114 @@ def admin_payout():
- 
-             elif action == "change_password":
-                 new_password = request.form.get("new_password") or ""
-                 confirm = request.form.get("confirm_password") or ""
-                 if not new_password:
-                     flash("新しいパスワードを入力してください。", "danger")
-                 elif new_password != confirm:
-                     flash("確認用パスワードが一致しません。", "danger")
-                 else:
-                     new_hash = bcrypt.hashpw(
-                         new_password.encode("utf-8"), bcrypt.gensalt()
-                     ).decode("utf-8")
-                     cursor.execute(
-                         """
+@@ -370,50 +370,51 @@ def admin_payout():
                          UPDATE mfu_payout_settings
                          SET payout_password_hash = %s,
                              payout_password_version = payout_password_version + 1,
@@ -353,35 +339,36 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
                      db.commit()
                      flash("専用パスワードを更新しました。全員の閲覧許可をリセットしました。", "success")
  
-+            elif action == "create_access_token":
-+                memo = (request.form.get("memo") or "").strip()
-+                if not memo:
-+                    flash("アクセストークンのメモは必須です。", "danger")
-+                elif len(memo) > 255:
-+                    flash("アクセストークンのメモは255文字以内で入力してください。", "danger")
-+                else:
-+                    created = create_payout_access_token(
-+                        db,
-+                        memo=memo,
-+                        issued_via="admin_ui",
-+                        issued_by_app=None,
-+                        created_by_admin=session.get("user") or "admin",
-+                    )
-+                    _set_new_access_token_notice(created)
-+                    flash("アクセストークンを作成しました。", "success")
-+
-+            elif action == "toggle_access_token":
-+                token_id = int(request.form.get("token_id") or 0)
-+                is_active = request.form.get("is_active") == "1"
-+                if not token_id:
-+                    flash("アクセストークンIDが不正です。", "danger")
-+                else:
-+                    toggle_payout_access_token_active(db, token_id, is_active)
-+                    flash(
-+                        "アクセストークンを有効化しました。" if is_active else "アクセストークンを無効化しました。",
-+                        "success",
-+                    )
-+
+             elif action == "create_access_token":
+                 memo = (request.form.get("memo") or "").strip()
+                 if not memo:
+                     flash("アクセストークンのメモは必須です。", "danger")
+                 elif len(memo) > 255:
+                     flash("アクセストークンのメモは255文字以内で入力してください。", "danger")
+                 else:
+                     created = create_payout_access_token(
+                         db,
+                         memo=memo,
+                         issued_via="admin_ui",
+                         issued_by_app=None,
+                         created_by_admin=session.get("user") or "admin",
+                     )
++                    created["access_url"] = build_payout_access_url(created.get("token") or "")
+                     _set_new_access_token_notice(created)
+                     flash("アクセストークンを作成しました。", "success")
+ 
+             elif action == "toggle_access_token":
+                 token_id = int(request.form.get("token_id") or 0)
+                 is_active = request.form.get("is_active") == "1"
+                 if not token_id:
+                     flash("アクセストークンIDが不正です。", "danger")
+                 else:
+                     toggle_payout_access_token_active(db, token_id, is_active)
+                     flash(
+                         "アクセストークンを有効化しました。" if is_active else "アクセストークンを無効化しました。",
+                         "success",
+                     )
+ 
              return redirect(url_for("bank_account.admin_payout"))
  
          settings = _get_settings(cursor)
@@ -392,235 +379,11 @@ index 9c312e6c8f598bf9d8f988be6f6edc89c0ef3667..9d06594cd7d3528030b76d24bf9c94f9
              FROM mfu_payout_paypay
              WHERE id = 1
              LIMIT 1
-             """
-         )
-         paypay = cursor.fetchone() or {"id": 1, "is_active": 1}
- 
-         cursor.execute(
-             """
-             SELECT id, label, bank_name, branch_name, account_number, is_active, sort_order, updated_at
-             FROM mfu_payout_account
-             ORDER BY sort_order ASC, id ASC
-             """
-         )
-         accounts = cursor.fetchall()
-+
-+        cursor.execute(
-+            """
-+            SELECT id,
-+                   token_prefix,
-+                   token_suffix,
-+                   memo,
-+                   is_active,
-+                   access_count,
-+                   last_accessed_at,
-+                   last_access_ip,
-+                   issued_via,
-+                   issued_by_app,
-+                   created_by_admin,
-+                   created_at,
-+                   updated_at,
-+                   expires_at
-+            FROM mfu_payout_access_token
-+            ORDER BY created_at DESC, id DESC
-+            """
-+        )
-+        access_tokens = cursor.fetchall()
-+        for token in access_tokens:
-+            token["token_preview"] = f"{token.get('token_prefix')}...{token.get('token_suffix')}"
-+
-+        new_access_token = _consume_new_access_token_notice()
-     finally:
-         cursor.close()
-         db.close()
- 
-     return render_template(
-         "bank_account/admin.html",
-         settings=settings,
-         paypay=paypay,
-         accounts=accounts,
-+        access_tokens=access_tokens,
-+        new_access_token=new_access_token,
-     )
-diff --git a/bank_account/schema.py b/bank_account/schema.py
-index a85d31626ec096177e4b84b1133d543d482ddb4d..d14db96734f363b0c9ae3d6f0f976ff94968afbb 100644
---- a/bank_account/schema.py
-+++ b/bank_account/schema.py
-@@ -1,90 +1,130 @@
- from __future__ import annotations
- 
- from app.utils.db import get_db
- 
- 
-+
- def _column_exists(cursor, table_name: str, column_name: str) -> bool:
-     cursor.execute(
-         """
-         SELECT 1
-         FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = DATABASE()
-           AND TABLE_NAME = %s
-           AND COLUMN_NAME = %s
-         LIMIT 1
-         """,
-         (table_name, column_name),
-     )
-     return cursor.fetchone() is not None
- 
- 
-+
- def ensure_bank_account_schema() -> None:
-     db = get_db()
-     cursor = db.cursor()
-     try:
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_settings (
-                 id INT NOT NULL PRIMARY KEY,
-                 payout_password_hash VARCHAR(255) NULL,
-                 payout_password_version INT NOT NULL DEFAULT 1,
-                 account_holder_name VARCHAR(100) NULL,
-                 updated_at DATETIME NULL
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         if not _column_exists(cursor, "mfu_payout_settings", "account_holder_name"):
-             cursor.execute(
-                 """
-                 ALTER TABLE mfu_payout_settings
-                 ADD COLUMN account_holder_name VARCHAR(100) NULL
-                 AFTER payout_password_version
-                 """
-             )
- 
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_account (
-                 id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                 label VARCHAR(100) NULL,
-                 bank_name VARCHAR(100) NOT NULL,
-                 branch_name VARCHAR(100) NULL,
-                 account_number VARCHAR(32) NOT NULL,
-                 is_active TINYINT NOT NULL DEFAULT 1,
-                 sort_order INT NOT NULL DEFAULT 0,
-                 created_at DATETIME NULL,
-                 updated_at DATETIME NULL
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_paypay (
-                 id INT NOT NULL PRIMARY KEY,
-                 paypay_send_id VARCHAR(100) NULL,
-                 paypay_link VARCHAR(255) NULL,
-                 is_active TINYINT NOT NULL DEFAULT 1,
-                 updated_at DATETIME NULL
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-+        cursor.execute(
-+            """
-+            CREATE TABLE IF NOT EXISTS mfu_payout_access_token (
-+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-+                token_hash VARCHAR(255) NOT NULL,
-+                token_prefix VARCHAR(32) NOT NULL,
-+                token_suffix VARCHAR(32) NOT NULL,
-+                memo VARCHAR(255) NOT NULL,
-+                is_active TINYINT(1) NOT NULL DEFAULT 1,
-+                access_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-+                last_accessed_at DATETIME NULL,
-+                last_access_ip VARCHAR(64) NULL,
-+                issued_via VARCHAR(32) NOT NULL DEFAULT 'admin_ui',
-+                issued_by_app VARCHAR(64) NULL,
-+                created_by_admin VARCHAR(64) NULL,
-+                expires_at DATETIME NULL,
-+                created_at DATETIME NOT NULL,
-+                updated_at DATETIME NOT NULL,
-+                INDEX idx_mfu_payout_access_token_active (is_active),
-+                INDEX idx_mfu_payout_access_token_created_at (created_at)
-+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+            """
-+        )
-+        cursor.execute(
-+            """
-+            CREATE TABLE IF NOT EXISTS mfu_payout_token_api_client (
-+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-+                app_name VARCHAR(64) NOT NULL,
-+                api_key_hash VARCHAR(255) NOT NULL,
-+                is_active TINYINT(1) NOT NULL DEFAULT 1,
-+                last_used_at DATETIME NULL,
-+                last_used_ip VARCHAR(64) NULL,
-+                created_at DATETIME NOT NULL,
-+                updated_at DATETIME NOT NULL,
-+                UNIQUE KEY uq_mfu_payout_token_api_client_app_name (app_name)
-+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-+            """
-+        )
-         cursor.execute(
-             """
-             INSERT INTO mfu_payout_settings (
-                 id, payout_password_hash, payout_password_version, account_holder_name, updated_at
-             )
-             VALUES (1, NULL, 1, NULL, NOW())
-             ON DUPLICATE KEY UPDATE id = id
-             """
-         )
-         cursor.execute(
-             """
-             INSERT INTO mfu_payout_paypay (id, paypay_send_id, paypay_link, is_active, updated_at)
-             VALUES (1, NULL, NULL, 1, NOW())
-             ON DUPLICATE KEY UPDATE id = id
-             """
-         )
-         db.commit()
-     finally:
-         cursor.close()
-         db.close()
 diff --git a/bank_account/templates/bank_account/admin.html b/bank_account/templates/bank_account/admin.html
-index c39c73ff76fa889e0cb304a64a7e2148fe1abb9c..182c248a800079123a69d25e5c70ce0cee1e5f08 100644
+index 182c248a800079123a69d25e5c70ce0cee1e5f08..8d8ccb4af1da9ccf894e1eef25efdf538cfc9d92 100644
 --- a/bank_account/templates/bank_account/admin.html
 +++ b/bank_account/templates/bank_account/admin.html
-@@ -71,48 +71,125 @@
-           <form method="post" class="border rounded p-3 mb-2">
-             <input type="hidden" name="account_id" value="{{ a.id }}">
-             <div class="row g-2 align-items-end">
-               <div class="col-md-2"><label class="form-label">ラベル</label><input type="text" name="label" class="form-control" value="{{ a.label or '' }}"></div>
-               <div class="col-md-2"><label class="form-label">銀行名</label><input type="text" name="bank_name" class="form-control" value="{{ a.bank_name }}" required></div>
-               <div class="col-md-2"><label class="form-label">支店名</label><input type="text" name="branch_name" class="form-control" value="{{ a.branch_name or '' }}"></div>
-               <div class="col-md-2"><label class="form-label">口座番号</label><input type="text" name="account_number" class="form-control" value="{{ a.account_number }}" required></div>
-               <div class="col-md-1"><label class="form-label">順序</label><input type="number" name="sort_order" class="form-control" value="{{ a.sort_order }}"></div>
-               <div class="col-md-1 form-check mt-4">
-                 <input class="form-check-input" type="checkbox" name="is_active" value="1" id="active_{{ a.id }}" {% if a.is_active %}checked{% endif %}>
-                 <label class="form-check-label" for="active_{{ a.id }}">有効</label>
-               </div>
-               <div class="col-md-2 d-flex gap-2">
-                 <button type="submit" class="btn btn-primary btn-sm" name="action" value="update_account">更新</button>
-                 <button type="submit" class="btn btn-outline-danger btn-sm" name="action" value="deactivate_account" onclick="return confirm('この口座を無効化しますか？');">無効化</button>
-               </div>
-             </div>
-           </form>
-         {% endfor %}
-       {% else %}
-         <p class="text-muted">口座はまだありません。</p>
-       {% endif %}
-     </div>
-   </div>
- 
--  <div class="card">
-+  <div class="card mb-4">
-     <div class="card-header">4. パスワード変更</div>
-     <div class="card-body">
-       <p class="text-muted">現在の平文パスワードは表示できません。保存時にハッシュ化されます。</p>
-       <p class="mb-2">現在のバージョン: {{ settings.payout_password_version }}</p>
-       <form method="post" class="row g-3">
-         <input type="hidden" name="action" value="change_password">
-         <div class="col-md-6">
-           <label class="form-label">新しいパスワード</label>
-           <input type="password" name="new_password" class="form-control" required>
-         </div>
-         <div class="col-md-6">
-           <label class="form-label">確認用パスワード</label>
+@@ -109,52 +109,58 @@
            <input type="password" name="confirm_password" class="form-control" required>
          </div>
          <div class="col-12">
@@ -629,90 +392,63 @@ index c39c73ff76fa889e0cb304a64a7e2148fe1abb9c..182c248a800079123a69d25e5c70ce0c
        </form>
      </div>
    </div>
-+
-+  <div class="card">
-+    <div class="card-header">5. アクセストークン管理</div>
-+    <div class="card-body">
-+      <form method="post" class="row g-3 mb-4">
-+        <input type="hidden" name="action" value="create_access_token">
-+        <div class="col-md-9">
-+          <label class="form-label">メモ（誰向けの token か必須）</label>
-+          <input type="text" name="memo" class="form-control" maxlength="255" required placeholder="例: album → user123 向け一時発行">
-+        </div>
-+        <div class="col-md-3 d-flex align-items-end">
-+          <button type="submit" class="btn btn-success w-100">トークンを発行</button>
-+        </div>
-+      </form>
-+
-+      {% if new_access_token %}
-+        <div class="alert alert-warning">
-+          <div class="fw-bold mb-2">この token はこの画面でしか表示されません。</div>
-+          <div class="small text-muted mb-1">{{ new_access_token.memo }}</div>
-+          <div class="input-group">
-+            <input type="text" class="form-control font-monospace" value="{{ new_access_token.token }}" readonly>
+ 
+   <div class="card">
+     <div class="card-header">5. アクセストークン管理</div>
+     <div class="card-body">
+       <form method="post" class="row g-3 mb-4">
+         <input type="hidden" name="action" value="create_access_token">
+         <div class="col-md-9">
+           <label class="form-label">メモ（誰向けの token か必須）</label>
+           <input type="text" name="memo" class="form-control" maxlength="255" required placeholder="例: album → user123 向け一時発行">
+         </div>
+         <div class="col-md-3 d-flex align-items-end">
+           <button type="submit" class="btn btn-success w-100">トークンを発行</button>
+         </div>
+       </form>
+ 
+       {% if new_access_token %}
+         <div class="alert alert-warning">
+-          <div class="fw-bold mb-2">この token はこの画面でしか表示されません。</div>
+-          <div class="small text-muted mb-1">{{ new_access_token.memo }}</div>
++          <div class="fw-bold mb-2">このアクセストークンはこの画面でしか表示されません。</div>
++          <div class="small text-muted mb-2">{{ new_access_token.memo }}</div>
++          <label class="form-label mb-1">共有用アクセスURL</label>
++          <div class="input-group mb-2">
++            <input type="text" class="form-control font-monospace" value="{{ new_access_token.access_url }}" readonly>
 +          </div>
-+          <div class="form-text">識別表示: {{ new_access_token.token_preview }}</div>
-+        </div>
-+      {% endif %}
-+
-+      <div class="table-responsive">
-+        <table class="table table-sm align-middle">
-+          <thead>
-+            <tr>
-+              <th>アクセストークン</th>
-+              <th>メモ</th>
-+              <th>最終アクセス日時</th>
-+              <th>最終アクセスIP</th>
-+              <th>アクセス回数</th>
-+              <th>発行元</th>
-+              <th>連携アプリ</th>
-+              <th>有効期限</th>
-+              <th>作成日時</th>
-+              <th>有効/無効</th>
-+            </tr>
-+          </thead>
-+          <tbody>
-+            {% if access_tokens %}
-+              {% for token in access_tokens %}
-+                <tr>
-+                  <td class="font-monospace">{{ token.token_preview }}</td>
-+                  <td>{{ token.memo }}</td>
-+                  <td>{{ token.last_accessed_at or '-' }}</td>
-+                  <td>{{ token.last_access_ip or '-' }}</td>
-+                  <td>{{ token.access_count }}</td>
-+                  <td>{{ token.issued_via }}</td>
-+                  <td>{{ token.issued_by_app or '-' }}</td>
-+                  <td>{{ token.expires_at or '-' }}</td>
-+                  <td>{{ token.created_at }}</td>
-+                  <td>
-+                    <form method="post" class="d-inline">
-+                      <input type="hidden" name="action" value="toggle_access_token">
-+                      <input type="hidden" name="token_id" value="{{ token.id }}">
-+                      <input type="hidden" name="is_active" value="{{ 0 if token.is_active else 1 }}">
-+                      <button type="submit" class="btn btn-sm {{ 'btn-outline-danger' if token.is_active else 'btn-outline-success' }}">
-+                        {{ '無効化' if token.is_active else '再有効化' }}
-+                      </button>
-+                    </form>
-+                  </td>
-+                </tr>
-+              {% endfor %}
-+            {% else %}
-+              <tr>
-+                <td colspan="10" class="text-muted">アクセストークンはまだありません。</td>
-+              </tr>
-+            {% endif %}
-+          </tbody>
-+        </table>
-+      </div>
-+    </div>
-+  </div>
- </div>
- {% endblock %}
++          <div class="form-text mb-3">このURLを相手に共有してください。アクセス時は <code>/payout?iv=...</code> で認証後、自動的に <code>/payout</code> へリダイレクトされます。</div>
++          <label class="form-label mb-1">トークン平文</label>
+           <div class="input-group">
+             <input type="text" class="form-control font-monospace" value="{{ new_access_token.token }}" readonly>
+           </div>
+           <div class="form-text">識別表示: {{ new_access_token.token_preview }}</div>
+         </div>
+       {% endif %}
+ 
+       <div class="table-responsive">
+         <table class="table table-sm align-middle">
+           <thead>
+             <tr>
+               <th>アクセストークン</th>
+               <th>メモ</th>
+               <th>最終アクセス日時</th>
+               <th>最終アクセスIP</th>
+               <th>アクセス回数</th>
+               <th>発行元</th>
+               <th>連携アプリ</th>
+               <th>有効期限</th>
+               <th>作成日時</th>
+               <th>有効/無効</th>
+             </tr>
+           </thead>
+           <tbody>
+             {% if access_tokens %}
 diff --git a/bank_account/templates/bank_account/unlock.html b/bank_account/templates/bank_account/unlock.html
-index 066fc8835cc8c10d11ae0d13626866eacf249f60..4a8bee2c3f4b1d07f502489497fe310a560d9960 100644
+index 4a8bee2c3f4b1d07f502489497fe310a560d9960..2a20df86f0e6daf24fe71e53a9c496e1fc8b0dea 100644
 --- a/bank_account/templates/bank_account/unlock.html
 +++ b/bank_account/templates/bank_account/unlock.html
-@@ -1,52 +1,69 @@
+@@ -1,69 +1,53 @@
  <!doctype html>
  <html lang="ja">
  <head>
@@ -737,8 +473,8 @@ index 066fc8835cc8c10d11ae0d13626866eacf249f60..4a8bee2c3f4b1d07f502489497fe310a
  
      {% if not password_is_set %}
        <div class="alert alert-warning">
--        管理者がパスワードを未設定です。設定完了までこのページは利用できません。
-+        管理者が専用パスワードを未設定です。アクセストークンがある場合は下の token 欄で解除できます。
+-        管理者が専用パスワードを未設定です。アクセストークンがある場合は下の token 欄で解除できます。
++        管理者が専用パスワードを未設定です。アクセストークンをお持ちの場合は、共有された専用URLからアクセスしてください。
        </div>
      {% endif %}
  
@@ -750,434 +486,262 @@ index 066fc8835cc8c10d11ae0d13626866eacf249f60..4a8bee2c3f4b1d07f502489497fe310a
  
      <form method="post" class="card card-body shadow-sm">
        <div class="mb-3">
--        <label for="password" class="form-label">専用パスワード</label>
-+        <label for="password" class="form-label">専用パスワードで解除</label>
+         <label for="password" class="form-label">専用パスワードで解除</label>
          <input
            type="password"
            class="form-control"
            id="password"
            name="password"
            autocomplete="current-password"
--          {% if not password_is_set or lock_remaining > 0 %}disabled{% endif %}
--          required
-+          {% if lock_remaining > 0 %}disabled{% endif %}
+           {% if lock_remaining > 0 %}disabled{% endif %}
          >
-+        <div class="form-text">パスワードが入力されている場合は、アクセストークンより優先して認証します。</div>
+-        <div class="form-text">パスワードが入力されている場合は、アクセストークンより優先して認証します。</div>
+-      </div>
+-
+-      <div class="text-center text-muted small mb-3">または</div>
+-
+-      <div class="mb-3">
+-        <label for="access_token" class="form-label">アクセストークンで解除</label>
+-        <input
+-          type="text"
+-          class="form-control"
+-          id="access_token"
+-          name="access_token"
+-          autocomplete="off"
+-          placeholder="mfu_pat_..."
+-          {% if lock_remaining > 0 %}disabled{% endif %}
+-        >
+-        <div class="form-text">管理画面または API で発行されたトークンを入力してください。</div>
++        <div class="form-text">アクセストークンをお持ちの場合は、共有された専用URLからアクセスしてください。</div>
        </div>
--      <button type="submit" class="btn btn-primary" {% if not password_is_set or lock_remaining > 0 %}disabled{% endif %}>解除する</button>
-+
-+      <div class="text-center text-muted small mb-3">または</div>
-+
-+      <div class="mb-3">
-+        <label for="access_token" class="form-label">アクセストークンで解除</label>
-+        <input
-+          type="text"
-+          class="form-control"
-+          id="access_token"
-+          name="access_token"
-+          autocomplete="off"
-+          placeholder="mfu_pat_..."
-+          {% if lock_remaining > 0 %}disabled{% endif %}
-+        >
-+        <div class="form-text">管理画面または API で発行されたトークンを入力してください。</div>
-+      </div>
-+
-+      <button type="submit" class="btn btn-primary" {% if lock_remaining > 0 %}disabled{% endif %}>解除する</button>
+ 
+       <button type="submit" class="btn btn-primary" {% if lock_remaining > 0 %}disabled{% endif %}>解除する</button>
      </form>
    </main>
  </body>
  </html>
 diff --git a/bank_account/token_api.py b/bank_account/token_api.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..0995b3310172c7e8c3eb208592b6a4f7e4bdbc87
---- /dev/null
+index 0995b3310172c7e8c3eb208592b6a4f7e4bdbc87..c2dcc2f313710196dc56bc98901d5f723a331f66 100644
+--- a/bank_account/token_api.py
 +++ b/bank_account/token_api.py
-@@ -0,0 +1,103 @@
-+from __future__ import annotations
-+
-+from datetime import datetime
-+
-+from flask import current_app, jsonify, request
-+
-+from app.utils.db import get_db
-+
-+from . import bank_account_bp
-+from .token_service import (
-+    create_payout_access_token,
-+    touch_payout_token_api_client_usage,
-+    verify_payout_token_api_key,
-+)
-+
-+
-+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-+
-+
-+
-+def _parse_expires_at(raw_value: str | None) -> datetime | None:
-+    value = (raw_value or "").strip()
-+    if not value:
-+        return None
-+    return datetime.strptime(value, DATETIME_FORMAT)
-+
-+
-+
-+def _client_ip() -> str | None:
-+    forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-+    return forwarded_for or request.remote_addr
-+
-+
-+@bank_account_bp.route("/admin/api/payout/access-token", methods=["POST"])
-+def create_payout_access_token_api():
-+    api_key = request.headers.get("X-MFU-PAYOUT-API-KEY") or ""
-+    db = get_db()
-+    client = None
-+    ip_address = _client_ip()
-+
-+    try:
-+        client = verify_payout_token_api_key(db, api_key)
-+        if not client:
-+            current_app.logger.warning(
-+                "bank_account payout token api auth failed ip=%s",
-+                ip_address,
-+            )
-+            return jsonify({"ok": False, "error": "unauthorized"}), 401
-+
-+        payload = request.get_json(silent=True) or {}
-+        memo = (payload.get("memo") or "").strip()
-+        issued_by_app = (payload.get("issued_by_app") or "").strip() or None
-+        expires_at_raw = payload.get("expires_at")
-+
-+        if not memo:
-+            return jsonify({"ok": False, "error": "memo is required"}), 400
-+        if len(memo) > 255:
-+            return jsonify({"ok": False, "error": "memo must be 255 characters or fewer"}), 400
-+        if issued_by_app and len(issued_by_app) > 64:
-+            return jsonify({"ok": False, "error": "issued_by_app must be 64 characters or fewer"}), 400
-+
-+        try:
-+            expires_at = _parse_expires_at(expires_at_raw)
-+        except ValueError:
-+            return jsonify({"ok": False, "error": f"expires_at must be in {DATETIME_FORMAT} format"}), 400
-+
-+        created = create_payout_access_token(
-+            db,
-+            memo=memo,
-+            issued_via="api",
-+            issued_by_app=issued_by_app or client.get("app_name"),
-+            created_by_admin=None,
-+            expires_at=expires_at,
-+        )
-+        touch_payout_token_api_client_usage(db, int(client["id"]), ip_address)
-+
-+        current_app.logger.info(
-+            "bank_account payout token api issued token_id=%s client=%s issued_by_app=%s ip=%s",
-+            created.get("id"),
-+            client.get("app_name"),
-+            created.get("issued_by_app"),
-+            ip_address,
-+        )
-+        return jsonify(
-+            {
-+                "ok": True,
-+                "token": created.get("token"),
-+                "token_preview": created.get("token_preview"),
-+                "token_id": created.get("id"),
-+                "memo": created.get("memo"),
-+                "issued_by_app": created.get("issued_by_app"),
-+                "created_at": created.get("created_at").strftime(DATETIME_FORMAT) if created.get("created_at") else None,
-+            }
-+        )
-+    except Exception:
-+        current_app.logger.exception(
-+            "bank_account payout token api unexpected error client=%s ip=%s",
-+            client.get("app_name") if client else None,
-+            ip_address,
-+        )
-+        return jsonify({"ok": False, "error": "internal_server_error"}), 500
-+    finally:
-+        db.close()
+@@ -1,35 +1,36 @@
+ from __future__ import annotations
+ 
+ from datetime import datetime
+ 
+ from flask import current_app, jsonify, request
+ 
+ from app.utils.db import get_db
+ 
+ from . import bank_account_bp
+ from .token_service import (
++    build_payout_access_url,
+     create_payout_access_token,
+     touch_payout_token_api_client_usage,
+     verify_payout_token_api_key,
+ )
+ 
+ 
+ DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+ 
+ 
+ 
+ def _parse_expires_at(raw_value: str | None) -> datetime | None:
+     value = (raw_value or "").strip()
+     if not value:
+         return None
+     return datetime.strptime(value, DATETIME_FORMAT)
+ 
+ 
+ 
+ def _client_ip() -> str | None:
+     forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+     return forwarded_for or request.remote_addr
+ 
+ 
+ @bank_account_bp.route("/admin/api/payout/access-token", methods=["POST"])
+ def create_payout_access_token_api():
+@@ -50,54 +51,56 @@ def create_payout_access_token_api():
+         payload = request.get_json(silent=True) or {}
+         memo = (payload.get("memo") or "").strip()
+         issued_by_app = (payload.get("issued_by_app") or "").strip() or None
+         expires_at_raw = payload.get("expires_at")
+ 
+         if not memo:
+             return jsonify({"ok": False, "error": "memo is required"}), 400
+         if len(memo) > 255:
+             return jsonify({"ok": False, "error": "memo must be 255 characters or fewer"}), 400
+         if issued_by_app and len(issued_by_app) > 64:
+             return jsonify({"ok": False, "error": "issued_by_app must be 64 characters or fewer"}), 400
+ 
+         try:
+             expires_at = _parse_expires_at(expires_at_raw)
+         except ValueError:
+             return jsonify({"ok": False, "error": f"expires_at must be in {DATETIME_FORMAT} format"}), 400
+ 
+         created = create_payout_access_token(
+             db,
+             memo=memo,
+             issued_via="api",
+             issued_by_app=issued_by_app or client.get("app_name"),
+             created_by_admin=None,
+             expires_at=expires_at,
+         )
++        access_url = build_payout_access_url(created.get("token") or "")
+         touch_payout_token_api_client_usage(db, int(client["id"]), ip_address)
+ 
+         current_app.logger.info(
+             "bank_account payout token api issued token_id=%s client=%s issued_by_app=%s ip=%s",
+             created.get("id"),
+             client.get("app_name"),
+             created.get("issued_by_app"),
+             ip_address,
+         )
+         return jsonify(
+             {
+                 "ok": True,
+                 "token": created.get("token"),
+                 "token_preview": created.get("token_preview"),
++                "access_url": access_url,
+                 "token_id": created.get("id"),
+                 "memo": created.get("memo"),
+                 "issued_by_app": created.get("issued_by_app"),
+                 "created_at": created.get("created_at").strftime(DATETIME_FORMAT) if created.get("created_at") else None,
+             }
+         )
+     except Exception:
+         current_app.logger.exception(
+             "bank_account payout token api unexpected error client=%s ip=%s",
+             client.get("app_name") if client else None,
+             ip_address,
+         )
+         return jsonify({"ok": False, "error": "internal_server_error"}), 500
+     finally:
+         db.close()
 diff --git a/bank_account/token_service.py b/bank_account/token_service.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..c011f2a15813e22131cd4cb7b3497276011513a6
---- /dev/null
+index c011f2a15813e22131cd4cb7b3497276011513a6..0dc2672f8ee31a11486621af95f45a4867be202f 100644
+--- a/bank_account/token_service.py
 +++ b/bank_account/token_service.py
-@@ -0,0 +1,235 @@
-+from __future__ import annotations
+@@ -1,46 +1,70 @@
+ from __future__ import annotations
+ 
+ import hashlib
+ import secrets
+ from datetime import datetime
+ from typing import Any
++from urllib.parse import quote
 +
-+import hashlib
-+import secrets
-+from datetime import datetime
-+from typing import Any
++from flask import current_app, has_app_context, has_request_context, request
+ 
+ TOKEN_PREFIX = "mfu_pat_"
+ TOKEN_CORE_BYTES = 32
+ TOKEN_PREVIEW_HEAD = 4
+ TOKEN_PREVIEW_TAIL = 4
++DEFAULT_PAYOUT_PUBLIC_BASE_URL = "https://mfu.iori0624.jp"
+ 
+ 
+ def _hash_secret(raw_value: str) -> str:
+     return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
+ 
+ 
+ def _build_token_preview(token_prefix: str, token_suffix: str) -> str:
+     return f"{token_prefix}...{token_suffix}"
+ 
+ 
++def _resolve_public_base_url(external_base_url: str | None = None) -> str:
++    if external_base_url:
++        return external_base_url.rstrip("/")
 +
-+TOKEN_PREFIX = "mfu_pat_"
-+TOKEN_CORE_BYTES = 32
-+TOKEN_PREVIEW_HEAD = 4
-+TOKEN_PREVIEW_TAIL = 4
++    config_base_url = current_app.config.get("PAYOUT_PUBLIC_BASE_URL") if has_app_context() else None
++    if config_base_url:
++        return str(config_base_url).rstrip("/")
 +
++    if has_request_context():
++        return request.url_root.rstrip("/")
 +
-+def _hash_secret(raw_value: str) -> str:
-+    return hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
-+
-+
-+def _build_token_preview(token_prefix: str, token_suffix: str) -> str:
-+    return f"{token_prefix}...{token_suffix}"
-+
-+
-+def generate_payout_access_token() -> tuple[str, str, str, str]:
-+    raw_body = secrets.token_urlsafe(TOKEN_CORE_BYTES)
-+    token = f"{TOKEN_PREFIX}{raw_body}"
-+    token_hash = _hash_secret(token)
-+    token_prefix = token[: len(TOKEN_PREFIX) + TOKEN_PREVIEW_HEAD]
-+    token_suffix = token[-TOKEN_PREVIEW_TAIL:]
-+    return token, token_hash, token_prefix, token_suffix
-+
-+
-+def create_payout_access_token(
-+    db,
-+    memo: str,
-+    issued_via: str = "admin_ui",
-+    issued_by_app: str | None = None,
-+    created_by_admin: str | None = None,
-+    expires_at: datetime | None = None,
-+) -> dict[str, Any]:
-+    token, token_hash, token_prefix, token_suffix = generate_payout_access_token()
-+    cursor = db.cursor(dictionary=True)
-+    try:
-+        cursor.execute(
-+            """
-+            INSERT INTO mfu_payout_access_token (
-+                token_hash,
-+                token_prefix,
-+                token_suffix,
-+                memo,
-+                is_active,
-+                access_count,
-+                last_accessed_at,
-+                last_access_ip,
-+                issued_via,
-+                issued_by_app,
-+                created_by_admin,
-+                expires_at,
-+                created_at,
-+                updated_at
-+            )
-+            VALUES (%s, %s, %s, %s, 1, 0, NULL, NULL, %s, %s, %s, %s, NOW(), NOW())
-+            """,
-+            (
-+                token_hash,
-+                token_prefix,
-+                token_suffix,
-+                memo,
-+                issued_via,
-+                issued_by_app,
-+                created_by_admin,
-+                expires_at,
-+            ),
-+        )
-+        token_id = cursor.lastrowid
-+        db.commit()
-+        cursor.execute(
-+            """
-+            SELECT id, memo, issued_via, issued_by_app, created_by_admin, expires_at, created_at, updated_at
-+            FROM mfu_payout_access_token
-+            WHERE id = %s
-+            LIMIT 1
-+            """,
-+            (token_id,),
-+        )
-+        created = cursor.fetchone() or {}
-+    finally:
-+        cursor.close()
-+
-+    created["token"] = token
-+    created["token_hash"] = token_hash
-+    created["token_prefix"] = token_prefix
-+    created["token_suffix"] = token_suffix
-+    created["token_preview"] = _build_token_preview(token_prefix, token_suffix)
-+    return created
++    return DEFAULT_PAYOUT_PUBLIC_BASE_URL
 +
 +
-+def verify_payout_access_token(db, raw_token: str) -> dict[str, Any] | None:
-+    normalized = (raw_token or "").strip()
-+    if not normalized or not normalized.startswith(TOKEN_PREFIX):
-+        return None
-+
-+    token_prefix = normalized[: len(TOKEN_PREFIX) + TOKEN_PREVIEW_HEAD]
-+    token_suffix = normalized[-TOKEN_PREVIEW_TAIL:]
-+    token_hash = _hash_secret(normalized)
-+
-+    cursor = db.cursor(dictionary=True)
-+    try:
-+        cursor.execute(
-+            """
-+            SELECT id, token_hash, token_prefix, token_suffix, memo, is_active, access_count,
-+                   last_accessed_at, last_access_ip, issued_via, issued_by_app,
-+                   created_by_admin, expires_at, created_at, updated_at
-+            FROM mfu_payout_access_token
-+            WHERE token_prefix = %s
-+              AND token_suffix = %s
-+              AND is_active = 1
-+              AND (expires_at IS NULL OR expires_at >= NOW())
-+            ORDER BY id DESC
-+            """,
-+            (token_prefix, token_suffix),
-+        )
-+        rows = cursor.fetchall()
-+    finally:
-+        cursor.close()
-+
-+    for row in rows:
-+        if row.get("token_hash") == token_hash:
-+            return row
-+    return None
++def build_payout_access_url(raw_token: str, external_base_url: str | None = None) -> str:
++    token = (raw_token or "").strip()
++    base_url = _resolve_public_base_url(external_base_url)
++    return f"{base_url}/payout?iv={quote(token, safe='')}"
 +
 +
-+def get_payout_access_token_by_id(db, token_id: int) -> dict[str, Any] | None:
-+    cursor = db.cursor(dictionary=True)
-+    try:
-+        cursor.execute(
-+            """
-+            SELECT id, token_hash, token_prefix, token_suffix, memo, is_active, access_count,
-+                   last_accessed_at, last_access_ip, issued_via, issued_by_app,
-+                   created_by_admin, expires_at, created_at, updated_at
-+            FROM mfu_payout_access_token
-+            WHERE id = %s
-+            LIMIT 1
-+            """,
-+            (token_id,),
-+        )
-+        return cursor.fetchone()
-+    finally:
-+        cursor.close()
-+
-+
-+def is_payout_access_token_usable(token_row: dict[str, Any] | None) -> bool:
-+    if not token_row or not token_row.get("is_active"):
-+        return False
-+    expires_at = token_row.get("expires_at")
-+    if expires_at and expires_at < datetime.now():
-+        return False
-+    return True
-+
-+
-+def touch_payout_access_token_usage(db, token_id: int, ip_address: str | None) -> None:
-+    cursor = db.cursor()
-+    try:
-+        cursor.execute(
-+            """
-+            UPDATE mfu_payout_access_token
-+            SET access_count = access_count + 1,
-+                last_accessed_at = NOW(),
-+                last_access_ip = %s,
-+                updated_at = NOW()
-+            WHERE id = %s
-+            """,
-+            (ip_address, token_id),
-+        )
-+        db.commit()
-+    finally:
-+        cursor.close()
-+
-+
-+def toggle_payout_access_token_active(db, token_id: int, is_active: bool) -> None:
-+    cursor = db.cursor()
-+    try:
-+        cursor.execute(
-+            """
-+            UPDATE mfu_payout_access_token
-+            SET is_active = %s,
-+                updated_at = NOW()
-+            WHERE id = %s
-+            """,
-+            (1 if is_active else 0, token_id),
-+        )
-+        db.commit()
-+    finally:
-+        cursor.close()
-+
-+
-+def verify_payout_token_api_key(db, raw_api_key: str) -> dict[str, Any] | None:
-+    normalized = (raw_api_key or "").strip()
-+    if not normalized:
-+        return None
-+
-+    api_key_hash = _hash_secret(normalized)
-+    cursor = db.cursor(dictionary=True)
-+    try:
-+        cursor.execute(
-+            """
-+            SELECT id, app_name, api_key_hash, is_active, last_used_at, last_used_ip, created_at, updated_at
-+            FROM mfu_payout_token_api_client
-+            WHERE is_active = 1
-+            """
-+        )
-+        rows = cursor.fetchall()
-+    finally:
-+        cursor.close()
-+
-+    for row in rows:
-+        if row.get("api_key_hash") == api_key_hash:
-+            return row
-+    return None
-+
-+
-+def touch_payout_token_api_client_usage(db, client_id: int, ip_address: str | None) -> None:
-+    cursor = db.cursor()
-+    try:
-+        cursor.execute(
-+            """
-+            UPDATE mfu_payout_token_api_client
-+            SET last_used_at = NOW(),
-+                last_used_ip = %s,
-+                updated_at = NOW()
-+            WHERE id = %s
-+            """,
-+            (ip_address, client_id),
-+        )
-+        db.commit()
-+    finally:
-+        cursor.close()
-diff --git a/docs/sql/20260319_bank_account_access_tokens.sql b/docs/sql/20260319_bank_account_access_tokens.sql
-new file mode 100644
-index 0000000000000000000000000000000000000000..d07d8d363b2de0e1b6554dc63d2dad305dad5e46
---- /dev/null
-+++ b/docs/sql/20260319_bank_account_access_tokens.sql
-@@ -0,0 +1,38 @@
-+CREATE TABLE IF NOT EXISTS mfu_payout_access_token (
-+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-+    token_hash VARCHAR(255) NOT NULL,
-+    token_prefix VARCHAR(32) NOT NULL,
-+    token_suffix VARCHAR(32) NOT NULL,
-+    memo VARCHAR(255) NOT NULL,
-+    is_active TINYINT(1) NOT NULL DEFAULT 1,
-+    access_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-+    last_accessed_at DATETIME NULL,
-+    last_access_ip VARCHAR(64) NULL,
-+    issued_via VARCHAR(32) NOT NULL DEFAULT 'admin_ui',
-+    issued_by_app VARCHAR(64) NULL,
-+    created_by_admin VARCHAR(64) NULL,
-+    expires_at DATETIME NULL,
-+    created_at DATETIME NOT NULL,
-+    updated_at DATETIME NOT NULL,
-+    INDEX idx_mfu_payout_access_token_active (is_active),
-+    INDEX idx_mfu_payout_access_token_created_at (created_at)
-+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-+
-+CREATE TABLE IF NOT EXISTS mfu_payout_token_api_client (
-+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-+    app_name VARCHAR(64) NOT NULL,
-+    api_key_hash VARCHAR(255) NOT NULL,
-+    is_active TINYINT(1) NOT NULL DEFAULT 1,
-+    last_used_at DATETIME NULL,
-+    last_used_ip VARCHAR(64) NULL,
-+    created_at DATETIME NOT NULL,
-+    updated_at DATETIME NOT NULL,
-+    UNIQUE KEY uq_mfu_payout_token_api_client_app_name (app_name)
-+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-+
-+-- seed example:
-+-- INSERT INTO mfu_payout_token_api_client (
-+--     app_name, api_key_hash, is_active, created_at, updated_at
-+-- ) VALUES (
-+--     'album', SHA2('replace-with-strong-raw-api-key', 256), 1, NOW(), NOW()
-+-- );
+ def generate_payout_access_token() -> tuple[str, str, str, str]:
+     raw_body = secrets.token_urlsafe(TOKEN_CORE_BYTES)
+     token = f"{TOKEN_PREFIX}{raw_body}"
+     token_hash = _hash_secret(token)
+     token_prefix = token[: len(TOKEN_PREFIX) + TOKEN_PREVIEW_HEAD]
+     token_suffix = token[-TOKEN_PREVIEW_TAIL:]
+     return token, token_hash, token_prefix, token_suffix
+ 
+ 
+ def create_payout_access_token(
+     db,
+     memo: str,
+     issued_via: str = "admin_ui",
+     issued_by_app: str | None = None,
+     created_by_admin: str | None = None,
+     expires_at: datetime | None = None,
+ ) -> dict[str, Any]:
+     token, token_hash, token_prefix, token_suffix = generate_payout_access_token()
+     cursor = db.cursor(dictionary=True)
+     try:
+         cursor.execute(
+             """
+             INSERT INTO mfu_payout_access_token (
+                 token_hash,
+                 token_prefix,
+@@ -68,50 +92,51 @@ def create_payout_access_token(
+                 issued_by_app,
+                 created_by_admin,
+                 expires_at,
+             ),
+         )
+         token_id = cursor.lastrowid
+         db.commit()
+         cursor.execute(
+             """
+             SELECT id, memo, issued_via, issued_by_app, created_by_admin, expires_at, created_at, updated_at
+             FROM mfu_payout_access_token
+             WHERE id = %s
+             LIMIT 1
+             """,
+             (token_id,),
+         )
+         created = cursor.fetchone() or {}
+     finally:
+         cursor.close()
+ 
+     created["token"] = token
+     created["token_hash"] = token_hash
+     created["token_prefix"] = token_prefix
+     created["token_suffix"] = token_suffix
+     created["token_preview"] = _build_token_preview(token_prefix, token_suffix)
++    created["access_url"] = build_payout_access_url(token)
+     return created
+ 
+ 
+ def verify_payout_access_token(db, raw_token: str) -> dict[str, Any] | None:
+     normalized = (raw_token or "").strip()
+     if not normalized or not normalized.startswith(TOKEN_PREFIX):
+         return None
+ 
+     token_prefix = normalized[: len(TOKEN_PREFIX) + TOKEN_PREVIEW_HEAD]
+     token_suffix = normalized[-TOKEN_PREVIEW_TAIL:]
+     token_hash = _hash_secret(normalized)
+ 
+     cursor = db.cursor(dictionary=True)
+     try:
+         cursor.execute(
+             """
+             SELECT id, token_hash, token_prefix, token_suffix, memo, is_active, access_count,
+                    last_accessed_at, last_access_ip, issued_via, issued_by_app,
+                    created_by_admin, expires_at, created_at, updated_at
+             FROM mfu_payout_access_token
+             WHERE token_prefix = %s
+               AND token_suffix = %s
+               AND is_active = 1
+               AND (expires_at IS NULL OR expires_at >= NOW())
+             ORDER BY id DESC
