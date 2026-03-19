@@ -110,14 +110,6 @@ def get_invoice_effective_bank_info(invoice: dict[str, Any]) -> str:
     return normalize_multiline_text(invoice.get("bank_info")) or ""
 
 
-def build_invoice_payout_memo(invoice: dict[str, Any]) -> str:
-    invoice_no = _normalize_stripped_text(invoice.get("invoice_no"))
-    if not invoice_no:
-        raise InvoiceValidationError("請求書番号が取得できないため payout メモを生成できません。")
-    subject = _normalize_stripped_text(invoice.get("subject"))
-    return f"{invoice_no}　{subject}" if subject else invoice_no
-
-
 def append_payout_guidance_to_mail_body(body: Any, access_url: str) -> str:
     normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
     normalized_url = _normalize_stripped_text(access_url)
