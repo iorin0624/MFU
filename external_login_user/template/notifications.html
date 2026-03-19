@@ -104,8 +104,12 @@
 
     const createItem = (item) => {
       const a = document.createElement('a');
-      a.href = '#';
+      const targetUrl = (typeof item?.target_url === 'string' && item.target_url.trim())
+        ? item.target_url.trim()
+        : '/external-login/';
+      a.href = targetUrl;
       a.dataset.notificationId = String(item.id);
+      a.dataset.targetUrl = targetUrl;
       const isRead = !!(item.read_at || item.is_read);
       a.className = `list-group-item list-group-item-action ${isRead ? '' : 'list-group-item-warning'}`;
       a.innerHTML = `
@@ -136,7 +140,7 @@
         } catch (_e) {
           // noop
         }
-        window.location.assign(item.target_url || '/external-login/');
+        window.location.assign(a.dataset.targetUrl || '/external-login/');
       });
       return a;
     };

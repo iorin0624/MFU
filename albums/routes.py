@@ -35,6 +35,7 @@ from flask import g  # 追加
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
 from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
+from app.utils.push import send_push
 from app.external_login_user.utils import _get_ext_user_by_social
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
@@ -153,8 +154,8 @@ def _fetch_album_process_status_map(album_id: str, child_id: str) -> dict[int, d
         }
     return status_map
 
-def _build_event_album_link(event_id: int, album_id: str, child_id: str) -> str:
-    """イベント参加者向けのアルバム直リンクを返す（取得できない場合はアルバムURLへフォールバック）。"""
+def _build_event_album_target_urls(event_id: int, album_id: str, child_id: str) -> dict[str, str]:
+    """イベント参加者向けの通知URLを返す。"""
     def _to_uuid_str(v):
         import uuid
         if isinstance(v, str):
@@ -202,10 +203,34 @@ def _build_event_album_link(event_id: int, album_id: str, child_id: str) -> str:
 
     if ev_uuid_str:
         try:
-            return url_for('external_login_user.event_album_direct', event_uuid=ev_uuid_str, _external=True)
+            return {
+                "absolute_url": url_for(
+                    'external_login_user.event_album_direct',
+                    event_uuid=ev_uuid_str,
+                    child_id=child_id,
+                    _external=True,
+                ),
+                "relative_url": url_for(
+                    'external_login_user.event_album_direct',
+                    event_uuid=ev_uuid_str,
+                    child_id=child_id,
+                    _external=False,
+                ),
+            }
         except Exception:
-            return url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)
-    return url_for('album.view_child', album_id=album_id, child_id=child_id, _external=True)
+            return {
+                "absolute_url": url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True),
+                "relative_url": url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=False),
+            }
+    return {
+        "absolute_url": url_for('album.view_child', album_id=album_id, child_id=child_id, _external=True),
+        "relative_url": url_for('album.view_child', album_id=album_id, child_id=child_id, _external=False),
+    }
+
+
+def _build_event_album_link(event_id: int, album_id: str, child_id: str) -> str:
+    """イベント参加者向けのメール本文URLを返す。"""
+    return _build_event_album_target_urls(event_id, album_id, child_id)["absolute_url"]
 
 
 def _notify_requester_process_completion(
@@ -1403,12 +1428,12 @@ def upload_child(album_id, child_id):
             sql = (
                 "SELECT m.user_id AS ext_user_id,"
                 "       u.email,"
+                "       COALESCE(u.nickname, '') AS nickname,"
                 "       COALESCE(u.notify_album_upload, 1)  AS notify_album_upload,"
                 "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
                 "  FROM mfu_event_member m "
                 "  JOIN external_login_user u ON u.id = m.user_id "
                 " WHERE m.event_id=%s AND m.status='approved' "
-                "   AND u.email IS NOT NULL AND u.email<>''"
             )
 
             rows = []
@@ -1444,6 +1469,8 @@ def upload_child(album_id, child_id):
                     current_app.logger.warning("notify(db) failed: %s", e2)
                     return
 
+            recipients_total = len(rows)
+
             # ★ process モードの通知は「未完了のみ」へ絞り込み
             if mode == "process" and kind in ("upload", "process_done"):
                 status_map = _fetch_album_process_status_map(album_id, child_id)
@@ -1471,17 +1498,46 @@ def upload_child(album_id, child_id):
                     len(rows),
                 )
 
-            # ★ 各自の通知設定でフィルタ
-            if kind == "upload":
-                emails = [r.get("email") for r in rows
-                          if r.get("email") and int(r.get("notify_album_upload", 1)) == 1]
-            elif kind == "process_done":
-                emails = [r.get("email") for r in rows
-                          if r.get("email") and int(r.get("notify_album_process", 1)) == 1]
-            else:
-                emails = [r.get("email") for r in rows if r.get("email")]
+            def _is_kind_enabled(recipient: dict) -> bool:
+                if kind == "upload":
+                    return int(recipient.get("notify_album_upload", 1) or 0) == 1
+                if kind == "process_done":
+                    return int(recipient.get("notify_album_process", 1) or 0) == 1
+                return True
 
-            current_app.logger.info("notify: recipients(after filter)=%d album_id=%s child_id=%s", len(emails), album_id, child_id)
+            recipients = [r for r in rows if _is_kind_enabled(r)]
+            if not recipients:
+                current_app.logger.info(
+                    "notify: skip no recipients kind=%s album_id=%s child_id=%s recipients_total=%s",
+                    kind,
+                    album_id,
+                    child_id,
+                    recipients_total,
+                )
+                return
+
+            mail_recipients = [
+                str(r.get("email") or "").strip()
+                for r in recipients
+                if str(r.get("email") or "").strip()
+            ]
+            push_recipients = []
+            for r in recipients:
+                try:
+                    ext_user_id = int(r.get("ext_user_id") or 0)
+                except (TypeError, ValueError):
+                    ext_user_id = 0
+                if ext_user_id > 0:
+                    push_recipients.append(ext_user_id)
+
+            current_app.logger.info(
+                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_recipients=%d",
+                len(recipients),
+                album_id,
+                child_id,
+                len(mail_recipients),
+                len(push_recipients),
+            )
             request_by_email = None
             if _is_ext_logged_in():
                 ext_user_id = session.get("ext_user_id")
@@ -1494,22 +1550,22 @@ def upload_child(album_id, child_id):
                 album_id,
                 child_id,
                 request_by_email,
-                len(emails),
-                _preview_recipients(emails),
+                len(mail_recipients),
+                _preview_recipients(mail_recipients),
                 "request_flag=1 AND complete_flag=0" if (mode == "process" and kind in ("upload", "process_done")) else "n/a",
             )
-            if not emails:
-                return
 
             # ★ クールタイム（uploadのみ対象／process_doneは対象外）
+            cooldown_state_path = os.path.join(child_path, ".notify_state.json")
+            cooldown_bucket = None
             if kind == "upload":
                 COOLDOWN_SEC = 300  # 5分
-                state_path = os.path.join(child_path, ".notify_state.json")
                 now_ts = int(time.time())
+                cooldown_bucket = now_ts // COOLDOWN_SEC
                 last_upload_ts = None
                 try:
-                    if os.path.exists(state_path):
-                        with open(state_path, "r", encoding="utf-8") as sf:
+                    if os.path.exists(cooldown_state_path):
+                        with open(cooldown_state_path, "r", encoding="utf-8") as sf:
                             st = json.load(sf) or {}
                             if st.get("last_upload_ts") is not None:
                                 last_upload_ts = int(st.get("last_upload_ts"))
@@ -1521,74 +1577,48 @@ def upload_child(album_id, child_id):
                                             kind, remain, album_id, child_id)
                     return
 
-            # ★ 利用者ビュー直リンク（/external-login/events/<UUID>/album）
-            def _to_uuid_str(v):
-                import uuid
-                if isinstance(v, str):
-                    s = v.strip()
-                    try:
-                        uuid.UUID(s); return s
-                    except Exception:
-                        return None
-                if isinstance(v, (bytes, bytearray)):
-                    try:
-                        return str(uuid.UUID(bytes=bytes(v)))
-                    except Exception:
-                        try:
-                            return str(uuid.UUID(hex=v.hex()))
-                        except Exception:
-                            return None
-                return None
-
-            ev_uuid_str = None
-            try:
-                # db_get_one があれば利用、なければ get_db で代替
-                try:
-                    from app.utils.db import db_get_one as util_db_get_one
-                    ev_row = util_db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-                    ev_b = ev_row.get("event_uuid") if isinstance(ev_row, dict) else None
-                except Exception:
-                    from app.utils.db import get_db
-                    conn = get_db()
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("SELECT event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-                        r = cur.fetchone()
-                        ev_b = r[0] if r else None
-                    finally:
-                        try: cur.close()
-                        except Exception: pass
-                        try: conn.close()
-                        except Exception: pass
-                ev_uuid_str = _to_uuid_str(ev_b)
-            except Exception as e:
-                current_app.logger.warning("notify(event_uuid) failed: %s", e)
-                ev_uuid_str = None
-
-            if ev_uuid_str:
-                try:
-                    # 新設の直リンクルート（未定義でも落ちないようフォールバック）
-                    link = url_for('external_login_user.event_album_direct', event_uuid=ev_uuid_str, _external=True)
-                except Exception:
-                    link = url_for('external_login_user.view_event', event_uuid=ev_uuid_str, _external=True)
-            else:
-                # フォールバック（万一 event_uuid 取得失敗時）
-                link = url_for('album.view_child', album_id=album_id, child_id=child_id, _external=True)
+            target_urls = _build_event_album_target_urls(event_id, album_id, child_id)
+            absolute_target_url = target_urls["absolute_url"]
+            relative_target_url = target_urls["relative_url"]
 
             if kind == "upload":
                 action = f"{len(saved_names or [])}件の写真/動画が追加されました"
+                push_kind = "album_upload"
+                title = f"【アルバム更新】{album_name}"
+                body_text = f"{album_name} の「{child_name}」に{action}。"
             elif kind == "process_done":
                 action = "加工済み写真が更新されました"
+                push_kind = "album_process_done"
+                title = f"【加工完了】{album_name}"
+                body_text = f"{album_name} の「{child_name}」の{action}"
             else:
                 action = "アルバムが更新されました"
+                push_kind = "album_update"
+                title = f"【アルバム更新】{album_name}"
+                body_text = f"{album_name} の「{child_name}」が更新されました。"
 
-            subject = f"【アルバム更新】{album_name}"
-            body = f"""{album_name} の「{child_name}」に{action}。
+            body = f"""{body_text}
 
 アクセスはこちら（アルバム直リンク）:
-{link}
+{absolute_target_url}
 
 このメールはイベント参加者（承認済み）のみへ自動通知しています。"""
+
+            process_done_state = "na"
+            if kind == "process_done":
+                latest_path = os.path.join(child_path, "latest.jpg")
+                try:
+                    process_done_state = str(int(os.path.getmtime(latest_path)))
+                except Exception:
+                    process_done_state = str(int(time.time()))
+
+            def _build_push_dedup_key(ext_user_id: int) -> str:
+                if kind == "upload":
+                    bucket = cooldown_bucket if cooldown_bucket is not None else int(time.time()) // 300
+                    return f"album:{album_id}:{child_id}:upload:{ext_user_id}:{bucket}"[:191]
+                if kind == "process_done":
+                    return f"album:{album_id}:{child_id}:process_done:{ext_user_id}:{process_done_state}"[:191]
+                return f"album:{album_id}:{child_id}:{kind}:{ext_user_id}"[:191]
 
             try:
                 from app.utils.mail import send_mail  # 既存の mail.py を利用
@@ -1597,29 +1627,88 @@ def upload_child(album_id, child_id):
                     from app.mail import send_mail
                 except Exception:
                     current_app.logger.warning("notify: send_mail import failed")
-                    return
+                    send_mail = None
 
             # 送信
             sent_ok = False
-            for to in emails:
+            mail_failed_count = 0
+            if send_mail:
+                for to in mail_recipients:
+                    try:
+                        current_app.logger.info("notify: send -> %s", to)
+                        send_mail(to, title, body)
+                        sent_ok = True
+                    except Exception as e:
+                        mail_failed_count += 1
+                        current_app.logger.warning("notify send failed to %s: %s", to, e)
+
+            push_failed_count = 0
+            push_skipped_count = 0
+            dedup_key_samples: list[str] = []
+            for ext_user_id in push_recipients:
+                dedup_key = _build_push_dedup_key(ext_user_id)
+                if len(dedup_key_samples) < 3:
+                    dedup_key_samples.append(dedup_key)
                 try:
-                    current_app.logger.info("notify: send -> %s", to)
-                    send_mail(to, subject, body)
-                    sent_ok = True
+                    push_result = send_push(
+                        recipient_type="external_user_id",
+                        recipient_value=ext_user_id,
+                        title=title,
+                        body=body_text,
+                        target_url=relative_target_url,
+                        kind=push_kind,
+                        sender_label="アルバム",
+                        dedup_key=dedup_key,
+                        event_id=event_id,
+                        create_in_app=True,
+                        send_web_push=True,
+                    )
+                    if bool(push_result.get("created")) or bool(push_result.get("ok")):
+                        sent_ok = True
+                    delivery = push_result.get("delivery") or {}
+                    web_push_status = str(delivery.get("web_push") or "")
+                    in_app_status = str(delivery.get("in_app") or "")
+                    if push_result.get("duplicate") or (web_push_status == "skipped" and in_app_status in {"duplicate", "skipped"}):
+                        push_skipped_count += 1
                 except Exception as e:
-                    current_app.logger.warning("notify send failed to %s: %s", to, e)
+                    push_failed_count += 1
+                    current_app.logger.warning(
+                        "notify push failed kind=%s album_id=%s child_id=%s ext_user_id=%s: %s",
+                        kind,
+                        album_id,
+                        child_id,
+                        ext_user_id,
+                        e,
+                    )
 
             # ★クールタイム記録（uploadのみ・送信が1件以上成功時）
             if kind == "upload" and sent_ok:
                 try:
                     now_ts = int(time.time())
-                    state_path = os.path.join(child_path, ".notify_state.json")
-                    tmp = state_path + ".tmp"
+                    tmp = cooldown_state_path + ".tmp"
                     with open(tmp, "w", encoding="utf-8") as tf:
                         json.dump({"last_upload_ts": now_ts}, tf, ensure_ascii=False, indent=2)
-                    os.replace(tmp, state_path)
+                    os.replace(tmp, cooldown_state_path)
                 except Exception as e:
                     current_app.logger.warning("notify(cooldown write) failed: %s", e)
+
+            current_app.logger.info(
+                "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s mail_recipients_count=%s push_recipients_count=%s "
+                "relative_target_url=%s absolute_target_url=%s dedup_key_samples=%s dedup_key_count=%s mail_failed_count=%s push_failed_count=%s push_skipped_count=%s",
+                kind,
+                album_id,
+                child_id,
+                recipients_total,
+                len(mail_recipients),
+                len(push_recipients),
+                relative_target_url,
+                absolute_target_url,
+                dedup_key_samples,
+                len(push_recipients),
+                mail_failed_count,
+                push_failed_count,
+                push_skipped_count,
+            )
 
         except Exception as e:
             current_app.logger.warning("notify(inner) failed: %s", e)

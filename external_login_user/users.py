@@ -4211,8 +4211,22 @@ def event_album_direct(event_uuid: str):
         flash("このイベントのアルバムはまだ準備中です。", "warning")
         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
-    # 既存のアルバム表示エンドポイントへ橋渡し
-    return redirect(url_for("album.album_access", album_id=album_id))
+    child_id = (request.args.get("child_id") or "").strip()
+    try:
+        from app.albums.routes import _grant_album_auth  # ローカル import で循環参照を回避
+        _grant_album_auth(str(album_id))
+    except Exception:
+        current_app.logger.warning(
+            "event_album_direct grant auth failed event_uuid=%s album_id=%s child_id=%s",
+            event_uuid,
+            album_id,
+            child_id,
+            exc_info=True,
+        )
+
+    if child_id:
+        return redirect(url_for("album.view_child", album_id=album_id, child_id=child_id))
+    return redirect(url_for("album.album_home", album_id=album_id))
 
 
 # ===== アップデート情報（テキスト→SHA1で既読管理） =========================
