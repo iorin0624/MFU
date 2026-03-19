@@ -8,10 +8,14 @@ from flask import flash, redirect, render_template, request, send_file, session,
 from . import invoice_bp
 from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
 from .mail import send_invoice_mail
+from .payout_client import InvoicePayoutClientError, create_invoice_payout_access
 from .pdf import generate_invoice_pdf
 from .services import (
+    BANK_INFO_MODE_LABELS,
+    BANK_INFO_MODE_PAYOUT_LINK,
     InvoiceValidationError,
     apply_issuer_template_to_form_data,
+    append_payout_guidance_to_mail_body,
     build_default_invoice_mail_body,
     build_issuer_template_form_data,
     build_fuel_cost_helper,
@@ -24,6 +28,7 @@ from .services import (
     fetch_contacts,
     get_default_issuer_template,
     get_contact,
+    get_invoice_effective_bank_info,
     get_invoice,
     get_issuer_template_by_id,
     list_invoices,
@@ -35,6 +40,7 @@ from .services import (
     resolve_invoice_issuer_email,
     save_contact,
     save_invoice,
+    save_invoice_payout_token,
     set_default_issuer_template,
     update_issuer_template,
     update_invoice_status,
@@ -272,6 +278,7 @@ def invoice_new():
         tax_category_labels=TAX_CATEGORY_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         status_labels=STATUS_LABELS,
+        bank_info_mode_labels=BANK_INFO_MODE_LABELS,
         mode="new",
     )
 
@@ -304,6 +311,7 @@ def invoice_edit(invoice_id: int):
         tax_category_labels=TAX_CATEGORY_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         status_labels=STATUS_LABELS,
+        bank_info_mode_labels=BANK_INFO_MODE_LABELS,
         invoice=invoice,
         mode="edit",
     )
@@ -331,11 +339,13 @@ def invoice_detail(invoice_id: int):
     return render_template(
         "invoice_detail.html",
         invoice=invoice,
+        effective_bank_info=get_invoice_effective_bank_info(invoice),
         status_labels=STATUS_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
         default_mail_subject=build_mail_subject(invoice.get("issue_date")),
         default_mail_body=build_default_invoice_mail_body(invoice),
         mail_to_default=invoice.get("contact_email_snapshot") or "",
+        bank_info_mode_labels=BANK_INFO_MODE_LABELS,
     )
 
 
@@ -400,6 +410,7 @@ def invoice_mail(invoice_id: int):
         bcc_email = (request.form.get("bcc_email") or "").strip()
         subject = (request.form.get("subject") or "").strip()
         body = request.form.get("body") or ""
+        final_body = body
         if not to_email:
             flash("宛先メールアドレスを入力してください。", "warning")
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
@@ -407,6 +418,10 @@ def invoice_mail(invoice_id: int):
             flash("送信前確認にチェックを入れてください。", "warning")
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
         try:
+            if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
+                payout_access = create_invoice_payout_access(invoice)
+                final_body = append_payout_guidance_to_mail_body(body, payout_access.get("access_url") or "")
+                save_invoice_payout_token(invoice_id, payout_access.get("token_id"))
             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
             send_invoice_mail(
                 invoice,
@@ -415,15 +430,22 @@ def invoice_mail(invoice_id: int):
                 bcc_email=bcc_email or None,
                 reply_to_email=effective_issuer_email or None,
                 subject=subject,
-                body=body,
+                body=final_body,
                 attachment_filename=attachment_name,
                 pdf_bytes=pdf_bytes,
             )
             flash("請求書メールを送信しました。", "success")
             return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+        except InvoicePayoutClientError:
+            flash("振込先リンクの発行に失敗したためメール送信を中止しました。", "danger")
+            form_data = dict(request.form)
+            form_data["body"] = body
+            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         except Exception as exc:
             flash(f"メール送信に失敗しました: {exc}", "danger")
-            return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
+            form_data = dict(request.form)
+            form_data["body"] = final_body
+            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
     return render_template("invoice_mail_form.html", invoice=invoice, form_data=initial)
 
 
@@ -461,6 +483,7 @@ def _normalized_invoice_form(form):
         "subject": form.get("subject"),
         "note": form.get("note"),
         "bank_info": form.get("bank_info"),
+        "bank_info_mode": form.get("bank_info_mode"),
         "issuer_template_id": form.get("issuer_template_id"),
         "issuer_name": form.get("issuer_name"),
         "issuer_postal_code": form.get("issuer_postal_code"),
@@ -494,6 +517,7 @@ def _posted_invoice_form_data(form, base=None):
         "subject": form.get("subject"),
         "note": form.get("note"),
         "bank_info": form.get("bank_info"),
+        "bank_info_mode": form.get("bank_info_mode"),
         "issuer_template_id": form.get("issuer_template_id"),
         "issuer_name": form.get("issuer_name"),
         "issuer_postal_code": form.get("issuer_postal_code"),

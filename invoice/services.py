@@ -28,6 +28,15 @@ from .utils import (
     to_decimal,
 )
 
+BANK_INFO_MODE_INLINE = "inline"
+BANK_INFO_MODE_PAYOUT_LINK = "payout_link"
+BANK_INFO_MODE_LABELS = {
+    BANK_INFO_MODE_INLINE: "請求書に直接記載",
+    BANK_INFO_MODE_PAYOUT_LINK: "payoutで確認してもらう",
+}
+PAYOUT_LINK_BANK_INFO_MESSAGE = "メール本文にて振込先一覧のリンクがあります。ご確認お願い致します。"
+PAYOUT_LINK_MAIL_GUIDANCE = "振込先は下からご確認ください。"
+
 
 @dataclass
 class InvoiceItemInput:
@@ -86,6 +95,40 @@ def _normalize_optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def normalize_bank_info_mode(value: Any) -> str:
+    normalized = str(value or "").strip()
+    if normalized == BANK_INFO_MODE_PAYOUT_LINK:
+        return BANK_INFO_MODE_PAYOUT_LINK
+    return BANK_INFO_MODE_INLINE
+
+
+def get_invoice_effective_bank_info(invoice: dict[str, Any]) -> str:
+    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK:
+        return PAYOUT_LINK_BANK_INFO_MESSAGE
+    return normalize_multiline_text(invoice.get("bank_info")) or ""
+
+
+def build_invoice_payout_memo(invoice: dict[str, Any]) -> str:
+    invoice_no = _normalize_stripped_text(invoice.get("invoice_no"))
+    if not invoice_no:
+        raise InvoiceValidationError("請求書番号が取得できないため payout メモを生成できません。")
+    subject = _normalize_stripped_text(invoice.get("subject"))
+    return f"{invoice_no}　{subject}" if subject else invoice_no
+
+
+def append_payout_guidance_to_mail_body(body: Any, access_url: str) -> str:
+    normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    normalized_url = _normalize_stripped_text(access_url)
+    if not normalized_url:
+        return normalized_body
+    if normalized_url in normalized_body:
+        return normalized_body
+    suffix = f"{PAYOUT_LINK_MAIL_GUIDANCE}\n{normalized_url}"
+    if not normalized_body:
+        return suffix
+    return f"{normalized_body}\n{suffix}"
 
 
 def resolve_invoice_issuer_email(invoice: dict[str, Any]) -> str:
@@ -526,18 +569,21 @@ def build_invoice_mail_recipient_label(
     return "お客様"
 
 
-def build_default_invoice_mail_body(invoice_data: dict[str, Any]) -> str:
+def build_default_invoice_mail_body(invoice_data: dict[str, Any], *, payout_access_url: str | None = None) -> str:
     recipient_label = build_invoice_mail_recipient_label(
         invoice_data.get("contact_name_snapshot") or invoice_data.get("contact_name"),
         invoice_data.get("contact_person_snapshot") or invoice_data.get("contact_person"),
         invoice_data.get("contact_honorific_snapshot") or invoice_data.get("honorific"),
     )
     issuer_name = (invoice_data.get("issuer_name") or "").strip() or "請求元"
-    return (
+    body = (
         f"いつもお世話になっております、{recipient_label}\n"
         f"{issuer_name}です。\n\n"
         "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。"
     )
+    if normalize_bank_info_mode(invoice_data.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
+        return append_payout_guidance_to_mail_body(body, payout_access_url)
+    return body
 
 
 def ensure_invoice_schema() -> None:
@@ -593,6 +639,8 @@ def ensure_invoice_schema() -> None:
                 issuer_phone VARCHAR(64) NULL,
                 issuer_email VARCHAR(255) NULL,
                 issuer_template_id INT NULL,
+                bank_info_mode VARCHAR(32) NOT NULL DEFAULT 'inline',
+                payout_access_token_id BIGINT NULL,
                 subtotal_yen INT NOT NULL DEFAULT 0,
                 tax_yen INT NOT NULL DEFAULT 0,
                 total_yen INT NOT NULL DEFAULT 0,
@@ -639,6 +687,14 @@ def ensure_invoice_schema() -> None:
             cur.execute("ALTER TABLE invoice_headers ADD COLUMN issuer_email VARCHAR(255) NULL AFTER issuer_phone")
         if not _column_exists(cur, "invoice_headers", "issuer_template_id"):
             cur.execute("ALTER TABLE invoice_headers ADD COLUMN issuer_template_id INT NULL AFTER issuer_email")
+        if not _column_exists(cur, "invoice_headers", "bank_info_mode"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN bank_info_mode VARCHAR(32) NOT NULL DEFAULT 'inline' AFTER issuer_template_id"
+            )
+        if not _column_exists(cur, "invoice_headers", "payout_access_token_id"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN payout_access_token_id BIGINT NULL AFTER bank_info_mode"
+            )
         ensure_invoice_issuer_templates_table(cur)
         cur.execute(
             """
@@ -934,6 +990,7 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
         "subject": subject,
         "note": normalize_multiline_text(form.get("note")),
         "bank_info": normalize_multiline_text(form.get("bank_info")),
+        "bank_info_mode": normalize_bank_info_mode(form.get("bank_info_mode")),
         "issuer_name": issuer_name,
         "issuer_postal_code": (form.get("issuer_postal_code") or "").strip() or None,
         "issuer_address1": (form.get("issuer_address1") or "").strip() or None,
@@ -941,6 +998,7 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
         "issuer_phone": (form.get("issuer_phone") or "").strip() or None,
         "issuer_template_id": issuer_template_id,
         "issuer_email": (form.get("issuer_email") or "").strip() or None,
+        "payout_access_token_id": None,
         **totals,
         "tax_mode": tax_mode,
         "status": normalize_status(form.get("status") or "draft"),
@@ -1085,6 +1143,8 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     issuer_phone=%s,
                     issuer_email=%s,
                     issuer_template_id=%s,
+                    bank_info_mode=%s,
+                    payout_access_token_id=%s,
                     subtotal_yen=%s,
                     tax_yen=%s,
                     total_yen=%s,
@@ -1102,6 +1162,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     payload["contact_phone_snapshot"], payload["subject"], payload["note"],
                     payload["bank_info"], payload["issuer_name"], payload["issuer_postal_code"],
                     payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"], payload["issuer_template_id"],
+                    payload["bank_info_mode"], payload["payout_access_token_id"],
                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"],
                     payload["tax_mode"], payload["status"], now, invoice_id,
                 ),
@@ -1118,6 +1179,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     contact_address1_snapshot, contact_address2_snapshot, contact_phone_snapshot,
                     subject, note, bank_info,
                     issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email, issuer_template_id,
+                    bank_info_mode, payout_access_token_id,
                     subtotal_yen, tax_yen, total_yen, tax_mode, status,
                     pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
                     created_at, updated_at
@@ -1128,6 +1190,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s,
                     %s, %s, %s, %s, %s,
                     NULL, NULL, NULL, NULL,
                     %s, %s
@@ -1140,6 +1203,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"], payload["contact_phone_snapshot"],
                     payload["subject"], payload["note"], payload["bank_info"],
                     payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"], payload["issuer_template_id"],
+                    payload["bank_info_mode"], payload["payout_access_token_id"],
                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"], payload["tax_mode"], "draft",
                     now, now,
                 ),
@@ -1283,6 +1347,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 contact_address1_snapshot, contact_address2_snapshot, contact_phone_snapshot,
                 subject, note, bank_info,
                 issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email, issuer_template_id,
+                bank_info_mode, payout_access_token_id,
                 subtotal_yen, tax_yen, total_yen, tax_mode, status,
                 pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
                 created_at, updated_at
@@ -1293,6 +1358,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s,
+                %s, %s,
                 %s, %s, %s, %s, %s,
                 NULL, NULL, NULL, NULL,
                 %s, %s
@@ -1305,6 +1371,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 original.get("contact_address1_snapshot"), original.get("contact_address2_snapshot"), original.get("contact_phone_snapshot"),
                 original.get("subject"), original.get("note"), original.get("bank_info"),
                 original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"), original.get("issuer_email"), original.get("issuer_template_id"),
+                normalize_bank_info_mode(original.get("bank_info_mode")), None,
                 original.get("subtotal_yen"), original.get("tax_yen"), original.get("total_yen"), original.get("tax_mode"), "draft",
                 now, now,
             ),
@@ -1424,6 +1491,25 @@ def mark_invoice_mailed(invoice_id: int) -> None:
         db.close()
 
 
+def save_invoice_payout_token(invoice_id: int, token_id: int | None) -> None:
+    now = now_jst()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE invoice_headers
+            SET payout_access_token_id=%s, updated_at=%s
+            WHERE id=%s
+            """,
+            (token_id, now, invoice_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
 def log_csv_export(invoice_id: int, filename: str, *, status: str, error_message: str | None = None) -> None:
     now = now_jst()
     db = get_db()
@@ -1456,6 +1542,7 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
             "due_date": format_ymd(today),
             "tax_mode": "external",
             "status": "draft",
+            "bank_info_mode": BANK_INFO_MODE_INLINE,
             "issuer_template_id": "",
             "issuer_email": "",
             "items": [
@@ -1484,4 +1571,5 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
         item["line_total_yen"] = str(item.get("line_total_yen") or 0)
         item["tax_category"] = normalize_tax_category(item.get("tax_category"))
     data["issuer_template_id"] = str(data.get("issuer_template_id") or "")
+    data["bank_info_mode"] = normalize_bank_info_mode(data.get("bank_info_mode"))
     return data
