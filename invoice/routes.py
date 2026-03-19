@@ -5,10 +5,11 @@ from functools import wraps
 
 from flask import flash, redirect, render_template, request, send_file, session, url_for
 
+from app.bank_account.integration_service import issue_payout_access_token_for_invoice
+
 from . import invoice_bp
 from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
 from .mail import send_invoice_mail
-from .payout_client import InvoicePayoutClientError, create_invoice_payout_access
 from .pdf import generate_invoice_pdf
 from .services import (
     BANK_INFO_MODE_LABELS,
@@ -417,11 +418,17 @@ def invoice_mail(invoice_id: int):
         if request.form.get("confirm_send") != "yes":
             flash("送信前確認にチェックを入れてください。", "warning")
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
-        try:
-            if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
-                payout_access = create_invoice_payout_access(invoice)
+        if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
+            try:
+                payout_access = issue_payout_access_token_for_invoice(invoice)
                 final_body = append_payout_guidance_to_mail_body(body, payout_access.get("access_url") or "")
-                save_invoice_payout_token(invoice_id, payout_access.get("token_id"))
+                save_invoice_payout_token(invoice_id, payout_access.get("id"))
+            except Exception as exc:
+                flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
+                form_data = dict(request.form)
+                form_data["body"] = body
+                return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
+        try:
             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
             send_invoice_mail(
                 invoice,
@@ -436,11 +443,6 @@ def invoice_mail(invoice_id: int):
             )
             flash("請求書メールを送信しました。", "success")
             return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
-        except InvoicePayoutClientError:
-            flash("振込先リンクの発行に失敗したためメール送信を中止しました。", "danger")
-            form_data = dict(request.form)
-            form_data["body"] = body
-            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         except Exception as exc:
             flash(f"メール送信に失敗しました: {exc}", "danger")
             form_data = dict(request.form)
