@@ -1,390 +1,744 @@
-diff --git a/__init__.py b/__init__.py
-index 9f2ddb1a55fcce598b216c3ec7a54d413e2d9a3a..23c63966380e9d695098a298b8489bf0107b429a 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -150,52 +150,50 @@ def _resolve_socketio_message_queue():
-     queue_url = (os.environ.get("SOCKETIO_MESSAGE_QUEUE") or "").strip()
-     if not queue_url:
-         return None
- 
-     try:
-         import importlib
-         if importlib.util.find_spec("redis") is None:
-             app.logger.warning("SOCKETIO_MESSAGE_QUEUE is set but redis package is not installed; fallback to local mode")
-             return None
-         redis = importlib.import_module("redis")
-         redis.Redis.from_url(queue_url, socket_connect_timeout=1, socket_timeout=1).ping()
-         return queue_url
-     except Exception as exc:
-         app.logger.warning("SOCKETIO_MESSAGE_QUEUE connection failed; fallback to local mode: %s", exc)
-         return None
- 
- 
- app.config["SOCKETIO_MESSAGE_QUEUE"] = _resolve_socketio_message_queue()
- 
- app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=60)
- 
- app.config["SESSION_COOKIE_SECURE"] = True            # HTTPSのみ送信
- app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ライン
- 
- app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
--app.config["PAYOUT_TOKEN_API_URL"] = os.environ.get("PAYOUT_TOKEN_API_URL", "").strip()
--app.config["PAYOUT_TOKEN_API_KEY"] = os.environ.get("PAYOUT_TOKEN_API_KEY", "").strip()
- app.config["PAYOUT_PUBLIC_BASE_URL"] = os.environ.get("PAYOUT_PUBLIC_BASE_URL", "https://mfu.iori0624.jp").strip()
- 
- # 既定ホワイトリスト（必要なら config で上書き）
- app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
- 
- login_manager = LoginManager()
- login_manager.init_app(app)
- login_manager.login_view = "login"
- login_manager.user_loader(load_user)
- socketio.init_app(app, message_queue=app.config["SOCKETIO_MESSAGE_QUEUE"])
- 
- if app.config["SOCKETIO_MESSAGE_QUEUE"]:
-     app.logger.info("Socket.IO message queue enabled")
- else:
-     app.logger.warning("Socket.IO message queue is disabled; multi-worker chat delivery may fail")
- 
- # =====================================
- # 🧠 補助関数群（上段へ集約）
- # =====================================
- 
- from functools import wraps
- from flask import session
- 
- def admin_required(func):
-     @wraps(func)
-diff --git a/bank_account/integration_service.py b/bank_account/integration_service.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..715d9ae1d103865f62a952f7ec1027fc5034253b
---- /dev/null
-+++ b/bank_account/integration_service.py
-@@ -0,0 +1,56 @@
-+from __future__ import annotations
-+
-+from datetime import datetime
-+from typing import Any
-+
-+from app.utils.db import get_db
-+
-+from .token_service import build_payout_access_url, create_payout_access_token
-+
-+
-+def build_invoice_payout_token_memo(invoice: dict[str, Any]) -> str:
-+    invoice_no = str(invoice.get("invoice_no") or "").strip()
-+    if not invoice_no:
-+        raise ValueError("invoice_no が空のため payout token 用メモを生成できません。")
-+
-+    subject = str(invoice.get("subject") or "").strip()
-+    if not subject:
-+        raise ValueError("subject が空のため payout token 用メモを生成できません。")
-+
-+    return f"{invoice_no}　{subject}"
-+
-+
-+def issue_payout_access_token_for_invoice(
-+    invoice: dict[str, Any],
-+    *,
-+    created_by_admin: str | None = None,
-+    expires_at: datetime | None = None,
-+) -> dict[str, Any]:
-+    memo = build_invoice_payout_token_memo(invoice)
-+    db = get_db()
-+    try:
-+        created = create_payout_access_token(
-+            db,
-+            memo=memo,
-+            issued_via="internal",
-+            issued_by_app="invoice",
-+            created_by_admin=created_by_admin,
-+            expires_at=expires_at,
-+        )
-+    finally:
-+        db.close()
-+
-+    access_url = str(created.get("access_url") or "").strip()
-+    token = str(created.get("token") or "").strip()
-+    if not access_url and token:
-+        access_url = build_payout_access_url(token)
-+
-+    return {
-+        "id": created.get("id"),
-+        "memo": created.get("memo") or memo,
-+        "token": token,
-+        "token_preview": created.get("token_preview"),
-+        "access_url": access_url,
-+        "issued_by_app": created.get("issued_by_app") or "invoice",
-+        "created_at": created.get("created_at"),
-+    }
-diff --git a/invoice/payout_client.py b/invoice/payout_client.py
-deleted file mode 100644
-index 5cf120547d7360b2de04391aaeef608d59b9eb55..0000000000000000000000000000000000000000
---- a/invoice/payout_client.py
-+++ /dev/null
-@@ -1,74 +0,0 @@
--from __future__ import annotations
--
--import os
--from typing import Any
--
--import requests
--from flask import current_app
--
--from .services import build_invoice_payout_memo
--
--DEFAULT_TIMEOUT_SECONDS = 10
--
--
--class InvoicePayoutClientError(RuntimeError):
--    pass
--
--
--def _config_value(name: str) -> str:
--    value = current_app.config.get(name) or os.environ.get(name) or ""
--    return str(value).strip()
--
--
--def create_invoice_payout_access(invoice: dict[str, Any]) -> dict[str, Any]:
--    api_url = _config_value("PAYOUT_TOKEN_API_URL")
--    api_key = _config_value("PAYOUT_TOKEN_API_KEY")
--    if not api_url:
--        raise InvoicePayoutClientError("PAYOUT_TOKEN_API_URL が未設定です。")
--    if not api_key:
--        raise InvoicePayoutClientError("PAYOUT_TOKEN_API_KEY が未設定です。")
--
--    payload = {
--        "memo": build_invoice_payout_memo(invoice),
--        "issued_by_app": "invoice",
--    }
--    headers = {
--        "Content-Type": "application/json",
--        "X-MFU-PAYOUT-API-KEY": api_key,
--    }
--    try:
--        response = requests.post(
--            api_url,
--            json=payload,
--            headers=headers,
--            timeout=DEFAULT_TIMEOUT_SECONDS,
--        )
--    except requests.RequestException as exc:
--        raise InvoicePayoutClientError(f"payout API への接続に失敗しました: {exc}") from exc
--
--    try:
--        response_data = response.json()
--    except ValueError as exc:
--        raise InvoicePayoutClientError(
--            f"payout API の応答が JSON ではありませんでした: status={response.status_code}"
--        ) from exc
--
--    if response.status_code >= 400 or not response_data.get("ok"):
--        error_message = response_data.get("error") or response.text or "unknown_error"
--        raise InvoicePayoutClientError(
--            f"payout API が失敗しました: status={response.status_code} error={error_message}"
--        )
--
--    access_url = str(response_data.get("access_url") or "").strip()
--    token = str(response_data.get("token") or "").strip()
--    if not access_url and token:
--        public_base_url = (
--            current_app.config.get("PAYOUT_PUBLIC_BASE_URL")
--            or os.environ.get("PAYOUT_PUBLIC_BASE_URL")
--            or "https://mfu.iori0624.jp"
--        )
--        access_url = f"{str(public_base_url).rstrip('/')}/payout?iv={token}"
--        response_data["access_url"] = access_url
--    if not access_url:
--        raise InvoicePayoutClientError("payout API の応答に access_url がありません。")
--    return response_data
-diff --git a/invoice/routes.py b/invoice/routes.py
-index 4b2b1707bdc4686ec55fdf7e63fd93ab0911a54a..c908b5c236d3a4d5ca9c77a4ace4cb2b39526579 100644
---- a/invoice/routes.py
-+++ b/invoice/routes.py
-@@ -1,36 +1,37 @@
+diff --git a/bank_account/routes.py b/bank_account/routes.py
+index 83a7030e49da304575c81168153c8560bd2df8bf..4a4191d37dcc9dcfc0f482ab876a3518551436f1 100644
+--- a/bank_account/routes.py
++++ b/bank_account/routes.py
+@@ -1,49 +1,53 @@
  from __future__ import annotations
  
- import threading
- from functools import wraps
+ import time
++from datetime import datetime, timedelta
  
- from flask import flash, redirect, render_template, request, send_file, session, url_for
+ import bcrypt
+-from flask import flash, redirect, render_template, request, session, url_for
++import requests
++from flask import current_app, flash, redirect, render_template, request, session, url_for
  
-+from app.bank_account.integration_service import issue_payout_access_token_for_invoice
-+
- from . import invoice_bp
- from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
- from .mail import send_invoice_mail
--from .payout_client import InvoicePayoutClientError, create_invoice_payout_access
- from .pdf import generate_invoice_pdf
- from .services import (
-     BANK_INFO_MODE_LABELS,
-     BANK_INFO_MODE_PAYOUT_LINK,
-     InvoiceValidationError,
-     apply_issuer_template_to_form_data,
-     append_payout_guidance_to_mail_body,
-     build_default_invoice_mail_body,
-     build_issuer_template_form_data,
-     build_fuel_cost_helper,
-     build_invoice_form_data,
-     create_issuer_template,
-     delete_contact,
-     delete_issuer_template,
-     duplicate_invoice,
-     ensure_invoice_schema,
-     fetch_contacts,
-     get_default_issuer_template,
-     get_contact,
-     get_invoice_effective_bank_info,
-     get_invoice,
-     get_issuer_template_by_id,
-     list_invoices,
-     list_issuer_templates,
-     log_csv_export,
-@@ -395,74 +396,75 @@ def invoice_mail(invoice_id: int):
-                     "honorific": contact.get("honorific"),
-                 }
-             )
-     effective_issuer_email = resolve_invoice_issuer_email(invoice)
-     initial = {
-         "to_email": invoice.get("contact_email_snapshot") or "",
-         "cc_email": effective_issuer_email,
-         "bcc_email": "",
-         "subject": build_mail_subject(invoice.get("issue_date")),
-         "body": build_default_invoice_mail_body(mail_context),
+ from app import admin_required
+ from app.utils.db import get_db
+ 
+ from . import bank_account_bp
+ from .token_service import (
+     build_payout_access_url,
+     create_payout_access_token,
+     get_payout_access_token_by_id,
+     is_payout_access_token_usable,
+     toggle_payout_access_token_active,
+     touch_payout_access_token_usage,
+     verify_payout_access_token,
+ )
+ 
+ MAX_UNLOCK_FAILURES = 10
+ LOCK_SECONDS = 10 * 60
+ NEW_ACCESS_TOKEN_SESSION_KEY = "payout_new_access_token"
++PAYPAY_LINK_EXPIRE_DAYS = 13
++USER_PAYPAY_EXPIRED_WARNING_MESSAGE = "このリンクは有効期限が切れているようです。お手数ですが、ご本人にご連絡ください。"
+ 
+ 
+ 
+ def _get_settings(cursor):
+     cursor.execute(
+         """
+         SELECT id, payout_password_hash, payout_password_version, account_holder_name, updated_at
+         FROM mfu_payout_settings
+         WHERE id = 1
+         LIMIT 1
+         """
+     )
+     return cursor.fetchone() or {
+         "id": 1,
+         "payout_password_hash": None,
+         "payout_password_version": 1,
+         "account_holder_name": None,
      }
-     if request.method == "POST":
-         to_email = (request.form.get("to_email") or "").strip()
-         cc_email = (request.form.get("cc_email") or "").strip()
-         final_cc_email = merge_invoice_cc_emails(effective_issuer_email, cc_email)
-         bcc_email = (request.form.get("bcc_email") or "").strip()
-         subject = (request.form.get("subject") or "").strip()
-         body = request.form.get("body") or ""
-         final_body = body
-         if not to_email:
-             flash("宛先メールアドレスを入力してください。", "warning")
-             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
-         if request.form.get("confirm_send") != "yes":
-             flash("送信前確認にチェックを入れてください。", "warning")
-             return render_template("invoice_mail_form.html", invoice=invoice, form_data=request.form)
--        try:
--            if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
--                payout_access = create_invoice_payout_access(invoice)
-+        if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
+ 
+ 
+ 
+ def _clear_unlock_failure() -> None:
+     session.pop("payout_unlock_fail_count", None)
+     session.pop("payout_unlock_lock_until", None)
+ 
+@@ -97,110 +101,238 @@ def _is_any_payout_unlocked(db, current_version: int) -> bool:
+ 
+ 
+ 
+ def _client_ip() -> str | None:
+     forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+     return forwarded_for or request.remote_addr
+ 
+ 
+ 
+ def _consume_new_access_token_notice() -> dict | None:
+     return session.pop(NEW_ACCESS_TOKEN_SESSION_KEY, None)
+ 
+ 
+ 
+ def _set_new_access_token_notice(created: dict) -> None:
+     session[NEW_ACCESS_TOKEN_SESSION_KEY] = {
+         "id": created.get("id"),
+         "token": created.get("token"),
+         "token_preview": created.get("token_preview"),
+         "access_url": created.get("access_url"),
+         "memo": created.get("memo"),
+         "created_at": created.get("created_at").strftime("%Y-%m-%d %H:%M:%S") if created.get("created_at") else None,
+     }
+ 
+ 
++def _format_datetime(value: datetime | None) -> str:
++    if not value:
++        return "未設定"
++    return value.strftime("%Y-%m-%d %H:%M:%S")
++
++
++def _build_paypay_link_status(paypay_row, now=None) -> dict:
++    now_dt = now or datetime.now()
++    paypay = paypay_row or {}
++    link = (paypay.get("paypay_link") or "").strip()
++    saved_at = paypay.get("paypay_link_saved_at")
++    is_active = int(paypay.get("is_active") or 0) == 1
++    has_link = bool(link)
++    is_expired = False
++    elapsed_days = None
++
++    if saved_at:
++        elapsed = now_dt - saved_at
++        elapsed_days = max(0, int(elapsed.total_seconds() // 86400))
++        if has_link and is_active and now_dt >= (saved_at + timedelta(days=PAYPAY_LINK_EXPIRE_DAYS)):
++            is_expired = True
++
++    return {
++        "has_link": has_link,
++        "is_active": is_active,
++        "saved_at": saved_at,
++        "saved_at_display": _format_datetime(saved_at),
++        "elapsed_days": elapsed_days,
++        "elapsed_days_display": f"{elapsed_days}日" if elapsed_days is not None else "未設定",
++        "is_expired": is_expired,
++        "warning_message": USER_PAYPAY_EXPIRED_WARNING_MESSAGE if is_expired else None,
++        "expires_after_days": PAYPAY_LINK_EXPIRE_DAYS,
++    }
++
++
++def _get_admin_webhook_urls(cursor) -> list[str]:
++    cursor.execute(
++        """
++        SELECT webhook_url
++        FROM users
++        WHERE username = 'admin'
++          AND webhook_url IS NOT NULL
++          AND webhook_url <> ''
++        """
++    )
++    rows = cursor.fetchall() or []
++    urls: list[str] = []
++    for row in rows:
++        webhook_url = row.get("webhook_url") if isinstance(row, dict) else row[0]
++        if webhook_url and webhook_url not in urls:
++            urls.append(webhook_url)
++    return urls
++
++
++def _post_discord_webhook(webhook_url: str, *, title: str, description: str, fields=(), color: int = 0xF1C40F) -> bool:
++    payload = {
++        "embeds": [
++            {
++                "title": title,
++                "description": description,
++                "color": color,
++                "fields": [{"name": name, "value": value, "inline": inline} for (name, value, inline) in fields],
++            }
++        ]
++    }
++    response = requests.post(webhook_url, json=payload, timeout=10)
++    response.raise_for_status()
++    return True
++
++
++def _notify_expired_paypay_link_if_needed(db, paypay_row, paypay_status: dict) -> None:
++    if not paypay_status.get("is_expired"):
++        return
++    if paypay_row.get("paypay_link_expired_notified_at") is not None:
++        return
++
++    cursor = db.cursor(dictionary=True)
++    try:
++        webhook_urls = _get_admin_webhook_urls(cursor)
++        if not webhook_urls:
++            return
++
++        description = "利用者が /payout を開いた際、PayPayリンクが期限切れ扱い（13日超過）でした。"
++        fields = (
++            ("保存日時", paypay_status.get("saved_at_display") or "未設定", False),
++            ("経過日数", paypay_status.get("elapsed_days_display") or "未設定", True),
++            ("IP", _client_ip() or "不明", True),
++            ("ページ", "/payout", True),
++        )
++
++        success_count = 0
++        for webhook_url in webhook_urls:
 +            try:
-+                payout_access = issue_payout_access_token_for_invoice(invoice)
-                 final_body = append_payout_guidance_to_mail_body(body, payout_access.get("access_url") or "")
--                save_invoice_payout_token(invoice_id, payout_access.get("token_id"))
-+                save_invoice_payout_token(invoice_id, payout_access.get("id"))
-+            except Exception as exc:
-+                flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-+                form_data = dict(request.form)
-+                form_data["body"] = body
-+                return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-+        try:
-             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
-             send_invoice_mail(
-                 invoice,
-                 to_email=to_email,
-                 cc_email=final_cc_email or None,
-                 bcc_email=bcc_email or None,
-                 reply_to_email=effective_issuer_email or None,
-                 subject=subject,
-                 body=final_body,
-                 attachment_filename=attachment_name,
-                 pdf_bytes=pdf_bytes,
++                if _post_discord_webhook(
++                    webhook_url,
++                    title="PayPayリンク期限警告",
++                    description=description,
++                    fields=fields,
++                ):
++                    success_count += 1
++            except Exception:
++                current_app.logger.exception("PayPayリンク期限切れDiscord通知に失敗しました: webhook=%s", webhook_url)
++
++        if success_count > 0:
++            cursor.execute(
++                """
++                UPDATE mfu_payout_paypay
++                SET paypay_link_expired_notified_at = NOW()
++                WHERE id = %s
++                  AND paypay_link_expired_notified_at IS NULL
++                """,
++                (paypay_row["id"],),
++            )
++            db.commit()
++    except Exception:
++        current_app.logger.exception("PayPayリンク期限切れ通知処理でエラーが発生しました")
++    finally:
++        cursor.close()
++
++
+ @bank_account_bp.route("/payout")
+ def payout_index():
+     iv = (request.args.get("iv") or "").strip()
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
+     try:
+         settings = _get_settings(cursor)
+         version = int(settings.get("payout_password_version") or 1)
+ 
+         if iv:
+             token_row = verify_payout_access_token(db, iv)
+             if token_row:
+                 session["payout_unlocked"] = True
+                 session["payout_auth_method"] = "token"
+                 session["payout_token_id"] = int(token_row["id"])
+                 session.pop("payout_pwd_version", None)
+                 touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
+                 _clear_unlock_failure()
+                 return redirect(url_for("bank_account.payout_index"))
+ 
+             _clear_payout_token_session()
+             flash("アクセストークンが無効です。", "danger")
+             return redirect(url_for("bank_account.payout_unlock"))
+ 
+         if not _is_any_payout_unlocked(db, version):
+             _clear_payout_auth_session()
+             return redirect(
+                 url_for(
+                     "bank_account.payout_unlock",
+                     setup_required=1 if not settings.get("payout_password_hash") else None,
+                 )
              )
-             flash("請求書メールを送信しました。", "success")
-             return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
--        except InvoicePayoutClientError:
--            flash("振込先リンクの発行に失敗したためメール送信を中止しました。", "danger")
--            form_data = dict(request.form)
--            form_data["body"] = body
--            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-         except Exception as exc:
-             flash(f"メール送信に失敗しました: {exc}", "danger")
-             form_data = dict(request.form)
-             form_data["body"] = final_body
-             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-     return render_template("invoice_mail_form.html", invoice=invoice, form_data=initial)
+ 
+         cursor.execute(
+             """
+             SELECT id, label, bank_name, branch_name, account_number, sort_order
+             FROM mfu_payout_account
+             WHERE is_active = 1
+             ORDER BY sort_order ASC, id ASC
+             """
+         )
+         accounts = cursor.fetchall()
+ 
+         cursor.execute(
+             """
+-            SELECT paypay_send_id, paypay_link, is_active
++            SELECT id,
++                   paypay_send_id,
++                   paypay_link,
++                   is_active,
++                   paypay_link_saved_at,
++                   paypay_link_expired_notified_at
+             FROM mfu_payout_paypay
+             WHERE id = 1
+             LIMIT 1
+             """
+         )
+         paypay = cursor.fetchone() or {}
++        paypay_status = _build_paypay_link_status(paypay)
++        _notify_expired_paypay_link_if_needed(db, paypay, paypay_status)
+     finally:
+         cursor.close()
+         db.close()
+ 
+     return render_template(
+         "bank_account/index.html",
+         accounts=accounts,
+         paypay=paypay,
++        paypay_status=paypay_status,
+         account_holder_name=settings.get("account_holder_name"),
+     )
  
  
- @invoice_bp.get("/<int:invoice_id>/freee-csv")
- @login_required
- def invoice_freee_csv(invoice_id: int):
-     invoice = get_invoice(invoice_id)
-     if not invoice:
-         flash("請求書が見つかりません。", "warning")
-         return redirect(url_for("invoice.invoice_list"))
-     contact = get_contact(invoice.get("contact_id")) if invoice.get("contact_id") else None
-     invoice["freee_partner_name"] = (contact or {}).get("freee_partner_name")
+ @bank_account_bp.route("/payout/unlock", methods=["GET", "POST"])
+ def payout_unlock():
+     now_ts = int(time.time())
+     lock_until = int(session.get("payout_unlock_lock_until") or 0)
+     lock_remaining = max(0, lock_until - now_ts)
+ 
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
      try:
-         csv_bytes, filename = build_invoice_freee_csv(invoice)
-         log_csv_export(invoice_id, filename, status="success")
-         response = build_invoice_freee_csv_response(invoice)
-         return response
-     except Exception as exc:
-         log_csv_export(invoice_id, f"freee_invoice_{invoice.get('invoice_no')}.csv", status="failed", error_message=str(exc))
-         flash(f"freee CSV の出力に失敗しました: {exc}", "danger")
-diff --git a/invoice/services.py b/invoice/services.py
-index f3e240722c2e7f45c2945f99446fb75dd2edd1c0..c3a483f788f695ad2b9bc2647cc4474317a4d4cd 100644
---- a/invoice/services.py
-+++ b/invoice/services.py
-@@ -88,58 +88,50 @@ def _normalize_stripped_text(value: Any) -> str:
+         settings = _get_settings(cursor)
+         pwd_hash = settings.get("payout_password_hash")
+         version = int(settings.get("payout_password_version") or 1)
+         if request.method == "POST":
+             if lock_remaining > 0:
+                 flash(f"失敗回数が上限に達しました。約{lock_remaining // 60 + 1}分後に再試行してください。", "danger")
+                 return redirect(url_for("bank_account.payout_unlock"))
  
- def _normalize_optional_int(value: Any) -> int | None:
-     text = _normalize_stripped_text(value)
-     if not text:
-         return None
+             password = request.form.get("password") or ""
+             if not password:
+                 flash("パスワードを入力してください。", "danger")
+                 return redirect(url_for("bank_account.payout_unlock"))
+@@ -252,60 +384,70 @@ def payout_logout():
+ def admin_payout():
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
      try:
-         parsed = int(text)
-     except (TypeError, ValueError):
-         return None
-     return parsed if parsed > 0 else None
+         if request.method == "POST":
+             action = request.form.get("action") or ""
  
+             if action == "update_holder_name":
+                 account_holder_name = (request.form.get("account_holder_name") or "").strip() or None
+                 cursor.execute(
+                     """
+                     UPDATE mfu_payout_settings
+                     SET account_holder_name = %s,
+                         updated_at = NOW()
+                     WHERE id = 1
+                     """,
+                     (account_holder_name,),
+                 )
+                 db.commit()
+                 flash("銀行口座の名義を更新しました。", "success")
  
- def normalize_bank_info_mode(value: Any) -> str:
-     normalized = str(value or "").strip()
-     if normalized == BANK_INFO_MODE_PAYOUT_LINK:
-         return BANK_INFO_MODE_PAYOUT_LINK
-     return BANK_INFO_MODE_INLINE
+             elif action == "update_paypay":
+                 send_id = (request.form.get("paypay_send_id") or "").strip() or None
+                 link = (request.form.get("paypay_link") or "").strip() or None
+                 is_active = 1 if request.form.get("is_active") == "1" else 0
++                if link:
++                    saved_at_sql = "NOW()"
++                    notified_at_sql = "NULL"
++                    params = (send_id, link, is_active)
++                else:
++                    saved_at_sql = "NULL"
++                    notified_at_sql = "NULL"
++                    params = (send_id, None, is_active)
+                 cursor.execute(
+-                    """
++                    f"""
+                     UPDATE mfu_payout_paypay
+                     SET paypay_send_id = %s,
+                         paypay_link = %s,
+                         is_active = %s,
++                        paypay_link_saved_at = {saved_at_sql},
++                        paypay_link_expired_notified_at = {notified_at_sql},
+                         updated_at = NOW()
+                     WHERE id = 1
+                     """,
+-                    (send_id, link, is_active),
++                    params,
+                 )
+                 db.commit()
+                 flash("PayPay設定を更新しました。", "success")
  
+             elif action == "add_account":
+                 label = (request.form.get("label") or "").strip() or None
+                 bank_name = (request.form.get("bank_name") or "").strip()
+                 branch_name = (request.form.get("branch_name") or "").strip() or None
+                 account_number = (request.form.get("account_number") or "").strip()
+                 sort_order = int(request.form.get("sort_order") or 0)
+                 is_active = 1 if request.form.get("is_active") == "1" else 0
  
- def get_invoice_effective_bank_info(invoice: dict[str, Any]) -> str:
-     if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK:
-         return PAYOUT_LINK_BANK_INFO_MESSAGE
-     return normalize_multiline_text(invoice.get("bank_info")) or ""
+                 if not bank_name or not account_number:
+                     flash("銀行名と口座番号は必須です。", "danger")
+                 else:
+                     cursor.execute(
+                         """
+                         INSERT INTO mfu_payout_account
+                             (label, bank_name, branch_name, account_number, is_active, sort_order, created_at, updated_at)
+                         VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                         """,
+                         (label, bank_name, branch_name, account_number, is_active, sort_order),
+                     )
+                     db.commit()
+                     flash("口座を追加しました。", "success")
+@@ -392,79 +534,87 @@ def admin_payout():
+                         issued_by_app=None,
+                         created_by_admin=session.get("user") or "admin",
+                     )
+                     created["access_url"] = build_payout_access_url(created.get("token") or "")
+                     _set_new_access_token_notice(created)
+                     flash("アクセストークンを作成しました。", "success")
  
+             elif action == "toggle_access_token":
+                 token_id = int(request.form.get("token_id") or 0)
+                 is_active = request.form.get("is_active") == "1"
+                 if not token_id:
+                     flash("アクセストークンIDが不正です。", "danger")
+                 else:
+                     toggle_payout_access_token_active(db, token_id, is_active)
+                     flash(
+                         "アクセストークンを有効化しました。" if is_active else "アクセストークンを無効化しました。",
+                         "success",
+                     )
  
--def build_invoice_payout_memo(invoice: dict[str, Any]) -> str:
--    invoice_no = _normalize_stripped_text(invoice.get("invoice_no"))
--    if not invoice_no:
--        raise InvoiceValidationError("請求書番号が取得できないため payout メモを生成できません。")
--    subject = _normalize_stripped_text(invoice.get("subject"))
--    return f"{invoice_no}　{subject}" if subject else invoice_no
--
--
- def append_payout_guidance_to_mail_body(body: Any, access_url: str) -> str:
-     normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
-     normalized_url = _normalize_stripped_text(access_url)
-     if not normalized_url:
-         return normalized_body
-     if normalized_url in normalized_body:
-         return normalized_body
-     suffix = f"{PAYOUT_LINK_MAIL_GUIDANCE}\n{normalized_url}"
-     if not normalized_body:
-         return suffix
-     return f"{normalized_body}\n{suffix}"
+             return redirect(url_for("bank_account.admin_payout"))
  
+         settings = _get_settings(cursor)
  
- def resolve_invoice_issuer_email(invoice: dict[str, Any]) -> str:
-     issuer_email = _normalize_stripped_text(invoice.get("issuer_email"))
-     if issuer_email:
-         return issuer_email
+         cursor.execute(
+             """
+-            SELECT id, paypay_send_id, paypay_link, is_active, updated_at
++            SELECT id,
++                   paypay_send_id,
++                   paypay_link,
++                   is_active,
++                   paypay_link_saved_at,
++                   paypay_link_expired_notified_at,
++                   updated_at
+             FROM mfu_payout_paypay
+             WHERE id = 1
+             LIMIT 1
+             """
+         )
+         paypay = cursor.fetchone() or {"id": 1, "is_active": 1}
++        paypay_status = _build_paypay_link_status(paypay)
  
-     issuer_template_id = _normalize_optional_int(invoice.get("issuer_template_id"))
-     if not issuer_template_id:
-         return ""
+         cursor.execute(
+             """
+             SELECT id, label, bank_name, branch_name, account_number, is_active, sort_order, updated_at
+             FROM mfu_payout_account
+             ORDER BY sort_order ASC, id ASC
+             """
+         )
+         accounts = cursor.fetchall()
  
-     template = get_issuer_template_by_id(issuer_template_id)
-     if not template:
-         return ""
+         cursor.execute(
+             """
+             SELECT id,
+                    token_prefix,
+                    token_suffix,
+                    memo,
+                    is_active,
+                    access_count,
+                    last_accessed_at,
+                    last_access_ip,
+                    issued_via,
+                    issued_by_app,
+                    created_by_admin,
+                    created_at,
+                    updated_at,
+                    expires_at
+             FROM mfu_payout_access_token
+             ORDER BY created_at DESC, id DESC
+             """
+         )
+         access_tokens = cursor.fetchall()
+         for token in access_tokens:
+             token["token_preview"] = f"{token.get('token_prefix')}...{token.get('token_suffix')}"
+ 
+         new_access_token = _consume_new_access_token_notice()
+     finally:
+         cursor.close()
+         db.close()
+ 
+     return render_template(
+         "bank_account/admin.html",
+         settings=settings,
+         paypay=paypay,
++        paypay_status=paypay_status,
+         accounts=accounts,
+         access_tokens=access_tokens,
+         new_access_token=new_access_token,
+     )
+diff --git a/bank_account/schema.py b/bank_account/schema.py
+index d14db96734f363b0c9ae3d6f0f976ff94968afbb..7f672cb5bb9f41ee19f852f9891028335d5846bd 100644
+--- a/bank_account/schema.py
++++ b/bank_account/schema.py
+@@ -44,87 +44,113 @@ def ensure_bank_account_schema() -> None:
+                 """
+             )
+ 
+         cursor.execute(
+             """
+             CREATE TABLE IF NOT EXISTS mfu_payout_account (
+                 id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                 label VARCHAR(100) NULL,
+                 bank_name VARCHAR(100) NOT NULL,
+                 branch_name VARCHAR(100) NULL,
+                 account_number VARCHAR(32) NOT NULL,
+                 is_active TINYINT NOT NULL DEFAULT 1,
+                 sort_order INT NOT NULL DEFAULT 0,
+                 created_at DATETIME NULL,
+                 updated_at DATETIME NULL
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         cursor.execute(
+             """
+             CREATE TABLE IF NOT EXISTS mfu_payout_paypay (
+                 id INT NOT NULL PRIMARY KEY,
+                 paypay_send_id VARCHAR(100) NULL,
+                 paypay_link VARCHAR(255) NULL,
+                 is_active TINYINT NOT NULL DEFAULT 1,
++                paypay_link_saved_at DATETIME NULL,
++                paypay_link_expired_notified_at DATETIME NULL,
+                 updated_at DATETIME NULL
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
++        if not _column_exists(cursor, "mfu_payout_paypay", "paypay_link_saved_at"):
++            cursor.execute(
++                """
++                ALTER TABLE mfu_payout_paypay
++                ADD COLUMN paypay_link_saved_at DATETIME NULL
++                AFTER is_active
++                """
++            )
++        if not _column_exists(cursor, "mfu_payout_paypay", "paypay_link_expired_notified_at"):
++            cursor.execute(
++                """
++                ALTER TABLE mfu_payout_paypay
++                ADD COLUMN paypay_link_expired_notified_at DATETIME NULL
++                AFTER paypay_link_saved_at
++                """
++            )
+         cursor.execute(
+             """
+             CREATE TABLE IF NOT EXISTS mfu_payout_access_token (
+                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                 token_hash VARCHAR(255) NOT NULL,
+                 token_prefix VARCHAR(32) NOT NULL,
+                 token_suffix VARCHAR(32) NOT NULL,
+                 memo VARCHAR(255) NOT NULL,
+                 is_active TINYINT(1) NOT NULL DEFAULT 1,
+                 access_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                 last_accessed_at DATETIME NULL,
+                 last_access_ip VARCHAR(64) NULL,
+                 issued_via VARCHAR(32) NOT NULL DEFAULT 'admin_ui',
+                 issued_by_app VARCHAR(64) NULL,
+                 created_by_admin VARCHAR(64) NULL,
+                 expires_at DATETIME NULL,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 INDEX idx_mfu_payout_access_token_active (is_active),
+                 INDEX idx_mfu_payout_access_token_created_at (created_at)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         cursor.execute(
+             """
+             CREATE TABLE IF NOT EXISTS mfu_payout_token_api_client (
+                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                 app_name VARCHAR(64) NOT NULL,
+                 api_key_hash VARCHAR(255) NOT NULL,
+                 is_active TINYINT(1) NOT NULL DEFAULT 1,
+                 last_used_at DATETIME NULL,
+                 last_used_ip VARCHAR(64) NULL,
+                 created_at DATETIME NOT NULL,
+                 updated_at DATETIME NOT NULL,
+                 UNIQUE KEY uq_mfu_payout_token_api_client_app_name (app_name)
+             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+             """
+         )
+         cursor.execute(
+             """
+             INSERT INTO mfu_payout_settings (
+                 id, payout_password_hash, payout_password_version, account_holder_name, updated_at
+             )
+             VALUES (1, NULL, 1, NULL, NOW())
+             ON DUPLICATE KEY UPDATE id = id
+             """
+         )
+         cursor.execute(
+             """
+-            INSERT INTO mfu_payout_paypay (id, paypay_send_id, paypay_link, is_active, updated_at)
+-            VALUES (1, NULL, NULL, 1, NOW())
++            INSERT INTO mfu_payout_paypay (
++                id,
++                paypay_send_id,
++                paypay_link,
++                is_active,
++                paypay_link_saved_at,
++                paypay_link_expired_notified_at,
++                updated_at
++            )
++            VALUES (1, NULL, NULL, 1, NULL, NULL, NOW())
+             ON DUPLICATE KEY UPDATE id = id
+             """
+         )
+         db.commit()
+     finally:
+         cursor.close()
+         db.close()
+diff --git a/bank_account/templates/bank_account/admin.html b/bank_account/templates/bank_account/admin.html
+index 8d8ccb4af1da9ccf894e1eef25efdf538cfc9d92..b39e1f10421dbdbe91f8ebdab92186d94c447b83 100644
+--- a/bank_account/templates/bank_account/admin.html
++++ b/bank_account/templates/bank_account/admin.html
+@@ -2,70 +2,98 @@
+ {% block title %}振込先管理{% endblock %}
+ 
+ {% block content %}
+ <div class="container py-4">
+   <h2 class="mb-4">振込先管理</h2>
+ 
+   <div class="card mb-4">
+     <div class="card-header">1. 銀行口座の名義（共通）</div>
+     <div class="card-body">
+       <form method="post" class="row g-3">
+         <input type="hidden" name="action" value="update_holder_name">
+         <div class="col-md-8">
+           <label class="form-label">口座名義（すべての銀行口座で共通表示）</label>
+           <input type="text" name="account_holder_name" class="form-control" value="{{ settings.account_holder_name or '' }}" placeholder="例: ヤマダ タロウ">
+         </div>
+         <div class="col-md-4 d-flex align-items-end">
+           <button type="submit" class="btn btn-primary">名義を保存</button>
+         </div>
+       </form>
+     </div>
+   </div>
+ 
+   <div class="card mb-4">
+     <div class="card-header">2. PayPay編集</div>
+     <div class="card-body">
++      {% if paypay_status and paypay_status.is_expired %}
++        <div class="alert alert-warning" role="alert">
++          このリンクは有効期限が切れているようです。お手数ですが、ご本人にご連絡ください。管理者画面でも期限切れとして表示しています。
++        </div>
++      {% endif %}
+       <form method="post" class="row g-3">
+         <input type="hidden" name="action" value="update_paypay">
+         <div class="col-md-6">
+           <label class="form-label">送金ID</label>
+           <input type="text" name="paypay_send_id" class="form-control" value="{{ paypay.paypay_send_id or '' }}">
+         </div>
+         <div class="col-md-6">
+           <label class="form-label">PayPayリンクURL</label>
+           <input type="url" name="paypay_link" class="form-control" value="{{ paypay.paypay_link or '' }}" placeholder="https://...">
+         </div>
+         <div class="col-12">
+           <div class="form-check">
+             <input class="form-check-input" type="checkbox" value="1" id="paypayActive" name="is_active" {% if paypay.is_active %}checked{% endif %}>
+             <label class="form-check-label" for="paypayActive">公開する</label>
+           </div>
+         </div>
+         <div class="col-12">
+           <button type="submit" class="btn btn-primary">PayPay設定を保存</button>
+         </div>
+       </form>
++      <hr>
++      <div class="row g-3 small">
++        <div class="col-md-4">
++          <div class="text-muted">リンク保存日時</div>
++          <div>{{ paypay_status.saved_at_display if paypay_status else '未設定' }}</div>
++        </div>
++        <div class="col-md-4">
++          <div class="text-muted">経過日数</div>
++          <div>{{ paypay_status.elapsed_days_display if paypay_status else '未設定' }}</div>
++        </div>
++        <div class="col-md-4">
++          <div class="text-muted">期限切れ判定</div>
++          <div>
++            {% if paypay_status and paypay_status.is_expired %}
++              <span class="badge text-bg-warning">期限切れ</span>
++            {% elif paypay_status and paypay_status.has_link and paypay_status.is_active %}
++              <span class="badge text-bg-success">有効</span>
++            {% else %}
++              <span class="badge text-bg-secondary">未設定 / 対象外</span>
++            {% endif %}
++          </div>
++        </div>
++      </div>
+     </div>
+   </div>
+ 
+   <div class="card mb-4">
+     <div class="card-header">3. 銀行口座管理</div>
+     <div class="card-body">
+       <h5>新規追加</h5>
+       <form method="post" class="row g-2 mb-4">
+         <input type="hidden" name="action" value="add_account">
+         <div class="col-md-2"><input type="text" name="label" class="form-control" placeholder="ラベル"></div>
+         <div class="col-md-2"><input type="text" name="bank_name" class="form-control" placeholder="銀行名" required></div>
+         <div class="col-md-2"><input type="text" name="branch_name" class="form-control" placeholder="支店名"></div>
+         <div class="col-md-2"><input type="text" name="account_number" class="form-control" placeholder="口座番号" required></div>
+         <div class="col-md-2"><input type="number" name="sort_order" class="form-control" placeholder="順序" value="0"></div>
+         <div class="col-md-1 form-check mt-2">
+           <input class="form-check-input" type="checkbox" name="is_active" value="1" checked id="add_active">
+           <label class="form-check-label" for="add_active">有効</label>
+         </div>
+         <div class="col-md-1"><button type="submit" class="btn btn-success w-100">追加</button></div>
+       </form>
+ 
+       <h5>既存口座</h5>
+       {% if accounts %}
+         {% for a in accounts %}
+           <form method="post" class="border rounded p-3 mb-2">
+diff --git a/bank_account/templates/bank_account/index.html b/bank_account/templates/bank_account/index.html
+index 9e190cb318f5d2e4aefdbebf9bbbd72d6405cd0b..f959e79a86775640ce2921a2859663625da4f976 100644
+--- a/bank_account/templates/bank_account/index.html
++++ b/bank_account/templates/bank_account/index.html
+@@ -48,50 +48,55 @@
+                     <td>{{ a.label or '-' }}</td>
+                     <td>{{ a.bank_name }}</td>
+                     <td>{{ a.branch_name or '-' }}</td>
+                     <td><code>{{ a.account_number }}</code></td>
+                     <td>
+                       <button type="button"
+                               class="btn btn-sm btn-outline-primary js-copy"
+                               data-copy-text="{{ a.account_number }}">
+                         口座番号コピー
+                       </button>
+                     </td>
+                   </tr>
+                 {% endfor %}
+               </tbody>
+             </table>
+           </div>
+         {% else %}
+           <p class="text-muted mb-0">有効な口座情報がありません。</p>
+         {% endif %}
+       </div>
+     </div>
+ 
+     <div class="card shadow-sm">
+       <div class="card-header">PayPay</div>
+       <div class="card-body">
++        {% if paypay_status and paypay_status.is_expired %}
++          <div class="alert alert-warning" role="alert">
++            {{ paypay_status.warning_message }}
++          </div>
++        {% endif %}
+         {% if paypay and paypay.is_active and paypay.paypay_send_id %}
+           <p class="mb-2">送金ID：<code>{{ paypay.paypay_send_id }}</code></p>
+           <p>
+             <button type="button"
+                     class="btn btn-sm btn-outline-primary js-copy"
+                     data-copy-text="{{ paypay.paypay_send_id }}">
+               IDコピー
+             </button>
+           </p>
+           {% if paypay.paypay_link %}
+             <a href="{{ paypay.paypay_link }}" target="_blank" rel="noopener" class="btn btn-sm btn-success">PayPayを開く</a>
+           {% endif %}
+         {% else %}
+           <p class="text-muted mb-0">PayPay送金IDは未公開です。</p>
+         {% endif %}
+       </div>
+     </div>
+ 
+     <div id="copy-feedback" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
+   </main>
+ 
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+ 
+   <!-- ★ bank_account.js をテンプレに統合（ここから） -->
+   <script>

@@ -30,6 +30,9 @@ FONT_STYLE_CANDIDATES = {
     "bold": ("Bold", "DemiBold", "Medium"),
 }
 
+DEFAULT_INVOICE_PDF_FONT_REGULAR_PATH = Path("/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf")
+DEFAULT_INVOICE_PDF_FONT_BOLD_PATH = Path("/mnt/mfu/app/PDF_Font/BIZUDPGothic-Bold.ttf")
+
 
 class InvoicePdfFontError(RuntimeError):
     pass
@@ -47,7 +50,7 @@ def _require_weasyprint():
 def _ensure_font_file(path_or_pattern: str | None, *, role: str) -> Path:
     value = (path_or_pattern or "").strip()
     if not value:
-        raise InvoicePdfFontError(f"請求書PDF用フォント({role}) が設定されていません。")
+        raise InvoicePdfFontError(f"請求書PDF用フォント({role}) の指定が空です。")
     path = Path(value).expanduser()
     if path.is_file():
         return path.resolve()
@@ -55,8 +58,13 @@ def _ensure_font_file(path_or_pattern: str | None, *, role: str) -> Path:
     if matched:
         return matched
     raise InvoicePdfFontError(
-        f"請求書PDF用フォント({role}) が見つかりません: {value}"
+        f"請求書PDF用フォント({role}) の指定先が見つかりません: {value}"
     )
+
+
+def _resolve_default_font_path(path: Path) -> Path | None:
+    candidate = path.expanduser()
+    return candidate.resolve() if candidate.is_file() else None
 
 
 def _fc_match(pattern: str) -> Path | None:
@@ -83,24 +91,27 @@ def _discover_font_file(*, role: str) -> Path:
             if matched:
                 return matched
     raise InvoicePdfFontError(
-        "請求書PDF用の日本語フォントが見つかりません。"
-        f" 候補: {', '.join(FONT_CANDIDATES)} / role={role}"
+        f"請求書PDF用フォント({role}) が自動検出でも見つかりません。"
+        f" 候補: {', '.join(FONT_CANDIDATES)}"
     )
 
 
 def _resolve_font_paths() -> tuple[Path, Path]:
     regular_cfg = current_app.config.get("INVOICE_PDF_FONT_REGULAR")
     bold_cfg = current_app.config.get("INVOICE_PDF_FONT_BOLD")
-    regular_path = (
-        _ensure_font_file(regular_cfg, role="regular")
-        if regular_cfg
-        else _discover_font_file(role="regular")
-    )
-    bold_path = (
-        _ensure_font_file(bold_cfg, role="bold")
-        if bold_cfg
-        else _discover_font_file(role="bold")
-    )
+
+    if regular_cfg:
+        regular_path = _ensure_font_file(regular_cfg, role="regular")
+    else:
+        regular_path = _resolve_default_font_path(DEFAULT_INVOICE_PDF_FONT_REGULAR_PATH)
+        if regular_path is None:
+            regular_path = _discover_font_file(role="regular")
+
+    if bold_cfg:
+        bold_path = _ensure_font_file(bold_cfg, role="bold")
+    else:
+        bold_path = _resolve_default_font_path(DEFAULT_INVOICE_PDF_FONT_BOLD_PATH) or regular_path
+
     return regular_path, bold_path
 
 

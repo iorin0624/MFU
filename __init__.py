@@ -173,6 +173,8 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"         # CSRF対策の基本ラ�
 
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_CONTENT_LENGTH_MB", "900")) * 1024 * 1024
 app.config["PAYOUT_PUBLIC_BASE_URL"] = os.environ.get("PAYOUT_PUBLIC_BASE_URL", "https://mfu.iori0624.jp").strip()
+app.config["INVOICE_PDF_FONT_REGULAR"] = os.environ.get("INVOICE_PDF_FONT_REGULAR", "").strip()
+app.config["INVOICE_PDF_FONT_BOLD"] = os.environ.get("INVOICE_PDF_FONT_BOLD", "").strip()
 
 # 既定ホワイトリスト（必要なら config で上書き）
 app.config.setdefault("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)

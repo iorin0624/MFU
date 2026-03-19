@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 
 import bcrypt
-from flask import flash, redirect, render_template, request, session, url_for
+import requests
+from flask import current_app, flash, redirect, render_template, request, session, url_for
 
 from app import admin_required
 from app.utils.db import get_db
@@ -22,6 +24,8 @@ from .token_service import (
 MAX_UNLOCK_FAILURES = 10
 LOCK_SECONDS = 10 * 60
 NEW_ACCESS_TOKEN_SESSION_KEY = "payout_new_access_token"
+PAYPAY_LINK_EXPIRE_DAYS = 13
+USER_PAYPAY_EXPIRED_WARNING_MESSAGE = "このリンクは有効期限が切れているようです。お手数ですが、ご本人にご連絡ください。"
 
 
 
@@ -119,6 +123,126 @@ def _set_new_access_token_notice(created: dict) -> None:
     }
 
 
+def _format_datetime(value: datetime | None) -> str:
+    if not value:
+        return "未設定"
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_paypay_link_status(paypay_row, now=None) -> dict:
+    now_dt = now or datetime.now()
+    paypay = paypay_row or {}
+    link = (paypay.get("paypay_link") or "").strip()
+    saved_at = paypay.get("paypay_link_saved_at")
+    is_active = int(paypay.get("is_active") or 0) == 1
+    has_link = bool(link)
+    is_expired = False
+    elapsed_days = None
+
+    if saved_at:
+        elapsed = now_dt - saved_at
+        elapsed_days = max(0, int(elapsed.total_seconds() // 86400))
+        if has_link and is_active and now_dt >= (saved_at + timedelta(days=PAYPAY_LINK_EXPIRE_DAYS)):
+            is_expired = True
+
+    return {
+        "has_link": has_link,
+        "is_active": is_active,
+        "saved_at": saved_at,
+        "saved_at_display": _format_datetime(saved_at),
+        "elapsed_days": elapsed_days,
+        "elapsed_days_display": f"{elapsed_days}日" if elapsed_days is not None else "未設定",
+        "is_expired": is_expired,
+        "warning_message": USER_PAYPAY_EXPIRED_WARNING_MESSAGE if is_expired else None,
+        "expires_after_days": PAYPAY_LINK_EXPIRE_DAYS,
+    }
+
+
+def _get_admin_webhook_urls(cursor) -> list[str]:
+    cursor.execute(
+        """
+        SELECT webhook_url
+        FROM users
+        WHERE username = 'admin'
+          AND webhook_url IS NOT NULL
+          AND webhook_url <> ''
+        """
+    )
+    rows = cursor.fetchall() or []
+    urls: list[str] = []
+    for row in rows:
+        webhook_url = row.get("webhook_url") if isinstance(row, dict) else row[0]
+        if webhook_url and webhook_url not in urls:
+            urls.append(webhook_url)
+    return urls
+
+
+def _post_discord_webhook(webhook_url: str, *, title: str, description: str, fields=(), color: int = 0xF1C40F) -> bool:
+    payload = {
+        "embeds": [
+            {
+                "title": title,
+                "description": description,
+                "color": color,
+                "fields": [{"name": name, "value": value, "inline": inline} for (name, value, inline) in fields],
+            }
+        ]
+    }
+    response = requests.post(webhook_url, json=payload, timeout=10)
+    response.raise_for_status()
+    return True
+
+
+def _notify_expired_paypay_link_if_needed(db, paypay_row, paypay_status: dict) -> None:
+    if not paypay_status.get("is_expired"):
+        return
+    if paypay_row.get("paypay_link_expired_notified_at") is not None:
+        return
+
+    cursor = db.cursor(dictionary=True)
+    try:
+        webhook_urls = _get_admin_webhook_urls(cursor)
+        if not webhook_urls:
+            return
+
+        description = "利用者が /payout を開いた際、PayPayリンクが期限切れ扱い（13日超過）でした。"
+        fields = (
+            ("保存日時", paypay_status.get("saved_at_display") or "未設定", False),
+            ("経過日数", paypay_status.get("elapsed_days_display") or "未設定", True),
+            ("IP", _client_ip() or "不明", True),
+            ("ページ", "/payout", True),
+        )
+
+        success_count = 0
+        for webhook_url in webhook_urls:
+            try:
+                if _post_discord_webhook(
+                    webhook_url,
+                    title="PayPayリンク期限警告",
+                    description=description,
+                    fields=fields,
+                ):
+                    success_count += 1
+            except Exception:
+                current_app.logger.exception("PayPayリンク期限切れDiscord通知に失敗しました: webhook=%s", webhook_url)
+
+        if success_count > 0:
+            cursor.execute(
+                """
+                UPDATE mfu_payout_paypay
+                SET paypay_link_expired_notified_at = NOW()
+                WHERE id = %s
+                  AND paypay_link_expired_notified_at IS NULL
+                """,
+                (paypay_row["id"],),
+            )
+            db.commit()
+    except Exception:
+        current_app.logger.exception("PayPayリンク期限切れ通知処理でエラーが発生しました")
+    finally:
+        cursor.close()
+
+
 @bank_account_bp.route("/payout")
 def payout_index():
     iv = (request.args.get("iv") or "").strip()
@@ -164,13 +288,20 @@ def payout_index():
 
         cursor.execute(
             """
-            SELECT paypay_send_id, paypay_link, is_active
+            SELECT id,
+                   paypay_send_id,
+                   paypay_link,
+                   is_active,
+                   paypay_link_saved_at,
+                   paypay_link_expired_notified_at
             FROM mfu_payout_paypay
             WHERE id = 1
             LIMIT 1
             """
         )
         paypay = cursor.fetchone() or {}
+        paypay_status = _build_paypay_link_status(paypay)
+        _notify_expired_paypay_link_if_needed(db, paypay, paypay_status)
     finally:
         cursor.close()
         db.close()
@@ -179,6 +310,7 @@ def payout_index():
         "bank_account/index.html",
         accounts=accounts,
         paypay=paypay,
+        paypay_status=paypay_status,
         account_holder_name=settings.get("account_holder_name"),
     )
 
@@ -274,16 +406,26 @@ def admin_payout():
                 send_id = (request.form.get("paypay_send_id") or "").strip() or None
                 link = (request.form.get("paypay_link") or "").strip() or None
                 is_active = 1 if request.form.get("is_active") == "1" else 0
+                if link:
+                    saved_at_sql = "NOW()"
+                    notified_at_sql = "NULL"
+                    params = (send_id, link, is_active)
+                else:
+                    saved_at_sql = "NULL"
+                    notified_at_sql = "NULL"
+                    params = (send_id, None, is_active)
                 cursor.execute(
-                    """
+                    f"""
                     UPDATE mfu_payout_paypay
                     SET paypay_send_id = %s,
                         paypay_link = %s,
                         is_active = %s,
+                        paypay_link_saved_at = {saved_at_sql},
+                        paypay_link_expired_notified_at = {notified_at_sql},
                         updated_at = NOW()
                     WHERE id = 1
                     """,
-                    (send_id, link, is_active),
+                    params,
                 )
                 db.commit()
                 flash("PayPay設定を更新しました。", "success")
@@ -414,13 +556,20 @@ def admin_payout():
 
         cursor.execute(
             """
-            SELECT id, paypay_send_id, paypay_link, is_active, updated_at
+            SELECT id,
+                   paypay_send_id,
+                   paypay_link,
+                   is_active,
+                   paypay_link_saved_at,
+                   paypay_link_expired_notified_at,
+                   updated_at
             FROM mfu_payout_paypay
             WHERE id = 1
             LIMIT 1
             """
         )
         paypay = cursor.fetchone() or {"id": 1, "is_active": 1}
+        paypay_status = _build_paypay_link_status(paypay)
 
         cursor.execute(
             """
@@ -464,6 +613,7 @@ def admin_payout():
         "bank_account/admin.html",
         settings=settings,
         paypay=paypay,
+        paypay_status=paypay_status,
         accounts=accounts,
         access_tokens=access_tokens,
         new_access_token=new_access_token,
