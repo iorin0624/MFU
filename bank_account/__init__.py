@@ -18,3 +18,4 @@ def register_bank_account(app) -> None:
 
 
 from . import routes  # noqa: E402,F401
+from . import token_api  # noqa: E402,F401
