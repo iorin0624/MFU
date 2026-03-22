@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS external_login_user (
   instagram_id     VARCHAR(30)     NULL,
   email            VARCHAR(191)    NULL,
   chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
+  notification_unread_reminder_last_sent_at DATETIME NULL,
   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -200,6 +201,11 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
+            _ensure_col(
+                "external_login_user",
+                "notification_unread_reminder_last_sent_at",
+                "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
+            )
 
             # ★ 追加：支払期間 列（後方互換で追加）
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")

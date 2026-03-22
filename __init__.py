@@ -1108,6 +1108,13 @@ def view_upload(uuid):
     show_zip_button = (not generate_thumbnails) and len(files) > 0
     # APIに渡す相対パス一覧（zip_stream.resolve_relpath が解決する仕様）
     all_relpaths = [f"uploads/{uuid}/original/{name}" for name in files]
+    file_entries = [
+        {
+            "name": name,
+            "url": url_for("uploaded_file", subpath=f"{uuid}/original/{name}"),
+        }
+        for name in files
+    ]
 
     return render_template(
         "view.html",
@@ -1119,6 +1126,7 @@ def view_upload(uuid):
         uuid=uuid,
         show_zip_button=show_zip_button,
         all_relpaths=all_relpaths,  # ← 追加
+        file_entries=file_entries,
     )
 
 @app.route("/upload/<path:subpath>")

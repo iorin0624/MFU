@@ -1,744 +1,945 @@
-diff --git a/bank_account/routes.py b/bank_account/routes.py
-index 83a7030e49da304575c81168153c8560bd2df8bf..4a4191d37dcc9dcfc0f482ab876a3518551436f1 100644
---- a/bank_account/routes.py
-+++ b/bank_account/routes.py
-@@ -1,49 +1,53 @@
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index e7d46af7b3b88c79ca1c9bf63b444dae462a9d94..a1f3a92f0ae57c61b272775007340529a0938649 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -1,49 +1,52 @@
  from __future__ import annotations
  
- import time
-+from datetime import datetime, timedelta
+ import hashlib
+ import hmac
+ import os
+-from datetime import datetime, timezone
++from datetime import datetime, timedelta, timezone
+ from time import perf_counter
+ from typing import Any
+ from urllib.parse import parse_qs, urlparse
  
- import bcrypt
--from flask import flash, redirect, render_template, request, session, url_for
-+import requests
-+from flask import current_app, flash, redirect, render_template, request, session, url_for
+ from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
  
- from app import admin_required
+ from . import bp
+ from .utils import _require_ext_login
  from app.utils.db import get_db
++from app.utils.mail import send_external_unread_reminder_mail
  
- from . import bank_account_bp
- from .token_service import (
-     build_payout_access_url,
-     create_payout_access_token,
-     get_payout_access_token_by_id,
-     is_payout_access_token_usable,
-     toggle_payout_access_token_active,
-     touch_payout_access_token_usage,
-     verify_payout_access_token,
- )
- 
- MAX_UNLOCK_FAILURES = 10
- LOCK_SECONDS = 10 * 60
- NEW_ACCESS_TOKEN_SESSION_KEY = "payout_new_access_token"
-+PAYPAY_LINK_EXPIRE_DAYS = 13
-+USER_PAYPAY_EXPIRED_WARNING_MESSAGE = "このリンクは有効期限が切れているようです。お手数ですが、ご本人にご連絡ください。"
+ try:
+     from app.chat.socketio_ext import socketio
+ except Exception:  # pragma: no cover
+     socketio = None
  
  
+ _READ_NOTIFICATIONS_KEEP_LIMIT = 30
++_JST = timezone(timedelta(hours=9))
+ mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
++_EXTERNAL_UNREAD_REMINDER_COLUMN = "notification_unread_reminder_last_sent_at"
  
- def _get_settings(cursor):
-     cursor.execute(
-         """
-         SELECT id, payout_password_hash, payout_password_version, account_holder_name, updated_at
-         FROM mfu_payout_settings
-         WHERE id = 1
-         LIMIT 1
-         """
-     )
-     return cursor.fetchone() or {
-         "id": 1,
-         "payout_password_hash": None,
-         "payout_password_version": 1,
-         "account_holder_name": None,
+ 
+ def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
+     if str(user_kind) == "mfu":
+         return (recipient_key or "").strip()
+     return str(int(user_id or 0))
+ 
+ 
+ def _notification_storage_user_id(user_kind: str, user_id: int, recipient_key: str | None = None) -> int:
+     if str(user_kind) != "mfu":
+         return int(user_id or 0)
+     recipient = (recipient_key or "").strip()
+     if not recipient:
+         return 0
+     digest = hashlib.sha1(recipient.encode("utf-8")).digest()
+     return int.from_bytes(digest[:8], "big", signed=False)
+ 
+ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
+     if int(ext_user_id or 0) <= 0:
+         return None
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+@@ -156,50 +159,66 @@ def _is_mfu_notification_user(username: str) -> bool:
+         cur.execute("SELECT 1 FROM mfu_event_admin_acl WHERE username=%s LIMIT 1", (name,))
+         return bool(cur.fetchone())
+     except Exception:
+         return False
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
+ def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
+     username, role = _resolve_mfu_notification_recipient_for_session()
+     if not username:
+         current_app.logger.info("mfu notification guard denied reason=login_required")
+         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
+     if not _is_mfu_notification_user(username):
+         current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
+         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+     current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
+     return username, None
+ 
+ 
+ def _now_utc() -> datetime:
+     return datetime.now(timezone.utc)
+ 
+ 
++def _as_utc(dt: datetime | None) -> datetime | None:
++    if dt is None:
++        return None
++    if dt.tzinfo is None:
++        return dt.replace(tzinfo=timezone.utc)
++    return dt.astimezone(timezone.utc)
++
++
++def _same_jst_day(lhs: datetime | None, rhs: datetime | None) -> bool:
++    lhs_utc = _as_utc(lhs)
++    rhs_utc = _as_utc(rhs)
++    if lhs_utc is None or rhs_utc is None:
++        return False
++    return lhs_utc.astimezone(_JST).date() == rhs_utc.astimezone(_JST).date()
++
++
+ def _relative_time_from(dt: datetime | None) -> str:
+     if not dt:
+         return ""
+     if dt.tzinfo is None:
+         dt = dt.replace(tzinfo=timezone.utc)
+     delta = max(0, int((_now_utc() - dt).total_seconds()))
+     if delta < 60:
+         return "たった今"
+     if delta < 3600:
+         return f"{delta // 60}分前"
+     if delta < 86400:
+         return f"{delta // 3600}時間前"
+     if delta < 86400 * 7:
+         return f"{delta // 86400}日前"
+     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+ 
+ 
+ def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
+     chat_room_id = str(row.get("chat_room_id") or "").strip()
+     chat_event_id = int(row.get("chat_event_id") or 0) or None
+     if chat_room_id:
+         return chat_event_id, chat_room_id
+ 
+     target_url = str(row.get("target_url") or "").strip()
+     event_id = int(row.get("event_id") or 0) or chat_event_id
+@@ -385,56 +404,69 @@ CREATE TABLE IF NOT EXISTS mfu_notification_deliveries (
+   sent_at DATETIME NULL,
+   PRIMARY KEY (id),
+   KEY idx_mfu_notification_deliveries_notification_id (notification_id),
+   KEY idx_mfu_notification_deliveries_dedup (dedup_key),
+   KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel),
+   KEY idx_mfu_notification_deliveries_created (created_at)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ 
+ def _ensure_notification_delivery_schema(cur) -> None:
+     cur.execute(_NOTIFICATION_DELIVERY_DDL)
+     cur.execute("SHOW INDEX FROM mfu_notification_deliveries")
+     existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
+     index_map = {
+         "idx_mfu_notification_deliveries_notification_id": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_notification_id (notification_id)",
+         "idx_mfu_notification_deliveries_dedup": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_dedup (dedup_key)",
+         "idx_mfu_notification_deliveries_recipient": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel)",
+         "idx_mfu_notification_deliveries_created": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_created (created_at)",
      }
+     for key_name, ddl in index_map.items():
+         if key_name not in existing_indexes:
+             cur.execute(ddl)
  
  
- 
- def _clear_unlock_failure() -> None:
-     session.pop("payout_unlock_fail_count", None)
-     session.pop("payout_unlock_lock_until", None)
- 
-@@ -97,110 +101,238 @@ def _is_any_payout_unlocked(db, current_version: int) -> bool:
- 
- 
- 
- def _client_ip() -> str | None:
-     forwarded_for = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-     return forwarded_for or request.remote_addr
- 
- 
- 
- def _consume_new_access_token_notice() -> dict | None:
-     return session.pop(NEW_ACCESS_TOKEN_SESSION_KEY, None)
- 
- 
- 
- def _set_new_access_token_notice(created: dict) -> None:
-     session[NEW_ACCESS_TOKEN_SESSION_KEY] = {
-         "id": created.get("id"),
-         "token": created.get("token"),
-         "token_preview": created.get("token_preview"),
-         "access_url": created.get("access_url"),
-         "memo": created.get("memo"),
-         "created_at": created.get("created_at").strftime("%Y-%m-%d %H:%M:%S") if created.get("created_at") else None,
-     }
- 
- 
-+def _format_datetime(value: datetime | None) -> str:
-+    if not value:
-+        return "未設定"
-+    return value.strftime("%Y-%m-%d %H:%M:%S")
-+
-+
-+def _build_paypay_link_status(paypay_row, now=None) -> dict:
-+    now_dt = now or datetime.now()
-+    paypay = paypay_row or {}
-+    link = (paypay.get("paypay_link") or "").strip()
-+    saved_at = paypay.get("paypay_link_saved_at")
-+    is_active = int(paypay.get("is_active") or 0) == 1
-+    has_link = bool(link)
-+    is_expired = False
-+    elapsed_days = None
-+
-+    if saved_at:
-+        elapsed = now_dt - saved_at
-+        elapsed_days = max(0, int(elapsed.total_seconds() // 86400))
-+        if has_link and is_active and now_dt >= (saved_at + timedelta(days=PAYPAY_LINK_EXPIRE_DAYS)):
-+            is_expired = True
-+
-+    return {
-+        "has_link": has_link,
-+        "is_active": is_active,
-+        "saved_at": saved_at,
-+        "saved_at_display": _format_datetime(saved_at),
-+        "elapsed_days": elapsed_days,
-+        "elapsed_days_display": f"{elapsed_days}日" if elapsed_days is not None else "未設定",
-+        "is_expired": is_expired,
-+        "warning_message": USER_PAYPAY_EXPIRED_WARNING_MESSAGE if is_expired else None,
-+        "expires_after_days": PAYPAY_LINK_EXPIRE_DAYS,
-+    }
-+
-+
-+def _get_admin_webhook_urls(cursor) -> list[str]:
-+    cursor.execute(
-+        """
-+        SELECT webhook_url
-+        FROM users
-+        WHERE username = 'admin'
-+          AND webhook_url IS NOT NULL
-+          AND webhook_url <> ''
-+        """
-+    )
-+    rows = cursor.fetchall() or []
-+    urls: list[str] = []
-+    for row in rows:
-+        webhook_url = row.get("webhook_url") if isinstance(row, dict) else row[0]
-+        if webhook_url and webhook_url not in urls:
-+            urls.append(webhook_url)
-+    return urls
-+
-+
-+def _post_discord_webhook(webhook_url: str, *, title: str, description: str, fields=(), color: int = 0xF1C40F) -> bool:
-+    payload = {
-+        "embeds": [
-+            {
-+                "title": title,
-+                "description": description,
-+                "color": color,
-+                "fields": [{"name": name, "value": value, "inline": inline} for (name, value, inline) in fields],
-+            }
-+        ]
-+    }
-+    response = requests.post(webhook_url, json=payload, timeout=10)
-+    response.raise_for_status()
-+    return True
-+
-+
-+def _notify_expired_paypay_link_if_needed(db, paypay_row, paypay_status: dict) -> None:
-+    if not paypay_status.get("is_expired"):
-+        return
-+    if paypay_row.get("paypay_link_expired_notified_at") is not None:
-+        return
-+
-+    cursor = db.cursor(dictionary=True)
-+    try:
-+        webhook_urls = _get_admin_webhook_urls(cursor)
-+        if not webhook_urls:
-+            return
-+
-+        description = "利用者が /payout を開いた際、PayPayリンクが期限切れ扱い（13日超過）でした。"
-+        fields = (
-+            ("保存日時", paypay_status.get("saved_at_display") or "未設定", False),
-+            ("経過日数", paypay_status.get("elapsed_days_display") or "未設定", True),
-+            ("IP", _client_ip() or "不明", True),
-+            ("ページ", "/payout", True),
++def _ensure_external_unread_reminder_schema(cur) -> None:
++    cur.execute("SHOW COLUMNS FROM external_login_user")
++    existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
++    if _EXTERNAL_UNREAD_REMINDER_COLUMN not in existing:
++        cur.execute(
++            f"""
++            ALTER TABLE external_login_user
++            ADD COLUMN {_EXTERNAL_UNREAD_REMINDER_COLUMN} DATETIME NULL AFTER chat_admin_alias
++            """
 +        )
 +
-+        success_count = 0
-+        for webhook_url in webhook_urls:
-+            try:
-+                if _post_discord_webhook(
-+                    webhook_url,
-+                    title="PayPayリンク期限警告",
-+                    description=description,
-+                    fields=fields,
-+                ):
-+                    success_count += 1
-+            except Exception:
-+                current_app.logger.exception("PayPayリンク期限切れDiscord通知に失敗しました: webhook=%s", webhook_url)
 +
-+        if success_count > 0:
-+            cursor.execute(
-+                """
-+                UPDATE mfu_payout_paypay
-+                SET paypay_link_expired_notified_at = NOW()
-+                WHERE id = %s
-+                  AND paypay_link_expired_notified_at IS NULL
-+                """,
-+                (paypay_row["id"],),
-+            )
-+            db.commit()
-+    except Exception:
-+        current_app.logger.exception("PayPayリンク期限切れ通知処理でエラーが発生しました")
+ def _ensure_notification_schema() -> None:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(_NOTIFICATION_DDL)
+         _ensure_notification_delivery_schema(cur)
++        _ensure_external_unread_reminder_schema(cur)
+ 
+         cur.execute("SHOW COLUMNS FROM mfu_notifications")
+         existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
+ 
+         if "chat_event_id" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_event_id BIGINT UNSIGNED NULL AFTER event_id")
+         if "chat_room_id" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_room_id VARCHAR(64) NULL AFTER chat_event_id")
+         if "recipient_key" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN recipient_key VARCHAR(191) NULL AFTER user_id")
+         if "room_type" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_type VARCHAR(32) NULL AFTER chat_room_id")
+         if "room_id" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_id VARCHAR(64) NULL AFTER room_type")
+         if "sender_label" not in existing:
+             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN sender_label VARCHAR(255) NULL AFTER room_id")
+ 
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET recipient_key=CAST(user_id AS CHAR)
+              WHERE user_kind='external'
+                AND (recipient_key IS NULL OR recipient_key='')
+             """
+         )
+@@ -534,50 +566,193 @@ def create_notification_external(
+     event_id: int | None = None,
+     chat_event_id: int | None = None,
+     chat_room_id: str | None = None,
+ ) -> bool:
+     result = create_notification_dispatch_result(
+         recipient_type="external_user_id",
+         recipient_value=int(user_id),
+         kind=kind,
+         title=title,
+         body=body,
+         target_url=target_url or "/external-login/",
+         dedup_key=dedup_key,
+         event_id=event_id,
+         chat_event_id=chat_event_id,
+         chat_room_id=chat_room_id,
+     )
+     if not result.get("ok"):
+         current_app.logger.warning(
+             "create_notification_external failed user_id=%s reason=%s",
+             user_id,
+             result.get("reason"),
+         )
+     return bool(result.get("created"))
+ 
+ 
++def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> dict[str, int]:
++    _ensure_notification_schema()
++    now_utc = _as_utc(now_utc) or _now_utc()
++    summary = {
++        "candidates": 0,
++        "sent": 0,
++        "failed": 0,
++        "skipped_no_mail": 0,
++        "skipped_already_sent_today": 0,
++        "skipped_no_unread": 0,
++        "skipped_invalid_user": 0,
++    }
++
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            f"""
++            SELECT id, email, {_EXTERNAL_UNREAD_REMINDER_COLUMN} AS last_sent_at
++              FROM external_login_user
++             WHERE id > 0
++             ORDER BY id ASC
++            """
++        )
++        rows = cur.fetchall() or []
 +    finally:
-+        cursor.close()
++        cur.close()
++        db.close()
 +
++    summary["candidates"] = len(rows)
++    current_app.logger.info(
++        "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
++        summary["candidates"],
++        now_utc.isoformat(),
++        now_utc.astimezone(_JST).isoformat(),
++    )
 +
- @bank_account_bp.route("/payout")
- def payout_index():
-     iv = (request.args.get("iv") or "").strip()
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
-     try:
-         settings = _get_settings(cursor)
-         version = int(settings.get("payout_password_version") or 1)
- 
-         if iv:
-             token_row = verify_payout_access_token(db, iv)
-             if token_row:
-                 session["payout_unlocked"] = True
-                 session["payout_auth_method"] = "token"
-                 session["payout_token_id"] = int(token_row["id"])
-                 session.pop("payout_pwd_version", None)
-                 touch_payout_access_token_usage(db, int(token_row["id"]), _client_ip())
-                 _clear_unlock_failure()
-                 return redirect(url_for("bank_account.payout_index"))
- 
-             _clear_payout_token_session()
-             flash("アクセストークンが無効です。", "danger")
-             return redirect(url_for("bank_account.payout_unlock"))
- 
-         if not _is_any_payout_unlocked(db, version):
-             _clear_payout_auth_session()
-             return redirect(
-                 url_for(
-                     "bank_account.payout_unlock",
-                     setup_required=1 if not settings.get("payout_password_hash") else None,
-                 )
-             )
- 
-         cursor.execute(
-             """
-             SELECT id, label, bank_name, branch_name, account_number, sort_order
-             FROM mfu_payout_account
-             WHERE is_active = 1
-             ORDER BY sort_order ASC, id ASC
-             """
-         )
-         accounts = cursor.fetchall()
- 
-         cursor.execute(
-             """
--            SELECT paypay_send_id, paypay_link, is_active
-+            SELECT id,
-+                   paypay_send_id,
-+                   paypay_link,
-+                   is_active,
-+                   paypay_link_saved_at,
-+                   paypay_link_expired_notified_at
-             FROM mfu_payout_paypay
-             WHERE id = 1
-             LIMIT 1
-             """
-         )
-         paypay = cursor.fetchone() or {}
-+        paypay_status = _build_paypay_link_status(paypay)
-+        _notify_expired_paypay_link_if_needed(db, paypay, paypay_status)
-     finally:
-         cursor.close()
-         db.close()
- 
-     return render_template(
-         "bank_account/index.html",
-         accounts=accounts,
-         paypay=paypay,
-+        paypay_status=paypay_status,
-         account_holder_name=settings.get("account_holder_name"),
-     )
- 
- 
- @bank_account_bp.route("/payout/unlock", methods=["GET", "POST"])
- def payout_unlock():
-     now_ts = int(time.time())
-     lock_until = int(session.get("payout_unlock_lock_until") or 0)
-     lock_remaining = max(0, lock_until - now_ts)
- 
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
-     try:
-         settings = _get_settings(cursor)
-         pwd_hash = settings.get("payout_password_hash")
-         version = int(settings.get("payout_password_version") or 1)
-         if request.method == "POST":
-             if lock_remaining > 0:
-                 flash(f"失敗回数が上限に達しました。約{lock_remaining // 60 + 1}分後に再試行してください。", "danger")
-                 return redirect(url_for("bank_account.payout_unlock"))
- 
-             password = request.form.get("password") or ""
-             if not password:
-                 flash("パスワードを入力してください。", "danger")
-                 return redirect(url_for("bank_account.payout_unlock"))
-@@ -252,60 +384,70 @@ def payout_logout():
- def admin_payout():
-     db = get_db()
-     cursor = db.cursor(dictionary=True)
-     try:
-         if request.method == "POST":
-             action = request.form.get("action") or ""
- 
-             if action == "update_holder_name":
-                 account_holder_name = (request.form.get("account_holder_name") or "").strip() or None
-                 cursor.execute(
-                     """
-                     UPDATE mfu_payout_settings
-                     SET account_holder_name = %s,
-                         updated_at = NOW()
-                     WHERE id = 1
-                     """,
-                     (account_holder_name,),
-                 )
-                 db.commit()
-                 flash("銀行口座の名義を更新しました。", "success")
- 
-             elif action == "update_paypay":
-                 send_id = (request.form.get("paypay_send_id") or "").strip() or None
-                 link = (request.form.get("paypay_link") or "").strip() or None
-                 is_active = 1 if request.form.get("is_active") == "1" else 0
-+                if link:
-+                    saved_at_sql = "NOW()"
-+                    notified_at_sql = "NULL"
-+                    params = (send_id, link, is_active)
-+                else:
-+                    saved_at_sql = "NULL"
-+                    notified_at_sql = "NULL"
-+                    params = (send_id, None, is_active)
-                 cursor.execute(
--                    """
++    for row in rows:
++        user_id = int(row.get("id") or 0)
++        email = str(row.get("email") or "").strip()
++        last_sent_at = _as_utc(row.get("last_sent_at"))
++
++        if user_id <= 0:
++            summary["skipped_invalid_user"] += 1
++            current_app.logger.info(
++                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
++                user_id,
++                email or "-",
++                0,
++            )
++            continue
++
++        if not email:
++            summary["skipped_no_mail"] += 1
++            current_app.logger.info(
++                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
++                user_id,
++                email or "-",
++                0,
++            )
++            continue
++
++        if _same_jst_day(last_sent_at, now_utc):
++            summary["skipped_already_sent_today"] += 1
++            current_app.logger.info(
++                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=当日送信済み last_sent_at=%s",
++                user_id,
++                email,
++                0,
++                last_sent_at.isoformat() if last_sent_at else None,
++            )
++            continue
++
++        try:
++            unread_count = _compute_unread_count_external(user_id)
++        except Exception:
++            summary["failed"] += 1
++            current_app.logger.exception(
++                "external unread reminder unread count failed user_id=%s email=%s",
++                user_id,
++                email,
++            )
++            continue
++
++        if unread_count <= 0:
++            summary["skipped_no_unread"] += 1
++            current_app.logger.info(
++                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
++                user_id,
++                email,
++                unread_count,
++            )
++            continue
++
++        try:
++            send_external_unread_reminder_mail(email, external_login_user_id=user_id)
++            db = get_db()
++            update_cur = db.cursor()
++            try:
++                update_cur.execute(
 +                    f"""
-                     UPDATE mfu_payout_paypay
-                     SET paypay_send_id = %s,
-                         paypay_link = %s,
-                         is_active = %s,
-+                        paypay_link_saved_at = {saved_at_sql},
-+                        paypay_link_expired_notified_at = {notified_at_sql},
-                         updated_at = NOW()
-                     WHERE id = 1
-                     """,
--                    (send_id, link, is_active),
-+                    params,
-                 )
-                 db.commit()
-                 flash("PayPay設定を更新しました。", "success")
- 
-             elif action == "add_account":
-                 label = (request.form.get("label") or "").strip() or None
-                 bank_name = (request.form.get("bank_name") or "").strip()
-                 branch_name = (request.form.get("branch_name") or "").strip() or None
-                 account_number = (request.form.get("account_number") or "").strip()
-                 sort_order = int(request.form.get("sort_order") or 0)
-                 is_active = 1 if request.form.get("is_active") == "1" else 0
- 
-                 if not bank_name or not account_number:
-                     flash("銀行名と口座番号は必須です。", "danger")
-                 else:
-                     cursor.execute(
-                         """
-                         INSERT INTO mfu_payout_account
-                             (label, bank_name, branch_name, account_number, is_active, sort_order, created_at, updated_at)
-                         VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-                         """,
-                         (label, bank_name, branch_name, account_number, is_active, sort_order),
-                     )
-                     db.commit()
-                     flash("口座を追加しました。", "success")
-@@ -392,79 +534,87 @@ def admin_payout():
-                         issued_by_app=None,
-                         created_by_admin=session.get("user") or "admin",
-                     )
-                     created["access_url"] = build_payout_access_url(created.get("token") or "")
-                     _set_new_access_token_notice(created)
-                     flash("アクセストークンを作成しました。", "success")
- 
-             elif action == "toggle_access_token":
-                 token_id = int(request.form.get("token_id") or 0)
-                 is_active = request.form.get("is_active") == "1"
-                 if not token_id:
-                     flash("アクセストークンIDが不正です。", "danger")
-                 else:
-                     toggle_payout_access_token_active(db, token_id, is_active)
-                     flash(
-                         "アクセストークンを有効化しました。" if is_active else "アクセストークンを無効化しました。",
-                         "success",
-                     )
- 
-             return redirect(url_for("bank_account.admin_payout"))
- 
-         settings = _get_settings(cursor)
- 
-         cursor.execute(
++                    UPDATE external_login_user
++                       SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
++                     WHERE id=%s
++                    """,
++                    (now_utc.replace(tzinfo=None), user_id),
++                )
++                db.commit()
++            except Exception:
++                db.rollback()
++                raise
++            finally:
++                update_cur.close()
++                db.close()
++            summary["sent"] += 1
++            current_app.logger.info(
++                "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
++                user_id,
++                email,
++                unread_count,
++            )
++        except Exception:
++            summary["failed"] += 1
++            current_app.logger.exception(
++                "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
++                user_id,
++                email,
++                unread_count,
++            )
++
++    current_app.logger.info(
++        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_already_sent_today=%s skipped_no_unread=%s skipped_invalid_user=%s",
++        summary["candidates"],
++        summary["sent"],
++        summary["failed"],
++        summary["skipped_no_mail"],
++        summary["skipped_already_sent_today"],
++        summary["skipped_no_unread"],
++        summary["skipped_invalid_user"],
++    )
++    return summary
++
++
+ def _compute_unread_count_mfu(username: str) -> int:
+     recipient = (username or "").strip()
+     if not recipient:
+         return 0
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
              """
--            SELECT id, paypay_send_id, paypay_link, is_active, updated_at
-+            SELECT id,
-+                   paypay_send_id,
-+                   paypay_link,
-+                   is_active,
-+                   paypay_link_saved_at,
-+                   paypay_link_expired_notified_at,
-+                   updated_at
-             FROM mfu_payout_paypay
-             WHERE id = 1
-             LIMIT 1
-             """
+             SELECT COUNT(*) AS cnt
+               FROM mfu_notifications
+              WHERE user_kind='mfu'
+                AND recipient_key=%s
+                AND read_at IS NULL
+             """,
+             (recipient,),
          )
-         paypay = cursor.fetchone() or {"id": 1, "is_active": 1}
-+        paypay_status = _build_paypay_link_status(paypay)
- 
-         cursor.execute(
-             """
-             SELECT id, label, bank_name, branch_name, account_number, is_active, sort_order, updated_at
-             FROM mfu_payout_account
-             ORDER BY sort_order ASC, id ASC
-             """
-         )
-         accounts = cursor.fetchall()
- 
-         cursor.execute(
-             """
-             SELECT id,
-                    token_prefix,
-                    token_suffix,
-                    memo,
-                    is_active,
-                    access_count,
-                    last_accessed_at,
-                    last_access_ip,
-                    issued_via,
-                    issued_by_app,
-                    created_by_admin,
-                    created_at,
-                    updated_at,
-                    expires_at
-             FROM mfu_payout_access_token
-             ORDER BY created_at DESC, id DESC
-             """
-         )
-         access_tokens = cursor.fetchall()
-         for token in access_tokens:
-             token["token_preview"] = f"{token.get('token_prefix')}...{token.get('token_suffix')}"
- 
-         new_access_token = _consume_new_access_token_notice()
+         return int((cur.fetchone() or {}).get("cnt") or 0)
      finally:
-         cursor.close()
+         cur.close()
          db.close()
  
-     return render_template(
-         "bank_account/admin.html",
-         settings=settings,
-         paypay=paypay,
-+        paypay_status=paypay_status,
-         accounts=accounts,
-         access_tokens=access_tokens,
-         new_access_token=new_access_token,
+ 
+ def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int | None = None) -> None:
+     if socketio is None:
+diff --git a/external_login_user/schema.py b/external_login_user/schema.py
+index 56e02edaa940fac92db093a58c28c7b98fcac7f1..c5ce600f8f7184ca018af58bc67daec20585fa56 100644
+--- a/external_login_user/schema.py
++++ b/external_login_user/schema.py
+@@ -1,48 +1,49 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import logging
+ from flask import current_app
+ from . import bp
+ from app.utils.db import get_db
+ 
+ # MySQL エラーコード（任意）
+ try:
+     from mysql.connector import errors as mysql_errors
+ except Exception:
+     mysql_errors = None  # type: ignore
+ 
+ DDL_EXTERNAL = """
+ CREATE TABLE IF NOT EXISTS external_login_user (
+   id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   mfu_uuid         BINARY(16)      NOT NULL,
+   social_id        VARCHAR(191)    NOT NULL,
+   nickname         VARCHAR(50)     NOT NULL,
+   x_id             VARCHAR(15)     NULL,
+   instagram_id     VARCHAR(30)     NULL,
+   email            VARCHAR(191)    NULL,
+   chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
++  notification_unread_reminder_last_sent_at DATETIME NULL,
+   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uniq_mfu_uuid   (mfu_uuid),
+   UNIQUE KEY uniq_social_id  (social_id),
+   KEY        idx_x_id        (x_id),
+   KEY        idx_instagram   (instagram_id),
+   KEY        idx_email       (email)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ # ★ 支払期間（pay_from / pay_until）をDDLに追加
+ DDL_EVENT = """
+ CREATE TABLE IF NOT EXISTS mfu_event (
+   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   event_uuid      BINARY(16)      NOT NULL,
+   title           VARCHAR(200)    NOT NULL,
+   owner_user_id   BIGINT UNSIGNED NULL,
+   starts_at       DATETIME        NULL,
+   fee_yen         INT UNSIGNED    NULL,
+   tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
+   pay_from        DATETIME        NULL,
+   pay_until       DATETIME        NULL,
+   place_name      VARCHAR(200)    NULL,
+   address         VARCHAR(255)    NULL,
+@@ -178,50 +179,55 @@ def _on_bp_registered(state) -> None:
+             cur.execute(DDL_NOTIFICATIONS)
+ 
+             # 後方互換ALTER（存在しなければADD）
+             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COUNT(*) FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                     """, (table, col))
+                     has = cur.fetchone()[0]
+                 except Exception:
+                     has = 0
+                 if not has:
+                     try:
+                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl_after_add}")
+                     except Exception as e:
+                         if not (mysql_errors and getattr(e, "errno", None) == 1060):
+                             raise
+ 
+             # 既存のゆるいALTER群
+             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
+             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
+             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
+             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
+             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
++            _ensure_col(
++                "external_login_user",
++                "notification_unread_reminder_last_sent_at",
++                "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
++            )
+ 
+             # ★ 追加：支払期間 列（後方互換で追加）
+             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
+             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+             _ensure_col("mfu_event", "checkin_qr_enabled",
+                         "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
+             _ensure_col("mfu_event", "checkin_qr_token",
+                         "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
+             _ensure_col("mfu_event", "checkin_qr_expires_at",
+                         "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
+             _ensure_col("mfu_event_member", "checkin_method",
+                         "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
+ 
+             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
+             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
+             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
+             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
+             _ensure_col("mfu_payment_request", "buyer_email", "buyer_email VARCHAR(255) NULL AFTER instagram_id")
+             _ensure_col("mfu_payment_request", "lecture_auto_approve",
+                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
+ 
+             def _ensure_payment_request_status_enum() -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+diff --git a/tests/test_external_unread_reminder.py b/tests/test_external_unread_reminder.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b96994c38cddda7a8b92cc3189ca19b0a42d6bc6
+--- /dev/null
++++ b/tests/test_external_unread_reminder.py
+@@ -0,0 +1,195 @@
++import importlib.util
++import sys
++import types
++import unittest
++from datetime import datetime, timezone
++from pathlib import Path
++from unittest.mock import patch
++
++
++class _DummyLogger:
++    def info(self, *args, **kwargs):
++        return None
++
++    def warning(self, *args, **kwargs):
++        return None
++
++    def exception(self, *args, **kwargs):
++        return None
++
++
++class _DummyBlueprint:
++    def __init__(self, *args, **kwargs):
++        return None
++
++    def app_context_processor(self, func):
++        return func
++
++    def record_once(self, func):
++        return func
++
++    def get(self, *args, **kwargs):
++        return lambda func: func
++
++    def post(self, *args, **kwargs):
++        return lambda func: func
++
++
++def _install_flask_stub():
++    flask_module = types.ModuleType("flask")
++    flask_module.Blueprint = _DummyBlueprint
++    flask_module.abort = lambda *args, **kwargs: None
++    flask_module.current_app = types.SimpleNamespace(logger=_DummyLogger())
++    flask_module.jsonify = lambda payload=None, *args, **kwargs: payload
++    flask_module.redirect = lambda value, *args, **kwargs: value
++    flask_module.render_template = lambda *args, **kwargs: ""
++    flask_module.request = types.SimpleNamespace(args={}, view_args={}, endpoint=None)
++    flask_module.session = {}
++    sys.modules["flask"] = flask_module
++
++
++def load_mail_module():
++    repo_root = Path(__file__).resolve().parents[1]
++    app_module = types.ModuleType("app")
++    app_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_module = types.ModuleType("app.utils")
++    app_utils_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_logs = types.ModuleType("app.utils.logs")
++    app_utils_logs.write_smtp_log = lambda *args, **kwargs: None
++    app_utils_mail_delivery = types.ModuleType("app.utils.mail_delivery")
++    app_utils_mail_delivery.generate_message_id = lambda: ("uuid", "message@example.com")
++    app_utils_mail_delivery.record_mail_submission = lambda *args, **kwargs: None
++    sys.modules["app"] = app_module
++    sys.modules["app.utils"] = app_utils_module
++    sys.modules["app.utils.logs"] = app_utils_logs
++    sys.modules["app.utils.mail_delivery"] = app_utils_mail_delivery
++
++    spec = importlib.util.spec_from_file_location("app.utils.mail", repo_root / "utils" / "mail.py")
++    module = importlib.util.module_from_spec(spec)
++    assert spec and spec.loader
++    sys.modules["app.utils.mail"] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++def load_notifications_module():
++    repo_root = Path(__file__).resolve().parents[1]
++    _install_flask_stub()
++
++    package_module = types.ModuleType("external_login_user")
++    package_module.__path__ = [str(repo_root / "external_login_user")]  # type: ignore[attr-defined]
++    package_module.bp = _DummyBlueprint()
++    sys.modules["external_login_user"] = package_module
++
++    ext_utils_module = types.ModuleType("external_login_user.utils")
++    ext_utils_module._require_ext_login = lambda: None
++    sys.modules["external_login_user.utils"] = ext_utils_module
++
++    app_module = types.ModuleType("app")
++    app_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_module = types.ModuleType("app.utils")
++    app_utils_module.__path__ = []  # type: ignore[attr-defined]
++    app_utils_db = types.ModuleType("app.utils.db")
++    app_utils_db.get_db = lambda: None
++    app_utils_mail = types.ModuleType("app.utils.mail")
++    app_utils_mail.send_external_unread_reminder_mail = lambda *args, **kwargs: None
++    app_chat = types.ModuleType("app.chat")
++    app_chat.__path__ = []  # type: ignore[attr-defined]
++    app_chat_socket = types.ModuleType("app.chat.socketio_ext")
++    app_chat_socket.socketio = None
++    sys.modules["app"] = app_module
++    sys.modules["app.utils"] = app_utils_module
++    sys.modules["app.utils.db"] = app_utils_db
++    sys.modules["app.utils.mail"] = app_utils_mail
++    sys.modules["app.chat"] = app_chat
++    sys.modules["app.chat.socketio_ext"] = app_chat_socket
++
++    spec = importlib.util.spec_from_file_location(
++        "external_login_user.notifications",
++        repo_root / "external_login_user" / "notifications.py",
++    )
++    module = importlib.util.module_from_spec(spec)
++    assert spec and spec.loader
++    sys.modules["external_login_user.notifications"] = module
++    spec.loader.exec_module(module)
++    return module
++
++
++class ExternalUnreadReminderMailTest(unittest.TestCase):
++    def test_send_external_unread_reminder_mail_uses_existing_send_mail(self):
++        mail_module = load_mail_module()
++
++        with patch.object(mail_module, "send_mail") as mocked:
++            mail_module.send_external_unread_reminder_mail(
++                "user@example.com",
++                external_login_user_id=123,
++            )
++
++        mocked.assert_called_once_with(
++            "user@example.com",
++            mail_module.EXTERNAL_UNREAD_REMINDER_SUBJECT,
++            mail_module.EXTERNAL_UNREAD_REMINDER_BODY,
++            external_login_user_id=123,
++            mail_kind="external_unread_reminder",
++            append_signature=False,
++        )
++
++
++class ExternalUnreadReminderNotificationTest(unittest.TestCase):
++    def test_same_jst_day_uses_jst_boundary(self):
++        notifications = load_notifications_module()
++        late_jst = datetime(2026, 3, 19, 14, 59, tzinfo=timezone.utc)
++        next_day_jst = datetime(2026, 3, 19, 15, 1, tzinfo=timezone.utc)
++        same_day_jst = datetime(2026, 3, 19, 3, 0, tzinfo=timezone.utc)
++
++        self.assertFalse(notifications._same_jst_day(late_jst, next_day_jst))
++        self.assertTrue(notifications._same_jst_day(late_jst, same_day_jst))
++
++    def test_send_external_unread_reminder_emails_skips_user_already_sent_today(self):
++        notifications = load_notifications_module()
++
++        class FakeCursor:
++            def __init__(self, rows):
++                self._rows = rows
++
++            def execute(self, *args, **kwargs):
++                return None
++
++            def fetchall(self):
++                return self._rows
++
++            def close(self):
++                return None
++
++        class FakeDB:
++            def __init__(self, rows):
++                self._rows = rows
++
++            def cursor(self, dictionary=True):
++                return FakeCursor(self._rows)
++
++            def close(self):
++                return None
++
++        last_sent_at = datetime(2026, 3, 20, 1, 0, 0)
++        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": last_sent_at}]
++
++        with (
++            patch.object(notifications, "_ensure_notification_schema"),
++            patch.object(notifications, "get_db", return_value=FakeDB(rows)),
++            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
++            patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
++        ):
++            summary = notifications.send_external_unread_reminder_emails(
++                now_utc=datetime(2026, 3, 20, 2, 0, tzinfo=timezone.utc)
++            )
++
++        self.assertEqual(summary["candidates"], 1)
++        self.assertEqual(summary["skipped_already_sent_today"], 1)
++        self.assertEqual(summary["sent"], 0)
++        mocked_send.assert_not_called()
++        mocked_unread.assert_not_called()
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/utils/mail.py b/utils/mail.py
+index 12e30c820743897ebd70266786d6c476857ea05d..2ecab5b35ee6076647be6cd264ce841f4a91b4f6 100644
+--- a/utils/mail.py
++++ b/utils/mail.py
+@@ -1,68 +1,86 @@
+ import logging
+ import re
+ import smtplib
+ import ssl
+ from email.header import Header
+ from email.mime.text import MIMEText
+ from email.utils import formataddr, formatdate, getaddresses, parseaddr
+ from pathlib import Path
+ 
+ from app.utils.logs import write_smtp_log
+ from app.utils.mail_delivery import generate_message_id, record_mail_submission
+ 
+ 
++EXTERNAL_UNREAD_REMINDER_SUBJECT = "【お知らせ】未読があるのでご確認よろしくお願いします。"
++EXTERNAL_UNREAD_REMINDER_BODY = """こんにちは、いおりん写真室です！
++
++イベント管理システムにて、未読になっているチャットまたは通知が1件以上あります！
++お知らせがある可能性もあるため、ご確認よろしくお願いします。
++
++https://mfu.iori0624.jp/external-login/
++
++【プッシュ通知のお願い】
++Androidご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）からプッシュ通知の有効で問題無いです。
++iPhoneご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）をホーム画面に追加して欲しいです。
++やり方はリンクがありますのでご確認よろしくお願いします。
++ホーム画面に追加後、プッシュ通知の有効をお願い致します。
++
++よろしくお願いします。"""
++
++
+ # 署名ファイルのパス（このファイルと同じディレクトリ）
+ SIGNATURE_FILE = Path(__file__).parent / "signature.txt"
+ 
+ # モジュール読み込み時に署名を1回だけ読み込む
+ try:
+     DEFAULT_SIGNATURE = SIGNATURE_FILE.read_text(encoding="utf-8").rstrip("\n")
+     if DEFAULT_SIGNATURE:
+         DEFAULT_SIGNATURE = "\n\n" + DEFAULT_SIGNATURE.lstrip("\n")
+ except Exception as e:
+     DEFAULT_SIGNATURE = ""
+     logging.getLogger("mfu.smtp").warning(
+         f"署名ファイルの読み込みに失敗しました: {SIGNATURE_FILE} - {e}"
      )
-diff --git a/bank_account/schema.py b/bank_account/schema.py
-index d14db96734f363b0c9ae3d6f0f976ff94968afbb..7f672cb5bb9f41ee19f852f9891028335d5846bd 100644
---- a/bank_account/schema.py
-+++ b/bank_account/schema.py
-@@ -44,87 +44,113 @@ def ensure_bank_account_schema() -> None:
-                 """
-             )
  
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_account (
-                 id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                 label VARCHAR(100) NULL,
-                 bank_name VARCHAR(100) NOT NULL,
-                 branch_name VARCHAR(100) NULL,
-                 account_number VARCHAR(32) NOT NULL,
-                 is_active TINYINT NOT NULL DEFAULT 1,
-                 sort_order INT NOT NULL DEFAULT 0,
-                 created_at DATETIME NULL,
-                 updated_at DATETIME NULL
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_paypay (
-                 id INT NOT NULL PRIMARY KEY,
-                 paypay_send_id VARCHAR(100) NULL,
-                 paypay_link VARCHAR(255) NULL,
-                 is_active TINYINT NOT NULL DEFAULT 1,
-+                paypay_link_saved_at DATETIME NULL,
-+                paypay_link_expired_notified_at DATETIME NULL,
-                 updated_at DATETIME NULL
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-+        if not _column_exists(cursor, "mfu_payout_paypay", "paypay_link_saved_at"):
-+            cursor.execute(
-+                """
-+                ALTER TABLE mfu_payout_paypay
-+                ADD COLUMN paypay_link_saved_at DATETIME NULL
-+                AFTER is_active
-+                """
-+            )
-+        if not _column_exists(cursor, "mfu_payout_paypay", "paypay_link_expired_notified_at"):
-+            cursor.execute(
-+                """
-+                ALTER TABLE mfu_payout_paypay
-+                ADD COLUMN paypay_link_expired_notified_at DATETIME NULL
-+                AFTER paypay_link_saved_at
-+                """
-+            )
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_access_token (
-                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                 token_hash VARCHAR(255) NOT NULL,
-                 token_prefix VARCHAR(32) NOT NULL,
-                 token_suffix VARCHAR(32) NOT NULL,
-                 memo VARCHAR(255) NOT NULL,
-                 is_active TINYINT(1) NOT NULL DEFAULT 1,
-                 access_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
-                 last_accessed_at DATETIME NULL,
-                 last_access_ip VARCHAR(64) NULL,
-                 issued_via VARCHAR(32) NOT NULL DEFAULT 'admin_ui',
-                 issued_by_app VARCHAR(64) NULL,
-                 created_by_admin VARCHAR(64) NULL,
-                 expires_at DATETIME NULL,
-                 created_at DATETIME NOT NULL,
-                 updated_at DATETIME NOT NULL,
-                 INDEX idx_mfu_payout_access_token_active (is_active),
-                 INDEX idx_mfu_payout_access_token_created_at (created_at)
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         cursor.execute(
-             """
-             CREATE TABLE IF NOT EXISTS mfu_payout_token_api_client (
-                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-                 app_name VARCHAR(64) NOT NULL,
-                 api_key_hash VARCHAR(255) NOT NULL,
-                 is_active TINYINT(1) NOT NULL DEFAULT 1,
-                 last_used_at DATETIME NULL,
-                 last_used_ip VARCHAR(64) NULL,
-                 created_at DATETIME NOT NULL,
-                 updated_at DATETIME NOT NULL,
-                 UNIQUE KEY uq_mfu_payout_token_api_client_app_name (app_name)
-             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-             """
-         )
-         cursor.execute(
-             """
-             INSERT INTO mfu_payout_settings (
-                 id, payout_password_hash, payout_password_version, account_holder_name, updated_at
-             )
-             VALUES (1, NULL, 1, NULL, NOW())
-             ON DUPLICATE KEY UPDATE id = id
-             """
-         )
-         cursor.execute(
-             """
--            INSERT INTO mfu_payout_paypay (id, paypay_send_id, paypay_link, is_active, updated_at)
--            VALUES (1, NULL, NULL, 1, NOW())
-+            INSERT INTO mfu_payout_paypay (
-+                id,
-+                paypay_send_id,
-+                paypay_link,
-+                is_active,
-+                paypay_link_saved_at,
-+                paypay_link_expired_notified_at,
-+                updated_at
-+            )
-+            VALUES (1, NULL, NULL, 1, NULL, NULL, NOW())
-             ON DUPLICATE KEY UPDATE id = id
-             """
-         )
-         db.commit()
+ 
+ def send_mail(
+     to,
+     subject: str,
+     body: str,
+     *,
+     event_uuid: str | None = None,    # 後方互換性のため残す
+     event_name: str | None = None,
+     smtp_host: str = "192.168.103.15",
+     smtp_port: int = 25,
+     timeout: int = 45,
+     debug: bool = False,
+     starttls: bool | None = None,
+     ignore_quit_errors: bool = True,
+     external_login_user_id: int | None = None,
+     mail_kind: str | None = None,
++    append_signature: bool = True,
+ ) -> None:
+     """
+     メール送信ユーティリティ。
+ 
+     - From: noreply@mail.iori0624.jp（表示名はイベント名 or システム名）
+     - Reply-To: admin@mail.iori0624.jp（固定）
+     - 本文末尾に signature.txt の内容を自動追加（存在する場合）
+     """
+     log = logging.getLogger("mfu.smtp")
+ 
+     def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
+         status = "OK" if ok else "NG"
+         msg = f'送信{status}: to="{to_text}" subj="{subj}"'
+         if extra:
+             msg += f" detail={extra}"
+ 
+         log.info(msg)
+         line = f"[SMTP] {msg}"
+         print(line)
+         try:
+             write_smtp_log(line)
+         except Exception:
+             log.warning("write_smtp_log failed", exc_info=True)
+ 
+     from_address = "noreply@mail.iori0624.jp"
+@@ -76,51 +94,51 @@ def send_mail(
+         to_header = to_list[0] if to_list else ""
+ 
+     if not to_list:
+         _summary_log(False, "(none)", subject or "", "no recipients")
+         return
+ 
+     # 表示名の決定
+     is_event = event_uuid or event_name
+     display_name = None
+ 
+     if is_event:
+         # 【【講座】テストイベント0002】のような複合形式に対応
+         m = re.match(r"^(【[^】]*】[^】]*】)", subject or "")
+         if m:
+             display_name = Header(m.group(1), "utf-8").encode()
+         else:
+             m = re.match(r"^【([^】]+)】", subject or "")
+             if m:
+                 display_name = Header(m.group(1), "utf-8").encode()
+             else:
+                 display_name = Header(event_name or "イベント", "utf-8").encode()
+     else:
+         display_name = Header("IORI0624_MFUシステム", "utf-8").encode()
+ 
+     # 本文に署名を追加
+-    final_body = body + DEFAULT_SIGNATURE
++    final_body = body + DEFAULT_SIGNATURE if append_signature else body
+ 
+     # メッセージ作成
+     msg = MIMEText(final_body, "plain", "utf-8")
+     msg["Subject"] = subject or ""
+     msg["From"] = formataddr((display_name, from_address))
+     msg["To"] = to_header
+     msg["Reply-To"] = "admin@mail.iori0624.jp"  # 固定
+     msg["Date"] = formatdate(localtime=True)
+     mfu_mail_uuid, message_id = generate_message_id()
+     message_id_header = f"<{message_id}>"
+     if msg.get("Message-ID"):
+         msg.replace_header("Message-ID", message_id_header)
+     else:
+         msg["Message-ID"] = message_id_header
+     if msg.get("X-MFU-Mail-ID"):
+         msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
+     else:
+         msg["X-MFU-Mail-ID"] = mfu_mail_uuid
+ 
+     # STARTTLS 自動判定
+     if starttls is None:
+         starttls = (smtp_port == 587)
+ 
+     smtp = None
+     sent_ok = False
+@@ -202,50 +220,61 @@ def send_mail(
+         else:
+             _summary_log(False, to_header, subject or "", repr(e))
+             try:
+                 record_mail_submission(
+                     mfu_mail_uuid=mfu_mail_uuid,
+                     message_id=message_id,
+                     to_addresses=to_header,
+                     subject=subject or "",
+                     submit_status="failed",
+                     last_delivery_status="failed",
+                     last_delivery_detail=repr(e),
+                     external_login_user_id=external_login_user_id,
+                     mail_kind=mail_kind,
+                 )
+             except Exception:
+                 log.warning("mail submission log failed", exc_info=True)
+             raise
      finally:
-         cursor.close()
-         db.close()
-diff --git a/bank_account/templates/bank_account/admin.html b/bank_account/templates/bank_account/admin.html
-index 8d8ccb4af1da9ccf894e1eef25efdf538cfc9d92..b39e1f10421dbdbe91f8ebdab92186d94c447b83 100644
---- a/bank_account/templates/bank_account/admin.html
-+++ b/bank_account/templates/bank_account/admin.html
-@@ -2,70 +2,98 @@
- {% block title %}振込先管理{% endblock %}
+         if smtp is not None:
+             try:
+                 smtp.close()
+             except Exception:
+                 pass
  
- {% block content %}
- <div class="container py-4">
-   <h2 class="mb-4">振込先管理</h2>
  
-   <div class="card mb-4">
-     <div class="card-header">1. 銀行口座の名義（共通）</div>
-     <div class="card-body">
-       <form method="post" class="row g-3">
-         <input type="hidden" name="action" value="update_holder_name">
-         <div class="col-md-8">
-           <label class="form-label">口座名義（すべての銀行口座で共通表示）</label>
-           <input type="text" name="account_holder_name" class="form-control" value="{{ settings.account_holder_name or '' }}" placeholder="例: ヤマダ タロウ">
-         </div>
-         <div class="col-md-4 d-flex align-items-end">
-           <button type="submit" class="btn btn-primary">名義を保存</button>
-         </div>
-       </form>
-     </div>
-   </div>
++def send_external_unread_reminder_mail(email: str, *, external_login_user_id: int) -> None:
++    send_mail(
++        email,
++        EXTERNAL_UNREAD_REMINDER_SUBJECT,
++        EXTERNAL_UNREAD_REMINDER_BODY,
++        external_login_user_id=external_login_user_id,
++        mail_kind="external_unread_reminder",
++        append_signature=False,
++    )
++
++
+ def send_mime(
+     msg,
+     *,
+     smtp_host: str = "192.168.103.15",
+     smtp_port: int = 25,
+     timeout: int = 45,
+     debug: bool = False,
+     starttls: bool | None = None,
+     ignore_quit_errors: bool = True,
+ ) -> None:
+     """構築済みのMIMEメッセージをそのまま送信（署名は追加しない）"""
+     log = logging.getLogger("mfu.smtp")
  
-   <div class="card mb-4">
-     <div class="card-header">2. PayPay編集</div>
-     <div class="card-body">
-+      {% if paypay_status and paypay_status.is_expired %}
-+        <div class="alert alert-warning" role="alert">
-+          このリンクは有効期限が切れているようです。お手数ですが、ご本人にご連絡ください。管理者画面でも期限切れとして表示しています。
-+        </div>
-+      {% endif %}
-       <form method="post" class="row g-3">
-         <input type="hidden" name="action" value="update_paypay">
-         <div class="col-md-6">
-           <label class="form-label">送金ID</label>
-           <input type="text" name="paypay_send_id" class="form-control" value="{{ paypay.paypay_send_id or '' }}">
-         </div>
-         <div class="col-md-6">
-           <label class="form-label">PayPayリンクURL</label>
-           <input type="url" name="paypay_link" class="form-control" value="{{ paypay.paypay_link or '' }}" placeholder="https://...">
-         </div>
-         <div class="col-12">
-           <div class="form-check">
-             <input class="form-check-input" type="checkbox" value="1" id="paypayActive" name="is_active" {% if paypay.is_active %}checked{% endif %}>
-             <label class="form-check-label" for="paypayActive">公開する</label>
-           </div>
-         </div>
-         <div class="col-12">
-           <button type="submit" class="btn btn-primary">PayPay設定を保存</button>
-         </div>
-       </form>
-+      <hr>
-+      <div class="row g-3 small">
-+        <div class="col-md-4">
-+          <div class="text-muted">リンク保存日時</div>
-+          <div>{{ paypay_status.saved_at_display if paypay_status else '未設定' }}</div>
-+        </div>
-+        <div class="col-md-4">
-+          <div class="text-muted">経過日数</div>
-+          <div>{{ paypay_status.elapsed_days_display if paypay_status else '未設定' }}</div>
-+        </div>
-+        <div class="col-md-4">
-+          <div class="text-muted">期限切れ判定</div>
-+          <div>
-+            {% if paypay_status and paypay_status.is_expired %}
-+              <span class="badge text-bg-warning">期限切れ</span>
-+            {% elif paypay_status and paypay_status.has_link and paypay_status.is_active %}
-+              <span class="badge text-bg-success">有効</span>
-+            {% else %}
-+              <span class="badge text-bg-secondary">未設定 / 対象外</span>
-+            {% endif %}
-+          </div>
-+        </div>
-+      </div>
-     </div>
-   </div>
+     def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
+         status = "OK" if ok else "NG"
+         s = f'送信{status}: to="{to_text}" subj="{subj}"'
+         if extra:
+             s += f" detail={extra}"
+         log.info(s)
+         print(f"[SMTP] {s}")
  
-   <div class="card mb-4">
-     <div class="card-header">3. 銀行口座管理</div>
-     <div class="card-body">
-       <h5>新規追加</h5>
-       <form method="post" class="row g-2 mb-4">
-         <input type="hidden" name="action" value="add_account">
-         <div class="col-md-2"><input type="text" name="label" class="form-control" placeholder="ラベル"></div>
-         <div class="col-md-2"><input type="text" name="bank_name" class="form-control" placeholder="銀行名" required></div>
-         <div class="col-md-2"><input type="text" name="branch_name" class="form-control" placeholder="支店名"></div>
-         <div class="col-md-2"><input type="text" name="account_number" class="form-control" placeholder="口座番号" required></div>
-         <div class="col-md-2"><input type="number" name="sort_order" class="form-control" placeholder="順序" value="0"></div>
-         <div class="col-md-1 form-check mt-2">
-           <input class="form-check-input" type="checkbox" name="is_active" value="1" checked id="add_active">
-           <label class="form-check-label" for="add_active">有効</label>
-         </div>
-         <div class="col-md-1"><button type="submit" class="btn btn-success w-100">追加</button></div>
-       </form>
+     envelope_from = parseaddr(msg.get("From", ""))[1] or "noreply@mail.iori0624.jp"
  
-       <h5>既存口座</h5>
-       {% if accounts %}
-         {% for a in accounts %}
-           <form method="post" class="border rounded p-3 mb-2">
-diff --git a/bank_account/templates/bank_account/index.html b/bank_account/templates/bank_account/index.html
-index 9e190cb318f5d2e4aefdbebf9bbbd72d6405cd0b..f959e79a86775640ce2921a2859663625da4f976 100644
---- a/bank_account/templates/bank_account/index.html
-+++ b/bank_account/templates/bank_account/index.html
-@@ -48,50 +48,55 @@
-                     <td>{{ a.label or '-' }}</td>
-                     <td>{{ a.bank_name }}</td>
-                     <td>{{ a.branch_name or '-' }}</td>
-                     <td><code>{{ a.account_number }}</code></td>
-                     <td>
-                       <button type="button"
-                               class="btn btn-sm btn-outline-primary js-copy"
-                               data-copy-text="{{ a.account_number }}">
-                         口座番号コピー
-                       </button>
-                     </td>
-                   </tr>
-                 {% endfor %}
-               </tbody>
-             </table>
-           </div>
-         {% else %}
-           <p class="text-muted mb-0">有効な口座情報がありません。</p>
-         {% endif %}
-       </div>
-     </div>
- 
-     <div class="card shadow-sm">
-       <div class="card-header">PayPay</div>
-       <div class="card-body">
-+        {% if paypay_status and paypay_status.is_expired %}
-+          <div class="alert alert-warning" role="alert">
-+            {{ paypay_status.warning_message }}
-+          </div>
-+        {% endif %}
-         {% if paypay and paypay.is_active and paypay.paypay_send_id %}
-           <p class="mb-2">送金ID：<code>{{ paypay.paypay_send_id }}</code></p>
-           <p>
-             <button type="button"
-                     class="btn btn-sm btn-outline-primary js-copy"
-                     data-copy-text="{{ paypay.paypay_send_id }}">
-               IDコピー
-             </button>
-           </p>
-           {% if paypay.paypay_link %}
-             <a href="{{ paypay.paypay_link }}" target="_blank" rel="noopener" class="btn btn-sm btn-success">PayPayを開く</a>
-           {% endif %}
-         {% else %}
-           <p class="text-muted mb-0">PayPay送金IDは未公開です。</p>
-         {% endif %}
-       </div>
-     </div>
- 
-     <div id="copy-feedback" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
-   </main>
- 
-   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
- 
-   <!-- ★ bank_account.js をテンプレに統合（ここから） -->
-   <script>
+     mfu_mail_uuid, message_id = generate_message_id()
+     message_id_header = f"<{message_id}>"
+diff --git a/utils/send_external_unread_reminders.py b/utils/send_external_unread_reminders.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2ba5f20ba0b84482e89a021e68234b479f45a956
+--- /dev/null
++++ b/utils/send_external_unread_reminders.py
+@@ -0,0 +1,33 @@
++#!/usr/bin/env python3
++from __future__ import annotations
++
++import json
++import sys
++from datetime import datetime, timezone
++
++from app import create_app
++from app.external_login_user.notifications import send_external_unread_reminder_emails
++
++
++def main() -> int:
++    app = create_app()
++    with app.app_context():
++        summary = send_external_unread_reminder_emails(now_utc=datetime.now(timezone.utc))
++
++    payload = {
++        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
++        "summary": summary,
++    }
++    print(json.dumps(payload, ensure_ascii=False))
++    return 0
++
++
++if __name__ == "__main__":
++    try:
++        raise SystemExit(main())
++    except Exception as exc:
++        print(
++            f"[send_external_unread_reminders] ERROR: {exc.__class__.__name__}: {exc}",
++            file=sys.stderr,
++        )
++        raise
