@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -13,6 +13,7 @@ from flask import Blueprint, abort, current_app, jsonify, redirect, render_templ
 from . import bp
 from .utils import _require_ext_login
 from app.utils.db import get_db
+from app.utils.mail import send_external_unread_reminder_mail
 
 try:
     from app.chat.socketio_ext import socketio
@@ -21,7 +22,9 @@ except Exception:  # pragma: no cover
 
 
 _READ_NOTIFICATIONS_KEEP_LIMIT = 30
+_JST = timezone(timedelta(hours=9))
 mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
+_EXTERNAL_UNREAD_REMINDER_COLUMN = "notification_unread_reminder_last_sent_at"
 
 
 def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
@@ -176,6 +179,22 @@ def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _same_jst_day(lhs: datetime | None, rhs: datetime | None) -> bool:
+    lhs_utc = _as_utc(lhs)
+    rhs_utc = _as_utc(rhs)
+    if lhs_utc is None or rhs_utc is None:
+        return False
+    return lhs_utc.astimezone(_JST).date() == rhs_utc.astimezone(_JST).date()
 
 
 def _relative_time_from(dt: datetime | None) -> str:
@@ -407,12 +426,25 @@ def _ensure_notification_delivery_schema(cur) -> None:
             cur.execute(ddl)
 
 
+def _ensure_external_unread_reminder_schema(cur) -> None:
+    cur.execute("SHOW COLUMNS FROM external_login_user")
+    existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
+    if _EXTERNAL_UNREAD_REMINDER_COLUMN not in existing:
+        cur.execute(
+            f"""
+            ALTER TABLE external_login_user
+            ADD COLUMN {_EXTERNAL_UNREAD_REMINDER_COLUMN} DATETIME NULL AFTER chat_admin_alias
+            """
+        )
+
+
 def _ensure_notification_schema() -> None:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
         cur.execute(_NOTIFICATION_DDL)
         _ensure_notification_delivery_schema(cur)
+        _ensure_external_unread_reminder_schema(cur)
 
         cur.execute("SHOW COLUMNS FROM mfu_notifications")
         existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
@@ -554,6 +586,149 @@ def create_notification_external(
             result.get("reason"),
         )
     return bool(result.get("created"))
+
+
+def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> dict[str, int]:
+    _ensure_notification_schema()
+    now_utc = _as_utc(now_utc) or _now_utc()
+    summary = {
+        "candidates": 0,
+        "sent": 0,
+        "failed": 0,
+        "skipped_no_mail": 0,
+        "skipped_already_sent_today": 0,
+        "skipped_no_unread": 0,
+        "skipped_invalid_user": 0,
+    }
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            f"""
+            SELECT id, email, {_EXTERNAL_UNREAD_REMINDER_COLUMN} AS last_sent_at
+              FROM external_login_user
+             WHERE id > 0
+             ORDER BY id ASC
+            """
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    summary["candidates"] = len(rows)
+    current_app.logger.info(
+        "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
+        summary["candidates"],
+        now_utc.isoformat(),
+        now_utc.astimezone(_JST).isoformat(),
+    )
+
+    for row in rows:
+        user_id = int(row.get("id") or 0)
+        email = str(row.get("email") or "").strip()
+        last_sent_at = _as_utc(row.get("last_sent_at"))
+
+        if user_id <= 0:
+            summary["skipped_invalid_user"] += 1
+            current_app.logger.info(
+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
+                user_id,
+                email or "-",
+                0,
+            )
+            continue
+
+        if not email:
+            summary["skipped_no_mail"] += 1
+            current_app.logger.info(
+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
+                user_id,
+                email or "-",
+                0,
+            )
+            continue
+
+        if _same_jst_day(last_sent_at, now_utc):
+            summary["skipped_already_sent_today"] += 1
+            current_app.logger.info(
+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=当日送信済み last_sent_at=%s",
+                user_id,
+                email,
+                0,
+                last_sent_at.isoformat() if last_sent_at else None,
+            )
+            continue
+
+        try:
+            unread_count = _compute_unread_count_external(user_id)
+        except Exception:
+            summary["failed"] += 1
+            current_app.logger.exception(
+                "external unread reminder unread count failed user_id=%s email=%s",
+                user_id,
+                email,
+            )
+            continue
+
+        if unread_count <= 0:
+            summary["skipped_no_unread"] += 1
+            current_app.logger.info(
+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
+                user_id,
+                email,
+                unread_count,
+            )
+            continue
+
+        try:
+            send_external_unread_reminder_mail(email, external_login_user_id=user_id)
+            db = get_db()
+            update_cur = db.cursor()
+            try:
+                update_cur.execute(
+                    f"""
+                    UPDATE external_login_user
+                       SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
+                     WHERE id=%s
+                    """,
+                    (now_utc.replace(tzinfo=None), user_id),
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                update_cur.close()
+                db.close()
+            summary["sent"] += 1
+            current_app.logger.info(
+                "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
+                user_id,
+                email,
+                unread_count,
+            )
+        except Exception:
+            summary["failed"] += 1
+            current_app.logger.exception(
+                "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
+                user_id,
+                email,
+                unread_count,
+            )
+
+    current_app.logger.info(
+        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_already_sent_today=%s skipped_no_unread=%s skipped_invalid_user=%s",
+        summary["candidates"],
+        summary["sent"],
+        summary["failed"],
+        summary["skipped_no_mail"],
+        summary["skipped_already_sent_today"],
+        summary["skipped_no_unread"],
+        summary["skipped_invalid_user"],
+    )
+    return summary
 
 
 def _compute_unread_count_mfu(username: str) -> int:

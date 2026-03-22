@@ -11,6 +11,23 @@ from app.utils.logs import write_smtp_log
 from app.utils.mail_delivery import generate_message_id, record_mail_submission
 
 
+EXTERNAL_UNREAD_REMINDER_SUBJECT = "【お知らせ】未読があるのでご確認よろしくお願いします。"
+EXTERNAL_UNREAD_REMINDER_BODY = """こんにちは、いおりん写真室です！
+
+イベント管理システムにて、未読になっているチャットまたは通知が1件以上あります！
+お知らせがある可能性もあるため、ご確認よろしくお願いします。
+
+https://mfu.iori0624.jp/external-login/
+
+【プッシュ通知のお願い】
+Androidご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）からプッシュ通知の有効で問題無いです。
+iPhoneご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）をホーム画面に追加して欲しいです。
+やり方はリンクがありますのでご確認よろしくお願いします。
+ホーム画面に追加後、プッシュ通知の有効をお願い致します。
+
+よろしくお願いします。"""
+
+
 # 署名ファイルのパス（このファイルと同じディレクトリ）
 SIGNATURE_FILE = Path(__file__).parent / "signature.txt"
 
@@ -41,6 +58,7 @@ def send_mail(
     ignore_quit_errors: bool = True,
     external_login_user_id: int | None = None,
     mail_kind: str | None = None,
+    append_signature: bool = True,
 ) -> None:
     """
     メール送信ユーティリティ。
@@ -98,7 +116,7 @@ def send_mail(
         display_name = Header("IORI0624_MFUシステム", "utf-8").encode()
 
     # 本文に署名を追加
-    final_body = body + DEFAULT_SIGNATURE
+    final_body = body + DEFAULT_SIGNATURE if append_signature else body
 
     # メッセージ作成
     msg = MIMEText(final_body, "plain", "utf-8")
@@ -222,6 +240,17 @@ def send_mail(
                 smtp.close()
             except Exception:
                 pass
+
+
+def send_external_unread_reminder_mail(email: str, *, external_login_user_id: int) -> None:
+    send_mail(
+        email,
+        EXTERNAL_UNREAD_REMINDER_SUBJECT,
+        EXTERNAL_UNREAD_REMINDER_BODY,
+        external_login_user_id=external_login_user_id,
+        mail_kind="external_unread_reminder",
+        append_signature=False,
+    )
 
 
 def send_mime(
