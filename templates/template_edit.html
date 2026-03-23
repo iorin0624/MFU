@@ -3,11 +3,13 @@
 <head>
     <meta charset="utf-8">
     <title>{{ mode }} モード設定とテンプレート編集</title>
+    <meta name="csrf-token" content="{{ csrf_token() }}">
 </head>
 <body>
     <h2>{{ mode }} モード設定とテンプレート編集</h2>
 
     <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>モード名:</label><br>
         <input type="text" name="mode" value="{{ mode }}" readonly><br><br>
 

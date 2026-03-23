@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import bcrypt
 import os
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
+
+from flask import current_app, session
+from werkzeug.utils import safe_join
+
+from app.utils.db import get_db
 
 
 # 必要に応じて拡張して利用する。
@@ -16,6 +22,10 @@ DEFAULT_ALLOWED_EXTENSIONS = {
     ".gif": "image/gif",
     ".pdf": "application/pdf",
 }
+
+VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
+VIEW_AUTH_MAX_ITEMS = 50
+_UUID32_RE = re.compile(r"^[0-9a-f]{32}$")
 
 # 代表的な「危険な実行系拡張子」
 DENY_EXTENSION_SEGMENTS = {
@@ -110,3 +120,203 @@ def validate_upload_file(
 
     return True, "ok"
 
+
+def cleanup_legacy_view_auth_keys(current_uuid: str | None = None) -> None:
+    """旧形式の session['view_auth_<uuid>'] を削除する。"""
+    for key in list(session.keys()):
+        if not key.startswith("view_auth_"):
+            continue
+        if current_uuid and key == f"view_auth_{current_uuid}":
+            continue
+        session.pop(key, None)
+
+
+def grant_view_auth(uuid: str) -> None:
+    cleanup_legacy_view_auth_keys(current_uuid=uuid)
+    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
+    if uuid in allowed:
+        return
+    session[VIEW_AUTH_SESSION_KEY] = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
+
+
+def has_view_auth(uuid: str) -> bool:
+    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
+    if uuid in allowed:
+        return True
+
+    legacy_key = f"view_auth_{uuid}"
+    if session.get(legacy_key):
+        grant_view_auth(uuid)
+        session.pop(legacy_key, None)
+        return True
+    return False
+
+
+def hash_upload_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def ensure_upload_password_schema() -> None:
+    """
+    uploads.password_hash を追加し、legacy の平文 password を安全にハッシュ移行する。
+    再実行しても壊れないようにする。
+    """
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SHOW COLUMNS FROM uploads")
+        columns = {row["Field"] for row in cur.fetchall()}
+        if "password_hash" not in columns:
+            cur.execute("ALTER TABLE uploads ADD COLUMN password_hash VARCHAR(255) NULL AFTER password")
+            db.commit()
+
+        if "password" not in columns:
+            return
+
+        cur.execute(
+            """
+            SELECT id, password
+              FROM uploads
+             WHERE COALESCE(password_hash, '') = ''
+               AND COALESCE(password, '') <> ''
+            """
+        )
+        legacy_rows = cur.fetchall()
+        for row in legacy_rows:
+            cur.execute(
+                "UPDATE uploads SET password_hash=%s, password='' WHERE id=%s",
+                (hash_upload_password(row["password"]), row["id"]),
+            )
+        if legacy_rows:
+            db.commit()
+    finally:
+        db.close()
+
+
+def migrate_upload_password_if_needed(upload: dict) -> Optional[str]:
+    legacy_password = (upload.get("password") or "").strip()
+    if upload.get("password_hash") or not legacy_password or not upload.get("id"):
+        return upload.get("password_hash")
+
+    password_hash = hash_upload_password(legacy_password)
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE uploads SET password_hash=%s, password='' WHERE id=%s",
+            (password_hash, upload["id"]),
+        )
+        db.commit()
+    finally:
+        db.close()
+    upload["password_hash"] = password_hash
+    upload["password"] = ""
+    return password_hash
+
+
+def upload_password_required(upload: dict | None) -> bool:
+    if not upload:
+        return False
+    require_password = str(upload.get("require_password") or "").lower() in ("1", "true", "t", "yes", "y")
+    has_secret = bool((upload.get("password_hash") or "").strip() or (upload.get("password") or "").strip())
+    return require_password or has_secret
+
+
+def verify_upload_password(upload: dict, input_password: str) -> bool:
+    if not upload_password_required(upload):
+        return True
+
+    candidate = (input_password or "").encode("utf-8")
+    password_hash = (upload.get("password_hash") or "").strip()
+    if password_hash:
+        try:
+            return bcrypt.checkpw(candidate, password_hash.encode("utf-8"))
+        except ValueError:
+            return False
+
+    legacy_password = (upload.get("password") or "").strip()
+    if not legacy_password:
+        return False
+    if input_password != legacy_password:
+        return False
+    migrate_upload_password_if_needed(upload)
+    return True
+
+
+def can_access_upload_record(upload: dict | None, *, has_view_auth_func=None) -> bool:
+    if not upload:
+        return False
+
+    username = session.get("user")
+    if username == "admin":
+        return True
+    if username and username == upload.get("username"):
+        return True
+    if has_view_auth_func and has_view_auth_func(upload.get("uuid")):
+        return True
+    return not upload_password_required(upload)
+
+
+def fetch_upload_access_record(uuid: str) -> Optional[dict]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM uploads WHERE uuid=%s", (uuid,))
+        upload = cur.fetchone()
+        if not upload:
+            return None
+
+        cur.execute(
+            """
+            SELECT require_password, generate_thumbnails
+              FROM upload_modes
+             WHERE username=%s AND mode=%s
+             LIMIT 1
+            """,
+            (upload["username"], upload["mode"]),
+        )
+        mode_row = cur.fetchone() or {}
+        upload["require_password"] = mode_row.get("require_password")
+        upload["generate_thumbnails"] = mode_row.get("generate_thumbnails")
+        return upload
+    finally:
+        db.close()
+
+
+def resolve_upload_subpath(subpath: str, *, allow_zip: bool = True) -> Optional[dict]:
+    normalized = (subpath or "").strip().lstrip("/")
+    if normalized.startswith("uploads/"):
+        normalized = normalized[len("uploads/"):]
+
+    parts = normalized.split("/", 2)
+    allowed_kinds = {"original", "thumb"}
+    if allow_zip:
+        allowed_kinds.add("zip")
+    if len(parts) != 3:
+        return None
+
+    uuid, kind, filename = parts
+    if not (_UUID32_RE.fullmatch(uuid or "") and kind in allowed_kinds and filename):
+        return None
+
+    storage_root = current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
+    full = safe_join(storage_root, uuid, kind, filename)
+    if not full:
+        return None
+
+    target = Path(full).resolve()
+    base_dir = Path(storage_root).resolve()
+    try:
+        if not target.is_relative_to(base_dir):
+            return None
+    except AttributeError:
+        base_prefix = str(base_dir) + os.sep
+        if str(target) != str(base_dir) and not str(target).startswith(base_prefix):
+            return None
+
+    return {
+        "uuid": uuid,
+        "kind": kind,
+        "filename": filename,
+        "target": target,
+    }

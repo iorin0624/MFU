@@ -1,327 +1,1719 @@
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 31a88a38ef9d7b7efb2528c03d0c5e31822d7281..5436cf503b7a3d11e6d66fac61ba9b5e49dfd25d 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -18,171 +18,182 @@
- }
+diff --git a/__init__.py b/__init__.py
+index 30fed47778f2d6d623fc83b0d537efdf335e45a5..73016c2c04bdcffdddfd0fc31d181875434ce208 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -1,88 +1,99 @@
+ # =====================================
+ # 🔧 標準ライブラリ（上段に集約・アルファベット順）
+ # =====================================
+ import base64
+ import hmac
+ import hashlib
+ import io
+ import json
+ import os
+ import re
+ import secrets
+ import shutil
+ import smtplib
+ import subprocess
+ import tempfile
+ import threading
+ import time
+ import uuid
+ import zipfile
+ import csv
+ from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, date as date_cls, timedelta, timezone
+ from email.mime.text import MIMEText
+ from ipaddress import ip_address, ip_network
+ from pathlib import Path
++from urllib.parse import urlparse
  
- .chat-date-divider span {
-   display: inline-block;
-   font-size: 0.78rem;
-   color: #556;
-   background: rgba(255, 255, 255, 0.95);
-   border-radius: 999px;
-   padding: 3px 12px;
- }
+ # =====================================
+ # 🌐 外部ライブラリ（上段に集約）
+ # =====================================
+ import bcrypt
+ import psutil
+ import requests
+ from dateutil import parser as dateutil_parser
+ from dotenv import load_dotenv
+ from PIL import Image  # （将来の画像操作に備え、既存どおり保持）
  
- .chat-row {
-   position: relative;
-   margin-bottom: 10px;
-   touch-action: pan-y;
- }
+ # Flask & Werkzeug
+ from flask import (
+     Flask, request, session, redirect, render_template, url_for, flash,
+     send_from_directory, send_file, abort, jsonify, current_app, after_this_request, g, Response,
+ )
+ from flask_login import LoginManager, current_user
+ from werkzeug.middleware.proxy_fix import ProxyFix
+ from werkzeug.utils import secure_filename, safe_join
+ 
+ # =====================================
+ # 🛠️ アプリ内ユーティリティ（上段に集約）
+ # =====================================
+ from app.utils.auth import load_user
+ from app.utils.db import get_db
+ from app.utils.feature_access import (
+     ensure_feature_access_schema,
+     get_allowed_features,
+     get_nav_items_for_user,
+     has_feature,
+     require_feature,
+ )
+ from app.utils.file_ops import generate_thumbnail, create_zip
+ from app.utils.upload_security import (
+     DEFAULT_ALLOWED_EXTENSIONS,
++    can_access_upload_record,
++    cleanup_legacy_view_auth_keys,
+     detect_mime_from_bytes,
++    ensure_upload_password_schema,
++    fetch_upload_access_record,
++    grant_view_auth,
++    has_view_auth,
++    hash_upload_password,
++    migrate_upload_password_if_needed,
++    resolve_upload_subpath,
+     sanitize_filename,
+     validate_upload_file,
++    verify_upload_password,
+ )
+ from app.utils.image import save_as_jpeg
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
+ from app.utils.message import generate_message
+ from app.utils.storage_info import get_storage_info
+ from app.utils.thumbs import enqueue_thumb_job
+ from app.utils.totp_util import get_totp_status
+ from app.utils.whois_util import get_netinfo
+ from app.albums import album_bp
+ from app.receipts import receipts_bp
+ from app.utils.mail import send_mail
+ from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
+ from app.chat.socketio_ext import socketio
+ 
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
+ 
+ INAPP_BROWSER_WARNING_ENABLED_KEY = "inapp_browser_warning_enabled"
+@@ -184,86 +195,187 @@ login_manager.init_app(app)
+ login_manager.login_view = "login"
+ login_manager.user_loader(load_user)
+ socketio.init_app(app, message_queue=app.config["SOCKETIO_MESSAGE_QUEUE"])
+ 
+ if app.config["SOCKETIO_MESSAGE_QUEUE"]:
+     app.logger.info("Socket.IO message queue enabled")
+ else:
+     app.logger.warning("Socket.IO message queue is disabled; multi-worker chat delivery may fail")
+ 
+ # =====================================
+ # 🧠 補助関数群（上段へ集約）
+ # =====================================
+ 
+ from functools import wraps
+ from flask import session
+ 
+ def admin_required(func):
+     @wraps(func)
+     def wrapper(*args, **kwargs):
+         if session.get("user") != "admin":
+             return "管理者のみアクセス可能", 403
+         return func(*args, **kwargs)
+     return wrapper
  
  
- .chat-line {
-   display: flex;
-   gap: 8px;
-   align-items: flex-start;
-   min-width: 0;
- }
+-VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
+-VIEW_AUTH_MAX_ITEMS = 50
+-
+-
+ def _cleanup_legacy_view_auth_keys(current_uuid=None):
+-    """旧形式の session['view_auth_<uuid>'] を削除してクッキー肥大化を防ぐ。"""
+-    for key in list(session.keys()):
+-        if not key.startswith("view_auth_"):
+-            continue
+-        if current_uuid and key == f"view_auth_{current_uuid}":
+-            continue
+-        session.pop(key, None)
++    cleanup_legacy_view_auth_keys(current_uuid)
  
-+.chat-line > * {
-+  min-width: 0;
+ 
+ def _grant_view_auth(uuid):
+     """閲覧許可を単一キー配下のUUID配列で管理する。"""
+-    _cleanup_legacy_view_auth_keys(current_uuid=uuid)
+-    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
+-    if uuid in allowed:
+-        return
+-    allowed = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
+-    session[VIEW_AUTH_SESSION_KEY] = allowed
++    grant_view_auth(uuid)
+ 
+ 
+ def _has_view_auth(uuid):
+     """新旧のセッション形式を読み、必要なら新形式へ移行する。"""
+-    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
+-    if uuid in allowed:
++    return has_view_auth(uuid)
++
++
++CSRF_SESSION_KEY = "csrf_token"
++_UPLOAD_SECURITY_SCHEMA_LOCK = threading.Lock()
++_upload_security_schema_ready = False
++_CSRF_PROTECTED_PREFIXES = (
++    "/admin/users",
++    "/admin/user-features",
++    "/admin/features",
++    "/admin/nav",
++    "/admin/logs/404-ban",
++    "/admin/mail-delivery/refresh",
++    "/admin/maintenance",
++    "/admin/settings/inapp-browser",
++    "/admin/restart",
++    "/admin/logs/export",
++    "/templates",
++    "/modes",
++    "/upload_delete/",
++)
++_CSRF_PROTECTED_PATHS = {
++    "/submit_upload",
++    "/api/zip-stream",
++}
++_CSRF_EXEMPT_PATHS = {
++    "/login",
 +}
 +
- .chat-row.me .chat-line {
-   justify-content: flex-end;
- }
- 
- .chat-row.other .chat-line {
-   justify-content: flex-start;
- }
- 
- .chat-main {
-   display: flex;
-   flex-direction: column;
--  max-width: min(80%, 560px);
-+  flex: 1 1 auto;
-   min-width: 0;
-+  max-width: min(100%, 560px);
- }
- 
- .chat-row.me .chat-main {
-   align-items: flex-end;
- }
- 
- .chat-row.other .chat-main {
-   align-items: flex-start;
- }
- 
- .chat-sender {
-   font-size: 0.76rem;
-   color: #667;
-   margin: 0 8px 4px;
- }
- 
- .chat-bubble-wrap {
-   display: flex;
-   align-items: flex-end;
-   gap: 6px;
-+  width: 100%;
-   min-width: 0;
--  flex: 0 0 auto;
-+  max-width: 100%;
-+  flex: 1 1 auto;
-   position: relative;
- }
- 
- .chat-row.me .chat-bubble-wrap {
-   flex-direction: row-reverse;
-   gap: 12px;
- }
- 
- .chat-bubble {
--  display: inline-block;
--  max-width: min(calc(100% - 64px), 28rem);
-+  /* メタ列ぶんを引いた残り幅で縮められる吹き出しにする */
-+  display: block;
-+  width: fit-content;
-+  min-width: 0;
-+  max-width: min(100%, calc(100% - 64px));
-   padding: 8px 12px;
-   border-radius: 16px;
-   line-height: 1.4;
-   white-space: normal;
--  overflow-wrap: break-word;
--  word-break: normal;
--  flex: 0 0 auto;
-+  overflow-wrap: anywhere;
-+  word-break: break-word;
-+  flex: 0 1 auto;
-   position: relative;
-   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
-   cursor: pointer;
-   transition: box-shadow 0.2s ease, transform 0.2s ease;
-   -webkit-user-select: none;
-   user-select: none;
-   -webkit-touch-callout: none;
-   touch-action: manipulation;
-   -webkit-tap-highlight-color: transparent;
- }
- 
- .chat-body {
-   min-width: 0;
--  overflow-wrap: break-word;
--  word-break: normal;
-+  overflow-wrap: anywhere;
-+  word-break: break-word;
- }
- 
- /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
- .chat-bubble .chat-body,
- .chat-bubble .chat-body * {
-   -webkit-user-select: text;
-   user-select: text;
-   -webkit-touch-callout: default;
- }
- 
- /* リンクはタップできる */
- .chat-bubble .chat-body a {
-   -webkit-user-select: auto;
-   user-select: auto;
-   -webkit-touch-callout: default;
- }
- 
- .chat-body img {
-   max-width: 100%;
-   height: auto;
- }
- 
- .chat-body .chat-link {
-   text-decoration: underline;
-   color: #1f57d6;
--  overflow-wrap: break-word;
--  word-break: normal;
-+  overflow-wrap: anywhere;
-+  word-break: break-word;
- }
- 
- .chat-body p,
- .chat-body ul,
- .chat-body ol {
-   margin: 0;
- }
- 
- .chat-row.me .chat-bubble {
-   background: #4a8dff;
-   color: #fff;
-   border-bottom-right-radius: 6px;
- }
- 
- .chat-row.other .chat-bubble {
-   background: #f1f3f5;
-   color: #222;
-   border-bottom-left-radius: 6px;
- }
- 
- .chat-meta-col {
-   display: flex;
-   flex-direction: column;
-   align-items: flex-end;
-   justify-content: flex-end;
-   gap: 2px;
-+  flex: 0 0 56px;
-   min-width: 56px;
- }
- 
- .chat-row.me .chat-meta-col {
-   margin-right: 8px;
- }
- 
- .chat-time {
-   font-size: 0.72rem;
-   color: #7a7a7a;
-   white-space: nowrap;
-   line-height: 1.1;
- }
- 
- .chat-edited-label {
-   font-size: 0.68rem;
-   color: #697187;
-   white-space: nowrap;
- }
- 
- .chat-typing-indicator {
-   min-height: 0;
-   margin: 6px 0 0;
-   padding: 6px 10px;
-   font-size: 0.82rem;
-@@ -583,56 +594,60 @@
-   aspect-ratio: 1 / 1;
-   overflow: hidden;
-   border-radius: 10px;
-   border: 1px solid rgba(0, 0, 0, 0.12);
-   background: #fff;
- }
- 
- .chat-image-cell img {
-   width: 100%;
-   height: 100%;
-   object-fit: cover;
-   object-position: center;
-   display: block;
- }
- 
- .chat-image-thumb {
-   display: block;
-   max-width: min(320px, 70vw);
-   width: 100%;
-   height: auto;
-   border-radius: 10px;
-   border: 1px solid rgba(0, 0, 0, 0.12);
-   background: #fff;
- }
- 
--.chat-bubble {
--  max-width: 100%;
-+.chat-body,
-+.chat-body *,
-+.chat-body a,
-+.chat-body .chat-link {
-+  overflow-wrap: anywhere;
-+  word-break: break-word;
- }
- 
- .chat-body {
--  overflow-x: hidden;
-+  overflow-x: hidden; /* 保険。見切れ対策の主因は上の折り返し＋flex調整 */
- }
- 
- #chat-body {
-   resize: none;
-   overflow-y: auto;
- }
- 
- .chat-image-viewer {
-   position: fixed;
-   inset: 0;
-   z-index: 1080;
-   display: none;
-   align-items: center;
-   justify-content: center;
-   background: rgba(0, 0, 0, 0.78);
-   padding: 20px;
- }
- 
- .chat-image-viewer.is-open {
-   display: flex;
- }
- 
- .chat-image-viewer-close {
-   position: absolute;
-   top: 10px;
-@@ -1025,50 +1040,64 @@
-   .chat-room-main,
-   .chat-body-layout {
-     flex: 1;
-     min-height: 0;
-     overflow: hidden;
-   }
- 
-   .chat-room-main {
-     gap: .25rem;
-   }
- 
-   .chat-messages {
-     flex: 1;
-     min-height: 0;
-     height: auto;
-     margin-bottom: 0 !important;
-     overflow-y: auto;
-     -webkit-overflow-scrolling: touch;
-     overscroll-behavior: contain;
-   }
- 
-   #messages.chat-messages {
-     padding: .6rem !important;
-   }
- 
-+  /* iPhone 幅でもアバター・メタ列込みで自然に収める */
-+  .chat-main {
-+    max-width: 100%;
-+  }
 +
-+  .chat-row.me .chat-bubble-wrap {
-+    gap: 8px;
-+  }
++def _ensure_upload_security_schema_once():
++    global _upload_security_schema_ready
++    if _upload_security_schema_ready:
++        return
++    with _UPLOAD_SECURITY_SCHEMA_LOCK:
++        if _upload_security_schema_ready:
++            return
++        ensure_upload_password_schema()
++        _upload_security_schema_ready = True
 +
-+  .chat-meta-col {
-+    flex-basis: 52px;
-+    min-width: 52px;
-+  }
 +
-   .chat-nav-label {
-     display: none;
-   }
++def _get_upload_access_record(uuid):
++    return fetch_upload_access_record(uuid)
++
++
++def _can_access_upload_record(upload):
++    return can_access_upload_record(upload, has_view_auth_func=_has_view_auth)
++
++
++def _can_access_upload_uuid(uuid):
++    upload = _get_upload_access_record(uuid)
++    return bool(upload and _can_access_upload_record(upload))
++
++
++def _get_csrf_token():
++    token = session.get(CSRF_SESSION_KEY)
++    if not token:
++        token = secrets.token_urlsafe(32)
++        session[CSRF_SESSION_KEY] = token
++    return token
++
++
++def _is_same_origin_request():
++    expected = urlparse(request.host_url)
++    for header_name in ("Origin", "Referer"):
++        raw = request.headers.get(header_name)
++        if not raw:
++            continue
++        parsed = urlparse(raw)
++        if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc:
++            return False
++    return True
++
++
++def _is_json_error_response():
++    if request.path.startswith("/api/"):
++        return True
++    if request.is_json:
+         return True
++    best = request.accept_mimetypes.best
++    return best == "application/json"
  
-   .chat-nav-link {
-     padding: .3rem .45rem;
-   }
+-    legacy_key = f"view_auth_{uuid}"
+-    if session.get(legacy_key):
+-        _grant_view_auth(uuid)
+-        session.pop(legacy_key, None)
++
++def _csrf_error(message, status=403):
++    if _is_json_error_response():
++        return jsonify({"ok": False, "error": "csrf_failed", "message": message}), status
++    return message, status
++
++
++def _requires_csrf_protection():
++    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
++        return False
++    if request.path in _CSRF_EXEMPT_PATHS:
++        return False
++    if request.endpoint == "view_upload":
++        # 公開導線のパスワードフォームは今回のCSRF必須対象外。
++        return False
++    if request.path in _CSRF_PROTECTED_PATHS:
+         return True
+-    return False
++    return request.path.startswith(_CSRF_PROTECTED_PREFIXES)
++
++
++def _validate_csrf_request():
++    if not _is_same_origin_request():
++        return _csrf_error("CSRF origin check failed", 403)
++
++    session_token = session.get(CSRF_SESSION_KEY) or ""
++    request_token = (
++        request.headers.get("X-CSRF-Token")
++        or request.form.get("csrf_token")
++        or ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "")
++        or ""
++    )
++    if not session_token or not request_token:
++        return _csrf_error("CSRF token is missing", 400)
++    if not hmac.compare_digest(str(session_token), str(request_token)):
++        return _csrf_error("CSRF token is invalid", 403)
++    return None
++
++
++@app.context_processor
++def inject_csrf_token():
++    return {
++        "csrf_token": _get_csrf_token,
++        "csrf_token_value": _get_csrf_token(),
++    }
  
-   #chat-search-input {
-     font-size: 16px;
-   }
  
-   .chat-nav-link-top .chat-nav-label {
-     display: inline;
-   }
+ def _save_stream(file_storage, dest_path):
+     """アップロードストリームを保存（最小実装）"""
+     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+     file_storage.save(dest_path)
+     return os.path.basename(dest_path)
  
-   .chat-bottom-jump-btn {
-     right: 8px;
-     bottom: calc(78px + env(safe-area-inset-bottom));
+ def delayed_restart():
+     try:
+         print("[delayed_restart] 🔁 サービス再起動処理を開始")
+         time.sleep(2)
+         print("[delayed_restart] 📤 systemctl restart 実行中...")
+         result = subprocess.run(
+             ["sudo", "systemctl", "restart", "mfu.service"],
+             check=True,
+             capture_output=True,
+             text=True,
+         )
+         print("[delayed_restart] ✅ 再起動成功")
+         print("[stdout]", result.stdout)
+         print("[stderr]", result.stderr)
+     except subprocess.CalledProcessError as e:
+         print("[delayed_restart] ❌ 再起動失敗（subprocess.CalledProcessError）")
+         print("[stderr]", e.stderr)
+@@ -748,50 +860,51 @@ def submit_upload():
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
+     cursor.execute("SELECT * FROM upload_modes WHERE username = %s AND mode = %s", (username, mode))
+     mode_config = cursor.fetchone()
+     cursor.execute("SELECT nickname, webhook_url, email, notify_method FROM users WHERE username = %s", (username,))
+     user_info = cursor.fetchone()
+     db.close()
+     if not mode_config:
+         return f"未定義のモードです: {mode}", 400
+ 
+     nickname = (user_info or {}).get("nickname") or username
+ 
+     # ▼ テンプレキー（未設定なら mode をそのまま使う）
+     template_key = (mode_config.get("template_key") or "").strip() or mode
+ 
+     # ▼ サムネ生成フラグ（1/0, '1'/'0', True/False いずれでも解釈）
+     gt_val = mode_config.get("generate_thumbnails", 1)
+     gen_thumbs = str(gt_val).lower() in ("1", "true", "t", "yes", "y")
+ 
+     # =====================================
+     # ① 事前準備
+     # =====================================
+     uid = uuid4().hex
+     # パスワードはモード設定に従う（未指定なら空）
+     password = secrets.token_hex(4) if mode_config.get("require_password") else ""
++    password_hash = hash_upload_password(password) if password else None
+ 
+     # 保存ルート（設定優先、なければ既定）
+     storage_root = current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
+     base_dir = os.path.join(storage_root, uid)
+     original_dir = os.path.join(base_dir, "original")
+     thumb_dir = os.path.join(base_dir, "thumb")
+     os.makedirs(original_dir, exist_ok=True)
+     os.makedirs(thumb_dir, exist_ok=True)
+ 
+     # ファイル名の重複回避セット
+     used_names = set()
+ 
+     # =====================================
+     # ② 保存前検証（拡張子・二重拡張子・MIME）
+     # =====================================
+     allowed_extensions = current_app.config.get("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
+     validated_files = []
+     for fs in uploaded_files:
+         original_name = sanitize_filename(fs.filename, used_names)
+         head = fs.stream.read(8192)
+         fs.stream.seek(0)
+ 
+         detected_mime = detect_mime_from_bytes(head)
+         ok, reason = validate_upload_file(
+             filename=original_name,
+@@ -823,85 +936,85 @@ def submit_upload():
+     # ディレクトリ権限: rwx(rw-)---
+     os.chmod(base_dir, 0o750)
+     os.chmod(original_dir, 0o750)
+     os.chmod(thumb_dir, 0o750)
+ 
+     with ThreadPoolExecutor(max_workers=8) as executor:
+         futures = []
+         for fs, original_name in validated_files:
+             save_path = os.path.join(original_dir, original_name)
+             futures.append((original_name, executor.submit(save_file_chunked, fs, save_path)))
+         for original_name, fut in futures:
+             if fut.result():
+                 filenames.append(original_name)
+                 saved_count += 1
+             else:
+                 failed.append(original_name)
+ 
+     # =====================================
+     # ④ DB登録（uploads / files）
+     #   ※ files には created_at 列が無い前提で INSERT を修正
+     # =====================================
+     db = get_db()
+     cur = db.cursor()
+     cur.execute(
+         """
+-        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password)
+-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
++        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
++        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+         """,
+-        (uid, title, date, expire_at, mode, username, "", password),
++        (uid, title, date, expire_at, mode, username, "", "", password_hash),
+     )
+     upload_id = cur.lastrowid
+     if filenames:
+         cur.executemany(
+             "INSERT INTO files (upload_id, filename) VALUES (%s, %s)",
+             [(upload_id, name) for name in filenames],
+         )
+     db.commit()
+     db.close()
+ 
+     # =====================================
+     # ⑤ テンプレートメッセージ生成＆保存（messages）
+     # =====================================
+     public_base = current_app.config.get("PUBLIC_BASE_URL")
+     if not public_base:
+         try:
+             public_base = PUBLIC_BASE_URL  # グローバル定義があれば使用
+         except NameError:
+             public_base = request.url_root.rstrip("/")
+ 
+     context = {
+         "uid": uid,
+         "title": title,
+         "date": (date.strftime("%Y-%m-%d") if isinstance(date, (datetime, date_cls)) else str(date or "")),
+         "expire": expire_str,
+         "username": username,
+         "nickname": nickname,
+         "base_url": public_base.rstrip("/"),
+         "link": f"{public_base.rstrip('/')}/view/{uid}" if mode_config.get("enable_download_url") else "",
+         "download_url": f"{public_base.rstrip('/')}/d/{uid}",
+-        "manage_url": f"{public_base.rstrip('/')}/m/{uid}?pw={password}",
++        "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
+         "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
+         "password": password or "",
+         "count": saved_count,
+     }
+ 
+     try:
+         message = generate_message(template_key, context, username=username)
+     except Exception as e:
+         message = f"[テンプレ生成失敗: {e}]"
+ 
+     db = get_db(); cur = db.cursor()
+     cur.execute("REPLACE INTO messages (uuid, mode, message) VALUES (%s, %s, %s)", (uid, template_key, message))
+     db.commit(); db.close()
+ 
+     # =====================================
+     # ⑥ バックグラウンド：サムネ生成 → 通知
+     # =====================================
+     app_obj = current_app._get_current_object()
+ 
+     def _runner():
+         try:
+             with app_obj.app_context():
+                 background_thumb_and_notify(
+                     uid=uid,
+                     filenames=filenames,
+@@ -1026,88 +1139,75 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
+                 (logger.warning if logger else print)(f"[通知] Discord失敗: {e}")
+ 
+         if notify_method in ("email", "both") and user and user.get("email"):
+             try:
+                 # ★ mail.pyに統一
+                 send_mail(
+                     to=user["email"],
+                     subject="ファイルアップロード通知",
+                     body=msg,
+                     event_uuid="notify",      # From: notify@mail.iori0624.jp
+                     smtp_host="192.168.103.15",
+                     smtp_port=25,
+                     timeout=45,
+                 )
+                 (logger.info if logger else print)(f"メール通知送信完了 (uid={uid})")
+             except Exception as e:
+                 (logger.warning if logger else print)(f"[通知] メール失敗: {e}")
+     except Exception as e:
+         (logger.error if logger else print)(f"[通知] 例外: {e}")
+ 
+ # =====================================
+ # ③ 表示／配信
+ # =====================================
+ @app.route("/view/<uuid>", methods=["GET", "POST"])
+ def view_upload(uuid):
+-    db = get_db()
+-    cursor = db.cursor(dictionary=True)
+-    cursor.execute("SELECT * FROM uploads WHERE uuid = %s", (uuid,))
+-    upload = cursor.fetchone()
+-
++    upload = _get_upload_access_record(uuid)
+     if not upload:
+         return "指定されたデータが存在しません", 404
+ 
+-    # アップロード者 or 管理者は常時閲覧可
+-    if "user" in session and (session["user"] == "admin" or session["user"] == upload["username"]):
+-        _grant_view_auth(uuid)
++    if (upload.get("password") or "").strip() and not upload.get("password_hash"):
++        migrate_upload_password_if_needed(upload)
+ 
+-    # モード情報取得（パス要否 & サムネ生成要否）
+-    cursor.execute(
+-        "SELECT require_password, generate_thumbnails FROM upload_modes WHERE username=%s AND mode=%s LIMIT 1",
+-        (upload["username"], upload["mode"]),
+-    )
+-    mode_row = cursor.fetchone() or {}
+-    require_password = bool(mode_row.get("require_password"))
+-    generate_thumbnails = bool(mode_row.get("generate_thumbnails"))
+-
+-    # パス不要 or 空パスなら自動許可
+-    if (not require_password) or (not upload.get("password")):
++    if _can_access_upload_record(upload):
+         _grant_view_auth(uuid)
+ 
++    generate_thumbnails = bool(upload.get("generate_thumbnails"))
++
+     # パス未認証ならパス画面へ
+     if request.method == "POST" and not _has_view_auth(uuid):
+         input_pass = request.form.get("password", "")
+-        if input_pass != (upload.get("password") or ""):
+-            db.close()
++        if not verify_upload_password(upload, input_pass):
+             return render_template("view_password.html", uuid=uuid, error="パスワードが違います")
+         _grant_view_auth(uuid)
+ 
+     if not _has_view_auth(uuid):
+-        db.close()
+         return render_template("view_password.html", uuid=uuid)
+ 
+     # ファイル一覧
++    db = get_db()
++    cursor = db.cursor(dictionary=True)
+     cursor.execute("SELECT filename FROM files WHERE upload_id = %s ORDER BY filename ASC", (upload["id"],))
+     files = [row["filename"] for row in cursor.fetchall()]
+     db.close()
+ 
+     # サムネ（存在するもののみ列挙）
+     thumb_dir = f"/mnt/mfu/uploads/{uuid}/thumb"
+     thumbnails = []
+     if generate_thumbnails:
+         for f in files:
+             base, _ = os.path.splitext(f)
+             webp_path = os.path.join(thumb_dir, base + ".webp")
+             if os.path.exists(webp_path):
+                 thumbnails.append({"webp": base + ".webp", "fallback": f})
+             else:
+                 fallback_path = os.path.join(thumb_dir, f)
+                 if os.path.exists(fallback_path):
+                     thumbnails.append({"webp": None, "fallback": f})
+ 
+     # ▼ サムネOFFのときはZIP一括DL（API方式）ボタンを表示
+     show_zip_button = (not generate_thumbnails) and len(files) > 0
+     # APIに渡す相対パス一覧（zip_stream.resolve_relpath が解決する仕様）
+     all_relpaths = [f"uploads/{uuid}/original/{name}" for name in files]
+     file_entries = [
+         {
+             "name": name,
+@@ -1117,100 +1217,99 @@ def view_upload(uuid):
+     ]
+ 
+     return render_template(
+         "view.html",
+         upload=upload,
+         files=files,
+         thumbnails=thumbnails,
+         image_count=len(files),
+         mode_label=upload["mode"],
+         uuid=uuid,
+         show_zip_button=show_zip_button,
+         all_relpaths=all_relpaths,  # ← 追加
+         file_entries=file_entries,
+     )
+ 
+ @app.route("/upload/<path:subpath>")
+ @app.route("/uploads/<path:subpath>")
+ def uploaded_file(subpath: str):
+     """
+     /mnt/mfu/uploads をルートに、安全に実体ファイルを配信する。
+     例: /uploads/layer_uploads/<...>/zip/2025年09月09日_21時39分_木野　諒さん.zip
+     """
+     # 実体の保存場所。未設定なら /mnt/mfu/uploads を既定に
+     base_dir = Path(current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")).resolve()
+ 
+-    # 要求パスを正規化して実体パスへ
+-    target = (base_dir / subpath).resolve()
++    upload_ref = resolve_upload_subpath(subpath, allow_zip=True)
++    if upload_ref:
++        upload = _get_upload_access_record(upload_ref["uuid"])
++        if not upload:
++            abort(404)
++        if not _can_access_upload_record(upload):
++            abort(403)
++        target = upload_ref["target"]
++    else:
++        normalized = (subpath or "").strip().lstrip("/")
++        if not normalized.startswith("layer_uploads/"):
++            abort(404)
++        # 既存の layer_uploads 導線だけは、従来どおりの安全なパス検証のみ維持する。
++        target = (base_dir / subpath).resolve()
+ 
++    # 要求パスを正規化して実体パスへ
+     # パストラバーサル等の防止: base_dir 配下かどうか確認
+     try:
+         # Python 3.11 なら is_relative_to が使えます
+         if not target.is_relative_to(base_dir):
+             abort(404)
+     except AttributeError:
+         # 互換: もし古いPythonならstartswithで代替
+         if str(target).startswith(str(base_dir)) is False:
+             abort(404)
+ 
+     # ファイル実在チェック
+     if not target.exists() or not target.is_file():
+         abort(404)
+ 
+     # ZIPなどはダウンロードさせる（日本語名も維持）
+     as_attachment = target.suffix.lower() in {".zip", ".7z", ".rar"}
+     return send_file(
+         target,
+         as_attachment=as_attachment,
+         conditional=True,            # Range/If-Modified-Since 等を有効化
+         download_name=target.name    # 非ASCII名も適切にContent-Dispositionへ
+     )
+ 
+ @app.route("/view/<uuid>/zip", methods=["GET"])
+ def download_zip_for_upload(uuid):
+-    # 認可チェック
+-    if not _has_view_auth(uuid):
+-        # 未認証なら /view へ戻す（パスまたは権限で認証）
+-        return redirect(url_for("view_upload", uuid=uuid))
+-
+-    # uploads レコード取得
+-    db = get_db()
+-    cursor = db.cursor(dictionary=True)
+-    cursor.execute("SELECT id, title, username FROM uploads WHERE uuid=%s", (uuid,))
+-    upload = cursor.fetchone()
++    upload = _get_upload_access_record(uuid)
+     if not upload:
+-        db.close()
+         return "指定されたデータが存在しません", 404
++    if not _can_access_upload_record(upload):
++        return redirect(url_for("view_upload", uuid=uuid))
++    _grant_view_auth(uuid)
+ 
+-    # モードのサムネフラグ確認（OFFのときのみボタンを想定）
+-    cursor.execute(
+-        "SELECT generate_thumbnails FROM upload_modes WHERE username=%s AND mode=(SELECT mode FROM uploads WHERE uuid=%s) LIMIT 1",
+-        (upload["username"], uuid),
+-    )
+-    mode_row = cursor.fetchone() or {}
+-    generate_thumbnails = bool(mode_row.get("generate_thumbnails"))
+-    db.close()
++    generate_thumbnails = bool(upload.get("generate_thumbnails"))
+ 
+     # ファイル一覧
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
+     cursor.execute("SELECT filename FROM files WHERE upload_id=%s ORDER BY filename ASC", (upload["id"],))
+     rows = cursor.fetchall()
+     db.close()
+     filenames = [r["filename"] for r in rows]
+ 
+     if not filenames:
+         abort(404)
+ 
+     # ZIP生成場所
+     base_dir = os.path.join(UPLOAD_BASE_DIR, uuid)
+     original_dir = os.path.join(base_dir, "original")
+     zip_dir = os.path.join(base_dir, "zip")
+     os.makedirs(zip_dir, exist_ok=True)
+ 
+     # ファイル名（タイトルがあればそれを使う）
+     safe_title = (upload["title"] or f"upload_{uuid}")[:60].replace("/", "_").replace("\\", "_")
+     zip_path = os.path.join(zip_dir, f"{safe_title}.zip")
+ 
+     # 既存ZIPがあれば再利用（更新したければ削除してね運用）
+     if not os.path.exists(zip_path):
+         import zipfile
+@@ -3269,50 +3368,60 @@ def temp_sensor():
+         return {"Authorization": token, "sign": sign, "nonce": nonce, "t": t, "Content-Type": "application/json"}
+ 
+     def get_status(device_id):
+         try:
+             headers = generate_headers()
+             url = f"https://api.switch-bot.com/v1.1/devices/{device_id}/status"
+             res = requests.get(url, headers=headers, timeout=10)
+             data = res.json()
+             if data.get("statusCode") == 100:
+                 b = data["body"]
+                 return {"temperature": b.get("temperature"), "humidity": b.get("humidity"), "device_id": device_id}
+             else:
+                 return {"error": f"APIエラー: statusCode {data.get('statusCode')}", "device_id": device_id}
+         except Exception as e:
+             return {"error": f"通信エラー: {str(e)}", "device_id": device_id}
+ 
+     return {"indoor": get_status("DD25F897C8B8"), "outdoor": get_status("E8DD055523AE")}
+ 
+ # =====================================
+ # ⑦ 共通フック（before/after_request）
+ # =====================================
+ @app.before_request
+ def before_every_request():
+     g._req_start = time.time()
+ 
++    try:
++        _ensure_upload_security_schema_once()
++    except Exception as exc:
++        app.logger.warning(f"upload security schema ensure failed: {exc}")
++
++    if _requires_csrf_protection():
++        csrf_error = _validate_csrf_request()
++        if csrf_error:
++            return csrf_error
++
+     # ★ 管理パス(/admin...) は admin 以外には 404 を返す
+     #    - 未ログイン
+     #    - 一般ユーザー
+     #    どちらも 404 にすることで /admin の存在自体を隠す
+     if request.path.startswith("/admin"):
+         if session.get("user") != "admin":
+             abort(404)
+ 
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
+     cursor.execute("SELECT value FROM settings WHERE `key` = 'maintenance_mode'")
+     mode = cursor.fetchone()
+     cursor.execute("SELECT value FROM settings WHERE `key` = 'maintenance_until'")
+     until_row = cursor.fetchone()
+     db.close()
+ 
+     until_time = None
+     if until_row and until_row["value"]:
+         try:
+             utc_dt = dateutil_parser.isoparse(until_row["value"])
+             until_time = utc_dt.astimezone(JST)
+         except Exception as e:
+             app.logger.warning(f"[Timer Parse Error] {e}")
+ 
+     if mode and mode["value"] == "on":
+@@ -3579,25 +3688,30 @@ app.register_blueprint(invoice_bp)
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings, write_login_log, log_access
+ 
+ from app.external_login_user.routes import bp as ext_login_bp, init_oauth as init_line_oauth
+ from app.external_login_user.sw_blueprint import sw_bp
+ from app.external_login_user.notifications import mfu_notifications_bp
+ init_line_oauth(app)
+ app.register_blueprint(ext_login_bp, url_prefix="/external-login")
+ app.register_blueprint(ext_login_bp, url_prefix="/e", name="external_login_user_short")
+ app.register_blueprint(sw_bp)
+ app.register_blueprint(mfu_notifications_bp)
+ 
+ from app.s_u_calendar.routes import s_u_calendar_bp
+ app.register_blueprint(s_u_calendar_bp, url_prefix="/suc")
+ 
+ from app.chat import chat_bp
+ app.register_blueprint(chat_bp)
+ 
+ from app.profile import profile_bp
+ app.register_blueprint(profile_bp)
+ 
+ from app.fare import fare_bp
+ app.register_blueprint(fare_bp)
+ 
+ from app.bank_account import register_bank_account
+ register_bank_account(app)
++
++try:
++    _ensure_upload_security_schema_once()
++except Exception as exc:
++    app.logger.warning(f"upload security schema init skipped: {exc}")
+diff --git a/templates/base.html b/templates/base.html
+index 6a39f43da1131a33dc683b3e45cf40fe7219e519..751fb09604e74269f0c7a912bbcf5ea6e705d9e5 100644
+--- a/templates/base.html
++++ b/templates/base.html
+@@ -1,31 +1,32 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <title>{% block title %}MFU{% endblock %}</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="csrf-token" content="{{ csrf_token() }}">
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+   {% block head_extra %}{% endblock %}
+ </head>
+ <body>
+   <!-- 🔰 共通ナビゲーションバー -->
+   {% if request.path.startswith('/chat/') and nav_mode == 'chat' %}
+     {# chat専用画面では共通ナビを表示しない #}
+   {% elif request.path.startswith('/chat/') and nav_mode == 'external' %}
+     {% include "_extlogin_nav.html" %}
+   {% else %}
+     <nav class="navbar navbar-expand-lg navbar-light bg-light border-bottom mb-4">
+       <div class="container-fluid">
+         <a class="navbar-brand" href="/">📂 MFU</a>
+ 
+         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+           <span class="navbar-toggler-icon"></span>
+         </button>
+ 
+         <div class="collapse navbar-collapse" id="navbarMain">
+           <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+ 
+             {% if session.get('user') %}
+               {% for item in nav_items %}
+                 {% set show_item = (not item.feature_key) or has_feature(item.feature_key) or session.user == 'admin' %}
+                 {% if show_item %}
+@@ -86,50 +87,111 @@
+                     {{ session.nickname }}（{{ session.user }}）
+                   {% else %}
+                     {{ session.user }}
+                   {% endif %}
+                 </strong>
+               </span>
+               <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">ログアウト</a>
+             {% else %}
+               <a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">ログイン</a>
+             {% endif %}
+           </div>
+         </div>
+       </div>
+     </nav>
+   {% endif %}
+ 
+   <!-- 📄 各ページの内容 -->
+   <div class="container">
+     {% block content %}{% endblock %}
+   </div>
+ 
+   {% block body_extra %}{% endblock %}
+ 
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js" crossorigin="anonymous"></script>
++  <script>
++  (function(){
++    const token = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
++    const csrfSafeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
++    const isSameOrigin = (url) => {
++      try {
++        const resolved = new URL(url || window.location.href, window.location.href);
++        return resolved.origin === window.location.origin;
++      } catch (_) {
++        return false;
++      }
++    };
++    const shouldAttach = (method, url) => !csrfSafeMethods.has(String(method || 'GET').toUpperCase()) && isSameOrigin(url);
++
++    const ensureFormToken = (form) => {
++      if (!form || String(form.method || 'GET').toUpperCase() === 'GET') return;
++      if (!isSameOrigin(form.action || window.location.href)) return;
++      if (form.querySelector('input[name="csrf_token"]')) return;
++      const input = document.createElement('input');
++      input.type = 'hidden';
++      input.name = 'csrf_token';
++      input.value = token;
++      form.appendChild(input);
++    };
++
++    document.addEventListener('DOMContentLoaded', () => {
++      document.querySelectorAll('form').forEach(ensureFormToken);
++    });
++    document.addEventListener('submit', (event) => ensureFormToken(event.target), true);
++
++    const originalFetch = window.fetch?.bind(window);
++    if (originalFetch) {
++      window.fetch = (input, init = {}) => {
++        const method = (init.method || (input && input.method) || 'GET').toUpperCase();
++        const url = typeof input === 'string' ? input : (input?.url || window.location.href);
++        if (!shouldAttach(method, url)) {
++          return originalFetch(input, init);
++        }
++        const headers = new Headers(init.headers || (input instanceof Request ? input.headers : undefined) || {});
++        if (!headers.has('X-CSRF-Token') && token) {
++          headers.set('X-CSRF-Token', token);
++        }
++        return originalFetch(input, { ...init, headers });
++      };
++    }
++
++    const originalOpen = XMLHttpRequest.prototype.open;
++    const originalSend = XMLHttpRequest.prototype.send;
++    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
++      this._csrfMethod = method;
++      this._csrfUrl = url;
++      return originalOpen.call(this, method, url, ...rest);
++    };
++    XMLHttpRequest.prototype.send = function(body) {
++      if (shouldAttach(this._csrfMethod, this._csrfUrl) && token) {
++        try { this.setRequestHeader('X-CSRF-Token', token); } catch (_) {}
++      }
++      return originalSend.call(this, body);
++    };
++  })();
++  </script>
+ 
+   <!-- ▼ 追加：PC幅はhoverでドロップダウンを展開 -->
+   
+   <style>
+     .mfu-notif-bell { min-width: 42px; }
+     .mfu-notif-badge {
+       position: absolute;
+       top: -6px;
+       right: -6px;
+       background: #dc3545;
+       color: #fff;
+       border-radius: 999px;
+       font-size: 11px;
+       padding: 1px 6px;
+       line-height: 1.4;
+     }
+     .mfu-notif-popup {
+       position: absolute;
+       right: 0;
+       top: calc(100% + 8px);
+       width: min(420px, 92vw);
+       max-height: 65vh;
+       background: #fff;
+       border: 1px solid #dee2e6;
+       border-radius: .5rem;
+diff --git a/templates/template_edit.html b/templates/template_edit.html
+index 7e80b54ddf812378add8d588d8da48f702fe308b..076d0bad592e29ab0b711998beec14875f6baaf5 100644
+--- a/templates/template_edit.html
++++ b/templates/template_edit.html
+@@ -1,29 +1,31 @@
+ <!DOCTYPE html>
+ <html>
+ <head>
+     <meta charset="utf-8">
+     <title>{{ mode }} モード設定とテンプレート編集</title>
++    <meta name="csrf-token" content="{{ csrf_token() }}">
+ </head>
+ <body>
+     <h2>{{ mode }} モード設定とテンプレート編集</h2>
+ 
+     <form method="post">
++        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+         <label>モード名:</label><br>
+         <input type="text" name="mode" value="{{ mode }}" readonly><br><br>
+ 
+         <label>表示ラベル:</label><br>
+         <input type="text" name="label" value="{{ mode_data.label if mode_data else '' }}"><br><br>
+ 
+         <label><input type="checkbox" name="enable_download_url" {% if mode_data and mode_data.enable_download_url %}checked{% endif %}> ダウンロードURLを表示</label><br>
+         <label><input type="checkbox" name="require_password" {% if mode_data and mode_data.require_password %}checked{% endif %}> パスワードを発行</label><br>
+         <label><input type="checkbox" name="enable_layer_upload_url" {% if mode_data and mode_data.enable_layer_upload_url %}checked{% endif %}> 加工済アップロードURL</label><br><br>
+ 
+         <label>テンプレート本文:</label><br>
+         <textarea name="template" rows="20" cols="80" style="width:100%;">{{ template }}</textarea><br><br>
+ 
+         <button type="submit">保存</button>
+     </form>
+ 
+     <p><a href="{{ url_for('mode_list') }}">← モード一覧に戻る</a></p>
+ </body>
+ </html>
+diff --git a/templates/upload_list.html b/templates/upload_list.html
+index 6f19e38fabf355fbe559bab0dba5bda365f9916c..507c630f5c5d321234a9892183b7defcafee92a4 100644
+--- a/templates/upload_list.html
++++ b/templates/upload_list.html
+@@ -1,52 +1,53 @@
+ {% extends "base.html" %}
+ {% block title %}アップロード履歴{% endblock %}
+ 
+ {% block content %}
+ <style>
+   td, th {
+     white-space: normal !important;
+     word-break: break-word;
+     max-width: 200px;
    }
+ </style>
+ 
+ <div class="container mt-4">
+   <h2 class="mb-4">アップロード履歴</h2>
+   <div class="table-responsive">
+     <table class="table table-sm table-striped table-bordered text-nowrap align-middle">
+       <thead class="table-light">
+         <tr>
+           <th style="width: 10%;">UUID</th>
+           <th>ユーザー名</th>
+           <th>タイトル</th>
+           <th>撮影日</th>
+           <th>有効期限</th>
+           <th>アップロード日時</th>
+-          <th>パスワード</th>
++          <th>閲覧保護</th>
+           <th>リンク</th>
+           <th>操作</th>
+         </tr>
+       </thead>
+ <tbody>
+   {% for item in uploads %}
+   <tr>
+     <td title="{{ item.uuid }}">{{ item.uuid[:8] }}...</td>
+     <td>{{ item.username }}</td>
+     <td>{{ item.title }}</td>
+     <td>{{ item.date }}</td>
+     <td>{{ item.expire_at }}</td>
+     <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
+-    <td>{{ item.password }}</td>
++    <td>{{ '有効' if item.password_hash else 'なし' }}</td>
+     <td><a href="{{ url_for('view_upload', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary" target="_blank">表示</a></td>
+     <td>
+       <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post" onsubmit="return confirm('本当に削除しますか？');">
++        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+         <button class="btn btn-sm btn-danger">削除</button>
+       </form>
+     </td>
+   </tr>
+   {% endfor %}
+ </tbody>
+     </table>
+   </div>
+ </div>
+-{% endblock %}
+\ No newline at end of file
++{% endblock %}
+diff --git a/templates/view.html b/templates/view.html
+index dba388cfa0166b07816f10266fd26f520068c757..76c523c03bab908fef0a8693f008533b71bbd09b 100644
+--- a/templates/view.html
++++ b/templates/view.html
+@@ -1,31 +1,32 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <title>写真閲覧</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
++  <meta name="csrf-token" content="{{ csrf_token() }}">
+   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
+   <style>
+     body { font-family: sans-serif; background:#f9f9f9; margin:0; padding:1em; }
+     .container { max-width:800px; margin:auto; background:#fff; padding:1.5em; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,.1); }
+     h1,h2,p{ margin:0 0 .8em 0; } .info{ margin-bottom:1.2em; text-align:center; }
+ 
+     .gallery{ display:flex; flex-wrap:wrap; gap:.9em; justify-content:center; }
+     .item{ text-align:center; width:120px; }
+     .pick{ display:inline-flex; align-items:center; gap:.5em; font-size:1rem; color:#333; margin-bottom:.35em; user-select:none; }
+     .pick input[type="checkbox"]{ width:22px; height:22px; transform:scale(1.4); transform-origin:left center; accent-color:#007bff; }
+ 
+     .gallery a img{ width:110px; height:auto; border-radius:6px; border:1px solid #ccc; transition:transform .2s; }
+     .gallery a:hover img{ transform:scale(1.05); }
+ 
+     /* ▼ 下部固定ツールバー */
+     .zip-toolbar{
+       display:flex; flex-wrap:wrap; gap:.8em; justify-content:center; align-items:center;
+       background:rgba(255,255,255,.92);
+       -webkit-backdrop-filter:saturate(180%) blur(8px); backdrop-filter:saturate(180%) blur(8px);
+       border:1px solid #e6e6e6; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
+       padding:.8em 1em; position:fixed; left:50%; transform:translateX(-50%);
+       width:calc(min(100vw - 2rem, 820px));
+       bottom:max(8px, env(safe-area-inset-bottom)); z-index:1000;
+     }
+     .zip-toolbar.hidden{ display:none !important; }
+@@ -149,50 +150,51 @@
+     </div>
+ 
+     <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+ 
+     <script>
+       // 下部バーの余白確保は常時
+       function setupBottomSpacer() {
+         const bottomBar = document.querySelector('.zip-toolbar');
+         const bottomSp  = document.getElementById('zip-bottom-spacer');
+         if (!bottomBar || !bottomSp) return;
+         bottomSp.style.height = (bottomBar.offsetHeight + 12) + 'px';
+       }
+       window.addEventListener('resize', () => requestAnimationFrame(setupBottomSpacer));
+       window.addEventListener('orientationchange', () => requestAnimationFrame(setupBottomSpacer));
+ 
+       // 進捗UIユーティリティ（共通）
+       function fmtBytes(n){ if(!n && n!==0) return "-"; const u=["B","KB","MB","GB","TB"]; let i=0; while(n>=1024 && i<u.length-1){ n/=1024; i++; } return (Math.round(n*10)/10)+' '+u[i]; }
+       function showProgress(){ document.getElementById('zip-progress')?.removeAttribute('hidden'); setupBottomSpacer(); }
+       function hideProgress(){ document.getElementById('zip-progress')?.setAttribute('hidden',''); setProgress(0,"0%"); setupBottomSpacer(); }
+       function setProgress(pct, text){
+         const fill = document.getElementById('zip-progress-fill');
+         const txt  = document.getElementById('zip-progress-txt');
+         if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+         if (txt)  txt.textContent = text;
+       }
++      const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+       const FILE_ENTRIES = {{ file_entries|tojson }};
+       function toAbsoluteUrl(urlLike){
+         if (!urlLike) return '';
+         try { return new URL(urlLike, location.href).href; }
+         catch(_){ return ''; }
+       }
+       function extractFilename(value, fallback='image.jpg'){
+         const raw = (value || '').split('/').pop() || '';
+         const clean = decodeURIComponent(raw).trim();
+         return clean || fallback;
+       }
+       function safeFilename(nameHint, mimeType='image/jpeg'){
+         const fallbackExt = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi,'') || 'jpg';
+         const base = (nameHint || 'image').replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
+         const file = base || `image.${fallbackExt}`;
+         return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
+       }
+       function mimeTypeFromName(name=''){
+         const lower = `${name}`.toLowerCase();
+         if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+         if (lower.endsWith('.png')) return 'image/png';
+         if (lower.endsWith('.webp')) return 'image/webp';
+         if (lower.endsWith('.gif')) return 'image/gif';
+         return 'image/jpeg';
+       }
+@@ -347,51 +349,51 @@
+           );
+           const entries = FILE_ENTRIES.filter(entry => selectedNames.has(entry.name));
+           await shareFileEntries(entries, {
+             fallbackMessage: 'この端末では複数枚の共有保存が難しいため、ZIPダウンロードをご利用ください。'
+           });
+         });
+ 
+         btnZip?.addEventListener('click', async () => {
+           if (inflight) return;
+           const paths = $$('.pick-file:checked').map(el => el.dataset.path).filter(Boolean);
+           if (!paths.length) { alert('ファイルを選択してください'); return; }
+ 
+           inflight = true;
+           [btnZip, btnShare, btnAll, btnNone].forEach(b=>{ if(b){ b.disabled = true; } });
+           if (btnZip) btnZip.classList.add('btn-busy');
+           setBtnText('ZIP生成中…');
+ 
+           const idKey = (crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
+           startProgressPolling(idKey);
+ 
+           const hideAfterMs = 1200;
+ 
+           try {
+             const res = await fetch('/api/zip-stream', {
+               method: 'POST',
+-              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey },
++              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey, 'X-CSRF-Token': CSRF_TOKEN },
+               body: JSON.stringify({ paths })
+             });
+ 
+             if (res.status === 409) {
+               setBtnText('既にZIP生成中です…');
+               scheduleReset(5000);
+               return;
+             }
+             if (!res.ok) {
+               const text = await res.text().catch(() => res.statusText);
+               console.error('ZIP error:', text);
+               setBtnText('エラーが発生しました');
+               scheduleReset(4000);
+               return;
+             }
+ 
+             await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
+             setBtnText('生成完了—ダウンロードが始まります');
+ 
+             const cd  = res.headers.get('Content-Disposition') || '';
+             const m   = cd.match(/filename=([^;]+)/i);
+             const fn  = (m ? m[1].trim().replace(/^["']|["']$/g, '') : 'download.zip');
+             const blob = await res.blob();
+             const url  = URL.createObjectURL(blob);
+             const a = document.createElement('a');
+@@ -455,51 +457,51 @@
+         const statusEl = document.getElementById('zip-status');
+         const setBtnBusy = (busy) => {
+           if (!btn) return;
+           btn.disabled = !!busy;
+           btn.classList.toggle('btn-busy', !!busy);
+         };
+         const announce = (t) => { if(statusEl){ statusEl.textContent = t; } };
+ 
+         btnShare?.addEventListener('click', async () => {
+           const ok = await shareFileEntries(FILE_ENTRIES, {
+             fallbackMessage: 'この端末では写真の共有保存が難しいため、ZIPダウンロードをご利用ください。'
+           });
+           if (ok) announce('共有メニューを開きました');
+         });
+ 
+         btn?.addEventListener('click', async () => {
+           if (!ALL_PATHS.length) return;
+           setBtnBusy(true); if (btnShare) btnShare.disabled = true; announce('ZIP生成を開始しました');
+           const idKey = (crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
+           startProgressPolling(idKey);
+           const hideAfterMs = 1200;
+ 
+           try{
+             const res = await fetch('/api/zip-stream', {
+               method: 'POST',
+-              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey },
++              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey, 'X-CSRF-Token': CSRF_TOKEN },
+               body: JSON.stringify({ paths: ALL_PATHS })
+             });
+ 
+             if (res.status === 409) {
+               announce('既にZIP生成中です'); return;
+             }
+             if (!res.ok) {
+               announce('エラーが発生しました'); return;
+             }
+ 
+             await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
+             announce('生成完了—ダウンロードが始まります');
+ 
+             const cd  = res.headers.get('Content-Disposition') || '';
+             const m   = cd.match(/filename=([^;]+)/i);
+             const fn  = (m ? m[1].trim().replace(/^["']|["']$/g, '') : 'download.zip');
+             const blob = await res.blob();
+             const url  = URL.createObjectURL(blob);
+             const a = document.createElement('a');
+             a.href = url; a.download = fn;
+             document.body.appendChild(a); a.click(); a.remove();
+             URL.revokeObjectURL(url);
+ 
+           }catch(e){
+             announce('通信エラーが発生しました');
+diff --git a/utils/ext_api_uploads.py b/utils/ext_api_uploads.py
+index 26b63ac67f1e454adb0fc58b80c3273054613f62..35a92d01c1e7e4f6d74982ca2cccd344a5702f91 100644
+--- a/utils/ext_api_uploads.py
++++ b/utils/ext_api_uploads.py
+@@ -7,50 +7,51 @@
+ # - /api/ext/up/thumb    : 生成済みサムネ (webp) を保存（表示は既存の view が利用）
+ #
+ # 認証:
+ #   環境変数 MFU_EXT_API_KEY がセットされている場合のみ Bearer チェックを有効化。
+ #   未設定（空文字）の場合は認証をスキップ（LAN 内テスト等）。
+ #
+ # 既存アプリへの組み込み:
+ #   from app.utils.ext_api_uploads import ext_up
+ #   app.register_blueprint(ext_up)
+ #
+ # 依存:
+ #   - app.utils.db.get_db() : MySQL接続 (conn/cursor)
+ #   - app.utils.file_ops.sanitize_filename(name, denyset) : ファイル名サニタイズ
+ #   - uploads, files テーブルスキーマ（一般的な想定に合わせています）
+ # ------------------------------------------------------------
+ 
+ from __future__ import annotations
+ import os
+ import uuid as _uuid
+ import secrets
+ import threading
+ import re
+ from datetime import datetime, timedelta
+ from typing import Optional, Tuple
+ from flask import Blueprint, request, jsonify, abort, current_app
++from app.utils.upload_security import hash_upload_password
+ 
+ # ---- 可変部: 既存ユーティリティの取り込み（無ければフォールバック） ----
+ try:
+     from app.utils.db import get_db  # type: ignore
+ except Exception:
+     # フォールバック: ダミーを定義（本番では必ず既存の get_db を使ってください）
+     def get_db():
+         raise RuntimeError("get_db() is not available. Ensure app.utils.db is importable.")
+ 
+ try:
+     from app.utils.file_ops import sanitize_filename  # type: ignore
+ except Exception:
+     # 最低限のフォールバック（全角→そのまま、禁則文字を下線へ）
+     def sanitize_filename(name: str, denyset: set[str] | None = None) -> str:
+         deny = denyset or set()
+         # Windows禁止文字や制御文字など簡易除去
+         name = re.sub(r"[\\/:*?\"<>|\x00-\x1F]", "_", name)
+         name = name.strip().strip(".")  # 先頭末尾のドットなども避ける
+         for d in deny:
+             name = name.replace(d, "_")
+         return name or "file"
+ 
+ # ---- 設定 ----
+ UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
+ API_KEY = os.environ.get("MFU_EXT_API_KEY", "").strip()
+@@ -111,59 +112,60 @@ def _ensure_upload_row(uuid32: str) -> Optional[int]:
+     row = cur.fetchone()
+     cur.close()
+     if not row:
+         return None
+     if isinstance(row, dict):
+         return int(row.get("id"))
+     return int(row[0])
+ 
+ # ---- ルーティング ----
+ @ext_up.route("/create", methods=["POST"])
+ def create_upload():
+     """アップロード枠の作成"""
+     _auth_required()
+     data = request.get_json(silent=True) or {}
+     title = (data.get("title") or "").strip()
+     date_str = _parse_date(data.get("date"))
+     mode = (data.get("mode") or "").strip()
+     username = (data.get("username") or "").strip()
+     require_password = bool(data.get("require_password"))
+ 
+     if not mode or not username:
+         return jsonify({"ok": False, "error": "missing mode/username"}), 400
+ 
+     uuid32 = _uuid.uuid4().hex
+     password = secrets.token_hex(4) if require_password else ""
++    password_hash = hash_upload_password(password) if password else None
+     _mk_dirs(uuid32)
+     expire_at = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+ 
+     db = get_db()
+     cur = db.cursor()
+     cur.execute(
+-        """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password)
+-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+-        (uuid32, title, date_str, expire_at, mode, username, "", password),
++        """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
++           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
++        (uuid32, title, date_str, expire_at, mode, username, "", "", password_hash),
+     )
+     db.commit()
+     cur.close()
+     return jsonify({"ok": True, "uuid": uuid32, "password": password})
+ 
+ 
+ @ext_up.route("/original", methods=["POST"])
+ def push_original():
+     """原本ファイルの保存"""
+     _auth_required()
+     uuid32 = (request.form.get("uuid") or "").strip()
+     file = request.files.get("file")
+     if not uuid32 or not file:
+         return jsonify({"ok": False, "error": "missing uuid/file"}), 400
+ 
+     upload_id = _ensure_upload_row(uuid32)
+     if upload_id is None:
+         return jsonify({"ok": False, "error": "unknown uuid"}), 404
+ 
+     o_dir = os.path.join(UPLOAD_BASE_DIR, uuid32, "original")
+     os.makedirs(o_dir, exist_ok=True)
+     safe_name = sanitize_filename(file.filename or "file", set())
+     full, real_name = _unique_path(o_dir, safe_name)
+     file.save(full)
+ 
+diff --git a/utils/upload_security.py b/utils/upload_security.py
+index f41babab9af300d493031559b954775fc06ca5fb..431139ebde2cd7b3f0a0a261c554b02ff4c5544a 100644
+--- a/utils/upload_security.py
++++ b/utils/upload_security.py
+@@ -1,44 +1,54 @@
+ """アップロード時のセキュリティ検証ユーティリティ。"""
+ 
+ from __future__ import annotations
+ 
++import bcrypt
+ import os
+ import re
+ from pathlib import Path
+-from typing import Iterable
++from typing import Iterable, Optional
++
++from flask import current_app, session
++from werkzeug.utils import safe_join
++
++from app.utils.db import get_db
+ 
+ 
+ # 必要に応じて拡張して利用する。
+ DEFAULT_ALLOWED_EXTENSIONS = {
+     ".jpg": "image/jpeg",
+     ".jpeg": "image/jpeg",
+     ".png": "image/png",
+     ".gif": "image/gif",
+     ".pdf": "application/pdf",
  }
  
- /* Bootstrap modal が transform 配下で backdrop に負けて操作不能になる対策 */
- #chat-fulltext-modal.chat-fulltext-modal.modal {
-   z-index: 3000;
++VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
++VIEW_AUTH_MAX_ITEMS = 50
++_UUID32_RE = re.compile(r"^[0-9a-f]{32}$")
++
+ # 代表的な「危険な実行系拡張子」
+ DENY_EXTENSION_SEGMENTS = {
+     "php",
+     "phtml",
+     "php3",
+     "php4",
+     "php5",
+     "phar",
+     "cgi",
+     "pl",
+     "py",
+     "rb",
+     "sh",
+     "bash",
+     "exe",
+     "dll",
+     "so",
+     "js",
+     "jsp",
+     "asp",
+     "aspx",
+ }
+ 
+ 
+ def sanitize_filename(name: str, used_names: set[str]) -> str:
+@@ -88,25 +98,225 @@ def validate_upload_file(
+     detected_mime: str,
+     allowed_extensions: dict[str, str],
+ ) -> tuple[bool, str]:
+     """拡張子・二重拡張子・MIME整合をチェックする。"""
+     lowered = (filename or "").lower()
+     ext = os.path.splitext(lowered)[1]
+ 
+     if not ext or ext not in allowed_extensions:
+         return False, f"許可されていない拡張子です: {ext or '(なし)'}"
+ 
+     if has_double_extension(lowered):
+         return False, "二重拡張子ファイルは拒否されました"
+ 
+     expected_mime = allowed_extensions[ext]
+     normalized_header = (header_mime or "").split(";")[0].strip().lower()
+ 
+     # Header は参考程度。実データ判定を最優先する。
+     if detected_mime != expected_mime:
+         return False, (
+             "MIME 不一致: "
+             f"expected={expected_mime}, detected={detected_mime}, header={normalized_header or 'N/A'}"
+         )
+ 
+     return True, "ok"
+ 
++
++def cleanup_legacy_view_auth_keys(current_uuid: str | None = None) -> None:
++    """旧形式の session['view_auth_<uuid>'] を削除する。"""
++    for key in list(session.keys()):
++        if not key.startswith("view_auth_"):
++            continue
++        if current_uuid and key == f"view_auth_{current_uuid}":
++            continue
++        session.pop(key, None)
++
++
++def grant_view_auth(uuid: str) -> None:
++    cleanup_legacy_view_auth_keys(current_uuid=uuid)
++    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
++    if uuid in allowed:
++        return
++    session[VIEW_AUTH_SESSION_KEY] = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
++
++
++def has_view_auth(uuid: str) -> bool:
++    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
++    if uuid in allowed:
++        return True
++
++    legacy_key = f"view_auth_{uuid}"
++    if session.get(legacy_key):
++        grant_view_auth(uuid)
++        session.pop(legacy_key, None)
++        return True
++    return False
++
++
++def hash_upload_password(password: str) -> str:
++    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
++
++
++def ensure_upload_password_schema() -> None:
++    """
++    uploads.password_hash を追加し、legacy の平文 password を安全にハッシュ移行する。
++    再実行しても壊れないようにする。
++    """
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("SHOW COLUMNS FROM uploads")
++        columns = {row["Field"] for row in cur.fetchall()}
++        if "password_hash" not in columns:
++            cur.execute("ALTER TABLE uploads ADD COLUMN password_hash VARCHAR(255) NULL AFTER password")
++            db.commit()
++
++        if "password" not in columns:
++            return
++
++        cur.execute(
++            """
++            SELECT id, password
++              FROM uploads
++             WHERE COALESCE(password_hash, '') = ''
++               AND COALESCE(password, '') <> ''
++            """
++        )
++        legacy_rows = cur.fetchall()
++        for row in legacy_rows:
++            cur.execute(
++                "UPDATE uploads SET password_hash=%s, password='' WHERE id=%s",
++                (hash_upload_password(row["password"]), row["id"]),
++            )
++        if legacy_rows:
++            db.commit()
++    finally:
++        db.close()
++
++
++def migrate_upload_password_if_needed(upload: dict) -> Optional[str]:
++    legacy_password = (upload.get("password") or "").strip()
++    if upload.get("password_hash") or not legacy_password or not upload.get("id"):
++        return upload.get("password_hash")
++
++    password_hash = hash_upload_password(legacy_password)
++    db = get_db()
++    cur = db.cursor()
++    try:
++        cur.execute(
++            "UPDATE uploads SET password_hash=%s, password='' WHERE id=%s",
++            (password_hash, upload["id"]),
++        )
++        db.commit()
++    finally:
++        db.close()
++    upload["password_hash"] = password_hash
++    upload["password"] = ""
++    return password_hash
++
++
++def upload_password_required(upload: dict | None) -> bool:
++    if not upload:
++        return False
++    require_password = str(upload.get("require_password") or "").lower() in ("1", "true", "t", "yes", "y")
++    has_secret = bool((upload.get("password_hash") or "").strip() or (upload.get("password") or "").strip())
++    return require_password or has_secret
++
++
++def verify_upload_password(upload: dict, input_password: str) -> bool:
++    if not upload_password_required(upload):
++        return True
++
++    candidate = (input_password or "").encode("utf-8")
++    password_hash = (upload.get("password_hash") or "").strip()
++    if password_hash:
++        try:
++            return bcrypt.checkpw(candidate, password_hash.encode("utf-8"))
++        except ValueError:
++            return False
++
++    legacy_password = (upload.get("password") or "").strip()
++    if not legacy_password:
++        return False
++    if input_password != legacy_password:
++        return False
++    migrate_upload_password_if_needed(upload)
++    return True
++
++
++def can_access_upload_record(upload: dict | None, *, has_view_auth_func=None) -> bool:
++    if not upload:
++        return False
++
++    username = session.get("user")
++    if username == "admin":
++        return True
++    if username and username == upload.get("username"):
++        return True
++    if has_view_auth_func and has_view_auth_func(upload.get("uuid")):
++        return True
++    return not upload_password_required(upload)
++
++
++def fetch_upload_access_record(uuid: str) -> Optional[dict]:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute("SELECT * FROM uploads WHERE uuid=%s", (uuid,))
++        upload = cur.fetchone()
++        if not upload:
++            return None
++
++        cur.execute(
++            """
++            SELECT require_password, generate_thumbnails
++              FROM upload_modes
++             WHERE username=%s AND mode=%s
++             LIMIT 1
++            """,
++            (upload["username"], upload["mode"]),
++        )
++        mode_row = cur.fetchone() or {}
++        upload["require_password"] = mode_row.get("require_password")
++        upload["generate_thumbnails"] = mode_row.get("generate_thumbnails")
++        return upload
++    finally:
++        db.close()
++
++
++def resolve_upload_subpath(subpath: str, *, allow_zip: bool = True) -> Optional[dict]:
++    normalized = (subpath or "").strip().lstrip("/")
++    if normalized.startswith("uploads/"):
++        normalized = normalized[len("uploads/"):]
++
++    parts = normalized.split("/", 2)
++    allowed_kinds = {"original", "thumb"}
++    if allow_zip:
++        allowed_kinds.add("zip")
++    if len(parts) != 3:
++        return None
++
++    uuid, kind, filename = parts
++    if not (_UUID32_RE.fullmatch(uuid or "") and kind in allowed_kinds and filename):
++        return None
++
++    storage_root = current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
++    full = safe_join(storage_root, uuid, kind, filename)
++    if not full:
++        return None
++
++    target = Path(full).resolve()
++    base_dir = Path(storage_root).resolve()
++    try:
++        if not target.is_relative_to(base_dir):
++            return None
++    except AttributeError:
++        base_prefix = str(base_dir) + os.sep
++        if str(target) != str(base_dir) and not str(target).startswith(base_prefix):
++            return None
++
++    return {
++        "uuid": uuid,
++        "kind": kind,
++        "filename": filename,
++        "target": target,
++    }
+diff --git a/utils/zip_stream.py b/utils/zip_stream.py
+index cf66fb9991e9f89ba249d9271bff3a927f8a98f3..51b6ee88361af4712984ce8647681fa07c7a763b 100644
+--- a/utils/zip_stream.py
++++ b/utils/zip_stream.py
+@@ -1,40 +1,41 @@
+ # /mnt/mfu/app/utils/zip_stream.py
+ # ===[ 選択式ZIP: Python標準zipで一時ファイル生成 / UUID名 / 直下配置 / 進行状況ファイル ]===
+ import os
+ import re
+ import json
+ import uuid
+ import time
+ import zipfile
+ from datetime import datetime
+ from typing import Optional, Iterable, List, Tuple
+ 
+ from werkzeug.utils import safe_join
+ from flask import (
+     Blueprint, current_app, request, jsonify, send_file, after_this_request
+ )
++from app.utils.upload_security import can_access_upload_record, fetch_upload_access_record, has_view_auth, resolve_upload_subpath
+ 
+ # ------------------------------------------------------------
+ # Blueprint（他モジュールで使っていればそのまま生かす）
+ zip_api = Blueprint("zip_api", __name__)
+ 
+ # ------------------------------------------------------------
+ # 設定ヘルパ
+ def _cfg_storage_root() -> str:
+     # 通常アップロード保存先
+     return current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
+ 
+ def _cfg_albums_root() -> str:
+     # （従来の単一ルート）アルバム保存先
+     return current_app.config.get("ALBUMS_ROOT", "/mnt/mfu/mfu_albums")
+ 
+ def _cfg_album_multi_roots() -> List[str]:
+     """
+     アルバム保存先の候補を優先順で返す（SSD/HDD 両対応）。
+     設定で明示されていればそれを優先し、無ければ既定の2ルートを含める。
+     """
+     roots: List[str] = []
+     # 1) 既存 ALBUMS_ROOT
+     base = _cfg_albums_root()
+     if base:
+         roots.append(base)
+@@ -376,50 +377,55 @@ def resolve_relpath(rel: str) -> Optional[str]:
+ 
+ def make_zip_file(abs_paths: Iterable[str], key: str):
+     """
+     Back-compat: tickets 側の想定シグネチャと同じ。
+     TMP_ROOT/<key>.zip を生成して、その絶対パスを返す。
+     """
+     return _make_zip_file_internal(abs_paths, key)
+ 
+ __all__ = ["zip_api", "resolve_relpath", "make_zip_file"]
+ 
+ # ------------------------------------------------------------
+ # （任意）/api/zip-stream エンドポイントを使っている場合の互換
+ @zip_api.route("/api/zip-stream", methods=["POST"])
+ def api_zip_stream():
+     # 入口でTTL超過の進捗を掃除
+     _cleanup_progress_expired()
+ 
+     data = request.get_json(silent=True) or {}
+     relpaths = data.get("paths") or []
+     if not isinstance(relpaths, list) or not relpaths:
+         return "paths が未指定です", 400
+ 
+     abs_list = []
+     bad_paths = []
+     for rel in relpaths:
++        upload_ref = resolve_upload_subpath(str(rel), allow_zip=True)
++        if upload_ref:
++            upload = fetch_upload_access_record(upload_ref["uuid"])
++            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
++                return jsonify({"ok": False, "error": "unauthorized_upload_path", "path": rel}), 403
+         p = resolve_relpath(str(rel))
+         if not p or not os.path.isfile(p):
+             bad_paths.append(rel); continue
+         abs_list.append(p)
+ 
+     if not abs_list:
+         return jsonify({"ok": False, "error": "no_valid_files", "bad_paths": bad_paths}), 400
+ 
+     key = request.headers.get("X-Idempotency-Key") or uuid.uuid4().hex
+     if not re.fullmatch(r"[0-9A-Za-z._:-]{8,}", key):
+         key = uuid.uuid4().hex
+ 
+     if not _acquire_lock(key):
+         prog = _progress_read(key)
+         return jsonify({"ok": False, "error": "already_in_progress", "progress": prog}), 409
+ 
+     path = _make_zip_file_internal(abs_list, key)
+     if not path:
+         _unlock_only(key)  # 失敗時もロック解除
+         return jsonify({"ok": False, "error": "zip_failed"}), 500
+ 
+     # このAPIは「即ダウンロード＆後始末」仕様（進捗はTTLまで残す）
+     dl_name = f"{uuid.uuid4().hex}.zip"
+ 
+     @after_this_request

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <title>写真閲覧</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
   <style>
     body { font-family: sans-serif; background:#f9f9f9; margin:0; padding:1em; }
@@ -171,6 +172,7 @@
         if (fill) fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
         if (txt)  txt.textContent = text;
       }
+      const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
       const FILE_ENTRIES = {{ file_entries|tojson }};
       function toAbsoluteUrl(urlLike){
         if (!urlLike) return '';
@@ -369,7 +371,7 @@
           try {
             const res = await fetch('/api/zip-stream', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey },
+              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey, 'X-CSRF-Token': CSRF_TOKEN },
               body: JSON.stringify({ paths })
             });
 
@@ -477,7 +479,7 @@
           try{
             const res = await fetch('/api/zip-stream', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey },
+              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey, 'X-CSRF-Token': CSRF_TOKEN },
               body: JSON.stringify({ paths: ALL_PATHS })
             });
 

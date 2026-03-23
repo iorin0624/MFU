@@ -13,6 +13,7 @@ from werkzeug.utils import safe_join
 from flask import (
     Blueprint, current_app, request, jsonify, send_file, after_this_request
 )
+from app.utils.upload_security import can_access_upload_record, fetch_upload_access_record, has_view_auth, resolve_upload_subpath
 
 # ------------------------------------------------------------
 # Blueprint（他モジュールで使っていればそのまま生かす）
@@ -398,6 +399,11 @@ def api_zip_stream():
     abs_list = []
     bad_paths = []
     for rel in relpaths:
+        upload_ref = resolve_upload_subpath(str(rel), allow_zip=True)
+        if upload_ref:
+            upload = fetch_upload_access_record(upload_ref["uuid"])
+            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
+                return jsonify({"ok": False, "error": "unauthorized_upload_path", "path": rel}), 403
         p = resolve_relpath(str(rel))
         if not p or not os.path.isfile(p):
             bad_paths.append(rel); continue
