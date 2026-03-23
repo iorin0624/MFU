@@ -16,7 +16,7 @@
   <h1 class="h5 mb-3">あなたの役割 - <span class="fw-normal">{{ event.title }}</span></h1>
 
   <form method="post" class="vstack gap-3">
-    {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
+    {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">{% endif %}
 
     <div class="form-check form-switch">
       <input class="form-check-input" type="checkbox" id="is_camera" name="is_camera" value="1" {{ 'checked' if role.is_camera else '' }}>
