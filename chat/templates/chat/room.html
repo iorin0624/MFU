@@ -40,6 +40,10 @@
   min-width: 0;
 }
 
+.chat-line > * {
+  min-width: 0;
+}
+
 .chat-row.me .chat-line {
   justify-content: flex-end;
 }
@@ -51,8 +55,9 @@
 .chat-main {
   display: flex;
   flex-direction: column;
-  max-width: min(80%, 560px);
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: min(100%, 560px);
 }
 
 .chat-row.me .chat-main {
@@ -73,8 +78,10 @@
   display: flex;
   align-items: flex-end;
   gap: 6px;
+  width: 100%;
   min-width: 0;
-  flex: 0 0 auto;
+  max-width: 100%;
+  flex: 1 1 auto;
   position: relative;
 }
 
@@ -84,15 +91,18 @@
 }
 
 .chat-bubble {
-  display: inline-block;
-  max-width: min(calc(100% - 64px), 28rem);
+  /* メタ列ぶんを引いた残り幅で縮められる吹き出しにする */
+  display: block;
+  width: fit-content;
+  min-width: 0;
+  max-width: min(100%, calc(100% - 64px));
   padding: 8px 12px;
   border-radius: 16px;
   line-height: 1.4;
   white-space: normal;
-  overflow-wrap: break-word;
-  word-break: normal;
-  flex: 0 0 auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  flex: 0 1 auto;
   position: relative;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
@@ -106,8 +116,8 @@
 
 .chat-body {
   min-width: 0;
-  overflow-wrap: break-word;
-  word-break: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
@@ -133,8 +143,8 @@
 .chat-body .chat-link {
   text-decoration: underline;
   color: #1f57d6;
-  overflow-wrap: break-word;
-  word-break: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-body p,
@@ -161,6 +171,7 @@
   align-items: flex-end;
   justify-content: flex-end;
   gap: 2px;
+  flex: 0 0 56px;
   min-width: 56px;
 }
 
@@ -605,12 +616,16 @@
   background: #fff;
 }
 
-.chat-bubble {
-  max-width: 100%;
+.chat-body,
+.chat-body *,
+.chat-body a,
+.chat-body .chat-link {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-body {
-  overflow-x: hidden;
+  overflow-x: hidden; /* 保険。見切れ対策の主因は上の折り返し＋flex調整 */
 }
 
 #chat-body {
@@ -1045,6 +1060,20 @@
 
   #messages.chat-messages {
     padding: .6rem !important;
+  }
+
+  /* iPhone 幅でもアバター・メタ列込みで自然に収める */
+  .chat-main {
+    max-width: 100%;
+  }
+
+  .chat-row.me .chat-bubble-wrap {
+    gap: 8px;
+  }
+
+  .chat-meta-col {
+    flex-basis: 52px;
+    min-width: 52px;
   }
 
   .chat-nav-label {
