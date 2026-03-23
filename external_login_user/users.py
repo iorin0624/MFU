@@ -35,7 +35,7 @@ from weasyprint import HTML
 # =========================
 from flask import (
     request, session, redirect, url_for, render_template,
-    abort, flash, current_app, send_from_directory, make_response
+    abort, flash, current_app, send_from_directory, make_response, jsonify
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
@@ -54,6 +54,13 @@ from .utils import (
     avatar_url_for,  # ← 追加
     QR_TRADEMARK_NOTICE,
     remember_session_map_value,
+    EXT_LOGIN_MODE_PWA,
+    PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
+    PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
+    normalize_ext_login_mode,
+    create_external_login_resume_token,
+    get_external_login_resume_token_summary,
+    consume_external_login_resume_token,
 )
 from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
@@ -1266,10 +1273,17 @@ def line_login():
 
     local_next = (_to_local_next(raw_next) or "/external-login/")[:512]
     session["ext_after_login_next"] = local_next  # ← セッションにも保持
+    login_mode = normalize_ext_login_mode(request.args.get("pwa") or session.get("ext_login_mode"))
+    session["ext_login_mode"] = login_mode
+    pwa_client_id = (request.args.get("pwa_client_id") or session.get("ext_pwa_client_id") or "").strip()[:128]
+    if login_mode == EXT_LOGIN_MODE_PWA and pwa_client_id:
+        session["ext_pwa_client_id"] = pwa_client_id
 
     # 2) 署名付き state を作って callback で検証できるようにする
     state_payload = {
         "n": local_next,                               # next（相対URL）
+        "mode": login_mode,
+        "pcid": pwa_client_id if login_mode == EXT_LOGIN_MODE_PWA else "",
         "ip": _client_ip_prefix(request.remote_addr or ""),
         "ua": _ua_sha256(request.headers.get("User-Agent", "")),
         "t": int(time.time()),                         # 発行時刻
@@ -1298,6 +1312,8 @@ def line_callback():
         return redirect(url_for("external_login_user.index"))
 
     next_path = _sanitize_next(payload.get("n"))
+    login_mode = normalize_ext_login_mode(payload.get("mode"))
+    pwa_client_id = (payload.get("pcid") or "").strip()[:128]
     ip_expected = payload.get("ip", "")
     ua_expected = payload.get("ua", "")
     issued_at = int(payload.get("t", 0) or 0)
@@ -1513,6 +1529,9 @@ def line_callback():
 
     # 追加：LINEログインは長期セッション扱いにする
     session.permanent = True
+    session["ext_login_mode"] = login_mode
+    if pwa_client_id:
+        session["ext_pwa_client_id"] = pwa_client_id
 
     # 既存の next を壊さない（上書きしない）
     session.setdefault("ext_after_login_next", next_path)
@@ -1539,13 +1558,72 @@ def line_callback():
         # \n を <br> にして安全にマーク
         email_notice_markup = Markup("<br>".join(escape(email_notice).split("\n")))
         flash(email_notice_markup, "info")
-        # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
-        return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
+        if login_mode != EXT_LOGIN_MODE_PWA:
+            # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
+            return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
     else:
         session.pop("ext_user_need_email", None)
 
+    if login_mode == EXT_LOGIN_MODE_PWA:
+        resume_token = create_external_login_resume_token(
+            ext_user_id=int(ext_user_id),
+            social_id=sub,
+            next_path=next_path,
+            mode=login_mode,
+            pwa_client_id=pwa_client_id or None,
+        )
+        return redirect(url_for("external_login_user.pwa_resume_page", rt=resume_token))
+
     # メール登録済みなら通常遷移
     return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
+
+
+@bp.get("/pwa-resume")
+def pwa_resume_page():
+    resume_token = (request.args.get("rt") or "").strip()
+    summary = get_external_login_resume_token_summary(resume_token)
+    next_path = _sanitize_next((summary or {}).get("next_path") or url_for("external_login_user.index"))
+    is_valid = bool(summary)
+    return render_template(
+        "pwa_resume.html",
+        resume_token=resume_token if is_valid else "",
+        next_path=next_path,
+        is_valid=is_valid,
+        resume_token_key=PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
+        resume_token_at_key=PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
+    )
+
+
+@bp.post("/api/pwa-resume/consume")
+def pwa_resume_consume_api():
+    payload = request.get_json(silent=True) or {}
+    token = (payload.get("token") or request.form.get("token") or "").strip()
+    pwa_client_id = (payload.get("pwa_client_id") or request.form.get("pwa_client_id") or "").strip()[:128]
+
+    row = consume_external_login_resume_token(token=token or None, pwa_client_id=pwa_client_id or None)
+    if not row:
+        return jsonify({
+            "ok": False,
+            "message": "復帰トークンの有効期限が切れたか、すでに使用済みです。再度ログインしてください。",
+        }), 400
+
+    next_path = _sanitize_next((row.get("next_path") or "").strip() or url_for("external_login_user.index"))
+    session["ext_user_id"] = int(row["ext_user_id"])
+    session["ext_user_social_id"] = (row.get("social_id") or "").strip()
+    session["ext_after_login_next"] = next_path
+    session["ext_login_mode"] = normalize_ext_login_mode(row.get("mode"))
+    session.permanent = True
+
+    me = _get_ext_user_by_social(session["ext_user_social_id"])
+    if me:
+        session["ext_user_nickname"] = me.get("nickname") or "（未設定）"
+        email = (me.get("email") or "").strip()
+        if email and "@" in email:
+            session.pop("ext_user_need_email", None)
+        else:
+            session["ext_user_need_email"] = True
+
+    return jsonify({"ok": True, "next": next_path})
 
 # =========================
 # プロフィール（CSRF, 画像アップ対応・メール確認送信対応）
@@ -2832,7 +2910,8 @@ def logout():
     # 主要キーを削除
     for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname",
               "ext_after_login_next", "ext_user_onboarding",
-              "ext_user_need_email", "ext_user_email_unverified"):
+              "ext_user_need_email", "ext_user_email_unverified",
+              "ext_login_mode", "ext_pwa_client_id"):
         session.pop(k, None)
     # フラッシュ全消し
     session.pop("_flashes", None)

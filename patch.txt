@@ -1,448 +1,82 @@
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index e7d46af7b3b88c79ca1c9bf63b444dae462a9d94..a1f3a92f0ae57c61b272775007340529a0938649 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -1,49 +1,52 @@
- from __future__ import annotations
- 
- import hashlib
- import hmac
- import os
--from datetime import datetime, timezone
-+from datetime import datetime, timedelta, timezone
- from time import perf_counter
- from typing import Any
- from urllib.parse import parse_qs, urlparse
- 
- from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
- 
- from . import bp
- from .utils import _require_ext_login
- from app.utils.db import get_db
-+from app.utils.mail import send_external_unread_reminder_mail
- 
- try:
-     from app.chat.socketio_ext import socketio
- except Exception:  # pragma: no cover
-     socketio = None
- 
- 
- _READ_NOTIFICATIONS_KEEP_LIMIT = 30
-+_JST = timezone(timedelta(hours=9))
- mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
-+_EXTERNAL_UNREAD_REMINDER_COLUMN = "notification_unread_reminder_last_sent_at"
- 
- 
- def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
-     if str(user_kind) == "mfu":
-         return (recipient_key or "").strip()
-     return str(int(user_id or 0))
- 
- 
- def _notification_storage_user_id(user_kind: str, user_id: int, recipient_key: str | None = None) -> int:
-     if str(user_kind) != "mfu":
-         return int(user_id or 0)
-     recipient = (recipient_key or "").strip()
-     if not recipient:
-         return 0
-     digest = hashlib.sha1(recipient.encode("utf-8")).digest()
-     return int.from_bytes(digest[:8], "big", signed=False)
- 
- def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
-     if int(ext_user_id or 0) <= 0:
-         return None
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-@@ -156,50 +159,66 @@ def _is_mfu_notification_user(username: str) -> bool:
-         cur.execute("SELECT 1 FROM mfu_event_admin_acl WHERE username=%s LIMIT 1", (name,))
-         return bool(cur.fetchone())
-     except Exception:
-         return False
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
-     username, role = _resolve_mfu_notification_recipient_for_session()
-     if not username:
-         current_app.logger.info("mfu notification guard denied reason=login_required")
-         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
-     if not _is_mfu_notification_user(username):
-         current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
-         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
-     current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
-     return username, None
- 
- 
- def _now_utc() -> datetime:
-     return datetime.now(timezone.utc)
- 
- 
-+def _as_utc(dt: datetime | None) -> datetime | None:
-+    if dt is None:
-+        return None
-+    if dt.tzinfo is None:
-+        return dt.replace(tzinfo=timezone.utc)
-+    return dt.astimezone(timezone.utc)
-+
-+
-+def _same_jst_day(lhs: datetime | None, rhs: datetime | None) -> bool:
-+    lhs_utc = _as_utc(lhs)
-+    rhs_utc = _as_utc(rhs)
-+    if lhs_utc is None or rhs_utc is None:
-+        return False
-+    return lhs_utc.astimezone(_JST).date() == rhs_utc.astimezone(_JST).date()
-+
-+
- def _relative_time_from(dt: datetime | None) -> str:
-     if not dt:
-         return ""
-     if dt.tzinfo is None:
-         dt = dt.replace(tzinfo=timezone.utc)
-     delta = max(0, int((_now_utc() - dt).total_seconds()))
-     if delta < 60:
-         return "たった今"
-     if delta < 3600:
-         return f"{delta // 60}分前"
-     if delta < 86400:
-         return f"{delta // 3600}時間前"
-     if delta < 86400 * 7:
-         return f"{delta // 86400}日前"
-     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
- 
- 
- def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
-     chat_room_id = str(row.get("chat_room_id") or "").strip()
-     chat_event_id = int(row.get("chat_event_id") or 0) or None
-     if chat_room_id:
-         return chat_event_id, chat_room_id
- 
-     target_url = str(row.get("target_url") or "").strip()
-     event_id = int(row.get("event_id") or 0) or chat_event_id
-@@ -385,56 +404,69 @@ CREATE TABLE IF NOT EXISTS mfu_notification_deliveries (
-   sent_at DATETIME NULL,
-   PRIMARY KEY (id),
-   KEY idx_mfu_notification_deliveries_notification_id (notification_id),
-   KEY idx_mfu_notification_deliveries_dedup (dedup_key),
-   KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel),
-   KEY idx_mfu_notification_deliveries_created (created_at)
- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
- """
- 
- 
- def _ensure_notification_delivery_schema(cur) -> None:
-     cur.execute(_NOTIFICATION_DELIVERY_DDL)
-     cur.execute("SHOW INDEX FROM mfu_notification_deliveries")
-     existing_indexes = {str(r.get("Key_name") or "") for r in (cur.fetchall() or [])}
-     index_map = {
-         "idx_mfu_notification_deliveries_notification_id": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_notification_id (notification_id)",
-         "idx_mfu_notification_deliveries_dedup": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_dedup (dedup_key)",
-         "idx_mfu_notification_deliveries_recipient": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_recipient (recipient_type, recipient_value, channel)",
-         "idx_mfu_notification_deliveries_created": "ALTER TABLE mfu_notification_deliveries ADD KEY idx_mfu_notification_deliveries_created (created_at)",
-     }
-     for key_name, ddl in index_map.items():
-         if key_name not in existing_indexes:
-             cur.execute(ddl)
- 
- 
-+def _ensure_external_unread_reminder_schema(cur) -> None:
-+    cur.execute("SHOW COLUMNS FROM external_login_user")
-+    existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
-+    if _EXTERNAL_UNREAD_REMINDER_COLUMN not in existing:
-+        cur.execute(
-+            f"""
-+            ALTER TABLE external_login_user
-+            ADD COLUMN {_EXTERNAL_UNREAD_REMINDER_COLUMN} DATETIME NULL AFTER chat_admin_alias
-+            """
-+        )
-+
-+
- def _ensure_notification_schema() -> None:
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(_NOTIFICATION_DDL)
-         _ensure_notification_delivery_schema(cur)
-+        _ensure_external_unread_reminder_schema(cur)
- 
-         cur.execute("SHOW COLUMNS FROM mfu_notifications")
-         existing = {str(r.get("Field") or "") for r in (cur.fetchall() or [])}
- 
-         if "chat_event_id" not in existing:
-             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_event_id BIGINT UNSIGNED NULL AFTER event_id")
-         if "chat_room_id" not in existing:
-             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN chat_room_id VARCHAR(64) NULL AFTER chat_event_id")
-         if "recipient_key" not in existing:
-             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN recipient_key VARCHAR(191) NULL AFTER user_id")
-         if "room_type" not in existing:
-             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_type VARCHAR(32) NULL AFTER chat_room_id")
-         if "room_id" not in existing:
-             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN room_id VARCHAR(64) NULL AFTER room_type")
-         if "sender_label" not in existing:
-             cur.execute("ALTER TABLE mfu_notifications ADD COLUMN sender_label VARCHAR(255) NULL AFTER room_id")
- 
-         cur.execute(
-             """
-             UPDATE mfu_notifications
-                SET recipient_key=CAST(user_id AS CHAR)
-              WHERE user_kind='external'
-                AND (recipient_key IS NULL OR recipient_key='')
-             """
-         )
-@@ -534,50 +566,193 @@ def create_notification_external(
-     event_id: int | None = None,
-     chat_event_id: int | None = None,
-     chat_room_id: str | None = None,
- ) -> bool:
-     result = create_notification_dispatch_result(
-         recipient_type="external_user_id",
-         recipient_value=int(user_id),
-         kind=kind,
-         title=title,
-         body=body,
-         target_url=target_url or "/external-login/",
-         dedup_key=dedup_key,
-         event_id=event_id,
-         chat_event_id=chat_event_id,
-         chat_room_id=chat_room_id,
-     )
-     if not result.get("ok"):
-         current_app.logger.warning(
-             "create_notification_external failed user_id=%s reason=%s",
-             user_id,
-             result.get("reason"),
-         )
-     return bool(result.get("created"))
- 
- 
-+def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> dict[str, int]:
-+    _ensure_notification_schema()
-+    now_utc = _as_utc(now_utc) or _now_utc()
-+    summary = {
-+        "candidates": 0,
-+        "sent": 0,
-+        "failed": 0,
-+        "skipped_no_mail": 0,
-+        "skipped_already_sent_today": 0,
-+        "skipped_no_unread": 0,
-+        "skipped_invalid_user": 0,
-+    }
-+
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            f"""
-+            SELECT id, email, {_EXTERNAL_UNREAD_REMINDER_COLUMN} AS last_sent_at
-+              FROM external_login_user
-+             WHERE id > 0
-+             ORDER BY id ASC
-+            """
-+        )
-+        rows = cur.fetchall() or []
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+    summary["candidates"] = len(rows)
-+    current_app.logger.info(
-+        "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
-+        summary["candidates"],
-+        now_utc.isoformat(),
-+        now_utc.astimezone(_JST).isoformat(),
-+    )
-+
-+    for row in rows:
-+        user_id = int(row.get("id") or 0)
-+        email = str(row.get("email") or "").strip()
-+        last_sent_at = _as_utc(row.get("last_sent_at"))
-+
-+        if user_id <= 0:
-+            summary["skipped_invalid_user"] += 1
-+            current_app.logger.info(
-+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
-+                user_id,
-+                email or "-",
-+                0,
-+            )
-+            continue
-+
-+        if not email:
-+            summary["skipped_no_mail"] += 1
-+            current_app.logger.info(
-+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
-+                user_id,
-+                email or "-",
-+                0,
-+            )
-+            continue
-+
-+        if _same_jst_day(last_sent_at, now_utc):
-+            summary["skipped_already_sent_today"] += 1
-+            current_app.logger.info(
-+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=当日送信済み last_sent_at=%s",
-+                user_id,
-+                email,
-+                0,
-+                last_sent_at.isoformat() if last_sent_at else None,
-+            )
-+            continue
-+
-+        try:
-+            unread_count = _compute_unread_count_external(user_id)
-+        except Exception:
-+            summary["failed"] += 1
-+            current_app.logger.exception(
-+                "external unread reminder unread count failed user_id=%s email=%s",
-+                user_id,
-+                email,
-+            )
-+            continue
-+
-+        if unread_count <= 0:
-+            summary["skipped_no_unread"] += 1
-+            current_app.logger.info(
-+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
-+                user_id,
-+                email,
-+                unread_count,
-+            )
-+            continue
-+
-+        try:
-+            send_external_unread_reminder_mail(email, external_login_user_id=user_id)
-+            db = get_db()
-+            update_cur = db.cursor()
-+            try:
-+                update_cur.execute(
-+                    f"""
-+                    UPDATE external_login_user
-+                       SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
-+                     WHERE id=%s
-+                    """,
-+                    (now_utc.replace(tzinfo=None), user_id),
-+                )
-+                db.commit()
-+            except Exception:
-+                db.rollback()
-+                raise
-+            finally:
-+                update_cur.close()
-+                db.close()
-+            summary["sent"] += 1
-+            current_app.logger.info(
-+                "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
-+                user_id,
-+                email,
-+                unread_count,
-+            )
-+        except Exception:
-+            summary["failed"] += 1
-+            current_app.logger.exception(
-+                "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
-+                user_id,
-+                email,
-+                unread_count,
-+            )
-+
-+    current_app.logger.info(
-+        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_already_sent_today=%s skipped_no_unread=%s skipped_invalid_user=%s",
-+        summary["candidates"],
-+        summary["sent"],
-+        summary["failed"],
-+        summary["skipped_no_mail"],
-+        summary["skipped_already_sent_today"],
-+        summary["skipped_no_unread"],
-+        summary["skipped_invalid_user"],
-+    )
-+    return summary
-+
-+
- def _compute_unread_count_mfu(username: str) -> int:
-     recipient = (username or "").strip()
-     if not recipient:
-         return 0
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT COUNT(*) AS cnt
-               FROM mfu_notifications
-              WHERE user_kind='mfu'
-                AND recipient_key=%s
-                AND read_at IS NULL
-             """,
-             (recipient,),
-         )
-         return int((cur.fetchone() or {}).get("cnt") or 0)
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _emit_notif_unread_mfu(username: str, reason: str = "sync", latest_id: int | None = None) -> None:
-     if socketio is None:
 diff --git a/external_login_user/schema.py b/external_login_user/schema.py
-index 56e02edaa940fac92db093a58c28c7b98fcac7f1..c5ce600f8f7184ca018af58bc67daec20585fa56 100644
+index c5ce600f8f7184ca018af58bc67daec20585fa56..6571b54514784423266a695780f6976a66f27eea 100644
 --- a/external_login_user/schema.py
 +++ b/external_login_user/schema.py
-@@ -1,48 +1,49 @@
- # -*- coding: utf-8 -*-
- from __future__ import annotations
- import logging
- from flask import current_app
- from . import bp
- from app.utils.db import get_db
- 
- # MySQL エラーコード（任意）
- try:
-     from mysql.connector import errors as mysql_errors
- except Exception:
-     mysql_errors = None  # type: ignore
- 
- DDL_EXTERNAL = """
- CREATE TABLE IF NOT EXISTS external_login_user (
-   id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-   mfu_uuid         BINARY(16)      NOT NULL,
-   social_id        VARCHAR(191)    NOT NULL,
-   nickname         VARCHAR(50)     NOT NULL,
-   x_id             VARCHAR(15)     NULL,
-   instagram_id     VARCHAR(30)     NULL,
-   email            VARCHAR(191)    NULL,
-   chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
-+  notification_unread_reminder_last_sent_at DATETIME NULL,
-   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-   updated_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+@@ -129,155 +129,198 @@ CREATE TABLE IF NOT EXISTS mfu_notifications (
+ DDL_PAYMENT_REQUEST = """
+ CREATE TABLE IF NOT EXISTS mfu_payment_request (
+   id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   token          CHAR(36) NOT NULL,
+   event_id       BIGINT UNSIGNED NOT NULL,
+   event_uuid     CHAR(36) NULL,
+   user_id        BIGINT UNSIGNED NOT NULL,
+   nickname       VARCHAR(50)     NULL,
+   x_id           VARCHAR(15)     NULL,
+   instagram_id   VARCHAR(30)     NULL,
+   buyer_email    VARCHAR(255)    NULL,
+   kind           VARCHAR(32)     NOT NULL DEFAULT 'event_fee',
+   tip_event_id   BIGINT UNSIGNED NULL,
+   amount_yen     INT UNSIGNED NOT NULL,
+   lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0,
+   status         ENUM('pending','used','canceled') NOT NULL DEFAULT 'pending',
+   created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   used_at        DATETIME NULL,
    PRIMARY KEY (id),
-   UNIQUE KEY uniq_mfu_uuid   (mfu_uuid),
-   UNIQUE KEY uniq_social_id  (social_id),
-   KEY        idx_x_id        (x_id),
-   KEY        idx_instagram   (instagram_id),
-   KEY        idx_email       (email)
+   UNIQUE KEY uniq_token (token),
+   KEY idx_evt_user (event_id, user_id),
+   KEY idx_status (status)
  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
  """
  
- # ★ 支払期間（pay_from / pay_until）をDDLに追加
- DDL_EVENT = """
- CREATE TABLE IF NOT EXISTS mfu_event (
-   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-   event_uuid      BINARY(16)      NOT NULL,
-   title           VARCHAR(200)    NOT NULL,
-   owner_user_id   BIGINT UNSIGNED NULL,
-   starts_at       DATETIME        NULL,
-   fee_yen         INT UNSIGNED    NULL,
-   tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
-   pay_from        DATETIME        NULL,
-   pay_until       DATETIME        NULL,
-   place_name      VARCHAR(200)    NULL,
-   address         VARCHAR(255)    NULL,
-@@ -178,50 +179,55 @@ def _on_bp_registered(state) -> None:
++DDL_EXTERNAL_LOGIN_RESUME_TOKEN = """
++CREATE TABLE IF NOT EXISTS external_login_resume_token (
++  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
++  token_hash         CHAR(64)        NOT NULL,
++  ext_user_id        BIGINT UNSIGNED NOT NULL,
++  social_id          VARCHAR(191)    NOT NULL,
++  next_path          VARCHAR(512)    NOT NULL,
++  mode               ENUM('browser','pwa') NOT NULL DEFAULT 'pwa',
++  pwa_client_id_hash CHAR(64)        NULL,
++  issued_at          DATETIME        NOT NULL,
++  expires_at         DATETIME        NOT NULL,
++  consumed_at        DATETIME        NULL,
++  created_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  updated_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
++  PRIMARY KEY (id),
++  UNIQUE KEY uq_ext_login_resume_token_hash (token_hash),
++  KEY idx_ext_login_resume_valid (expires_at, consumed_at),
++  KEY idx_ext_login_resume_user (ext_user_id, issued_at),
++  KEY idx_ext_login_resume_pwa_client (pwa_client_id_hash, consumed_at, expires_at)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
++"""
++
+ def _ensure_index(cur, check_sql: str, create_sql: str):
+     try:
+         cur.execute(check_sql)
+         has = cur.fetchone()[0]
+     except Exception:
+         has = 0
+     if not has:
+         try:
+             cur.execute(create_sql)
+         except Exception as e:
+             if not (mysql_errors and getattr(e, "errno", None) == 1061):
+                 pass
+ 
+ @bp.record_once
+ def _on_bp_registered(state) -> None:
+     app = state.app
+     with app.app_context():
+         try:
+             db = get_db(); cur = db.cursor()
+             # ベースDDL
+             cur.execute(DDL_EXTERNAL)
+             cur.execute(DDL_EVENT)
+             cur.execute(DDL_EVENT_MEMBER)
+             cur.execute(DDL_ALBUM_PROCESS)
+             cur.execute(DDL_PAYMENT_REQUEST)
              cur.execute(DDL_NOTIFICATIONS)
++            cur.execute(DDL_EXTERNAL_LOGIN_RESUME_TOKEN)
  
              # 後方互換ALTER（存在しなければADD）
              def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
@@ -467,11 +101,11 @@ index 56e02edaa940fac92db093a58c28c7b98fcac7f1..c5ce600f8f7184ca018af58bc67daec2
              _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
              _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
              _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
-+            _ensure_col(
-+                "external_login_user",
-+                "notification_unread_reminder_last_sent_at",
-+                "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
-+            )
+             _ensure_col(
+                 "external_login_user",
+                 "notification_unread_reminder_last_sent_at",
+                 "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
+             )
  
              # ★ 追加：支払期間 列（後方互換で追加）
              _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
@@ -493,453 +127,1019 @@ index 56e02edaa940fac92db093a58c28c7b98fcac7f1..c5ce600f8f7184ca018af58bc67daec2
              _ensure_col("mfu_payment_request", "lecture_auto_approve",
                          "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
  
++            _ensure_col(
++                "external_login_resume_token",
++                "pwa_client_id_hash",
++                "pwa_client_id_hash CHAR(64) NULL AFTER mode",
++            )
++
              def _ensure_payment_request_status_enum() -> None:
                  try:
                      cur.execute("""
                          SELECT COLUMN_TYPE FROM information_schema.COLUMNS
-diff --git a/tests/test_external_unread_reminder.py b/tests/test_external_unread_reminder.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..b96994c38cddda7a8b92cc3189ca19b0a42d6bc6
---- /dev/null
-+++ b/tests/test_external_unread_reminder.py
-@@ -0,0 +1,195 @@
-+import importlib.util
-+import sys
-+import types
-+import unittest
-+from datetime import datetime, timezone
-+from pathlib import Path
-+from unittest.mock import patch
-+
-+
-+class _DummyLogger:
-+    def info(self, *args, **kwargs):
-+        return None
-+
-+    def warning(self, *args, **kwargs):
-+        return None
-+
-+    def exception(self, *args, **kwargs):
-+        return None
-+
-+
-+class _DummyBlueprint:
-+    def __init__(self, *args, **kwargs):
-+        return None
-+
-+    def app_context_processor(self, func):
-+        return func
-+
-+    def record_once(self, func):
-+        return func
-+
-+    def get(self, *args, **kwargs):
-+        return lambda func: func
-+
-+    def post(self, *args, **kwargs):
-+        return lambda func: func
-+
-+
-+def _install_flask_stub():
-+    flask_module = types.ModuleType("flask")
-+    flask_module.Blueprint = _DummyBlueprint
-+    flask_module.abort = lambda *args, **kwargs: None
-+    flask_module.current_app = types.SimpleNamespace(logger=_DummyLogger())
-+    flask_module.jsonify = lambda payload=None, *args, **kwargs: payload
-+    flask_module.redirect = lambda value, *args, **kwargs: value
-+    flask_module.render_template = lambda *args, **kwargs: ""
-+    flask_module.request = types.SimpleNamespace(args={}, view_args={}, endpoint=None)
-+    flask_module.session = {}
-+    sys.modules["flask"] = flask_module
-+
-+
-+def load_mail_module():
-+    repo_root = Path(__file__).resolve().parents[1]
-+    app_module = types.ModuleType("app")
-+    app_module.__path__ = []  # type: ignore[attr-defined]
-+    app_utils_module = types.ModuleType("app.utils")
-+    app_utils_module.__path__ = []  # type: ignore[attr-defined]
-+    app_utils_logs = types.ModuleType("app.utils.logs")
-+    app_utils_logs.write_smtp_log = lambda *args, **kwargs: None
-+    app_utils_mail_delivery = types.ModuleType("app.utils.mail_delivery")
-+    app_utils_mail_delivery.generate_message_id = lambda: ("uuid", "message@example.com")
-+    app_utils_mail_delivery.record_mail_submission = lambda *args, **kwargs: None
-+    sys.modules["app"] = app_module
-+    sys.modules["app.utils"] = app_utils_module
-+    sys.modules["app.utils.logs"] = app_utils_logs
-+    sys.modules["app.utils.mail_delivery"] = app_utils_mail_delivery
-+
-+    spec = importlib.util.spec_from_file_location("app.utils.mail", repo_root / "utils" / "mail.py")
-+    module = importlib.util.module_from_spec(spec)
-+    assert spec and spec.loader
-+    sys.modules["app.utils.mail"] = module
-+    spec.loader.exec_module(module)
-+    return module
-+
-+
-+def load_notifications_module():
-+    repo_root = Path(__file__).resolve().parents[1]
-+    _install_flask_stub()
-+
-+    package_module = types.ModuleType("external_login_user")
-+    package_module.__path__ = [str(repo_root / "external_login_user")]  # type: ignore[attr-defined]
-+    package_module.bp = _DummyBlueprint()
-+    sys.modules["external_login_user"] = package_module
-+
-+    ext_utils_module = types.ModuleType("external_login_user.utils")
-+    ext_utils_module._require_ext_login = lambda: None
-+    sys.modules["external_login_user.utils"] = ext_utils_module
-+
-+    app_module = types.ModuleType("app")
-+    app_module.__path__ = []  # type: ignore[attr-defined]
-+    app_utils_module = types.ModuleType("app.utils")
-+    app_utils_module.__path__ = []  # type: ignore[attr-defined]
-+    app_utils_db = types.ModuleType("app.utils.db")
-+    app_utils_db.get_db = lambda: None
-+    app_utils_mail = types.ModuleType("app.utils.mail")
-+    app_utils_mail.send_external_unread_reminder_mail = lambda *args, **kwargs: None
-+    app_chat = types.ModuleType("app.chat")
-+    app_chat.__path__ = []  # type: ignore[attr-defined]
-+    app_chat_socket = types.ModuleType("app.chat.socketio_ext")
-+    app_chat_socket.socketio = None
-+    sys.modules["app"] = app_module
-+    sys.modules["app.utils"] = app_utils_module
-+    sys.modules["app.utils.db"] = app_utils_db
-+    sys.modules["app.utils.mail"] = app_utils_mail
-+    sys.modules["app.chat"] = app_chat
-+    sys.modules["app.chat.socketio_ext"] = app_chat_socket
-+
-+    spec = importlib.util.spec_from_file_location(
-+        "external_login_user.notifications",
-+        repo_root / "external_login_user" / "notifications.py",
-+    )
-+    module = importlib.util.module_from_spec(spec)
-+    assert spec and spec.loader
-+    sys.modules["external_login_user.notifications"] = module
-+    spec.loader.exec_module(module)
-+    return module
-+
-+
-+class ExternalUnreadReminderMailTest(unittest.TestCase):
-+    def test_send_external_unread_reminder_mail_uses_existing_send_mail(self):
-+        mail_module = load_mail_module()
-+
-+        with patch.object(mail_module, "send_mail") as mocked:
-+            mail_module.send_external_unread_reminder_mail(
-+                "user@example.com",
-+                external_login_user_id=123,
+                          WHERE TABLE_SCHEMA=DATABASE()
+                            AND TABLE_NAME='mfu_payment_request'
+                            AND COLUMN_NAME='status'
+                     """)
+                     row = cur.fetchone()
+                     column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
+                 except Exception:
+                     app.logger.exception("failed to inspect mfu_payment_request.status")
+                     return
+ 
+                 if not column_type:
+                     return
+                 if "used" in str(column_type).lower():
+                     return
+                 try:
+                     cur.execute("""
+                         ALTER TABLE mfu_payment_request
+                           MODIFY COLUMN status ENUM('pending','used','canceled')
+                           NOT NULL DEFAULT 'pending'
+                     """)
+                 except Exception:
+                     app.logger.exception("failed to alter mfu_payment_request.status enum")
+ 
+             _ensure_payment_request_status_enum()
+ 
++            _ensure_index(
++                cur,
++                """
++                SELECT COUNT(*) FROM information_schema.STATISTICS
++                 WHERE TABLE_SCHEMA=DATABASE()
++                   AND TABLE_NAME='external_login_resume_token'
++                   AND INDEX_NAME='idx_ext_login_resume_pwa_client'
++                """,
++                """
++                CREATE INDEX idx_ext_login_resume_pwa_client
++                    ON external_login_resume_token(pwa_client_id_hash, consumed_at, expires_at)
++                """,
 +            )
 +
-+        mocked.assert_called_once_with(
-+            "user@example.com",
-+            mail_module.EXTERNAL_UNREAD_REMINDER_SUBJECT,
-+            mail_module.EXTERNAL_UNREAD_REMINDER_BODY,
-+            external_login_user_id=123,
-+            mail_kind="external_unread_reminder",
-+            append_signature=False,
-+        )
-+
-+
-+class ExternalUnreadReminderNotificationTest(unittest.TestCase):
-+    def test_same_jst_day_uses_jst_boundary(self):
-+        notifications = load_notifications_module()
-+        late_jst = datetime(2026, 3, 19, 14, 59, tzinfo=timezone.utc)
-+        next_day_jst = datetime(2026, 3, 19, 15, 1, tzinfo=timezone.utc)
-+        same_day_jst = datetime(2026, 3, 19, 3, 0, tzinfo=timezone.utc)
-+
-+        self.assertFalse(notifications._same_jst_day(late_jst, next_day_jst))
-+        self.assertTrue(notifications._same_jst_day(late_jst, same_day_jst))
-+
-+    def test_send_external_unread_reminder_emails_skips_user_already_sent_today(self):
-+        notifications = load_notifications_module()
-+
-+        class FakeCursor:
-+            def __init__(self, rows):
-+                self._rows = rows
-+
-+            def execute(self, *args, **kwargs):
-+                return None
-+
-+            def fetchall(self):
-+                return self._rows
-+
-+            def close(self):
-+                return None
-+
-+        class FakeDB:
-+            def __init__(self, rows):
-+                self._rows = rows
-+
-+            def cursor(self, dictionary=True):
-+                return FakeCursor(self._rows)
-+
-+            def close(self):
-+                return None
-+
-+        last_sent_at = datetime(2026, 3, 20, 1, 0, 0)
-+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": last_sent_at}]
-+
-+        with (
-+            patch.object(notifications, "_ensure_notification_schema"),
-+            patch.object(notifications, "get_db", return_value=FakeDB(rows)),
-+            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
-+        ):
-+            summary = notifications.send_external_unread_reminder_emails(
-+                now_utc=datetime(2026, 3, 20, 2, 0, tzinfo=timezone.utc)
-+            )
-+
-+        self.assertEqual(summary["candidates"], 1)
-+        self.assertEqual(summary["skipped_already_sent_today"], 1)
-+        self.assertEqual(summary["sent"], 0)
-+        mocked_send.assert_not_called()
-+        mocked_unread.assert_not_called()
-+
-+
-+if __name__ == "__main__":
-+    unittest.main()
-diff --git a/utils/mail.py b/utils/mail.py
-index 12e30c820743897ebd70266786d6c476857ea05d..2ecab5b35ee6076647be6cd264ce841f4a91b4f6 100644
---- a/utils/mail.py
-+++ b/utils/mail.py
-@@ -1,68 +1,86 @@
- import logging
- import re
- import smtplib
- import ssl
- from email.header import Header
- from email.mime.text import MIMEText
- from email.utils import formataddr, formatdate, getaddresses, parseaddr
- from pathlib import Path
+             def _ensure_checkin_method_enum() -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA=DATABASE()
+                            AND TABLE_NAME='mfu_event_member'
+                            AND COLUMN_NAME='checkin_method'
+                     """)
+                     row = cur.fetchone()
+                     column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
+                 except Exception:
+                     app.logger.exception("failed to inspect mfu_event_member.checkin_method")
+                     return
  
- from app.utils.logs import write_smtp_log
- from app.utils.mail_delivery import generate_message_id, record_mail_submission
+                 lowered = str(column_type or "").lower()
+                 if ("'gps'" in lowered) and ("'qr'" in lowered):
+                     return
  
+                 try:
+                     cur.execute("""
+                         ALTER TABLE mfu_event_member
+                           MODIFY COLUMN checkin_method ENUM('gps','qr') NULL
+                     """)
+                 except Exception:
+                     app.logger.exception("failed to alter mfu_event_member.checkin_method enum")
+diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
+index 389d1c0eacf59f1f8c6b90ddcc89aa5f39f3f59a..7c3f2da6977a8e47d17aeb36b7e2cd05780392e3 100644
+--- a/external_login_user/template/ext_index.html
++++ b/external_login_user/template/ext_index.html
+@@ -256,51 +256,52 @@
+                         <button
+                           type="button"
+                           class="btn btn-sm btn-warning js-tip-open"
+                           data-bs-toggle="modal"
+                           data-bs-target="#tipModal"
+                           data-event-id="{{ e.id }}"
+                           data-event-title="{{ e.title|e }}"
+                         >投げ銭</button>
+                       {% endif %}
+                     </div>
+                   </div>
+                 </div>
+               {% endfor %}
+             </div>
+           {% endif %}
+         </div>
+       </div>
+     </div>
+   {% else %}
+     <div class="line-login-cta mb-3">
+       <p class="lead mb-2">はじめるには LINE ログインが必要です</p>
+       <ul class="mb-3 ps-3">
+         <li>参加イベントの確認・支払い・アルバム共有に使います</li>
+         <li>通知や連絡のため、ログイン後にプロフィールでメールも登録できます</li>
+       </ul>
+-      <a class="btn btn-line btn-lg w-100 mb-2" href="{{ url_for('external_login_user.line_login') }}">
++      <div id="pwaResumeError" class="alert alert-warning d-none" role="alert"></div>
++      <a class="btn btn-line btn-lg w-100 mb-2 js-ext-line-login" href="{{ url_for('external_login_user.line_login') }}">
+         <span class="me-2" aria-hidden="true">💬</span> LINEでログイン
+       </a>
  
-+EXTERNAL_UNREAD_REMINDER_SUBJECT = "【お知らせ】未読があるのでご確認よろしくお願いします。"
-+EXTERNAL_UNREAD_REMINDER_BODY = """こんにちは、いおりん写真室です！
+       {# トグルリンク（必要な時だけ展開） #}
+       <p class="text-center mb-0">
+         <a class="small link-secondary" data-bs-toggle="collapse" href="#pinLoginCollapse" role="button" aria-expanded="false" aria-controls="pinLoginCollapse">
+           LINEが使えない / 使わない場合はこちら（メールのPINでログイン）
+         </a>
+       </p>
+     </div>
+ 
+     {# === PIN ログイン（折りたたみ） =================== #}
+     <div class="collapse{% if session and session.get('pin_email') %} show{% endif %}" id="pinLoginCollapse">
+       <div class="card mb-4">
+         <div class="card-body">
+           <h2 class="h5 mb-3">メールのPINコードでログイン</h2>
+ 
+           <div class="row g-3">
+             <!-- PIN送信フォーム -->
+             <div class="col-12 col-md-6">
+               <form action="{{ url_for('external_login_user.pin_request') }}" method="post" class="border rounded p-3 h-100">
+                 <div class="mb-2 fw-semibold">1) PINコードを送る</div>
+                 <div class="mb-3">
+                   <label for="pinReqEmail" class="form-label">メールアドレス</label>
+                   <input type="email" class="form-control" id="pinReqEmail" name="email" inputmode="email" autocomplete="email" required>
+@@ -495,50 +496,168 @@
+             <input class="form-check-input" type="checkbox" id="updateDontShow">
+             <label class="form-check-label" for="updateDontShow">次回以降は表示しない</label>
+           </div>
+         </div>
+         <div class="modal-footer">
+           <button id="updateOkBtn" type="button" class="btn btn-primary" data-bs-dismiss="modal">閉じる</button>
+         </div>
+       </div>
+     </div>
+   </div>
+   <!-- ▲▲▲ アップデート情報モーダルここまで ▲▲▲ -->
+ 
+   <!-- Bootstrap JS（collapse用） -->
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+ 
+   {% if session and session.get('pin_email') %}
+   <script>
+     // サーバ側で pin_email があれば PIN ログイン欄を自動で展開
+     try {
+       var el = document.getElementById('pinLoginCollapse');
+       if (el) new bootstrap.Collapse(el, {toggle:false}).show();
+     } catch(e){}
+   </script>
+   {% endif %}
+ 
++  <script>
++  (() => {
++    const STORAGE_TOKEN_KEY = 'mfu_pwa_resume_token';
++    const STORAGE_TOKEN_AT_KEY = 'mfu_pwa_resume_at';
++    const STORAGE_CLIENT_ID_KEY = 'mfu_pwa_client_id';
++    const LOGIN_SELECTOR = '.js-ext-line-login';
++    const RESUME_API = '/external-login/api/pwa-resume/consume';
++    const errorEl = document.getElementById('pwaResumeError');
++    let consumeStarted = false;
 +
-+イベント管理システムにて、未読になっているチャットまたは通知が1件以上あります！
-+お知らせがある可能性もあるため、ご確認よろしくお願いします。
++    const isStandalone = () => {
++      try {
++        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
++      } catch (_e) {
++        return window.navigator.standalone === true;
++      }
++    };
 +
-+https://mfu.iori0624.jp/external-login/
++    const ensureClientId = () => {
++      try {
++        let clientId = localStorage.getItem(STORAGE_CLIENT_ID_KEY);
++        if (!clientId) {
++          const raw = new Uint8Array(24);
++          if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
++            window.crypto.getRandomValues(raw);
++            clientId = Array.from(raw, (v) => v.toString(16).padStart(2, '0')).join('');
++          } else {
++            clientId = String(Date.now()) + Math.random().toString(16).slice(2);
++          }
++          localStorage.setItem(STORAGE_CLIENT_ID_KEY, clientId);
++        }
++        return clientId;
++      } catch (_e) {
++        return '';
++      }
++    };
 +
-+【プッシュ通知のお願い】
-+Androidご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）からプッシュ通知の有効で問題無いです。
-+iPhoneご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）をホーム画面に追加して欲しいです。
-+やり方はリンクがありますのでご確認よろしくお願いします。
-+ホーム画面に追加後、プッシュ通知の有効をお願い致します。
++    const clearResumeStorage = () => {
++      try {
++        localStorage.removeItem(STORAGE_TOKEN_KEY);
++        localStorage.removeItem(STORAGE_TOKEN_AT_KEY);
++      } catch (_e) {}
++    };
 +
-+よろしくお願いします。"""
++    const showResumeError = (message) => {
++      if (!errorEl) return;
++      errorEl.textContent = message || '再ログインしてください。';
++      errorEl.classList.remove('d-none');
++    };
 +
++    const buildLoginHref = (anchor) => {
++      try {
++        const url = new URL(anchor.getAttribute('href'), window.location.origin);
++        if (isStandalone()) {
++          url.searchParams.set('pwa', '1');
++          const clientId = ensureClientId();
++          if (clientId) {
++            url.searchParams.set('pwa_client_id', clientId);
++          }
++        }
++        return url.pathname + url.search + url.hash;
++      } catch (_e) {
++        return anchor.getAttribute('href');
++      }
++    };
 +
- # 署名ファイルのパス（このファイルと同じディレクトリ）
- SIGNATURE_FILE = Path(__file__).parent / "signature.txt"
- 
- # モジュール読み込み時に署名を1回だけ読み込む
- try:
-     DEFAULT_SIGNATURE = SIGNATURE_FILE.read_text(encoding="utf-8").rstrip("\n")
-     if DEFAULT_SIGNATURE:
-         DEFAULT_SIGNATURE = "\n\n" + DEFAULT_SIGNATURE.lstrip("\n")
- except Exception as e:
-     DEFAULT_SIGNATURE = ""
-     logging.getLogger("mfu.smtp").warning(
-         f"署名ファイルの読み込みに失敗しました: {SIGNATURE_FILE} - {e}"
-     )
- 
- 
- def send_mail(
-     to,
-     subject: str,
-     body: str,
-     *,
-     event_uuid: str | None = None,    # 後方互換性のため残す
-     event_name: str | None = None,
-     smtp_host: str = "192.168.103.15",
-     smtp_port: int = 25,
-     timeout: int = 45,
-     debug: bool = False,
-     starttls: bool | None = None,
-     ignore_quit_errors: bool = True,
-     external_login_user_id: int | None = None,
-     mail_kind: str | None = None,
-+    append_signature: bool = True,
- ) -> None:
-     """
-     メール送信ユーティリティ。
- 
-     - From: noreply@mail.iori0624.jp（表示名はイベント名 or システム名）
-     - Reply-To: admin@mail.iori0624.jp（固定）
-     - 本文末尾に signature.txt の内容を自動追加（存在する場合）
-     """
-     log = logging.getLogger("mfu.smtp")
- 
-     def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
-         status = "OK" if ok else "NG"
-         msg = f'送信{status}: to="{to_text}" subj="{subj}"'
-         if extra:
-             msg += f" detail={extra}"
- 
-         log.info(msg)
-         line = f"[SMTP] {msg}"
-         print(line)
-         try:
-             write_smtp_log(line)
-         except Exception:
-             log.warning("write_smtp_log failed", exc_info=True)
- 
-     from_address = "noreply@mail.iori0624.jp"
-@@ -76,51 +94,51 @@ def send_mail(
-         to_header = to_list[0] if to_list else ""
- 
-     if not to_list:
-         _summary_log(False, "(none)", subject or "", "no recipients")
-         return
- 
-     # 表示名の決定
-     is_event = event_uuid or event_name
-     display_name = None
- 
-     if is_event:
-         # 【【講座】テストイベント0002】のような複合形式に対応
-         m = re.match(r"^(【[^】]*】[^】]*】)", subject or "")
-         if m:
-             display_name = Header(m.group(1), "utf-8").encode()
-         else:
-             m = re.match(r"^【([^】]+)】", subject or "")
-             if m:
-                 display_name = Header(m.group(1), "utf-8").encode()
-             else:
-                 display_name = Header(event_name or "イベント", "utf-8").encode()
-     else:
-         display_name = Header("IORI0624_MFUシステム", "utf-8").encode()
- 
-     # 本文に署名を追加
--    final_body = body + DEFAULT_SIGNATURE
-+    final_body = body + DEFAULT_SIGNATURE if append_signature else body
- 
-     # メッセージ作成
-     msg = MIMEText(final_body, "plain", "utf-8")
-     msg["Subject"] = subject or ""
-     msg["From"] = formataddr((display_name, from_address))
-     msg["To"] = to_header
-     msg["Reply-To"] = "admin@mail.iori0624.jp"  # 固定
-     msg["Date"] = formatdate(localtime=True)
-     mfu_mail_uuid, message_id = generate_message_id()
-     message_id_header = f"<{message_id}>"
-     if msg.get("Message-ID"):
-         msg.replace_header("Message-ID", message_id_header)
-     else:
-         msg["Message-ID"] = message_id_header
-     if msg.get("X-MFU-Mail-ID"):
-         msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
-     else:
-         msg["X-MFU-Mail-ID"] = mfu_mail_uuid
- 
-     # STARTTLS 自動判定
-     if starttls is None:
-         starttls = (smtp_port == 587)
- 
-     smtp = None
-     sent_ok = False
-@@ -202,50 +220,61 @@ def send_mail(
-         else:
-             _summary_log(False, to_header, subject or "", repr(e))
-             try:
-                 record_mail_submission(
-                     mfu_mail_uuid=mfu_mail_uuid,
-                     message_id=message_id,
-                     to_addresses=to_header,
-                     subject=subject or "",
-                     submit_status="failed",
-                     last_delivery_status="failed",
-                     last_delivery_detail=repr(e),
-                     external_login_user_id=external_login_user_id,
-                     mail_kind=mail_kind,
-                 )
-             except Exception:
-                 log.warning("mail submission log failed", exc_info=True)
-             raise
-     finally:
-         if smtp is not None:
-             try:
-                 smtp.close()
-             except Exception:
-                 pass
- 
- 
-+def send_external_unread_reminder_mail(email: str, *, external_login_user_id: int) -> None:
-+    send_mail(
-+        email,
-+        EXTERNAL_UNREAD_REMINDER_SUBJECT,
-+        EXTERNAL_UNREAD_REMINDER_BODY,
-+        external_login_user_id=external_login_user_id,
-+        mail_kind="external_unread_reminder",
-+        append_signature=False,
-+    )
++    document.querySelectorAll(LOGIN_SELECTOR).forEach((anchor) => {
++      const applyHref = () => {
++        const href = buildLoginHref(anchor);
++        if (href) anchor.setAttribute('href', href);
++      };
++      applyHref();
++      anchor.addEventListener('click', applyHref, { passive: true });
++    });
 +
++    const consumeResumeToken = async () => {
++      if (!isStandalone() || consumeStarted) return;
++      consumeStarted = true;
++      const clientId = ensureClientId();
++      let token = '';
++      try {
++        token = (localStorage.getItem(STORAGE_TOKEN_KEY) || '').trim();
++      } catch (_e) {}
 +
- def send_mime(
-     msg,
-     *,
-     smtp_host: str = "192.168.103.15",
-     smtp_port: int = 25,
-     timeout: int = 45,
-     debug: bool = False,
-     starttls: bool | None = None,
-     ignore_quit_errors: bool = True,
- ) -> None:
-     """構築済みのMIMEメッセージをそのまま送信（署名は追加しない）"""
-     log = logging.getLogger("mfu.smtp")
++      if (!token && !clientId) {
++        consumeStarted = false;
++        return;
++      }
++
++      try {
++        const res = await fetch(RESUME_API, {
++          method: 'POST',
++          credentials: 'same-origin',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({
++            token: token || undefined,
++            pwa_client_id: clientId || undefined,
++          }),
++        });
++        const data = await res.json().catch(() => ({}));
++        if (res.ok && data && data.ok && data.next) {
++          clearResumeStorage();
++          window.location.replace(data.next);
++          return;
++        }
++        clearResumeStorage();
++        showResumeError((data && data.message) || '復帰に失敗しました。再ログインしてください。');
++      } catch (_e) {
++        showResumeError('通信に失敗しました。時間をおいて再ログインしてください。');
++      } finally {
++        consumeStarted = false;
++      }
++    };
++
++    document.addEventListener('DOMContentLoaded', consumeResumeToken, { once: true });
++  })();
++  </script>
++
+   <!-- ▼ アップデート情報：自動チェック＋再確認リンク（既読状態をチェックに反映） -->
+   <script>
+   (() => {
+     const modalEl = document.getElementById('updateInfoModal');
+     const bsModal  = new bootstrap.Modal(modalEl);
+     const updateTextEl = document.getElementById('updateText');
+     const dontShowEl   = document.getElementById('updateDontShow');
+     const okBtn        = document.getElementById('updateOkBtn');
+     const linkEl       = document.getElementById('linkUpdateInfo');
  
-     def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
-         status = "OK" if ok else "NG"
-         s = f'送信{status}: to="{to_text}" subj="{subj}"'
-         if extra:
-             s += f" detail={extra}"
-         log.info(s)
-         print(f"[SMTP] {s}")
+     let showedAuto = false;
  
-     envelope_from = parseaddr(msg.get("From", ""))[1] or "noreply@mail.iori0624.jp"
- 
-     mfu_mail_uuid, message_id = generate_message_id()
-     message_id_header = f"<{message_id}>"
-diff --git a/utils/send_external_unread_reminders.py b/utils/send_external_unread_reminders.py
+     async function fetchCheckAndMaybeShow() {
+       try {
+         const r = await fetch('/external-login/updates/check', { credentials: 'same-origin' });
+         if (!r.ok) return;
+         const js = await r.json();
+         if (js.show && !showedAuto) {
+           updateTextEl.textContent = js.text || '';
+           // DB既読状態に合わせてチェック（通常 show===true の時は未既読 → false）
+           dontShowEl.checked = !!js.seen;
+           bsModal.show();
+           showedAuto = true;
+         }
+       } catch (e) { console.error(e); }
+diff --git a/external_login_user/template/pwa_resume.html b/external_login_user/template/pwa_resume.html
 new file mode 100644
-index 0000000000000000000000000000000000000000..2ba5f20ba0b84482e89a021e68234b479f45a956
+index 0000000000000000000000000000000000000000..3b3f8e63ae62cec04b07a9fdd1b8c22fdc07a3d4
 --- /dev/null
-+++ b/utils/send_external_unread_reminders.py
-@@ -0,0 +1,33 @@
-+#!/usr/bin/env python3
-+from __future__ import annotations
++++ b/external_login_user/template/pwa_resume.html
+@@ -0,0 +1,62 @@
++<!DOCTYPE html>
++<html lang="ja">
++<head>
++  <meta charset="UTF-8">
++  <title>MFUアプリへ戻ってください</title>
++  <meta name="viewport" content="width=device-width, initial-scale=1">
++  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
++</head>
++<body class="bg-light">
++  <main class="container py-5" style="max-width:720px;">
++    <div class="card shadow-sm">
++      <div class="card-body p-4 p-md-5">
++        {% if is_valid %}
++          <h1 class="h4 mb-3">LINEログインが完了しました</h1>
++          <p class="mb-3">このまま <strong>ホーム画面の MFU アプリ</strong> に戻ってください。PWA 側でログイン状態を復帰します。</p>
++          <div class="alert alert-info">
++            <div class="fw-semibold mb-1">復帰先</div>
++            <code>{{ next_path }}</code>
++          </div>
++          <ol class="mb-4 ps-3">
++            <li>この Safari 画面は閉じなくて大丈夫です。</li>
++            <li>ホーム画面から起動した MFU アプリへ戻ってください。</li>
++            <li>数秒で復帰しない場合は、MFU アプリを開き直して再度お試しください。</li>
++          </ol>
++          <div id="resumeSaved" class="alert alert-success d-none" role="alert">
++            復帰情報を保存しました。MFU アプリに戻ってください。
++          </div>
++          <div id="resumeSaveError" class="alert alert-warning d-none" role="alert">
++            復帰情報の保存に失敗しました。MFU アプリを開き直して、必要なら再ログインしてください。
++          </div>
++        {% else %}
++          <h1 class="h4 mb-3">復帰情報が見つかりません</h1>
++          <div class="alert alert-warning mb-3">
++            この復帰リンクは期限切れ、またはすでに使用済みです。
++          </div>
++          <p class="mb-0">お手数ですが MFU アプリに戻って、もう一度 LINE ログインをやり直してください。</p>
++        {% endif %}
++      </div>
++    </div>
++  </main>
 +
-+import json
-+import sys
-+from datetime import datetime, timezone
++  {% if is_valid %}
++  <script>
++  (() => {
++    const token = {{ resume_token|tojson }};
++    const tokenKey = {{ resume_token_key|tojson }};
++    const issuedAtKey = {{ resume_token_at_key|tojson }};
++    const okEl = document.getElementById('resumeSaved');
++    const errEl = document.getElementById('resumeSaveError');
 +
-+from app import create_app
-+from app.external_login_user.notifications import send_external_unread_reminder_emails
-+
-+
-+def main() -> int:
-+    app = create_app()
-+    with app.app_context():
-+        summary = send_external_unread_reminder_emails(now_utc=datetime.now(timezone.utc))
-+
-+    payload = {
-+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-+        "summary": summary,
++    try {
++      localStorage.setItem(tokenKey, token);
++      localStorage.setItem(issuedAtKey, String(Date.now()));
++      okEl?.classList.remove('d-none');
++    } catch (_e) {
++      errEl?.classList.remove('d-none');
 +    }
-+    print(json.dumps(payload, ensure_ascii=False))
-+    return 0
-+
-+
-+if __name__ == "__main__":
-+    try:
-+        raise SystemExit(main())
-+    except Exception as exc:
-+        print(
-+            f"[send_external_unread_reminders] ERROR: {exc.__class__.__name__}: {exc}",
-+            file=sys.stderr,
++  })();
++  </script>
++  {% endif %}
++</body>
++</html>
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 32c1c78d281804fc88c1f6648749aac46a7f35a3..c04eef75f21eaeb69dc6b959c771dac130c1c970 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -13,69 +13,76 @@ import secrets
+ import hashlib
+ from pathlib import Path
+ from datetime import datetime, timedelta, timezone
+ from mimetypes import guess_extension
+ from urllib.parse import quote_plus, urlparse
+ from ipaddress import ip_address, IPv4Address, IPv6Address, ip_network
+ from app.utils.logs import write_line_login_log  # 追加
+ from jinja2 import TemplateNotFound
+ import math
+ from urllib.parse import urlparse, parse_qs, unquote
+ 
+ 
+ # =========================
+ # サードパーティ
+ # =========================
+ from PIL import Image
+ import requests
+ from itsdangerous import URLSafeSerializer, BadSignature
+ from weasyprint import HTML
+ 
+ # =========================
+ # Flask / アプリ内部
+ # =========================
+ from flask import (
+     request, session, redirect, url_for, render_template,
+-    abort, flash, current_app, send_from_directory, make_response
++    abort, flash, current_app, send_from_directory, make_response, jsonify
+ )
+ from werkzeug.utils import secure_filename
+ from werkzeug.exceptions import HTTPException
+ 
+ # Blueprint は必ず先に import
+ from . import bp, oauth
+ 
+ from app.utils.db import get_db
+ from app.utils.mail import send_mail
+ from .utils import (
+     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
+     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
+     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
+     _event_by_uuid_str, _membership_status,
+     update_event_member_status,
+     avatar_url_for,  # ← 追加
+     QR_TRADEMARK_NOTICE,
+     remember_session_map_value,
++    EXT_LOGIN_MODE_PWA,
++    PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
++    PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
++    normalize_ext_login_mode,
++    create_external_login_resume_token,
++    get_external_login_resume_token_summary,
++    consume_external_login_resume_token,
+ )
+ from .admin import _recalc_event_fee_if_auto
+ #from .auto_payment import load_default_card_summary
+ 
+ 
+ # ==== アバター保存設定 ====
+ AVATAR_ROOT = Path("/mnt/mfu/avatars")
+ ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+ AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
+ 
+ 
+ JST = timezone(timedelta(hours=9))
+ 
+ # =========================
+ # 便利ヘルパ（このファイル内限定）
+ # =========================
+ def _normalize_email(s: str) -> str | None:
+     s = (s or "").strip()
+     if not s or "@" not in s or len(s) > 255:
+         return None
+     return s
+ 
+ 
+ def _normalize_external_url(raw: str | None) -> str | None:
+     if not isinstance(raw, str):
+@@ -1244,82 +1251,91 @@ def _trim_line_oauth_state_session(max_items: int = 2) -> None:
+         return
+     for key in sorted(state_keys)[:-max_items]:
+         session.pop(key, None)
+ 
+ 
+ @bp.route("/line/login")
+ def line_login():
+     # 1) next を安全化
+     raw_next = (request.args.get("next") or session.get("ext_after_login_next") or request.referrer or "").strip()
+ 
+     def _to_local_next(u: str) -> str | None:
+         if not u:
+             return None
+         if u.startswith("/") and not u.startswith("//"):
+             return u
+         try:
+             p = urlparse(u)
+             if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+                 return p.path + (("?" + p.query) if p.query else "")
+         except Exception:
+             pass
+         return None
+ 
+     local_next = (_to_local_next(raw_next) or "/external-login/")[:512]
+     session["ext_after_login_next"] = local_next  # ← セッションにも保持
++    login_mode = normalize_ext_login_mode(request.args.get("pwa") or session.get("ext_login_mode"))
++    session["ext_login_mode"] = login_mode
++    pwa_client_id = (request.args.get("pwa_client_id") or session.get("ext_pwa_client_id") or "").strip()[:128]
++    if login_mode == EXT_LOGIN_MODE_PWA and pwa_client_id:
++        session["ext_pwa_client_id"] = pwa_client_id
+ 
+     # 2) 署名付き state を作って callback で検証できるようにする
+     state_payload = {
+         "n": local_next,                               # next（相対URL）
++        "mode": login_mode,
++        "pcid": pwa_client_id if login_mode == EXT_LOGIN_MODE_PWA else "",
+         "ip": _client_ip_prefix(request.remote_addr or ""),
+         "ua": _ua_sha256(request.headers.get("User-Agent", "")),
+         "t": int(time.time()),                         # 発行時刻
+         "jti": secrets.token_urlsafe(12),              # リプレイ対策の一意ID（任意）
+     }
+     state_token = _state_signer().dumps(state_payload)
+ 
+     # 3) LINE 認可ページへ（state を必ず付ける）
+     redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
+     _trim_line_oauth_state_session(max_items=1)
+     return oauth.line.authorize_redirect(redirect_uri=redirect_uri, state=state_token)  # type: ignore[arg-type]
+ 
+ @bp.route("/line/callback")
+ def line_callback():
+     _trim_line_oauth_state_session(max_items=1)
+     # ---- state 検証 ----
+     state_token = request.args.get("state")
+     if not state_token:
+         flash("LINEログインに失敗しました。（stateなし）", "error")
+         return redirect(url_for("external_login_user.index"))
+ 
+     try:
+         payload = _state_signer().loads(state_token)
+     except BadSignature:
+         flash("LINEログインに失敗しました。（state改ざん）", "error")
+         return redirect(url_for("external_login_user.index"))
+ 
+     next_path = _sanitize_next(payload.get("n"))
++    login_mode = normalize_ext_login_mode(payload.get("mode"))
++    pwa_client_id = (payload.get("pcid") or "").strip()[:128]
+     ip_expected = payload.get("ip", "")
+     ua_expected = payload.get("ua", "")
+     issued_at = int(payload.get("t", 0) or 0)
+     jti = payload.get("jti", "")
+ 
+     if _now_ts() - issued_at > 15 * 60:
+         next_path = url_for(".index")
+     if jti and _is_jti_used(jti):
+         next_path = url_for(".index")
+     else:
+         _mark_jti_used(jti or "")
+ 
+     if ip_expected and _client_ip_prefix(request.remote_addr or "") != ip_expected:
+         next_path = url_for(".index")
+     if ua_expected and _ua_sha256(request.headers.get("User-Agent", "")) != ua_expected:
+         next_path = url_for(".index")
+ 
+     # ---- トークン交換 & プロフィール取得 ----
+     code = request.args.get("code")
+     if not code:
+         flash("LINEログインに失敗しました。（codeなし）", "error")
+         return redirect(url_for("external_login_user.index"))
+ 
+     try:
+         redirect_uri = LINE_REDIRECT_URI() if callable(LINE_REDIRECT_URI) else LINE_REDIRECT_URI
+@@ -1491,84 +1507,146 @@ def line_callback():
+ 
+         # ---- ここで [LINE_LOGIN] ログを1行追記（logsテーブルのみ） ----
+         ip_for_log = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                       or request.remote_addr or "-")
+         log_text = f"[LINE_LOGIN] ユーザー: #{ext_user_id}　{nickname_for_log}　がログインしました"
+         try:
+             cur.execute(
+                 "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+                 (ip_for_log, log_text)
+             )
+             db.commit()
+         except Exception:
+             # ログ書き込み失敗は握りつぶし
+             current_app.logger.warning("write [LINE_LOGIN] log failed", exc_info=True)
+ 
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     # セッションへ格納
+     session["ext_user_id"] = ext_user_id
+     session["ext_user_nickname"] = nickname_for_log
+ 
+     # 追加：LINEログインは長期セッション扱いにする
+     session.permanent = True
++    session["ext_login_mode"] = login_mode
++    if pwa_client_id:
++        session["ext_pwa_client_id"] = pwa_client_id
+ 
+     # 既存の next を壊さない（上書きしない）
+     session.setdefault("ext_after_login_next", next_path)
+ 
+     # ---- リダイレクト方針 ----
+     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
+     # ・メール未登録のみ: ext_user_need_email=True（初回メッセージは出さず、メール注意喚起のみ）
+     if onboarding:
+         session["ext_user_onboarding"] = True
+     else:
+         session.pop("ext_user_onboarding", None)
+ 
+     if needs_email:
+         session["ext_user_need_email"] = True
+         # 改行を反映させたフラッシュ（<br>化）
+         from markupsafe import Markup, escape
+         email_notice = (
+             "クレジットカード決済時のメールアドレスの入力について\n\n"
+             "クレジットカード会社の規定変更により、クレジットカードでの決済時に、カード名義人のメールアドレスの入力が必要となります。\n"
+             "入力されたメールアドレスは、カード決済時の本人認証処理にて、クレジットカードの不正利用の検知・防止のため、カード発行会社に提供いたします。\n\n"
+             "ご理解、ご協力お願いいたします。\n\n"
+             "登録したメールアドレスに、確認用のメールが送信されます。ご対応お願いいたします。\n"
+         )
+         # \n を <br> にして安全にマーク
+         email_notice_markup = Markup("<br>".join(escape(email_notice).split("\n")))
+         flash(email_notice_markup, "info")
+-        # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
+-        return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
++        if login_mode != EXT_LOGIN_MODE_PWA:
++            # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
++            return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
+     else:
+         session.pop("ext_user_need_email", None)
+ 
++    if login_mode == EXT_LOGIN_MODE_PWA:
++        resume_token = create_external_login_resume_token(
++            ext_user_id=int(ext_user_id),
++            social_id=sub,
++            next_path=next_path,
++            mode=login_mode,
++            pwa_client_id=pwa_client_id or None,
 +        )
++        return redirect(url_for("external_login_user.pwa_resume_page", rt=resume_token))
++
+     # メール登録済みなら通常遷移
+     return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
+ 
++
++@bp.get("/pwa-resume")
++def pwa_resume_page():
++    resume_token = (request.args.get("rt") or "").strip()
++    summary = get_external_login_resume_token_summary(resume_token)
++    next_path = _sanitize_next((summary or {}).get("next_path") or url_for("external_login_user.index"))
++    is_valid = bool(summary)
++    return render_template(
++        "pwa_resume.html",
++        resume_token=resume_token if is_valid else "",
++        next_path=next_path,
++        is_valid=is_valid,
++        resume_token_key=PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
++        resume_token_at_key=PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
++    )
++
++
++@bp.post("/api/pwa-resume/consume")
++def pwa_resume_consume_api():
++    payload = request.get_json(silent=True) or {}
++    token = (payload.get("token") or request.form.get("token") or "").strip()
++    pwa_client_id = (payload.get("pwa_client_id") or request.form.get("pwa_client_id") or "").strip()[:128]
++
++    row = consume_external_login_resume_token(token=token or None, pwa_client_id=pwa_client_id or None)
++    if not row:
++        return jsonify({
++            "ok": False,
++            "message": "復帰トークンの有効期限が切れたか、すでに使用済みです。再度ログインしてください。",
++        }), 400
++
++    next_path = _sanitize_next((row.get("next_path") or "").strip() or url_for("external_login_user.index"))
++    session["ext_user_id"] = int(row["ext_user_id"])
++    session["ext_user_social_id"] = (row.get("social_id") or "").strip()
++    session["ext_after_login_next"] = next_path
++    session["ext_login_mode"] = normalize_ext_login_mode(row.get("mode"))
++    session.permanent = True
++
++    me = _get_ext_user_by_social(session["ext_user_social_id"])
++    if me:
++        session["ext_user_nickname"] = me.get("nickname") or "（未設定）"
++        email = (me.get("email") or "").strip()
++        if email and "@" in email:
++            session.pop("ext_user_need_email", None)
++        else:
++            session["ext_user_need_email"] = True
++
++    return jsonify({"ok": True, "next": next_path})
++
+ # =========================
+ # プロフィール（CSRF, 画像アップ対応・メール確認送信対応）
+ # =========================
+ @bp.route("/profile", methods=["GET", "POST"])
+ def profile():
+     """
+     外部参加者のプロフィール編集。
+     - 画像アップロード: <input type="file" name="avatar_file">
+     - CSRF: session["ext_csrf"] と hidden input csrf_token を比較
+     - メールアドレス: 変更時は email_verified_at をクリアし確認コード送信
+     - 保存後は ext_after_login_next（join等）に戻す
+     - ★通知設定: notify_album_upload / notify_album_process をON/OFF保存
+     - ★決済モード: payment_mode (manual / auto)
+     """
+     # ===== ログイン必須 =====
+     social_id = session.get("ext_user_social_id")
+     if not social_id:
+         return redirect(url_for(
+             "external_login_user.line_login",
+             next=session.get("ext_after_login_next") or request.url
+         ))
+ 
+     # ===== CSRF 準備 =====
+     if "ext_csrf" not in session:
+         session["ext_csrf"] = secrets.token_hex(16)
+@@ -2810,51 +2888,52 @@ def update_my_process(event_uuid: str):
+                SET process=%s
+              WHERE event_id=%s AND user_id=%s
+              LIMIT 1
+         """, (process_flag, ev["id"], me["id"]))  # type: ignore
+         db.commit()
+         flash("加工回し設定を更新しました。", "success")
+     except Exception:
+         try: db.rollback()
+         except Exception: pass
+         flash("加工回し設定の更新に失敗しました。", "danger")
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+ 
+ 
+ # =========================
+ # ログアウト
+ # =========================
+ @bp.route("/logout")
+ def logout():
+     # 主要キーを削除
+     for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname",
+               "ext_after_login_next", "ext_user_onboarding",
+-              "ext_user_need_email", "ext_user_email_unverified"):
++              "ext_user_need_email", "ext_user_email_unverified",
++              "ext_login_mode", "ext_pwa_client_id"):
+         session.pop(k, None)
+     # フラッシュ全消し
+     session.pop("_flashes", None)
+ 
+     # 任意：ログアウト完了メッセージ（info）
+     # flash("ログアウトしました。", "info")
+ 
+     # トップへ
+     return redirect(url_for("external_login_user.index"))
+ 
+ 
+ # =========================
+ # 参加者一覧（主催→副主催→他、各グループはニックネーム昇順）
+ # =========================
+ @bp.route("/events/<event_uuid>/members")
+ def member_list(event_uuid: str):
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     # 管理者はOK / 参加者は承認済みのみ
+     if _is_mfu_logged_in():
+         allow = True
+     else:
+         sid = session.get("ext_user_social_id")
+diff --git a/external_login_user/utils.py b/external_login_user/utils.py
+index 1ccbc207ad1588f17e34e9205b21f3df52262d92..7c5bcc19ff61603da8f22fd4330228b87c0413f6 100644
+--- a/external_login_user/utils.py
++++ b/external_login_user/utils.py
+@@ -1,38 +1,45 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+-import os, re, uuid, base64, secrets
++import os, re, uuid, base64, secrets, hashlib
++from datetime import datetime, timedelta
+ from typing import Optional, Any
+ from urllib.parse import quote_plus
+ from flask import current_app, request, session, redirect, url_for, abort, flash
+ 
+ from . import bp, oauth  # oauth は None の可能性あり
+ from app.utils.db import get_db
+ 
+ QR_TRADEMARK_NOTICE = "QRコードは株式会社デンソーウェーブの登録商標です。"
+ SESSION_MAP_MAX_ITEMS = 8
+ SESSION_VALUE_MAX_LEN = 128
++EXT_LOGIN_MODE_BROWSER = "browser"
++EXT_LOGIN_MODE_PWA = "pwa"
++PWA_RESUME_TOKEN_TTL_SECONDS = 300
++PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY = "mfu_pwa_resume_token"
++PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY = "mfu_pwa_resume_at"
++PWA_RESUME_LOCAL_STORAGE_CLIENT_ID_KEY = "mfu_pwa_client_id"
+ 
+ # ---- 環境値 → 関数 ----
+ def LINE_CLIENT_ID() -> str:
+     return os.getenv("LINE_CHANNEL_ID") or ""
+ 
+ def LINE_CLIENT_SECRET() -> str:
+     return os.getenv("LINE_CHANNEL_SECRET") or ""
+ 
+ def LINE_REDIRECT_URI() -> Optional[str]:
+     v = os.getenv("LINE_REDIRECT_URI")
+     return v.strip() if v else None
+ 
+ def PAYMENT_ENTRY_BASE() -> str:
+     return (os.getenv("PAYMENT_ENTRY_BASE") or "/payment/e/").rstrip("/") + "/"
+ 
+ # ---- CSRF, セッション ----
+ def _admin_csrf_token() -> str:
+     t = session.get("admin_csrf")
+     if not t:
+         t = secrets.token_urlsafe(16)
+         session["admin_csrf"] = t
+     return t
+ 
+ def _require_mfu_login_redirect():
+     if not session.get("user"):
+@@ -113,50 +120,218 @@ def remember_session_map_value(map_key: str, item_key: str, value: Any, *, max_i
+     if isinstance(item, str):
+         item = item[:SESSION_VALUE_MAX_LEN]
+     data[key] = item
+ 
+     while len(data) > max_items:
+         oldest = next(iter(data), None)
+         if oldest is None:
+             break
+         data.pop(oldest, None)
+     session[map_key] = data
+ 
+ 
+ def set_compact_pay_ctx(*, event_id: int, event_uuid: str | None, ext_user_id: int, expected_amount_yen: int | None, payment_token: str, invite_token: str | None = None):
+     """セッションには識別に必要な最小情報のみを保存する。"""
+     ctx = {
+         "mfu_event_id": int(event_id),
+         "mfu_event_uuid": (event_uuid or "")[:64],
+         "ext_user_id": int(ext_user_id),
+         "expected_amount_yen": int(expected_amount_yen) if expected_amount_yen is not None else None,
+         "payment_token": (payment_token or "")[:128],
+     }
+     if invite_token:
+         ctx["invite_token"] = invite_token[:SESSION_VALUE_MAX_LEN]
+     session["pay_ctx"] = ctx
+ 
++
++def normalize_ext_login_mode(raw_mode: Any) -> str:
++    value = str(raw_mode or "").strip().lower()
++    return EXT_LOGIN_MODE_PWA if value in {"1", "true", "yes", "on", EXT_LOGIN_MODE_PWA} else EXT_LOGIN_MODE_BROWSER
++
++
++def is_pwa_login_request() -> bool:
++    return normalize_ext_login_mode(request.args.get("pwa") or session.get("ext_login_mode")) == EXT_LOGIN_MODE_PWA
++
++
++def issue_pwa_client_id() -> str:
++    return secrets.token_urlsafe(24)
++
++
++def _resume_token_hash(value: str) -> str:
++    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
++
++
++def _utcnow_naive() -> datetime:
++    return datetime.utcnow().replace(tzinfo=None)
++
++
++def create_external_login_resume_token(
++    *,
++    ext_user_id: int,
++    social_id: str,
++    next_path: str,
++    mode: str,
++    pwa_client_id: str | None = None,
++    ttl_seconds: int = PWA_RESUME_TOKEN_TTL_SECONDS,
++) -> str:
++    token = secrets.token_urlsafe(32)
++    now = _utcnow_naive()
++    expires_at = now + timedelta(seconds=max(30, int(ttl_seconds or PWA_RESUME_TOKEN_TTL_SECONDS)))
++    token_hash = _resume_token_hash(token)
++    client_hash = _resume_token_hash(pwa_client_id) if pwa_client_id else None
++
++    db = get_db(); cur = db.cursor()
++    try:
++        cur.execute(
++            """
++            INSERT INTO external_login_resume_token
++              (token_hash, ext_user_id, social_id, next_path, mode, pwa_client_id_hash,
++               issued_at, expires_at, consumed_at)
++            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
++            """,
++            (
++                token_hash,
++                int(ext_user_id),
++                (social_id or "")[:191],
++                (next_path or "/external-login/")[:512],
++                normalize_ext_login_mode(mode),
++                client_hash,
++                now,
++                expires_at,
++            ),
++        )
++        db.commit()
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++    return token
++
++
++def _fetch_resume_token_row(
++    *,
++    token: str | None = None,
++    pwa_client_id: str | None = None,
++    for_update: bool = False,
++) -> dict[str, Any] | None:
++    clauses: list[str] = [
++        "consumed_at IS NULL",
++        "expires_at >= %s",
++    ]
++    params: list[Any] = [_utcnow_naive()]
++
++    token_hash = _resume_token_hash(token) if token else None
++    client_hash = _resume_token_hash(pwa_client_id) if pwa_client_id else None
++    if token_hash:
++        clauses.append("token_hash = %s")
++        params.append(token_hash)
++    elif client_hash:
++        clauses.append("pwa_client_id_hash = %s")
++        params.append(client_hash)
++        clauses.append("mode = %s")
++        params.append(EXT_LOGIN_MODE_PWA)
++    else:
++        return None
++
++    order_by = "ORDER BY issued_at DESC, id DESC"
++    limit = "LIMIT 1"
++    lock = " FOR UPDATE" if for_update else ""
++    sql = f"""
++        SELECT
++          id, ext_user_id, social_id, next_path, mode,
++          issued_at, expires_at, consumed_at, created_at, updated_at
++        FROM external_login_resume_token
++        WHERE {' AND '.join(clauses)}
++        {order_by}
++        {limit}{lock}
++    """
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(sql, tuple(params))
++        row = cur.fetchone()
++        if for_update:
++            return {"_db": db, "_cur": cur, "row": row}
++        return row
++    except Exception:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
 +        raise
++
++
++def get_external_login_resume_token_summary(token: str | None) -> dict[str, Any] | None:
++    if not token:
++        return None
++    return _fetch_resume_token_row(token=token, for_update=False)
++
++
++def consume_external_login_resume_token(*, token: str | None = None, pwa_client_id: str | None = None) -> dict[str, Any] | None:
++    locked = _fetch_resume_token_row(token=token, pwa_client_id=pwa_client_id, for_update=True)
++    if not locked:
++        return None
++
++    db = locked["_db"]
++    cur = locked["_cur"]
++    row = locked["row"]
++    if not row:
++        try:
++            db.rollback()
++        except Exception:
++            pass
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++        return None
++
++    consumed_at = _utcnow_naive()
++    try:
++        cur.execute(
++            """
++            UPDATE external_login_resume_token
++               SET consumed_at=%s,
++                   updated_at=CURRENT_TIMESTAMP
++             WHERE id=%s
++               AND consumed_at IS NULL
++             LIMIT 1
++            """,
++            (consumed_at, int(row["id"])),
++        )
++        if int(cur.rowcount or 0) != 1:
++            db.rollback()
++            return None
++        db.commit()
++        row["consumed_at"] = consumed_at
++        return row
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++
+ # ---- ID/DB ヘルパ ----
+ def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:
+     if not b: return None
+     try:
+         return str(uuid.UUID(bytes=b))
+     except Exception:
+         try:
+             return str(uuid.UUID(hex=b.hex()))
+         except Exception:
+             return None
+ 
+ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
+     """
+     external_login_user を social_id で1件取得して dict で返す。
+     avatar_url / avatar_file も取得して、イベント参加証などでのアイコン表示に使えるようにする。
+     """
+     db = get_db(); cur = db.cursor()
+     cur.execute("""
+         SELECT
+           id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
+           avatar_url, avatar_file,
+           created_at, updated_at
+         FROM external_login_user
+         WHERE social_id=%s
+         LIMIT 1
