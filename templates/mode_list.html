@@ -17,7 +17,10 @@
         </div>
         <div>
           <a class="btn btn-sm btn-outline-primary me-2" href="{{ url_for('mode_edit_combined', mode=m.mode) }}">編集</a>
-          <a class="btn btn-sm btn-outline-danger" href="{{ url_for('mode_delete', mode=m.mode) }}" onclick="return confirm('本当に削除しますか？');">🗑 削除</a>
+          <form method="post" action="{{ url_for('mode_delete', mode=m.mode) }}" class="d-inline" onsubmit="return confirm('本当に削除しますか？');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-outline-danger">🗑 削除</button>
+          </form>
         </div>
       </li>
     {% endfor %}
