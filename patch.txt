@@ -1,149 +1,327 @@
-diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
-index 46c54aeb37336f139f357b4afb8aacdb3297d074..d74c0a21dca5caae3ade986151925347f8a5bd25 100644
---- a/external_login_user/template/ext_index.html
-+++ b/external_login_user/template/ext_index.html
-@@ -56,68 +56,50 @@
-     </div>
-     <div class="d-flex flex-wrap gap-2 mb-3">
-       <button class="btn btn-outline-primary" type="button" id="enable-chat-push">プッシュ通知の有効</button>
-     </div>
-     <div class="alert alert-info small mb-4" role="alert" id="pwa-guide">
-       iPhoneでPWA（ホーム画面に追加）にしていない場合、Push通知は利用できません。<br>
-       設定手順は
-       <a href="https://support.apple.com/ja-jp/guide/iphone/iphea86e5236/ios" target="_blank" rel="noopener noreferrer">Apple公式ガイド</a>
-       をご確認ください。
-     </div>
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 31a88a38ef9d7b7efb2528c03d0c5e31822d7281..5436cf503b7a3d11e6d66fac61ba9b5e49dfd25d 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -18,171 +18,182 @@
+ }
  
-     {# ★ メール登録 促し（プロフィールから登録・変更） ★ #}
-     {% set _email = (me.email if (me is defined and me.email is defined) else '') %}
-     {% if (_email or '')|trim == '' %}
-       <div class="alert alert-warning d-flex justify-content-between align-items-center mb-4" role="alert">
-         <div class="me-3">
-           以前は任意登録のメールアドレスですが、決済や連絡のため、<strong>プロフィール編集</strong>から登録をお願いします。
-         </div>
-         <a class="btn btn-sm btn-warning" href="{{ url_for('external_login_user.profile') }}">
-           プロフィールで登録
-         </a>
-       </div>
-     {% else %}
-     {% endif %}
+ .chat-date-divider span {
+   display: inline-block;
+   font-size: 0.78rem;
+   color: #556;
+   background: rgba(255, 255, 255, 0.95);
+   border-radius: 999px;
+   padding: 3px 12px;
+ }
  
--    {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
--      <div class="card mb-4">
--        <div class="card-body">
--          <h2 class="h6 mb-3">各種ドキュメント</h2>
--          <div class="d-flex flex-column gap-2">
--            {% if privacy_policy_link_url %}
--              <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
--            {% endif %}
--            {% if commerce_law_url %}
--              <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
--            {% endif %}
--            {% if participant_terms_url %}
--              <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
--            {% endif %}
--          </div>
--        </div>
--      </div>
--    {% endif %}
+ .chat-row {
+   position: relative;
+   margin-bottom: 10px;
+   touch-action: pan-y;
+ }
  
-     {% if privacy_policy_required %}
-       <div class="modal fade" id="privacyPolicyModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
-         <div class="modal-dialog modal-dialog-centered">
-           <div class="modal-content">
-             <div class="modal-header">
-               <h2 class="modal-title fs-5">
-                 {% if privacy_policy_mode == 'reconsent' %}
-                   プライバシーポリシー改定のお知らせ
-                 {% else %}
-                   プライバシーポリシーへの同意のお願い
-                 {% endif %}
-               </h2>
-             </div>
-             <div class="modal-body">
-               <p class="mb-2">現在有効なプライバシーポリシーへの同意が必要です。</p>
-               <p class="mb-3">改定日：<strong>{{ privacy_policy_revised_date_label }}</strong></p>
-               <div class="d-grid gap-2">
-                 <a class="btn btn-outline-primary" href="{{ privacy_policy_url }}" target="_blank" rel="noopener">プライバシーポリシーを開く</a>
-                 <form method="post" action="{{ url_for('external_login_user.privacy_policy_agree') }}" class="d-grid">
-                   <input type="hidden" name="csrf_token" value="{{ ext_csrf or '' }}">
-                   <button type="submit" class="btn btn-primary">同意する</button>
-                 </form>
-               </div>
-             </div>
-@@ -391,56 +373,69 @@
-           </div>
  
-           <script>
-             // 使い勝手向上：左で入力したメールを右にも反映
-             (function(){
-               const a = document.getElementById('pinReqEmail');
-               const b = document.getElementById('pinLoginEmail');
-               if(a && b){
-                 a.addEventListener('change', ()=>{ if(!b.value) b.value = a.value; });
-               }
-             })();
-           </script>
-         </div>
-       </div>
-     </div>
-     {# === /PIN ログイン ================================== #}
-   {% endif %}
+ .chat-line {
+   display: flex;
+   gap: 8px;
+   align-items: flex-start;
+   min-width: 0;
+ }
  
-   <!-- ▼ アップデート情報リンク（特商法の「上あたり」に配置） -->
-   <div class="text-end mb-2">
-     <a href="#" id="linkUpdateInfo" class="link-primary small">アップデート情報</a>
-   </div>
++.chat-line > * {
++  min-width: 0;
++}
++
+ .chat-row.me .chat-line {
+   justify-content: flex-end;
+ }
  
-   <!-- === 特定商取引法：ログイン前は既存表示、ログイン後はリンク ================= -->
-   <hr class="my-4">
--  {% if login and me and commerce_law_url %}
--    <p class="text-center mb-2">
--      <a href="{{ commerce_law_url }}" class="link-secondary" target="_blank" rel="noopener">
--        特定商取引法に基づく表記（リンク）
--      </a>
--    </p>
-+  {% if login and me %}
-+    {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
-+      <div class="card mb-3">
-+        <div class="card-body">
-+          <h2 class="h6 mb-3">各種ドキュメント</h2>
-+          <div class="d-flex flex-column gap-2">
-+            {% if privacy_policy_link_url %}
-+              <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
-+            {% endif %}
-+            {% if commerce_law_url %}
-+              <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
-+            {% endif %}
-+            {% if participant_terms_url %}
-+              <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
-+            {% endif %}
-+          </div>
-+        </div>
-+      </div>
-+    {% endif %}
-   {% else %}
-     <p class="text-center mb-2">
-       <a href="#tokushohoCollapse"
-          class="link-secondary"
-          data-bs-toggle="collapse"
-          role="button"
-          aria-expanded="false"
-          aria-controls="tokushohoCollapse">
-         特定商取引法に基づく表記（クリックで表示）
-       </a>
-     </p>
+ .chat-row.other .chat-line {
+   justify-content: flex-start;
+ }
  
-     <div class="collapse" id="tokushohoCollapse">
-       <section id="tokushoho" class="mt-3">
-         <h2 class="h5 mb-3">特定商取引法に基づく表記</h2>
-         <div class="alert alert-info mb-0">
-           <div><strong>販売業者：</strong> 小松　伊織</div>
-           <div class="small text-muted mt-1">
-             そのほかの住所・電話番号・連絡先等の情報は、<u>請求があれば開示</u>します。<br>
-             ログイン後に、上記の全項目を確認できます。
-           </div>
-         </div>
-       </section>
-     </div>
-   {% endif %}
+ .chat-main {
+   display: flex;
+   flex-direction: column;
+-  max-width: min(80%, 560px);
++  flex: 1 1 auto;
+   min-width: 0;
++  max-width: min(100%, 560px);
+ }
+ 
+ .chat-row.me .chat-main {
+   align-items: flex-end;
+ }
+ 
+ .chat-row.other .chat-main {
+   align-items: flex-start;
+ }
+ 
+ .chat-sender {
+   font-size: 0.76rem;
+   color: #667;
+   margin: 0 8px 4px;
+ }
+ 
+ .chat-bubble-wrap {
+   display: flex;
+   align-items: flex-end;
+   gap: 6px;
++  width: 100%;
+   min-width: 0;
+-  flex: 0 0 auto;
++  max-width: 100%;
++  flex: 1 1 auto;
+   position: relative;
+ }
+ 
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+   gap: 12px;
+ }
+ 
+ .chat-bubble {
+-  display: inline-block;
+-  max-width: min(calc(100% - 64px), 28rem);
++  /* メタ列ぶんを引いた残り幅で縮められる吹き出しにする */
++  display: block;
++  width: fit-content;
++  min-width: 0;
++  max-width: min(100%, calc(100% - 64px));
+   padding: 8px 12px;
+   border-radius: 16px;
+   line-height: 1.4;
+   white-space: normal;
+-  overflow-wrap: break-word;
+-  word-break: normal;
+-  flex: 0 0 auto;
++  overflow-wrap: anywhere;
++  word-break: break-word;
++  flex: 0 1 auto;
+   position: relative;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
+   -webkit-user-select: none;
+   user-select: none;
+   -webkit-touch-callout: none;
+   touch-action: manipulation;
+   -webkit-tap-highlight-color: transparent;
+ }
+ 
+ .chat-body {
+   min-width: 0;
+-  overflow-wrap: break-word;
+-  word-break: normal;
++  overflow-wrap: anywhere;
++  word-break: break-word;
+ }
+ 
+ /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
+ .chat-bubble .chat-body,
+ .chat-bubble .chat-body * {
+   -webkit-user-select: text;
+   user-select: text;
+   -webkit-touch-callout: default;
+ }
+ 
+ /* リンクはタップできる */
+ .chat-bubble .chat-body a {
+   -webkit-user-select: auto;
+   user-select: auto;
+   -webkit-touch-callout: default;
+ }
+ 
+ .chat-body img {
+   max-width: 100%;
+   height: auto;
+ }
+ 
+ .chat-body .chat-link {
+   text-decoration: underline;
+   color: #1f57d6;
+-  overflow-wrap: break-word;
+-  word-break: normal;
++  overflow-wrap: anywhere;
++  word-break: break-word;
+ }
+ 
+ .chat-body p,
+ .chat-body ul,
+ .chat-body ol {
+   margin: 0;
+ }
+ 
+ .chat-row.me .chat-bubble {
+   background: #4a8dff;
+   color: #fff;
+   border-bottom-right-radius: 6px;
+ }
+ 
+ .chat-row.other .chat-bubble {
+   background: #f1f3f5;
+   color: #222;
+   border-bottom-left-radius: 6px;
+ }
+ 
+ .chat-meta-col {
+   display: flex;
+   flex-direction: column;
+   align-items: flex-end;
+   justify-content: flex-end;
+   gap: 2px;
++  flex: 0 0 56px;
+   min-width: 56px;
+ }
+ 
+ .chat-row.me .chat-meta-col {
+   margin-right: 8px;
+ }
+ 
+ .chat-time {
+   font-size: 0.72rem;
+   color: #7a7a7a;
+   white-space: nowrap;
+   line-height: 1.1;
+ }
+ 
+ .chat-edited-label {
+   font-size: 0.68rem;
+   color: #697187;
+   white-space: nowrap;
+ }
+ 
+ .chat-typing-indicator {
+   min-height: 0;
+   margin: 6px 0 0;
+   padding: 6px 10px;
+   font-size: 0.82rem;
+@@ -583,56 +594,60 @@
+   aspect-ratio: 1 / 1;
+   overflow: hidden;
+   border-radius: 10px;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: #fff;
+ }
+ 
+ .chat-image-cell img {
+   width: 100%;
+   height: 100%;
+   object-fit: cover;
+   object-position: center;
+   display: block;
+ }
+ 
+ .chat-image-thumb {
+   display: block;
+   max-width: min(320px, 70vw);
+   width: 100%;
+   height: auto;
+   border-radius: 10px;
+   border: 1px solid rgba(0, 0, 0, 0.12);
+   background: #fff;
+ }
+ 
+-.chat-bubble {
+-  max-width: 100%;
++.chat-body,
++.chat-body *,
++.chat-body a,
++.chat-body .chat-link {
++  overflow-wrap: anywhere;
++  word-break: break-word;
+ }
+ 
+ .chat-body {
+-  overflow-x: hidden;
++  overflow-x: hidden; /* 保険。見切れ対策の主因は上の折り返し＋flex調整 */
+ }
+ 
+ #chat-body {
+   resize: none;
+   overflow-y: auto;
+ }
+ 
+ .chat-image-viewer {
+   position: fixed;
+   inset: 0;
+   z-index: 1080;
+   display: none;
+   align-items: center;
+   justify-content: center;
+   background: rgba(0, 0, 0, 0.78);
+   padding: 20px;
+ }
+ 
+ .chat-image-viewer.is-open {
+   display: flex;
+ }
+ 
+ .chat-image-viewer-close {
+   position: absolute;
+   top: 10px;
+@@ -1025,50 +1040,64 @@
+   .chat-room-main,
+   .chat-body-layout {
+     flex: 1;
+     min-height: 0;
+     overflow: hidden;
+   }
+ 
+   .chat-room-main {
+     gap: .25rem;
+   }
+ 
+   .chat-messages {
+     flex: 1;
+     min-height: 0;
+     height: auto;
+     margin-bottom: 0 !important;
+     overflow-y: auto;
+     -webkit-overflow-scrolling: touch;
+     overscroll-behavior: contain;
+   }
+ 
+   #messages.chat-messages {
+     padding: .6rem !important;
+   }
+ 
++  /* iPhone 幅でもアバター・メタ列込みで自然に収める */
++  .chat-main {
++    max-width: 100%;
++  }
++
++  .chat-row.me .chat-bubble-wrap {
++    gap: 8px;
++  }
++
++  .chat-meta-col {
++    flex-basis: 52px;
++    min-width: 52px;
++  }
++
+   .chat-nav-label {
+     display: none;
+   }
+ 
+   .chat-nav-link {
+     padding: .3rem .45rem;
+   }
+ 
+   #chat-search-input {
+     font-size: 16px;
+   }
+ 
+   .chat-nav-link-top .chat-nav-label {
+     display: inline;
+   }
+ 
+   .chat-bottom-jump-btn {
+     right: 8px;
+     bottom: calc(78px + env(safe-area-inset-bottom));
+   }
+ }
+ 
+ /* Bootstrap modal が transform 配下で backdrop に負けて操作不能になる対策 */
+ #chat-fulltext-modal.chat-fulltext-modal.modal {
+   z-index: 3000;
