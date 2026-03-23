@@ -189,12 +189,14 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _same_jst_day(lhs: datetime | None, rhs: datetime | None) -> bool:
-    lhs_utc = _as_utc(lhs)
-    rhs_utc = _as_utc(rhs)
-    if lhs_utc is None or rhs_utc is None:
+def _can_send_external_unread_reminder(last_sent_at: datetime | None, now_utc: datetime | None) -> bool:
+    last_sent_utc = _as_utc(last_sent_at)
+    current_utc = _as_utc(now_utc)
+    if current_utc is None:
         return False
-    return lhs_utc.astimezone(_JST).date() == rhs_utc.astimezone(_JST).date()
+    if last_sent_utc is None:
+        return True
+    return current_utc >= (last_sent_utc + timedelta(days=2))
 
 
 def _relative_time_from(dt: datetime | None) -> str:
@@ -596,7 +598,7 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
         "sent": 0,
         "failed": 0,
         "skipped_no_mail": 0,
-        "skipped_already_sent_today": 0,
+        "skipped_too_soon": 0,
         "skipped_no_unread": 0,
         "skipped_invalid_user": 0,
     }
@@ -650,10 +652,10 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
             )
             continue
 
-        if _same_jst_day(last_sent_at, now_utc):
-            summary["skipped_already_sent_today"] += 1
+        if not _can_send_external_unread_reminder(last_sent_at, now_utc):
+            summary["skipped_too_soon"] += 1
             current_app.logger.info(
-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=当日送信済み last_sent_at=%s",
+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
                 user_id,
                 email,
                 0,
@@ -719,12 +721,12 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
             )
 
     current_app.logger.info(
-        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_already_sent_today=%s skipped_no_unread=%s skipped_invalid_user=%s",
+        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_too_soon=%s skipped_no_unread=%s skipped_invalid_user=%s",
         summary["candidates"],
         summary["sent"],
         summary["failed"],
         summary["skipped_no_mail"],
-        summary["skipped_already_sent_today"],
+        summary["skipped_too_soon"],
         summary["skipped_no_unread"],
         summary["skipped_invalid_user"],
     )

@@ -1,525 +1,448 @@
-diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
-index a6fd2b8280defab6b7f6913acc96cbe237808940..771f37c6929f9281fe190a79b6c928f17dd84440 100644
---- a/external_login_user/admin_users.py
-+++ b/external_login_user/admin_users.py
-@@ -75,89 +75,100 @@ def _format_datetime_jst(value) -> str | None:
-         return str(value)
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index a1f3a92f0ae57c61b272775007340529a0938649..296ff8f2dadef6617d9e17f9937d3fa46287c91e 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -167,56 +167,58 @@ def _is_mfu_notification_user(username: str) -> bool:
  
+ def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
+     username, role = _resolve_mfu_notification_recipient_for_session()
+     if not username:
+         current_app.logger.info("mfu notification guard denied reason=login_required")
+         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
+     if not _is_mfu_notification_user(username):
+         current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
+         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
+     current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
+     return username, None
+ 
+ 
+ def _now_utc() -> datetime:
+     return datetime.now(timezone.utc)
+ 
+ 
+ def _as_utc(dt: datetime | None) -> datetime | None:
+     if dt is None:
+         return None
+     if dt.tzinfo is None:
+         return dt.replace(tzinfo=timezone.utc)
+     return dt.astimezone(timezone.utc)
+ 
+ 
+-def _same_jst_day(lhs: datetime | None, rhs: datetime | None) -> bool:
+-    lhs_utc = _as_utc(lhs)
+-    rhs_utc = _as_utc(rhs)
+-    if lhs_utc is None or rhs_utc is None:
++def _can_send_external_unread_reminder(last_sent_at: datetime | None, now_utc: datetime | None) -> bool:
++    last_sent_utc = _as_utc(last_sent_at)
++    current_utc = _as_utc(now_utc)
++    if current_utc is None:
+         return False
+-    return lhs_utc.astimezone(_JST).date() == rhs_utc.astimezone(_JST).date()
++    if last_sent_utc is None:
++        return True
++    return current_utc >= (last_sent_utc + timedelta(days=2))
+ 
+ 
+ def _relative_time_from(dt: datetime | None) -> str:
+     if not dt:
+         return ""
      if dt.tzinfo is None:
          dt = dt.replace(tzinfo=timezone.utc)
- 
-     jst = timezone(timedelta(hours=9))
-     return dt.astimezone(jst).strftime("%Y年%m月%d日 %H:%M:%S")
- 
- 
- def _format_email_verified_at_rows(rows: list[dict]) -> None:
-     for r in rows:
-         r["email_verified_at"] = _format_datetime_jst(r.get("email_verified_at"))
- 
- def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, str]:
-     """一覧API向けのソートキーを正規化する。"""
-     key = (sort_key or "id").strip().lower()
-     if key not in ("id", "nickname"):
-         key = "id"
- 
-     order = (sort_order or "asc").strip().lower()
-     if order not in ("asc", "desc"):
-         order = "asc"
-     return key, order
+     delta = max(0, int((_now_utc() - dt).total_seconds()))
+     if delta < 60:
+         return "たった今"
+     if delta < 3600:
+         return f"{delta // 60}分前"
+     if delta < 86400:
+         return f"{delta // 3600}時間前"
+     if delta < 86400 * 7:
+         return f"{delta // 86400}日前"
+     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
  
  
-+_PUSH_SUBSCRIPTION_COUNT_SQL = """
-+    (
-+      SELECT COUNT(*)
-+        FROM chat_push_subscriptions cps
-+       WHERE cps.actor_type = 'line'
-+         AND cps.actor_id = CAST(external_login_user.id AS CHAR)
-+    ) AS push_subscription_count
-+"""
-+
-+
- # ============= 画面（一覧） =============
- @bp.route("/admin/ext-users")
- def admin_ext_users_index():
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
+ def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
+     chat_room_id = str(row.get("chat_room_id") or "").strip()
+     chat_event_id = int(row.get("chat_event_id") or 0) or None
+     if chat_room_id:
+         return chat_event_id, chat_room_id
  
-     q = (request.args.get("q") or "").strip()
-     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
- 
-     params: list = []
-     where = []
-     if q:
-         like = f"%{q}%"
-         where.append(
-             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+@@ -574,51 +576,51 @@ def create_notification_external(
+         title=title,
+         body=body,
+         target_url=target_url or "/external-login/",
+         dedup_key=dedup_key,
+         event_id=event_id,
+         chat_event_id=chat_event_id,
+         chat_room_id=chat_room_id,
+     )
+     if not result.get("ok"):
+         current_app.logger.warning(
+             "create_notification_external failed user_id=%s reason=%s",
+             user_id,
+             result.get("reason"),
          )
-         params += [like, like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+     return bool(result.get("created"))
+ 
+ 
+ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> dict[str, int]:
+     _ensure_notification_schema()
+     now_utc = _as_utc(now_utc) or _now_utc()
+     summary = {
+         "candidates": 0,
+         "sent": 0,
+         "failed": 0,
+         "skipped_no_mail": 0,
+-        "skipped_already_sent_today": 0,
++        "skipped_too_soon": 0,
+         "skipped_no_unread": 0,
+         "skipped_invalid_user": 0,
+     }
  
      db = get_db()
      cur = db.cursor(dictionary=True)
      try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
--        cols = """
-+        cols = f"""
-             id,
-             nickname,
-             x_id,
-             instagram_id,
-             email,
-             social_id,
-             avatar_file,
-             avatar_url,
-             created_at,
-             updated_at,
-             admin_note,
-             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-             COALESCE(notify_album_process, 1) AS notify_album_process,
-+            {_PUSH_SUBSCRIPTION_COUNT_SQL},
-             (
-               SELECT COUNT(*)
-                 FROM external_login_user_card_data c
-                WHERE c.user_id = external_login_user.id
-                  AND c.deleted_at IS NULL
-             ) AS card_count
-         """
-         if has_verified:
-             cols += ", email_verified_at"
- 
-         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
-         cur.execute(f"""
-             SELECT {cols}
+         cur.execute(
+             f"""
+             SELECT id, email, {_EXTERNAL_UNREAD_REMINDER_COLUMN} AS last_sent_at
                FROM external_login_user
-               {sql_where}
-              ORDER BY {order_by}
-         """, params)
-         initial_items = cur.fetchall() or []
-         if not has_verified:
-             for r in initial_items:
-                 r["email_verified_at"] = None
-         _format_email_verified_at_rows(initial_items)
- 
-         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
-         total = int((cur.fetchone() or {}).get("c", 0))
-@@ -188,57 +199,58 @@ def admin_ext_users_data():
-     if guard:
-         return guard
- 
-     q = (request.args.get("q") or "").strip()
-     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
-     try:
-         page = max(int(request.args.get("page") or 1), 1)
-     except Exception:
-         page = 1
-     try:
-         per_page = min(max(int(request.args.get("per_page") or 1000), 1), 10000)
-     except Exception:
-         per_page = 1000
- 
-     params: list = []
-     where = []
-     if q:
-         like = f"%{q}%"
-         where.append(
-             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+              WHERE id > 0
+              ORDER BY id ASC
+             """
          )
-         params += [like, like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
--    cols = """
-+    cols = f"""
-         id, nickname, x_id, instagram_id, email, social_id,
-         avatar_file, avatar_url, created_at, updated_at,
-         admin_note,
-         COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-         COALESCE(notify_album_process, 1) AS notify_album_process,
-+        {_PUSH_SUBSCRIPTION_COUNT_SQL},
-         (
-           SELECT COUNT(*)
-             FROM external_login_user_card_data c
-            WHERE c.user_id = external_login_user.id
-              AND c.deleted_at IS NULL
-         ) AS card_count
-     """
-     if has_verified:
-         cols += ", email_verified_at"
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
-         total = int(cur.fetchone()["c"])
-         offset = (page - 1) * per_page
- 
-         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
-         cur.execute(f"""
-             SELECT {cols}
-               FROM external_login_user
-               {sql_where}
-              ORDER BY {order_by}
-              LIMIT %s OFFSET %s
-         """, params + [per_page, offset])
          rows = cur.fetchall() or []
-@@ -249,64 +261,67 @@ def admin_ext_users_data():
      finally:
-         try: cur.close(); db.close()
-         except Exception: pass
+         cur.close()
+         db.close()
  
-     return jsonify({
-         "ok": True,
-         "items": rows,
-         "total": total,
-         "page": page,
-         "per_page": per_page,
-         "sort": sort_key,
-         "order": sort_order,
-         "q": q,
-     })
+     summary["candidates"] = len(rows)
+     current_app.logger.info(
+         "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
+         summary["candidates"],
+         now_utc.isoformat(),
+@@ -628,54 +630,54 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
+     for row in rows:
+         user_id = int(row.get("id") or 0)
+         email = str(row.get("email") or "").strip()
+         last_sent_at = _as_utc(row.get("last_sent_at"))
  
- # ============= API（単票：旧モーダル用） =============
- @bp.get("/admin/ext-users/<int:user_id>/detail")
- def admin_ext_users_detail(user_id: int):
-     """（旧モーダル用）単票取得。"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
+         if user_id <= 0:
+             summary["skipped_invalid_user"] += 1
+             current_app.logger.info(
+                 "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
+                 user_id,
+                 email or "-",
+                 0,
+             )
+             continue
  
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
--        cur.execute("""
-+        cur.execute(f"""
-             SELECT
-               id,
-               nickname,
-               x_id,
-               instagram_id,
-               email,
-               social_id,
-               avatar_file,
-               avatar_url,
-               created_at,
-               updated_at,
-               admin_note,
--              COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-+              COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-+              COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-+              COALESCE(notify_album_process, 1) AS notify_album_process,
-+              {_PUSH_SUBSCRIPTION_COUNT_SQL}
-             FROM external_login_user
-             WHERE id=%s
-             LIMIT 1
-         """, (user_id,))
-         row = cur.fetchone()
-         if not row:
-             abort(404)
-     finally:
+         if not email:
+             summary["skipped_no_mail"] += 1
+             current_app.logger.info(
+                 "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
+                 user_id,
+                 email or "-",
+                 0,
+             )
+             continue
+ 
+-        if _same_jst_day(last_sent_at, now_utc):
+-            summary["skipped_already_sent_today"] += 1
++        if not _can_send_external_unread_reminder(last_sent_at, now_utc):
++            summary["skipped_too_soon"] += 1
+             current_app.logger.info(
+-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=当日送信済み last_sent_at=%s",
++                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
+                 user_id,
+                 email,
+                 0,
+                 last_sent_at.isoformat() if last_sent_at else None,
+             )
+             continue
+ 
          try:
-             cur.close()
-             db.close()
+             unread_count = _compute_unread_count_external(user_id)
          except Exception:
-             pass
+             summary["failed"] += 1
+             current_app.logger.exception(
+                 "external unread reminder unread count failed user_id=%s email=%s",
+                 user_id,
+                 email,
+             )
+             continue
  
-     return jsonify({"ok": True, "item": row})
- 
- 
- # ============= 更新 =============
- @bp.post("/admin/ext-users/<int:user_id>/update")
- def admin_ext_users_update(user_id: int):
-     """項目更新（nickname / x_id / instagram_id / email / admin_note）
-        フォームPOST: 成功時は一覧へリダイレクト（?saved=1）
-        JSON(AJAX): 互換のため JSON を返す
-     """
-     guard = _require_mfu_login_redirect()
-@@ -472,57 +487,58 @@ def admin_ext_users_resend_confirm(user_id: int):
-             abort(404)
-         if not u.get("email"):
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
-     finally:
-         try:
-             cur.close()
-             db.close()
+         if unread_count <= 0:
+             summary["skipped_no_unread"] += 1
+             current_app.logger.info(
+                 "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
+                 user_id,
+                 email,
+                 unread_count,
+@@ -697,56 +699,56 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
+                 )
+                 db.commit()
+             except Exception:
+                 db.rollback()
+                 raise
+             finally:
+                 update_cur.close()
+                 db.close()
+             summary["sent"] += 1
+             current_app.logger.info(
+                 "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
+                 user_id,
+                 email,
+                 unread_count,
+             )
          except Exception:
-             pass
+             summary["failed"] += 1
+             current_app.logger.exception(
+                 "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
+                 user_id,
+                 email,
+                 unread_count,
+             )
  
-     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
+     current_app.logger.info(
+-        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_already_sent_today=%s skipped_no_unread=%s skipped_invalid_user=%s",
++        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_too_soon=%s skipped_no_unread=%s skipped_invalid_user=%s",
+         summary["candidates"],
+         summary["sent"],
+         summary["failed"],
+         summary["skipped_no_mail"],
+-        summary["skipped_already_sent_today"],
++        summary["skipped_too_soon"],
+         summary["skipped_no_unread"],
+         summary["skipped_invalid_user"],
+     )
+     return summary
  
  
- # ============= 別ページ編集（GET） =============
- @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
- def admin_ext_users_edit_page(user_id: int):
-     """外部ログインユーザー 編集ページ（別ページ実装）"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
+ def _compute_unread_count_mfu(username: str) -> int:
+     recipient = (username or "").strip()
+     if not recipient:
+         return 0
      db = get_db()
      cur = db.cursor(dictionary=True)
      try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
--        cols = """
-+        cols = f"""
-             id, nickname, x_id, instagram_id, email, social_id,
-             avatar_file, avatar_url, created_at, updated_at,
-             admin_note,
-             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
--            COALESCE(notify_album_process, 1) AS notify_album_process
-+            COALESCE(notify_album_process, 1) AS notify_album_process,
-+            {_PUSH_SUBSCRIPTION_COUNT_SQL}
-         """
-         if has_verified:
-             cols += ", email_verified_at"
-         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         user = cur.fetchone()
-         if not user:
-             abort(404)
-         if not has_verified:
-             user["email_verified_at"] = None
- 
-         # 参加中イベント一覧
          cur.execute(
              """
-             SELECT
-               m.id AS member_id,
-               e.id AS event_id,
-               e.title,
-               e.starts_at,
-               m.status,
-               m.payment_status
-             FROM mfu_event_member AS m
-             JOIN mfu_event AS e ON e.id = m.event_id
-             WHERE m.user_id=%s
-             ORDER BY COALESCE(e.starts_at, '9999-12-31') DESC, e.id DESC
+             SELECT COUNT(*) AS cnt
+               FROM mfu_notifications
+              WHERE user_kind='mfu'
+                AND recipient_key=%s
+                AND read_at IS NULL
              """,
-diff --git a/external_login_user/template/admin_ext_users.html b/external_login_user/template/admin_ext_users.html
-index 92d13c5e8c936e7a258a0c68a2391ceae3e339bf..8158367dc4bffda4cd7451aa59c8d04a2c1e1593 100644
---- a/external_login_user/template/admin_ext_users.html
-+++ b/external_login_user/template/admin_ext_users.html
-@@ -68,50 +68,58 @@
-             <div>{{ it.email }}</div>
-             <div class="small mt-1">
-               {% if it.email_verified_at %}
-                 <span class="badge bg-success">確認済</span>
-                 <span class="text-muted ms-1">{{ it.email_verified_at }}</span>
-               {% else %}
-                 <span class="badge bg-secondary">未確認</span>
-               {% endif %}
-             </div>
-           {% else %}
-             <span class="text-muted">-</span>
-           {% endif %}
-         </td>
-         <td>
-           {% if it.x_id %}
-             <a href="https://x.com/{{ it.x_id|e }}" target="_blank" rel="noopener">X: @{{ it.x_id }}</a>{% if it.instagram_id %}<br>{% endif %}
-           {% endif %}
-           {% if it.instagram_id %}
-             <a href="https://www.instagram.com/{{ it.instagram_id|e }}/" target="_blank" rel="noopener">IG: @{{ it.instagram_id }}</a>
-           {% endif %}
-           {% if not it.x_id and not it.instagram_id %}
-             <span class="text-muted">-</span>
-           {% endif %}
-         </td>
-         <td>
-+          <div>
-+            Push通知
-+            {% if (it.push_subscription_count or 0)|int > 0 %}
-+              🔵
-+            {% else %}
-+              🔴
-+            {% endif %}
-+          </div>
-           <div>
-             アップ
-             {% if it.notify_album_upload %}
-               🔵
-             {% else %}
-               🔴
-             {% endif %}
-           </div>
-           <div>
-             加工
-             {% if it.notify_album_process %}
-               🔵
-             {% else %}
-               🔴
-             {% endif %}
-           </div>
-         </td>
-         <td>
-           {% if it.card_count and it.card_count|int > 0 %}
-             登録あり
-           {% else %}
-             未登録
-           {% endif %}
-         </td>
-         <td class="text-end">
-@@ -176,60 +184,61 @@
-       return `<img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">`;
-     }
+             (recipient,),
+         )
+         return int((cur.fetchone() or {}).get("cnt") or 0)
+     finally:
+diff --git a/tests/test_external_unread_reminder.py b/tests/test_external_unread_reminder.py
+index b96994c38cddda7a8b92cc3189ca19b0a42d6bc6..ccdaf45be24515703ffaea4ed801349e9ae13638 100644
+--- a/tests/test_external_unread_reminder.py
++++ b/tests/test_external_unread_reminder.py
+@@ -114,82 +114,175 @@ def load_notifications_module():
+     spec.loader.exec_module(module)
+     return module
  
-     function renderRows(items) {
-       if (!items || !items.length) {
-         tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
-         return;
-       }
-       tbody.innerHTML = items.map((it) => {
-         const isEnabled = (value) => {
-           if (value === true) return true;
-           if (value === false || value == null) return false;
-           const n = Number(value);
-           return Number.isFinite(n) ? n === 1 : String(value).toLowerCase() === 'true';
-         };
-         const nick = escapeHtml(it.nickname || '');
-         const socialId = escapeHtml(it.social_id || '-');
-         const emailBlock = it.email
-           ? `<div>${escapeHtml(it.email)}</div>
-              <div class="small mt-1">${it.email_verified_at ? '<span class="badge bg-success">確認済</span><span class="text-muted ms-1">' + escapeHtml(it.email_verified_at) + '</span>' : '<span class="badge bg-secondary">未確認</span>'}</div>`
-           : '<span class="text-muted">-</span>';
-         let sns = '<span class="text-muted">-</span>';
-         if (it.x_id || it.instagram_id) {
-           sns = `${it.x_id ? `<a href="https://x.com/${encodeURIComponent(it.x_id)}" target="_blank" rel="noopener">X: @${escapeHtml(it.x_id)}</a>` : ''}${(it.x_id && it.instagram_id) ? '<br>' : ''}${it.instagram_id ? `<a href="https://www.instagram.com/${encodeURIComponent(it.instagram_id)}/" target="_blank" rel="noopener">IG: @${escapeHtml(it.instagram_id)}</a>` : ''}`;
-         }
-+        const notifyPush = Number(it.push_subscription_count || 0) > 0 ? '🔵' : '🔴';
-         const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
-         const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
-         const cardText = (it.card_count && Number(it.card_count) > 0) ? '登録あり' : '未登録';
-         return `<tr data-id="${Number(it.id || 0)}">
-           <td class="text-muted">#${Number(it.id || 0)}</td>
-           <td>${makeAvatar(it)}</td>
-           <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
-           <td>${emailBlock}</td>
-           <td>${sns}</td>
--          <td><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
-+          <td><div>Push通知 ${notifyPush}</div><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
-           <td>${cardText}</td>
-           <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${Number(it.id || 0)}/edit">編集</a></td>
-         </tr>`;
-       }).join('');
-     }
  
-     function updateSortButtonStyles() {
-       const isId = state.sort === 'id';
-       sortIdBtn.classList.toggle('btn-primary', isId);
-       sortIdBtn.classList.toggle('btn-outline-secondary', !isId);
-       sortNickBtn.classList.toggle('btn-primary', !isId);
-       sortNickBtn.classList.toggle('btn-outline-secondary', isId);
-       sortIdBtn.textContent = `ID順${isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
-       sortNickBtn.textContent = `ニックネーム順${!isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
-     }
+ class ExternalUnreadReminderMailTest(unittest.TestCase):
+     def test_send_external_unread_reminder_mail_uses_existing_send_mail(self):
+         mail_module = load_mail_module()
  
-     async function fetchAndRender() {
-       const url = new URL(config.dataUrl, window.location.origin);
-       url.searchParams.set('q', state.q);
-       url.searchParams.set('sort', state.sort);
-       url.searchParams.set('order', state.order);
-       url.searchParams.set('page', '1');
-       url.searchParams.set('per_page', String(state.perPage));
+         with patch.object(mail_module, "send_mail") as mocked:
+             mail_module.send_external_unread_reminder_mail(
+                 "user@example.com",
+                 external_login_user_id=123,
+             )
  
-       const res = await fetch(url.toString(), { credentials: 'same-origin' });
-diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
-index 617f00c65af4f462cec8b62206620ffa4e11fd6d..882318cc5789ecbe3b54a407f565a83425857b8a 100644
---- a/external_login_user/template/admin_ext_users_edit.html
-+++ b/external_login_user/template/admin_ext_users_edit.html
-@@ -42,74 +42,78 @@
-             <input type="text" class="form-control" name="nickname" value="{{ u.nickname or '' }}" required>
-           </div>
-           <div class="row g-2">
-             <div class="col-md-6">
-               <label class="form-label">X（@不要）</label>
-               <input type="text" class="form-control" name="x_id" value="{{ u.x_id or '' }}" placeholder="example">
-             </div>
-             <div class="col-md-6">
-               <label class="form-label">Instagram（@不要）</label>
-               <input type="text" class="form-control" name="instagram_id" value="{{ u.instagram_id or '' }}" placeholder="example">
-             </div>
-           </div>
-           <div class="mt-3">
-             <label class="form-label">メール</label>
-             <input type="email" class="form-control" name="email" value="{{ u.email or '' }}" placeholder="name@example.com">
-             <div class="form-text mt-1">
-               {% if u.email_verified_at %}
-                 <span class="badge bg-success">確認済</span>
-                 <small class="text-muted ms-2">{{ u.email_verified_at }}</small>
-               {% else %}
-                 <span class="badge bg-secondary">未確認</span>
-               {% endif %}
-             </div>
-           </div>
+         mocked.assert_called_once_with(
+             "user@example.com",
+             mail_module.EXTERNAL_UNREAD_REMINDER_SUBJECT,
+             mail_module.EXTERNAL_UNREAD_REMINDER_BODY,
+             external_login_user_id=123,
+             mail_kind="external_unread_reminder",
+             append_signature=False,
+         )
  
--          {# ★ 共有アルバム通知有無の確認 #}
-           <div class="mt-3">
--            <label class="form-label">共有アルバム通知</label>
--            <div>
--              <span class="badge bg-outline-secondary text-dark me-2">
--                アップロード通知:
--                {% if u.notify_album_upload %}
--                  ON
--                {% else %}
--                  OFF
--                {% endif %}
--              </span>
--              <span class="badge bg-outline-secondary text-dark">
--                加工完了通知:
--                {% if u.notify_album_process %}
--                  ON
--                {% else %}
--                  OFF
--                {% endif %}
--              </span>
-+            <div class="form-label">通知状態</div>
-+            <div class="fw-semibold">共有アルバム通知</div>
-+            <div class="mt-1">
-+              アップロード通知:
-+              {% if u.notify_album_upload %}
-+                ON
-+              {% else %}
-+                OFF
-+              {% endif %}
-+              加工完了通知:
-+              {% if u.notify_album_process %}
-+                ON
-+              {% else %}
-+                OFF
-+              {% endif %}
-             </div>
-             <div class="form-text mt-1 text-muted">
-               外部ユーザー本人のプロフィール画面で設定された通知フラグの現在値です（管理画面からは変更できません）。
-             </div>
-+            <div class="mt-1">
-+              Push通知:
-+              {% if (u.push_subscription_count or 0)|int > 0 %}
-+                ON
-+              {% else %}
-+                OFF
-+              {% endif %}
-+            </div>
-           </div>
  
-           <div class="mt-3">
-             <label class="form-label d-block">チャット管理者 alias</label>
-             <div class="form-check form-switch">
-               <input class="form-check-input" type="checkbox" id="chat_admin_alias" name="chat_admin_alias" value="1" {% if u.chat_admin_alias %}checked{% endif %}>
-               <label class="form-check-label" for="chat_admin_alias">LINEログイン時にチャット/通知のみ admin alias として扱う</label>
-             </div>
-             <div class="form-text mt-1 text-muted">※ /chat と /mfu-notifications のみ対象。管理画面全体の権限は付与されません。</div>
-           </div>
+ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
+-    def test_same_jst_day_uses_jst_boundary(self):
+-        notifications = load_notifications_module()
+-        late_jst = datetime(2026, 3, 19, 14, 59, tzinfo=timezone.utc)
+-        next_day_jst = datetime(2026, 3, 19, 15, 1, tzinfo=timezone.utc)
+-        same_day_jst = datetime(2026, 3, 19, 3, 0, tzinfo=timezone.utc)
++    class _FakeCursor:
++        def __init__(self, rows=None):
++            self._rows = rows or []
++            self.executed = []
  
-           {# ★ 内部メモ（管理者用） #}
-           <div class="mt-3">
-             <label class="form-label">内部メモ（管理者用）</label>
-             <textarea
-               class="form-control"
-               name="admin_note"
-               rows="4"
-               placeholder="このユーザーに関する注意点やメモを記入">{{ u.admin_note or '' }}</textarea>
-             <div class="form-text mt-1 text-muted">
-               ※このメモは管理画面のみで使用され、ユーザー本人には表示されません。
-             </div>
-           </div>
-         </div>
+-        self.assertFalse(notifications._same_jst_day(late_jst, next_day_jst))
+-        self.assertTrue(notifications._same_jst_day(late_jst, same_day_jst))
++        def execute(self, query, params=None):
++            self.executed.append((query, params))
++            return None
  
+-    def test_send_external_unread_reminder_emails_skips_user_already_sent_today(self):
+-        notifications = load_notifications_module()
++        def fetchall(self):
++            return self._rows
+ 
+-        class FakeCursor:
+-            def __init__(self, rows):
+-                self._rows = rows
++        def close(self):
++            return None
+ 
+-            def execute(self, *args, **kwargs):
+-                return None
++    class _FakeDB:
++        def __init__(self, rows=None):
++            self._rows = rows or []
++            self.select_cursor = ExternalUnreadReminderNotificationTest._FakeCursor(self._rows)
++            self.update_cursor = ExternalUnreadReminderNotificationTest._FakeCursor()
++            self.committed = False
++            self.rolled_back = False
+ 
+-            def fetchall(self):
+-                return self._rows
++        def cursor(self, dictionary=False):
++            return self.select_cursor if dictionary else self.update_cursor
+ 
+-            def close(self):
+-                return None
++        def commit(self):
++            self.committed = True
+ 
+-        class FakeDB:
+-            def __init__(self, rows):
+-                self._rows = rows
++        def rollback(self):
++            self.rolled_back = True
+ 
+-            def cursor(self, dictionary=True):
+-                return FakeCursor(self._rows)
++        def close(self):
++            return None
+ 
+-            def close(self):
+-                return None
++    def test_can_send_external_unread_reminder_allows_null_last_sent_at(self):
++        notifications = load_notifications_module()
+ 
+-        last_sent_at = datetime(2026, 3, 20, 1, 0, 0)
+-        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": last_sent_at}]
++        self.assertTrue(
++            notifications._can_send_external_unread_reminder(
++                None,
++                datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc),
++            )
++        )
++
++    def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
++        notifications = load_notifications_module()
++        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
++        select_db = self._FakeDB(rows)
+ 
+         with (
+             patch.object(notifications, "_ensure_notification_schema"),
+-            patch.object(notifications, "get_db", return_value=FakeDB(rows)),
++            patch.object(notifications, "get_db", return_value=select_db),
+             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+             patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
+         ):
+             summary = notifications.send_external_unread_reminder_emails(
+-                now_utc=datetime(2026, 3, 20, 2, 0, tzinfo=timezone.utc)
++                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
+             )
+ 
+         self.assertEqual(summary["candidates"], 1)
+-        self.assertEqual(summary["skipped_already_sent_today"], 1)
++        self.assertEqual(summary["skipped_too_soon"], 1)
+         self.assertEqual(summary["sent"], 0)
+         mocked_send.assert_not_called()
+         mocked_unread.assert_not_called()
+ 
++    def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
++        notifications = load_notifications_module()
++        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
++        select_db = self._FakeDB(rows)
++        update_db = self._FakeDB()
++        get_db_side_effect = [select_db, update_db]
++        now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
++
++        with (
++            patch.object(notifications, "_ensure_notification_schema"),
++            patch.object(notifications, "get_db", side_effect=get_db_side_effect),
++            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
++            patch.object(notifications, "_compute_unread_count_external", return_value=3),
++        ):
++            summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
++
++        self.assertEqual(summary["sent"], 1)
++        self.assertEqual(summary["failed"], 0)
++        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
++        self.assertTrue(update_db.committed)
++        self.assertFalse(update_db.rolled_back)
++        self.assertEqual(
++            update_db.update_cursor.executed,
++            [
++                (
++                    """
++                    UPDATE external_login_user
++                       SET notification_unread_reminder_last_sent_at=%s
++                     WHERE id=%s
++                    """,
++                    (now_utc.replace(tzinfo=None), 10),
++                )
++            ],
++        )
++
++    def test_send_external_unread_reminder_emails_updates_last_sent_at_only_on_success(self):
++        notifications = load_notifications_module()
++        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
++        select_db = self._FakeDB(rows)
++        update_db = self._FakeDB()
++        get_db_side_effect = [select_db, update_db]
++        now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
++
++        with (
++            patch.object(notifications, "_ensure_notification_schema"),
++            patch.object(notifications, "get_db", side_effect=get_db_side_effect),
++            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
++            patch.object(notifications, "_compute_unread_count_external", return_value=1),
++        ):
++            summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
++
++        self.assertEqual(summary["sent"], 1)
++        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
++        self.assertTrue(update_db.committed)
++        self.assertEqual(len(update_db.update_cursor.executed), 1)
++
++    def test_send_external_unread_reminder_emails_does_not_update_last_sent_at_on_failure(self):
++        notifications = load_notifications_module()
++        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
++        select_db = self._FakeDB(rows)
++
++        with (
++            patch.object(notifications, "_ensure_notification_schema"),
++            patch.object(notifications, "get_db", return_value=select_db),
++            patch.object(
++                notifications,
++                "send_external_unread_reminder_mail",
++                side_effect=RuntimeError("smtp error"),
++            ) as mocked_send,
++            patch.object(notifications, "_compute_unread_count_external", return_value=2),
++        ):
++            summary = notifications.send_external_unread_reminder_emails(
++                now_utc=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
++            )
++
++        self.assertEqual(summary["failed"], 1)
++        self.assertEqual(summary["sent"], 0)
++        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
++        self.assertFalse(select_db.committed)
++        self.assertEqual(select_db.update_cursor.executed, [])
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
