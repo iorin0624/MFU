@@ -619,106 +619,107 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
         cur.close()
         db.close()
 
-    summary["candidates"] = len(rows)
-    current_app.logger.info(
-        "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
-        summary["candidates"],
-        now_utc.isoformat(),
-        now_utc.astimezone(_JST).isoformat(),
-    )
+    update_db = get_db()
+    update_cur = update_db.cursor()
+    try:
+        summary["candidates"] = len(rows)
+        current_app.logger.info(
+            "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
+            summary["candidates"],
+            now_utc.isoformat(),
+            now_utc.astimezone(_JST).isoformat(),
+        )
 
-    for row in rows:
-        user_id = int(row.get("id") or 0)
-        email = str(row.get("email") or "").strip()
-        last_sent_at = _as_utc(row.get("last_sent_at"))
+        for row in rows:
+            user_id = int(row.get("id") or 0)
+            email = str(row.get("email") or "").strip()
+            last_sent_at = _as_utc(row.get("last_sent_at"))
 
-        if user_id <= 0:
-            summary["skipped_invalid_user"] += 1
-            current_app.logger.info(
-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
-                user_id,
-                email or "-",
-                0,
-            )
-            continue
-
-        if not email:
-            summary["skipped_no_mail"] += 1
-            current_app.logger.info(
-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
-                user_id,
-                email or "-",
-                0,
-            )
-            continue
-
-        if not _can_send_external_unread_reminder(last_sent_at, now_utc):
-            summary["skipped_too_soon"] += 1
-            current_app.logger.info(
-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
-                user_id,
-                email,
-                0,
-                last_sent_at.isoformat() if last_sent_at else None,
-            )
-            continue
-
-        try:
-            unread_count = _compute_unread_count_external(user_id)
-        except Exception:
-            summary["failed"] += 1
-            current_app.logger.exception(
-                "external unread reminder unread count failed user_id=%s email=%s",
-                user_id,
-                email,
-            )
-            continue
-
-        if unread_count <= 0:
-            summary["skipped_no_unread"] += 1
-            current_app.logger.info(
-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
-                user_id,
-                email,
-                unread_count,
-            )
-            continue
-
-        try:
-            send_external_unread_reminder_mail(email, external_login_user_id=user_id)
-            db = get_db()
-            update_cur = db.cursor()
-            try:
-                update_cur.execute(
-                    f"""
-                    UPDATE external_login_user
-                       SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
-                     WHERE id=%s
-                    """,
-                    (now_utc.replace(tzinfo=None), user_id),
+            if user_id <= 0:
+                summary["skipped_invalid_user"] += 1
+                current_app.logger.info(
+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
+                    user_id,
+                    email or "-",
+                    0,
                 )
-                db.commit()
+                continue
+
+            if not email:
+                summary["skipped_no_mail"] += 1
+                current_app.logger.info(
+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
+                    user_id,
+                    email or "-",
+                    0,
+                )
+                continue
+
+            try:
+                unread_count = _compute_unread_count_external(user_id)
             except Exception:
-                db.rollback()
-                raise
-            finally:
-                update_cur.close()
-                db.close()
-            summary["sent"] += 1
-            current_app.logger.info(
-                "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
-                user_id,
-                email,
-                unread_count,
-            )
-        except Exception:
-            summary["failed"] += 1
-            current_app.logger.exception(
-                "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
-                user_id,
-                email,
-                unread_count,
-            )
+                summary["failed"] += 1
+                current_app.logger.exception(
+                    "external unread reminder unread count failed user_id=%s email=%s",
+                    user_id,
+                    email,
+                )
+                continue
+
+            if unread_count <= 0:
+                summary["skipped_no_unread"] += 1
+                current_app.logger.info(
+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
+                    user_id,
+                    email,
+                    unread_count,
+                )
+                continue
+
+            if not _can_send_external_unread_reminder(last_sent_at, now_utc):
+                summary["skipped_too_soon"] += 1
+                current_app.logger.info(
+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
+                    user_id,
+                    email,
+                    unread_count,
+                    last_sent_at.isoformat() if last_sent_at else None,
+                )
+                continue
+
+            try:
+                send_external_unread_reminder_mail(email, external_login_user_id=user_id)
+                try:
+                    update_cur.execute(
+                        f"""
+                        UPDATE external_login_user
+                           SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
+                         WHERE id=%s
+                        """,
+                        (now_utc.replace(tzinfo=None), user_id),
+                    )
+                    update_db.commit()
+                except Exception:
+                    update_db.rollback()
+                    raise
+                summary["sent"] += 1
+                current_app.logger.info(
+                    "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
+                    user_id,
+                    email,
+                    unread_count,
+                )
+            except Exception:
+                summary["failed"] += 1
+                current_app.logger.exception(
+                    "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
+                    user_id,
+                    email,
+                    unread_count,
+                )
+    finally:
+        update_cur.close()
+        update_db.close()
 
     current_app.logger.info(
         "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_too_soon=%s skipped_no_unread=%s skipped_invalid_user=%s",
