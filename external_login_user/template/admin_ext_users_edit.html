@@ -26,6 +26,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">外部ログインユーザー編集 <span class="text-muted">#{{ u.id }}</span></h1>
   <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">一覧へ戻る</a>
   </div>
 </div>
@@ -150,6 +151,42 @@
         </div>
       </div>
     </form>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-header">
+    <strong>プライバシーポリシー同意状況</strong>
+  </div>
+  <div class="card-body">
+    <dl class="row mb-0">
+      <dt class="col-md-3">現在の状態</dt>
+      <dd class="col-md-9">
+        <span class="badge {% if u.privacy_policy_status == '同意済' %}bg-success{% elif u.privacy_policy_status == '旧版' %}bg-warning text-dark{% elif u.privacy_policy_status == '未設定' %}bg-secondary{% else %}bg-danger{% endif %}">
+          {{ u.privacy_policy_status }}
+        </span>
+      </dd>
+
+      <dt class="col-md-3">同意した改定日</dt>
+      <dd class="col-md-9">{{ u.privacy_policy_agreed_revised_date_label or '—' }}</dd>
+
+      <dt class="col-md-3">同意日時</dt>
+      <dd class="col-md-9">{{ u.privacy_policy_agreed_at_label or '—' }}</dd>
+
+      <dt class="col-md-3">現在有効な改定日</dt>
+      <dd class="col-md-9">{{ u.privacy_policy_current_revised_date_label or '—' }}</dd>
+
+      <dt class="col-md-3">差分</dt>
+      <dd class="col-md-9">
+        {% if u.privacy_policy_status == '未設定' %}
+          現在有効なポリシー設定はありません。
+        {% elif u.privacy_policy_needs_reagreement %}
+          現在の有効版に対して再同意が必要です。
+        {% else %}
+          現在の有効版との差分はありません。
+        {% endif %}
+      </dd>
+    </dl>
   </div>
 </div>
 

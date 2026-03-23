@@ -8,6 +8,12 @@ from flask import request, render_template, jsonify, abort, url_for, redirect
 from . import bp
 from app.utils.db import get_db
 from .utils import _require_mfu_login_redirect, _admin_csrf_token
+from .utils import (
+    _get_current_privacy_policy_config,
+    _needs_privacy_policy_agreement,
+    _privacy_policy_status,
+    _privacy_policy_date_label,
+)
 
 # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
 try:
@@ -143,6 +149,8 @@ def admin_ext_users_index():
             created_at,
             updated_at,
             admin_note,
+            privacy_policy_agreed_at,
+            privacy_policy_agreed_revised_date,
             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
             COALESCE(notify_album_process, 1) AS notify_album_process,
@@ -169,6 +177,11 @@ def admin_ext_users_index():
             for r in initial_items:
                 r["email_verified_at"] = None
         _format_email_verified_at_rows(initial_items)
+        current_privacy_config = _get_current_privacy_policy_config()
+        for r in initial_items:
+            r["privacy_policy_status"] = _privacy_policy_status(r, current_privacy_config)
+            r["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(r.get("privacy_policy_agreed_revised_date"))
+            r["privacy_policy_agreed_at_label"] = _format_datetime_jst(r.get("privacy_policy_agreed_at"))
 
         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
         total = int((cur.fetchone() or {}).get("c", 0))
@@ -189,6 +202,7 @@ def admin_ext_users_index():
         initial_q=q,
         initial_sort=sort_key,
         initial_order=sort_order,
+        current_privacy_config=current_privacy_config,
     )
 
 
@@ -225,6 +239,8 @@ def admin_ext_users_data():
         id, nickname, x_id, instagram_id, email, social_id,
         avatar_file, avatar_url, created_at, updated_at,
         admin_note,
+        privacy_policy_agreed_at,
+        privacy_policy_agreed_revised_date,
         COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
         COALESCE(notify_album_process, 1) AS notify_album_process,
@@ -258,6 +274,11 @@ def admin_ext_users_data():
             for r in rows:
                 r["email_verified_at"] = None
         _format_email_verified_at_rows(rows)
+        current_privacy_config = _get_current_privacy_policy_config()
+        for r in rows:
+            r["privacy_policy_status"] = _privacy_policy_status(r, current_privacy_config)
+            r["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(r.get("privacy_policy_agreed_revised_date"))
+            r["privacy_policy_agreed_at_label"] = _format_datetime_jst(r.get("privacy_policy_agreed_at"))
     finally:
         try: cur.close(); db.close()
         except Exception: pass
@@ -513,6 +534,8 @@ def admin_ext_users_edit_page(user_id: int):
             id, nickname, x_id, instagram_id, email, social_id,
             avatar_file, avatar_url, created_at, updated_at,
             admin_note,
+            privacy_policy_agreed_at,
+            privacy_policy_agreed_revised_date,
             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
             COALESCE(notify_album_process, 1) AS notify_album_process,
@@ -568,12 +591,20 @@ def admin_ext_users_edit_page(user_id: int):
         except Exception:
             pass
 
+    current_privacy_config = _get_current_privacy_policy_config()
+    user["privacy_policy_status"] = _privacy_policy_status(user, current_privacy_config)
+    user["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(user.get("privacy_policy_agreed_revised_date"))
+    user["privacy_policy_agreed_at_label"] = _format_datetime_jst(user.get("privacy_policy_agreed_at"))
+    user["privacy_policy_current_revised_date_label"] = _privacy_policy_date_label(current_privacy_config.get("privacy_policy_revised_date"))
+    user["privacy_policy_needs_reagreement"] = _needs_privacy_policy_agreement(user, current_privacy_config)
+
     return render_template(
         "admin_ext_users_edit.html",
         u=user,
         memberships=memberships,
         assignable_events=assignable,
-        admin_csrf=_admin_csrf_token()
+        admin_csrf=_admin_csrf_token(),
+        current_privacy_config=current_privacy_config,
     )
 
 

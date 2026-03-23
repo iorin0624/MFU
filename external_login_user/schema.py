@@ -173,6 +173,18 @@ CREATE TABLE IF NOT EXISTS external_login_resume_token (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
+DDL_PRIVACY_POLICY_CONFIG = """
+CREATE TABLE IF NOT EXISTS mfu_external_privacy_policy_config (
+  id                           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  privacy_policy_url           VARCHAR(2048)   NULL,
+  privacy_policy_revised_date  DATE            NULL,
+  updated_by                   VARCHAR(191)    NULL,
+  created_at                   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at                   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
 def _ensure_index(cur, check_sql: str, create_sql: str):
     try:
         cur.execute(check_sql)
@@ -200,6 +212,7 @@ def _on_bp_registered(state) -> None:
             cur.execute(DDL_PAYMENT_REQUEST)
             cur.execute(DDL_NOTIFICATIONS)
             cur.execute(DDL_EXTERNAL_LOGIN_RESUME_TOKEN)
+            cur.execute(DDL_PRIVACY_POLICY_CONFIG)
 
             # 後方互換ALTER（存在しなければADD）
             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
@@ -228,6 +241,16 @@ def _on_bp_registered(state) -> None:
                 "external_login_user",
                 "notification_unread_reminder_last_sent_at",
                 "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
+            )
+            _ensure_col(
+                "external_login_user",
+                "privacy_policy_agreed_at",
+                "privacy_policy_agreed_at DATETIME NULL AFTER notification_unread_reminder_last_sent_at",
+            )
+            _ensure_col(
+                "external_login_user",
+                "privacy_policy_agreed_revised_date",
+                "privacy_policy_agreed_revised_date DATE NULL AFTER privacy_policy_agreed_at",
             )
 
             # ★ 追加：支払期間 列（後方互換で追加）

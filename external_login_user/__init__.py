@@ -245,7 +245,12 @@ def _enforce_lecture_prepaid_on_join():
     return None
 
 # === 未確認メールのユーザーを専用ページへ誘導（全域ガード） ====================
-from .utils import get_db  # 既存
+from .utils import (
+    get_db,
+    _get_current_privacy_policy_config,
+    _needs_privacy_policy_agreement,
+    _sanitize_ext_local_url,
+)
 
 _ALLOW_UNVERIFIED_ENDPOINTS = {
     # プロフィール編集、ログアウト、再送、確認リンク、未確認専用ページ、アバター配信
@@ -307,6 +312,69 @@ def _lock_unverified_globally():
         current_app.logger.exception("unverified global lock failed")
         return None
 # ========================================================================
+
+_ALLOW_PRIVACY_POLICY_ENDPOINTS = {
+    "external_login_user.index",
+    "external_login_user.privacy_policy_agree",
+    "external_login_user.profile",
+    "external_login_user.profile_setup",
+    "external_login_user.line_login",
+    "external_login_user.line_login_shortcut",
+    "external_login_user.line_callback",
+    "external_login_user.pwa_resume_page",
+    "external_login_user.pwa_resume_consume_api",
+    "external_login_user.logout",
+    "external_login_user.unverified",
+    "external_login_user.verify_email_pin",
+    "external_login_user.email_verify",
+    "external_login_user.resend_verify_email",
+    "external_login_user.avatar_file",
+}
+
+
+@bp.before_app_request
+def _lock_privacy_policy_globally():
+    try:
+        if not session.get("ext_user_id"):
+            return None
+        if request.blueprint != "external_login_user":
+            return None
+        if request.endpoint == "static" or request.blueprint == "static":
+            return None
+        if request.endpoint in _ALLOW_PRIVACY_POLICY_ENDPOINTS:
+            return None
+        if _is_email_unverified():
+            return None
+
+        db = get_db(); cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                """
+                SELECT id, privacy_policy_agreed_revised_date
+                  FROM external_login_user
+                 WHERE id=%s
+                 LIMIT 1
+                """,
+                (int(session.get("ext_user_id") or 0),),
+            )
+            me = cur.fetchone() or {}
+        finally:
+            try:
+                cur.close(); db.close()
+            except Exception:
+                pass
+
+        config = _get_current_privacy_policy_config()
+        if not _needs_privacy_policy_agreement(me, config):
+            return None
+
+        next_url = _sanitize_ext_local_url(request.full_path or request.url, default="/external-login/")
+        if next_url not in {"/external-login/", "/external-login"}:
+            session["ext_after_privacy_policy_next"] = next_url
+        return redirect(url_for("external_login_user.index"))
+    except Exception:
+        current_app.logger.exception("privacy policy global lock failed")
+        return None
 
 
 # --- サブモジュール読み込み（ルート登録） ---

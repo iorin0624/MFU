@@ -78,6 +78,35 @@
     {% else %}
     {% endif %}
 
+    {% if privacy_policy_required %}
+      <div class="modal fade" id="privacyPolicyModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h2 class="modal-title fs-5">
+                {% if privacy_policy_mode == 'reconsent' %}
+                  プライバシーポリシー改定のお知らせ
+                {% else %}
+                  プライバシーポリシーへの同意のお願い
+                {% endif %}
+              </h2>
+            </div>
+            <div class="modal-body">
+              <p class="mb-2">現在有効なプライバシーポリシーへの同意が必要です。</p>
+              <p class="mb-3">改定日：<strong>{{ privacy_policy_revised_date_label }}</strong></p>
+              <div class="d-grid gap-2">
+                <a class="btn btn-outline-primary" href="{{ privacy_policy_url }}" target="_blank" rel="noopener">プライバシーポリシーを開く</a>
+                <form method="post" action="{{ url_for('external_login_user.privacy_policy_agree') }}" class="d-grid">
+                  <input type="hidden" name="csrf_token" value="{{ ext_csrf or '' }}">
+                  <button type="submit" class="btn btn-primary">同意する</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
 {# ★ 未払いアラート：支払期限が近い順。支払不要はサーバ側で除外済み #}
 {% set _unpaid = unpaid_notices or [] %}
 {% if _unpaid|length > 0 %}
@@ -515,6 +544,17 @@
       var el = document.getElementById('pinLoginCollapse');
       if (el) new bootstrap.Collapse(el, {toggle:false}).show();
     } catch(e){}
+  </script>
+  {% endif %}
+
+  {% if privacy_policy_required %}
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var el = document.getElementById('privacyPolicyModal');
+      if (!el || !window.bootstrap) return;
+      var modal = new bootstrap.Modal(el, {backdrop: 'static', keyboard: false});
+      modal.show();
+    });
   </script>
   {% endif %}
 
