@@ -78,24 +78,6 @@
     {% else %}
     {% endif %}
 
-    {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
-      <div class="card mb-4">
-        <div class="card-body">
-          <h2 class="h6 mb-3">各種ドキュメント</h2>
-          <div class="d-flex flex-column gap-2">
-            {% if privacy_policy_link_url %}
-              <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
-            {% endif %}
-            {% if commerce_law_url %}
-              <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
-            {% endif %}
-            {% if participant_terms_url %}
-              <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-    {% endif %}
 
     {% if privacy_policy_required %}
       <div class="modal fade" id="privacyPolicyModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
@@ -413,12 +395,25 @@
 
   <!-- === 特定商取引法：ログイン前は既存表示、ログイン後はリンク ================= -->
   <hr class="my-4">
-  {% if login and me and commerce_law_url %}
-    <p class="text-center mb-2">
-      <a href="{{ commerce_law_url }}" class="link-secondary" target="_blank" rel="noopener">
-        特定商取引法に基づく表記（リンク）
-      </a>
-    </p>
+  {% if login and me %}
+    {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
+      <div class="card mb-3">
+        <div class="card-body">
+          <h2 class="h6 mb-3">各種ドキュメント</h2>
+          <div class="d-flex flex-column gap-2">
+            {% if privacy_policy_link_url %}
+              <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
+            {% endif %}
+            {% if commerce_law_url %}
+              <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
+            {% endif %}
+            {% if participant_terms_url %}
+              <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
   {% else %}
     <p class="text-center mb-2">
       <a href="#tokushohoCollapse"
