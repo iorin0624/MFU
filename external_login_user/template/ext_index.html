@@ -278,7 +278,8 @@
         <li>参加イベントの確認・支払い・アルバム共有に使います</li>
         <li>通知や連絡のため、ログイン後にプロフィールでメールも登録できます</li>
       </ul>
-      <a class="btn btn-line btn-lg w-100 mb-2" href="{{ url_for('external_login_user.line_login') }}">
+      <div id="pwaResumeError" class="alert alert-warning d-none" role="alert"></div>
+      <a class="btn btn-line btn-lg w-100 mb-2 js-ext-line-login" href="{{ url_for('external_login_user.line_login') }}">
         <span class="me-2" aria-hidden="true">💬</span> LINEでログイン
       </a>
 
@@ -516,6 +517,124 @@
     } catch(e){}
   </script>
   {% endif %}
+
+  <script>
+  (() => {
+    const STORAGE_TOKEN_KEY = 'mfu_pwa_resume_token';
+    const STORAGE_TOKEN_AT_KEY = 'mfu_pwa_resume_at';
+    const STORAGE_CLIENT_ID_KEY = 'mfu_pwa_client_id';
+    const LOGIN_SELECTOR = '.js-ext-line-login';
+    const RESUME_API = '/external-login/api/pwa-resume/consume';
+    const errorEl = document.getElementById('pwaResumeError');
+    let consumeStarted = false;
+
+    const isStandalone = () => {
+      try {
+        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      } catch (_e) {
+        return window.navigator.standalone === true;
+      }
+    };
+
+    const ensureClientId = () => {
+      try {
+        let clientId = localStorage.getItem(STORAGE_CLIENT_ID_KEY);
+        if (!clientId) {
+          const raw = new Uint8Array(24);
+          if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+            window.crypto.getRandomValues(raw);
+            clientId = Array.from(raw, (v) => v.toString(16).padStart(2, '0')).join('');
+          } else {
+            clientId = String(Date.now()) + Math.random().toString(16).slice(2);
+          }
+          localStorage.setItem(STORAGE_CLIENT_ID_KEY, clientId);
+        }
+        return clientId;
+      } catch (_e) {
+        return '';
+      }
+    };
+
+    const clearResumeStorage = () => {
+      try {
+        localStorage.removeItem(STORAGE_TOKEN_KEY);
+        localStorage.removeItem(STORAGE_TOKEN_AT_KEY);
+      } catch (_e) {}
+    };
+
+    const showResumeError = (message) => {
+      if (!errorEl) return;
+      errorEl.textContent = message || '再ログインしてください。';
+      errorEl.classList.remove('d-none');
+    };
+
+    const buildLoginHref = (anchor) => {
+      try {
+        const url = new URL(anchor.getAttribute('href'), window.location.origin);
+        if (isStandalone()) {
+          url.searchParams.set('pwa', '1');
+          const clientId = ensureClientId();
+          if (clientId) {
+            url.searchParams.set('pwa_client_id', clientId);
+          }
+        }
+        return url.pathname + url.search + url.hash;
+      } catch (_e) {
+        return anchor.getAttribute('href');
+      }
+    };
+
+    document.querySelectorAll(LOGIN_SELECTOR).forEach((anchor) => {
+      const applyHref = () => {
+        const href = buildLoginHref(anchor);
+        if (href) anchor.setAttribute('href', href);
+      };
+      applyHref();
+      anchor.addEventListener('click', applyHref, { passive: true });
+    });
+
+    const consumeResumeToken = async () => {
+      if (!isStandalone() || consumeStarted) return;
+      consumeStarted = true;
+      const clientId = ensureClientId();
+      let token = '';
+      try {
+        token = (localStorage.getItem(STORAGE_TOKEN_KEY) || '').trim();
+      } catch (_e) {}
+
+      if (!token && !clientId) {
+        consumeStarted = false;
+        return;
+      }
+
+      try {
+        const res = await fetch(RESUME_API, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: token || undefined,
+            pwa_client_id: clientId || undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data && data.ok && data.next) {
+          clearResumeStorage();
+          window.location.replace(data.next);
+          return;
+        }
+        clearResumeStorage();
+        showResumeError((data && data.message) || '復帰に失敗しました。再ログインしてください。');
+      } catch (_e) {
+        showResumeError('通信に失敗しました。時間をおいて再ログインしてください。');
+      } finally {
+        consumeStarted = false;
+      }
+    };
+
+    document.addEventListener('DOMContentLoaded', consumeResumeToken, { once: true });
+  })();
+  </script>
 
   <!-- ▼ アップデート情報：自動チェック＋再確認リンク（既読状態をチェックに反映） -->
   <script>

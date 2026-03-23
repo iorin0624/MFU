@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-import os, re, uuid, base64, secrets
+import os, re, uuid, base64, secrets, hashlib
+from datetime import datetime, timedelta
 from typing import Optional, Any
 from urllib.parse import quote_plus
 from flask import current_app, request, session, redirect, url_for, abort, flash
@@ -11,6 +12,12 @@ from app.utils.db import get_db
 QR_TRADEMARK_NOTICE = "QRコードは株式会社デンソーウェーブの登録商標です。"
 SESSION_MAP_MAX_ITEMS = 8
 SESSION_VALUE_MAX_LEN = 128
+EXT_LOGIN_MODE_BROWSER = "browser"
+EXT_LOGIN_MODE_PWA = "pwa"
+PWA_RESUME_TOKEN_TTL_SECONDS = 300
+PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY = "mfu_pwa_resume_token"
+PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY = "mfu_pwa_resume_at"
+PWA_RESUME_LOCAL_STORAGE_CLIENT_ID_KEY = "mfu_pwa_client_id"
 
 # ---- 環境値 → 関数 ----
 def LINE_CLIENT_ID() -> str:
@@ -134,6 +141,174 @@ def set_compact_pay_ctx(*, event_id: int, event_uuid: str | None, ext_user_id: i
     if invite_token:
         ctx["invite_token"] = invite_token[:SESSION_VALUE_MAX_LEN]
     session["pay_ctx"] = ctx
+
+
+def normalize_ext_login_mode(raw_mode: Any) -> str:
+    value = str(raw_mode or "").strip().lower()
+    return EXT_LOGIN_MODE_PWA if value in {"1", "true", "yes", "on", EXT_LOGIN_MODE_PWA} else EXT_LOGIN_MODE_BROWSER
+
+
+def is_pwa_login_request() -> bool:
+    return normalize_ext_login_mode(request.args.get("pwa") or session.get("ext_login_mode")) == EXT_LOGIN_MODE_PWA
+
+
+def issue_pwa_client_id() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def _resume_token_hash(value: str) -> str:
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.utcnow().replace(tzinfo=None)
+
+
+def create_external_login_resume_token(
+    *,
+    ext_user_id: int,
+    social_id: str,
+    next_path: str,
+    mode: str,
+    pwa_client_id: str | None = None,
+    ttl_seconds: int = PWA_RESUME_TOKEN_TTL_SECONDS,
+) -> str:
+    token = secrets.token_urlsafe(32)
+    now = _utcnow_naive()
+    expires_at = now + timedelta(seconds=max(30, int(ttl_seconds or PWA_RESUME_TOKEN_TTL_SECONDS)))
+    token_hash = _resume_token_hash(token)
+    client_hash = _resume_token_hash(pwa_client_id) if pwa_client_id else None
+
+    db = get_db(); cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO external_login_resume_token
+              (token_hash, ext_user_id, social_id, next_path, mode, pwa_client_id_hash,
+               issued_at, expires_at, consumed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULL)
+            """,
+            (
+                token_hash,
+                int(ext_user_id),
+                (social_id or "")[:191],
+                (next_path or "/external-login/")[:512],
+                normalize_ext_login_mode(mode),
+                client_hash,
+                now,
+                expires_at,
+            ),
+        )
+        db.commit()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+    return token
+
+
+def _fetch_resume_token_row(
+    *,
+    token: str | None = None,
+    pwa_client_id: str | None = None,
+    for_update: bool = False,
+) -> dict[str, Any] | None:
+    clauses: list[str] = [
+        "consumed_at IS NULL",
+        "expires_at >= %s",
+    ]
+    params: list[Any] = [_utcnow_naive()]
+
+    token_hash = _resume_token_hash(token) if token else None
+    client_hash = _resume_token_hash(pwa_client_id) if pwa_client_id else None
+    if token_hash:
+        clauses.append("token_hash = %s")
+        params.append(token_hash)
+    elif client_hash:
+        clauses.append("pwa_client_id_hash = %s")
+        params.append(client_hash)
+        clauses.append("mode = %s")
+        params.append(EXT_LOGIN_MODE_PWA)
+    else:
+        return None
+
+    order_by = "ORDER BY issued_at DESC, id DESC"
+    limit = "LIMIT 1"
+    lock = " FOR UPDATE" if for_update else ""
+    sql = f"""
+        SELECT
+          id, ext_user_id, social_id, next_path, mode,
+          issued_at, expires_at, consumed_at, created_at, updated_at
+        FROM external_login_resume_token
+        WHERE {' AND '.join(clauses)}
+        {order_by}
+        {limit}{lock}
+    """
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(sql, tuple(params))
+        row = cur.fetchone()
+        if for_update:
+            return {"_db": db, "_cur": cur, "row": row}
+        return row
+    except Exception:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+        raise
+
+
+def get_external_login_resume_token_summary(token: str | None) -> dict[str, Any] | None:
+    if not token:
+        return None
+    return _fetch_resume_token_row(token=token, for_update=False)
+
+
+def consume_external_login_resume_token(*, token: str | None = None, pwa_client_id: str | None = None) -> dict[str, Any] | None:
+    locked = _fetch_resume_token_row(token=token, pwa_client_id=pwa_client_id, for_update=True)
+    if not locked:
+        return None
+
+    db = locked["_db"]
+    cur = locked["_cur"]
+    row = locked["row"]
+    if not row:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+        return None
+
+    consumed_at = _utcnow_naive()
+    try:
+        cur.execute(
+            """
+            UPDATE external_login_resume_token
+               SET consumed_at=%s,
+                   updated_at=CURRENT_TIMESTAMP
+             WHERE id=%s
+               AND consumed_at IS NULL
+             LIMIT 1
+            """,
+            (consumed_at, int(row["id"])),
+        )
+        if int(cur.rowcount or 0) != 1:
+            db.rollback()
+            return None
+        db.commit()
+        row["consumed_at"] = consumed_at
+        return row
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
 
 # ---- ID/DB ヘルパ ----
 def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:

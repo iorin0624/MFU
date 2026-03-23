@@ -151,6 +151,28 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
+DDL_EXTERNAL_LOGIN_RESUME_TOKEN = """
+CREATE TABLE IF NOT EXISTS external_login_resume_token (
+  id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  token_hash         CHAR(64)        NOT NULL,
+  ext_user_id        BIGINT UNSIGNED NOT NULL,
+  social_id          VARCHAR(191)    NOT NULL,
+  next_path          VARCHAR(512)    NOT NULL,
+  mode               ENUM('browser','pwa') NOT NULL DEFAULT 'pwa',
+  pwa_client_id_hash CHAR(64)        NULL,
+  issued_at          DATETIME        NOT NULL,
+  expires_at         DATETIME        NOT NULL,
+  consumed_at        DATETIME        NULL,
+  created_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_ext_login_resume_token_hash (token_hash),
+  KEY idx_ext_login_resume_valid (expires_at, consumed_at),
+  KEY idx_ext_login_resume_user (ext_user_id, issued_at),
+  KEY idx_ext_login_resume_pwa_client (pwa_client_id_hash, consumed_at, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
 def _ensure_index(cur, check_sql: str, create_sql: str):
     try:
         cur.execute(check_sql)
@@ -177,6 +199,7 @@ def _on_bp_registered(state) -> None:
             cur.execute(DDL_ALBUM_PROCESS)
             cur.execute(DDL_PAYMENT_REQUEST)
             cur.execute(DDL_NOTIFICATIONS)
+            cur.execute(DDL_EXTERNAL_LOGIN_RESUME_TOKEN)
 
             # 後方互換ALTER（存在しなければADD）
             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
@@ -227,6 +250,12 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_payment_request", "lecture_auto_approve",
                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
 
+            _ensure_col(
+                "external_login_resume_token",
+                "pwa_client_id_hash",
+                "pwa_client_id_hash CHAR(64) NULL AFTER mode",
+            )
+
             def _ensure_payment_request_status_enum() -> None:
                 try:
                     cur.execute("""
@@ -255,6 +284,20 @@ def _on_bp_registered(state) -> None:
                     app.logger.exception("failed to alter mfu_payment_request.status enum")
 
             _ensure_payment_request_status_enum()
+
+            _ensure_index(
+                cur,
+                """
+                SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE TABLE_SCHEMA=DATABASE()
+                   AND TABLE_NAME='external_login_resume_token'
+                   AND INDEX_NAME='idx_ext_login_resume_pwa_client'
+                """,
+                """
+                CREATE INDEX idx_ext_login_resume_pwa_client
+                    ON external_login_resume_token(pwa_client_id_hash, consumed_at, expires_at)
+                """,
+            )
 
             def _ensure_checkin_method_enum() -> None:
                 try:
