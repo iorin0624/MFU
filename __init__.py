@@ -23,6 +23,7 @@ from datetime import datetime, date as date_cls, timedelta, timezone
 from email.mime.text import MIMEText
 from ipaddress import ip_address, ip_network
 from pathlib import Path
+from urllib.parse import urlparse
 
 # =====================================
 # 🌐 外部ライブラリ（上段に集約）
@@ -58,9 +59,19 @@ from app.utils.feature_access import (
 from app.utils.file_ops import generate_thumbnail, create_zip
 from app.utils.upload_security import (
     DEFAULT_ALLOWED_EXTENSIONS,
+    can_access_upload_record,
+    cleanup_legacy_view_auth_keys,
     detect_mime_from_bytes,
+    ensure_upload_password_schema,
+    fetch_upload_access_record,
+    grant_view_auth,
+    has_view_auth,
+    hash_upload_password,
+    migrate_upload_password_if_needed,
+    resolve_upload_subpath,
     sanitize_filename,
     validate_upload_file,
+    verify_upload_password,
 )
 from app.utils.image import save_as_jpeg
 from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
@@ -206,42 +217,143 @@ def admin_required(func):
     return wrapper
 
 
-VIEW_AUTH_SESSION_KEY = "view_auth_uuids"
-VIEW_AUTH_MAX_ITEMS = 50
-
-
 def _cleanup_legacy_view_auth_keys(current_uuid=None):
-    """旧形式の session['view_auth_<uuid>'] を削除してクッキー肥大化を防ぐ。"""
-    for key in list(session.keys()):
-        if not key.startswith("view_auth_"):
-            continue
-        if current_uuid and key == f"view_auth_{current_uuid}":
-            continue
-        session.pop(key, None)
+    cleanup_legacy_view_auth_keys(current_uuid)
 
 
 def _grant_view_auth(uuid):
     """閲覧許可を単一キー配下のUUID配列で管理する。"""
-    _cleanup_legacy_view_auth_keys(current_uuid=uuid)
-    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
-    if uuid in allowed:
-        return
-    allowed = (allowed + [uuid])[-VIEW_AUTH_MAX_ITEMS:]
-    session[VIEW_AUTH_SESSION_KEY] = allowed
+    grant_view_auth(uuid)
 
 
 def _has_view_auth(uuid):
     """新旧のセッション形式を読み、必要なら新形式へ移行する。"""
-    allowed = session.get(VIEW_AUTH_SESSION_KEY) or []
-    if uuid in allowed:
-        return True
+    return has_view_auth(uuid)
 
-    legacy_key = f"view_auth_{uuid}"
-    if session.get(legacy_key):
-        _grant_view_auth(uuid)
-        session.pop(legacy_key, None)
+
+CSRF_SESSION_KEY = "csrf_token"
+_UPLOAD_SECURITY_SCHEMA_LOCK = threading.Lock()
+_upload_security_schema_ready = False
+_CSRF_PROTECTED_PREFIXES = (
+    "/admin/users",
+    "/admin/user-features",
+    "/admin/features",
+    "/admin/nav",
+    "/admin/logs/404-ban",
+    "/admin/mail-delivery/refresh",
+    "/admin/maintenance",
+    "/admin/settings/inapp-browser",
+    "/admin/restart",
+    "/admin/logs/export",
+    "/templates",
+    "/modes",
+    "/upload_delete/",
+)
+_CSRF_PROTECTED_PATHS = {
+    "/submit_upload",
+    "/api/zip-stream",
+}
+_CSRF_EXEMPT_PATHS = {
+    "/login",
+}
+
+
+def _ensure_upload_security_schema_once():
+    global _upload_security_schema_ready
+    if _upload_security_schema_ready:
+        return
+    with _UPLOAD_SECURITY_SCHEMA_LOCK:
+        if _upload_security_schema_ready:
+            return
+        ensure_upload_password_schema()
+        _upload_security_schema_ready = True
+
+
+def _get_upload_access_record(uuid):
+    return fetch_upload_access_record(uuid)
+
+
+def _can_access_upload_record(upload):
+    return can_access_upload_record(upload, has_view_auth_func=_has_view_auth)
+
+
+def _can_access_upload_uuid(uuid):
+    upload = _get_upload_access_record(uuid)
+    return bool(upload and _can_access_upload_record(upload))
+
+
+def _get_csrf_token():
+    token = session.get(CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return token
+
+
+def _is_same_origin_request():
+    expected = urlparse(request.host_url)
+    for header_name in ("Origin", "Referer"):
+        raw = request.headers.get(header_name)
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc:
+            return False
+    return True
+
+
+def _is_json_error_response():
+    if request.path.startswith("/api/"):
         return True
-    return False
+    if request.is_json:
+        return True
+    best = request.accept_mimetypes.best
+    return best == "application/json"
+
+
+def _csrf_error(message, status=403):
+    if _is_json_error_response():
+        return jsonify({"ok": False, "error": "csrf_failed", "message": message}), status
+    return message, status
+
+
+def _requires_csrf_protection():
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return False
+    if request.path in _CSRF_EXEMPT_PATHS:
+        return False
+    if request.endpoint == "view_upload":
+        # 公開導線のパスワードフォームは今回のCSRF必須対象外。
+        return False
+    if request.path in _CSRF_PROTECTED_PATHS:
+        return True
+    return request.path.startswith(_CSRF_PROTECTED_PREFIXES)
+
+
+def _validate_csrf_request():
+    if not _is_same_origin_request():
+        return _csrf_error("CSRF origin check failed", 403)
+
+    session_token = session.get(CSRF_SESSION_KEY) or ""
+    request_token = (
+        request.headers.get("X-CSRF-Token")
+        or request.form.get("csrf_token")
+        or ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "")
+        or ""
+    )
+    if not session_token or not request_token:
+        return _csrf_error("CSRF token is missing", 400)
+    if not hmac.compare_digest(str(session_token), str(request_token)):
+        return _csrf_error("CSRF token is invalid", 403)
+    return None
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {
+        "csrf_token": _get_csrf_token,
+        "csrf_token_value": _get_csrf_token(),
+    }
 
 
 def _save_stream(file_storage, dest_path):
@@ -770,6 +882,7 @@ def submit_upload():
     uid = uuid4().hex
     # パスワードはモード設定に従う（未指定なら空）
     password = secrets.token_hex(4) if mode_config.get("require_password") else ""
+    password_hash = hash_upload_password(password) if password else None
 
     # 保存ルート（設定優先、なければ既定）
     storage_root = current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
@@ -845,10 +958,10 @@ def submit_upload():
     cur = db.cursor()
     cur.execute(
         """
-        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (uid, title, date, expire_at, mode, username, "", password),
+        (uid, title, date, expire_at, mode, username, "", "", password_hash),
     )
     upload_id = cur.lastrowid
     if filenames:
@@ -879,7 +992,7 @@ def submit_upload():
         "base_url": public_base.rstrip("/"),
         "link": f"{public_base.rstrip('/')}/view/{uid}" if mode_config.get("enable_download_url") else "",
         "download_url": f"{public_base.rstrip('/')}/d/{uid}",
-        "manage_url": f"{public_base.rstrip('/')}/m/{uid}?pw={password}",
+        "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
         "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
         "password": password or "",
         "count": saved_count,
@@ -1048,44 +1161,31 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
 # =====================================
 @app.route("/view/<uuid>", methods=["GET", "POST"])
 def view_upload(uuid):
-    db = get_db()
-    cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM uploads WHERE uuid = %s", (uuid,))
-    upload = cursor.fetchone()
-
+    upload = _get_upload_access_record(uuid)
     if not upload:
         return "指定されたデータが存在しません", 404
 
-    # アップロード者 or 管理者は常時閲覧可
-    if "user" in session and (session["user"] == "admin" or session["user"] == upload["username"]):
+    if (upload.get("password") or "").strip() and not upload.get("password_hash"):
+        migrate_upload_password_if_needed(upload)
+
+    if _can_access_upload_record(upload):
         _grant_view_auth(uuid)
 
-    # モード情報取得（パス要否 & サムネ生成要否）
-    cursor.execute(
-        "SELECT require_password, generate_thumbnails FROM upload_modes WHERE username=%s AND mode=%s LIMIT 1",
-        (upload["username"], upload["mode"]),
-    )
-    mode_row = cursor.fetchone() or {}
-    require_password = bool(mode_row.get("require_password"))
-    generate_thumbnails = bool(mode_row.get("generate_thumbnails"))
-
-    # パス不要 or 空パスなら自動許可
-    if (not require_password) or (not upload.get("password")):
-        _grant_view_auth(uuid)
+    generate_thumbnails = bool(upload.get("generate_thumbnails"))
 
     # パス未認証ならパス画面へ
     if request.method == "POST" and not _has_view_auth(uuid):
         input_pass = request.form.get("password", "")
-        if input_pass != (upload.get("password") or ""):
-            db.close()
+        if not verify_upload_password(upload, input_pass):
             return render_template("view_password.html", uuid=uuid, error="パスワードが違います")
         _grant_view_auth(uuid)
 
     if not _has_view_auth(uuid):
-        db.close()
         return render_template("view_password.html", uuid=uuid)
 
     # ファイル一覧
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
     cursor.execute("SELECT filename FROM files WHERE upload_id = %s ORDER BY filename ASC", (upload["id"],))
     files = [row["filename"] for row in cursor.fetchall()]
     db.close()
@@ -1139,9 +1239,22 @@ def uploaded_file(subpath: str):
     # 実体の保存場所。未設定なら /mnt/mfu/uploads を既定に
     base_dir = Path(current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")).resolve()
 
-    # 要求パスを正規化して実体パスへ
-    target = (base_dir / subpath).resolve()
+    upload_ref = resolve_upload_subpath(subpath, allow_zip=True)
+    if upload_ref:
+        upload = _get_upload_access_record(upload_ref["uuid"])
+        if not upload:
+            abort(404)
+        if not _can_access_upload_record(upload):
+            abort(403)
+        target = upload_ref["target"]
+    else:
+        normalized = (subpath or "").strip().lstrip("/")
+        if not normalized.startswith("layer_uploads/"):
+            abort(404)
+        # 既存の layer_uploads 導線だけは、従来どおりの安全なパス検証のみ維持する。
+        target = (base_dir / subpath).resolve()
 
+    # 要求パスを正規化して実体パスへ
     # パストラバーサル等の防止: base_dir 配下かどうか確認
     try:
         # Python 3.11 なら is_relative_to が使えます
@@ -1167,28 +1280,14 @@ def uploaded_file(subpath: str):
 
 @app.route("/view/<uuid>/zip", methods=["GET"])
 def download_zip_for_upload(uuid):
-    # 認可チェック
-    if not _has_view_auth(uuid):
-        # 未認証なら /view へ戻す（パスまたは権限で認証）
-        return redirect(url_for("view_upload", uuid=uuid))
-
-    # uploads レコード取得
-    db = get_db()
-    cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT id, title, username FROM uploads WHERE uuid=%s", (uuid,))
-    upload = cursor.fetchone()
+    upload = _get_upload_access_record(uuid)
     if not upload:
-        db.close()
         return "指定されたデータが存在しません", 404
+    if not _can_access_upload_record(upload):
+        return redirect(url_for("view_upload", uuid=uuid))
+    _grant_view_auth(uuid)
 
-    # モードのサムネフラグ確認（OFFのときのみボタンを想定）
-    cursor.execute(
-        "SELECT generate_thumbnails FROM upload_modes WHERE username=%s AND mode=(SELECT mode FROM uploads WHERE uuid=%s) LIMIT 1",
-        (upload["username"], uuid),
-    )
-    mode_row = cursor.fetchone() or {}
-    generate_thumbnails = bool(mode_row.get("generate_thumbnails"))
-    db.close()
+    generate_thumbnails = bool(upload.get("generate_thumbnails"))
 
     # ファイル一覧
     db = get_db()
@@ -3291,6 +3390,16 @@ def temp_sensor():
 def before_every_request():
     g._req_start = time.time()
 
+    try:
+        _ensure_upload_security_schema_once()
+    except Exception as exc:
+        app.logger.warning(f"upload security schema ensure failed: {exc}")
+
+    if _requires_csrf_protection():
+        csrf_error = _validate_csrf_request()
+        if csrf_error:
+            return csrf_error
+
     # ★ 管理パス(/admin...) は admin 以外には 404 を返す
     #    - 未ログイン
     #    - 一般ユーザー
@@ -3601,3 +3710,8 @@ app.register_blueprint(fare_bp)
 
 from app.bank_account import register_bank_account
 register_bank_account(app)
+
+try:
+    _ensure_upload_security_schema_once()
+except Exception as exc:
+    app.logger.warning(f"upload security schema init skipped: {exc}")

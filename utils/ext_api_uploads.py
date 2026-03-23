@@ -29,6 +29,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
 from flask import Blueprint, request, jsonify, abort, current_app
+from app.utils.upload_security import hash_upload_password
 
 # ---- 可変部: 既存ユーティリティの取り込み（無ければフォールバック） ----
 try:
@@ -133,15 +134,16 @@ def create_upload():
 
     uuid32 = _uuid.uuid4().hex
     password = secrets.token_hex(4) if require_password else ""
+    password_hash = hash_upload_password(password) if password else None
     _mk_dirs(uuid32)
     expire_at = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
 
     db = get_db()
     cur = db.cursor()
     cur.execute(
-        """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-        (uuid32, title, date_str, expire_at, mode, username, "", password),
+        """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (uuid32, title, date_str, expire_at, mode, username, "", "", password_hash),
     )
     db.commit()
     cur.close()
