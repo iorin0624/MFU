@@ -252,6 +252,7 @@ _CSRF_PROTECTED_PREFIXES = (
 _CSRF_PROTECTED_PATHS = {
     "/submit_upload",
     "/api/zip-stream",
+    "/admin/fw/ban",
 }
 _CSRF_EXEMPT_PATHS = {
     "/login",
@@ -3231,7 +3232,7 @@ def mode_edit_combined(mode):
                            mode_data=mode_data,
                            template=template)
 
-@app.route("/modes/delete/<mode>")
+@app.post("/modes/delete/<mode>")
 def mode_delete(mode):
     if "user" not in session:
         return redirect(url_for("login"))
