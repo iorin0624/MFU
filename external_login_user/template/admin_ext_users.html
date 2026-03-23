@@ -91,6 +91,14 @@
         </td>
         <td>
           <div>
+            Push通知
+            {% if (it.push_subscription_count or 0)|int > 0 %}
+              🔵
+            {% else %}
+              🔴
+            {% endif %}
+          </div>
+          <div>
             アップ
             {% if it.notify_album_upload %}
               🔵
@@ -198,6 +206,7 @@
         if (it.x_id || it.instagram_id) {
           sns = `${it.x_id ? `<a href="https://x.com/${encodeURIComponent(it.x_id)}" target="_blank" rel="noopener">X: @${escapeHtml(it.x_id)}</a>` : ''}${(it.x_id && it.instagram_id) ? '<br>' : ''}${it.instagram_id ? `<a href="https://www.instagram.com/${encodeURIComponent(it.instagram_id)}/" target="_blank" rel="noopener">IG: @${escapeHtml(it.instagram_id)}</a>` : ''}`;
         }
+        const notifyPush = Number(it.push_subscription_count || 0) > 0 ? '🔵' : '🔴';
         const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
         const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
         const cardText = (it.card_count && Number(it.card_count) > 0) ? '登録あり' : '未登録';
@@ -207,7 +216,7 @@
           <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
           <td>${emailBlock}</td>
           <td>${sns}</td>
-          <td><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
+          <td><div>Push通知 ${notifyPush}</div><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
           <td>${cardText}</td>
           <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${Number(it.id || 0)}/edit">編集</a></td>
         </tr>`;
