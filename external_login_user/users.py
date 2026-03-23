@@ -67,6 +67,7 @@ from .utils import (
     _agree_current_privacy_policy,
     _privacy_policy_date_label,
     _sanitize_ext_local_url,
+    _is_disallowed_ext_redirect_path,
 )
 from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
@@ -263,7 +264,10 @@ def _build_privacy_policy_view_data(user_row: dict | None) -> dict:
 
 def _resolve_privacy_policy_post_agree_next() -> str:
     next_url = _sanitize_ext_local_url(session.pop("ext_after_privacy_policy_next", None), default="/external-login/")
-    if next_url in {"/external-login/privacy-policy/agree", "/external-login/privacy-policy/agree?"}:
+    if (
+        next_url in {"/external-login/privacy-policy/agree", "/external-login/privacy-policy/agree?"}
+        or _is_disallowed_ext_redirect_path(next_url)
+    ):
         return url_for("external_login_user.index")
     return next_url or url_for("external_login_user.index")
 

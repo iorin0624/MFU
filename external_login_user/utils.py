@@ -245,17 +245,34 @@ def _agree_current_privacy_policy(user_id: int, source: str = "top") -> bool:
             pass
 
 
+def _is_disallowed_ext_redirect_path(path: str | None) -> bool:
+    value = str(path or "").strip()
+    if not value:
+        return False
+    disallowed_prefixes = (
+        "/external-login/api/",
+        "/chat/api/",
+        "/api/",
+    )
+    return any(value.startswith(prefix) for prefix in disallowed_prefixes)
+
+
 def _sanitize_ext_local_url(raw_url: str | None, *, default: str = "/external-login/") -> str:
     raw = (raw_url or "").strip()
     if not raw:
         return default
     if raw.startswith("/") and not raw.startswith("//"):
+        if _is_disallowed_ext_redirect_path(raw):
+            return default
         return raw[:512]
     try:
         from urllib.parse import urlparse
         parsed = urlparse(raw)
         if (parsed.path or "").startswith("/") and not (parsed.path or "").startswith("//"):
-            return (parsed.path + (("?" + parsed.query) if parsed.query else ""))[:512]
+            candidate = parsed.path + (("?" + parsed.query) if parsed.query else "")
+            if _is_disallowed_ext_redirect_path(parsed.path):
+                return default
+            return candidate[:512]
     except Exception:
         pass
     return default
