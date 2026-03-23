@@ -78,6 +78,25 @@
     {% else %}
     {% endif %}
 
+    {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
+      <div class="card mb-4">
+        <div class="card-body">
+          <h2 class="h6 mb-3">各種ドキュメント</h2>
+          <div class="d-flex flex-column gap-2">
+            {% if privacy_policy_link_url %}
+              <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
+            {% endif %}
+            {% if commerce_law_url %}
+              <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
+            {% endif %}
+            {% if participant_terms_url %}
+              <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
     {% if privacy_policy_required %}
       <div class="modal fade" id="privacyPolicyModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-dialog-centered">
@@ -392,86 +411,29 @@
     <a href="#" id="linkUpdateInfo" class="link-primary small">アップデート情報</a>
   </div>
 
-  <!-- === 特定商取引法：リンク → 折りたたみ本体 ================= -->
+  <!-- === 特定商取引法：ログイン前は既存表示、ログイン後はリンク ================= -->
   <hr class="my-4">
-  <p class="text-center mb-2">
-    <a href="#tokushohoCollapse"
-       class="link-secondary"
-       data-bs-toggle="collapse"
-       role="button"
-       aria-expanded="false"
-       aria-controls="tokushohoCollapse">
-      特定商取引法に基づく表記（クリックで表示）
-    </a>
-  </p>
+  {% if login and me and commerce_law_url %}
+    <p class="text-center mb-2">
+      <a href="{{ commerce_law_url }}" class="link-secondary" target="_blank" rel="noopener">
+        特定商取引法に基づく表記（リンク）
+      </a>
+    </p>
+  {% else %}
+    <p class="text-center mb-2">
+      <a href="#tokushohoCollapse"
+         class="link-secondary"
+         data-bs-toggle="collapse"
+         role="button"
+         aria-expanded="false"
+         aria-controls="tokushohoCollapse">
+        特定商取引法に基づく表記（クリックで表示）
+      </a>
+    </p>
 
-  <div class="collapse" id="tokushohoCollapse">
-    <section id="tokushoho" class="mt-3">
-      <h2 class="h5 mb-3">特定商取引法に基づく表記</h2>
-
-      {% if login and me %}
-        <!-- ログイン後：フルオープン -->
-        <div class="card">
-          <div class="card-body">
-            <dl class="row mb-0">
-              <dt class="col-sm-4 col-md-3">販売業者</dt>
-              <dd class="col-sm-8 col-md-9">小松　伊織</dd>
-
-              <dt class="col-sm-4 col-md-3">運営責任者</dt>
-              <dd class="col-sm-8 col-md-9">小松　伊織</dd>
-
-              <dt class="col-sm-4 col-md-3">所在地</dt>
-              <dd class="col-sm-8 col-md-9">290-0023　千葉県市原市惣社79-2</dd>
-
-              <dt class="col-sm-4 col-md-3">電話番号</dt>
-              <dd class="col-sm-8 col-md-9">050-6874-1025</dd>
-
-              <dt class="col-sm-4 col-md-3">メールアドレス</dt>
-              <dd class="col-sm-8 col-md-9">admin@mail.iori0624.jp</dd>
-
-              <dt class="col-sm-4 col-md-3">サイトURL</dt>
-              <dd class="col-sm-8 col-md-9">
-                {{ request.url_root.rstrip('/') if request else '' }}
-              </dd>
-
-              <dt class="col-sm-4 col-md-3">販売価格</dt>
-              <dd class="col-sm-8 col-md-9">各イベントページに表示（消費税込）</dd>
-
-              <dt class="col-sm-4 col-md-3">代金の支払時期・方法</dt>
-              <dd class="col-sm-8 col-md-9">
-                クレジットカード決済（Square）、Apple&nbsp;Pay、Google&nbsp;Pay（申込時に即時決済）<br>
-                ※銀行振込も対応しますが、振込手数料はご負担お願い致します。（例外対応）<br>
-              </dd>
-
-              <dt class="col-sm-4 col-md-3">商品の引渡し時期・役務の提供時期</dt>
-              <dd class="col-sm-8 col-md-9">
-                決済確認後、イベント当日または案内に従い提供・共有（デジタルコンテンツは即時または準備完了後に提供）
-              </dd>
-
-              <dt class="col-sm-4 col-md-3">追加費用（手数料・送料など）</dt>
-              <dd class="col-sm-8 col-md-9">なし（通信費はお客様負担）</dd>
-
-              <dt class="col-sm-4 col-md-3">キャンセル・返金</dt>
-              <dd class="col-sm-8 col-md-9">
-                主催者都合（天候等含む）による中止時は全額返金します。<br>
-                参加者都合のキャンセルは、各イベントの募集要項に定めるキャンセルポリシーに従います。<br>
-                必要に応じて部分返金（差額返金）に対応します。
-              </dd>
-
-              <dt class="col-sm-4 col-md-3">動作環境</dt>
-              <dd class="col-sm-8 col-md-9">
-                最新の主要ブラウザを推奨。アルバム閲覧・ダウンロード時のデータ通信料はお客様負担。
-              </dd>
-
-              <dt class="col-sm-4 col-md-3">問い合わせ窓口</dt>
-              <dd class="col-sm-8 col-md-9">
-                上記メールアドレス、X（@iorin0624）のDM、Instagram（@iorin0624）のDMよりお問い合わせください。
-              </dd>
-            </dl>
-          </div>
-        </div>
-      {% else %}
-        <!-- 未ログイン：最小限 -->
+    <div class="collapse" id="tokushohoCollapse">
+      <section id="tokushoho" class="mt-3">
+        <h2 class="h5 mb-3">特定商取引法に基づく表記</h2>
         <div class="alert alert-info mb-0">
           <div><strong>販売業者：</strong> 小松　伊織</div>
           <div class="small text-muted mt-1">
@@ -479,9 +441,9 @@
             ログイン後に、上記の全項目を確認できます。
           </div>
         </div>
-      {% endif %}
-    </section>
-  </div>
+      </section>
+    </div>
+  {% endif %}
   <!-- /特商法（折りたたみ） ================================= -->
 
   <div class="modal fade" id="tipModal" tabindex="-1" aria-hidden="true">

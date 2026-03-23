@@ -61,7 +61,10 @@ from .utils import (
     create_external_login_resume_token,
     get_external_login_resume_token_summary,
     consume_external_login_resume_token,
+    _get_current_commerce_law_config,
+    _get_current_participant_terms_config,
     _get_current_privacy_policy_config,
+    _is_participant_terms_effective,
     _is_privacy_policy_effective,
     _needs_privacy_policy_agreement,
     _agree_current_privacy_policy,
@@ -259,6 +262,19 @@ def _build_privacy_policy_view_data(user_row: dict | None) -> dict:
         "privacy_policy_revised_date_label": _privacy_policy_date_label(current_revised),
         "privacy_policy_mode": "reconsent" if (required and agreed_revised) else "initial",
         "privacy_policy_effective": _is_privacy_policy_effective(config),
+    }
+
+
+def _build_external_document_view_data() -> dict:
+    privacy_config = _get_current_privacy_policy_config()
+    commerce_law_config = _get_current_commerce_law_config()
+    participant_terms_config = _get_current_participant_terms_config()
+    return {
+        "privacy_policy_link_url": privacy_config.get("privacy_policy_url") or "",
+        "commerce_law_url": commerce_law_config.get("commerce_law_url") or "",
+        "participant_terms_url": participant_terms_config.get("participant_terms_url") or "",
+        "participant_terms_revised_date": participant_terms_config.get("participant_terms_revised_date"),
+        "participant_terms_effective": _is_participant_terms_effective(participant_terms_config),
     }
 
 
@@ -1168,6 +1184,8 @@ def index():
         events_upcoming.sort(key=_key_asc)
         events_past.sort(key=_key_desc, reverse=True)
 
+    document_view = _build_external_document_view_data()
+
     resp = make_response(render_template(
         "ext_index.html",
         login=bool(me),
@@ -1176,6 +1194,7 @@ def index():
         events_past=events_past,
         ext_csrf=session.get("ext_csrf"),
         **privacy_view,
+        **document_view,
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -2331,7 +2350,10 @@ def join_event(event_uuid: str):
     privacy_config = _get_current_privacy_policy_config()
     privacy_effective = _is_privacy_policy_effective(privacy_config)
     privacy_required_for_user = _needs_privacy_policy_agreement(u, privacy_config)
+    participant_terms_config = _get_current_participant_terms_config()
+    participant_terms_effective = _is_participant_terms_effective(participant_terms_config)
     privacy_error = ""
+    participant_terms_error = ""
 
     # 既存メンバー状況
     cur.execute("""
@@ -2341,7 +2363,9 @@ def join_event(event_uuid: str):
                COALESCE(process, 0) AS process,
                COALESCE(payment_status,'unpaid') AS payment_status,
                payment_row_id,
-               COALESCE(require_payment,1) AS require_payment
+               COALESCE(require_payment,1) AS require_payment,
+               participant_terms_agreed_revised_date,
+               privacy_policy_join_agreed_revised_date
           FROM mfu_event_member
          WHERE event_id=%s AND user_id=%s
          LIMIT 1
@@ -2382,8 +2406,11 @@ def join_event(event_uuid: str):
             abort(400, "invalid csrf token")
 
         privacy_agree_checked = request.form.get("privacy_policy_agree") in ("1", "on", "true", "yes")
+        participant_terms_checked = request.form.get("participant_terms_agree") in ("1", "on", "true", "yes")
         if privacy_effective and not privacy_agree_checked:
             privacy_error = "参加申請にはプライバシーポリシーへの同意が必要です。"
+        if participant_terms_effective and not participant_terms_checked:
+            participant_terms_error = "参加申請には参加条件・支払・キャンセル規定・返金規定への同意が必要です。"
 
         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
         # ★ 'other' を許可
@@ -2396,7 +2423,7 @@ def join_event(event_uuid: str):
             costume = None  # サーバ側でも空に
         process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
 
-        if privacy_error:
+        if privacy_error or participant_terms_error:
             status = (m and m.get("status")) or None
             cur.close(); db.close()
             return render_template(
@@ -2412,6 +2439,10 @@ def join_event(event_uuid: str):
                 privacy_policy_error=privacy_error,
                 privacy_policy_checked=privacy_agree_checked,
                 privacy_policy_agreed_latest=not privacy_required_for_user,
+                participant_terms_effective=participant_terms_effective,
+                participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
+                participant_terms_error=participant_terms_error,
+                participant_terms_checked=participant_terms_checked,
             ), 400
 
         # ステータス決定（自動承認 or 手動承認待ち）
@@ -2435,6 +2466,10 @@ def join_event(event_uuid: str):
                     privacy_policy_error="プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。",
                     privacy_policy_checked=privacy_agree_checked,
                     privacy_policy_agreed_latest=False,
+                    participant_terms_effective=participant_terms_effective,
+                    participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
+                    participant_terms_error=participant_terms_error,
+                    participant_terms_checked=participant_terms_checked,
                 ), 500
 
         update_event_member_status(
@@ -2452,14 +2487,35 @@ def join_event(event_uuid: str):
                 "process": process_flag,
             },
         )
+        join_update_parts = ["joined_at=COALESCE(joined_at, NOW())"]
+        join_update_values: list[object] = []
+        if participant_terms_effective:
+            join_update_parts.extend([
+                "participant_terms_agreed_at=%s",
+                "participant_terms_agreed_revised_date=%s",
+            ])
+            join_update_values.extend([
+                datetime.now(JST).replace(tzinfo=None),
+                participant_terms_config.get("participant_terms_revised_date"),
+            ])
+        if privacy_effective and privacy_agree_checked:
+            join_update_parts.extend([
+                "privacy_policy_join_agreed_at=%s",
+                "privacy_policy_join_agreed_revised_date=%s",
+            ])
+            join_update_values.extend([
+                datetime.now(JST).replace(tzinfo=None),
+                privacy_config.get("privacy_policy_revised_date"),
+            ])
+        join_update_values.extend([ev["id"], ext_uid])
         cur.execute(
-            """
+            f"""
             UPDATE mfu_event_member
-               SET joined_at=COALESCE(joined_at, NOW())
+               SET {', '.join(join_update_parts)}
              WHERE event_id=%s AND user_id=%s
              LIMIT 1
             """,
-            (ev["id"], ext_uid),
+            tuple(join_update_values),
         )
         db.commit()
         _recalc_event_fee_if_auto(ev["id"])
@@ -2601,6 +2657,10 @@ def join_event(event_uuid: str):
         privacy_policy_error=privacy_error,
         privacy_policy_checked=False,
         privacy_policy_agreed_latest=not privacy_required_for_user,
+        participant_terms_effective=participant_terms_effective,
+        participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
+        participant_terms_error=participant_terms_error,
+        participant_terms_checked=False,
     )
 
 

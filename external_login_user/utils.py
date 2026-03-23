@@ -128,7 +128,7 @@ def _privacy_policy_date_label(value: Any) -> str:
     return d.strftime("%Y年%m月%d日") if d else ""
 
 
-def _get_current_privacy_policy_config() -> dict[str, Any]:
+def _get_external_document_config() -> dict[str, Any]:
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
         cur.execute(
@@ -137,6 +137,9 @@ def _get_current_privacy_policy_config() -> dict[str, Any]:
               id,
               privacy_policy_url,
               privacy_policy_revised_date,
+              commerce_law_url,
+              participant_terms_url,
+              participant_terms_revised_date,
               updated_by,
               created_at,
               updated_at
@@ -157,7 +160,45 @@ def _get_current_privacy_policy_config() -> dict[str, Any]:
     cfg = dict(row or {})
     cfg["privacy_policy_url"] = str(cfg.get("privacy_policy_url") or "").strip()
     cfg["privacy_policy_revised_date"] = _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date"))
+    cfg["commerce_law_url"] = str(cfg.get("commerce_law_url") or "").strip()
+    cfg["participant_terms_url"] = str(cfg.get("participant_terms_url") or "").strip()
+    cfg["participant_terms_revised_date"] = _normalize_privacy_policy_date(cfg.get("participant_terms_revised_date"))
     return cfg
+
+
+def _get_current_privacy_policy_config() -> dict[str, Any]:
+    cfg = _get_external_document_config()
+    return {
+        "id": cfg.get("id"),
+        "privacy_policy_url": cfg.get("privacy_policy_url") or "",
+        "privacy_policy_revised_date": _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date")),
+        "updated_by": cfg.get("updated_by"),
+        "created_at": cfg.get("created_at"),
+        "updated_at": cfg.get("updated_at"),
+    }
+
+
+def _get_current_commerce_law_config() -> dict[str, Any]:
+    cfg = _get_external_document_config()
+    return {
+        "id": cfg.get("id"),
+        "commerce_law_url": cfg.get("commerce_law_url") or "",
+        "updated_by": cfg.get("updated_by"),
+        "created_at": cfg.get("created_at"),
+        "updated_at": cfg.get("updated_at"),
+    }
+
+
+def _get_current_participant_terms_config() -> dict[str, Any]:
+    cfg = _get_external_document_config()
+    return {
+        "id": cfg.get("id"),
+        "participant_terms_url": cfg.get("participant_terms_url") or "",
+        "participant_terms_revised_date": _normalize_privacy_policy_date(cfg.get("participant_terms_revised_date")),
+        "updated_by": cfg.get("updated_by"),
+        "created_at": cfg.get("created_at"),
+        "updated_at": cfg.get("updated_at"),
+    }
 
 
 def _is_privacy_policy_effective(config: dict[str, Any] | None) -> bool:
@@ -165,6 +206,14 @@ def _is_privacy_policy_effective(config: dict[str, Any] | None) -> bool:
     return bool(
         str(cfg.get("privacy_policy_url") or "").strip()
         and _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date"))
+    )
+
+
+def _is_participant_terms_effective(config: dict[str, Any] | None) -> bool:
+    cfg = config or {}
+    return bool(
+        str(cfg.get("participant_terms_url") or "").strip()
+        and _normalize_privacy_policy_date(cfg.get("participant_terms_revised_date"))
     )
 
 

@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS mfu_external_privacy_policy_config (
   id                           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   privacy_policy_url           VARCHAR(2048)   NULL,
   privacy_policy_revised_date  DATE            NULL,
+  commerce_law_url             VARCHAR(2048)   NULL,
+  participant_terms_url        VARCHAR(2048)   NULL,
+  participant_terms_revised_date DATE          NULL,
   updated_by                   VARCHAR(191)    NULL,
   created_at                   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at                   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -251,6 +254,41 @@ def _on_bp_registered(state) -> None:
                 "external_login_user",
                 "privacy_policy_agreed_revised_date",
                 "privacy_policy_agreed_revised_date DATE NULL AFTER privacy_policy_agreed_at",
+            )
+            _ensure_col(
+                "mfu_external_privacy_policy_config",
+                "commerce_law_url",
+                "commerce_law_url VARCHAR(2048) NULL AFTER privacy_policy_revised_date",
+            )
+            _ensure_col(
+                "mfu_external_privacy_policy_config",
+                "participant_terms_url",
+                "participant_terms_url VARCHAR(2048) NULL AFTER commerce_law_url",
+            )
+            _ensure_col(
+                "mfu_external_privacy_policy_config",
+                "participant_terms_revised_date",
+                "participant_terms_revised_date DATE NULL AFTER participant_terms_url",
+            )
+            _ensure_col(
+                "mfu_event_member",
+                "participant_terms_agreed_at",
+                "participant_terms_agreed_at DATETIME NULL AFTER joined_at",
+            )
+            _ensure_col(
+                "mfu_event_member",
+                "participant_terms_agreed_revised_date",
+                "participant_terms_agreed_revised_date DATE NULL AFTER participant_terms_agreed_at",
+            )
+            _ensure_col(
+                "mfu_event_member",
+                "privacy_policy_join_agreed_at",
+                "privacy_policy_join_agreed_at DATETIME NULL AFTER participant_terms_agreed_revised_date",
+            )
+            _ensure_col(
+                "mfu_event_member",
+                "privacy_policy_join_agreed_revised_date",
+                "privacy_policy_join_agreed_revised_date DATE NULL AFTER privacy_policy_join_agreed_at",
             )
 
             # ★ 追加：支払期間 列（後方互換で追加）
