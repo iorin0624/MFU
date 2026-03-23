@@ -97,6 +97,16 @@ def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, 
     return key, order
 
 
+_PUSH_SUBSCRIPTION_COUNT_SQL = """
+    (
+      SELECT COUNT(*)
+        FROM chat_push_subscriptions cps
+       WHERE cps.actor_type = 'line'
+         AND cps.actor_id = CAST(external_login_user.id AS CHAR)
+    ) AS push_subscription_count
+"""
+
+
 # ============= 画面（一覧） =============
 @bp.route("/admin/ext-users")
 def admin_ext_users_index():
@@ -121,7 +131,7 @@ def admin_ext_users_index():
     cur = db.cursor(dictionary=True)
     try:
         has_verified = _column_exists("external_login_user", "email_verified_at")
-        cols = """
+        cols = f"""
             id,
             nickname,
             x_id,
@@ -136,6 +146,7 @@ def admin_ext_users_index():
             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
             COALESCE(notify_album_process, 1) AS notify_album_process,
+            {_PUSH_SUBSCRIPTION_COUNT_SQL},
             (
               SELECT COUNT(*)
                 FROM external_login_user_card_data c
@@ -210,13 +221,14 @@ def admin_ext_users_data():
     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
 
     has_verified = _column_exists("external_login_user", "email_verified_at")
-    cols = """
+    cols = f"""
         id, nickname, x_id, instagram_id, email, social_id,
         avatar_file, avatar_url, created_at, updated_at,
         admin_note,
         COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
         COALESCE(notify_album_process, 1) AS notify_album_process,
+        {_PUSH_SUBSCRIPTION_COUNT_SQL},
         (
           SELECT COUNT(*)
             FROM external_login_user_card_data c
@@ -271,7 +283,7 @@ def admin_ext_users_detail(user_id: int):
 
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
-        cur.execute("""
+        cur.execute(f"""
             SELECT
               id,
               nickname,
@@ -284,7 +296,10 @@ def admin_ext_users_detail(user_id: int):
               created_at,
               updated_at,
               admin_note,
-              COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+              COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+              COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+              COALESCE(notify_album_process, 1) AS notify_album_process,
+              {_PUSH_SUBSCRIPTION_COUNT_SQL}
             FROM external_login_user
             WHERE id=%s
             LIMIT 1
@@ -494,13 +509,14 @@ def admin_ext_users_edit_page(user_id: int):
     cur = db.cursor(dictionary=True)
     try:
         has_verified = _column_exists("external_login_user", "email_verified_at")
-        cols = """
+        cols = f"""
             id, nickname, x_id, instagram_id, email, social_id,
             avatar_file, avatar_url, created_at, updated_at,
             admin_note,
             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-            COALESCE(notify_album_process, 1) AS notify_album_process
+            COALESCE(notify_album_process, 1) AS notify_album_process,
+            {_PUSH_SUBSCRIPTION_COUNT_SQL}
         """
         if has_verified:
             cols += ", email_verified_at"

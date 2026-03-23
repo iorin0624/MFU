@@ -64,29 +64,33 @@
             </div>
           </div>
 
-          {# ★ 共有アルバム通知有無の確認 #}
           <div class="mt-3">
-            <label class="form-label">共有アルバム通知</label>
-            <div>
-              <span class="badge bg-outline-secondary text-dark me-2">
-                アップロード通知:
-                {% if u.notify_album_upload %}
-                  ON
-                {% else %}
-                  OFF
-                {% endif %}
-              </span>
-              <span class="badge bg-outline-secondary text-dark">
-                加工完了通知:
-                {% if u.notify_album_process %}
-                  ON
-                {% else %}
-                  OFF
-                {% endif %}
-              </span>
+            <div class="form-label">通知状態</div>
+            <div class="fw-semibold">共有アルバム通知</div>
+            <div class="mt-1">
+              アップロード通知:
+              {% if u.notify_album_upload %}
+                ON
+              {% else %}
+                OFF
+              {% endif %}
+              加工完了通知:
+              {% if u.notify_album_process %}
+                ON
+              {% else %}
+                OFF
+              {% endif %}
             </div>
             <div class="form-text mt-1 text-muted">
               外部ユーザー本人のプロフィール画面で設定された通知フラグの現在値です（管理画面からは変更できません）。
+            </div>
+            <div class="mt-1">
+              Push通知:
+              {% if (u.push_subscription_count or 0)|int > 0 %}
+                ON
+              {% else %}
+                OFF
+              {% endif %}
             </div>
           </div>
 
