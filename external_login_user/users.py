@@ -61,6 +61,12 @@ from .utils import (
     create_external_login_resume_token,
     get_external_login_resume_token_summary,
     consume_external_login_resume_token,
+    _get_current_privacy_policy_config,
+    _is_privacy_policy_effective,
+    _needs_privacy_policy_agreement,
+    _agree_current_privacy_policy,
+    _privacy_policy_date_label,
+    _sanitize_ext_local_url,
 )
 from .admin import _recalc_event_fee_if_auto
 #from .auto_payment import load_default_card_summary
@@ -238,6 +244,28 @@ def _format_yen(amount_yen: int | None) -> str:
     if amount_yen is None:
         return ""
     return f"¥{int(amount_yen):,}"
+
+
+def _build_privacy_policy_view_data(user_row: dict | None) -> dict:
+    config = _get_current_privacy_policy_config()
+    required = _needs_privacy_policy_agreement(user_row, config)
+    agreed_revised = (user_row or {}).get("privacy_policy_agreed_revised_date")
+    current_revised = config.get("privacy_policy_revised_date")
+    return {
+        "privacy_policy_required": required,
+        "privacy_policy_url": config.get("privacy_policy_url") or "",
+        "privacy_policy_revised_date": current_revised,
+        "privacy_policy_revised_date_label": _privacy_policy_date_label(current_revised),
+        "privacy_policy_mode": "reconsent" if (required and agreed_revised) else "initial",
+        "privacy_policy_effective": _is_privacy_policy_effective(config),
+    }
+
+
+def _resolve_privacy_policy_post_agree_next() -> str:
+    next_url = _sanitize_ext_local_url(session.pop("ext_after_privacy_policy_next", None), default="/external-login/")
+    if next_url in {"/external-login/privacy-policy/agree", "/external-login/privacy-policy/agree?"}:
+        return url_for("external_login_user.index")
+    return next_url or url_for("external_login_user.index")
 
 
 def _fetchone_dict(cur):
@@ -925,6 +953,7 @@ def _calc_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
 # =========================
 @bp.route("/")
 def index():
+    row = None
     # ---- 未ログイン時は当該バナーのフラッシュを除去してから描画 --------------------
     try:
         if not session.get("ext_user_id"):
@@ -961,7 +990,9 @@ def index():
             db = get_db(); cur = db.cursor(dictionary=True)
             try:
                 cur.execute("""
-                    SELECT email, email_verified_at
+                    SELECT email, email_verified_at,
+                           privacy_policy_agreed_at,
+                           privacy_policy_agreed_revised_date
                       FROM external_login_user
                      WHERE id=%s
                      LIMIT 1
@@ -1004,6 +1035,9 @@ def index():
 
     social_id = session.get("ext_user_social_id")
     me = _get_ext_user_by_social(social_id) if social_id else None
+    privacy_view = _build_privacy_policy_view_data(row or me)
+    if "ext_csrf" not in session:
+        session["ext_csrf"] = secrets.token_hex(16)
 
     if request.args.get("tip") == "done":
         if request.args.get("status") == "ok":
@@ -1130,13 +1164,45 @@ def index():
         events_upcoming.sort(key=_key_asc)
         events_past.sort(key=_key_desc, reverse=True)
 
-    resp = make_response(render_template("ext_index.html",
-                           login=bool(me), me=me,
-                           events_upcoming=events_upcoming,
-                           events_past=events_past))
+    resp = make_response(render_template(
+        "ext_index.html",
+        login=bool(me),
+        me=me,
+        events_upcoming=events_upcoming,
+        events_past=events_past,
+        ext_csrf=session.get("ext_csrf"),
+        **privacy_view,
+    ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+
+@bp.post("/privacy-policy/agree")
+def privacy_policy_agree():
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    if "ext_csrf" not in session:
+        session["ext_csrf"] = secrets.token_hex(16)
+    token = (request.form.get("csrf_token") or "").strip()
+    if not token or token != session.get("ext_csrf"):
+        flash("フォームの有効期限が切れました。もう一度お試しください。", "warning")
+        return redirect(url_for("external_login_user.index"))
+
+    ext_user_id = int(session.get("ext_user_id") or 0)
+    if ext_user_id <= 0:
+        return redirect(url_for("external_login_user.index"))
+
+    config = _get_current_privacy_policy_config()
+    if _is_privacy_policy_effective(config):
+        if not _agree_current_privacy_policy(ext_user_id, source="top"):
+            flash("プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。", "danger")
+            return redirect(url_for("external_login_user.index"))
+        flash("プライバシーポリシーに同意しました。", "success")
+
+    return redirect(_resolve_privacy_policy_post_agree_next())
 
 
 
@@ -1429,7 +1495,8 @@ def line_callback():
     try:
         # email を含めて取得（既存未保存時に保存するため avatar_file / avatar_url も取る）
         cur.execute("""
-            SELECT id, nickname, avatar_file, avatar_url, email
+            SELECT id, nickname, avatar_file, avatar_url, email,
+                   privacy_policy_agreed_revised_date
             FROM external_login_user
             WHERE social_id=%s
             LIMIT 1
@@ -1535,6 +1602,16 @@ def line_callback():
 
     # 既存の next を壊さない（上書きしない）
     session.setdefault("ext_after_login_next", next_path)
+    privacy_user_row = {}
+    if row:
+        if isinstance(row, dict):
+            privacy_user_row["privacy_policy_agreed_revised_date"] = row.get("privacy_policy_agreed_revised_date")
+        elif isinstance(row, tuple) and len(row) >= 6:
+            privacy_user_row["privacy_policy_agreed_revised_date"] = row[5]
+    privacy_required = _needs_privacy_policy_agreement(
+        privacy_user_row,
+        _get_current_privacy_policy_config(),
+    )
 
     # ---- リダイレクト方針 ----
     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
@@ -1560,19 +1637,30 @@ def line_callback():
         flash(email_notice_markup, "info")
         if login_mode != EXT_LOGIN_MODE_PWA:
             # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
-            return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
+            profile_next_url = url_for("external_login_user.profile", next=next_path, reason="email")
+            if privacy_required:
+                session["ext_after_privacy_policy_next"] = profile_next_url
+                return redirect(url_for("external_login_user.index"))
+            return redirect(profile_next_url)
     else:
         session.pop("ext_user_need_email", None)
 
     if login_mode == EXT_LOGIN_MODE_PWA:
+        pwa_next_path = url_for("external_login_user.index") if privacy_required else next_path
+        if privacy_required:
+            session["ext_after_privacy_policy_next"] = _sanitize_ext_local_url(next_path, default="/external-login/")
         resume_token = create_external_login_resume_token(
             ext_user_id=int(ext_user_id),
             social_id=sub,
-            next_path=next_path,
+            next_path=pwa_next_path,
             mode=login_mode,
             pwa_client_id=pwa_client_id or None,
         )
         return redirect(url_for("external_login_user.pwa_resume_page", rt=resume_token))
+
+    if privacy_required:
+        session["ext_after_privacy_policy_next"] = _sanitize_ext_local_url(next_path, default="/external-login/")
+        return redirect(url_for("external_login_user.index"))
 
     # メール登録済みなら通常遷移
     return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
@@ -2179,7 +2267,9 @@ def join_event(event_uuid: str):
 
     # --- 外部ユーザーを取得（social_id → external_login_user.id） ---
     cur.execute("""
-        SELECT id, email, nickname, x_id, instagram_id
+        SELECT id, email, nickname, x_id, instagram_id,
+               privacy_policy_agreed_revised_date,
+               privacy_policy_agreed_at
           FROM external_login_user
          WHERE social_id=%s
          LIMIT 1
@@ -2234,6 +2324,10 @@ def join_event(event_uuid: str):
     ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
     ev["event_uuid_str"] = ev_uuid_str
     admin_url = f"https://mfu.iori0624.jp/external-login/admin/events/{ev['id']}"
+    privacy_config = _get_current_privacy_policy_config()
+    privacy_effective = _is_privacy_policy_effective(privacy_config)
+    privacy_required_for_user = _needs_privacy_policy_agreement(u, privacy_config)
+    privacy_error = ""
 
     # 既存メンバー状況
     cur.execute("""
@@ -2283,6 +2377,10 @@ def join_event(event_uuid: str):
             cur.close(); db.close()
             abort(400, "invalid csrf token")
 
+        privacy_agree_checked = request.form.get("privacy_policy_agree") in ("1", "on", "true", "yes")
+        if privacy_effective and not privacy_agree_checked:
+            privacy_error = "参加申請にはプライバシーポリシーへの同意が必要です。"
+
         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
         # ★ 'other' を許可
         if role not in ("camera", "assistant", "cosplayer", "other"):
@@ -2294,10 +2392,46 @@ def join_event(event_uuid: str):
             costume = None  # サーバ側でも空に
         process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
 
+        if privacy_error:
+            status = (m and m.get("status")) or None
+            cur.close(); db.close()
+            return render_template(
+                "event_join.html",
+                ev=ev,
+                status=status,
+                form_role=role,
+                form_costume=costume or "",
+                form_process=bool(process_flag),
+                csrf_token=csrf_token,
+                privacy_policy_effective=privacy_effective,
+                privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
+                privacy_policy_error=privacy_error,
+                privacy_policy_checked=privacy_agree_checked,
+                privacy_policy_agreed_latest=not privacy_required_for_user,
+            ), 400
+
         # ステータス決定（自動承認 or 手動承認待ち）
         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
         new_status = "approved" if (auto_hit or already_approved) else "pending"
         should_notify = not (already_approved and auto_hit_by_lecture)
+
+        if privacy_effective and privacy_required_for_user:
+            if not _agree_current_privacy_policy(ext_uid, source="join"):
+                cur.close(); db.close()
+                return render_template(
+                    "event_join.html",
+                    ev=ev,
+                    status=None,
+                    form_role=role,
+                    form_costume=costume or "",
+                    form_process=bool(process_flag),
+                    csrf_token=csrf_token,
+                    privacy_policy_effective=privacy_effective,
+                    privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
+                    privacy_policy_error="プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。",
+                    privacy_policy_checked=privacy_agree_checked,
+                    privacy_policy_agreed_latest=False,
+                ), 500
 
         update_event_member_status(
             ev["id"],
@@ -2458,6 +2592,11 @@ def join_event(event_uuid: str):
         form_costume=form_costume,
         form_process=form_process,
         csrf_token=csrf_token,
+        privacy_policy_effective=privacy_effective,
+        privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
+        privacy_policy_error=privacy_error,
+        privacy_policy_checked=False,
+        privacy_policy_agreed_latest=not privacy_required_for_user,
     )
 
 

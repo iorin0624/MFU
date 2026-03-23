@@ -1,423 +1,2657 @@
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 296ff8f2dadef6617d9e17f9937d3fa46287c91e..d732bfabb2ba5be93a504c965fc044d4513e4300 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -597,150 +597,151 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
-         "candidates": 0,
-         "sent": 0,
-         "failed": 0,
-         "skipped_no_mail": 0,
-         "skipped_too_soon": 0,
-         "skipped_no_unread": 0,
-         "skipped_invalid_user": 0,
+diff --git a/external_login_user/__init__.py b/external_login_user/__init__.py
+index bd46dd834f78c4c6ca7a9fef8acdee3db70020d7..472a785ff3a02ce95584b15bc8f810023e3d88e8 100644
+--- a/external_login_user/__init__.py
++++ b/external_login_user/__init__.py
+@@ -223,51 +223,56 @@ def _enforce_lecture_prepaid_on_join():
+ 
+     # 支払状況チェック（未払いなら支払へ）
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT COALESCE(payment_status,'unpaid') AS ps
+               FROM mfu_event_member
+              WHERE event_id=%s AND user_id=%s
+              LIMIT 1
+         """, (ev["id"], me["id"]))  # type: ignore
+         row = cur.fetchone()
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+     ps = ((row or {}).get("ps") or "unpaid").lower()
+     if ps != "paid":
+         flash("この講座は『先にお支払い』が必要です。お支払いページへ移動します。", "warning")
+         return redirect(url_for("external_login_user.pay_start", event_uuid=event_uuid))
+ 
+     return None
+ 
+ # === 未確認メールのユーザーを専用ページへ誘導（全域ガード） ====================
+-from .utils import get_db  # 既存
++from .utils import (
++    get_db,
++    _get_current_privacy_policy_config,
++    _needs_privacy_policy_agreement,
++    _sanitize_ext_local_url,
++)
+ 
+ _ALLOW_UNVERIFIED_ENDPOINTS = {
+     # プロフィール編集、ログアウト、再送、確認リンク、未確認専用ページ、アバター配信
+     "external_login_user.profile",
+     "external_login_user.logout",
+     "external_login_user.resend_verify_email",
+     "external_login_user.unverified",
+     "external_login_user.verify_email_pin",
+     "external_login_user.email_verify",
+     "external_login_user.avatar_file",   # ★ 追加：アバター画像の配信は許可
+ }
+ 
+ def _endpoint_allowed_when_unverified(ep: str | None) -> bool:
+     if not ep:
+         return False
+     if ep in _ALLOW_UNVERIFIED_ENDPOINTS:
+         return True
+     if ep == "static":
+         return True
+     return False
+ 
+ def _is_email_unverified() -> bool:
+     """email 登録済み かつ email_verified_at が NULL なら True（g にキャッシュ）"""
+     if hasattr(g, "_ext_email_unverified"):
+         return g._ext_email_unverified
+@@ -286,35 +291,98 @@ def _is_email_unverified() -> bool:
+     g._ext_email_unverified = bool(email and row and not row.get("email_verified_at"))
+     return g._ext_email_unverified
+ 
+ @bp.before_app_request
+ def _lock_unverified_globally():
+     try:
+         # 未ログインは対象外
+         if not session.get("ext_user_id"):
+             return None
+         # 未確認でなければ素通り
+         if not _is_email_unverified():
+             return None
+         # 許可エンドポイントなら通す
+         if _endpoint_allowed_when_unverified(request.endpoint):
+             return None
+         # 既に専用ページにいるなら何もしない
+         if request.endpoint == "external_login_user.unverified":
+             return None
+         # next で戻れるよう保持して未確認ページへ
+         return redirect(url_for("external_login_user.unverified", next=request.full_path or ""))
+     except Exception:
+         current_app.logger.exception("unverified global lock failed")
+         return None
+ # ========================================================================
+ 
++_ALLOW_PRIVACY_POLICY_ENDPOINTS = {
++    "external_login_user.index",
++    "external_login_user.privacy_policy_agree",
++    "external_login_user.profile",
++    "external_login_user.profile_setup",
++    "external_login_user.line_login",
++    "external_login_user.line_login_shortcut",
++    "external_login_user.line_callback",
++    "external_login_user.pwa_resume_page",
++    "external_login_user.pwa_resume_consume_api",
++    "external_login_user.logout",
++    "external_login_user.unverified",
++    "external_login_user.verify_email_pin",
++    "external_login_user.email_verify",
++    "external_login_user.resend_verify_email",
++    "external_login_user.avatar_file",
++}
++
++
++@bp.before_app_request
++def _lock_privacy_policy_globally():
++    try:
++        if not session.get("ext_user_id"):
++            return None
++        if request.blueprint != "external_login_user":
++            return None
++        if request.endpoint == "static" or request.blueprint == "static":
++            return None
++        if request.endpoint in _ALLOW_PRIVACY_POLICY_ENDPOINTS:
++            return None
++        if _is_email_unverified():
++            return None
++
++        db = get_db(); cur = db.cursor(dictionary=True)
++        try:
++            cur.execute(
++                """
++                SELECT id, privacy_policy_agreed_revised_date
++                  FROM external_login_user
++                 WHERE id=%s
++                 LIMIT 1
++                """,
++                (int(session.get("ext_user_id") or 0),),
++            )
++            me = cur.fetchone() or {}
++        finally:
++            try:
++                cur.close(); db.close()
++            except Exception:
++                pass
++
++        config = _get_current_privacy_policy_config()
++        if not _needs_privacy_policy_agreement(me, config):
++            return None
++
++        next_url = _sanitize_ext_local_url(request.full_path or request.url, default="/external-login/")
++        if next_url not in {"/external-login/", "/external-login"}:
++            session["ext_after_privacy_policy_next"] = next_url
++        return redirect(url_for("external_login_user.index"))
++    except Exception:
++        current_app.logger.exception("privacy policy global lock failed")
++        return None
++
+ 
+ # --- サブモジュール読み込み（ルート登録） ---
+ from . import utils  # noqa: F401
+ from . import schema  # noqa: F401
+ from . import albums  # noqa: F401
+ from . import payments  # noqa: F401
+ from . import users  # noqa: F401
+ from . import admin  # noqa: F401
+ from . import admin_users  # ← 外部ログインユーザー管理ルートを有効化
+ from . import notifications  # noqa: F401
+diff --git a/external_login_user/admin.py b/external_login_user/admin.py
+index 236afb964c0dfa856e92d166ddc694d407ffef63..36fe57abfdbb3a5fb913aeec3db768b443530834 100644
+--- a/external_login_user/admin.py
++++ b/external_login_user/admin.py
+@@ -1,58 +1,81 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import csv
+ import math
+ from flask import request, jsonify
+ from email.mime.text import MIMEText
+ from email.header import Header
+ from email.utils import formataddr
+ import smtplib
+ from flask import current_app
+ from .utils import (
+     _event_admin_can_view,
+     _event_admin_can_manage,
+     _ensure_event_invite_token,
+     _event_invite_url,
+     extract_lat_lng_from_maps_url,  # 追加
+     QR_TRADEMARK_NOTICE,
++    _get_current_privacy_policy_config,
++    _is_privacy_policy_effective,
++    _privacy_policy_date_label,
+ )
+ 
+ from app.utils.mail import send_mail
+ 
+ 
+ from io import StringIO
+ from flask import request, session, redirect, url_for, render_template, abort, flash, make_response
+ from . import bp
+ from .utils import (
+     _require_mfu_login_redirect, _admin_csrf_token, _uuid_bytes_to_str, _event_admin_can_view, update_event_member_status,
+ )
+ from .albums import create_event_album
+ from .payments import _ensure_payment_uuid_for_event
+ from app.utils.db import get_db
+ 
+ 
++def _normalize_privacy_policy_admin_url(raw_url: str | None) -> str | None:
++    value = (raw_url or "").strip()
++    if not value:
++        return None
++    if value.startswith(("http://", "https://")):
++        return value
++    return None
++
++
++def _parse_privacy_policy_revised_date(raw_value: str | None):
++    value = (raw_value or "").strip()
++    if not value:
++        return None
++    try:
++        from datetime import datetime
++        return datetime.strptime(value, "%Y-%m-%d").date()
++    except Exception:
++        return None
++
++
+ def _calculate_event_fee(studio_fee_yen: int | float | None,
+                          fee_rate_percent: int | float | None,
+                          admin_fee_yen: int | float | None,
+                          payers: int | None) -> int | None:
+     if studio_fee_yen in (None, "") or fee_rate_percent in (None, "") or payers in (None, 0):
+         return None
+     admin_fee_value = float(admin_fee_yen or 0)
+     studio_fee_value = float(studio_fee_yen)
+     fee_rate_value = float(fee_rate_percent)
+     per_person = studio_fee_value / payers
+     with_fee = per_person * (1 + (fee_rate_value / 100))
+     total = math.ceil((with_fee + admin_fee_value) / 10) * 10
+     return int(total)
+ 
+ 
+ def _recalc_event_fee_if_auto(event_id: int) -> bool:
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT studio_fee_yen, fee_rate_percent, admin_fee_yen,
+                    COALESCE(fee_auto_calc, 1) AS fee_auto_calc
+               FROM mfu_event
+              WHERE id=%s
+              LIMIT 1
+         """, (event_id,))
+@@ -314,50 +337,127 @@ def _normalize_role_for_db(db, role: str) -> tuple[str, bool]:
+             if "cosplayer" in allowed:
+                 return "cosplayer", True
+             elif "none" in allowed:
+                 return "none", True
+             else:
+                 # 何も無ければそのまま（最悪再度エラーするが、その方が気づける）
+                 return role, True
+         # その他の未知値は 'none' があれば退避
+         if "none" in allowed:
+             return "none", True
+         return role, True
+     except Exception:
+         # エラー時は何もいじらない（落ちないことを優先）
+         return role, False
+ 
+ 
+ 
+ @bp.route("/admin")
+ def admin_home():
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+     # 直接イベント一覧へ飛ばす
+     return redirect(url_for("external_login_user.admin_events_list"))
+ 
++
++@bp.route("/admin/privacy-policy", methods=["GET", "POST"])
++def admin_privacy_policy():
++    guard = _require_mfu_login_redirect()
++    if guard:
++        return guard
++
++    admin_csrf = _admin_csrf_token()
++    config = _get_current_privacy_policy_config()
++    form = {
++        "privacy_policy_url": config.get("privacy_policy_url") or "",
++        "privacy_policy_revised_date": (
++            config["privacy_policy_revised_date"].isoformat()
++            if config.get("privacy_policy_revised_date") else ""
++        ),
++    }
++    errors: dict[str, str] = {}
++
++    if request.method == "POST":
++        token = (request.form.get("csrf_token") or "").strip()
++        if not token or token != admin_csrf:
++            flash("CSRFエラーのため保存できませんでした。", "danger")
++            return redirect(url_for("external_login_user.admin_privacy_policy"))
++
++        form["privacy_policy_url"] = (request.form.get("privacy_policy_url") or "").strip()
++        form["privacy_policy_revised_date"] = (request.form.get("privacy_policy_revised_date") or "").strip()
++
++        normalized_url = _normalize_privacy_policy_admin_url(form["privacy_policy_url"])
++        revised_date = _parse_privacy_policy_revised_date(form["privacy_policy_revised_date"])
++
++        if form["privacy_policy_url"] and not normalized_url:
++            errors["privacy_policy_url"] = "URLは http:// または https:// で始まる形式で入力してください。"
++        if form["privacy_policy_revised_date"] and not revised_date:
++            errors["privacy_policy_revised_date"] = "改定日は yyyy-mm-dd 形式で入力してください。"
++
++        if not errors:
++            db = get_db(); cur = db.cursor()
++            try:
++                cur.execute(
++                    """
++                    INSERT INTO mfu_external_privacy_policy_config
++                      (privacy_policy_url, privacy_policy_revised_date, updated_by)
++                    VALUES (%s, %s, %s)
++                    """,
++                    (
++                        normalized_url,
++                        revised_date,
++                        (session.get("user") or "").strip() or None,
++                    ),
++                )
++                db.commit()
++                flash("プライバシーポリシー設定を保存しました。", "success")
++                return redirect(url_for("external_login_user.admin_privacy_policy"))
++            except Exception:
++                try:
++                    db.rollback()
++                except Exception:
++                    pass
++                current_app.logger.exception("privacy policy admin save failed")
++                errors["form"] = "保存に失敗しました。時間をおいて再度お試しください。"
++            finally:
++                try:
++                    cur.close(); db.close()
++                except Exception:
++                    pass
++
++    current_config = _get_current_privacy_policy_config()
++    return render_template(
++        "admin_privacy_policy.html",
++        admin_csrf=admin_csrf,
++        form=form,
++        errors=errors,
++        current_config=current_config,
++        privacy_policy_effective=_is_privacy_policy_effective(current_config),
++        privacy_policy_revised_date_label=_privacy_policy_date_label(current_config.get("privacy_policy_revised_date")),
++    )
++
+ # admin.py の admin_events_list() を置換
+ @bp.route("/admin/events")
+ def admin_events_list():
+     guard = _require_mfu_login_redirect()
+     if guard: 
+         return guard
+ 
+     # MFUログイン中のユーザー名（セッション 'user'）を使う
+     from flask import session
+     username = (session.get("user") or "").strip()
+ 
+     _ensure_event_soft_delete_columns()
+ 
+     db = get_db(); cur = db.cursor()
+     try:
+         if username == "admin":
+             # admin は全件：開始日が近い順（NULLは一番下）、同日内は id 昇順で安定化
+             cur.execute("""
+               SELECT
+                 e.id,
+                 e.title,
+                 e.event_uuid,
+                 e.starts_at,
+                 e.pay_from,
+                 e.pay_until,
+diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
+index 771f37c6929f9281fe190a79b6c928f17dd84440..20e0684cf57dd7630d124bfa3a77b22ebc2f93a0 100644
+--- a/external_login_user/admin_users.py
++++ b/external_login_user/admin_users.py
+@@ -1,35 +1,41 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ 
+ import re
+ from datetime import datetime, timezone, timedelta
+ from email.utils import parsedate_to_datetime
+ from flask import request, render_template, jsonify, abort, url_for, redirect
+ from . import bp
+ from app.utils.db import get_db
+ from .utils import _require_mfu_login_redirect, _admin_csrf_token
++from .utils import (
++    _get_current_privacy_policy_config,
++    _needs_privacy_policy_agreement,
++    _privacy_policy_status,
++    _privacy_policy_date_label,
++)
+ 
+ # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
+ try:
+     from .users import _issue_verify_pin, _send_verify_pin_mail  # type: ignore
+ except Exception:
+     _issue_verify_pin = None  # type: ignore
+     _send_verify_pin_mail = None  # type: ignore
+ 
+ 
+ # ============= 内部ヘルパ =============
+ def _column_exists(table: str, column: str) -> bool:
+     """information_schema で列の有無を確認（email_verified_at 非存在でも動かす）"""
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute("SELECT DATABASE()")
+         dbname = (cur.fetchone() or [None])[0]
+         if not dbname:
+             return False
+         cur.execute(
+             """
+             SELECT 1
+               FROM information_schema.COLUMNS
+              WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
+              LIMIT 1
+@@ -121,165 +127,180 @@ def admin_ext_users_index():
+     where = []
+     if q:
+         like = f"%{q}%"
+         where.append(
+             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+         )
+         params += [like, like, like, like, like, like]
+     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = f"""
+             id,
+             nickname,
+             x_id,
+             instagram_id,
+             email,
+             social_id,
+             avatar_file,
+             avatar_url,
+             created_at,
+             updated_at,
+             admin_note,
++            privacy_policy_agreed_at,
++            privacy_policy_agreed_revised_date,
+             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+             COALESCE(notify_album_process, 1) AS notify_album_process,
+             {_PUSH_SUBSCRIPTION_COUNT_SQL},
+             (
+               SELECT COUNT(*)
+                 FROM external_login_user_card_data c
+                WHERE c.user_id = external_login_user.id
+                  AND c.deleted_at IS NULL
+             ) AS card_count
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+ 
+         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+              ORDER BY {order_by}
+         """, params)
+         initial_items = cur.fetchall() or []
+         if not has_verified:
+             for r in initial_items:
+                 r["email_verified_at"] = None
+         _format_email_verified_at_rows(initial_items)
++        current_privacy_config = _get_current_privacy_policy_config()
++        for r in initial_items:
++            r["privacy_policy_status"] = _privacy_policy_status(r, current_privacy_config)
++            r["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(r.get("privacy_policy_agreed_revised_date"))
++            r["privacy_policy_agreed_at_label"] = _format_datetime_jst(r.get("privacy_policy_agreed_at"))
+ 
+         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
+         total = int((cur.fetchone() or {}).get("c", 0))
+     finally:
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
+     return render_template(
+         "admin_ext_users.html",
+         admin_csrf=_admin_csrf_token(),
+         initial_items=initial_items,
+         initial_total=total,
+         initial_per_page=total,
+         initial_page=1,
+         initial_q=q,
+         initial_sort=sort_key,
+         initial_order=sort_order,
++        current_privacy_config=current_privacy_config,
+     )
+ 
+ 
+ # ============= API（一括） =============
+ @bp.get("/admin/ext-users/data")
+ def admin_ext_users_data():
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     q = (request.args.get("q") or "").strip()
+     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
+     try:
+         page = max(int(request.args.get("page") or 1), 1)
+     except Exception:
+         page = 1
+     try:
+         per_page = min(max(int(request.args.get("per_page") or 1000), 1), 10000)
+     except Exception:
+         per_page = 1000
+ 
+     params: list = []
+     where = []
+     if q:
+         like = f"%{q}%"
+         where.append(
+             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+         )
+         params += [like, like, like, like, like, like]
+     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+ 
+     has_verified = _column_exists("external_login_user", "email_verified_at")
+     cols = f"""
+         id, nickname, x_id, instagram_id, email, social_id,
+         avatar_file, avatar_url, created_at, updated_at,
+         admin_note,
++        privacy_policy_agreed_at,
++        privacy_policy_agreed_revised_date,
+         COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+         COALESCE(notify_album_process, 1) AS notify_album_process,
+         {_PUSH_SUBSCRIPTION_COUNT_SQL},
+         (
+           SELECT COUNT(*)
+             FROM external_login_user_card_data c
+            WHERE c.user_id = external_login_user.id
+              AND c.deleted_at IS NULL
+         ) AS card_count
+     """
+     if has_verified:
+         cols += ", email_verified_at"
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
+         total = int(cur.fetchone()["c"])
+         offset = (page - 1) * per_page
+ 
+         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
+         cur.execute(f"""
+             SELECT {cols}
+               FROM external_login_user
+               {sql_where}
+              ORDER BY {order_by}
+              LIMIT %s OFFSET %s
+         """, params + [per_page, offset])
+         rows = cur.fetchall() or []
+         if not has_verified:
+             for r in rows:
+                 r["email_verified_at"] = None
+         _format_email_verified_at_rows(rows)
++        current_privacy_config = _get_current_privacy_policy_config()
++        for r in rows:
++            r["privacy_policy_status"] = _privacy_policy_status(r, current_privacy_config)
++            r["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(r.get("privacy_policy_agreed_revised_date"))
++            r["privacy_policy_agreed_at_label"] = _format_datetime_jst(r.get("privacy_policy_agreed_at"))
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return jsonify({
+         "ok": True,
+         "items": rows,
+         "total": total,
+         "page": page,
+         "per_page": per_page,
+         "sort": sort_key,
+         "order": sort_order,
+         "q": q,
+     })
+ 
+ # ============= API（単票：旧モーダル用） =============
+ @bp.get("/admin/ext-users/<int:user_id>/detail")
+ def admin_ext_users_detail(user_id: int):
+     """（旧モーダル用）単票取得。"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+@@ -491,50 +512,52 @@ def admin_ext_users_resend_confirm(user_id: int):
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
+     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
+ 
+ 
+ # ============= 別ページ編集（GET） =============
+ @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
+ def admin_ext_users_edit_page(user_id: int):
+     """外部ログインユーザー 編集ページ（別ページ実装）"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         cols = f"""
+             id, nickname, x_id, instagram_id, email, social_id,
+             avatar_file, avatar_url, created_at, updated_at,
+             admin_note,
++            privacy_policy_agreed_at,
++            privacy_policy_agreed_revised_date,
+             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
+             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
+             COALESCE(notify_album_process, 1) AS notify_album_process,
+             {_PUSH_SUBSCRIPTION_COUNT_SQL}
+         """
+         if has_verified:
+             cols += ", email_verified_at"
+         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+         user = cur.fetchone()
+         if not user:
+             abort(404)
+         if not has_verified:
+             user["email_verified_at"] = None
+ 
+         # 参加中イベント一覧
+         cur.execute(
+             """
+             SELECT
+               m.id AS member_id,
+               e.id AS event_id,
+               e.title,
+               e.starts_at,
+               m.status,
+               m.payment_status
+             FROM mfu_event_member AS m
+@@ -546,56 +569,64 @@ def admin_ext_users_edit_page(user_id: int):
+         )
+         memberships = cur.fetchall() or []
+ 
+         # 参加可能イベント（未参加のもの）
+         cur.execute(
+             """
+             SELECT e.id, e.title, e.starts_at
+               FROM mfu_event AS e
+              WHERE e.id NOT IN (
+                     SELECT event_id FROM mfu_event_member WHERE user_id=%s
+                    )
+              ORDER BY COALESCE(e.starts_at, '9999-12-31') ASC, e.id ASC
+              LIMIT 200
+             """,
+             (user_id,),
+         )
+         assignable = cur.fetchall() or []
+ 
+     finally:
+         try:
+             cur.close()
+             db.close()
+         except Exception:
+             pass
+ 
++    current_privacy_config = _get_current_privacy_policy_config()
++    user["privacy_policy_status"] = _privacy_policy_status(user, current_privacy_config)
++    user["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(user.get("privacy_policy_agreed_revised_date"))
++    user["privacy_policy_agreed_at_label"] = _format_datetime_jst(user.get("privacy_policy_agreed_at"))
++    user["privacy_policy_current_revised_date_label"] = _privacy_policy_date_label(current_privacy_config.get("privacy_policy_revised_date"))
++    user["privacy_policy_needs_reagreement"] = _needs_privacy_policy_agreement(user, current_privacy_config)
++
+     return render_template(
+         "admin_ext_users_edit.html",
+         u=user,
+         memberships=memberships,
+         assignable_events=assignable,
+-        admin_csrf=_admin_csrf_token()
++        admin_csrf=_admin_csrf_token(),
++        current_privacy_config=current_privacy_config,
+     )
+ 
+ 
+ # ============= 参加追加（POST） =============
+ @bp.post("/admin/ext-users/<int:user_id>/assign")
+ def admin_ext_users_assign(user_id: int):
+     """
+     指定ユーザーをイベントに参加追加する
+     - Form POST（csrf必須）
+     - 既に参加済みなら duplicated=1 を付けて編集ページに戻す
+     """
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     token_req = (request.form.get("csrf_token") or "").strip()
+     if not token_req or token_req != _admin_csrf_token():
+         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
+ 
+     try:
+         event_id = int(request.form.get("event_id") or "0")
+     except Exception:
+         event_id = 0
+     if event_id <= 0:
+         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="bad_event"))
+diff --git a/external_login_user/schema.py b/external_login_user/schema.py
+index 6571b54514784423266a695780f6976a66f27eea..6d28f7f592885b4e772c4186522c1209d8e00c2a 100644
+--- a/external_login_user/schema.py
++++ b/external_login_user/schema.py
+@@ -151,106 +151,129 @@ CREATE TABLE IF NOT EXISTS mfu_payment_request (
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ DDL_EXTERNAL_LOGIN_RESUME_TOKEN = """
+ CREATE TABLE IF NOT EXISTS external_login_resume_token (
+   id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   token_hash         CHAR(64)        NOT NULL,
+   ext_user_id        BIGINT UNSIGNED NOT NULL,
+   social_id          VARCHAR(191)    NOT NULL,
+   next_path          VARCHAR(512)    NOT NULL,
+   mode               ENUM('browser','pwa') NOT NULL DEFAULT 'pwa',
+   pwa_client_id_hash CHAR(64)        NULL,
+   issued_at          DATETIME        NOT NULL,
+   expires_at         DATETIME        NOT NULL,
+   consumed_at        DATETIME        NULL,
+   created_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uq_ext_login_resume_token_hash (token_hash),
+   KEY idx_ext_login_resume_valid (expires_at, consumed_at),
+   KEY idx_ext_login_resume_user (ext_user_id, issued_at),
+   KEY idx_ext_login_resume_pwa_client (pwa_client_id_hash, consumed_at, expires_at)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
++DDL_PRIVACY_POLICY_CONFIG = """
++CREATE TABLE IF NOT EXISTS mfu_external_privacy_policy_config (
++  id                           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
++  privacy_policy_url           VARCHAR(2048)   NULL,
++  privacy_policy_revised_date  DATE            NULL,
++  updated_by                   VARCHAR(191)    NULL,
++  created_at                   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  updated_at                   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
++  PRIMARY KEY (id)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
++"""
++
+ def _ensure_index(cur, check_sql: str, create_sql: str):
+     try:
+         cur.execute(check_sql)
+         has = cur.fetchone()[0]
+     except Exception:
+         has = 0
+     if not has:
+         try:
+             cur.execute(create_sql)
+         except Exception as e:
+             if not (mysql_errors and getattr(e, "errno", None) == 1061):
+                 pass
+ 
+ @bp.record_once
+ def _on_bp_registered(state) -> None:
+     app = state.app
+     with app.app_context():
+         try:
+             db = get_db(); cur = db.cursor()
+             # ベースDDL
+             cur.execute(DDL_EXTERNAL)
+             cur.execute(DDL_EVENT)
+             cur.execute(DDL_EVENT_MEMBER)
+             cur.execute(DDL_ALBUM_PROCESS)
+             cur.execute(DDL_PAYMENT_REQUEST)
+             cur.execute(DDL_NOTIFICATIONS)
+             cur.execute(DDL_EXTERNAL_LOGIN_RESUME_TOKEN)
++            cur.execute(DDL_PRIVACY_POLICY_CONFIG)
+ 
+             # 後方互換ALTER（存在しなければADD）
+             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COUNT(*) FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                     """, (table, col))
+                     has = cur.fetchone()[0]
+                 except Exception:
+                     has = 0
+                 if not has:
+                     try:
+                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl_after_add}")
+                     except Exception as e:
+                         if not (mysql_errors and getattr(e, "errno", None) == 1060):
+                             raise
+ 
+             # 既存のゆるいALTER群
+             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
+             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
+             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
+             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
+             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
+             _ensure_col(
+                 "external_login_user",
+                 "notification_unread_reminder_last_sent_at",
+                 "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
+             )
++            _ensure_col(
++                "external_login_user",
++                "privacy_policy_agreed_at",
++                "privacy_policy_agreed_at DATETIME NULL AFTER notification_unread_reminder_last_sent_at",
++            )
++            _ensure_col(
++                "external_login_user",
++                "privacy_policy_agreed_revised_date",
++                "privacy_policy_agreed_revised_date DATE NULL AFTER privacy_policy_agreed_at",
++            )
+ 
+             # ★ 追加：支払期間 列（後方互換で追加）
+             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
+             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+             _ensure_col("mfu_event", "checkin_qr_enabled",
+                         "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
+             _ensure_col("mfu_event", "checkin_qr_token",
+                         "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
+             _ensure_col("mfu_event", "checkin_qr_expires_at",
+                         "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
+             _ensure_col("mfu_event_member", "checkin_method",
+                         "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
+ 
+             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
+             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
+             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
+             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
+             _ensure_col("mfu_payment_request", "buyer_email", "buyer_email VARCHAR(255) NULL AFTER instagram_id")
+             _ensure_col("mfu_payment_request", "lecture_auto_approve",
+                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
+ 
+             _ensure_col(
+                 "external_login_resume_token",
+                 "pwa_client_id_hash",
+                 "pwa_client_id_hash CHAR(64) NULL AFTER mode",
+diff --git a/external_login_user/template/admin_ext_users.html b/external_login_user/template/admin_ext_users.html
+index 8158367dc4bffda4cd7451aa59c8d04a2c1e1593..4c66c12fee7b25abfa660fa4bc062b4ba96821e2 100644
+--- a/external_login_user/template/admin_ext_users.html
++++ b/external_login_user/template/admin_ext_users.html
+@@ -1,158 +1,165 @@
+ {% extends "base.html" %}
+ {% block title %}外部ログインユーザー一覧{% endblock %}
+ 
+ {% block content %}
+ <div class="d-flex justify-content-between align-items-center mb-3">
+   <h1 class="h4 mb-0">外部ログインユーザー一覧</h1>
+   <div class="d-flex gap-2">
++    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
+     <span class="text-muted small">総件数: <span id="totalCount">{{ initial_total }}</span></span>
+   </div>
+ </div>
+ 
+ <meta name="x-csrf-token" content="{{ admin_csrf }}">
+ 
+ <div class="card mb-3">
+   <div class="card-body">
+     <div class="row g-2 align-items-center">
+       <div class="col-sm-6 col-md-5">
+         <input id="searchInput" type="search" class="form-control" placeholder="ID / ニックネーム / X / Instagram / メール / social_id を検索" value="{{ initial_q or '' }}">
+       </div>
+       <div class="col-auto">
+         <button id="searchBtn" class="btn btn-outline-primary">検索</button>
+       </div>
+       <div class="col-auto">
+         <button id="clearBtn" class="btn btn-outline-secondary">クリア</button>
+       </div>
+       <div class="col-auto">
+         <div class="btn-group" role="group" aria-label="Sort buttons">
+           <button id="sortIdBtn" type="button" class="btn btn-outline-secondary btn-sm">
+             ID順
+           </button>
+           <button id="sortNickBtn" type="button" class="btn btn-outline-secondary btn-sm">
+             ニックネーム順
+           </button>
+         </div>
+       </div>
+     </div>
+   </div>
+ </div>
+ 
+ <div class="table-responsive">
+   <table class="table table-sm align-middle">
+     <thead class="table-light">
+       <tr>
+         <th style="width:72px;">ID</th>
+         <th style="width:72px;">Avatar</th>
+         <th>ニックネーム</th>
+         <th>メール</th>
+         <th style="min-width:180px;">SNS</th>
++        <th style="min-width:180px;">プライバシーポリシー</th>
+         <th style="min-width:200px;">通知状態</th>
+         <th style="width:140px;">クレカ登録（将来用）</th>
+         <th style="width:120px;"></th>
+       </tr>
+     </thead>
+     <tbody id="userTbody">
+       {% for it in initial_items %}
+       <tr data-id="{{ it.id }}">
+         <td class="text-muted">#{{ it.id }}</td>
+         <td>
+           {% set avatar = it.avatar_file and ("/external-login/avatars/" ~ it.avatar_file) or it.avatar_url or "https://via.placeholder.com/48?text=—" %}
+           <img src="{{ avatar }}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">
+         </td>
+         <td>
+           <div class="fw-semibold">{{ it.nickname }}</div>
+           <div class="small text-muted">social_id: {{ it.social_id or '-' }}</div>
+         </td>
+         <td>
+           {% if it.email %}
+             <div>{{ it.email }}</div>
+             <div class="small mt-1">
+               {% if it.email_verified_at %}
+                 <span class="badge bg-success">確認済</span>
+                 <span class="text-muted ms-1">{{ it.email_verified_at }}</span>
+               {% else %}
+                 <span class="badge bg-secondary">未確認</span>
+               {% endif %}
+             </div>
+           {% else %}
+             <span class="text-muted">-</span>
+           {% endif %}
+         </td>
+         <td>
+           {% if it.x_id %}
+             <a href="https://x.com/{{ it.x_id|e }}" target="_blank" rel="noopener">X: @{{ it.x_id }}</a>{% if it.instagram_id %}<br>{% endif %}
+           {% endif %}
+           {% if it.instagram_id %}
+             <a href="https://www.instagram.com/{{ it.instagram_id|e }}/" target="_blank" rel="noopener">IG: @{{ it.instagram_id }}</a>
+           {% endif %}
+           {% if not it.x_id and not it.instagram_id %}
+             <span class="text-muted">-</span>
+           {% endif %}
+         </td>
++        <td>
++          <div><span class="badge {% if it.privacy_policy_status == '同意済' %}bg-success{% elif it.privacy_policy_status == '旧版' %}bg-warning text-dark{% elif it.privacy_policy_status == '未設定' %}bg-secondary{% else %}bg-danger{% endif %}">{{ it.privacy_policy_status }}</span></div>
++          <div class="small text-muted mt-1">改定日: {{ it.privacy_policy_agreed_revised_date_label or '-' }}</div>
++          <div class="small text-muted">同意日時: {{ it.privacy_policy_agreed_at_label or '-' }}</div>
++        </td>
+         <td>
+           <div>
+             Push通知
+             {% if (it.push_subscription_count or 0)|int > 0 %}
+               🔵
+             {% else %}
+               🔴
+             {% endif %}
+           </div>
+           <div>
+             アップ
+             {% if it.notify_album_upload %}
+               🔵
+             {% else %}
+               🔴
+             {% endif %}
+           </div>
+           <div>
+             加工
+             {% if it.notify_album_process %}
+               🔵
+             {% else %}
+               🔴
+             {% endif %}
+           </div>
+         </td>
+         <td>
+           {% if it.card_count and it.card_count|int > 0 %}
+             登録あり
+           {% else %}
+             未登録
+           {% endif %}
+         </td>
+         <td class="text-end">
+           <a class="btn btn-sm btn-outline-primary"
+              href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=it.id) }}">編集</a>
+         </td>
+       </tr>
+       {% endfor %}
+ 
+       {% if not initial_items %}
+-      <tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>
++      <tr><td colspan="9" class="text-center text-muted py-4">データがありません。</td></tr>
+       {% endif %}
+     </tbody>
+   </table>
+ </div>
+ 
+ <div class="small text-muted mt-3">1ページに全件表示しています。</div>
+ 
+ {# 初期化用データ（JSが無効でも初期表示はサーバー側でOK） #}
+ <script>
+   window.__EXT_USERS__ = {
+     total: {{ initial_total|int }},
+     perPage: {{ (initial_total if initial_total > 0 else 1000)|int }},
+     page: {{ initial_page|int }},
+     q: {{ (initial_q or '')|tojson }},
+     sort: {{ (initial_sort or 'id')|tojson }},
+     order: {{ (initial_order or 'asc')|tojson }},
+     dataUrl: "{{ url_for('external_login_user.admin_ext_users_data') }}"
+   };
+ </script>
+ 
+ {# 検索/並び替え（サーバー側処理） #}
+ <script>
+   (function () {
+     const config = window.__EXT_USERS__ || {};
+     const tbody = document.getElementById('userTbody');
+@@ -164,80 +171,85 @@
+     const sortNickBtn = document.getElementById('sortNickBtn');
+     if (!tbody || !searchInput || !searchBtn || !clearBtn || !sortIdBtn || !sortNickBtn) return;
+ 
+     let state = {
+       q: config.q || '',
+       sort: config.sort || 'id',
+       order: config.order || 'asc',
+       perPage: Math.max(Number(config.perPage || 1000), 1),
+     };
+ 
+     function escapeHtml(text) {
+       const div = document.createElement('div');
+       div.textContent = text == null ? '' : String(text);
+       return div.innerHTML;
      }
  
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             f"""
-             SELECT id, email, {_EXTERNAL_UNREAD_REMINDER_COLUMN} AS last_sent_at
-               FROM external_login_user
-              WHERE id > 0
-              ORDER BY id ASC
-             """
-         )
-         rows = cur.fetchall() or []
+     function makeAvatar(item) {
+       const avatar = item.avatar_file
+         ? `/external-login/avatars/${encodeURIComponent(item.avatar_file)}`
+         : (item.avatar_url || 'https://via.placeholder.com/48?text=—');
+       return `<img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">`;
+     }
+ 
+     function renderRows(items) {
+       if (!items || !items.length) {
+-        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
++        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">データがありません。</td></tr>';
+         return;
+       }
+       tbody.innerHTML = items.map((it) => {
+         const isEnabled = (value) => {
+           if (value === true) return true;
+           if (value === false || value == null) return false;
+           const n = Number(value);
+           return Number.isFinite(n) ? n === 1 : String(value).toLowerCase() === 'true';
+         };
+         const nick = escapeHtml(it.nickname || '');
+         const socialId = escapeHtml(it.social_id || '-');
+         const emailBlock = it.email
+           ? `<div>${escapeHtml(it.email)}</div>
+              <div class="small mt-1">${it.email_verified_at ? '<span class="badge bg-success">確認済</span><span class="text-muted ms-1">' + escapeHtml(it.email_verified_at) + '</span>' : '<span class="badge bg-secondary">未確認</span>'}</div>`
+           : '<span class="text-muted">-</span>';
+         let sns = '<span class="text-muted">-</span>';
+         if (it.x_id || it.instagram_id) {
+           sns = `${it.x_id ? `<a href="https://x.com/${encodeURIComponent(it.x_id)}" target="_blank" rel="noopener">X: @${escapeHtml(it.x_id)}</a>` : ''}${(it.x_id && it.instagram_id) ? '<br>' : ''}${it.instagram_id ? `<a href="https://www.instagram.com/${encodeURIComponent(it.instagram_id)}/" target="_blank" rel="noopener">IG: @${escapeHtml(it.instagram_id)}</a>` : ''}`;
+         }
++        const privacyStatus = escapeHtml(it.privacy_policy_status || '未同意');
++        const privacyBadge = privacyStatus === '同意済'
++          ? 'bg-success'
++          : (privacyStatus === '旧版' ? 'bg-warning text-dark' : (privacyStatus === '未設定' ? 'bg-secondary' : 'bg-danger'));
+         const notifyPush = Number(it.push_subscription_count || 0) > 0 ? '🔵' : '🔴';
+         const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
+         const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
+         const cardText = (it.card_count && Number(it.card_count) > 0) ? '登録あり' : '未登録';
+         return `<tr data-id="${Number(it.id || 0)}">
+           <td class="text-muted">#${Number(it.id || 0)}</td>
+           <td>${makeAvatar(it)}</td>
+           <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
+           <td>${emailBlock}</td>
+           <td>${sns}</td>
++          <td><div><span class="badge ${privacyBadge}">${privacyStatus}</span></div><div class="small text-muted mt-1">改定日: ${escapeHtml(it.privacy_policy_agreed_revised_date_label || '-')}</div><div class="small text-muted">同意日時: ${escapeHtml(it.privacy_policy_agreed_at_label || '-')}</div></td>
+           <td><div>Push通知 ${notifyPush}</div><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
+           <td>${cardText}</td>
+           <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${Number(it.id || 0)}/edit">編集</a></td>
+         </tr>`;
+       }).join('');
+     }
+ 
+     function updateSortButtonStyles() {
+       const isId = state.sort === 'id';
+       sortIdBtn.classList.toggle('btn-primary', isId);
+       sortIdBtn.classList.toggle('btn-outline-secondary', !isId);
+       sortNickBtn.classList.toggle('btn-primary', !isId);
+       sortNickBtn.classList.toggle('btn-outline-secondary', isId);
+       sortIdBtn.textContent = `ID順${isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
+       sortNickBtn.textContent = `ニックネーム順${!isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
+     }
+ 
+     async function fetchAndRender() {
+       const url = new URL(config.dataUrl, window.location.origin);
+       url.searchParams.set('q', state.q);
+       url.searchParams.set('sort', state.sort);
+       url.searchParams.set('order', state.order);
+       url.searchParams.set('page', '1');
+       url.searchParams.set('per_page', String(state.perPage));
+ 
+diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
+index 882318cc5789ecbe3b54a407f565a83425857b8a..09e24b8e1e8b19342724758795cbc3c6a6564ccc 100644
+--- a/external_login_user/template/admin_ext_users_edit.html
++++ b/external_login_user/template/admin_ext_users_edit.html
+@@ -4,50 +4,51 @@
+ {% block content %}
+ <meta name="x-csrf-token" content="{{ admin_csrf }}">
+ 
+ {# ---- フラッシュ/通知 ---- #}
+ {% if request.args.get('sent') %}
+   <div class="alert alert-success" role="alert">確認コードを送信しました。</div>
+ {% elif request.args.get('assigned') %}
+   <div class="alert alert-success" role="alert">イベントに参加として追加しました。</div>
+ {% elif request.args.get('duplicated') %}
+   <div class="alert alert-info" role="alert">このユーザーは既にそのイベントに参加しています。</div>
+ {% elif request.args.get('error') == 'csrf' %}
+   <div class="alert alert-danger" role="alert">CSRFエラーのため処理できませんでした。もう一度お試しください。</div>
+ {% elif request.args.get('error') == 'no_email' %}
+   <div class="alert alert-warning" role="alert">メールアドレスが未設定のため送信できませんでした。</div>
+ {% elif request.args.get('error') == 'smtp' %}
+   <div class="alert alert-danger" role="alert">メール送信に失敗しました（SMTP）。時間をおいて再度お試しください。</div>
+ {% elif request.args.get('error') == 'bad_event' %}
+   <div class="alert alert-warning" role="alert">イベントの指定が不正です。</div>
+ {% elif request.args.get('error') == 'not_found' %}
+   <div class="alert alert-warning" role="alert">対象のデータが見つかりません。</div>
+ {% endif %}
+ 
+ <div class="d-flex justify-content-between align-items-center mb-3">
+   <h1 class="h4 mb-0">外部ログインユーザー編集 <span class="text-muted">#{{ u.id }}</span></h1>
+   <div class="d-flex gap-2">
++    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
+     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">一覧へ戻る</a>
+   </div>
+ </div>
+ 
+ {# ---- 基本情報 ---- #}
+ <div class="card mb-4">
+   <div class="card-body">
+     <form method="post" action="{{ url_for('external_login_user.admin_ext_users_update', user_id=u.id) }}">
+       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+       <div class="row g-3">
+         <div class="col-md-8">
+           <div class="mb-3">
+             <label class="form-label">ニックネーム</label>
+             <input type="text" class="form-control" name="nickname" value="{{ u.nickname or '' }}" required>
+           </div>
+           <div class="row g-2">
+             <div class="col-md-6">
+               <label class="form-label">X（@不要）</label>
+               <input type="text" class="form-control" name="x_id" value="{{ u.x_id or '' }}" placeholder="example">
+             </div>
+             <div class="col-md-6">
+               <label class="form-label">Instagram（@不要）</label>
+               <input type="text" class="form-control" name="instagram_id" value="{{ u.instagram_id or '' }}" placeholder="example">
+             </div>
+           </div>
+@@ -131,50 +132,86 @@
+                   href="#"
+                 {% endif %}
+               >確認コードを再送</a>
+               {% if not u.email %}
+                 <div class="small text-muted">※メール未設定のため送信できません。</div>
+               {% endif %}
+             </div>
+           </div>
+         </div>
+       </div>
+ 
+       <hr class="my-4">
+       <div class="d-flex justify-content-between">
+         <div class="small text-muted">
+           作成: {{ u.created_at }} / 更新: {{ u.updated_at }}
+         </div>
+         <div class="d-flex gap-2">
+           <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">キャンセル</a>
+           <button class="btn btn-primary" type="submit">保存</button>
+         </div>
+       </div>
+     </form>
+   </div>
+ </div>
+ 
++<div class="card mb-4">
++  <div class="card-header">
++    <strong>プライバシーポリシー同意状況</strong>
++  </div>
++  <div class="card-body">
++    <dl class="row mb-0">
++      <dt class="col-md-3">現在の状態</dt>
++      <dd class="col-md-9">
++        <span class="badge {% if u.privacy_policy_status == '同意済' %}bg-success{% elif u.privacy_policy_status == '旧版' %}bg-warning text-dark{% elif u.privacy_policy_status == '未設定' %}bg-secondary{% else %}bg-danger{% endif %}">
++          {{ u.privacy_policy_status }}
++        </span>
++      </dd>
++
++      <dt class="col-md-3">同意した改定日</dt>
++      <dd class="col-md-9">{{ u.privacy_policy_agreed_revised_date_label or '—' }}</dd>
++
++      <dt class="col-md-3">同意日時</dt>
++      <dd class="col-md-9">{{ u.privacy_policy_agreed_at_label or '—' }}</dd>
++
++      <dt class="col-md-3">現在有効な改定日</dt>
++      <dd class="col-md-9">{{ u.privacy_policy_current_revised_date_label or '—' }}</dd>
++
++      <dt class="col-md-3">差分</dt>
++      <dd class="col-md-9">
++        {% if u.privacy_policy_status == '未設定' %}
++          現在有効なポリシー設定はありません。
++        {% elif u.privacy_policy_needs_reagreement %}
++          現在の有効版に対して再同意が必要です。
++        {% else %}
++          現在の有効版との差分はありません。
++        {% endif %}
++      </dd>
++    </dl>
++  </div>
++</div>
++
+ {# =========================================
+    参加中イベント一覧（直近→遠い順 & タイトルに管理リンク）
+    日本語表示: 参加状態/支払状態
+    ========================================= #}
+ {% set status_map = {
+   'approved':'承認済', 'pending':'保留', 'rejected':'拒否',
+   'confirmed':'参加', 'cancelled':'キャンセル', 'canceled':'キャンセル',
+   'owner':'主催', 'guest':'ゲスト'
+ } %}
+ {% set pay_map = {
+   'unpaid':'未払い', 'pending':'確認中', 'paid':'支払済み',
+   'refunded':'返金済み', 'failed':'失敗', 'canceled':'取消', 'cancelled':'取消'
+ } %}
+ 
+ <div class="card mb-4">
+   <div class="card-header">
+     <strong>参加中イベント</strong>
+   </div>
+   <div class="card-body p-0">
+     <div class="table-responsive">
+       <table class="table table-sm mb-0 align-middle">
+         <thead class="table-light">
+           <tr>
+             <th style="width:80px;">ID</th>
+             <th>タイトル</th>
+diff --git a/external_login_user/template/admin_privacy_policy.html b/external_login_user/template/admin_privacy_policy.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ff9def561cca1004c66d2ad0bb38b89cb38a052
+--- /dev/null
++++ b/external_login_user/template/admin_privacy_policy.html
+@@ -0,0 +1,100 @@
++{% extends "base.html" %}
++{% block title %}プライバシーポリシー設定{% endblock %}
++
++{% block content %}
++<div class="d-flex justify-content-between align-items-center mb-3">
++  <h1 class="h4 mb-0">プライバシーポリシー設定</h1>
++  <div class="d-flex gap-2">
++    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">外部ユーザー一覧へ</a>
++    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_events_list') }}">イベント一覧へ</a>
++  </div>
++</div>
++
++{% if errors.form %}
++  <div class="alert alert-danger" role="alert">{{ errors.form }}</div>
++{% endif %}
++
++<div class="row g-4">
++  <div class="col-lg-7">
++    <div class="card">
++      <div class="card-body">
++        <form method="post" novalidate>
++          <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
++
++          <div class="mb-3">
++            <label class="form-label" for="privacy_policy_url">GoogleドキュメントURL</label>
++            <input
++              type="url"
++              class="form-control {% if errors.privacy_policy_url %}is-invalid{% endif %}"
++              id="privacy_policy_url"
++              name="privacy_policy_url"
++              value="{{ form.privacy_policy_url or '' }}"
++              placeholder="https://docs.google.com/...">
++            {% if errors.privacy_policy_url %}
++              <div class="invalid-feedback">{{ errors.privacy_policy_url }}</div>
++            {% endif %}
++            <div class="form-text">URL または改定日のどちらか一方だけでも保存できますが、両方そろうまで利用者側では未設定扱いになります。</div>
++          </div>
++
++          <div class="mb-3">
++            <label class="form-label" for="privacy_policy_revised_date">改定日</label>
++            <input
++              type="date"
++              class="form-control {% if errors.privacy_policy_revised_date %}is-invalid{% endif %}"
++              id="privacy_policy_revised_date"
++              name="privacy_policy_revised_date"
++              value="{{ form.privacy_policy_revised_date or '' }}">
++            {% if errors.privacy_policy_revised_date %}
++              <div class="invalid-feedback">{{ errors.privacy_policy_revised_date }}</div>
++            {% endif %}
++            <div class="form-text">再同意が必要になるのは、この改定日が変わったときだけです。</div>
++          </div>
++
++          <div class="d-flex gap-2">
++            <button class="btn btn-primary" type="submit">保存</button>
++          </div>
++        </form>
++      </div>
++    </div>
++  </div>
++
++  <div class="col-lg-5">
++    <div class="card">
++      <div class="card-header">現在の有効状態</div>
++      <div class="card-body">
++        {% if privacy_policy_effective %}
++          <div class="alert alert-success">現在のプライバシーポリシーは有効です。</div>
++        {% else %}
++          <div class="alert alert-warning">現在はポリシー未設定です。</div>
++        {% endif %}
++
++        <dl class="row mb-0">
++          <dt class="col-sm-4">URL</dt>
++          <dd class="col-sm-8">
++            {% if current_config.privacy_policy_url %}
++              <a href="{{ current_config.privacy_policy_url }}" target="_blank" rel="noopener">{{ current_config.privacy_policy_url }}</a>
++            {% else %}
++              <span class="text-muted">未設定</span>
++            {% endif %}
++          </dd>
++
++          <dt class="col-sm-4">改定日</dt>
++          <dd class="col-sm-8">
++            {% if privacy_policy_revised_date_label %}
++              {{ privacy_policy_revised_date_label }}
++            {% else %}
++              <span class="text-muted">未設定</span>
++            {% endif %}
++          </dd>
++
++          <dt class="col-sm-4">更新者</dt>
++          <dd class="col-sm-8">{{ current_config.updated_by or '—' }}</dd>
++
++          <dt class="col-sm-4">更新日時</dt>
++          <dd class="col-sm-8">{{ current_config.updated_at or '—' }}</dd>
++        </dl>
++      </div>
++    </div>
++  </div>
++</div>
++{% endblock %}
+diff --git a/external_login_user/template/event_join.html b/external_login_user/template/event_join.html
+index 1a98ffc82717955425676e676188732f691b1a1a..b4947710475b163eadc011f79283f851e7fea429 100644
+--- a/external_login_user/template/event_join.html
++++ b/external_login_user/template/event_join.html
+@@ -78,50 +78,79 @@
+             <input type="text" class="form-control" id="costume_label" name="costume_label"
+                    maxlength="120" value="{{ form_costume or '' }}" placeholder="例：アナ（雪山）／受付補助／進行補助 など">
+             <div class="form-text" id="costume_help">
+               「衣装」または「その他」を選択した方は入力してください（最大120文字）。
+             </div>
+           </div>
+         </div>
+       </div>
+ 
+       <div class="col-12">
+         <div class="card h-100">
+           <div class="card-body">
+             <h2 class="h6 mb-3">加工回しの有無</h2>
+             <div class="form-check">
+               <input class="form-check-input" type="checkbox" id="processCheck" name="process" value="1"
+                      {% if form_process %}checked{% endif %}>
+               <label class="form-check-label" for="processCheck">
+                 加工回しが必要
+               </label>
+             </div>
+             <div class="form-text mt-2">チェックを入れると加工回し対象として記録されます。</div>
+           </div>
+         </div>
+       </div>
+ 
++      {% if privacy_policy_effective %}
++      <div class="col-12">
++        <div class="card h-100">
++          <div class="card-body">
++            <h2 class="h6 mb-3">プライバシーポリシー</h2>
++            <div class="form-check">
++              <input
++                class="form-check-input {% if privacy_policy_error %}is-invalid{% endif %}"
++                type="checkbox"
++                id="privacyPolicyAgree"
++                name="privacy_policy_agree"
++                value="1"
++                {% if privacy_policy_checked %}checked{% endif %}>
++              <label class="form-check-label" for="privacyPolicyAgree">
++                プライバシーポリシーに同意する
++                <a href="{{ privacy_policy_url }}" target="_blank" rel="noopener">（リンク）</a>
++              </label>
++              {% if privacy_policy_error %}
++                <div class="invalid-feedback d-block">{{ privacy_policy_error }}</div>
++              {% endif %}
++            </div>
++            {% if privacy_policy_agreed_latest %}
++              <div class="form-text mt-2">現在有効な版には既に同意済みですが、参加申請時は再度チェックが必要です。</div>
++            {% endif %}
++          </div>
++        </div>
++      </div>
++      {% endif %}
++
+       <div class="col-12 d-flex gap-2">
+         <button class="btn btn-primary">参加を申請する</button>
+         <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">キャンセル</a>
+       </div>
+     </form>
+ 
+     <!-- 役割→メモ入力の有効/無効 切替（衣装／その他のときON） -->
+     <script>
+       (function () {
+         function sync() {
+           const r = document.querySelector('input[name="participant_role"]:checked');
+           const role = r ? r.value : 'cosplayer';
+           const memo = document.getElementById('costume_label');
+           const help = document.getElementById('costume_help');
+           if (role === 'cosplayer' || role === 'other') {
+             memo.removeAttribute('disabled');
+             help.textContent = '「衣装」または「その他」を選択した方は入力してください（最大120文字）。';
+           } else {
+             memo.value = '';
+             memo.setAttribute('disabled', 'disabled');
+             help.textContent = 'カメラマン／アシスタントの場合、入力は不要です（サーバー側でも空にします）。';
+           }
+         }
+         document.querySelectorAll('input[name="participant_role"]').forEach(el => {
+           el.addEventListener('change', sync);
+diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
+index 7c3f2da6977a8e47d17aeb36b7e2cd05780392e3..b5cf7f76a5fa924f195df58f9e8283759205d264 100644
+--- a/external_login_user/template/ext_index.html
++++ b/external_login_user/template/ext_index.html
+@@ -56,50 +56,79 @@
+     </div>
+     <div class="d-flex flex-wrap gap-2 mb-3">
+       <button class="btn btn-outline-primary" type="button" id="enable-chat-push">プッシュ通知の有効</button>
+     </div>
+     <div class="alert alert-info small mb-4" role="alert" id="pwa-guide">
+       iPhoneでPWA（ホーム画面に追加）にしていない場合、Push通知は利用できません。<br>
+       設定手順は
+       <a href="https://support.apple.com/ja-jp/guide/iphone/iphea86e5236/ios" target="_blank" rel="noopener noreferrer">Apple公式ガイド</a>
+       をご確認ください。
+     </div>
+ 
+     {# ★ メール登録 促し（プロフィールから登録・変更） ★ #}
+     {% set _email = (me.email if (me is defined and me.email is defined) else '') %}
+     {% if (_email or '')|trim == '' %}
+       <div class="alert alert-warning d-flex justify-content-between align-items-center mb-4" role="alert">
+         <div class="me-3">
+           以前は任意登録のメールアドレスですが、決済や連絡のため、<strong>プロフィール編集</strong>から登録をお願いします。
+         </div>
+         <a class="btn btn-sm btn-warning" href="{{ url_for('external_login_user.profile') }}">
+           プロフィールで登録
+         </a>
+       </div>
+     {% else %}
+     {% endif %}
+ 
++    {% if privacy_policy_required %}
++      <div class="modal fade" id="privacyPolicyModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
++        <div class="modal-dialog modal-dialog-centered">
++          <div class="modal-content">
++            <div class="modal-header">
++              <h2 class="modal-title fs-5">
++                {% if privacy_policy_mode == 'reconsent' %}
++                  プライバシーポリシー改定のお知らせ
++                {% else %}
++                  プライバシーポリシーへの同意のお願い
++                {% endif %}
++              </h2>
++            </div>
++            <div class="modal-body">
++              <p class="mb-2">現在有効なプライバシーポリシーへの同意が必要です。</p>
++              <p class="mb-3">改定日：<strong>{{ privacy_policy_revised_date_label }}</strong></p>
++              <div class="d-grid gap-2">
++                <a class="btn btn-outline-primary" href="{{ privacy_policy_url }}" target="_blank" rel="noopener">プライバシーポリシーを開く</a>
++                <form method="post" action="{{ url_for('external_login_user.privacy_policy_agree') }}" class="d-grid">
++                  <input type="hidden" name="csrf_token" value="{{ ext_csrf or '' }}">
++                  <button type="submit" class="btn btn-primary">同意する</button>
++                </form>
++              </div>
++            </div>
++          </div>
++        </div>
++      </div>
++    {% endif %}
++
+ {# ★ 未払いアラート：支払期限が近い順。支払不要はサーバ側で除外済み #}
+ {% set _unpaid = unpaid_notices or [] %}
+ {% if _unpaid|length > 0 %}
+   <div class="alert alert-danger d-flex align-items-start justify-content-between mb-4" role="alert">
+     <div class="me-3">
+       <div class="fw-bold mb-1">未払いのイベントがあります</div>
+       <ul class="mb-0 ps-3">
+         {# 期日→タイトル→金額→リンク #}
+         {% for it in _unpaid %}
+           <li class="mb-1">
+             {% if it.due_at %}
+               <span class="badge bg-danger-subtle text-danger border border-danger-subtle me-1">
+                 期日 {{ it.due_at.strftime('%Y/%m/%d') }}
+               </span>
+             {% else %}
+               <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle me-1">
+                 期日未設定
+               </span>
+             {% endif %}
+             <a class="link-dark text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=it.event_uuid_str) }}">
+               {{ it.title }}
+             </a>
+             <span class="text-muted small ms-1">（{{ (it.fee_yen or 0)|int }} 円）</span>
+           </li>
+         {% endfor %}
+@@ -496,50 +525,61 @@
+             <input class="form-check-input" type="checkbox" id="updateDontShow">
+             <label class="form-check-label" for="updateDontShow">次回以降は表示しない</label>
+           </div>
+         </div>
+         <div class="modal-footer">
+           <button id="updateOkBtn" type="button" class="btn btn-primary" data-bs-dismiss="modal">閉じる</button>
+         </div>
+       </div>
+     </div>
+   </div>
+   <!-- ▲▲▲ アップデート情報モーダルここまで ▲▲▲ -->
+ 
+   <!-- Bootstrap JS（collapse用） -->
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+ 
+   {% if session and session.get('pin_email') %}
+   <script>
+     // サーバ側で pin_email があれば PIN ログイン欄を自動で展開
+     try {
+       var el = document.getElementById('pinLoginCollapse');
+       if (el) new bootstrap.Collapse(el, {toggle:false}).show();
+     } catch(e){}
+   </script>
+   {% endif %}
+ 
++  {% if privacy_policy_required %}
++  <script>
++    document.addEventListener('DOMContentLoaded', function () {
++      var el = document.getElementById('privacyPolicyModal');
++      if (!el || !window.bootstrap) return;
++      var modal = new bootstrap.Modal(el, {backdrop: 'static', keyboard: false});
++      modal.show();
++    });
++  </script>
++  {% endif %}
++
+   <script>
+   (() => {
+     const STORAGE_TOKEN_KEY = 'mfu_pwa_resume_token';
+     const STORAGE_TOKEN_AT_KEY = 'mfu_pwa_resume_at';
+     const STORAGE_CLIENT_ID_KEY = 'mfu_pwa_client_id';
+     const LOGIN_SELECTOR = '.js-ext-line-login';
+     const RESUME_API = '/external-login/api/pwa-resume/consume';
+     const errorEl = document.getElementById('pwaResumeError');
+     let consumeStarted = false;
+ 
+     const isStandalone = () => {
+       try {
+         return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+       } catch (_e) {
+         return window.navigator.standalone === true;
+       }
+     };
+ 
+     const ensureClientId = () => {
+       try {
+         let clientId = localStorage.getItem(STORAGE_CLIENT_ID_KEY);
+         if (!clientId) {
+           const raw = new Uint8Array(24);
+           if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+             window.crypto.getRandomValues(raw);
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index c04eef75f21eaeb69dc6b959c771dac130c1c970..fb64fbcd2c6c41daacfa93f4a4f48d066b59783c 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -39,50 +39,56 @@ from flask import (
+ )
+ from werkzeug.utils import secure_filename
+ from werkzeug.exceptions import HTTPException
+ 
+ # Blueprint は必ず先に import
+ from . import bp, oauth
+ 
+ from app.utils.db import get_db
+ from app.utils.mail import send_mail
+ from .utils import (
+     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
+     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
+     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
+     _event_by_uuid_str, _membership_status,
+     update_event_member_status,
+     avatar_url_for,  # ← 追加
+     QR_TRADEMARK_NOTICE,
+     remember_session_map_value,
+     EXT_LOGIN_MODE_PWA,
+     PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
+     PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
+     normalize_ext_login_mode,
+     create_external_login_resume_token,
+     get_external_login_resume_token_summary,
+     consume_external_login_resume_token,
++    _get_current_privacy_policy_config,
++    _is_privacy_policy_effective,
++    _needs_privacy_policy_agreement,
++    _agree_current_privacy_policy,
++    _privacy_policy_date_label,
++    _sanitize_ext_local_url,
+ )
+ from .admin import _recalc_event_fee_if_auto
+ #from .auto_payment import load_default_card_summary
+ 
+ 
+ # ==== アバター保存設定 ====
+ AVATAR_ROOT = Path("/mnt/mfu/avatars")
+ ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+ AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
+ 
+ 
+ JST = timezone(timedelta(hours=9))
+ 
+ # =========================
+ # 便利ヘルパ（このファイル内限定）
+ # =========================
+ def _normalize_email(s: str) -> str | None:
+     s = (s or "").strip()
+     if not s or "@" not in s or len(s) > 255:
+         return None
+     return s
+ 
+ 
+ def _normalize_external_url(raw: str | None) -> str | None:
+     if not isinstance(raw, str):
+@@ -218,50 +224,72 @@ def _issue_email_verify_token(user_id: int, email: str, *, ttl_hours: int = 24,
      finally:
-         cur.close()
-         db.close()
+         try: cur.close(); db.close()
+         except Exception: pass
+     return raw
  
--    summary["candidates"] = len(rows)
--    current_app.logger.info(
--        "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
--        summary["candidates"],
--        now_utc.isoformat(),
--        now_utc.astimezone(_JST).isoformat(),
--    )
-+    update_db = get_db()
-+    update_cur = update_db.cursor()
-+    try:
-+        summary["candidates"] = len(rows)
-+        current_app.logger.info(
-+            "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
-+            summary["candidates"],
-+            now_utc.isoformat(),
-+            now_utc.astimezone(_JST).isoformat(),
-+        )
  
--    for row in rows:
--        user_id = int(row.get("id") or 0)
--        email = str(row.get("email") or "").strip()
--        last_sent_at = _as_utc(row.get("last_sent_at"))
--
--        if user_id <= 0:
--            summary["skipped_invalid_user"] += 1
--            current_app.logger.info(
--                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
--                user_id,
--                email or "-",
--                0,
--            )
--            continue
--
--        if not email:
--            summary["skipped_no_mail"] += 1
--            current_app.logger.info(
--                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
--                user_id,
--                email or "-",
--                0,
--            )
--            continue
--
--        if not _can_send_external_unread_reminder(last_sent_at, now_utc):
--            summary["skipped_too_soon"] += 1
--            current_app.logger.info(
--                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
--                user_id,
--                email,
--                0,
--                last_sent_at.isoformat() if last_sent_at else None,
--            )
--            continue
-+        for row in rows:
-+            user_id = int(row.get("id") or 0)
-+            email = str(row.get("email") or "").strip()
-+            last_sent_at = _as_utc(row.get("last_sent_at"))
+ def _to_jst_date(dt_value) -> datetime.date | None:
+     if not dt_value:
+         return None
+     if isinstance(dt_value, str):
+         try:
+             dt_value = datetime.fromisoformat(dt_value.replace("Z", "+00:00"))
+         except Exception:
+             return None
+     if not hasattr(dt_value, "tzinfo") or dt_value.tzinfo is None:
+         return dt_value.date()
+     return dt_value.astimezone(JST).date()
+ 
+ 
+ def _format_yen(amount_yen: int | None) -> str:
+     if amount_yen is None:
+         return ""
+     return f"¥{int(amount_yen):,}"
+ 
+ 
++def _build_privacy_policy_view_data(user_row: dict | None) -> dict:
++    config = _get_current_privacy_policy_config()
++    required = _needs_privacy_policy_agreement(user_row, config)
++    agreed_revised = (user_row or {}).get("privacy_policy_agreed_revised_date")
++    current_revised = config.get("privacy_policy_revised_date")
++    return {
++        "privacy_policy_required": required,
++        "privacy_policy_url": config.get("privacy_policy_url") or "",
++        "privacy_policy_revised_date": current_revised,
++        "privacy_policy_revised_date_label": _privacy_policy_date_label(current_revised),
++        "privacy_policy_mode": "reconsent" if (required and agreed_revised) else "initial",
++        "privacy_policy_effective": _is_privacy_policy_effective(config),
++    }
 +
-+            if user_id <= 0:
-+                summary["skipped_invalid_user"] += 1
-+                current_app.logger.info(
-+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
-+                    user_id,
-+                    email or "-",
-+                    0,
-+                )
-+                continue
- 
--        try:
--            unread_count = _compute_unread_count_external(user_id)
--        except Exception:
--            summary["failed"] += 1
--            current_app.logger.exception(
--                "external unread reminder unread count failed user_id=%s email=%s",
--                user_id,
--                email,
--            )
--            continue
--
--        if unread_count <= 0:
--            summary["skipped_no_unread"] += 1
--            current_app.logger.info(
--                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
--                user_id,
--                email,
--                unread_count,
--            )
--            continue
-+            if not email:
-+                summary["skipped_no_mail"] += 1
-+                current_app.logger.info(
-+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
-+                    user_id,
-+                    email or "-",
-+                    0,
-+                )
-+                continue
- 
--        try:
--            send_external_unread_reminder_mail(email, external_login_user_id=user_id)
--            db = get_db()
--            update_cur = db.cursor()
-             try:
--                update_cur.execute(
--                    f"""
--                    UPDATE external_login_user
--                       SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
--                     WHERE id=%s
--                    """,
--                    (now_utc.replace(tzinfo=None), user_id),
-+                unread_count = _compute_unread_count_external(user_id)
-+            except Exception:
-+                summary["failed"] += 1
-+                current_app.logger.exception(
-+                    "external unread reminder unread count failed user_id=%s email=%s",
-+                    user_id,
-+                    email,
-+                )
-+                continue
 +
-+            if unread_count <= 0:
-+                summary["skipped_no_unread"] += 1
-+                current_app.logger.info(
-+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
-+                    user_id,
-+                    email,
-+                    unread_count,
-+                )
-+                continue
++def _resolve_privacy_policy_post_agree_next() -> str:
++    next_url = _sanitize_ext_local_url(session.pop("ext_after_privacy_policy_next", None), default="/external-login/")
++    if next_url in {"/external-login/privacy-policy/agree", "/external-login/privacy-policy/agree?"}:
++        return url_for("external_login_user.index")
++    return next_url or url_for("external_login_user.index")
 +
-+            if not _can_send_external_unread_reminder(last_sent_at, now_utc):
-+                summary["skipped_too_soon"] += 1
-+                current_app.logger.info(
-+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
-+                    user_id,
-+                    email,
-+                    unread_count,
-+                    last_sent_at.isoformat() if last_sent_at else None,
-+                )
-+                continue
 +
-+            try:
-+                send_external_unread_reminder_mail(email, external_login_user_id=user_id)
-+                try:
-+                    update_cur.execute(
-+                        f"""
-+                        UPDATE external_login_user
-+                           SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
-+                         WHERE id=%s
-+                        """,
-+                        (now_utc.replace(tzinfo=None), user_id),
-+                    )
-+                    update_db.commit()
-+                except Exception:
-+                    update_db.rollback()
-+                    raise
-+                summary["sent"] += 1
-+                current_app.logger.info(
-+                    "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
-+                    user_id,
-+                    email,
-+                    unread_count,
-                 )
--                db.commit()
-             except Exception:
--                db.rollback()
--                raise
--            finally:
--                update_cur.close()
--                db.close()
--            summary["sent"] += 1
--            current_app.logger.info(
--                "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
--                user_id,
--                email,
--                unread_count,
--            )
--        except Exception:
--            summary["failed"] += 1
--            current_app.logger.exception(
--                "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
--                user_id,
--                email,
--                unread_count,
--            )
-+                summary["failed"] += 1
-+                current_app.logger.exception(
-+                    "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
-+                    user_id,
-+                    email,
-+                    unread_count,
-+                )
-+    finally:
-+        update_cur.close()
-+        update_db.close()
- 
-     current_app.logger.info(
-         "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_too_soon=%s skipped_no_unread=%s skipped_invalid_user=%s",
-         summary["candidates"],
-         summary["sent"],
-         summary["failed"],
-         summary["skipped_no_mail"],
-         summary["skipped_too_soon"],
-         summary["skipped_no_unread"],
-         summary["skipped_invalid_user"],
-     )
-     return summary
+ def _fetchone_dict(cur):
+     row = cur.fetchone()
+     if row is None:
+         return None
+     if isinstance(row, dict):
+         return row
+     cols = [d[0] for d in cur.description]
+     return dict(zip(cols, row))
  
  
- def _compute_unread_count_mfu(username: str) -> int:
-     recipient = (username or "").strip()
-     if not recipient:
-         return 0
-     db = get_db()
-     cur = db.cursor(dictionary=True)
+ def _get_admin_payer_profile(cur):
+     cur.execute("SELECT * FROM payer_profiles WHERE issuer_user_id = %s", ("admin",))
+     return _fetchone_dict(cur)
+ 
+ 
+ def _send_verify_mail(to_email: str, token_raw: str):
+     """legacy / no longer used for new verification flow."""
+     """メールアドレス確認コード（イベント非関連）→ send_mail に統一"""
+     verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
+     subject = "イベント管理システムからメールアドレス確認のお願い"
+     body = (
+         "メールアドレスの確認をお願いします。\n"
+         "下記の確認ページを開き、「確認する」ボタンを押してください（有効期限: 24時間）。\n\n"
+         f"{verify_url_get}\n\n"
+         "※このメールに心当たりがない場合は破棄してください。"
+@@ -903,129 +931,135 @@ def _parse_lat_lng_from_maps_url(maps_url: str):
+ 
+ # --- 2点間距離[m]（ハーサイン） -----------------------------------------
+ def _calc_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+     """
+     2点の距離[m]をざっくり計算。
+     イベント会場付近かどうか判定する用途なら十分な精度。
+     """
+     R = 6371000.0  # 地球半径[m]
+ 
+     phi1 = math.radians(lat1)
+     phi2 = math.radians(lat2)
+     dphi = math.radians(lat2 - lat1)
+     dlambda = math.radians(lng2 - lng1)
+ 
+     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+     return R * c
+ 
+ 
+ 
+ # =========================
+ # TOP（=マイページ）
+ # =========================
+ @bp.route("/")
+ def index():
++    row = None
+     # ---- 未ログイン時は当該バナーのフラッシュを除去してから描画 --------------------
      try:
-         cur.execute(
-             """
-             SELECT COUNT(*) AS cnt
-               FROM mfu_notifications
-diff --git a/tests/test_external_unread_reminder.py b/tests/test_external_unread_reminder.py
-index ccdaf45be24515703ffaea4ed801349e9ae13638..f5a0f4ec9fd44212a3232cdfe3791c8f4147b041 100644
---- a/tests/test_external_unread_reminder.py
-+++ b/tests/test_external_unread_reminder.py
-@@ -159,130 +159,151 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
-             self.committed = False
-             self.rolled_back = False
+         if not session.get("ext_user_id"):
+             fl = session.get("_flashes")
+             if isinstance(fl, list) and fl:
+                 def _is_unverified_banner(t):
+                     try:
+                         cat, msg = t
+                         cat_str = str(cat or "")
+                         # 複数カテゴリ対応: "warning unverified_email" など
+                         if "unverified_email" in cat_str:
+                             return True
+                         s = str(msg)
+                         return ("warning" in cat_str) and (
+                             "メール確認のお願い" in s
+                             or "メールアドレスの確認が完了していません" in s
+                         )
+                     except Exception:
+                         return False
+                 new_fl = [t for t in fl if not _is_unverified_banner(t)]
+                 if len(new_fl) != len(fl):
+                     session["_flashes"] = new_fl
+     except Exception:
+         try:
+             current_app.logger.exception("cleanup flashes for anonymous failed")
+         except Exception:
+             pass
+     # -----------------------------------------------------------------------
  
-         def cursor(self, dictionary=False):
-             return self.select_cursor if dictionary else self.update_cursor
+     # ---- ログイン済みなら「未確認」バナーをここでだけ出す ------------------------
+     try:
+         uid = session.get("ext_user_id")
+         if uid:
+             db = get_db(); cur = db.cursor(dictionary=True)
+             try:
+                 cur.execute("""
+-                    SELECT email, email_verified_at
++                    SELECT email, email_verified_at,
++                           privacy_policy_agreed_at,
++                           privacy_policy_agreed_revised_date
+                       FROM external_login_user
+                      WHERE id=%s
+                      LIMIT 1
+                 """, (uid,))
+                 row = cur.fetchone()
+             finally:
+                 try: cur.close(); db.close()
+                 except Exception: pass
  
-         def commit(self):
-             self.committed = True
+             email = (row.get("email") or "").strip() if row else ""
+             unverified = bool(email and row and not row.get("email_verified_at"))
+             if unverified:
+                 from markupsafe import Markup, escape
+                 msg = (
+                     "メールアドレスの確認が完了していません。\n"
+                     "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
+                     "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
+                 )
+                 body = Markup("<br>".join(escape(msg).split("\n")))
+                 resend_url = url_for("external_login_user.resend_verify_email")
+                 btn = Markup(
+                     f'''<form method="post" action="{escape(resend_url)}" style="display:inline;margin-left:8px;">
+                             <button type="submit" class="btn btn-sm btn-primary">確認コードを再送する</button>
+                         </form>'''
+                 )
+                 # ★ カテゴリ: "warning unverified_email"（黄色スタイル + 後段の特定しやすさ）
+                 flash(
+                     Markup(
+                         '<div style="font-weight:600;">メール確認のお願い</div>'
+                         f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
+                     ),
+                     "warning unverified_email"
+                 )
+     except Exception:
+         try:
+             current_app.logger.exception("top banner check failed")
+         except Exception:
+             pass
+     # -----------------------------------------------------------------------
  
-         def rollback(self):
-             self.rolled_back = True
+     social_id = session.get("ext_user_social_id")
+     me = _get_ext_user_by_social(social_id) if social_id else None
++    privacy_view = _build_privacy_policy_view_data(row or me)
++    if "ext_csrf" not in session:
++        session["ext_csrf"] = secrets.token_hex(16)
  
-         def close(self):
+     if request.args.get("tip") == "done":
+         if request.args.get("status") == "ok":
+             flash("投げ銭ありがとうございます！", "success")
+         elif request.args.get("status") == "ng":
+             flash("投げ銭の決済が完了しませんでした。", "warning")
+ 
+     events_upcoming, events_past = [], []
+     if me:
+         db = get_db(); cur = db.cursor(dictionary=True)
+         has_deleted_at = _mfu_event_has_deleted_at_column()
+         where_deleted = "WHERE e.deleted_at IS NULL" if has_deleted_at else ""
+         cur.execute(f"""
+           SELECT
+             e.id, e.event_uuid, e.title,
+             e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
+             COALESCE(e.tip_enabled,0) AS tip_enabled,
+             m.id AS member_id,
+             COALESCE(m.status,'pending')                        AS status,
+             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
+             m.receipt_url,
+             COALESCE(m.bank_transfer,0) AS bank_transfer,
+             COALESCE(m.paypay_transfer,0) AS paypay_transfer,
+             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
+           FROM mfu_event e
+@@ -1108,59 +1142,91 @@ def index():
+             dt = _to_dt(r["starts_at"])
+             if dt is None:
+                 events_past.append(item)
+             else:
+                 (events_upcoming if dt.date() >= now.date() else events_past).append(item)
+ 
+         def _key_asc(x):
+             from datetime import datetime as _dt
+             v = x.get("starts_at")
+             try:
+                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
+             except Exception:
+                 return _dt.max
+ 
+         def _key_desc(x):
+             from datetime import datetime as _dt
+             v = x.get("starts_at")
+             try:
+                 return v if hasattr(v, "year") else _dt.fromisoformat(str(v).replace(" ", "T"))
+             except Exception:
+                 return _dt.min
+ 
+         events_upcoming.sort(key=_key_asc)
+         events_past.sort(key=_key_desc, reverse=True)
+ 
+-    resp = make_response(render_template("ext_index.html",
+-                           login=bool(me), me=me,
+-                           events_upcoming=events_upcoming,
+-                           events_past=events_past))
++    resp = make_response(render_template(
++        "ext_index.html",
++        login=bool(me),
++        me=me,
++        events_upcoming=events_upcoming,
++        events_past=events_past,
++        ext_csrf=session.get("ext_csrf"),
++        **privacy_view,
++    ))
+     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+     resp.headers["Pragma"] = "no-cache"
+     return resp
+ 
+ 
++@bp.post("/privacy-policy/agree")
++def privacy_policy_agree():
++    guard = _require_ext_login()
++    if guard:
++        return guard
++
++    if "ext_csrf" not in session:
++        session["ext_csrf"] = secrets.token_hex(16)
++    token = (request.form.get("csrf_token") or "").strip()
++    if not token or token != session.get("ext_csrf"):
++        flash("フォームの有効期限が切れました。もう一度お試しください。", "warning")
++        return redirect(url_for("external_login_user.index"))
++
++    ext_user_id = int(session.get("ext_user_id") or 0)
++    if ext_user_id <= 0:
++        return redirect(url_for("external_login_user.index"))
++
++    config = _get_current_privacy_policy_config()
++    if _is_privacy_policy_effective(config):
++        if not _agree_current_privacy_policy(ext_user_id, source="top"):
++            flash("プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。", "danger")
++            return redirect(url_for("external_login_user.index"))
++        flash("プライバシーポリシーに同意しました。", "success")
++
++    return redirect(_resolve_privacy_policy_post_agree_next())
++
++
+ 
+ 
+ @bp.get("/api/events/chat-unread-counts")
+ def api_event_chat_unread_counts():
+     social_id = session.get("ext_user_social_id")
+     me = _get_ext_user_by_social(social_id) if social_id else None
+     if not me:
+         return jsonify({"ok": False, "error": "unauthorized"}), 401
+ 
+     ids_arg = (request.args.get("event_ids") or "").strip()
+     event_ids: list[int] = []
+     if ids_arg:
+         for token in ids_arg.split(","):
+             token = token.strip()
+             if not token:
+                 continue
+             try:
+                 event_id = int(token)
+             except Exception:
+                 continue
+             if event_id > 0:
+                 event_ids.append(event_id)
+     # 重複除去 + 件数上限
+     event_ids = list(dict.fromkeys(event_ids))[:200]
+ 
+@@ -1407,51 +1473,52 @@ def line_callback():
+ 
+             if ctype == "image/gif":
+                 with open(out_path, "wb") as f:
+                     f.write(data)
+                 return name
+ 
+             with Image.open(BytesIO(data)) as im:
+                 im = im.convert("RGB")
+                 im.thumbnail((1024, 1024))
+                 if ctype == "image/png":
+                     im.save(out_path, format="PNG", optimize=True)
+                 elif ctype == "image/webp":
+                     im.save(out_path, format="WEBP", quality=85, method=6)
+                 else:  # JPEG
+                     im.save(out_path, format="JPEG", quality=85, optimize=True, progressive=True)
+             return name
+         except Exception:
+             current_app.logger.exception("avatar download failed: %s", url)
              return None
  
-     def test_can_send_external_unread_reminder_allows_null_last_sent_at(self):
-         notifications = load_notifications_module()
+     # ---- ユーザ upsert + 初回判定 ----
+     db = get_db(); cur = db.cursor()
+     try:
+         # email を含めて取得（既存未保存時に保存するため avatar_file / avatar_url も取る）
+         cur.execute("""
+-            SELECT id, nickname, avatar_file, avatar_url, email
++            SELECT id, nickname, avatar_file, avatar_url, email,
++                   privacy_policy_agreed_revised_date
+             FROM external_login_user
+             WHERE social_id=%s
+             LIMIT 1
+         """, (sub,))
+         row = cur.fetchone()
+         onboarding = False
+         needs_email = False
  
-         self.assertTrue(
-             notifications._can_send_external_unread_reminder(
-                 None,
-                 datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc),
+         picture_url = (prof.get("pictureUrl") or "")  # LINE側画像URL
+ 
+         if not row:
+             # 新規作成
+             nick_new = (prof.get("displayName") or "（未設定）")
+             cur.execute("""
+                 INSERT INTO external_login_user
+                   (mfu_uuid, social_id, nickname, x_id, instagram_id, email, avatar_url, avatar_file)
+                 VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, NULL, NULL, NULL, %s, NULL)
+             """, (sub, nick_new, picture_url))
+             db.commit()
+             onboarding = True          # ← 初回のみ True
+             needs_email = True         # ← 新規はメール未登録扱い
+ 
+             ext_user_id = cur.lastrowid
+             nickname_for_log = nick_new
+ 
+@@ -1513,89 +1580,110 @@ def line_callback():
+             cur.execute(
+                 "INSERT INTO logs (log_date, ip, log_text) VALUES (NOW(), %s, %s)",
+                 (ip_for_log, log_text)
              )
+             db.commit()
+         except Exception:
+             # ログ書き込み失敗は握りつぶし
+             current_app.logger.warning("write [LINE_LOGIN] log failed", exc_info=True)
+ 
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     # セッションへ格納
+     session["ext_user_id"] = ext_user_id
+     session["ext_user_nickname"] = nickname_for_log
+ 
+     # 追加：LINEログインは長期セッション扱いにする
+     session.permanent = True
+     session["ext_login_mode"] = login_mode
+     if pwa_client_id:
+         session["ext_pwa_client_id"] = pwa_client_id
+ 
+     # 既存の next を壊さない（上書きしない）
+     session.setdefault("ext_after_login_next", next_path)
++    privacy_user_row = {}
++    if row:
++        if isinstance(row, dict):
++            privacy_user_row["privacy_policy_agreed_revised_date"] = row.get("privacy_policy_agreed_revised_date")
++        elif isinstance(row, tuple) and len(row) >= 6:
++            privacy_user_row["privacy_policy_agreed_revised_date"] = row[5]
++    privacy_required = _needs_privacy_policy_agreement(
++        privacy_user_row,
++        _get_current_privacy_policy_config(),
++    )
+ 
+     # ---- リダイレクト方針 ----
+     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
+     # ・メール未登録のみ: ext_user_need_email=True（初回メッセージは出さず、メール注意喚起のみ）
+     if onboarding:
+         session["ext_user_onboarding"] = True
+     else:
+         session.pop("ext_user_onboarding", None)
+ 
+     if needs_email:
+         session["ext_user_need_email"] = True
+         # 改行を反映させたフラッシュ（<br>化）
+         from markupsafe import Markup, escape
+         email_notice = (
+             "クレジットカード決済時のメールアドレスの入力について\n\n"
+             "クレジットカード会社の規定変更により、クレジットカードでの決済時に、カード名義人のメールアドレスの入力が必要となります。\n"
+             "入力されたメールアドレスは、カード決済時の本人認証処理にて、クレジットカードの不正利用の検知・防止のため、カード発行会社に提供いたします。\n\n"
+             "ご理解、ご協力お願いいたします。\n\n"
+             "登録したメールアドレスに、確認用のメールが送信されます。ご対応お願いいたします。\n"
+         )
+         # \n を <br> にして安全にマーク
+         email_notice_markup = Markup("<br>".join(escape(email_notice).split("\n")))
+         flash(email_notice_markup, "info")
+         if login_mode != EXT_LOGIN_MODE_PWA:
+             # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
+-            return redirect(url_for("external_login_user.profile", next=next_path, reason="email"))
++            profile_next_url = url_for("external_login_user.profile", next=next_path, reason="email")
++            if privacy_required:
++                session["ext_after_privacy_policy_next"] = profile_next_url
++                return redirect(url_for("external_login_user.index"))
++            return redirect(profile_next_url)
+     else:
+         session.pop("ext_user_need_email", None)
+ 
+     if login_mode == EXT_LOGIN_MODE_PWA:
++        pwa_next_path = url_for("external_login_user.index") if privacy_required else next_path
++        if privacy_required:
++            session["ext_after_privacy_policy_next"] = _sanitize_ext_local_url(next_path, default="/external-login/")
+         resume_token = create_external_login_resume_token(
+             ext_user_id=int(ext_user_id),
+             social_id=sub,
+-            next_path=next_path,
++            next_path=pwa_next_path,
+             mode=login_mode,
+             pwa_client_id=pwa_client_id or None,
+         )
+         return redirect(url_for("external_login_user.pwa_resume_page", rt=resume_token))
+ 
++    if privacy_required:
++        session["ext_after_privacy_policy_next"] = _sanitize_ext_local_url(next_path, default="/external-login/")
++        return redirect(url_for("external_login_user.index"))
++
+     # メール登録済みなら通常遷移
+     return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
+ 
+ 
+ @bp.get("/pwa-resume")
+ def pwa_resume_page():
+     resume_token = (request.args.get("rt") or "").strip()
+     summary = get_external_login_resume_token_summary(resume_token)
+     next_path = _sanitize_next((summary or {}).get("next_path") or url_for("external_login_user.index"))
+     is_valid = bool(summary)
+     return render_template(
+         "pwa_resume.html",
+         resume_token=resume_token if is_valid else "",
+         next_path=next_path,
+         is_valid=is_valid,
+         resume_token_key=PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
+         resume_token_at_key=PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
+     )
+ 
+ 
+ @bp.post("/api/pwa-resume/consume")
+ def pwa_resume_consume_api():
+     payload = request.get_json(silent=True) or {}
+     token = (payload.get("token") or request.form.get("token") or "").strip()
+     pwa_client_id = (payload.get("pwa_client_id") or request.form.get("pwa_client_id") or "").strip()[:128]
+@@ -2157,51 +2245,53 @@ def join_event(event_uuid: str):
+     仕様:
+       - 未ログイン時は LINE ログインへ。next に現在URL(含iv)を渡す。
+       - ログイン後/初回プロフィール作成後も常にこのフォームへ戻す。
+       - GET: 既存メンバーは状態表示、未申請は「役割/衣装」入力フォームを表示。
+       - POST: 自動承認トークン(iv)が一致すれば 'approved'、なければ 'pending' で upsert。
+               送信後はイベントページ（/events/view/<uuid>）へ遷移。
+     """
+     import secrets
+ 
+     # --- ログインチェック（next でこのページに戻す。iv も保持される） ---
+     social_id = session.get("ext_user_social_id")
+     if not social_id:
+         session["ext_after_login_next"] = request.url
+         login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
+         return redirect(login_url)
+ 
+     # --- CSRF トークン ---
+     if "ext_csrf" not in session:
+         session["ext_csrf"] = secrets.token_hex(16)
+     csrf_token = session["ext_csrf"]
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+ 
+     # --- 外部ユーザーを取得（social_id → external_login_user.id） ---
+     cur.execute("""
+-        SELECT id, email, nickname, x_id, instagram_id
++        SELECT id, email, nickname, x_id, instagram_id,
++               privacy_policy_agreed_revised_date,
++               privacy_policy_agreed_at
+           FROM external_login_user
+          WHERE social_id=%s
+          LIMIT 1
+     """, (social_id,))
+     u = cur.fetchone()
+     if not u:
+         login_url = url_for("external_login_user.line_login", next=request.url, _external=False)
+         return redirect(login_url)
+ 
+     ext_uid  = u["id"]
+     to_email = u.get("email")
+     nick     = u.get("nickname")
+     xid      = u.get("x_id") or ""
+     igid     = u.get("instagram_id") or ""
+ 
+     # --- プロフィール未設定チェック ---
+     # ニックネームが未設定、または「（未設定）」の場合はプロフィール編集へ誘導
+     is_profile_incomplete = not (nick and str(nick).strip()) or nick == "（未設定）"
+     if is_profile_incomplete:
+         session["ext_after_login_next"] = request.url
+         flash("イベントに参加する前に、プロフィールの作成をお願いします。", "info")
+         return redirect(url_for("external_login_user.profile", next=request.url))
+ 
+     # --- イベント本体（テンプレが参照する列は必ず選ぶ） ---
+     cur.execute("""
+@@ -2212,115 +2302,159 @@ def join_event(event_uuid: str):
+         invite_token
+       FROM mfu_event
+       WHERE event_uuid = UNHEX(REPLACE(%s,'-',''))
+       LIMIT 1
+     """, (event_uuid,))
+     ev = cur.fetchone()
+     if not ev:
+         cur.close(); db.close()
+         abort(404, "event not found")
+ 
+     iv_param = (request.args.get("iv") or request.args.get("vi") or "").strip()
+     is_lecture = _is_lecture_event_from_event(ev)
+     if iv_param and is_lecture:
+         remember_session_map_value("lecture_invite_tokens", event_uuid, iv_param)
+         _mark_lecture_auto_approve_by_iv(
+             event_id=ev["id"],
+             event_uuid=event_uuid,
+             user_id=ext_uid,
+             iv_token=iv_param,
          )
  
-+    def test_send_external_unread_reminder_emails_skips_no_unread_before_too_soon(self):
-+        notifications = load_notifications_module()
-+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 22, 9, 0, 0)}]
-+        select_db = self._FakeDB(rows)
-+        update_db = self._FakeDB()
-+
-+        with (
-+            patch.object(notifications, "_ensure_notification_schema"),
-+            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
-+            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "_compute_unread_count_external", return_value=0) as mocked_unread,
-+        ):
-+            summary = notifications.send_external_unread_reminder_emails(
-+                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
-+            )
-+
-+        self.assertEqual(summary["candidates"], 1)
-+        self.assertEqual(summary["skipped_no_unread"], 1)
-+        self.assertEqual(summary["skipped_too_soon"], 0)
-+        self.assertEqual(summary["sent"], 0)
-+        mocked_send.assert_not_called()
-+        mocked_unread.assert_called_once_with(10)
-+        self.assertEqual(update_db.update_cursor.executed, [])
-+
-     def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
-         select_db = self._FakeDB(rows)
-+        update_db = self._FakeDB()
+     # 表示用 UUID 文字列 / 管理URL
+     ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
+     ev["event_uuid_str"] = ev_uuid_str
+     admin_url = f"https://mfu.iori0624.jp/external-login/admin/events/{ev['id']}"
++    privacy_config = _get_current_privacy_policy_config()
++    privacy_effective = _is_privacy_policy_effective(privacy_config)
++    privacy_required_for_user = _needs_privacy_policy_agreement(u, privacy_config)
++    privacy_error = ""
  
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
--            patch.object(notifications, "get_db", return_value=select_db),
-+            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
-             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
--            patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
-+            patch.object(notifications, "_compute_unread_count_external", return_value=2) as mocked_unread,
-         ):
-             summary = notifications.send_external_unread_reminder_emails(
-                 now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
-             )
+     # 既存メンバー状況
+     cur.execute("""
+         SELECT id, COALESCE(status,'pending') AS status,
+                COALESCE(participant_role,'none') AS participant_role,
+                costume_label,
+                COALESCE(process, 0) AS process,
+                COALESCE(payment_status,'unpaid') AS payment_status,
+                payment_row_id,
+                COALESCE(require_payment,1) AS require_payment
+           FROM mfu_event_member
+          WHERE event_id=%s AND user_id=%s
+          LIMIT 1
+     """, (ev["id"], ext_uid))
+     m = cur.fetchone()
  
-         self.assertEqual(summary["candidates"], 1)
-         self.assertEqual(summary["skipped_too_soon"], 1)
-         self.assertEqual(summary["sent"], 0)
-         mocked_send.assert_not_called()
--        mocked_unread.assert_not_called()
-+        mocked_unread.assert_called_once_with(10)
-+        self.assertEqual(update_db.update_cursor.executed, [])
+     if is_lecture:
+         require_payment = int(m.get("require_payment") or 1) if m else 1
+         payment_status = (m.get("payment_status") or "unpaid").strip() if m else "unpaid"
+         if require_payment != 0 and payment_status != "paid":
+             iv_redirect = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or iv_param
+             if iv_redirect:
+                 return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid, iv=iv_redirect))
+             return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid))
  
-     def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
-         get_db_side_effect = [select_db, update_db]
-         now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
- 
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
-             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=3),
-         ):
-             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
- 
-         self.assertEqual(summary["sent"], 1)
-         self.assertEqual(summary["failed"], 0)
-         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-         self.assertTrue(update_db.committed)
-         self.assertFalse(update_db.rolled_back)
-+        self.assertEqual(len(update_db.update_cursor.executed), 1)
-+        executed_query, executed_params = update_db.update_cursor.executed[0]
-         self.assertEqual(
--            update_db.update_cursor.executed,
--            [
--                (
--                    """
--                    UPDATE external_login_user
--                       SET notification_unread_reminder_last_sent_at=%s
--                     WHERE id=%s
--                    """,
--                    (now_utc.replace(tzinfo=None), 10),
--                )
--            ],
-+            " ".join(executed_query.split()),
-+            "UPDATE external_login_user SET notification_unread_reminder_last_sent_at=%s WHERE id=%s",
+     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
+     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
+     if not iv:
+         iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
+     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
+     auto_hit_by_lecture = False
+     if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
+         auto_hit_by_lecture = _lecture_auto_approve_from_payment_request(
+             event_id=ev["id"],
+             user_id=ext_uid,
+             payment_row_id=m.get("payment_row_id"),
          )
-+        self.assertEqual(executed_params, (now_utc.replace(tzinfo=None), 10))
+         auto_hit = auto_hit or auto_hit_by_lecture
  
-     def test_send_external_unread_reminder_emails_updates_last_sent_at_only_on_success(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
-         get_db_side_effect = [select_db, update_db]
-         now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
+     # =========================
+     # POST: フォーム送信（申請）
+     # =========================
+     if request.method == "POST":
+         # CSRF
+         token = request.form.get("csrf_token", "")
+         if not token or token != csrf_token:
+             cur.close(); db.close()
+             abort(400, "invalid csrf token")
  
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
-             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=1),
-         ):
-             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
++        privacy_agree_checked = request.form.get("privacy_policy_agree") in ("1", "on", "true", "yes")
++        if privacy_effective and not privacy_agree_checked:
++            privacy_error = "参加申請にはプライバシーポリシーへの同意が必要です。"
++
+         role = (request.form.get("participant_role") or "cosplayer").strip().lower()
+         # ★ 'other' を許可
+         if role not in ("camera", "assistant", "cosplayer", "other"):
+             role = "cosplayer"
  
-         self.assertEqual(summary["sent"], 1)
-         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-         self.assertTrue(update_db.committed)
-         self.assertEqual(len(update_db.update_cursor.executed), 1)
+         costume = (request.form.get("costume_label") or "").strip() or None
+         # ★ 「衣装／その他」のときだけ保持
+         if role not in ("cosplayer", "other"):
+             costume = None  # サーバ側でも空に
+         process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
  
-     def test_send_external_unread_reminder_emails_does_not_update_last_sent_at_on_failure(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
-         select_db = self._FakeDB(rows)
-+        update_db = self._FakeDB()
++        if privacy_error:
++            status = (m and m.get("status")) or None
++            cur.close(); db.close()
++            return render_template(
++                "event_join.html",
++                ev=ev,
++                status=status,
++                form_role=role,
++                form_costume=costume or "",
++                form_process=bool(process_flag),
++                csrf_token=csrf_token,
++                privacy_policy_effective=privacy_effective,
++                privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
++                privacy_policy_error=privacy_error,
++                privacy_policy_checked=privacy_agree_checked,
++                privacy_policy_agreed_latest=not privacy_required_for_user,
++            ), 400
++
+         # ステータス決定（自動承認 or 手動承認待ち）
+         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
+         new_status = "approved" if (auto_hit or already_approved) else "pending"
+         should_notify = not (already_approved and auto_hit_by_lecture)
  
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
--            patch.object(notifications, "get_db", return_value=select_db),
-+            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
-             patch.object(
-                 notifications,
-                 "send_external_unread_reminder_mail",
-                 side_effect=RuntimeError("smtp error"),
-             ) as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=2),
-         ):
-             summary = notifications.send_external_unread_reminder_emails(
-                 now_utc=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
-             )
++        if privacy_effective and privacy_required_for_user:
++            if not _agree_current_privacy_policy(ext_uid, source="join"):
++                cur.close(); db.close()
++                return render_template(
++                    "event_join.html",
++                    ev=ev,
++                    status=None,
++                    form_role=role,
++                    form_costume=costume or "",
++                    form_process=bool(process_flag),
++                    csrf_token=csrf_token,
++                    privacy_policy_effective=privacy_effective,
++                    privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
++                    privacy_policy_error="プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。",
++                    privacy_policy_checked=privacy_agree_checked,
++                    privacy_policy_agreed_latest=False,
++                ), 500
++
+         update_event_member_status(
+             ev["id"],
+             ext_uid,
+             new_status,
+             extra_update_fields={
+                 "participant_role": role,
+                 "costume_label": costume,
+                 "process": process_flag,
+             },
+             extra_insert_fields={
+                 "participant_role": role,
+                 "costume_label": costume,
+                 "process": process_flag,
+             },
+         )
+         cur.execute(
+             """
+             UPDATE mfu_event_member
+                SET joined_at=COALESCE(joined_at, NOW())
+              WHERE event_id=%s AND user_id=%s
+              LIMIT 1
+             """,
+             (ev["id"], ext_uid),
+         )
+         db.commit()
+@@ -2436,50 +2570,55 @@ def join_event(event_uuid: str):
+             flash("参加が承認されました。", "success")
+         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
  
-         self.assertEqual(summary["failed"], 1)
-         self.assertEqual(summary["sent"], 0)
-         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
--        self.assertFalse(select_db.committed)
--        self.assertEqual(select_db.update_cursor.executed, [])
-+        self.assertFalse(update_db.committed)
-+        self.assertEqual(update_db.update_cursor.executed, [])
+     # =========================
+     # GET: 表示
+     # =========================
+     for k in ("starts_at", "fee_yen", "place_name", "address"):
+         ev.setdefault(k, None)
+ 
+     status = (m and m.get("status")) or None
+     if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
+         status = None
+     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
+     form_costume = (m and (m.get("costume_label") or "")) or ""
+     form_process = bool(m and int(m.get("process") or 0) == 1)
+ 
+     cur.close(); db.close()
+     return render_template(
+         "event_join.html",
+         ev=ev,
+         status=status,
+         form_role=form_role,
+         form_costume=form_costume,
+         form_process=form_process,
+         csrf_token=csrf_token,
++        privacy_policy_effective=privacy_effective,
++        privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
++        privacy_policy_error=privacy_error,
++        privacy_policy_checked=False,
++        privacy_policy_agreed_latest=not privacy_required_for_user,
+     )
  
  
- if __name__ == "__main__":
-     unittest.main()
+ @bp.route("/events/<event_uuid>/members/<int:member_id>/receipt.pdf")
+ def member_receipt_pdf(event_uuid: str, member_id: int):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+     if not me and not _is_mfu_logged_in():
+         abort(401)
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               m.id AS member_id,
+               m.user_id,
+               m.event_id,
+               m.paid_amount_yen,
+diff --git a/external_login_user/utils.py b/external_login_user/utils.py
+index 7c5bcc19ff61603da8f22fd4330228b87c0413f6..09ffe88cf314e643d7b10dd9694b1b776d4260f0 100644
+--- a/external_login_user/utils.py
++++ b/external_login_user/utils.py
+@@ -1,45 +1,46 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import os, re, uuid, base64, secrets, hashlib
+-from datetime import datetime, timedelta
++from datetime import datetime, timedelta, date, timezone
+ from typing import Optional, Any
+ from urllib.parse import quote_plus
+ from flask import current_app, request, session, redirect, url_for, abort, flash
+ 
+ from . import bp, oauth  # oauth は None の可能性あり
+ from app.utils.db import get_db
+ 
+ QR_TRADEMARK_NOTICE = "QRコードは株式会社デンソーウェーブの登録商標です。"
+ SESSION_MAP_MAX_ITEMS = 8
+ SESSION_VALUE_MAX_LEN = 128
+ EXT_LOGIN_MODE_BROWSER = "browser"
+ EXT_LOGIN_MODE_PWA = "pwa"
+ PWA_RESUME_TOKEN_TTL_SECONDS = 300
+ PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY = "mfu_pwa_resume_token"
+ PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY = "mfu_pwa_resume_at"
+ PWA_RESUME_LOCAL_STORAGE_CLIENT_ID_KEY = "mfu_pwa_client_id"
++JST = timezone(timedelta(hours=9))
+ 
+ # ---- 環境値 → 関数 ----
+ def LINE_CLIENT_ID() -> str:
+     return os.getenv("LINE_CHANNEL_ID") or ""
+ 
+ def LINE_CLIENT_SECRET() -> str:
+     return os.getenv("LINE_CHANNEL_SECRET") or ""
+ 
+ def LINE_REDIRECT_URI() -> Optional[str]:
+     v = os.getenv("LINE_REDIRECT_URI")
+     return v.strip() if v else None
+ 
+ def PAYMENT_ENTRY_BASE() -> str:
+     return (os.getenv("PAYMENT_ENTRY_BASE") or "/payment/e/").rstrip("/") + "/"
+ 
+ # ---- CSRF, セッション ----
+ def _admin_csrf_token() -> str:
+     t = session.get("admin_csrf")
+     if not t:
+         t = secrets.token_urlsafe(16)
+         session["admin_csrf"] = t
+     return t
+ 
+ def _require_mfu_login_redirect():
+     if not session.get("user"):
+@@ -80,50 +81,207 @@ def _require_ext_login():
+     """未ログインなら安全化した next を保持して LINE ログインへ"""
+     if session.get("ext_user_id"):
+         return None
+ 
+     raw_next = request.url  # 例: /external-login/events/view/<uuid>?iv=...
+ 
+     # 絶対URLや外部ドメインを排除し、/external-login/ 配下の相対URLだけ許可
+     from urllib.parse import urlparse
+     def _to_local_next(u: str) -> str:
+         if not u:
+             return "/external-login/"
+         if u.startswith("/") and not u.startswith("//"):
+             return u
+         try:
+             p = urlparse(u)
+             if (p.path or "").startswith("/") and "/external-login/" in (p.path or ""):
+                 return p.path + (("?" + p.query) if p.query else "")
+         except Exception:
+             pass
+         return "/external-login/"
+ 
+     local_next = _to_local_next(raw_next)[:512]
+     session["ext_after_login_next"] = local_next
+     return redirect(url_for("external_login_user.line_login", next=local_next))
+ 
++
++def _normalize_privacy_policy_date(value: Any) -> date | None:
++    if not value:
++        return None
++    if isinstance(value, date):
++        return value if not isinstance(value, datetime) else value.date()
++    raw = str(value).strip()
++    if not raw:
++        return None
++    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
++        try:
++            return datetime.strptime(raw, fmt).date()
++        except Exception:
++            continue
++    try:
++        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(JST).date()
++    except Exception:
++        return None
++
++
++def _privacy_policy_date_label(value: Any) -> str:
++    d = _normalize_privacy_policy_date(value)
++    return d.strftime("%Y年%m月%d日") if d else ""
++
++
++def _get_current_privacy_policy_config() -> dict[str, Any]:
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT
++              id,
++              privacy_policy_url,
++              privacy_policy_revised_date,
++              updated_by,
++              created_at,
++              updated_at
++            FROM mfu_external_privacy_policy_config
++            ORDER BY id DESC
++            LIMIT 1
++            """
++        )
++        row = cur.fetchone() or {}
++    except Exception:
++        row = {}
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++
++    cfg = dict(row or {})
++    cfg["privacy_policy_url"] = str(cfg.get("privacy_policy_url") or "").strip()
++    cfg["privacy_policy_revised_date"] = _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date"))
++    return cfg
++
++
++def _is_privacy_policy_effective(config: dict[str, Any] | None) -> bool:
++    cfg = config or {}
++    return bool(
++        str(cfg.get("privacy_policy_url") or "").strip()
++        and _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date"))
++    )
++
++
++def _needs_privacy_policy_agreement(user_row: dict[str, Any] | None, config: dict[str, Any] | None) -> bool:
++    if not _is_privacy_policy_effective(config):
++        return False
++    user = user_row or {}
++    current_revised = _normalize_privacy_policy_date((config or {}).get("privacy_policy_revised_date"))
++    agreed_revised = _normalize_privacy_policy_date(user.get("privacy_policy_agreed_revised_date"))
++    return bool(current_revised and agreed_revised != current_revised)
++
++
++def _privacy_policy_status(user_row: dict[str, Any] | None, config: dict[str, Any] | None) -> str:
++    if not _is_privacy_policy_effective(config):
++        return "未設定"
++    user = user_row or {}
++    agreed_revised = _normalize_privacy_policy_date(user.get("privacy_policy_agreed_revised_date"))
++    current_revised = _normalize_privacy_policy_date((config or {}).get("privacy_policy_revised_date"))
++    if not agreed_revised:
++        return "未同意"
++    if current_revised and agreed_revised == current_revised:
++        return "同意済"
++    return "旧版"
++
++
++def _agree_current_privacy_policy(user_id: int, source: str = "top") -> bool:
++    config = _get_current_privacy_policy_config()
++    if not _is_privacy_policy_effective(config):
++        return False
++
++    revised_date = _normalize_privacy_policy_date(config.get("privacy_policy_revised_date"))
++    if not revised_date:
++        return False
++
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT privacy_policy_agreed_revised_date
++            FROM external_login_user
++            WHERE id=%s
++            LIMIT 1
++            """,
++            (int(user_id),),
++        )
++        row = cur.fetchone() or {}
++        already = _normalize_privacy_policy_date(row.get("privacy_policy_agreed_revised_date"))
++        if already == revised_date:
++            return True
++
++        cur.execute(
++            """
++            UPDATE external_login_user
++            SET privacy_policy_agreed_at=NOW(),
++                privacy_policy_agreed_revised_date=%s
++            WHERE id=%s
++            LIMIT 1
++            """,
++            (revised_date, int(user_id)),
++        )
++        db.commit()
++        current_app.logger.info(
++            "privacy policy agreed: user_id=%s revised_date=%s source=%s",
++            int(user_id), revised_date.isoformat(), (source or "top")[:32]
++        )
++        return True
++    except Exception:
++        try:
++            db.rollback()
++        except Exception:
++            pass
++        current_app.logger.exception("privacy policy agree failed: user_id=%s source=%s", user_id, source)
++        return False
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++
++
++def _sanitize_ext_local_url(raw_url: str | None, *, default: str = "/external-login/") -> str:
++    raw = (raw_url or "").strip()
++    if not raw:
++        return default
++    if raw.startswith("/") and not raw.startswith("//"):
++        return raw[:512]
++    try:
++        from urllib.parse import urlparse
++        parsed = urlparse(raw)
++        if (parsed.path or "").startswith("/") and not (parsed.path or "").startswith("//"):
++            return (parsed.path + (("?" + parsed.query) if parsed.query else ""))[:512]
++    except Exception:
++        pass
++    return default
++
+ def _is_mfu_logged_in() -> bool:
+     return bool(session.get("user"))
+ 
+ 
+ def remember_session_map_value(map_key: str, item_key: str, value: Any, *, max_items: int = SESSION_MAP_MAX_ITEMS):
+     """cookie session の肥大化防止のため、少数件だけ保持する。"""
+     key = str(item_key or "").strip()
+     if not key:
+         return
+ 
+     stored = session.get(map_key)
+     data = dict(stored) if isinstance(stored, dict) else {}
+     data.pop(key, None)
+ 
+     item = value
+     if isinstance(item, str):
+         item = item[:SESSION_VALUE_MAX_LEN]
+     data[key] = item
+ 
+     while len(data) > max_items:
+         oldest = next(iter(data), None)
+         if oldest is None:
+             break
+         data.pop(oldest, None)
+     session[map_key] = data

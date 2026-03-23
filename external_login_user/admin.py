@@ -15,6 +15,9 @@ from .utils import (
     _event_invite_url,
     extract_lat_lng_from_maps_url,  # 追加
     QR_TRADEMARK_NOTICE,
+    _get_current_privacy_policy_config,
+    _is_privacy_policy_effective,
+    _privacy_policy_date_label,
 )
 
 from app.utils.mail import send_mail
@@ -29,6 +32,26 @@ from .utils import (
 from .albums import create_event_album
 from .payments import _ensure_payment_uuid_for_event
 from app.utils.db import get_db
+
+
+def _normalize_privacy_policy_admin_url(raw_url: str | None) -> str | None:
+    value = (raw_url or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    return None
+
+
+def _parse_privacy_policy_revised_date(raw_value: str | None):
+    value = (raw_value or "").strip()
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 
 def _calculate_event_fee(studio_fee_yen: int | float | None,
@@ -335,6 +358,83 @@ def admin_home():
         return guard
     # 直接イベント一覧へ飛ばす
     return redirect(url_for("external_login_user.admin_events_list"))
+
+
+@bp.route("/admin/privacy-policy", methods=["GET", "POST"])
+def admin_privacy_policy():
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+
+    admin_csrf = _admin_csrf_token()
+    config = _get_current_privacy_policy_config()
+    form = {
+        "privacy_policy_url": config.get("privacy_policy_url") or "",
+        "privacy_policy_revised_date": (
+            config["privacy_policy_revised_date"].isoformat()
+            if config.get("privacy_policy_revised_date") else ""
+        ),
+    }
+    errors: dict[str, str] = {}
+
+    if request.method == "POST":
+        token = (request.form.get("csrf_token") or "").strip()
+        if not token or token != admin_csrf:
+            flash("CSRFエラーのため保存できませんでした。", "danger")
+            return redirect(url_for("external_login_user.admin_privacy_policy"))
+
+        form["privacy_policy_url"] = (request.form.get("privacy_policy_url") or "").strip()
+        form["privacy_policy_revised_date"] = (request.form.get("privacy_policy_revised_date") or "").strip()
+
+        normalized_url = _normalize_privacy_policy_admin_url(form["privacy_policy_url"])
+        revised_date = _parse_privacy_policy_revised_date(form["privacy_policy_revised_date"])
+
+        if form["privacy_policy_url"] and not normalized_url:
+            errors["privacy_policy_url"] = "URLは http:// または https:// で始まる形式で入力してください。"
+        if form["privacy_policy_revised_date"] and not revised_date:
+            errors["privacy_policy_revised_date"] = "改定日は yyyy-mm-dd 形式で入力してください。"
+
+        if not errors:
+            db = get_db(); cur = db.cursor()
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO mfu_external_privacy_policy_config
+                      (privacy_policy_url, privacy_policy_revised_date, updated_by)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (
+                        normalized_url,
+                        revised_date,
+                        (session.get("user") or "").strip() or None,
+                    ),
+                )
+                db.commit()
+                flash("プライバシーポリシー設定を保存しました。", "success")
+                return redirect(url_for("external_login_user.admin_privacy_policy"))
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                current_app.logger.exception("privacy policy admin save failed")
+                errors["form"] = "保存に失敗しました。時間をおいて再度お試しください。"
+            finally:
+                try:
+                    cur.close(); db.close()
+                except Exception:
+                    pass
+
+    current_config = _get_current_privacy_policy_config()
+    return render_template(
+        "admin_privacy_policy.html",
+        admin_csrf=admin_csrf,
+        form=form,
+        errors=errors,
+        current_config=current_config,
+        privacy_policy_effective=_is_privacy_policy_effective(current_config),
+        privacy_policy_revised_date_label=_privacy_policy_date_label(current_config.get("privacy_policy_revised_date")),
+    )
 
 # admin.py の admin_events_list() を置換
 @bp.route("/admin/events")

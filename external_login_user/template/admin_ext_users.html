@@ -5,6 +5,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">外部ログインユーザー一覧</h1>
   <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
     <span class="text-muted small">総件数: <span id="totalCount">{{ initial_total }}</span></span>
   </div>
 </div>
@@ -46,6 +47,7 @@
         <th>ニックネーム</th>
         <th>メール</th>
         <th style="min-width:180px;">SNS</th>
+        <th style="min-width:180px;">プライバシーポリシー</th>
         <th style="min-width:200px;">通知状態</th>
         <th style="width:140px;">クレカ登録（将来用）</th>
         <th style="width:120px;"></th>
@@ -90,6 +92,11 @@
           {% endif %}
         </td>
         <td>
+          <div><span class="badge {% if it.privacy_policy_status == '同意済' %}bg-success{% elif it.privacy_policy_status == '旧版' %}bg-warning text-dark{% elif it.privacy_policy_status == '未設定' %}bg-secondary{% else %}bg-danger{% endif %}">{{ it.privacy_policy_status }}</span></div>
+          <div class="small text-muted mt-1">改定日: {{ it.privacy_policy_agreed_revised_date_label or '-' }}</div>
+          <div class="small text-muted">同意日時: {{ it.privacy_policy_agreed_at_label or '-' }}</div>
+        </td>
+        <td>
           <div>
             Push通知
             {% if (it.push_subscription_count or 0)|int > 0 %}
@@ -130,7 +137,7 @@
       {% endfor %}
 
       {% if not initial_items %}
-      <tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>
+      <tr><td colspan="9" class="text-center text-muted py-4">データがありません。</td></tr>
       {% endif %}
     </tbody>
   </table>
@@ -186,7 +193,7 @@
 
     function renderRows(items) {
       if (!items || !items.length) {
-        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">データがありません。</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">データがありません。</td></tr>';
         return;
       }
       tbody.innerHTML = items.map((it) => {
@@ -206,6 +213,10 @@
         if (it.x_id || it.instagram_id) {
           sns = `${it.x_id ? `<a href="https://x.com/${encodeURIComponent(it.x_id)}" target="_blank" rel="noopener">X: @${escapeHtml(it.x_id)}</a>` : ''}${(it.x_id && it.instagram_id) ? '<br>' : ''}${it.instagram_id ? `<a href="https://www.instagram.com/${encodeURIComponent(it.instagram_id)}/" target="_blank" rel="noopener">IG: @${escapeHtml(it.instagram_id)}</a>` : ''}`;
         }
+        const privacyStatus = escapeHtml(it.privacy_policy_status || '未同意');
+        const privacyBadge = privacyStatus === '同意済'
+          ? 'bg-success'
+          : (privacyStatus === '旧版' ? 'bg-warning text-dark' : (privacyStatus === '未設定' ? 'bg-secondary' : 'bg-danger'));
         const notifyPush = Number(it.push_subscription_count || 0) > 0 ? '🔵' : '🔴';
         const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
         const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
@@ -216,6 +227,7 @@
           <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
           <td>${emailBlock}</td>
           <td>${sns}</td>
+          <td><div><span class="badge ${privacyBadge}">${privacyStatus}</span></div><div class="small text-muted mt-1">改定日: ${escapeHtml(it.privacy_policy_agreed_revised_date_label || '-')}</div><div class="small text-muted">同意日時: ${escapeHtml(it.privacy_policy_agreed_at_label || '-')}</div></td>
           <td><div>Push通知 ${notifyPush}</div><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
           <td>${cardText}</td>
           <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${Number(it.id || 0)}/edit">編集</a></td>

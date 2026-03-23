@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 import os, re, uuid, base64, secrets, hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, timezone
 from typing import Optional, Any
 from urllib.parse import quote_plus
 from flask import current_app, request, session, redirect, url_for, abort, flash
@@ -18,6 +18,7 @@ PWA_RESUME_TOKEN_TTL_SECONDS = 300
 PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY = "mfu_pwa_resume_token"
 PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY = "mfu_pwa_resume_at"
 PWA_RESUME_LOCAL_STORAGE_CLIENT_ID_KEY = "mfu_pwa_client_id"
+JST = timezone(timedelta(hours=9))
 
 # ---- 環境値 → 関数 ----
 def LINE_CLIENT_ID() -> str:
@@ -101,6 +102,163 @@ def _require_ext_login():
     local_next = _to_local_next(raw_next)[:512]
     session["ext_after_login_next"] = local_next
     return redirect(url_for("external_login_user.line_login", next=local_next))
+
+
+def _normalize_privacy_policy_date(value: Any) -> date | None:
+    if not value:
+        return None
+    if isinstance(value, date):
+        return value if not isinstance(value, datetime) else value.date()
+    raw = str(value).strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(JST).date()
+    except Exception:
+        return None
+
+
+def _privacy_policy_date_label(value: Any) -> str:
+    d = _normalize_privacy_policy_date(value)
+    return d.strftime("%Y年%m月%d日") if d else ""
+
+
+def _get_current_privacy_policy_config() -> dict[str, Any]:
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT
+              id,
+              privacy_policy_url,
+              privacy_policy_revised_date,
+              updated_by,
+              created_at,
+              updated_at
+            FROM mfu_external_privacy_policy_config
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone() or {}
+    except Exception:
+        row = {}
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    cfg = dict(row or {})
+    cfg["privacy_policy_url"] = str(cfg.get("privacy_policy_url") or "").strip()
+    cfg["privacy_policy_revised_date"] = _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date"))
+    return cfg
+
+
+def _is_privacy_policy_effective(config: dict[str, Any] | None) -> bool:
+    cfg = config or {}
+    return bool(
+        str(cfg.get("privacy_policy_url") or "").strip()
+        and _normalize_privacy_policy_date(cfg.get("privacy_policy_revised_date"))
+    )
+
+
+def _needs_privacy_policy_agreement(user_row: dict[str, Any] | None, config: dict[str, Any] | None) -> bool:
+    if not _is_privacy_policy_effective(config):
+        return False
+    user = user_row or {}
+    current_revised = _normalize_privacy_policy_date((config or {}).get("privacy_policy_revised_date"))
+    agreed_revised = _normalize_privacy_policy_date(user.get("privacy_policy_agreed_revised_date"))
+    return bool(current_revised and agreed_revised != current_revised)
+
+
+def _privacy_policy_status(user_row: dict[str, Any] | None, config: dict[str, Any] | None) -> str:
+    if not _is_privacy_policy_effective(config):
+        return "未設定"
+    user = user_row or {}
+    agreed_revised = _normalize_privacy_policy_date(user.get("privacy_policy_agreed_revised_date"))
+    current_revised = _normalize_privacy_policy_date((config or {}).get("privacy_policy_revised_date"))
+    if not agreed_revised:
+        return "未同意"
+    if current_revised and agreed_revised == current_revised:
+        return "同意済"
+    return "旧版"
+
+
+def _agree_current_privacy_policy(user_id: int, source: str = "top") -> bool:
+    config = _get_current_privacy_policy_config()
+    if not _is_privacy_policy_effective(config):
+        return False
+
+    revised_date = _normalize_privacy_policy_date(config.get("privacy_policy_revised_date"))
+    if not revised_date:
+        return False
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT privacy_policy_agreed_revised_date
+            FROM external_login_user
+            WHERE id=%s
+            LIMIT 1
+            """,
+            (int(user_id),),
+        )
+        row = cur.fetchone() or {}
+        already = _normalize_privacy_policy_date(row.get("privacy_policy_agreed_revised_date"))
+        if already == revised_date:
+            return True
+
+        cur.execute(
+            """
+            UPDATE external_login_user
+            SET privacy_policy_agreed_at=NOW(),
+                privacy_policy_agreed_revised_date=%s
+            WHERE id=%s
+            LIMIT 1
+            """,
+            (revised_date, int(user_id)),
+        )
+        db.commit()
+        current_app.logger.info(
+            "privacy policy agreed: user_id=%s revised_date=%s source=%s",
+            int(user_id), revised_date.isoformat(), (source or "top")[:32]
+        )
+        return True
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        current_app.logger.exception("privacy policy agree failed: user_id=%s source=%s", user_id, source)
+        return False
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+
+def _sanitize_ext_local_url(raw_url: str | None, *, default: str = "/external-login/") -> str:
+    raw = (raw_url or "").strip()
+    if not raw:
+        return default
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw[:512]
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(raw)
+        if (parsed.path or "").startswith("/") and not (parsed.path or "").startswith("//"):
+            return (parsed.path + (("?" + parsed.query) if parsed.query else ""))[:512]
+    except Exception:
+        pass
+    return default
 
 def _is_mfu_logged_in() -> bool:
     return bool(session.get("user"))
