@@ -1,117 +1,94 @@
-diff --git a/__init__.py b/__init__.py
-index 73016c2c04bdcffdddfd0fc31d181875434ce208..bbc794bdf9dfe7788ed53369c81c71137c8d8995 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -230,50 +230,51 @@ def _has_view_auth(uuid):
-     """新旧のセッション形式を読み、必要なら新形式へ移行する。"""
-     return has_view_auth(uuid)
+diff --git a/external_login_user/template/my_role.html b/external_login_user/template/my_role.html
+index 77e2a41759977696194f3484904d6180588f8c61..b36dd5d1a418383cf6637d057f2ca7a291b13b1e 100644
+--- a/external_login_user/template/my_role.html
++++ b/external_login_user/template/my_role.html
+@@ -1,40 +1,40 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="utf-8">
+   <title>あなたの役割 - {{ event.title }}</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+ </head>
+ <body class="container py-4" style="max-width:720px;">
+ {% include "_extlogin_nav.html" %}
  
+   {% if not login %}
+     <div class="alert alert-warning">この操作にはLINEログインが必要です。</div>
+   {% endif %}
  
- CSRF_SESSION_KEY = "csrf_token"
- _UPLOAD_SECURITY_SCHEMA_LOCK = threading.Lock()
- _upload_security_schema_ready = False
- _CSRF_PROTECTED_PREFIXES = (
-     "/admin/users",
-     "/admin/user-features",
-     "/admin/features",
-     "/admin/nav",
-     "/admin/logs/404-ban",
-     "/admin/mail-delivery/refresh",
-     "/admin/maintenance",
-     "/admin/settings/inapp-browser",
-     "/admin/restart",
-     "/admin/logs/export",
-     "/templates",
-     "/modes",
-     "/upload_delete/",
- )
- _CSRF_PROTECTED_PATHS = {
-     "/submit_upload",
-     "/api/zip-stream",
-+    "/admin/fw/ban",
- }
- _CSRF_EXEMPT_PATHS = {
-     "/login",
- }
+   <h1 class="h5 mb-3">あなたの役割 - <span class="fw-normal">{{ event.title }}</span></h1>
  
+   <form method="post" class="vstack gap-3">
+-    {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{% endif %}
++    {% if csrf_token is defined %}<input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">{% endif %}
  
- def _ensure_upload_security_schema_once():
-     global _upload_security_schema_ready
-     if _upload_security_schema_ready:
-         return
-     with _UPLOAD_SECURITY_SCHEMA_LOCK:
-         if _upload_security_schema_ready:
-             return
-         ensure_upload_password_schema()
-         _upload_security_schema_ready = True
+     <div class="form-check form-switch">
+       <input class="form-check-input" type="checkbox" id="is_camera" name="is_camera" value="1" {{ 'checked' if role.is_camera else '' }}>
+       <label class="form-check-label" for="is_camera">カメラマン</label>
+     </div>
+     <div class="form-check form-switch">
+       <input class="form-check-input" type="checkbox" id="is_assistant" name="is_assistant" value="1" {{ 'checked' if role.is_assistant else '' }}>
+       <label class="form-check-label" for="is_assistant">アシスタント</label>
+     </div>
+     <div>
+       <label class="form-label" for="costume">衣装</label>
+       <input class="form-control" id="costume" name="costume" value="{{ role.costume }}" maxlength="120" placeholder="例）A衣装 / B衣装">
+     </div>
  
+     <div class="d-flex gap-2">
+       <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
+       <button class="btn btn-primary">保存</button>
+     </div>
+   </form>
+ </body>
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/templates/base.html b/templates/base.html
+index 751fb09604e74269f0c7a912bbcf5ea6e705d9e5..6ca0b2385c247a0f5744fbcb2a32fcdfd821607e 100644
+--- a/templates/base.html
++++ b/templates/base.html
+@@ -1,32 +1,32 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <title>{% block title %}MFU{% endblock %}</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+-  <meta name="csrf-token" content="{{ csrf_token() }}">
++  <meta name="csrf-token" content="{{ csrf_token_value }}">
+   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+   {% block head_extra %}{% endblock %}
+ </head>
+ <body>
+   <!-- 🔰 共通ナビゲーションバー -->
+   {% if request.path.startswith('/chat/') and nav_mode == 'chat' %}
+     {# chat専用画面では共通ナビを表示しない #}
+   {% elif request.path.startswith('/chat/') and nav_mode == 'external' %}
+     {% include "_extlogin_nav.html" %}
+   {% else %}
+     <nav class="navbar navbar-expand-lg navbar-light bg-light border-bottom mb-4">
+       <div class="container-fluid">
+         <a class="navbar-brand" href="/">📂 MFU</a>
  
- def _get_upload_access_record(uuid):
-     return fetch_upload_access_record(uuid)
+         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain" aria-controls="navbarMain" aria-expanded="false" aria-label="Toggle navigation">
+           <span class="navbar-toggler-icon"></span>
+         </button>
  
+         <div class="collapse navbar-collapse" id="navbarMain">
+           <ul class="navbar-nav me-auto mb-2 mb-lg-0">
  
- def _can_access_upload_record(upload):
-     return can_access_upload_record(upload, has_view_auth_func=_has_view_auth)
- 
- 
-@@ -3209,51 +3210,51 @@ def mode_edit_combined(mode):
-                 generate_thumbnails = VALUES(generate_thumbnails),
-                 template_key = VALUES(template_key)
-             """,
-             (username, mode, label, enable_download_url, require_password, enable_layer_upload_url, generate_thumbnails, mode),
-         )
- 
-         cursor.execute(
-             """
-             REPLACE INTO message_templates (username, mode, template)
-             VALUES (%s, %s, %s)
-             """,
-             (username, mode, template_text),
-         )
- 
-         db.commit()
-         db.close()
-         return redirect(url_for("mode_list"))
- 
-     db.close()
-     return render_template("mode_edit_combined.html",
-                            action="edit" if mode_data else "add",
-                            mode=mode,
-                            mode_data=mode_data,
-                            template=template)
- 
--@app.route("/modes/delete/<mode>")
-+@app.post("/modes/delete/<mode>")
- def mode_delete(mode):
-     if "user" not in session:
-         return redirect(url_for("login"))
-     username = session["user"]
- 
-     db = get_db()
-     cursor = db.cursor()
-     cursor.execute("DELETE FROM upload_modes WHERE username = %s AND mode = %s", (username, mode))
-     cursor.execute("DELETE FROM message_templates WHERE username = %s AND mode = %s", (username, mode))
-     cursor.execute("UPDATE users SET default_mode = NULL WHERE username = %s AND default_mode = %s", (username, mode))
-     db.commit()
-     db.close()
-     return redirect(url_for("mode_list"))
- 
- # =====================================
- # ⑥ API（デバッグ／センサー／CPU）
- # =====================================
- @app.route("/speedtest", methods=["GET"])
- @admin_required
- def speedtest_page():
-     return render_template("speedtest.html")
- 
- @app.route("/api/vcgencmd")
- @admin_required
- def api_vcgencmd():
+             {% if session.get('user') %}
+               {% for item in nav_items %}
+                 {% set show_item = (not item.feature_key) or has_feature(item.feature_key) or session.user == 'admin' %}
+                 {% if show_item %}
 diff --git a/templates/mode_list.html b/templates/mode_list.html
-index b2410b7739caca60ce236ef5015bc3106e124db0..8ebc9c5516821d299e8dc48cc3458d15a0375b1e 100644
+index 8ebc9c5516821d299e8dc48cc3458d15a0375b1e..512b8d4d67448d74983882bf251a9e453c106e87 100644
 --- a/templates/mode_list.html
 +++ b/templates/mode_list.html
-@@ -1,45 +1,48 @@
+@@ -1,46 +1,46 @@
  {% extends "base.html" %}
  {% block title %}モード一覧{% endblock %}
  
@@ -131,11 +108,11 @@ index b2410b7739caca60ce236ef5015bc3106e124db0..8ebc9c5516821d299e8dc48cc3458d15
          </div>
          <div>
            <a class="btn btn-sm btn-outline-primary me-2" href="{{ url_for('mode_edit_combined', mode=m.mode) }}">編集</a>
--          <a class="btn btn-sm btn-outline-danger" href="{{ url_for('mode_delete', mode=m.mode) }}" onclick="return confirm('本当に削除しますか？');">🗑 削除</a>
-+          <form method="post" action="{{ url_for('mode_delete', mode=m.mode) }}" class="d-inline" onsubmit="return confirm('本当に削除しますか？');">
-+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-+            <button type="submit" class="btn btn-sm btn-outline-danger">🗑 削除</button>
-+          </form>
+           <form method="post" action="{{ url_for('mode_delete', mode=m.mode) }}" class="d-inline" onsubmit="return confirm('本当に削除しますか？');">
+-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
++            <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+             <button type="submit" class="btn btn-sm btn-outline-danger">🗑 削除</button>
+           </form>
          </div>
        </li>
      {% endfor %}
@@ -159,5 +136,121 @@ index b2410b7739caca60ce236ef5015bc3106e124db0..8ebc9c5516821d299e8dc48cc3458d15
      </div>
      <div class="col-auto">
        <button type="submit" class="btn btn-primary">保存</button>
-     </div>
-   </form>
+diff --git a/templates/template_edit.html b/templates/template_edit.html
+index 076d0bad592e29ab0b711998beec14875f6baaf5..538826ac43053afb9e84aee667e29d9c1ad1ac92 100644
+--- a/templates/template_edit.html
++++ b/templates/template_edit.html
+@@ -1,31 +1,31 @@
+ <!DOCTYPE html>
+ <html>
+ <head>
+     <meta charset="utf-8">
+     <title>{{ mode }} モード設定とテンプレート編集</title>
+-    <meta name="csrf-token" content="{{ csrf_token() }}">
++    <meta name="csrf-token" content="{{ csrf_token_value }}">
+ </head>
+ <body>
+     <h2>{{ mode }} モード設定とテンプレート編集</h2>
+ 
+     <form method="post">
+-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
++        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+         <label>モード名:</label><br>
+         <input type="text" name="mode" value="{{ mode }}" readonly><br><br>
+ 
+         <label>表示ラベル:</label><br>
+         <input type="text" name="label" value="{{ mode_data.label if mode_data else '' }}"><br><br>
+ 
+         <label><input type="checkbox" name="enable_download_url" {% if mode_data and mode_data.enable_download_url %}checked{% endif %}> ダウンロードURLを表示</label><br>
+         <label><input type="checkbox" name="require_password" {% if mode_data and mode_data.require_password %}checked{% endif %}> パスワードを発行</label><br>
+         <label><input type="checkbox" name="enable_layer_upload_url" {% if mode_data and mode_data.enable_layer_upload_url %}checked{% endif %}> 加工済アップロードURL</label><br><br>
+ 
+         <label>テンプレート本文:</label><br>
+         <textarea name="template" rows="20" cols="80" style="width:100%;">{{ template }}</textarea><br><br>
+ 
+         <button type="submit">保存</button>
+     </form>
+ 
+     <p><a href="{{ url_for('mode_list') }}">← モード一覧に戻る</a></p>
+ </body>
+ </html>
+diff --git a/templates/upload_list.html b/templates/upload_list.html
+index 507c630f5c5d321234a9892183b7defcafee92a4..165a0de7e8b7f2baf940c1469835cd3536e84523 100644
+--- a/templates/upload_list.html
++++ b/templates/upload_list.html
+@@ -18,36 +18,36 @@
+         <tr>
+           <th style="width: 10%;">UUID</th>
+           <th>ユーザー名</th>
+           <th>タイトル</th>
+           <th>撮影日</th>
+           <th>有効期限</th>
+           <th>アップロード日時</th>
+           <th>閲覧保護</th>
+           <th>リンク</th>
+           <th>操作</th>
+         </tr>
+       </thead>
+ <tbody>
+   {% for item in uploads %}
+   <tr>
+     <td title="{{ item.uuid }}">{{ item.uuid[:8] }}...</td>
+     <td>{{ item.username }}</td>
+     <td>{{ item.title }}</td>
+     <td>{{ item.date }}</td>
+     <td>{{ item.expire_at }}</td>
+     <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M:%S') if item.created_at else 'N/A' }}</td>
+     <td>{{ '有効' if item.password_hash else 'なし' }}</td>
+     <td><a href="{{ url_for('view_upload', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary" target="_blank">表示</a></td>
+     <td>
+       <form action="{{ url_for('upload_history.upload_delete', uuid=item.uuid) }}" method="post" onsubmit="return confirm('本当に削除しますか？');">
+-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
++        <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+         <button class="btn btn-sm btn-danger">削除</button>
+       </form>
+     </td>
+   </tr>
+   {% endfor %}
+ </tbody>
+     </table>
+   </div>
+ </div>
+ {% endblock %}
+diff --git a/templates/view.html b/templates/view.html
+index 76c523c03bab908fef0a8693f008533b71bbd09b..78107898aca281bae40347e5f2f926e3475501e8 100644
+--- a/templates/view.html
++++ b/templates/view.html
+@@ -1,32 +1,32 @@
+ <!DOCTYPE html>
+ <html lang="ja">
+ <head>
+   <meta charset="UTF-8">
+   <title>写真閲覧</title>
+   <meta name="viewport" content="width=device-width, initial-scale=1">
+-  <meta name="csrf-token" content="{{ csrf_token() }}">
++  <meta name="csrf-token" content="{{ csrf_token_value }}">
+   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
+   <style>
+     body { font-family: sans-serif; background:#f9f9f9; margin:0; padding:1em; }
+     .container { max-width:800px; margin:auto; background:#fff; padding:1.5em; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,.1); }
+     h1,h2,p{ margin:0 0 .8em 0; } .info{ margin-bottom:1.2em; text-align:center; }
+ 
+     .gallery{ display:flex; flex-wrap:wrap; gap:.9em; justify-content:center; }
+     .item{ text-align:center; width:120px; }
+     .pick{ display:inline-flex; align-items:center; gap:.5em; font-size:1rem; color:#333; margin-bottom:.35em; user-select:none; }
+     .pick input[type="checkbox"]{ width:22px; height:22px; transform:scale(1.4); transform-origin:left center; accent-color:#007bff; }
+ 
+     .gallery a img{ width:110px; height:auto; border-radius:6px; border:1px solid #ccc; transition:transform .2s; }
+     .gallery a:hover img{ transform:scale(1.05); }
+ 
+     /* ▼ 下部固定ツールバー */
+     .zip-toolbar{
+       display:flex; flex-wrap:wrap; gap:.8em; justify-content:center; align-items:center;
+       background:rgba(255,255,255,.92);
+       -webkit-backdrop-filter:saturate(180%) blur(8px); backdrop-filter:saturate(180%) blur(8px);
+       border:1px solid #e6e6e6; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
+       padding:.8em 1em; position:fixed; left:50%; transform:translateX(-50%);
+       width:calc(min(100vw - 2rem, 820px));
+       bottom:max(8px, env(safe-area-inset-bottom)); z-index:1000;
+     }
+     .zip-toolbar.hidden{ display:none !important; }
