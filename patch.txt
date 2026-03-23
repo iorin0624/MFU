@@ -1,99 +1,13 @@
 diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index a1f3a92f0ae57c61b272775007340529a0938649..296ff8f2dadef6617d9e17f9937d3fa46287c91e 100644
+index 296ff8f2dadef6617d9e17f9937d3fa46287c91e..d732bfabb2ba5be93a504c965fc044d4513e4300 100644
 --- a/external_login_user/notifications.py
 +++ b/external_login_user/notifications.py
-@@ -167,56 +167,58 @@ def _is_mfu_notification_user(username: str) -> bool:
- 
- def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
-     username, role = _resolve_mfu_notification_recipient_for_session()
-     if not username:
-         current_app.logger.info("mfu notification guard denied reason=login_required")
-         return None, (jsonify({"ok": False, "reason": "login_required"}), 401)
-     if not _is_mfu_notification_user(username):
-         current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
-         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
-     current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
-     return username, None
- 
- 
- def _now_utc() -> datetime:
-     return datetime.now(timezone.utc)
- 
- 
- def _as_utc(dt: datetime | None) -> datetime | None:
-     if dt is None:
-         return None
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=timezone.utc)
-     return dt.astimezone(timezone.utc)
- 
- 
--def _same_jst_day(lhs: datetime | None, rhs: datetime | None) -> bool:
--    lhs_utc = _as_utc(lhs)
--    rhs_utc = _as_utc(rhs)
--    if lhs_utc is None or rhs_utc is None:
-+def _can_send_external_unread_reminder(last_sent_at: datetime | None, now_utc: datetime | None) -> bool:
-+    last_sent_utc = _as_utc(last_sent_at)
-+    current_utc = _as_utc(now_utc)
-+    if current_utc is None:
-         return False
--    return lhs_utc.astimezone(_JST).date() == rhs_utc.astimezone(_JST).date()
-+    if last_sent_utc is None:
-+        return True
-+    return current_utc >= (last_sent_utc + timedelta(days=2))
- 
- 
- def _relative_time_from(dt: datetime | None) -> str:
-     if not dt:
-         return ""
-     if dt.tzinfo is None:
-         dt = dt.replace(tzinfo=timezone.utc)
-     delta = max(0, int((_now_utc() - dt).total_seconds()))
-     if delta < 60:
-         return "たった今"
-     if delta < 3600:
-         return f"{delta // 60}分前"
-     if delta < 86400:
-         return f"{delta // 3600}時間前"
-     if delta < 86400 * 7:
-         return f"{delta // 86400}日前"
-     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
- 
- 
- def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
-     chat_room_id = str(row.get("chat_room_id") or "").strip()
-     chat_event_id = int(row.get("chat_event_id") or 0) or None
-     if chat_room_id:
-         return chat_event_id, chat_room_id
- 
-@@ -574,51 +576,51 @@ def create_notification_external(
-         title=title,
-         body=body,
-         target_url=target_url or "/external-login/",
-         dedup_key=dedup_key,
-         event_id=event_id,
-         chat_event_id=chat_event_id,
-         chat_room_id=chat_room_id,
-     )
-     if not result.get("ok"):
-         current_app.logger.warning(
-             "create_notification_external failed user_id=%s reason=%s",
-             user_id,
-             result.get("reason"),
-         )
-     return bool(result.get("created"))
- 
- 
- def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> dict[str, int]:
-     _ensure_notification_schema()
-     now_utc = _as_utc(now_utc) or _now_utc()
-     summary = {
+@@ -597,150 +597,151 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
          "candidates": 0,
          "sent": 0,
          "failed": 0,
          "skipped_no_mail": 0,
--        "skipped_already_sent_today": 0,
-+        "skipped_too_soon": 0,
+         "skipped_too_soon": 0,
          "skipped_no_unread": 0,
          "skipped_invalid_user": 0,
      }
@@ -114,103 +28,209 @@ index a1f3a92f0ae57c61b272775007340529a0938649..296ff8f2dadef6617d9e17f9937d3fa4
          cur.close()
          db.close()
  
-     summary["candidates"] = len(rows)
-     current_app.logger.info(
-         "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
-         summary["candidates"],
-         now_utc.isoformat(),
-@@ -628,54 +630,54 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
-     for row in rows:
-         user_id = int(row.get("id") or 0)
-         email = str(row.get("email") or "").strip()
-         last_sent_at = _as_utc(row.get("last_sent_at"))
+-    summary["candidates"] = len(rows)
+-    current_app.logger.info(
+-        "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
+-        summary["candidates"],
+-        now_utc.isoformat(),
+-        now_utc.astimezone(_JST).isoformat(),
+-    )
++    update_db = get_db()
++    update_cur = update_db.cursor()
++    try:
++        summary["candidates"] = len(rows)
++        current_app.logger.info(
++            "external unread reminder job started candidates=%s now_utc=%s now_jst=%s",
++            summary["candidates"],
++            now_utc.isoformat(),
++            now_utc.astimezone(_JST).isoformat(),
++        )
  
-         if user_id <= 0:
-             summary["skipped_invalid_user"] += 1
-             current_app.logger.info(
-                 "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
-                 user_id,
-                 email or "-",
-                 0,
-             )
-             continue
+-    for row in rows:
+-        user_id = int(row.get("id") or 0)
+-        email = str(row.get("email") or "").strip()
+-        last_sent_at = _as_utc(row.get("last_sent_at"))
+-
+-        if user_id <= 0:
+-            summary["skipped_invalid_user"] += 1
+-            current_app.logger.info(
+-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
+-                user_id,
+-                email or "-",
+-                0,
+-            )
+-            continue
+-
+-        if not email:
+-            summary["skipped_no_mail"] += 1
+-            current_app.logger.info(
+-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
+-                user_id,
+-                email or "-",
+-                0,
+-            )
+-            continue
+-
+-        if not _can_send_external_unread_reminder(last_sent_at, now_utc):
+-            summary["skipped_too_soon"] += 1
+-            current_app.logger.info(
+-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
+-                user_id,
+-                email,
+-                0,
+-                last_sent_at.isoformat() if last_sent_at else None,
+-            )
+-            continue
++        for row in rows:
++            user_id = int(row.get("id") or 0)
++            email = str(row.get("email") or "").strip()
++            last_sent_at = _as_utc(row.get("last_sent_at"))
++
++            if user_id <= 0:
++                summary["skipped_invalid_user"] += 1
++                current_app.logger.info(
++                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=invalid_user",
++                    user_id,
++                    email or "-",
++                    0,
++                )
++                continue
  
-         if not email:
-             summary["skipped_no_mail"] += 1
-             current_app.logger.info(
-                 "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
-                 user_id,
-                 email or "-",
-                 0,
-             )
-             continue
+-        try:
+-            unread_count = _compute_unread_count_external(user_id)
+-        except Exception:
+-            summary["failed"] += 1
+-            current_app.logger.exception(
+-                "external unread reminder unread count failed user_id=%s email=%s",
+-                user_id,
+-                email,
+-            )
+-            continue
+-
+-        if unread_count <= 0:
+-            summary["skipped_no_unread"] += 1
+-            current_app.logger.info(
+-                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
+-                user_id,
+-                email,
+-                unread_count,
+-            )
+-            continue
++            if not email:
++                summary["skipped_no_mail"] += 1
++                current_app.logger.info(
++                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=mailなし",
++                    user_id,
++                    email or "-",
++                    0,
++                )
++                continue
  
--        if _same_jst_day(last_sent_at, now_utc):
--            summary["skipped_already_sent_today"] += 1
-+        if not _can_send_external_unread_reminder(last_sent_at, now_utc):
-+            summary["skipped_too_soon"] += 1
-             current_app.logger.info(
--                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=当日送信済み last_sent_at=%s",
-+                "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
-                 user_id,
-                 email,
-                 0,
-                 last_sent_at.isoformat() if last_sent_at else None,
-             )
-             continue
- 
-         try:
-             unread_count = _compute_unread_count_external(user_id)
-         except Exception:
-             summary["failed"] += 1
-             current_app.logger.exception(
-                 "external unread reminder unread count failed user_id=%s email=%s",
-                 user_id,
-                 email,
-             )
-             continue
- 
-         if unread_count <= 0:
-             summary["skipped_no_unread"] += 1
-             current_app.logger.info(
-                 "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
-                 user_id,
-                 email,
-                 unread_count,
-@@ -697,56 +699,56 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
+-        try:
+-            send_external_unread_reminder_mail(email, external_login_user_id=user_id)
+-            db = get_db()
+-            update_cur = db.cursor()
+             try:
+-                update_cur.execute(
+-                    f"""
+-                    UPDATE external_login_user
+-                       SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
+-                     WHERE id=%s
+-                    """,
+-                    (now_utc.replace(tzinfo=None), user_id),
++                unread_count = _compute_unread_count_external(user_id)
++            except Exception:
++                summary["failed"] += 1
++                current_app.logger.exception(
++                    "external unread reminder unread count failed user_id=%s email=%s",
++                    user_id,
++                    email,
++                )
++                continue
++
++            if unread_count <= 0:
++                summary["skipped_no_unread"] += 1
++                current_app.logger.info(
++                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
++                    user_id,
++                    email,
++                    unread_count,
++                )
++                continue
++
++            if not _can_send_external_unread_reminder(last_sent_at, now_utc):
++                summary["skipped_too_soon"] += 1
++                current_app.logger.info(
++                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
++                    user_id,
++                    email,
++                    unread_count,
++                    last_sent_at.isoformat() if last_sent_at else None,
++                )
++                continue
++
++            try:
++                send_external_unread_reminder_mail(email, external_login_user_id=user_id)
++                try:
++                    update_cur.execute(
++                        f"""
++                        UPDATE external_login_user
++                           SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
++                         WHERE id=%s
++                        """,
++                        (now_utc.replace(tzinfo=None), user_id),
++                    )
++                    update_db.commit()
++                except Exception:
++                    update_db.rollback()
++                    raise
++                summary["sent"] += 1
++                current_app.logger.info(
++                    "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
++                    user_id,
++                    email,
++                    unread_count,
                  )
-                 db.commit()
+-                db.commit()
              except Exception:
-                 db.rollback()
-                 raise
-             finally:
-                 update_cur.close()
-                 db.close()
-             summary["sent"] += 1
-             current_app.logger.info(
-                 "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
-                 user_id,
-                 email,
-                 unread_count,
-             )
-         except Exception:
-             summary["failed"] += 1
-             current_app.logger.exception(
-                 "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
-                 user_id,
-                 email,
-                 unread_count,
-             )
+-                db.rollback()
+-                raise
+-            finally:
+-                update_cur.close()
+-                db.close()
+-            summary["sent"] += 1
+-            current_app.logger.info(
+-                "external unread reminder sent user_id=%s email=%s unread_count=%s result=success",
+-                user_id,
+-                email,
+-                unread_count,
+-            )
+-        except Exception:
+-            summary["failed"] += 1
+-            current_app.logger.exception(
+-                "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
+-                user_id,
+-                email,
+-                unread_count,
+-            )
++                summary["failed"] += 1
++                current_app.logger.exception(
++                    "external unread reminder failed user_id=%s email=%s unread_count=%s result=failed",
++                    user_id,
++                    email,
++                    unread_count,
++                )
++    finally:
++        update_cur.close()
++        update_db.close()
  
      current_app.logger.info(
--        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_already_sent_today=%s skipped_no_unread=%s skipped_invalid_user=%s",
-+        "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_too_soon=%s skipped_no_unread=%s skipped_invalid_user=%s",
+         "external unread reminder job finished candidates=%s sent=%s failed=%s skipped_no_mail=%s skipped_too_soon=%s skipped_no_unread=%s skipped_invalid_user=%s",
          summary["candidates"],
          summary["sent"],
          summary["failed"],
          summary["skipped_no_mail"],
--        summary["skipped_already_sent_today"],
-+        summary["skipped_too_soon"],
+         summary["skipped_too_soon"],
          summary["skipped_no_unread"],
          summary["skipped_invalid_user"],
      )
@@ -228,221 +248,176 @@ index a1f3a92f0ae57c61b272775007340529a0938649..296ff8f2dadef6617d9e17f9937d3fa4
              """
              SELECT COUNT(*) AS cnt
                FROM mfu_notifications
-              WHERE user_kind='mfu'
-                AND recipient_key=%s
-                AND read_at IS NULL
-             """,
-             (recipient,),
-         )
-         return int((cur.fetchone() or {}).get("cnt") or 0)
-     finally:
 diff --git a/tests/test_external_unread_reminder.py b/tests/test_external_unread_reminder.py
-index b96994c38cddda7a8b92cc3189ca19b0a42d6bc6..ccdaf45be24515703ffaea4ed801349e9ae13638 100644
+index ccdaf45be24515703ffaea4ed801349e9ae13638..f5a0f4ec9fd44212a3232cdfe3791c8f4147b041 100644
 --- a/tests/test_external_unread_reminder.py
 +++ b/tests/test_external_unread_reminder.py
-@@ -114,82 +114,175 @@ def load_notifications_module():
-     spec.loader.exec_module(module)
-     return module
+@@ -159,130 +159,151 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
+             self.committed = False
+             self.rolled_back = False
  
+         def cursor(self, dictionary=False):
+             return self.select_cursor if dictionary else self.update_cursor
  
- class ExternalUnreadReminderMailTest(unittest.TestCase):
-     def test_send_external_unread_reminder_mail_uses_existing_send_mail(self):
-         mail_module = load_mail_module()
+         def commit(self):
+             self.committed = True
  
-         with patch.object(mail_module, "send_mail") as mocked:
-             mail_module.send_external_unread_reminder_mail(
-                 "user@example.com",
-                 external_login_user_id=123,
+         def rollback(self):
+             self.rolled_back = True
+ 
+         def close(self):
+             return None
+ 
+     def test_can_send_external_unread_reminder_allows_null_last_sent_at(self):
+         notifications = load_notifications_module()
+ 
+         self.assertTrue(
+             notifications._can_send_external_unread_reminder(
+                 None,
+                 datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc),
              )
- 
-         mocked.assert_called_once_with(
-             "user@example.com",
-             mail_module.EXTERNAL_UNREAD_REMINDER_SUBJECT,
-             mail_module.EXTERNAL_UNREAD_REMINDER_BODY,
-             external_login_user_id=123,
-             mail_kind="external_unread_reminder",
-             append_signature=False,
          )
  
- 
- class ExternalUnreadReminderNotificationTest(unittest.TestCase):
--    def test_same_jst_day_uses_jst_boundary(self):
--        notifications = load_notifications_module()
--        late_jst = datetime(2026, 3, 19, 14, 59, tzinfo=timezone.utc)
--        next_day_jst = datetime(2026, 3, 19, 15, 1, tzinfo=timezone.utc)
--        same_day_jst = datetime(2026, 3, 19, 3, 0, tzinfo=timezone.utc)
-+    class _FakeCursor:
-+        def __init__(self, rows=None):
-+            self._rows = rows or []
-+            self.executed = []
- 
--        self.assertFalse(notifications._same_jst_day(late_jst, next_day_jst))
--        self.assertTrue(notifications._same_jst_day(late_jst, same_day_jst))
-+        def execute(self, query, params=None):
-+            self.executed.append((query, params))
-+            return None
- 
--    def test_send_external_unread_reminder_emails_skips_user_already_sent_today(self):
--        notifications = load_notifications_module()
-+        def fetchall(self):
-+            return self._rows
- 
--        class FakeCursor:
--            def __init__(self, rows):
--                self._rows = rows
-+        def close(self):
-+            return None
- 
--            def execute(self, *args, **kwargs):
--                return None
-+    class _FakeDB:
-+        def __init__(self, rows=None):
-+            self._rows = rows or []
-+            self.select_cursor = ExternalUnreadReminderNotificationTest._FakeCursor(self._rows)
-+            self.update_cursor = ExternalUnreadReminderNotificationTest._FakeCursor()
-+            self.committed = False
-+            self.rolled_back = False
- 
--            def fetchall(self):
--                return self._rows
-+        def cursor(self, dictionary=False):
-+            return self.select_cursor if dictionary else self.update_cursor
- 
--            def close(self):
--                return None
-+        def commit(self):
-+            self.committed = True
- 
--        class FakeDB:
--            def __init__(self, rows):
--                self._rows = rows
-+        def rollback(self):
-+            self.rolled_back = True
- 
--            def cursor(self, dictionary=True):
--                return FakeCursor(self._rows)
-+        def close(self):
-+            return None
- 
--            def close(self):
--                return None
-+    def test_can_send_external_unread_reminder_allows_null_last_sent_at(self):
++    def test_send_external_unread_reminder_emails_skips_no_unread_before_too_soon(self):
 +        notifications = load_notifications_module()
- 
--        last_sent_at = datetime(2026, 3, 20, 1, 0, 0)
--        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": last_sent_at}]
-+        self.assertTrue(
-+            notifications._can_send_external_unread_reminder(
-+                None,
-+                datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc),
-+            )
-+        )
-+
-+    def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
-+        notifications = load_notifications_module()
-+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
++        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 22, 9, 0, 0)}]
 +        select_db = self._FakeDB(rows)
++        update_db = self._FakeDB()
++
++        with (
++            patch.object(notifications, "_ensure_notification_schema"),
++            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
++            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
++            patch.object(notifications, "_compute_unread_count_external", return_value=0) as mocked_unread,
++        ):
++            summary = notifications.send_external_unread_reminder_emails(
++                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
++            )
++
++        self.assertEqual(summary["candidates"], 1)
++        self.assertEqual(summary["skipped_no_unread"], 1)
++        self.assertEqual(summary["skipped_too_soon"], 0)
++        self.assertEqual(summary["sent"], 0)
++        mocked_send.assert_not_called()
++        mocked_unread.assert_called_once_with(10)
++        self.assertEqual(update_db.update_cursor.executed, [])
++
+     def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
+         notifications = load_notifications_module()
+         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
+         select_db = self._FakeDB(rows)
++        update_db = self._FakeDB()
  
          with (
              patch.object(notifications, "_ensure_notification_schema"),
--            patch.object(notifications, "get_db", return_value=FakeDB(rows)),
-+            patch.object(notifications, "get_db", return_value=select_db),
+-            patch.object(notifications, "get_db", return_value=select_db),
++            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
              patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
+-            patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
++            patch.object(notifications, "_compute_unread_count_external", return_value=2) as mocked_unread,
          ):
              summary = notifications.send_external_unread_reminder_emails(
--                now_utc=datetime(2026, 3, 20, 2, 0, tzinfo=timezone.utc)
-+                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
+                 now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
              )
  
          self.assertEqual(summary["candidates"], 1)
--        self.assertEqual(summary["skipped_already_sent_today"], 1)
-+        self.assertEqual(summary["skipped_too_soon"], 1)
+         self.assertEqual(summary["skipped_too_soon"], 1)
          self.assertEqual(summary["sent"], 0)
          mocked_send.assert_not_called()
-         mocked_unread.assert_not_called()
+-        mocked_unread.assert_not_called()
++        mocked_unread.assert_called_once_with(10)
++        self.assertEqual(update_db.update_cursor.executed, [])
  
-+    def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
-+        notifications = load_notifications_module()
-+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
-+        select_db = self._FakeDB(rows)
-+        update_db = self._FakeDB()
-+        get_db_side_effect = [select_db, update_db]
-+        now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
-+
-+        with (
-+            patch.object(notifications, "_ensure_notification_schema"),
-+            patch.object(notifications, "get_db", side_effect=get_db_side_effect),
-+            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "_compute_unread_count_external", return_value=3),
-+        ):
-+            summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
-+
-+        self.assertEqual(summary["sent"], 1)
-+        self.assertEqual(summary["failed"], 0)
-+        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-+        self.assertTrue(update_db.committed)
-+        self.assertFalse(update_db.rolled_back)
-+        self.assertEqual(
-+            update_db.update_cursor.executed,
-+            [
-+                (
-+                    """
-+                    UPDATE external_login_user
-+                       SET notification_unread_reminder_last_sent_at=%s
-+                     WHERE id=%s
-+                    """,
-+                    (now_utc.replace(tzinfo=None), 10),
-+                )
-+            ],
-+        )
-+
-+    def test_send_external_unread_reminder_emails_updates_last_sent_at_only_on_success(self):
-+        notifications = load_notifications_module()
-+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
-+        select_db = self._FakeDB(rows)
-+        update_db = self._FakeDB()
-+        get_db_side_effect = [select_db, update_db]
-+        now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
-+
-+        with (
-+            patch.object(notifications, "_ensure_notification_schema"),
-+            patch.object(notifications, "get_db", side_effect=get_db_side_effect),
-+            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "_compute_unread_count_external", return_value=1),
-+        ):
-+            summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
-+
-+        self.assertEqual(summary["sent"], 1)
-+        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-+        self.assertTrue(update_db.committed)
+     def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
+         notifications = load_notifications_module()
+         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
+         select_db = self._FakeDB(rows)
+         update_db = self._FakeDB()
+         get_db_side_effect = [select_db, update_db]
+         now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
+ 
+         with (
+             patch.object(notifications, "_ensure_notification_schema"),
+             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
+             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+             patch.object(notifications, "_compute_unread_count_external", return_value=3),
+         ):
+             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
+ 
+         self.assertEqual(summary["sent"], 1)
+         self.assertEqual(summary["failed"], 0)
+         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
+         self.assertTrue(update_db.committed)
+         self.assertFalse(update_db.rolled_back)
 +        self.assertEqual(len(update_db.update_cursor.executed), 1)
-+
-+    def test_send_external_unread_reminder_emails_does_not_update_last_sent_at_on_failure(self):
-+        notifications = load_notifications_module()
-+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
-+        select_db = self._FakeDB(rows)
-+
-+        with (
-+            patch.object(notifications, "_ensure_notification_schema"),
-+            patch.object(notifications, "get_db", return_value=select_db),
-+            patch.object(
-+                notifications,
-+                "send_external_unread_reminder_mail",
-+                side_effect=RuntimeError("smtp error"),
-+            ) as mocked_send,
-+            patch.object(notifications, "_compute_unread_count_external", return_value=2),
-+        ):
-+            summary = notifications.send_external_unread_reminder_emails(
-+                now_utc=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
-+            )
-+
-+        self.assertEqual(summary["failed"], 1)
-+        self.assertEqual(summary["sent"], 0)
-+        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-+        self.assertFalse(select_db.committed)
-+        self.assertEqual(select_db.update_cursor.executed, [])
-+
++        executed_query, executed_params = update_db.update_cursor.executed[0]
+         self.assertEqual(
+-            update_db.update_cursor.executed,
+-            [
+-                (
+-                    """
+-                    UPDATE external_login_user
+-                       SET notification_unread_reminder_last_sent_at=%s
+-                     WHERE id=%s
+-                    """,
+-                    (now_utc.replace(tzinfo=None), 10),
+-                )
+-            ],
++            " ".join(executed_query.split()),
++            "UPDATE external_login_user SET notification_unread_reminder_last_sent_at=%s WHERE id=%s",
+         )
++        self.assertEqual(executed_params, (now_utc.replace(tzinfo=None), 10))
+ 
+     def test_send_external_unread_reminder_emails_updates_last_sent_at_only_on_success(self):
+         notifications = load_notifications_module()
+         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
+         select_db = self._FakeDB(rows)
+         update_db = self._FakeDB()
+         get_db_side_effect = [select_db, update_db]
+         now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
+ 
+         with (
+             patch.object(notifications, "_ensure_notification_schema"),
+             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
+             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+             patch.object(notifications, "_compute_unread_count_external", return_value=1),
+         ):
+             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
+ 
+         self.assertEqual(summary["sent"], 1)
+         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
+         self.assertTrue(update_db.committed)
+         self.assertEqual(len(update_db.update_cursor.executed), 1)
+ 
+     def test_send_external_unread_reminder_emails_does_not_update_last_sent_at_on_failure(self):
+         notifications = load_notifications_module()
+         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
+         select_db = self._FakeDB(rows)
++        update_db = self._FakeDB()
+ 
+         with (
+             patch.object(notifications, "_ensure_notification_schema"),
+-            patch.object(notifications, "get_db", return_value=select_db),
++            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
+             patch.object(
+                 notifications,
+                 "send_external_unread_reminder_mail",
+                 side_effect=RuntimeError("smtp error"),
+             ) as mocked_send,
+             patch.object(notifications, "_compute_unread_count_external", return_value=2),
+         ):
+             summary = notifications.send_external_unread_reminder_emails(
+                 now_utc=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
+             )
+ 
+         self.assertEqual(summary["failed"], 1)
+         self.assertEqual(summary["sent"], 0)
+         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
+-        self.assertFalse(select_db.committed)
+-        self.assertEqual(select_db.update_cursor.executed, [])
++        self.assertFalse(update_db.committed)
++        self.assertEqual(update_db.update_cursor.executed, [])
+ 
  
  if __name__ == "__main__":
      unittest.main()

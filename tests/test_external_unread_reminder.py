@@ -181,16 +181,41 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             )
         )
 
+    def test_send_external_unread_reminder_emails_skips_no_unread_before_too_soon(self):
+        notifications = load_notifications_module()
+        rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 22, 9, 0, 0)}]
+        select_db = self._FakeDB(rows)
+        update_db = self._FakeDB()
+
+        with (
+            patch.object(notifications, "_ensure_notification_schema"),
+            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
+            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+            patch.object(notifications, "_compute_unread_count_external", return_value=0) as mocked_unread,
+        ):
+            summary = notifications.send_external_unread_reminder_emails(
+                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
+            )
+
+        self.assertEqual(summary["candidates"], 1)
+        self.assertEqual(summary["skipped_no_unread"], 1)
+        self.assertEqual(summary["skipped_too_soon"], 0)
+        self.assertEqual(summary["sent"], 0)
+        mocked_send.assert_not_called()
+        mocked_unread.assert_called_once_with(10)
+        self.assertEqual(update_db.update_cursor.executed, [])
+
     def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
         notifications = load_notifications_module()
         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
         select_db = self._FakeDB(rows)
+        update_db = self._FakeDB()
 
         with (
             patch.object(notifications, "_ensure_notification_schema"),
-            patch.object(notifications, "get_db", return_value=select_db),
+            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
             patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-            patch.object(notifications, "_compute_unread_count_external") as mocked_unread,
+            patch.object(notifications, "_compute_unread_count_external", return_value=2) as mocked_unread,
         ):
             summary = notifications.send_external_unread_reminder_emails(
                 now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
@@ -200,7 +225,8 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         self.assertEqual(summary["skipped_too_soon"], 1)
         self.assertEqual(summary["sent"], 0)
         mocked_send.assert_not_called()
-        mocked_unread.assert_not_called()
+        mocked_unread.assert_called_once_with(10)
+        self.assertEqual(update_db.update_cursor.executed, [])
 
     def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
         notifications = load_notifications_module()
@@ -223,19 +249,13 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
         self.assertTrue(update_db.committed)
         self.assertFalse(update_db.rolled_back)
+        self.assertEqual(len(update_db.update_cursor.executed), 1)
+        executed_query, executed_params = update_db.update_cursor.executed[0]
         self.assertEqual(
-            update_db.update_cursor.executed,
-            [
-                (
-                    """
-                    UPDATE external_login_user
-                       SET notification_unread_reminder_last_sent_at=%s
-                     WHERE id=%s
-                    """,
-                    (now_utc.replace(tzinfo=None), 10),
-                )
-            ],
+            " ".join(executed_query.split()),
+            "UPDATE external_login_user SET notification_unread_reminder_last_sent_at=%s WHERE id=%s",
         )
+        self.assertEqual(executed_params, (now_utc.replace(tzinfo=None), 10))
 
     def test_send_external_unread_reminder_emails_updates_last_sent_at_only_on_success(self):
         notifications = load_notifications_module()
@@ -262,10 +282,11 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         notifications = load_notifications_module()
         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
         select_db = self._FakeDB(rows)
+        update_db = self._FakeDB()
 
         with (
             patch.object(notifications, "_ensure_notification_schema"),
-            patch.object(notifications, "get_db", return_value=select_db),
+            patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
             patch.object(
                 notifications,
                 "send_external_unread_reminder_mail",
@@ -280,8 +301,8 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         self.assertEqual(summary["failed"], 1)
         self.assertEqual(summary["sent"], 0)
         mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-        self.assertFalse(select_db.committed)
-        self.assertEqual(select_db.update_cursor.executed, [])
+        self.assertFalse(update_db.committed)
+        self.assertEqual(update_db.update_cursor.executed, [])
 
 
 if __name__ == "__main__":
