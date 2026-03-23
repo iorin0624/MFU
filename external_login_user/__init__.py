@@ -250,6 +250,7 @@ from .utils import (
     _get_current_privacy_policy_config,
     _needs_privacy_policy_agreement,
     _sanitize_ext_local_url,
+    _is_disallowed_ext_redirect_path,
 )
 
 _ALLOW_UNVERIFIED_ENDPOINTS = {
@@ -368,8 +369,9 @@ def _lock_privacy_policy_globally():
         if not _needs_privacy_policy_agreement(me, config):
             return None
 
-        next_url = _sanitize_ext_local_url(request.full_path or request.url, default="/external-login/")
-        if next_url not in {"/external-login/", "/external-login"}:
+        raw_next_url = _sanitize_ext_local_url(request.full_path or request.url, default="/external-login/")
+        if not _is_disallowed_ext_redirect_path(raw_next_url) and raw_next_url not in {"/external-login/", "/external-login"}:
+            next_url = raw_next_url
             session["ext_after_privacy_policy_next"] = next_url
         return redirect(url_for("external_login_user.index"))
     except Exception:
