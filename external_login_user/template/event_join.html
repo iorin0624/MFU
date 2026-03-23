@@ -129,6 +129,32 @@
       </div>
       {% endif %}
 
+      {% if participant_terms_effective %}
+      <div class="col-12">
+        <div class="card h-100">
+          <div class="card-body">
+            <h2 class="h6 mb-3">参加条件・支払・キャンセル規定・返金規定</h2>
+            <div class="form-check">
+              <input
+                class="form-check-input {% if participant_terms_error %}is-invalid{% endif %}"
+                type="checkbox"
+                id="participantTermsAgree"
+                name="participant_terms_agree"
+                value="1"
+                {% if participant_terms_checked %}checked{% endif %}>
+              <label class="form-check-label" for="participantTermsAgree">
+                参加条件・支払・キャンセル規定・返金規定に同意する
+                <a href="{{ participant_terms_url }}" target="_blank" rel="noopener">（リンク）</a>
+              </label>
+              {% if participant_terms_error %}
+                <div class="invalid-feedback d-block">{{ participant_terms_error }}</div>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
       <div class="col-12 d-flex gap-2">
         <button class="btn btn-primary">参加を申請する</button>
         <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">キャンセル</a>

@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}プライバシーポリシー設定{% endblock %}
+{% block title %}外部ログイン向けドキュメント設定{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h4 mb-0">プライバシーポリシー設定</h1>
+  <h1 class="h4 mb-0">外部ログイン向けドキュメント設定</h1>
   <div class="d-flex gap-2">
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">外部ユーザー一覧へ</a>
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_events_list') }}">イベント一覧へ</a>
@@ -14,87 +14,197 @@
   <div class="alert alert-danger" role="alert">{{ errors.form }}</div>
 {% endif %}
 
-<div class="row g-4">
-  <div class="col-lg-7">
-    <div class="card">
-      <div class="card-body">
-        <form method="post" novalidate>
-          <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+<form method="post" novalidate>
+  <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
 
-          <div class="mb-3">
-            <label class="form-label" for="privacy_policy_url">GoogleドキュメントURL</label>
-            <input
-              type="url"
-              class="form-control {% if errors.privacy_policy_url %}is-invalid{% endif %}"
-              id="privacy_policy_url"
-              name="privacy_policy_url"
-              value="{{ form.privacy_policy_url or '' }}"
-              placeholder="https://docs.google.com/...">
-            {% if errors.privacy_policy_url %}
-              <div class="invalid-feedback">{{ errors.privacy_policy_url }}</div>
+  <div class="row g-4">
+    <div class="col-lg-7">
+      <div class="d-grid gap-4">
+        <div class="card">
+          <div class="card-header">1. プライバシーポリシー</div>
+          <div class="card-body">
+            <div class="mb-3">
+              <label class="form-label" for="privacy_policy_url">GoogleドキュメントURL</label>
+              <input
+                type="url"
+                class="form-control {% if errors.privacy_policy_url %}is-invalid{% endif %}"
+                id="privacy_policy_url"
+                name="privacy_policy_url"
+                value="{{ form.privacy_policy_url or '' }}"
+                placeholder="https://docs.google.com/...">
+              {% if errors.privacy_policy_url %}
+                <div class="invalid-feedback">{{ errors.privacy_policy_url }}</div>
+              {% endif %}
+              <div class="form-text">URL または改定日のどちらか一方だけでも保存できますが、両方そろうまで利用者側では未設定扱いになります。</div>
+            </div>
+
+            <div class="mb-0">
+              <label class="form-label" for="privacy_policy_revised_date">改定日</label>
+              <input
+                type="date"
+                class="form-control {% if errors.privacy_policy_revised_date %}is-invalid{% endif %}"
+                id="privacy_policy_revised_date"
+                name="privacy_policy_revised_date"
+                value="{{ form.privacy_policy_revised_date or '' }}">
+              {% if errors.privacy_policy_revised_date %}
+                <div class="invalid-feedback">{{ errors.privacy_policy_revised_date }}</div>
+              {% endif %}
+              <div class="form-text">改定日が変わると、ログイン後と参加申請時に再同意を求めます。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">2. 特定商取引法</div>
+          <div class="card-body">
+            <div class="mb-0">
+              <label class="form-label" for="commerce_law_url">GoogleドキュメントURL</label>
+              <input
+                type="url"
+                class="form-control {% if errors.commerce_law_url %}is-invalid{% endif %}"
+                id="commerce_law_url"
+                name="commerce_law_url"
+                value="{{ form.commerce_law_url or '' }}"
+                placeholder="https://docs.google.com/...">
+              {% if errors.commerce_law_url %}
+                <div class="invalid-feedback">{{ errors.commerce_law_url }}</div>
+              {% endif %}
+              <div class="form-text">ログイン前の既存表示は維持され、ログイン後のみこのリンク表示に切り替わります。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">3. 参加条件・支払・キャンセル規定・返金規定</div>
+          <div class="card-body">
+            <div class="mb-3">
+              <label class="form-label" for="participant_terms_url">GoogleドキュメントURL</label>
+              <input
+                type="url"
+                class="form-control {% if errors.participant_terms_url %}is-invalid{% endif %}"
+                id="participant_terms_url"
+                name="participant_terms_url"
+                value="{{ form.participant_terms_url or '' }}"
+                placeholder="https://docs.google.com/...">
+              {% if errors.participant_terms_url %}
+                <div class="invalid-feedback">{{ errors.participant_terms_url }}</div>
+              {% endif %}
+              <div class="form-text">参加申請画面では、URL と改定日の両方が有効な場合に必須同意として扱います。</div>
+            </div>
+
+            <div class="mb-0">
+              <label class="form-label" for="participant_terms_revised_date">改定日</label>
+              <input
+                type="date"
+                class="form-control {% if errors.participant_terms_revised_date %}is-invalid{% endif %}"
+                id="participant_terms_revised_date"
+                name="participant_terms_revised_date"
+                value="{{ form.participant_terms_revised_date or '' }}">
+              {% if errors.participant_terms_revised_date %}
+                <div class="invalid-feedback">{{ errors.participant_terms_revised_date }}</div>
+              {% endif %}
+              <div class="form-text">申請単位で、どの改定日に同意したかを保存します。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="d-flex gap-2">
+          <button class="btn btn-primary" type="submit">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="d-grid gap-4">
+        <div class="card">
+          <div class="card-header">現在の有効状態</div>
+          <div class="card-body">
+            {% if privacy_policy_effective %}
+              <div class="alert alert-success">プライバシーポリシーは有効です。</div>
+            {% else %}
+              <div class="alert alert-warning">プライバシーポリシーは未設定または無効設定です。</div>
             {% endif %}
-            <div class="form-text">URL または改定日のどちらか一方だけでも保存できますが、両方そろうまで利用者側では未設定扱いになります。</div>
-          </div>
 
-          <div class="mb-3">
-            <label class="form-label" for="privacy_policy_revised_date">改定日</label>
-            <input
-              type="date"
-              class="form-control {% if errors.privacy_policy_revised_date %}is-invalid{% endif %}"
-              id="privacy_policy_revised_date"
-              name="privacy_policy_revised_date"
-              value="{{ form.privacy_policy_revised_date or '' }}">
-            {% if errors.privacy_policy_revised_date %}
-              <div class="invalid-feedback">{{ errors.privacy_policy_revised_date }}</div>
+            <dl class="row mb-0">
+              <dt class="col-sm-5">URL</dt>
+              <dd class="col-sm-7">
+                {% if current_config.privacy_policy_url %}
+                  <a href="{{ current_config.privacy_policy_url }}" target="_blank" rel="noopener">{{ current_config.privacy_policy_url }}</a>
+                {% else %}
+                  <span class="text-muted">未設定</span>
+                {% endif %}
+              </dd>
+
+              <dt class="col-sm-5">改定日</dt>
+              <dd class="col-sm-7">
+                {% if privacy_policy_revised_date_label %}
+                  {{ privacy_policy_revised_date_label }}
+                {% else %}
+                  <span class="text-muted">未設定</span>
+                {% endif %}
+              </dd>
+            </dl>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">特定商取引法リンク状態</div>
+          <div class="card-body">
+            {% if commerce_law_effective %}
+              <div class="alert alert-success">ログイン後のリンク表示に使用されます。</div>
+            {% else %}
+              <div class="alert alert-warning">URL未設定のため、ログイン後は既存表示を継続します。</div>
             {% endif %}
-            <div class="form-text">再同意が必要になるのは、この改定日が変わったときだけです。</div>
+            <dl class="row mb-0">
+              <dt class="col-sm-5">URL</dt>
+              <dd class="col-sm-7">
+                {% if commerce_law_config.commerce_law_url %}
+                  <a href="{{ commerce_law_config.commerce_law_url }}" target="_blank" rel="noopener">{{ commerce_law_config.commerce_law_url }}</a>
+                {% else %}
+                  <span class="text-muted">未設定</span>
+                {% endif %}
+              </dd>
+            </dl>
           </div>
+        </div>
 
-          <div class="d-flex gap-2">
-            <button class="btn btn-primary" type="submit">保存</button>
+        <div class="card">
+          <div class="card-header">参加条件・支払・キャンセル規定・返金規定の状態</div>
+          <div class="card-body">
+            {% if participant_terms_effective %}
+              <div class="alert alert-success">参加申請画面の必須同意に使用されます。</div>
+            {% else %}
+              <div class="alert alert-warning">URL または改定日が不足しているため無効設定です。</div>
+            {% endif %}
+            <dl class="row mb-0">
+              <dt class="col-sm-5">URL</dt>
+              <dd class="col-sm-7">
+                {% if current_config.participant_terms_url %}
+                  <a href="{{ current_config.participant_terms_url }}" target="_blank" rel="noopener">{{ current_config.participant_terms_url }}</a>
+                {% else %}
+                  <span class="text-muted">未設定</span>
+                {% endif %}
+              </dd>
+
+              <dt class="col-sm-5">改定日</dt>
+              <dd class="col-sm-7">
+                {% if participant_terms_revised_date_label %}
+                  {{ participant_terms_revised_date_label }}
+                {% else %}
+                  <span class="text-muted">未設定</span>
+                {% endif %}
+              </dd>
+
+              <dt class="col-sm-5">更新者</dt>
+              <dd class="col-sm-7">{{ current_config.updated_by or '—' }}</dd>
+
+              <dt class="col-sm-5">更新日時</dt>
+              <dd class="col-sm-7">{{ current_config.updated_at or '—' }}</dd>
+            </dl>
           </div>
-        </form>
+        </div>
       </div>
     </div>
   </div>
-
-  <div class="col-lg-5">
-    <div class="card">
-      <div class="card-header">現在の有効状態</div>
-      <div class="card-body">
-        {% if privacy_policy_effective %}
-          <div class="alert alert-success">現在のプライバシーポリシーは有効です。</div>
-        {% else %}
-          <div class="alert alert-warning">現在はポリシー未設定です。</div>
-        {% endif %}
-
-        <dl class="row mb-0">
-          <dt class="col-sm-4">URL</dt>
-          <dd class="col-sm-8">
-            {% if current_config.privacy_policy_url %}
-              <a href="{{ current_config.privacy_policy_url }}" target="_blank" rel="noopener">{{ current_config.privacy_policy_url }}</a>
-            {% else %}
-              <span class="text-muted">未設定</span>
-            {% endif %}
-          </dd>
-
-          <dt class="col-sm-4">改定日</dt>
-          <dd class="col-sm-8">
-            {% if privacy_policy_revised_date_label %}
-              {{ privacy_policy_revised_date_label }}
-            {% else %}
-              <span class="text-muted">未設定</span>
-            {% endif %}
-          </dd>
-
-          <dt class="col-sm-4">更新者</dt>
-          <dd class="col-sm-8">{{ current_config.updated_by or '—' }}</dd>
-
-          <dt class="col-sm-4">更新日時</dt>
-          <dd class="col-sm-8">{{ current_config.updated_at or '—' }}</dd>
-        </dl>
-      </div>
-    </div>
-  </div>
-</div>
+</form>
 {% endblock %}

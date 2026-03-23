@@ -15,8 +15,12 @@ from .utils import (
     _event_invite_url,
     extract_lat_lng_from_maps_url,  # 追加
     QR_TRADEMARK_NOTICE,
+    _get_external_document_config,
     _get_current_privacy_policy_config,
+    _get_current_commerce_law_config,
+    _get_current_participant_terms_config,
     _is_privacy_policy_effective,
+    _is_participant_terms_effective,
     _privacy_policy_date_label,
 )
 
@@ -34,7 +38,7 @@ from .payments import _ensure_payment_uuid_for_event
 from app.utils.db import get_db
 
 
-def _normalize_privacy_policy_admin_url(raw_url: str | None) -> str | None:
+def _normalize_document_admin_url(raw_url: str | None) -> str | None:
     value = (raw_url or "").strip()
     if not value:
         return None
@@ -43,7 +47,7 @@ def _normalize_privacy_policy_admin_url(raw_url: str | None) -> str | None:
     return None
 
 
-def _parse_privacy_policy_revised_date(raw_value: str | None):
+def _parse_document_revised_date(raw_value: str | None):
     value = (raw_value or "").strip()
     if not value:
         return None
@@ -367,12 +371,18 @@ def admin_privacy_policy():
         return guard
 
     admin_csrf = _admin_csrf_token()
-    config = _get_current_privacy_policy_config()
+    config = _get_external_document_config()
     form = {
         "privacy_policy_url": config.get("privacy_policy_url") or "",
         "privacy_policy_revised_date": (
             config["privacy_policy_revised_date"].isoformat()
             if config.get("privacy_policy_revised_date") else ""
+        ),
+        "commerce_law_url": config.get("commerce_law_url") or "",
+        "participant_terms_url": config.get("participant_terms_url") or "",
+        "participant_terms_revised_date": (
+            config["participant_terms_revised_date"].isoformat()
+            if config.get("participant_terms_revised_date") else ""
         ),
     }
     errors: dict[str, str] = {}
@@ -385,14 +395,26 @@ def admin_privacy_policy():
 
         form["privacy_policy_url"] = (request.form.get("privacy_policy_url") or "").strip()
         form["privacy_policy_revised_date"] = (request.form.get("privacy_policy_revised_date") or "").strip()
+        form["commerce_law_url"] = (request.form.get("commerce_law_url") or "").strip()
+        form["participant_terms_url"] = (request.form.get("participant_terms_url") or "").strip()
+        form["participant_terms_revised_date"] = (request.form.get("participant_terms_revised_date") or "").strip()
 
-        normalized_url = _normalize_privacy_policy_admin_url(form["privacy_policy_url"])
-        revised_date = _parse_privacy_policy_revised_date(form["privacy_policy_revised_date"])
+        normalized_privacy_url = _normalize_document_admin_url(form["privacy_policy_url"])
+        privacy_revised_date = _parse_document_revised_date(form["privacy_policy_revised_date"])
+        normalized_commerce_law_url = _normalize_document_admin_url(form["commerce_law_url"])
+        normalized_participant_terms_url = _normalize_document_admin_url(form["participant_terms_url"])
+        participant_terms_revised_date = _parse_document_revised_date(form["participant_terms_revised_date"])
 
-        if form["privacy_policy_url"] and not normalized_url:
+        if form["privacy_policy_url"] and not normalized_privacy_url:
             errors["privacy_policy_url"] = "URLは http:// または https:// で始まる形式で入力してください。"
-        if form["privacy_policy_revised_date"] and not revised_date:
+        if form["privacy_policy_revised_date"] and not privacy_revised_date:
             errors["privacy_policy_revised_date"] = "改定日は yyyy-mm-dd 形式で入力してください。"
+        if form["commerce_law_url"] and not normalized_commerce_law_url:
+            errors["commerce_law_url"] = "URLは http:// または https:// で始まる形式で入力してください。"
+        if form["participant_terms_url"] and not normalized_participant_terms_url:
+            errors["participant_terms_url"] = "URLは http:// または https:// で始まる形式で入力してください。"
+        if form["participant_terms_revised_date"] and not participant_terms_revised_date:
+            errors["participant_terms_revised_date"] = "改定日は yyyy-mm-dd 形式で入力してください。"
 
         if not errors:
             db = get_db(); cur = db.cursor()
@@ -400,24 +422,34 @@ def admin_privacy_policy():
                 cur.execute(
                     """
                     INSERT INTO mfu_external_privacy_policy_config
-                      (privacy_policy_url, privacy_policy_revised_date, updated_by)
-                    VALUES (%s, %s, %s)
+                      (
+                        privacy_policy_url,
+                        privacy_policy_revised_date,
+                        commerce_law_url,
+                        participant_terms_url,
+                        participant_terms_revised_date,
+                        updated_by
+                      )
+                    VALUES (%s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        normalized_url,
-                        revised_date,
+                        normalized_privacy_url,
+                        privacy_revised_date,
+                        normalized_commerce_law_url,
+                        normalized_participant_terms_url,
+                        participant_terms_revised_date,
                         (session.get("user") or "").strip() or None,
                     ),
                 )
                 db.commit()
-                flash("プライバシーポリシー設定を保存しました。", "success")
+                flash("外部ログイン向けドキュメント設定を保存しました。", "success")
                 return redirect(url_for("external_login_user.admin_privacy_policy"))
             except Exception:
                 try:
                     db.rollback()
                 except Exception:
                     pass
-                current_app.logger.exception("privacy policy admin save failed")
+                current_app.logger.exception("external document admin save failed")
                 errors["form"] = "保存に失敗しました。時間をおいて再度お試しください。"
             finally:
                 try:
@@ -425,15 +457,22 @@ def admin_privacy_policy():
                 except Exception:
                     pass
 
-    current_config = _get_current_privacy_policy_config()
+    current_config = _get_external_document_config()
+    privacy_config = _get_current_privacy_policy_config()
+    commerce_law_config = _get_current_commerce_law_config()
+    participant_terms_config = _get_current_participant_terms_config()
     return render_template(
         "admin_privacy_policy.html",
         admin_csrf=admin_csrf,
         form=form,
         errors=errors,
         current_config=current_config,
-        privacy_policy_effective=_is_privacy_policy_effective(current_config),
-        privacy_policy_revised_date_label=_privacy_policy_date_label(current_config.get("privacy_policy_revised_date")),
+        privacy_policy_effective=_is_privacy_policy_effective(privacy_config),
+        privacy_policy_revised_date_label=_privacy_policy_date_label(privacy_config.get("privacy_policy_revised_date")),
+        commerce_law_config=commerce_law_config,
+        commerce_law_effective=bool(commerce_law_config.get("commerce_law_url")),
+        participant_terms_effective=_is_participant_terms_effective(participant_terms_config),
+        participant_terms_revised_date_label=_privacy_policy_date_label(participant_terms_config.get("participant_terms_revised_date")),
     )
 
 # admin.py の admin_events_list() を置換
