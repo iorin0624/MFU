@@ -122,50 +122,21 @@ MFU PASS
           {% if checked_in|default(false) %}
             <div class="meta fw-bold text-success">受付済</div>
             <div class="small text-muted">受付時刻: {{ checkin_at_str or '-' }}</div>
-            <div class="small text-muted">受付方法: {{ (checkin_method == 'qr') and 'QRコード' or 'GPS' }}</div>
-            {% if checkin_method == 'qr' %}
-              <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
-            {% endif %}
+            <div class="small text-muted">受付方法: QRコード</div>
+            <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
           {% else %}
             <div class="meta text-danger">未受付</div>
           {% endif %}
         </div>
 
-        {# --- 受付ボタン（状態表示一体型） --- #}
-        {% if checkin_qr_enabled|default(false) %}
-          <div>
-            <div class="lbl">受付（会場掲示QRコード）</div>
-            <div class="small text-muted mb-2">会場掲示QRコードから受付してください。</div>
-            {% if not (checked_in|default(false) and checkin_method == 'qr') %}
-              <div class="small text-muted mb-2">※ {{ qr_trademark_notice }}</div>
-            {% endif %}
-            <div class="nowtime" id="nowtime" aria-live="polite"></div>
-          </div>
-        {% else %}
-          <div>
-            <div class="lbl">受付（GPSチェックイン）</div>
-            {% if gps_checkin_enabled|default(true) %}
-              <button
-                id="btn-checkin"
-                class="btn w-100 btn-lg {% if checked_in|default(false) %}btn-primary{% else %}btn-danger{% endif %}"
-                {% if checked_in|default(false) %}disabled{% endif %}
-              >
-                {% if checked_in|default(false) %}
-                  ✅ チェックイン完了
-                {% else %}
-                  📍 この場所でチェックインする
-                {% endif %}
-              </button>
-              <div class="nowtime" id="nowtime" aria-live="polite"></div>
-              <div id="checkin-message" class="mt-2 small text-muted"></div>
-            {% else %}
-              <div class="mt-2 small text-muted">
-                このイベントではGPSチェックインは利用できません。
-              </div>
-              <div class="nowtime" id="nowtime" aria-live="polite"></div>
-            {% endif %}
-          </div>
-        {% endif %}
+        <div>
+          <div class="lbl">受付（会場掲示QRコード）</div>
+          <div class="small text-muted mb-2">会場掲示QRコードから受付してください。</div>
+          {% if not checked_in|default(false) %}
+            <div class="small text-muted mb-2">※ {{ qr_trademark_notice }}</div>
+          {% endif %}
+          <div class="nowtime" id="nowtime" aria-live="polite"></div>
+        </div>
 
         <div class="footer-hint">
           画面は常時動作する背景を含みます。提示中は明るさを上げてご提示ください。
@@ -186,136 +157,6 @@ MFU PASS
       });
       function tick(){ el.textContent = '現在時刻：' + fmt.format(new Date()); }
       tick(); setInterval(tick, 1000);
-    })();
-
-    // GPSチェックイン
-    (function(){
-      const btn = document.getElementById('btn-checkin');
-      if (!btn) return;
-
-      const msgEl = document.getElementById('checkin-message');
-
-      // /external-login/events/pass/<uuid> から <uuid> を抜いて URL を組み立てる
-      const pathParts = window.location.pathname.split('/').filter(Boolean);
-      // ... ["external-login","events","pass","<uuid>"]
-      const eventUuid = pathParts[pathParts.length - 1];
-      const checkinUrl = `/external-login/events/pass/${eventUuid}/checkin`;
-      console.log("checkinUrl =", checkinUrl);
-
-      function setMessage(text, isError) {
-        if (!msgEl) return;
-        msgEl.textContent = text || '';
-        msgEl.classList.toggle('text-danger', !!isError);
-        msgEl.classList.toggle('text-success', !isError && !!text);
-      }
-
-      btn.addEventListener('click', function () {
-        if (!navigator.geolocation) {
-          setMessage('この端末では位置情報が利用できません。受付スタッフにお声がけください。', true);
-          return;
-        }
-
-        btn.disabled = true;
-        btn.textContent = '位置情報を取得中…';
-        setMessage('', false);
-
-        navigator.geolocation.getCurrentPosition(function (pos) {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          console.log("got position:", lat, lng);
-
-          // JSON ではなく URL エンコードの form データで送る
-          const params = new URLSearchParams();
-          params.append('lat', String(lat));
-          params.append('lng', String(lng));
-
-          fetch(checkinUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-              'X-Requested-With': 'XMLHttpRequest'
-            },
-            credentials: 'same-origin',
-            body: params.toString()
-          })
-          .then(async r => {
-            console.log("checkin response status =", r.status);
-            const ct = r.headers.get('content-type') || '';
-
-            if (!ct.includes('application/json')) {
-              const text = await r.text();
-              console.error('non-JSON response:', text);
-              throw { nonJson: true, status: r.status, body: text };
-            }
-
-            const data = await r.json();
-            console.log("checkin response json =", data);
-
-            if (!data.ok) {
-              // 失敗 → 赤ボタンに戻す
-              btn.disabled = false;
-              btn.textContent = '📍 この場所でチェックインする';
-              btn.classList.remove('btn-primary');
-              btn.classList.add('btn-danger');
-
-              let msg = data.error || '受付に失敗しました。';
-              if (data.distance_m && data.radius_m) {
-                msg += `（距離 約 ${data.distance_m}m / 許容 ${data.radius_m}m）`;
-              }
-              setMessage(msg, true);
-              return;
-            }
-
-            // 正常受付 → 青ボタン＋完了表示
-            btn.disabled = true;
-            btn.textContent = '✅ チェックイン完了';
-            btn.classList.remove('btn-danger');
-            btn.classList.add('btn-primary');
-
-            setMessage(data.message || '受付が完了しました。', false);
-          })
-          .catch(err => {
-            console.error('checkin fetch error', err);
-            btn.disabled = false;
-            btn.textContent = '📍 この場所でチェックインする';
-            btn.classList.remove('btn-primary');
-            btn.classList.add('btn-danger');
-
-            if (err && err.nonJson) {
-              setMessage(
-                'サーバー側でエラーが発生しました。（HTTP ' + err.status + '） 時間をおいて再度お試しください。',
-                true
-              );
-            } else {
-              setMessage('通信エラーが発生しました。時間をおいて再度お試しください。', true);
-            }
-          });
-        }, function (err) {
-          console.error('geolocation error', err);
-          btn.disabled = false;
-          btn.textContent = '📍 この場所でチェックインする';
-          btn.classList.remove('btn-primary');
-          btn.classList.add('btn-danger');
-
-          switch (err.code) {
-            case err.PERMISSION_DENIED:
-              setMessage('位置情報の利用が拒否されました。ブラウザや端末の設定を確認してください。', true);
-              break;
-            case err.POSITION_UNAVAILABLE:
-              setMessage('現在位置を取得できませんでした。屋外などで再度お試しください。', true);
-              break;
-            case err.TIMEOUT:
-              setMessage('位置情報の取得がタイムアウトしました。再度お試しください。', true);
-              break;
-            default:
-              setMessage('位置情報取得中にエラーが発生しました。', true);
-          }
-        }, {
-          enableHighAccuracy: true,
-          timeout: 15000,
-          maximumAge: 0
-        });
-      });
     })();
 
     // 絵文字フロート

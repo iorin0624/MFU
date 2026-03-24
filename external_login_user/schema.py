@@ -45,6 +45,9 @@ CREATE TABLE IF NOT EXISTS mfu_event (
   tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
   pay_from        DATETIME        NULL,
   pay_until       DATETIME        NULL,
+  checkin_qr_enabled TINYINT(1)   NOT NULL DEFAULT 1,
+  checkin_qr_token   CHAR(64)     NULL,
+  checkin_qr_expires_at DATETIME  NULL,
   place_name      VARCHAR(200)    NULL,
   address         VARCHAR(255)    NULL,
   maps_url        VARCHAR(512)    NULL,
@@ -301,13 +304,11 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
             _ensure_col("mfu_event", "checkin_qr_enabled",
-                        "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
+                        "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER pay_until")
             _ensure_col("mfu_event", "checkin_qr_token",
                         "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
             _ensure_col("mfu_event", "checkin_qr_expires_at",
                         "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
-            _ensure_col("mfu_event_member", "checkin_method",
-                        "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
 
             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
@@ -366,33 +367,42 @@ def _on_bp_registered(state) -> None:
                 """,
             )
 
-            def _ensure_checkin_method_enum() -> None:
+            try:
+                cur.execute("""
+                    UPDATE mfu_event
+                       SET checkin_qr_enabled = 1
+                """)
+                cur.execute("""
+                    UPDATE mfu_event
+                       SET checkin_qr_token = LOWER(HEX(RANDOM_BYTES(32)))
+                     WHERE checkin_qr_token IS NULL
+                        OR CHAR_LENGTH(TRIM(checkin_qr_token)) <> 64
+                """)
+            except Exception:
+                app.logger.exception("failed to normalize QR checkin flags/tokens")
+
+            def _drop_col_if_exists(table: str, col: str) -> None:
                 try:
                     cur.execute("""
-                        SELECT COLUMN_TYPE FROM information_schema.COLUMNS
-                         WHERE TABLE_SCHEMA=DATABASE()
-                           AND TABLE_NAME='mfu_event_member'
-                           AND COLUMN_NAME='checkin_method'
-                    """)
-                    row = cur.fetchone()
-                    column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
+                        SELECT COUNT(*) FROM information_schema.COLUMNS
+                         WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
+                    """, (table, col))
+                    has = int(cur.fetchone()[0] or 0)
                 except Exception:
-                    app.logger.exception("failed to inspect mfu_event_member.checkin_method")
+                    has = 0
+                if not has:
                     return
-
-                lowered = str(column_type or "").lower()
-                if ("'gps'" in lowered) and ("'qr'" in lowered):
-                    return
-
                 try:
-                    cur.execute("""
-                        ALTER TABLE mfu_event_member
-                          MODIFY COLUMN checkin_method ENUM('gps','qr') NULL
-                    """)
+                    cur.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
                 except Exception:
-                    app.logger.exception("failed to alter mfu_event_member.checkin_method enum")
+                    app.logger.exception("failed to drop column %s.%s", table, col)
 
-            _ensure_checkin_method_enum()
+            _drop_col_if_exists("mfu_event_member", "checkin_lat")
+            _drop_col_if_exists("mfu_event_member", "checkin_lng")
+            _drop_col_if_exists("mfu_event_member", "checkin_method")
+            _drop_col_if_exists("mfu_event", "event_lat")
+            _drop_col_if_exists("mfu_event", "event_lng")
+            _drop_col_if_exists("mfu_event", "checkin_radius_m")
 
             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
             _ensure_col("mfu_event", "line_openchat_url",

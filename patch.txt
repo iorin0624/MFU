@@ -1,8 +1,125 @@
+diff --git a/docs/sql/20260324_external_login_user_remove_gps_checkin.sql b/docs/sql/20260324_external_login_user_remove_gps_checkin.sql
+new file mode 100644
+index 0000000000000000000000000000000000000000..96915795940c276e979776a6975189b39ffc9056
+--- /dev/null
++++ b/docs/sql/20260324_external_login_user_remove_gps_checkin.sql
+@@ -0,0 +1,111 @@
++-- GPSチェックイン機能廃止 + QRチェックイン常時有効化
++-- 対象: external_login_user
++
++START TRANSACTION;
++
++-- 1) 既存イベントを QR 常時有効へ寄せる
++UPDATE mfu_event
++   SET checkin_qr_enabled = 1;
++
++-- 2) 無効/空トークンを再生成（64桁hexへ統一）
++UPDATE mfu_event
++   SET checkin_qr_token = LOWER(HEX(RANDOM_BYTES(32)))
++ WHERE checkin_qr_token IS NULL
++    OR CHAR_LENGTH(TRIM(checkin_qr_token)) <> 64
++    OR NOT (TRIM(checkin_qr_token) REGEXP '^[0-9A-Fa-f]{64}$');
++
++-- 3) デフォルトを常時ONへ変更
++SET @sql = (
++  SELECT IF(
++    EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event'
++         AND COLUMN_NAME = 'checkin_qr_enabled'
++    ),
++    'ALTER TABLE mfu_event MODIFY COLUMN checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 1',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++-- 4) GPS専用カラムを削除（存在確認つき）
++SET @sql = (
++  SELECT IF(EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event_member'
++         AND COLUMN_NAME = 'checkin_lat'
++    ),
++    'ALTER TABLE mfu_event_member DROP COLUMN checkin_lat',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++SET @sql = (
++  SELECT IF(EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event_member'
++         AND COLUMN_NAME = 'checkin_lng'
++    ),
++    'ALTER TABLE mfu_event_member DROP COLUMN checkin_lng',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++SET @sql = (
++  SELECT IF(EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event_member'
++         AND COLUMN_NAME = 'checkin_method'
++    ),
++    'ALTER TABLE mfu_event_member DROP COLUMN checkin_method',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++SET @sql = (
++  SELECT IF(EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event'
++         AND COLUMN_NAME = 'event_lat'
++    ),
++    'ALTER TABLE mfu_event DROP COLUMN event_lat',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++SET @sql = (
++  SELECT IF(EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event'
++         AND COLUMN_NAME = 'event_lng'
++    ),
++    'ALTER TABLE mfu_event DROP COLUMN event_lng',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++SET @sql = (
++  SELECT IF(EXISTS(
++      SELECT 1 FROM information_schema.COLUMNS
++       WHERE TABLE_SCHEMA = DATABASE()
++         AND TABLE_NAME = 'mfu_event'
++         AND COLUMN_NAME = 'checkin_radius_m'
++    ),
++    'ALTER TABLE mfu_event DROP COLUMN checkin_radius_m',
++    'SELECT 1'
++  )
++);
++PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
++
++COMMIT;
 diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index 67fdb18c4f1cea5c65d12ca26f14f74b7da34861..f12b916d83c271090327b21ebb162743d6e574be 100644
+index f12b916d83c271090327b21ebb162743d6e574be..95f4ce8dd46b368f878507a08b863a450bf3c113 100644
 --- a/external_login_user/admin.py
 +++ b/external_login_user/admin.py
-@@ -1,32 +1,33 @@
+@@ -1,45 +1,44 @@
  # -*- coding: utf-8 -*-
  from __future__ import annotations
  import csv
@@ -10,7 +127,7 @@ index 67fdb18c4f1cea5c65d12ca26f14f74b7da34861..f12b916d83c271090327b21ebb162743
  import os
  import re
  import textwrap
-+from functools import lru_cache
+ from functools import lru_cache
  from flask import request, jsonify
  from email.mime.text import MIMEText
  from email.header import Header
@@ -22,7 +139,7 @@ index 67fdb18c4f1cea5c65d12ca26f14f74b7da34861..f12b916d83c271090327b21ebb162743
      _event_admin_can_manage,
      _ensure_event_invite_token,
      _event_invite_url,
-     extract_lat_lng_from_maps_url,  # 追加
+-    extract_lat_lng_from_maps_url,  # 追加
      QR_TRADEMARK_NOTICE,
      _get_external_document_config,
      _get_current_privacy_policy_config,
@@ -36,149 +153,1670 @@ index 67fdb18c4f1cea5c65d12ca26f14f74b7da34861..f12b916d83c271090327b21ebb162743
  from app.utils.mail import send_mail
  
  
-@@ -1321,65 +1322,69 @@ def _compose_member_role_label(member: dict) -> str:
-     elif role_raw == "cosplayer":
-         role_label = f"衣装（{costume_label}）" if costume_label else "衣装"
-     elif role_raw == "other":
-         role_label = f"その他（{costume_label}）" if costume_label else "その他"
- 
-     if admin_prefix and role_label:
-         return f"{admin_prefix}＆{role_label}"
-     if admin_prefix:
-         return admin_prefix
-     if role_label:
-         return role_label
-     return "その他"
+ from io import StringIO, BytesIO
+ from flask import request, session, redirect, url_for, render_template, abort, flash, make_response, send_file
+ from . import bp
+ from .utils import (
+     _require_mfu_login_redirect, _admin_csrf_token, _uuid_bytes_to_str, _event_admin_can_view, update_event_member_status,
+ )
+ from .albums import create_event_album
+ from .payments import _ensure_payment_uuid_for_event
+ from app.utils.db import get_db
  
  
- def _safe_png_download_filename(event_id: int, title: str | None) -> str:
-     base = (title or "").strip()
-     if not base:
-         return f"participants_{event_id}.png"
-     safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", base)
-     safe = re.sub(r"\s+", "_", safe).strip("._")
-     if not safe:
-         safe = f"event_{event_id}"
-     return f"{safe}_参加者一覧.png"
+ def _normalize_document_admin_url(raw_url: str | None) -> str | None:
+@@ -687,53 +686,54 @@ def admin_event_new():
+     address   = (request.form.get("address") or "").strip()
+     maps_url  = (request.form.get("maps_url") or "").strip()
+     # ▼ 新規：支払期間（未入力は None → NULL）
+     pay_from  = (request.form.get("pay_from") or "").strip() or None
+     pay_until = (request.form.get("pay_until") or "").strip() or None
+     google_form_url = (request.form.get("google_form_url") or "").strip() or None
+ 
+     errors = {}
+     if not title:
+         errors["title"] = "タイトルは必須です。"
+     if fee_yen and not fee_yen.isdigit():
+         errors["fee_yen"] = "参加費は半角数字（円）で入力してください。"
+ 
+     if errors:
+         return render_template("admin_event_new.html",
+                                form={"title": title, "starts_at": starts_at, "fee_yen": fee_yen,
+                                      "place_name": place, "address": address, "maps_url": maps_url,
+                                      "pay_from": pay_from, "pay_until": pay_until},
+                                errors=errors), 400
+ 
+     db = get_db(); cur = db.cursor()
+     cur.execute("""
+       INSERT INTO mfu_event (
+         event_uuid, title, owner_user_id, starts_at, fee_yen,
+         pay_from, pay_until,
+-        place_name, address, maps_url
++        place_name, address, maps_url,
++        checkin_qr_enabled
+       )
+-      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s)
++      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1)
+     """, (title, (starts_at or None), (int(fee_yen) if fee_yen else None),
+           pay_from, pay_until,
+           (place or None), (address or None), (maps_url or None)))
+     db.commit()
+     new_id = cur.lastrowid
+     cur.close(); db.close()
+ 
+     # アルバム自動作成
+     album_id = create_event_album(title=title, event_id=new_id)
+     db = get_db(); cur = db.cursor()
+     cur.execute("UPDATE mfu_event SET album_id=%s WHERE id=%s", (album_id, new_id))
+     db.commit(); cur.close(); db.close()
+ 
+     # 決済イベントUUIDも事前作成
+     _ensure_payment_uuid_for_event(new_id)
+ 
+     flash("イベントを作成しました（連携アルバム・決済UUIDを自動作成）", "success")
+     return redirect(url_for("external_login_user.admin_event_view", event_id=new_id))
  
  
--def _load_png_font(size: int, bold: bool = False):
--    font_candidates = []
--    if bold:
--        font_candidates.append("/workspace/MFU/PDF_Font/BIZUDPGothic-Bold.ttf")
--    font_candidates.extend([
--        "/workspace/MFU/PDF_Font/BIZUDPGothic-Regular.ttf",
--        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
--    ])
--    for fp in font_candidates:
--        if fp and os.path.exists(fp):
--            try:
--                return ImageFont.truetype(fp, size)
--            except Exception:
--                continue
--    return ImageFont.load_default()
-+PNG_FONT_PATH = "/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf"
+ @bp.route("/admin/events/<int:event_id>")
+ def admin_event_view(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_view(event_id):
+@@ -1060,52 +1060,50 @@ def admin_event_edit(event_id: int):
+         "paypay_display": ev.get("paypay_display") or "",
+     }
+     errors: dict[str, str] = {}
+ 
+     if request.method == "POST":
+         token = request.form.get("csrf_token", "")
+         if not token or token != admin_csrf:
+             abort(400, "invalid csrf token")
+ 
+         title       = (request.form.get("title") or "").strip()
+         starts_at_in= request.form.get("starts_at") or ""
+         pay_from_in = request.form.get("pay_from")  or ""
+         pay_until_in= request.form.get("pay_until") or ""
+         fee_yen_in  = request.form.get("fee_yen")
+         studio_fee_yen_in = request.form.get("studio_fee_yen")
+         fee_rate_percent_in = request.form.get("fee_rate_percent")
+         admin_fee_yen_in = request.form.get("admin_fee_yen")
+         require_payment_count_in = request.form.get("require_payment_count")
+         fee_auto_calc = 1 if request.form.get("fee_auto_calc") else 0
+ 
+         place_name  = (request.form.get("place_name") or "").strip() or None
+         address     = (request.form.get("address") or "").strip() or None
+         maps_url    = (request.form.get("maps_url") or "").strip() or None
+         sns_hashtag = (request.form.get("sns_hashtag") or "").strip() or None
+ 
+-        auto_lat, auto_lng = extract_lat_lng_from_maps_url(maps_url) if maps_url else (None, None)
+-
+         line_openchat_url  = (request.form.get("line_openchat_url")  or "").strip() or None
+         line_openchat_pass = (request.form.get("line_openchat_pass") or "").strip() or None
+         google_form_url    = (request.form.get("google_form_url")    or "").strip() or None
+ 
+         album_id    = (request.form.get("album_id") or "").strip() or None
+         memo_all    = (request.form.get("memo_all") or "").strip() or None
+ 
+         allow_square   = 1 if request.form.get("allow_square") else 0
+         allow_paypay   = 1 if request.form.get("allow_paypay") else 0
+         allow_bank     = 1 if request.form.get("allow_bank")   else 0
+         paypay_display = (request.form.get("paypay_display") or "").strip() or None
+         tip_enabled = 1 if request.form.get("tip_enabled") else 0
+ 
+         if not title:
+             errors["title"] = "タイトルは必須です。"
+ 
+         fee_yen = None
+         if fee_yen_in not in (None, ""):
+             try:
+                 fee_yen = int(fee_yen_in)
+                 if fee_yen < 0: raise ValueError()
+             except Exception:
+                 errors["fee_yen"] = "参加費は0以上の整数で指定してください。"
+ 
+         studio_fee_yen = None
+@@ -1166,58 +1164,50 @@ def admin_event_edit(event_id: int):
+         # === 保存処理 ===
+         dbu = get_db(); curu = dbu.cursor()
+         try:
+             curu.execute("""
+                 UPDATE mfu_event
+                    SET title=%s, starts_at=%s, fee_yen=%s,
+                        studio_fee_yen=%s, fee_rate_percent=%s, admin_fee_yen=%s,
+                        fee_auto_calc=%s,
+                        pay_from=%s, pay_until=%s,
+                        place_name=%s, address=%s, maps_url=%s, sns_hashtag=%s,
+                        line_openchat_url=%s, line_openchat_pass=%s, google_form_url=%s,
+                        album_id=%s, memo_all=%s,
+                        allow_square=%s, allow_paypay=%s, allow_bank=%s, tip_enabled=%s, paypay_display=%s
+                  WHERE id=%s
+                  LIMIT 1
+             """, (title, starts_at, fee_yen,
+                   studio_fee_yen, fee_rate_percent, admin_fee_yen,
+                   fee_auto_calc,
+                   pay_from, pay_until,
+                   place_name, address, maps_url, sns_hashtag,
+                   line_openchat_url, line_openchat_pass, google_form_url,
+                   album_id, memo_all,
+                   allow_square, allow_paypay, allow_bank, tip_enabled, paypay_display,
+                   event_id))
+ 
+-            if auto_lat is not None and auto_lng is not None:
+-                curu.execute("""
+-                    UPDATE mfu_event
+-                       SET event_lat=%s, event_lng=%s
+-                     WHERE id=%s
+-                     LIMIT 1
+-                """, (auto_lat, auto_lng, event_id))
+-
+             dbu.commit()
+         finally:
+             try: curu.close(); dbu.close()
+             except Exception: pass
+ 
+         # === ここから追加：全体メモ変更時のメール通知 ===
+         try:
+             before = (ev.get("memo_all") or "").strip()
+             after  = (memo_all or "").strip()
+             if before != after:
+                 # 宛先：承認済み + 主催/副主催（status IS NULL）に送る
+                 dbn = get_db(); curn = dbn.cursor()
+                 try:
+                     curn.execute("""
+                         SELECT DISTINCT u.email
+                          FROM mfu_event_member m
+                           JOIN external_login_user u ON u.id = m.user_id
+                          WHERE m.event_id=%s
+                            AND (m.status='approved' OR m.status IS NULL)
+                            AND COALESCE(m.is_canceled,0)=0
+                            AND u.email IS NOT NULL
+                     """, (event_id,))
+                     rows = curn.fetchall() or []
+                 finally:
+                     try: curn.close(); dbn.close()
+@@ -2981,106 +2971,62 @@ def admin_toggle_auto_approve(event_id: int):
+         "invite_token": (token if enable == 1 else None)
+     })
+ 
+ 
+ # トークン発行/再発行（スイッチOFFのままでも可）
+ @bp.post("/external-login/admin/event/<int:event_id>/invite/rotate")
+ def admin_rotate_invite_token(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_manage(event_id):
+         abort(403, "このイベントを管理する権限がありません。")
+     _assert_admin_csrf()
+ 
+     new_tok = os.urandom(32).hex()  # 256bit → 64桁hex(小文字)
+     db = get_db(); cur = db.cursor()
+     try:
+         cur.execute("UPDATE mfu_event SET invite_token=%s WHERE id=%s", (new_tok, event_id))
+         db.commit()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return jsonify({"ok": True, "invite_token": new_tok})
+ 
+ 
+-@bp.post("/external-login/admin/event/<int:event_id>/checkin-qr")
+-def admin_toggle_checkin_qr(event_id: int):
+-    guard = _require_mfu_login_redirect()
+-    if guard: return guard
+-    if not _event_admin_can_manage(event_id):
+-        abort(403, "このイベントを管理する権限がありません。")
+-    _assert_admin_csrf()
+-
+-    enable = 1 if (request.form.get("enable") == "1") else 0
+-
+-    db = get_db(); cur = db.cursor(dictionary=True)
+-    try:
+-        cur.execute("""
+-            SELECT checkin_qr_token
+-              FROM mfu_event
+-             WHERE id=%s
+-             LIMIT 1
+-        """, (event_id,))
+-        row = cur.fetchone() or {}
+-        token = (row.get("checkin_qr_token") or "").strip()
+-        if enable == 1 and (not token or len(token) != 64):
+-            token = os.urandom(32).hex()
+-            cur.execute("""
+-                UPDATE mfu_event
+-                   SET checkin_qr_enabled=%s,
+-                       checkin_qr_token=%s
+-                 WHERE id=%s
+-            """, (enable, token, event_id))
+-        else:
+-            cur.execute("UPDATE mfu_event SET checkin_qr_enabled=%s WHERE id=%s", (enable, event_id))
+-        db.commit()
+-    finally:
+-        try: cur.close(); db.close()
+-        except Exception: pass
+-
+-    return jsonify({
+-        "ok": True,
+-        "checkin_qr_enabled": enable,
+-        "checkin_qr_token": (token if token else None),
+-        "checkin_qr_url": _build_checkin_qr_url(token),
+-        "qr_trademark_notice": QR_TRADEMARK_NOTICE,
+-    })
+-
+-
+ @bp.post("/external-login/admin/event/<int:event_id>/checkin-qr/rotate")
+ def admin_rotate_checkin_qr_token(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_manage(event_id):
+         abort(403, "このイベントを管理する権限がありません。")
+     _assert_admin_csrf()
+ 
+     new_tok = os.urandom(32).hex()
+     db = get_db(); cur = db.cursor()
+     try:
+-        cur.execute("UPDATE mfu_event SET checkin_qr_token=%s WHERE id=%s", (new_tok, event_id))
++        cur.execute("UPDATE mfu_event SET checkin_qr_enabled=1, checkin_qr_token=%s WHERE id=%s", (new_tok, event_id))
+         db.commit()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     return jsonify({
+         "ok": True,
+         "checkin_qr_token": new_tok,
+         "checkin_qr_url": _build_checkin_qr_url(new_tok),
+         "qr_trademark_notice": QR_TRADEMARK_NOTICE,
+     })
+ 
+ 
+ @bp.post("/external-login/admin/event/<int:event_id>/checkin-qr/expires")
+ def admin_update_checkin_qr_expires(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_manage(event_id):
+         abort(403, "このイベントを管理する権限がありません。")
+     _assert_admin_csrf()
+ 
+     raw = (request.form.get("expires_at") or "").strip()
+     expires_at = None
+     if raw:
+         from datetime import datetime as _dt
+@@ -3225,62 +3171,64 @@ def admin_event_copy(event_id: int):
+           title, fee_yen,
+           place_name, address, maps_url,
+           pay_from, pay_until,
+           line_openchat_url, line_openchat_pass,
+           google_form_url,
+           memo_all,
+           allow_square, allow_paypay, allow_bank,
+           paypay_display
+         FROM mfu_event
+         WHERE id=%s
+         LIMIT 1
+     """, (event_id,))
+     src = cur.fetchone()
+     if not src:
+         abort(404)
+ 
+     # 新規作成（UUIDは新規）
+     new_title = f"{src['title']}（コピー）"
+ 
+     cur.execute("""
+         INSERT INTO mfu_event (
+           event_uuid, title, owner_user_id,
+           fee_yen,
+           place_name, address, maps_url,
+           pay_from, pay_until,
++          checkin_qr_enabled,
+           line_openchat_url, line_openchat_pass,
+           google_form_url,
+           memo_all,
+           allow_square, allow_paypay, allow_bank,
+           paypay_display
+         )
+         VALUES (
+           UNHEX(REPLACE(UUID(),'-','')),
+           %s, NULL,
+           %s,
+           %s, %s, %s,
+           %s, %s,
++          1,
+           %s, %s,
+           %s,
+           %s,
+           %s, %s, %s,
+           %s
+         )
+     """, (
+         new_title,
+         src["fee_yen"],
+         src["place_name"], src["address"], src["maps_url"],
+         src["pay_from"], src["pay_until"],
+         src["line_openchat_url"], src["line_openchat_pass"],
+         src["google_form_url"],
+         src["memo_all"],
+         src["allow_square"], src["allow_paypay"], src["allow_bank"],
+         src["paypay_display"],
+     ))
+ 
+     db.commit()
+     new_event_id = cur.lastrowid
+     cur.close(); db.close()
+ 
+     # 新規アルバム＆決済UUID
+     album_id = create_event_album(title=new_title, event_id=new_event_id)
+     db = get_db(); cur = db.cursor()
+diff --git a/external_login_user/schema.py b/external_login_user/schema.py
+index 1acf0a61382c53551456565bd1b7d1ad8d889c2b..9ba4d95cebe0772852c18793a64dc1cd64407d0d 100644
+--- a/external_login_user/schema.py
++++ b/external_login_user/schema.py
+@@ -23,50 +23,53 @@ CREATE TABLE IF NOT EXISTS external_login_user (
+   chat_admin_alias TINYINT(1)      NOT NULL DEFAULT 0,
+   notification_unread_reminder_last_sent_at DATETIME NULL,
+   created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uniq_mfu_uuid   (mfu_uuid),
+   UNIQUE KEY uniq_social_id  (social_id),
+   KEY        idx_x_id        (x_id),
+   KEY        idx_instagram   (instagram_id),
+   KEY        idx_email       (email)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ # ★ 支払期間（pay_from / pay_until）をDDLに追加
+ DDL_EVENT = """
+ CREATE TABLE IF NOT EXISTS mfu_event (
+   id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   event_uuid      BINARY(16)      NOT NULL,
+   title           VARCHAR(200)    NOT NULL,
+   owner_user_id   BIGINT UNSIGNED NULL,
+   starts_at       DATETIME        NULL,
+   fee_yen         INT UNSIGNED    NULL,
+   tip_enabled     TINYINT(1)      NOT NULL DEFAULT 0,
+   pay_from        DATETIME        NULL,
+   pay_until       DATETIME        NULL,
++  checkin_qr_enabled TINYINT(1)   NOT NULL DEFAULT 1,
++  checkin_qr_token   CHAR(64)     NULL,
++  checkin_qr_expires_at DATETIME  NULL,
+   place_name      VARCHAR(200)    NULL,
+   address         VARCHAR(255)    NULL,
+   maps_url        VARCHAR(512)    NULL,
+   sns_hashtag     VARCHAR(255)    NULL,
+   google_form_url VARCHAR(512)    NULL,
+   album_id        CHAR(36)        NULL,
+   payment_uuid    CHAR(32)        NULL,
+   created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   PRIMARY KEY (id),
+   UNIQUE KEY uniq_event_uuid (event_uuid)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+ """
+ 
+ DDL_EVENT_MEMBER = """
+ CREATE TABLE IF NOT EXISTS mfu_event_member (
+   id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+   event_id           BIGINT UNSIGNED NOT NULL,
+   user_id            BIGINT UNSIGNED NOT NULL,
+   role               ENUM('viewer','editor') NOT NULL DEFAULT 'viewer',
+   status             ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
+   payment_status     ENUM('unpaid','pending','paid','refunded') NOT NULL DEFAULT 'unpaid',
+   require_payment    TINYINT(1) NOT NULL DEFAULT 1,
+   process            TINYINT(1) NOT NULL DEFAULT 0,
+   paid_at            DATETIME NULL,
+   payment_row_id     BIGINT UNSIGNED NULL,
+@@ -279,57 +282,55 @@ def _on_bp_registered(state) -> None:
+             _ensure_col(
+                 "mfu_event_member",
+                 "participant_terms_agreed_at",
+                 "participant_terms_agreed_at DATETIME NULL AFTER joined_at",
+             )
+             _ensure_col(
+                 "mfu_event_member",
+                 "participant_terms_agreed_revised_date",
+                 "participant_terms_agreed_revised_date DATE NULL AFTER participant_terms_agreed_at",
+             )
+             _ensure_col(
+                 "mfu_event_member",
+                 "privacy_policy_join_agreed_at",
+                 "privacy_policy_join_agreed_at DATETIME NULL AFTER participant_terms_agreed_revised_date",
+             )
+             _ensure_col(
+                 "mfu_event_member",
+                 "privacy_policy_join_agreed_revised_date",
+                 "privacy_policy_join_agreed_revised_date DATE NULL AFTER privacy_policy_join_agreed_at",
+             )
+ 
+             # ★ 追加：支払期間 列（後方互換で追加）
+             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
+             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+             _ensure_col("mfu_event", "checkin_qr_enabled",
+-                        "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER pay_until")
++                        "checkin_qr_enabled TINYINT(1) NOT NULL DEFAULT 1 AFTER pay_until")
+             _ensure_col("mfu_event", "checkin_qr_token",
+                         "checkin_qr_token CHAR(64) NULL AFTER checkin_qr_enabled")
+             _ensure_col("mfu_event", "checkin_qr_expires_at",
+                         "checkin_qr_expires_at DATETIME NULL AFTER checkin_qr_token")
+-            _ensure_col("mfu_event_member", "checkin_method",
+-                        "checkin_method ENUM('gps','qr') NULL AFTER checkin_lng")
+ 
+             _ensure_col("mfu_payment_request", "event_uuid", "event_uuid CHAR(36) NULL AFTER event_id")
+             _ensure_col("mfu_payment_request", "nickname", "nickname VARCHAR(50) NULL AFTER user_id")
+             _ensure_col("mfu_payment_request", "x_id", "x_id VARCHAR(15) NULL AFTER nickname")
+             _ensure_col("mfu_payment_request", "instagram_id", "instagram_id VARCHAR(30) NULL AFTER x_id")
+             _ensure_col("mfu_payment_request", "buyer_email", "buyer_email VARCHAR(255) NULL AFTER instagram_id")
+             _ensure_col("mfu_payment_request", "lecture_auto_approve",
+                         "lecture_auto_approve TINYINT(1) NOT NULL DEFAULT 0 AFTER amount_yen")
+ 
+             _ensure_col(
+                 "external_login_resume_token",
+                 "pwa_client_id_hash",
+                 "pwa_client_id_hash CHAR(64) NULL AFTER mode",
+             )
+ 
+             def _ensure_payment_request_status_enum() -> None:
+                 try:
+                     cur.execute("""
+                         SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+                          WHERE TABLE_SCHEMA=DATABASE()
+                            AND TABLE_NAME='mfu_payment_request'
+                            AND COLUMN_NAME='status'
+                     """)
+                     row = cur.fetchone()
+                     column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
+@@ -344,77 +345,86 @@ def _on_bp_registered(state) -> None:
+                 try:
+                     cur.execute("""
+                         ALTER TABLE mfu_payment_request
+                           MODIFY COLUMN status ENUM('pending','used','canceled')
+                           NOT NULL DEFAULT 'pending'
+                     """)
+                 except Exception:
+                     app.logger.exception("failed to alter mfu_payment_request.status enum")
+ 
+             _ensure_payment_request_status_enum()
+ 
+             _ensure_index(
+                 cur,
+                 """
+                 SELECT COUNT(*) FROM information_schema.STATISTICS
+                  WHERE TABLE_SCHEMA=DATABASE()
+                    AND TABLE_NAME='external_login_resume_token'
+                    AND INDEX_NAME='idx_ext_login_resume_pwa_client'
+                 """,
+                 """
+                 CREATE INDEX idx_ext_login_resume_pwa_client
+                     ON external_login_resume_token(pwa_client_id_hash, consumed_at, expires_at)
+                 """,
+             )
+ 
+-            def _ensure_checkin_method_enum() -> None:
++            try:
++                cur.execute("""
++                    UPDATE mfu_event
++                       SET checkin_qr_enabled = 1
++                """)
++                cur.execute("""
++                    UPDATE mfu_event
++                       SET checkin_qr_token = LOWER(HEX(RANDOM_BYTES(32)))
++                     WHERE checkin_qr_token IS NULL
++                        OR CHAR_LENGTH(TRIM(checkin_qr_token)) <> 64
++                """)
++            except Exception:
++                app.logger.exception("failed to normalize QR checkin flags/tokens")
 +
++            def _drop_col_if_exists(table: str, col: str) -> None:
+                 try:
+                     cur.execute("""
+-                        SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+-                         WHERE TABLE_SCHEMA=DATABASE()
+-                           AND TABLE_NAME='mfu_event_member'
+-                           AND COLUMN_NAME='checkin_method'
+-                    """)
+-                    row = cur.fetchone()
+-                    column_type = (row[0] if isinstance(row, tuple) else row.get("COLUMN_TYPE")) if row else ""
++                        SELECT COUNT(*) FROM information_schema.COLUMNS
++                         WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
++                    """, (table, col))
++                    has = int(cur.fetchone()[0] or 0)
+                 except Exception:
+-                    app.logger.exception("failed to inspect mfu_event_member.checkin_method")
+-                    return
+-
+-                lowered = str(column_type or "").lower()
+-                if ("'gps'" in lowered) and ("'qr'" in lowered):
++                    has = 0
++                if not has:
+                     return
+-
+                 try:
+-                    cur.execute("""
+-                        ALTER TABLE mfu_event_member
+-                          MODIFY COLUMN checkin_method ENUM('gps','qr') NULL
+-                    """)
++                    cur.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+                 except Exception:
+-                    app.logger.exception("failed to alter mfu_event_member.checkin_method enum")
+-
+-            _ensure_checkin_method_enum()
++                    app.logger.exception("failed to drop column %s.%s", table, col)
 +
-+@lru_cache(maxsize=1)
-+def _get_png_font_path() -> str:
-+    if os.path.exists(PNG_FONT_PATH):
-+        return PNG_FONT_PATH
-+    current_app.logger.error("PNG Japanese font file not found: %s", PNG_FONT_PATH)
-+    raise RuntimeError(f"PNG日本語フォントが見つかりません: {PNG_FONT_PATH}")
-+
-+
-+@lru_cache(maxsize=16)
-+def _get_png_font(size: int):
-+    font_path = _get_png_font_path()
-+    try:
-+        return ImageFont.truetype(font_path, size=size)
-+    except Exception:
-+        current_app.logger.exception("Failed to load PNG Japanese font: path=%s size=%s", font_path, size)
-+        raise RuntimeError(f"PNG日本語フォントの読込に失敗しました: {font_path}")
++            _drop_col_if_exists("mfu_event_member", "checkin_lat")
++            _drop_col_if_exists("mfu_event_member", "checkin_lng")
++            _drop_col_if_exists("mfu_event_member", "checkin_method")
++            _drop_col_if_exists("mfu_event", "event_lat")
++            _drop_col_if_exists("mfu_event", "event_lng")
++            _drop_col_if_exists("mfu_event", "checkin_radius_m")
+ 
+             _ensure_col("mfu_event", "google_form_url", "google_form_url VARCHAR(512) NULL AFTER maps_url")
+             _ensure_col("mfu_event", "line_openchat_url",
+                         "line_openchat_url VARCHAR(512) NULL AFTER maps_url")
+             _ensure_col("mfu_event", "line_openchat_pass",
+                         "line_openchat_pass VARCHAR(120) NULL AFTER line_openchat_url")
+             _ensure_col("mfu_event", "sns_hashtag",
+                         "sns_hashtag VARCHAR(255) NULL AFTER maps_url")
+             _ensure_col("mfu_event", "google_form_url",
+                         "google_form_url VARCHAR(512) NULL AFTER line_openchat_pass")
+             _ensure_col("mfu_event", "memo_all",
+                         "memo_all TEXT NULL AFTER google_form_url")
+ # === 支払方法の記録列（後方互換で追加）===
+             _ensure_col("mfu_event_member", "bank_transfer",
+                         "bank_transfer TINYINT(1) NOT NULL DEFAULT 0 AFTER payment_status")
+             _ensure_col("mfu_event_member", "bank_dest_name",
+                         "bank_dest_name VARCHAR(120) NULL AFTER bank_transfer")
+             _ensure_col("mfu_event_member", "bank_remitter_name",
+                         "bank_remitter_name VARCHAR(120) NULL AFTER bank_dest_name")
+             _ensure_col("mfu_event_member", "bank_deposit_date",
+                         "bank_deposit_date DATE NULL AFTER bank_remitter_name")
+ 
+             _ensure_col("mfu_event_member", "paypay_transfer",
+                         "paypay_transfer TINYINT(1) NOT NULL DEFAULT 0 AFTER bank_deposit_date")
+             _ensure_col("mfu_event_member", "paypay_sent_date",
+diff --git a/external_login_user/template/_event_checkin_qr_block.html b/external_login_user/template/_event_checkin_qr_block.html
+index 26d73f784b856505234c4e9c9f3e83029066598d..c2a41fa22b684b74967d95049f0e90584ca06675 100644
+--- a/external_login_user/template/_event_checkin_qr_block.html
++++ b/external_login_user/template/_event_checkin_qr_block.html
+@@ -1,151 +1,126 @@
+-{# 前提: ev(id, checkin_qr_enabled, checkin_qr_token, checkin_qr_expires_at), admin_csrf, qr_trademark_notice #}
++{# 前提: ev(id, checkin_qr_token, checkin_qr_expires_at), admin_csrf, qr_trademark_notice #}
+ {% set wrap_card = checkin_qr_wrap_card if checkin_qr_wrap_card is defined else true %}
+ {% set token = ev.checkin_qr_token or '' %}
+ {% set qr_url = token and url_for('external_login_user.event_qr_checkin', token=token, _external=True) or '' %}
+ 
+ {% if wrap_card %}
+ <div class="card mb-3" id="checkin-qr-card">
+   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+     <span>チェックインQRコード</span>
+-    <div class="form-check form-switch m-0">
+-      <input class="form-check-input" type="checkbox" id="checkinQrSwitch" {{ 'checked' if ev.checkin_qr_enabled else '' }}>
+-      <label class="form-check-label ms-2" for="checkinQrSwitch">
+-        {{ ev.checkin_qr_enabled and '有効（会場掲示QRコードで受付）' or '無効（QRコード受付停止中）' }}
+-      </label>
+-    </div>
++    <span class="badge text-bg-success">常時有効</span>
+   </div>
+   <div class="card-body d-grid gap-3">
+ {% else %}
+ <div id="checkin-qr-card" class="d-grid gap-3">
+   <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+     <div class="fw-semibold">チェックインQRコード</div>
+-    <div class="form-check form-switch m-0">
+-      <input class="form-check-input" type="checkbox" id="checkinQrSwitch" {{ 'checked' if ev.checkin_qr_enabled else '' }}>
+-      <label class="form-check-label ms-2" for="checkinQrSwitch">
+-        {{ ev.checkin_qr_enabled and '有効（会場掲示QRコードで受付）' or '無効（QRコード受付停止中）' }}
+-      </label>
+-    </div>
++    <span class="badge text-bg-success">常時有効</span>
+   </div>
+ {% endif %}
+ 
+     <div class="text-muted small">
+-      会場掲示用の共通QRコードURLです。未ログイン参加者はログイン後に元URLへ戻り、自動で受付処理されます。
++      QRチェックインは常に有効です。会場掲示用の共通QRコードURLを表示します。
+     </div>
+ 
+     <div>
+       <label class="form-label fw-bold mb-1">チェックインURL（QRコード埋め込み先）</label>
+       <div class="d-flex flex-column flex-md-row gap-2">
+         <textarea id="checkinQrUrl" class="form-control font-monospace break-anywhere" rows="2" readonly style="resize:none">{{ qr_url }}</textarea>
+         <button class="btn btn-outline-secondary w-100 w-md-auto" type="button" id="copyCheckinQrBtn" {{ '' if token else 'disabled' }}>コピー</button>
+       </div>
+     </div>
+ 
+     <div>
+       <div class="form-text">チェックイントークン</div>
+       <div class="p-2 border rounded bg-light break-anywhere">
+         <code id="checkinQrToken" class="d-block break-anywhere">{{ token or '-' }}</code>
+       </div>
+       {% if not token %}
+-        <div class="form-text text-muted">（未発行です。ONにするか「トークン再発行」で発行できます）</div>
++        <div class="form-text text-muted">（未発行です。「トークン再発行」で発行できます）</div>
+       {% endif %}
+     </div>
+ 
+     <div class="row g-2 align-items-end">
+       <div class="col-md-6">
+         <label class="form-label mb-1" for="checkinQrExpiresAt">有効期限（任意）</label>
+         <input
+           type="datetime-local"
+           id="checkinQrExpiresAt"
+           class="form-control"
+           value="{% if ev.checkin_qr_expires_at %}{{ ev.checkin_qr_expires_at.strftime('%Y-%m-%dT%H:%M') if ev.checkin_qr_expires_at.__class__.__name__ == 'datetime' else ev.checkin_qr_expires_at|string|replace(' ', 'T')|truncate(16, True, '') }}{% endif %}"
+         >
+       </div>
+       <div class="col-md-6 d-flex gap-2 flex-wrap">
+         <button class="btn btn-outline-primary btn-sm" type="button" id="saveCheckinQrExpiresBtn">期限を保存</button>
+         <button class="btn btn-outline-danger btn-sm" type="button" id="rotateCheckinQrBtn">トークン再発行</button>
+       </div>
+     </div>
+ 
+     <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
+ 
+ {% if wrap_card %}
+   </div>
+ </div>
+ {% else %}
+ </div>
+ {% endif %}
+ 
+ <style>
+ .break-anywhere{overflow-wrap:anywhere;word-break:break-word;}
+ @media (min-width: 768px){.w-md-auto{width:auto !important;}}
+ </style>
+ <script>
+ (function(){
+   const csrf = {{ admin_csrf|tojson }};
+-  const toggleUrl = {{ url_for('external_login_user.admin_toggle_checkin_qr', event_id=ev.id)|tojson }};
+   const rotateUrl = {{ url_for('external_login_user.admin_rotate_checkin_qr_token', event_id=ev.id)|tojson }};
+   const expiresUrl = {{ url_for('external_login_user.admin_update_checkin_qr_expires', event_id=ev.id)|tojson }};
+ 
+-  const switchEl = document.getElementById('checkinQrSwitch');
+-  const labelEl = document.querySelector('label[for="checkinQrSwitch"]');
+   const urlEl = document.getElementById('checkinQrUrl');
+   const tokenEl = document.getElementById('checkinQrToken');
+   const copyBtn = document.getElementById('copyCheckinQrBtn');
+   const rotateBtn = document.getElementById('rotateCheckinQrBtn');
+   const expiresEl = document.getElementById('checkinQrExpiresAt');
+   const saveExpiresBtn = document.getElementById('saveCheckinQrExpiresBtn');
+ 
+   function applyToken(token, url){
+     const has = !!token;
+     tokenEl.textContent = has ? token : '-';
+     urlEl.value = url || '';
+     copyBtn.disabled = !has;
+   }
+ 
+   async function post(url, body){
+     const res = await fetch(url, {
+       method: 'POST',
+       headers: {'X-CSRF-Token': csrf},
+       body: body instanceof URLSearchParams ? body : new URLSearchParams(body || {})
+     });
+     let js; try { js = await res.json(); } catch (e) { js = {ok:false, error:'invalid json'}; }
+     return js;
+   }
+ 
+-  switchEl?.addEventListener('change', async (e)=>{
+-    const enable = e.target.checked ? '1' : '0';
+-    const js = await post(toggleUrl, {enable});
+-    if(!js.ok){
+-      alert('チェックインQRコードの切替に失敗しました。');
+-      e.target.checked = !e.target.checked;
+-      return;
+-    }
+-    labelEl.textContent = (enable === '1') ? '有効（会場掲示QRコードで受付）' : '無効（QRコード受付停止中）';
+-    if (js.checkin_qr_token) applyToken(js.checkin_qr_token, js.checkin_qr_url);
+-  });
+-
+   copyBtn?.addEventListener('click', async ()=>{
+     try{
+       await navigator.clipboard.writeText(urlEl.value || '');
+       copyBtn.textContent = 'コピー済み';
+       setTimeout(()=>copyBtn.textContent='コピー', 1200);
+     }catch(_){ alert('コピーに失敗しました。手動でコピーしてください。'); }
+   });
+ 
+   rotateBtn?.addEventListener('click', async ()=>{
+     const js = await post(rotateUrl);
+     if(!js.ok || !js.checkin_qr_token){
+       alert('トークン再発行に失敗しました。');
+       return;
+     }
+     applyToken(js.checkin_qr_token, js.checkin_qr_url);
+   });
+ 
+   saveExpiresBtn?.addEventListener('click', async ()=>{
+     const js = await post(expiresUrl, {expires_at: expiresEl?.value || ''});
+     if(!js.ok){
+       alert(js.error || '期限保存に失敗しました。');
+       return;
+     }
+     alert('有効期限を保存しました。');
+   });
+diff --git a/external_login_user/template/event_pass.html b/external_login_user/template/event_pass.html
+index 95260a105c308f1d0b8071de85d0e50091377361..5a44957d933bd0248011c36983d837f69703fb3d 100644
+--- a/external_login_user/template/event_pass.html
++++ b/external_login_user/template/event_pass.html
+@@ -100,246 +100,87 @@ MFU PASS
+         <div>
+           <div class="lbl">会場名と開催日</div>
+           <div class="title">{{ ev.place_name or '会場未設定' }}</div>
+           <div class="meta">
+             {% if ev.starts_at %}
+               {% if ev.starts_at.__class__.__name__ == 'datetime' %}
+                 {{ ev.starts_at.strftime("%Y年%m月%d日 %H:%M") }}
+               {% elif ev.starts_at.__class__.__name__ == 'date' %}
+                 {{ ev.starts_at.strftime("%Y年%m月%d日") }}
+               {% else %}
+                 {{ ev.starts_at }}
+               {% endif %}
+             {% else %}
+               日時未設定
+             {% endif %}
+           </div>
+         </div>
  
  
- def _split_multiline(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
-     lines = []
-     for raw_line in str(text or "").splitlines() or [""]:
-         chunks = textwrap.wrap(raw_line, width=80, break_long_words=True, break_on_hyphens=False) or [raw_line]
-         for c in chunks:
-             if not c:
-                 lines.append("")
-                 continue
-             line = c
-             while line:
-                 if draw.textlength(line, font=font) <= max_width:
-                     lines.append(line)
-                     break
-                 cut = max(1, int(len(line) * max_width / max(draw.textlength(line, font=font), 1)))
-                 found = False
-                 for i in range(min(len(line), cut + 2), 0, -1):
-                     piece = line[:i]
-                     if draw.textlength(piece, font=font) <= max_width:
-                         lines.append(piece)
-                         line = line[i:]
-                         found = True
-                         break
-                 if not found:
-@@ -1422,55 +1427,55 @@ def _download_avatar_image(member: dict, size: int):
-             continue
+ 
+         <div>
+           <div class="lbl">受付ステータス</div>
+           {% if checked_in|default(false) %}
+             <div class="meta fw-bold text-success">受付済</div>
+             <div class="small text-muted">受付時刻: {{ checkin_at_str or '-' }}</div>
+-            <div class="small text-muted">受付方法: {{ (checkin_method == 'qr') and 'QRコード' or 'GPS' }}</div>
+-            {% if checkin_method == 'qr' %}
+-              <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
+-            {% endif %}
++            <div class="small text-muted">受付方法: QRコード</div>
++            <div class="small text-muted">※ {{ qr_trademark_notice }}</div>
+           {% else %}
+             <div class="meta text-danger">未受付</div>
+           {% endif %}
+         </div>
+ 
+-        {# --- 受付ボタン（状態表示一体型） --- #}
+-        {% if checkin_qr_enabled|default(false) %}
+-          <div>
+-            <div class="lbl">受付（会場掲示QRコード）</div>
+-            <div class="small text-muted mb-2">会場掲示QRコードから受付してください。</div>
+-            {% if not (checked_in|default(false) and checkin_method == 'qr') %}
+-              <div class="small text-muted mb-2">※ {{ qr_trademark_notice }}</div>
+-            {% endif %}
+-            <div class="nowtime" id="nowtime" aria-live="polite"></div>
+-          </div>
+-        {% else %}
+-          <div>
+-            <div class="lbl">受付（GPSチェックイン）</div>
+-            {% if gps_checkin_enabled|default(true) %}
+-              <button
+-                id="btn-checkin"
+-                class="btn w-100 btn-lg {% if checked_in|default(false) %}btn-primary{% else %}btn-danger{% endif %}"
+-                {% if checked_in|default(false) %}disabled{% endif %}
+-              >
+-                {% if checked_in|default(false) %}
+-                  ✅ チェックイン完了
+-                {% else %}
+-                  📍 この場所でチェックインする
+-                {% endif %}
+-              </button>
+-              <div class="nowtime" id="nowtime" aria-live="polite"></div>
+-              <div id="checkin-message" class="mt-2 small text-muted"></div>
+-            {% else %}
+-              <div class="mt-2 small text-muted">
+-                このイベントではGPSチェックインは利用できません。
+-              </div>
+-              <div class="nowtime" id="nowtime" aria-live="polite"></div>
+-            {% endif %}
+-          </div>
+-        {% endif %}
++        <div>
++          <div class="lbl">受付（会場掲示QRコード）</div>
++          <div class="small text-muted mb-2">会場掲示QRコードから受付してください。</div>
++          {% if not checked_in|default(false) %}
++            <div class="small text-muted mb-2">※ {{ qr_trademark_notice }}</div>
++          {% endif %}
++          <div class="nowtime" id="nowtime" aria-live="polite"></div>
++        </div>
+ 
+         <div class="footer-hint">
+           画面は常時動作する背景を含みます。提示中は明るさを上げてご提示ください。
+         </div>
+       </div>
+     </div>
+   </div>
+ 
+   <script>
+     // 現在時刻（毎秒更新）
+     (function(){
+       const el = document.getElementById('nowtime');
+       if (!el) return;
+       const fmt = new Intl.DateTimeFormat('ja-JP', {
+         year:'numeric', month:'2-digit', day:'2-digit',
+         hour:'2-digit', minute:'2-digit', second:'2-digit',
+         hour12:false
+       });
+       function tick(){ el.textContent = '現在時刻：' + fmt.format(new Date()); }
+       tick(); setInterval(tick, 1000);
+     })();
+ 
+-    // GPSチェックイン
+-    (function(){
+-      const btn = document.getElementById('btn-checkin');
+-      if (!btn) return;
+-
+-      const msgEl = document.getElementById('checkin-message');
+-
+-      // /external-login/events/pass/<uuid> から <uuid> を抜いて URL を組み立てる
+-      const pathParts = window.location.pathname.split('/').filter(Boolean);
+-      // ... ["external-login","events","pass","<uuid>"]
+-      const eventUuid = pathParts[pathParts.length - 1];
+-      const checkinUrl = `/external-login/events/pass/${eventUuid}/checkin`;
+-      console.log("checkinUrl =", checkinUrl);
+-
+-      function setMessage(text, isError) {
+-        if (!msgEl) return;
+-        msgEl.textContent = text || '';
+-        msgEl.classList.toggle('text-danger', !!isError);
+-        msgEl.classList.toggle('text-success', !isError && !!text);
+-      }
+-
+-      btn.addEventListener('click', function () {
+-        if (!navigator.geolocation) {
+-          setMessage('この端末では位置情報が利用できません。受付スタッフにお声がけください。', true);
+-          return;
+-        }
+-
+-        btn.disabled = true;
+-        btn.textContent = '位置情報を取得中…';
+-        setMessage('', false);
+-
+-        navigator.geolocation.getCurrentPosition(function (pos) {
+-          const lat = pos.coords.latitude;
+-          const lng = pos.coords.longitude;
+-          console.log("got position:", lat, lng);
+-
+-          // JSON ではなく URL エンコードの form データで送る
+-          const params = new URLSearchParams();
+-          params.append('lat', String(lat));
+-          params.append('lng', String(lng));
+-
+-          fetch(checkinUrl, {
+-            method: 'POST',
+-            headers: {
+-              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+-              'X-Requested-With': 'XMLHttpRequest'
+-            },
+-            credentials: 'same-origin',
+-            body: params.toString()
+-          })
+-          .then(async r => {
+-            console.log("checkin response status =", r.status);
+-            const ct = r.headers.get('content-type') || '';
+-
+-            if (!ct.includes('application/json')) {
+-              const text = await r.text();
+-              console.error('non-JSON response:', text);
+-              throw { nonJson: true, status: r.status, body: text };
+-            }
+-
+-            const data = await r.json();
+-            console.log("checkin response json =", data);
+-
+-            if (!data.ok) {
+-              // 失敗 → 赤ボタンに戻す
+-              btn.disabled = false;
+-              btn.textContent = '📍 この場所でチェックインする';
+-              btn.classList.remove('btn-primary');
+-              btn.classList.add('btn-danger');
+-
+-              let msg = data.error || '受付に失敗しました。';
+-              if (data.distance_m && data.radius_m) {
+-                msg += `（距離 約 ${data.distance_m}m / 許容 ${data.radius_m}m）`;
+-              }
+-              setMessage(msg, true);
+-              return;
+-            }
+-
+-            // 正常受付 → 青ボタン＋完了表示
+-            btn.disabled = true;
+-            btn.textContent = '✅ チェックイン完了';
+-            btn.classList.remove('btn-danger');
+-            btn.classList.add('btn-primary');
+-
+-            setMessage(data.message || '受付が完了しました。', false);
+-          })
+-          .catch(err => {
+-            console.error('checkin fetch error', err);
+-            btn.disabled = false;
+-            btn.textContent = '📍 この場所でチェックインする';
+-            btn.classList.remove('btn-primary');
+-            btn.classList.add('btn-danger');
+-
+-            if (err && err.nonJson) {
+-              setMessage(
+-                'サーバー側でエラーが発生しました。（HTTP ' + err.status + '） 時間をおいて再度お試しください。',
+-                true
+-              );
+-            } else {
+-              setMessage('通信エラーが発生しました。時間をおいて再度お試しください。', true);
+-            }
+-          });
+-        }, function (err) {
+-          console.error('geolocation error', err);
+-          btn.disabled = false;
+-          btn.textContent = '📍 この場所でチェックインする';
+-          btn.classList.remove('btn-primary');
+-          btn.classList.add('btn-danger');
+-
+-          switch (err.code) {
+-            case err.PERMISSION_DENIED:
+-              setMessage('位置情報の利用が拒否されました。ブラウザや端末の設定を確認してください。', true);
+-              break;
+-            case err.POSITION_UNAVAILABLE:
+-              setMessage('現在位置を取得できませんでした。屋外などで再度お試しください。', true);
+-              break;
+-            case err.TIMEOUT:
+-              setMessage('位置情報の取得がタイムアウトしました。再度お試しください。', true);
+-              break;
+-            default:
+-              setMessage('位置情報取得中にエラーが発生しました。', true);
+-          }
+-        }, {
+-          enableHighAccuracy: true,
+-          timeout: 15000,
+-          maximumAge: 0
+-        });
+-      });
+-    })();
+-
+     // 絵文字フロート
+     (function(){
+       const EMOJIS = ['📸','✨','🎉','🪄','⭐','🎈'];
+       const container = document.getElementById('float-emo');
+       const baseCount = 28;
+       const width = Math.max(window.innerWidth, screen.width || 0);
+       const dpr = window.devicePixelRatio || 1;
+       const densityBoost = width > 768 ? 1.6 : 1.2;
+       const count = Math.floor(baseCount * densityBoost * (dpr > 1 ? 1.1 : 1));
+       for (let i=0; i<count; i++){ spawnEmoji(i * 200); }
+       setInterval(()=> spawnEmoji(), 1800);
+       function spawnEmoji(delay=0){
+         const span = document.createElement('span');
+         span.textContent = EMOJIS[(Math.random()*EMOJIS.length)|0];
+         const left = Math.random() * 100;
+         const sizePx = rndBetween(18, 42);
+         const duration = rndBetween(9, 18);
+         const startDelay = rndBetween(0, 6);
+         const rotStart = rndBetween(-40, 40);
+         span.style.left = left + '%';
+         span.style.fontSize = sizePx + 'px';
+         span.style.animationDuration = duration + 's';
+         span.style.animationDelay = (delay/1000 + startDelay) + 's';
+         span.style.transform = `translateY(0) rotate(${rotStart}deg)`;
+         container.appendChild(span);
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 6efb7eb4653404204077b520eb94b7f2d8745bd1..423f17a71fdf770699e8e1bb1ee502af0928d8ef 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -1,47 +1,46 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ 
+ # =========================
+ # 標準ライブラリ
+ # =========================
+ import os
+ import re
+ import io
+ import uuid
+ import time
+ import secrets
+ import hashlib
+ from pathlib import Path
+ from datetime import datetime, timedelta, timezone
+ from mimetypes import guess_extension
+ from urllib.parse import quote_plus, urlparse
+ from ipaddress import ip_address, IPv4Address, IPv6Address, ip_network
+ from app.utils.logs import write_line_login_log  # 追加
+ from jinja2 import TemplateNotFound
+ import math
+-from urllib.parse import urlparse, parse_qs, unquote
+ 
+ 
+ # =========================
+ # サードパーティ
+ # =========================
+ from PIL import Image
+ import requests
+ from itsdangerous import URLSafeSerializer, BadSignature
+ from weasyprint import HTML
+ 
+ # =========================
+ # Flask / アプリ内部
+ # =========================
+ from flask import (
+     request, session, redirect, url_for, render_template,
+     abort, flash, current_app, send_from_directory, make_response, jsonify
+ )
+ from werkzeug.utils import secure_filename
+ from werkzeug.exceptions import HTTPException
+ 
+ # Blueprint は必ず先に import
+ from . import bp, oauth
+ 
+ from app.utils.db import get_db
+ from app.utils.mail import send_mail
+@@ -888,107 +887,50 @@ def _maybe_flash_email_verify_banner_for_top():
+         if not unverified:
+             return
+ 
+         # メッセージ（改行→<br> 変換）
+         msg = (
+             "メールアドレスの確認が完了していません。\n"
+             "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
+             "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
+         )
+         body = Markup("<br>".join(escape(msg).split("\n")))
+ 
+         btn = Markup(
+             f'''<form method="post" action="{escape(url_for('external_login_user.resend_verify_email'))}" style="display:inline;margin-left:8px;">
+                     <button type="submit" class="btn btn-sm btn-primary">確認コードを再送する</button>
+                 </form>'''
+         )
+ 
+         flash(Markup(
+             '<div style="font-weight:600;">メール確認のお願い</div>'
+             f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
+         ), "warning")
+ 
+     except Exception:
+         current_app.logger.exception("top email verify banner flash failed")
+ 
+-# --- GoogleマップURL からイベント座標を抜く -------------------------------
+-def _parse_lat_lng_from_maps_url(maps_url: str):
+-    """
+-    GoogleマップURLから (lat, lng) を頑張って抜き出す。
+-    取れなければ (None, None) を返す。
+-    """
+-    if not maps_url:
+-        return None, None
+-
+-    s = str(maps_url).strip()
+-    try:
+-        s = unquote(s)
+-    except Exception:
+-        pass
+-
+-    # パターン1: ".../@35.1234567,139.9876543,"
+-    m = re.search(r"@(-?\d+\.\d+),\s*(-?\d+\.\d+)", s)
+-    if m:
+-        try:
+-            return float(m.group(1)), float(m.group(2))
+-        except Exception:
+-            pass
+-
+-    # パターン2: クエリに ll=lat,lng or q=lat,lng or query=lat,lng
+-    parsed = urlparse(s)
+-    q = parse_qs(parsed.query)
+-    for key in ("ll", "q", "query"):
+-        if key in q:
+-            for v in q[key]:
+-                m2 = re.search(r"(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)", v)
+-                if m2:
+-                    try:
+-                        return float(m2.group(1)), float(m2.group(2))
+-                    except Exception:
+-                        pass
+-
+-    return None, None
+-
+-
+-# --- 2点間距離[m]（ハーサイン） -----------------------------------------
+-def _calc_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+-    """
+-    2点の距離[m]をざっくり計算。
+-    イベント会場付近かどうか判定する用途なら十分な精度。
+-    """
+-    R = 6371000.0  # 地球半径[m]
+-
+-    phi1 = math.radians(lat1)
+-    phi2 = math.radians(lat2)
+-    dphi = math.radians(lat2 - lat1)
+-    dlambda = math.radians(lng2 - lng1)
+-
+-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+-    return R * c
+-
+-
+ 
+ # =========================
+ # TOP（=マイページ）
+ # =========================
+ @bp.route("/")
+ def index():
+     row = None
+     # ---- 未ログイン時は当該バナーのフラッシュを除去してから描画 --------------------
+     try:
+         if not session.get("ext_user_id"):
+             fl = session.get("_flashes")
+             if isinstance(fl, list) and fl:
+                 def _is_unverified_banner(t):
+                     try:
+                         cat, msg = t
+                         cat_str = str(cat or "")
+                         # 複数カテゴリ対応: "warning unverified_email" など
+                         if "unverified_email" in cat_str:
+                             return True
+                         s = str(msg)
+                         return ("warning" in cat_str) and (
+                             "メール確認のお願い" in s
+                             or "メールアドレスの確認が完了していません" in s
+                         )
+                     except Exception:
+@@ -3491,85 +3433,83 @@ def event_pass(event_uuid: str):
+     if guard:
+         return guard
+ 
+     # イベント取得
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     # ログイン中ユーザー
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+     if not me:
+         abort(401)
+ 
+     # 参加状況（最新行）取得（★ checkin_at も取得するように拡張）
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               COALESCE(em.status,'pending')                    AS status,
+               CAST(COALESCE(em.require_payment,1) AS UNSIGNED) AS require_payment,
+               COALESCE(em.payment_status,'unpaid')             AS payment_status,
+               em.paid_amount_yen,
+               em.paid_at,
+               em.receipt_url,
+               em.checkin_at,
+-              em.checkin_method,
+               COALESCE(em.is_canceled,0) AS is_canceled
+             FROM mfu_event_member em
+             WHERE em.event_id=%s AND em.user_id=%s
+             ORDER BY em.id DESC
+             LIMIT 1
+         """, (ev["id"], me["id"]))
+         row = cur.fetchone()
+     finally:
+         try:
+             cur.close(); db.close()
          except Exception:
-             current_app.logger.exception("avatar fetch failed unexpectedly: %s", candidate)
+             pass
  
-     if avatar_image is None:
-         avatar_image = Image.new("RGB", (size, size), (220, 226, 234))
+     # 正規化（従来の支払系）
+     my_status          = (row["status"] if row else "pending") or "pending"
+     my_require_payment = int(row["require_payment"]) if row else 1
+     my_payment_status  = (row["payment_status"] if row else "unpaid") or "unpaid"
+     my_paid_amount_yen = row.get("paid_amount_yen") if row else None
+     my_paid_at         = row.get("paid_at") if row else None
+     my_receipt_url     = row.get("receipt_url") if row else None
  
-     mask = Image.new("L", (size, size), 0)
-     mask_draw = ImageDraw.Draw(mask)
-     mask_draw.ellipse((0, 0, size, size), fill=255)
-     rounded = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-     rounded.paste(avatar_image, (0, 0), mask)
-     return rounded
+     # ★ チェックイン情報
+     raw_checkin_at = row.get("checkin_at") if row else None
+     if row and int(row.get("is_canceled") or 0) == 1:
+         flash("キャンセル済みのため参加証は利用できません。", "warning")
+         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+     if isinstance(raw_checkin_at, _dt):
+         checkin_at_str = raw_checkin_at.strftime("%Y-%m-%d %H:%M:%S")
+     else:
+         # 文字列などの場合はそのまま or None
+         checkin_at_str = str(raw_checkin_at) if raw_checkin_at else None
  
+     checked_in = bool(raw_checkin_at)
+-    checkin_method = (row.get("checkin_method") if row else None)
  
- def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
-     width = 1200
-     padding_x = 56
-     top_pad = 44
-     avatar_size = 68
-     block_gap = 20
-     line_gap = 8
-     divider_gap_top = 14
-     min_block_height = 110
+     # 支払表示キーワード（テンプレ側ではもう使ってなくても互換のため残す）
+     fee = int(ev.get("fee_yen") or 0)
+     needs_pay = (my_require_payment == 1) and (fee > 0)
+     if needs_pay:
+         if my_payment_status == "paid":
+             payment_key, payment_label = "paid", "支払済"
+         else:
+             payment_key, payment_label = "unpaid", "未支払"
+     else:
+         payment_key, payment_label = "free", "支払不要"
  
--    title_font = _load_png_font(42, bold=True)
--    summary_font = _load_png_font(28)
--    name_font = _load_png_font(34, bold=True)
--    body_font = _load_png_font(25)
--    role_font = _load_png_font(25, bold=True)
-+    title_font = _get_png_font(42)
-+    summary_font = _get_png_font(28)
-+    name_font = _get_png_font(34)
-+    body_font = _get_png_font(25)
-+    role_font = _get_png_font(25)
+     # アバターURL算出
+     def _pick(*keys):
+         for k in keys:
+             v = me.get(k) if isinstance(me, dict) else getattr(me, k, None)
+             if isinstance(v, (str, bytes)) and str(v).strip():
+                 return str(v).strip()
+         return None
  
-     temp = Image.new("RGB", (width, 500), "white")
-     draw = ImageDraw.Draw(temp)
-     content_width = width - (padding_x * 2) - avatar_size - 28
+     file_name = _pick("avatar_file", "avatar_filename", "icon_file", "profile_image_file")
+     url_raw   = _pick("avatar_url", "icon_url", "picture_url",
+                       "profile_image_url", "image_url", "photo_url")
  
-     lines_cache = []
-     total_height = top_pad + 30
-     total_height += int(title_font.size * 1.8)
-     total_height += int(summary_font.size * 2.0)
+     avatar_src = None
+@@ -3585,409 +3525,174 @@ def event_pass(event_uuid: str):
+                 except TypeError:
+                     pass
+         if not avatar_src and "external_login_user.avatar" in current_app.view_functions:
+             try:
+                 avatar_src = url_for("external_login_user.avatar", name=file_name)
+             except TypeError:
+                 try:
+                     avatar_src = url_for("external_login_user.avatar", filename=file_name)
+                 except TypeError:
+                     pass
+         if not avatar_src:
+             avatar_src = f"/external-login/avatar/{quote_plus(file_name)}"
  
-     for member in members:
-         name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, content_width)
-         sns_parts = []
-         if member.get("x_id"):
-             sns_parts.append(f"X: {member.get('x_id')}")
-         if member.get("instagram_id"):
-             sns_parts.append(f"IG: {member.get('instagram_id')}")
-         sns_text = " / ".join(sns_parts)
-         sns_lines = _split_multiline(draw, sns_text, body_font, content_width) if sns_text else []
-         role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, content_width)
-         lines_cache.append((name_lines, sns_lines, role_lines))
+     if not avatar_src and url_raw:
+         if url_raw.startswith(("http://", "https://", "data:")):
+             avatar_src = url_raw
  
-         block_h = 0
-         block_h += len(name_lines) * (name_font.size + line_gap)
-         block_h += len(sns_lines) * (body_font.size + line_gap)
+     _ver = me.get("updated_at") if isinstance(me, dict) else getattr(me, "updated_at", None)
+     if hasattr(_ver, "strftime"):
+         cache_bust = _ver.strftime("%Y%m%d%H%M%S")
+     else:
+         cache_bust = str(_ver or _dt.now().strftime("%Y%m%d%H%M%S"))
+ 
+     now_str = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+ 
+-    # ★ イベントに座標 or maps_url があれば「GPS受付有効」とみなす
+-    ev_lat  = ev.get("event_lat")
+-    ev_lng  = ev.get("event_lng")
+-    maps_url = (ev.get("maps_url") or "").strip()
+-    checkin_qr_enabled = bool(ev.get("checkin_qr_enabled"))
+-    gps_checkin_enabled = ((ev_lat is not None and ev_lng is not None) or bool(maps_url)) and (not checkin_qr_enabled)
+ 
+     resp = make_response(render_template(
+         "event_pass.html",
+         ev=ev,
+         me=me,
+         now_str=now_str,
+         payment_key=payment_key,
+         payment_label=payment_label,
+         my_payment_status=my_payment_status,
+         my_paid_amount_yen=my_paid_amount_yen,
+         my_paid_at=my_paid_at,
+         my_receipt_url=my_receipt_url,
+         avatar_src=avatar_src,
+         cache_bust=cache_bust,
+         # ★ ここから GPS 受付用
+         checked_in=checked_in,
+         checkin_at_str=checkin_at_str,
+-        checkin_method=checkin_method,
+-        gps_checkin_enabled=gps_checkin_enabled,
+-        checkin_qr_enabled=checkin_qr_enabled,
++        checkin_method="qr" if checked_in else None,
+         qr_trademark_notice=QR_TRADEMARK_NOTICE,
+     ))
+     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+     resp.headers["Pragma"] = "no-cache"
+     return resp
+ 
+-def _update_checkin_member_row(*, member_id: int, checked_at, lat, lng, method: str) -> int:
+-    """checkin_method列のENUM差異に備え、失敗時はmethod更新なしへフォールバック。"""
++def _update_checkin_member_row(*, member_id: int, checked_at) -> int:
+     db = get_db(); cur = db.cursor()
+-    try:
+-        try:
+-            cur.execute(
+-                """
+-                UPDATE mfu_event_member
+-                   SET checkin_at = %s,
+-                       checkin_lat = %s,
+-                       checkin_lng = %s,
+-                       checkin_method = %s
+-                 WHERE id = %s
+-                   AND checkin_at IS NULL
+-                """,
+-                (checked_at, lat, lng, method, member_id),
+-            )
+-            db.commit()
+-            return cur.rowcount
+-        except Exception as e:
+-            msg = str(e)
+-            if ("checkin_method" not in msg) and ("1265" not in msg):
+-                raise
+-            try:
+-                db.rollback()
+-            except Exception:
+-                pass
+-            current_app.logger.warning("checkin_method update skipped due to schema mismatch: %s", msg)
+-            cur.execute(
+-                """
+-                UPDATE mfu_event_member
+-                   SET checkin_at = %s,
+-                       checkin_lat = %s,
+-                       checkin_lng = %s
+-                 WHERE id = %s
+-                   AND checkin_at IS NULL
+-                """,
+-                (checked_at, lat, lng, member_id),
+-            )
+-            db.commit()
+-            return cur.rowcount
+-    finally:
+-        try:
+-            cur.close(); db.close()
+-        except Exception:
+-            pass
+-
+-
+-@bp.route("/events/pass/<event_uuid>/checkin", methods=["POST"])
+-def event_pass_checkin(event_uuid: str):
+-    """
+-    参加証画面からの GPS チェックインAPI。
+-
+-    - URLの event_uuid からイベント特定
+-    - ログイン中ユーザー + イベントID から mfu_event_member を特定
+-    - イベントの座標（event_lat/event_lng or maps_url）と現在位置の距離を計算
+-    - 半径内なら mfu_event_member.checkin_* を更新
+-    - 初回のみ Discord + ACL メール通知
+-    """
+-    # 外部ログイン必須
+-    guard = _require_ext_login()
+-    if guard:
+-        return guard
+-
+-    # ログイン中ユーザー
+-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+-    if not me:
+-        abort(401)
+-
+-    # イベント取得
+-    ev = _event_by_uuid_str(event_uuid)
+-    if not ev:
+-        return jsonify(ok=False, error="イベントが見つかりませんでした。"), 404
+-
+-    event_id = ev["id"]
+-    ev_title = ev.get("title") or "イベント"
+-    if bool(ev.get("checkin_qr_enabled")):
+-        return jsonify(ok=False, error="このイベントは会場QRコード受付のみ有効です。"), 400
+-    ev_uuid_str = ev.get("event_uuid_str") or ""
+-    if not ev_uuid_str and ev.get("event_uuid") is not None:
+-        # 念のため bytes から変換する fallback
+-        try:
+-            ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"]) or ""
+-        except Exception:
+-            ev_uuid_str = ""
+-
+-    # 参加メンバー（自分）を特定（最新1件）
+-    db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+-            SELECT
+-                m.id,
+-                m.checkin_at,
+-                m.checkin_lat,
+-                m.checkin_lng,
+-                COALESCE(m.participant_role,'') AS participant_role,
+-                COALESCE(m.costume_label,'') AS costume_label
+-            FROM mfu_event_member AS m
+-            WHERE m.event_id = %s
+-              AND m.user_id = %s
+-              AND m.status = 'approved'
+-              AND COALESCE(m.is_canceled,0)=0
+-            ORDER BY m.id DESC
+-            LIMIT 1
++            UPDATE mfu_event_member
++               SET checkin_at = %s
++             WHERE id = %s
++               AND checkin_at IS NULL
+             """,
+-            (event_id, me["id"]),
++            (checked_at, member_id),
+         )
+-        member = cur.fetchone()
++        db.commit()
++        return cur.rowcount
+     finally:
+         try:
+-            cur.close()
++            cur.close(); db.close()
+         except Exception:
+             pass
+ 
+-    if not member:
+-        return jsonify(ok=False, error="このイベントの参加情報が見つかりませんでした。"), 404
+-
+-    # すでに受付済みなら何もしない（通知も出さない）
+-    if member.get("checkin_at"):
+-        return jsonify(
+-            ok=True,
+-            already=True,
+-            message="すでに受付済みです。",
+-        )
+-
+-    # --- 会場側の座標決定 --------------------------------------
+-    # 優先: event_lat / event_lng カラム（あれば）
+-    ev_lat = ev.get("event_lat")
+-    ev_lng = ev.get("event_lng")
+-
+-    # なければ maps_url からパース
+-    if ev_lat is None or ev_lng is None:
+-        maps_url = ev.get("maps_url") or ""
+-        from_lat, from_lng = _parse_lat_lng_from_maps_url(maps_url)
+-        ev_lat = ev_lat if ev_lat is not None else from_lat
+-        ev_lng = ev_lng if ev_lng is not None else from_lng
+-
+-    if ev_lat is None or ev_lng is None:
+-        return jsonify(ok=False, error="このイベントではGPS受付が有効化されていません。"), 400
+-
+-    # 受付許容半径[m]（イベントにカラムがあれば利用、なければ300m）
+-    try:
+-        radius_m = int(ev.get("checkin_radius_m") or 300)
+-        if radius_m <= 0:
+-            radius_m = 300
+-    except Exception:
+-        radius_m = 300
+-
+-    # --- 端末からの位置情報を取得（JSON / form 両対応） ---------
+-    lat_raw = None
+-    lng_raw = None
+-
+-    if request.is_json:
+-        data = request.get_json(silent=True) or {}
+-        lat_raw = data.get("lat")
+-        lng_raw = data.get("lng")
+-    else:
+-        lat_raw = request.form.get("lat")
+-        lng_raw = request.form.get("lng")
+-
+-    try:
+-        user_lat = float(lat_raw)
+-        user_lng = float(lng_raw)
+-    except (TypeError, ValueError):
+-        return jsonify(ok=False, error="位置情報の形式が不正です。"), 400
+-
+-    # 距離計算
+-    distance_m = _calc_distance_m(float(ev_lat), float(ev_lng), user_lat, user_lng)
+-
+-    if distance_m > radius_m:
+-        return jsonify(
+-            ok=False,
+-            error=f"会場から少し離れすぎています（約 {distance_m:.0f} m）。受付は会場付近で行ってください。",
+-            distance_m=round(distance_m),
+-            radius_m=radius_m,
+-        ), 400
+-
+-    # --- 会場付近 → チェックイン登録 ------------------------------
+-    now = datetime.now()
+-
+-    updated = _update_checkin_member_row(
+-        member_id=member["id"],
+-        checked_at=now,
+-        lat=user_lat,
+-        lng=user_lng,
+-        method="gps",
+-    )
+-
+-    # UPDATE に失敗（他プロセスが先にチェックイン済みにした等）の場合はここで終了
+-    if not updated:
+-        return jsonify(
+-            ok=True,
+-            already=True,
+-            message="すでに受付処理が完了しています。",
+-        )
+-
+-    # --- 通知処理（初回チェックインのみ） -------------------------
+-    nickname = me.get("nickname") or "参加者"
+-    admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+-    notice_body = _build_checkin_notice_body(
+-        nickname=nickname,
+-        checked_at=now,
+-        event_title=ev_title,
+-        participant_role=member.get("participant_role"),
+-        costume_label=member.get("costume_label"),
+-        method_label="GPS",
+-        admin_url=admin_url,
+-    )
+-
+-    # 1) Discord（adminユーザー向け）
+-    try:
+-        _notify_discord(notice_body)
+-    except Exception:
+-        current_app.logger.exception("Discord 受付通知でエラーが発生しました")
+-
+-    # 2) ACL メンバーにメール通知
+-    try:
+-        acl_emails = _get_acl_admin_emails(event_id)
+-        if acl_emails:
+-            subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん"
+-            for addr in acl_emails:
+-                send_mail(
+-                    to=addr,
+-                    subject=subject,
+-                    body=notice_body,
+-                    event_uuid=ev_uuid_str or None,
+-                )
+-    except Exception:
+-        current_app.logger.exception("ACL向け受付メール通知でエラーが発生しました")
+-
+-    return jsonify(
+-        ok=True,
+-        message="受付が完了しました。",
+-        distance_m=round(distance_m),
+-        radius_m=radius_m,
+-        checkin_at=now_str,
+-    )
+-
+-
+ @bp.route("/checkin/<token>")
+ def event_qr_checkin(token: str):
+     """会場掲示トークン経由のQR受付（ログイン後に自動チェックイン）。"""
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+     if not me:
+         abort(401)
+ 
+     token = (token or "").strip().lower()
+     if len(token) != 64:
+         return make_response("チェックイン用トークンが不正です。", 400)
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT id, title, event_uuid,
+-                   COALESCE(checkin_qr_enabled, 0) AS checkin_qr_enabled,
+                    checkin_qr_token,
+                    checkin_qr_expires_at
+               FROM mfu_event
+              WHERE checkin_qr_token=%s
+              LIMIT 1
+         """, (token,))
+         ev = cur.fetchone()
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+     if not ev:
+         return make_response("チェックイン用トークンが無効です。", 404)
+-    if int(ev.get("checkin_qr_enabled") or 0) != 1:
+-        return make_response("このチェックインは現在無効です。", 400)
+-
+     expires_at = ev.get("checkin_qr_expires_at")
+     if isinstance(expires_at, str):
+         try:
+             expires_at = datetime.fromisoformat(expires_at.replace(" ", "T"))
+         except Exception:
+             expires_at = None
+     if expires_at and expires_at < datetime.now():
+         return make_response("このチェックイン用トークンは期限切れです。", 400)
+ 
+     event_id = ev["id"]
+     ev_title = ev.get("title") or "イベント"
+     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid")) or ""
+ 
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT id, checkin_at,
+                    COALESCE(participant_role,'') AS participant_role,
+                    COALESCE(costume_label,'') AS costume_label
+               FROM mfu_event_member
+              WHERE event_id=%s
+                AND user_id=%s
+                AND status='approved'
+                AND COALESCE(is_canceled,0)=0
+              ORDER BY id DESC
+              LIMIT 1
+         """, (event_id, me["id"]))
+         member = cur.fetchone()
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+     if not member:
+         return make_response("このイベントの参加情報が見つかりませんでした。", 404)
+ 
+     if member.get("checkin_at"):
+         return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 
+     now = datetime.now()
+     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+ 
+     updated = _update_checkin_member_row(
+         member_id=member["id"],
+         checked_at=now,
+-        lat=None,
+-        lng=None,
+-        method="qr",
+     )
+ 
+     if not updated:
+         return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 
+     nickname = me.get("nickname") or "参加者"
+     admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+     notice_body = _build_checkin_notice_body(
+         nickname=nickname,
+         checked_at=now,
+         event_title=ev_title,
+         participant_role=member.get("participant_role"),
+         costume_label=member.get("costume_label"),
+         method_label="QR",
+         admin_url=admin_url,
+     )
+ 
+     try:
+         _notify_discord(notice_body)
+     except Exception:
+         current_app.logger.exception("Discord QR受付通知でエラーが発生しました")
+ 
+     try:
+         acl_emails = _get_acl_admin_emails(event_id)
+         if acl_emails:
