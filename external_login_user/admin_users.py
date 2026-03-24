@@ -71,6 +71,12 @@ def _format_datetime_jst(value) -> str | None:
         except Exception:
             dt = None
         if dt is None:
+            # MySQL/ISO8601 文字列（末尾 Z を含む形式含む）を優先的に解釈
+            try:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except Exception:
+                dt = None
+        if dt is None:
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
                 try:
                     dt = datetime.strptime(raw, fmt)
