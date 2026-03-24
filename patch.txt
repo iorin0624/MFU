@@ -1,73 +1,61 @@
 diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
-index 9ac114b5397f59da7718e82f69d5da7b513cec76..5c7283a16f55e07b443b3d9b6c507388de22dbb6 100644
+index 5c7283a16f55e07b443b3d9b6c507388de22dbb6..ad80d627f67cf271f5e1ebb6c7bf26ed636b09c3 100644
 --- a/external_login_user/admin_users.py
 +++ b/external_login_user/admin_users.py
-@@ -565,54 +565,67 @@ def admin_ext_users_resend_verify(user_id: int):
-             if request.is_json:
-                 return jsonify({"ok": False, "error": "smtp_error"}), 502
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="smtp"))
- 
-         if request.is_json:
-             return jsonify({"ok": True})
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, sent="1"))
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
- 
- 
- # ============= 再送の確認ページ（GET） =============
- @bp.get("/admin/ext-users/<int:user_id>/resend-confirm", endpoint="admin_ext_users_resend_confirm")
- def admin_ext_users_resend_confirm(user_id: int):
-     """再送のサーバー確認ページ（JS不要）"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
--        cur.execute("SELECT id, email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-+        cur.execute(
-+            """
-+            SELECT
-+              id,
-+              email,
-+              COALESCE(is_deleted, 0) AS is_deleted
-+            FROM external_login_user
-+            WHERE id=%s
-+            LIMIT 1
-+            """,
-+            (user_id,),
-+        )
-         u = cur.fetchone()
-         if not u:
-             abort(404)
-+        if int(u.get("is_deleted") or 0) == 1:
-+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
-         if not u.get("email"):
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
-     finally:
+@@ -48,50 +48,56 @@ def _column_exists(table: str, column: str) -> bool:
          try:
              cur.close()
              db.close()
          except Exception:
              pass
  
-     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
  
  
- # ============= 別ページ編集（GET） =============
- @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
- def admin_ext_users_edit_page(user_id: int):
-     """外部ログインユーザー 編集ページ（別ページ実装）"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
  
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-         has_deleted = _column_exists("external_login_user", "is_deleted")
+ def _format_datetime_jst(value) -> str | None:
+     """日時を JST の yyyy年mm月dd日 hh:mm:ss に整形する。"""
+     if not value:
+         return None
+ 
+     dt = None
+     if isinstance(value, datetime):
+         dt = value
+     elif isinstance(value, str):
+         raw = value.strip()
+         if not raw:
+             return None
+         try:
+             dt = parsedate_to_datetime(raw)
+         except Exception:
+             dt = None
++        if dt is None:
++            # MySQL/ISO8601 文字列（末尾 Z を含む形式含む）を優先的に解釈
++            try:
++                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
++            except Exception:
++                dt = None
+         if dt is None:
+             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                 try:
+                     dt = datetime.strptime(raw, fmt)
+                     break
+                 except Exception:
+                     continue
+ 
+     if dt is None:
+         return str(value)
+ 
+     if dt.tzinfo is None:
+         dt = dt.replace(tzinfo=timezone.utc)
+ 
+     jst = timezone(timedelta(hours=9))
+     return dt.astimezone(jst).strftime("%Y年%m月%d日 %H:%M:%S")
+ 
+ 
+ def _format_email_verified_at_rows(rows: list[dict]) -> None:
+     for r in rows:
+         r["email_verified_at"] = _format_datetime_jst(r.get("email_verified_at"))
+ 
+ def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, str]:
+     """一覧API向けのソートキーを正規化する。"""
+     key = (sort_key or "id").strip().lower()
