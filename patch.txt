@@ -1,1308 +1,83 @@
-diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index 860c3e1397e0ec53b60f893d06fafb315595bcff..5c447640af221241cb23db34628418ff81e8e9ad 100644
---- a/external_login_user/admin.py
-+++ b/external_login_user/admin.py
-@@ -482,74 +482,76 @@ def admin_events_list():
-     if guard: 
-         return guard
- 
-     # MFUログイン中のユーザー名（セッション 'user'）を使う
-     from flask import session
-     username = (session.get("user") or "").strip()
- 
-     _ensure_event_soft_delete_columns()
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         if username == "admin":
-             # admin は全件：開始日が近い順（NULLは一番下）、同日内は id 昇順で安定化
-             cur.execute("""
-               SELECT
-                 e.id,
-                 e.title,
-                 e.event_uuid,
-                 e.starts_at,
-                 e.pay_from,
-                 e.pay_until,
-                 (SELECT COUNT(*)
-                    FROM mfu_event_member m
-                   WHERE m.event_id=e.id
-                     AND (m.status='approved' OR m.status IS NULL)
-+                    AND COALESCE(m.is_canceled,0)=0
-                 ) AS members
-               FROM mfu_event e
-               WHERE e.deleted_at IS NULL
-               ORDER BY
-                 (e.starts_at IS NULL) ASC,
-                 e.starts_at ASC,
-                 e.id ASC
-               LIMIT 200
-             """)
-         else:
-             # ACL 許可イベントのみ：同じく開始日が近い順（NULLは下）
-             try:
-                 cur.execute("""
-                   SELECT
-                     e.id,
-                     e.title,
-                     e.event_uuid,
-                     e.starts_at,
-                     e.pay_from,
-                     e.pay_until,
-                     (SELECT COUNT(*)
-                        FROM mfu_event_member m
-                       WHERE m.event_id=e.id
-                         AND (m.status='approved' OR m.status IS NULL)
-+                        AND COALESCE(m.is_canceled,0)=0
-                     ) AS members
-                   FROM mfu_event e
-                   JOIN mfu_event_admin_acl a ON a.event_id = e.id
-                   WHERE a.username = %s
-                     AND e.deleted_at IS NULL
-                   ORDER BY
-                     (e.starts_at IS NULL) ASC,
-                     e.starts_at ASC,
-                     e.id ASC
-                   LIMIT 200
-                 """, (username,))
-             except Exception:
-                 # ACLテーブル未作成などでも落ちないように空配列返却
-                 cur.fetchall()  # drain if needed
-                 return render_template("admin_events_list.html", events=[])
-         raws = cur.fetchall()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     events = []
-     for r in raws or []:
-         # tuple/dict 両対応で取り出し
-         id_        = r[0] if isinstance(r, tuple) else r["id"]
-         title      = r[1] if isinstance(r, tuple) else r["title"]
-@@ -758,170 +760,181 @@ def admin_event_view(event_id: int):
-     album_url = url_for("album.album_access", album_id=ev["album_id"], _external=True) if ev.get("album_id") else None
-     pay_admin_url = f"/payment/admin/events/uuid/{ev['payment_uuid']}" if ev.get("payment_uuid") else None
- 
-     # ★ メモ列を確保してからメンバー取得
-     _ensure_member_memo_columns()
- 
-     # ===== ここを修正：並び順を 役割優先 → ニックネーム（あいうえお順） → joined_at に =====
-     db = get_db(); cur = db.cursor()
-     cur.execute("""
-       SELECT
-         m.user_id,
-         u.nickname, u.x_id, u.instagram_id, u.email,
-         u.avatar_file, u.avatar_url, u.updated_at,
-         m.status, m.payment_status, m.paid_at, m.receipt_url, m.joined_at,
-         m.checkin_at,
-         COALESCE(m.require_payment, 1)        AS require_payment,
-         COALESCE(m.process, 0)                AS process,
-         COALESCE(m.is_host, 0)                AS is_host,
-         COALESCE(m.is_subhost, 0)             AS is_subhost,
-         COALESCE(m.participant_role, 'none')  AS participant_role,
-         m.costume_label,
-         m.paid_amount_yen,
-         m.contact_memo,
-         m.admin_note,
-         m.receipt_note,
-+        COALESCE(m.is_canceled,0) AS is_canceled,
-+        m.canceled_at,
-+        m.canceled_by,
-         CASE
-           WHEN COALESCE(m.is_host, 0)=1 THEN 0
-           WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
-           WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 2
-           WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 3
-           WHEN LOWER(COALESCE(m.participant_role,''))='cosplayer' THEN 4
-           ELSE 5
-         END AS role_rank
-       FROM mfu_event_member m
-       JOIN external_login_user u ON u.id = m.user_id
-       WHERE m.event_id=%s
-       ORDER BY role_rank ASC, u.nickname ASC, m.joined_at ASC
-     """, (event_id,))
-     rows = cur.fetchall()
-     cur.close(); db.close()
- 
-     def _badge(label: str, color: str) -> str:
-         return f'<span class="badge bg-{color}">{label}</span>'
- 
-     # pending系を「確認（オレンジ）」に寄せるマップ（既存）
-     PENDING_STATUSES = {
-         "pending", "confirm", "confirming", "checking",
-         "verifying", "awaiting", "processing", "authorized"
-     }
- 
-     members = []
-     total_member_count = 0
-     camera_count = 0
-     assistant_count = 0
-     cosplayer_count = 0
-     other_count = 0
-     require_payment_count = 0
-     paid_count = 0
-     for r in rows:
-         if isinstance(r, tuple):
-             (user_id, nickname, x_id, instagram_id, email,
-              avatar_file, avatar_url, updated_at,
-              status, payment_status, paid_at, receipt_url, joined_at, checkin_at,
-              require_payment, process, is_host, is_subhost, participant_role, costume_label,
--             paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
-+             paid_amount_yen, contact_memo, admin_note, receipt_note,
-+             is_canceled, canceled_at, canceled_by, _role_rank) = r
-         else:
-             user_id          = r["user_id"]
-             nickname         = r["nickname"]
-             x_id             = r["x_id"]
-             instagram_id     = r["instagram_id"]
-             email            = r["email"]
-             avatar_file      = r["avatar_file"]
-             avatar_url       = r["avatar_url"]
-             updated_at       = r["updated_at"]
-             status           = r["status"]
-             payment_status   = r["payment_status"]
-             paid_at          = r["paid_at"]
-             receipt_url      = r["receipt_url"]
-             joined_at        = r["joined_at"]
-             checkin_at       = r.get("checkin_at")
-             require_payment  = r["require_payment"]
-             process          = r["process"]
-             is_host          = r["is_host"]
-             is_subhost       = r["is_subhost"]
-             participant_role = r["participant_role"]
-             costume_label    = r["costume_label"]
-             paid_amount_yen  = r.get("paid_amount_yen")
-             contact_memo     = r.get("contact_memo")
-             admin_note       = r.get("admin_note")
-             receipt_note     = r.get("receipt_note")
--
--        total_member_count += 1
--        normalized_role = str(participant_role or "none").strip().lower()
--        if normalized_role == "camera":
--            camera_count += 1
--        elif normalized_role == "assistant":
--            assistant_count += 1
--        elif normalized_role == "cosplayer":
--            cosplayer_count += 1
--        else:
--            other_count += 1
-+            is_canceled      = int(r.get("is_canceled") or 0)
-+            canceled_at      = r.get("canceled_at")
-+            canceled_by      = r.get("canceled_by")
-+
-+        if int(is_canceled or 0) == 0:
-+            total_member_count += 1
-+            normalized_role = str(participant_role or "none").strip().lower()
-+            if normalized_role == "camera":
-+                camera_count += 1
-+            elif normalized_role == "assistant":
-+                assistant_count += 1
-+            elif normalized_role == "cosplayer":
-+                cosplayer_count += 1
-+            else:
-+                other_count += 1
- 
-         # --- 支払状況バッジ（既存ロジック） ---
-         status_s = (payment_status or "").strip().lower()
-         if paid_at:  # 支払日時が入っていれば最優先で「済」
-             pay_status_html = _badge("済", "success")
-         elif status_s == "paid":
-             pay_status_html = _badge("済", "success")
-         elif status_s in PENDING_STATUSES:
-             pay_status_html = _badge("確認", "warning")
-         else:
-             pay_status_html = _badge("未", "danger")
- 
-         require_payment_flag = 1 if (require_payment is None) else int(require_payment)
--        if require_payment_flag == 1:
-+        if int(is_canceled or 0) == 0 and require_payment_flag == 1:
-             require_payment_count += 1
-             if paid_at or status_s == "paid":
-                 paid_count += 1
- 
-         members.append({
-             "user_id": user_id,
-             "nickname": nickname,
-             "x_id": x_id,
-             "instagram_id": instagram_id,
-             "email": email,
-             "avatar_file": avatar_file,
-             "avatar_url": avatar_url,
-             "updated_at": updated_at,
-             "status": status,
-             "payment_status": payment_status,
-             "paid_at": paid_at,
-             "receipt_url": receipt_url,
-             "joined_at": joined_at,
-             "checkin_at": checkin_at,
-             "checked_in": bool(checkin_at),
-             "require_payment": require_payment_flag,
-             "process": 1 if process else 0,
-             "is_host": 1 if is_host else 0,
-             "is_subhost": 1 if is_subhost else 0,
-             "participant_role": (participant_role or "none"),
-             "costume_label": costume_label,
-             "paid_amount_yen": paid_amount_yen,
-             "contact_memo": contact_memo,
-             "admin_note": admin_note,
-             "receipt_note": receipt_note,
-+            "is_canceled": int(is_canceled or 0),
-+            "canceled_at": canceled_at,
-+            "canceled_by": canceled_by,
-             "pay_status_html": pay_status_html,
-         })
- 
-     admin_csrf = _admin_csrf_token()
-     return render_template(
-         "admin_event_view.html",
-         ev=ev, members=members,
-         join_url=join_url, maps_link=maps_link,
-         album_url=album_url, pay_admin_url=pay_admin_url,
-         line_openchat_url=ev.get("line_openchat_url"),
-         line_openchat_pass=ev.get("line_openchat_pass"),
-         google_form_url=ev.get("google_form_url"),
-         total_member_count=total_member_count,
-         camera_count=camera_count,
-         assistant_count=assistant_count,
-         cosplayer_count=cosplayer_count,
-         other_count=other_count,
-         require_payment_count=require_payment_count,
-         paid_count=paid_count,
-         admin_csrf=admin_csrf,
-         qr_trademark_notice=QR_TRADEMARK_NOTICE
-     )
- 
- 
- @bp.route("/admin/events/<int:event_id>/edit", methods=["GET", "POST"], endpoint="admin_event_edit")
-@@ -1170,54 +1183,55 @@ def admin_event_edit(event_id: int):
-                   event_id))
- 
-             if auto_lat is not None and auto_lng is not None:
-                 curu.execute("""
-                     UPDATE mfu_event
-                        SET event_lat=%s, event_lng=%s
-                      WHERE id=%s
-                      LIMIT 1
-                 """, (auto_lat, auto_lng, event_id))
- 
-             dbu.commit()
-         finally:
-             try: curu.close(); dbu.close()
-             except Exception: pass
- 
-         # === ここから追加：全体メモ変更時のメール通知 ===
-         try:
-             before = (ev.get("memo_all") or "").strip()
-             after  = (memo_all or "").strip()
-             if before != after:
-                 # 宛先：承認済み + 主催/副主催（status IS NULL）に送る
-                 dbn = get_db(); curn = dbn.cursor()
-                 try:
-                     curn.execute("""
-                         SELECT DISTINCT u.email
--                          FROM mfu_event_member m
-+                         FROM mfu_event_member m
-                           JOIN external_login_user u ON u.id = m.user_id
-                          WHERE m.event_id=%s
-                            AND (m.status='approved' OR m.status IS NULL)
-+                           AND COALESCE(m.is_canceled,0)=0
-                            AND u.email IS NOT NULL
-                     """, (event_id,))
-                     rows = curn.fetchall() or []
-                 finally:
-                     try: curn.close(); dbn.close()
-                     except Exception: pass
- 
-                 emails = [ (r[0] if isinstance(r, tuple) else r["email"]) for r in rows if (r and (r[0] if isinstance(r, tuple) else r.get("email"))) ]
- 
-                 if emails:
-                     view_url = url_for("external_login_user.view_event", event_uuid=ev["event_uuid_str"], _external=True)
-                     subject  = f"【{title or ev.get('title')}】全体メモが更新されました"
-                     body     = (
-                         "全体メモが更新されました。\n\n"
-                         "―― 新しい全体メモ ――\n"
-                         f"{after}\n\n"
-                         f"イベントページ: {view_url}\n"
-                     )
-                     sent = 0
-                     for addr in emails:
-                         try:
-                             send_mail(
-                                 to=addr,
-                                 subject=subject,
-                                 body=body,
-@@ -1576,60 +1590,86 @@ def admin_set_participant_role(event_id: int, user_id: int):
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-         """, (save_role, costume, event_id, user_id))
-         db.commit()
-         if degraded:
-             flash("注意：DBスキーマが 'other' を未対応のため、近い役割にフォールバックして保存しました。後日ENUMに 'other' を追加してください。", "warning")
-         else:
-             flash("役割・メモを更新しました。", "success")
+diff --git a/albums/routes.py b/albums/routes.py
+index e180021e4d6d0128200cd545adad8f8f6f0d104d..99dfdd47542254285db1d0de81c6c402940351e4 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -974,52 +974,55 @@ def _uuid_bytes_to_str(b):
+         return str(uuid.UUID(bytes=b))
      except Exception:
-         try: db.rollback()
-         except Exception: pass
-         flash("役割・メモの更新に失敗しました。", "danger")
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
- 
- @bp.route("/admin/events/<int:event_id>/members/<int:user_id>/<action>", methods=["POST"])
- def admin_event_member_action(event_id: int, user_id: int, action: str):
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
-     if request.form.get("csrf_token") != session.get("admin_csrf"):
-         abort(400, "CSRF token mismatch")
-+    if action == "uncancel":
-+        db = get_db(); cur = db.cursor()
-+        try:
-+            cur.execute("""
-+                UPDATE mfu_event_member
-+                   SET is_canceled=0,
-+                       canceled_at=NULL,
-+                       canceled_by=NULL
-+                 WHERE event_id=%s AND user_id=%s
-+                 LIMIT 1
-+            """, (event_id, user_id))
-+            db.commit()
-+        finally:
-+            cur.close(); db.close()
-+        _recalc_event_fee_if_auto(event_id)
-+        flash("参加キャンセルを解除しました。", "success")
-+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
-+
-     if action not in ("approve", "reject"):
-         if action == "remove":
-             db = get_db(); cur = db.cursor()
-             try:
--                cur.execute("DELETE FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
-+                canceled_by = (session.get("user") or "admin")
-+                cur.execute("""
-+                    UPDATE mfu_event_member
-+                       SET is_canceled=1,
-+                           canceled_at=NOW(),
-+                           canceled_by=%s
-+                     WHERE event_id=%s AND user_id=%s
-+                     LIMIT 1
-+                """, (canceled_by, event_id, user_id))
-                 db.commit()
-             finally:
-                 cur.close(); db.close()
-             _recalc_event_fee_if_auto(event_id)
--            flash("更新しました。", "success")
-+            flash("参加者をキャンセル済みにしました。", "success")
-             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
-         abort(400, "unsupported action")
- 
-     new_status = "approved" if action == "approve" else "rejected"
-     STATUS_JA = {"approved": "承認", "rejected": "拒否", "pending": "保留"}
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         # イベント情報
-         cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-         ev = cur.fetchone()
-         if not ev:
-             abort(404, "event not found")
-         ev_title = ev[0] if isinstance(ev, tuple) else ev["title"]
-         ev_uuid_b = ev[1] if isinstance(ev, tuple) else ev["event_uuid"]
-         ev_uuid_str = _uuid_bytes_to_str(ev_uuid_b) or ""
-         view_url = f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}"
- 
-         # 対象メンバー
-         cur.execute("""
-             SELECT m.status, u.email, u.nickname
-               FROM mfu_event_member m
-               JOIN external_login_user u ON u.id = m.user_id
-              WHERE m.event_id=%s AND m.user_id=%s
-              LIMIT 1
-diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
-index 20e0684cf57dd7630d124bfa3a77b22ebc2f93a0..8c9575a994590c94f634be271550c7aedc6a9bae 100644
---- a/external_login_user/admin_users.py
-+++ b/external_login_user/admin_users.py
-@@ -1,32 +1,32 @@
- # -*- coding: utf-8 -*-
- from __future__ import annotations
- 
- import re
- from datetime import datetime, timezone, timedelta
- from email.utils import parsedate_to_datetime
--from flask import request, render_template, jsonify, abort, url_for, redirect
-+from flask import request, render_template, jsonify, abort, url_for, redirect, session
- from . import bp
- from app.utils.db import get_db
- from .utils import _require_mfu_login_redirect, _admin_csrf_token
- from .utils import (
-     _get_current_privacy_policy_config,
-     _needs_privacy_policy_agreement,
-     _privacy_policy_status,
-     _privacy_policy_date_label,
- )
- 
- # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
- try:
-     from .users import _issue_verify_pin, _send_verify_pin_mail  # type: ignore
- except Exception:
-     _issue_verify_pin = None  # type: ignore
-     _send_verify_pin_mail = None  # type: ignore
- 
- 
- # ============= 内部ヘルパ =============
- def _column_exists(table: str, column: str) -> bool:
-     """information_schema で列の有無を確認（email_verified_at 非存在でも動かす）"""
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute("SELECT DATABASE()")
-@@ -537,51 +537,54 @@ def admin_ext_users_edit_page(user_id: int):
-             privacy_policy_agreed_at,
-             privacy_policy_agreed_revised_date,
-             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-             COALESCE(notify_album_process, 1) AS notify_album_process,
-             {_PUSH_SUBSCRIPTION_COUNT_SQL}
-         """
-         if has_verified:
-             cols += ", email_verified_at"
-         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         user = cur.fetchone()
-         if not user:
-             abort(404)
-         if not has_verified:
-             user["email_verified_at"] = None
- 
-         # 参加中イベント一覧
-         cur.execute(
-             """
-             SELECT
-               m.id AS member_id,
-               e.id AS event_id,
-               e.title,
-               e.starts_at,
-               m.status,
--              m.payment_status
-+              m.payment_status,
-+              COALESCE(m.is_canceled,0) AS is_canceled,
-+              m.canceled_at,
-+              m.canceled_by
-             FROM mfu_event_member AS m
-             JOIN mfu_event AS e ON e.id = m.event_id
-             WHERE m.user_id=%s
-             ORDER BY COALESCE(e.starts_at, '9999-12-31') DESC, e.id DESC
-             """,
-             (user_id,),
-         )
-         memberships = cur.fetchall() or []
- 
-         # 参加可能イベント（未参加のもの）
-         cur.execute(
-             """
-             SELECT e.id, e.title, e.starts_at
-               FROM mfu_event AS e
-              WHERE e.id NOT IN (
-                     SELECT event_id FROM mfu_event_member WHERE user_id=%s
-                    )
-              ORDER BY COALESCE(e.starts_at, '9999-12-31') ASC, e.id ASC
-              LIMIT 200
-             """,
-             (user_id,),
-         )
-         assignable = cur.fetchall() or []
- 
-     finally:
-@@ -613,112 +616,135 @@ def admin_ext_users_edit_page(user_id: int):
- def admin_ext_users_assign(user_id: int):
-     """
-     指定ユーザーをイベントに参加追加する
-     - Form POST（csrf必須）
-     - 既に参加済みなら duplicated=1 を付けて編集ページに戻す
-     """
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     token_req = (request.form.get("csrf_token") or "").strip()
-     if not token_req or token_req != _admin_csrf_token():
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
- 
-     try:
-         event_id = int(request.form.get("event_id") or "0")
-     except Exception:
-         event_id = 0
-     if event_id <= 0:
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="bad_event"))
- 
-     db = get_db()
-     cur = db.cursor()
-     try:
-         # すでに参加済みか軽く確認（UNIQUE制約もあるが事前チェックでメッセージを素直に）
--        cur.execute("SELECT 1 FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
--        if cur.fetchone():
-+        cur.execute("SELECT id, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
-+        existing = cur.fetchone()
-+        if existing:
-+            existing_id = existing[0] if isinstance(existing, tuple) else existing.get("id")
-+            existing_canceled = existing[1] if isinstance(existing, tuple) else existing.get("is_canceled", 0)
-+            if int(existing_canceled or 0) == 1:
-+                cur.execute("""
-+                    UPDATE mfu_event_member
-+                       SET is_canceled=0,
-+                           canceled_at=NULL,
-+                           canceled_by=NULL
-+                     WHERE id=%s
-+                     LIMIT 1
-+                """, (existing_id,))
-+                db.commit()
-+                return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, revived=1))
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, duplicated=1))
- 
-         # 追加：初期は pending / unpaid で登録
-         cur.execute(
-             """
-             INSERT INTO mfu_event_member (event_id, user_id, status, payment_status)
-             VALUES (%s, %s, 'pending', 'unpaid')
-             """,
-             (event_id, user_id),
-         )
-         db.commit()
-     finally:
          try:
-             cur.close()
-             db.close()
+             return str(uuid.UUID(hex=b.hex()))
          except Exception:
-             pass
+             return None
  
-     return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, assigned=1))
+ def _event_join_url(event_id: int) -> str | None:
+     ev = db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s", (event_id,))
+     if not ev: return None
+     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid"))
+     if not ev_uuid_str: return None
+     return url_for('external_login_user.join_event', event_uuid=ev_uuid_str)
  
- # ============= 参加削除 確認ページ（GET） =============
- @bp.get("/admin/ext-users/<int:user_id>/membership/<int:member_id>/delete-confirm",
-         endpoint="admin_ext_users_member_delete_confirm")
- def admin_ext_users_member_delete_confirm(user_id: int, member_id: int):
--    """ユーザーのイベント参加レコードを削除する前の確認ページ"""
-+    """ユーザーのイベント参加レコードをキャンセルする前の確認ページ"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
+ def _is_event_member_approved(event_id: int) -> bool:
+     sid = session.get("ext_user_social_id")
+     if not sid:
+         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
+         return False
+     u = db_get_one("SELECT id FROM external_login_user WHERE social_id=%s", (sid,))
+     if not u:
+         session["ext_user_onboarding"] = True
+         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
+         return False
+     ext_user_id = int(u["id"])
+-    mem = db_get_one("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
+-    return bool(mem and mem.get("status") == "approved")
++    mem = db_get_one(
++        "SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s",
++        (event_id, ext_user_id),
++    )
++    return bool(mem and mem.get("status") == "approved" and int(mem.get("is_canceled") or 0) == 0)
  
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         # 該当の membership がユーザーのものか検証して情報取得
-         cur.execute("""
-             SELECT m.id AS member_id, m.user_id, m.event_id, m.status, m.payment_status,
-+                   COALESCE(m.is_canceled,0) AS is_canceled, m.canceled_at, m.canceled_by,
-                    e.title, e.starts_at
-               FROM mfu_event_member AS m
-               JOIN mfu_event AS e ON e.id = m.event_id
-              WHERE m.id=%s AND m.user_id=%s
-              LIMIT 1
-         """, (member_id, user_id))
-         m = cur.fetchone()
-         if not m:
-             # 見つからない or 他人のデータ
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page",
-                                     user_id=user_id, error="not_found"))
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
+ def event_gate(view_func):
+     """イベント連携アルバム用ゲート（access_mode='event' だけ処理）。他はスルー"""
+     @wraps(view_func)
+     def _wrapped(album_id, *args, **kwargs):
+         session["_gate_album_id"] = album_id  # ログイン後の戻り先
+         meta = _fetch_album_meta(album_id)
+         if not meta:
+             return "アルバムが存在しません", 404
  
-     return render_template("admin_ext_users_member_delete_confirm.html",
-                            u_id=user_id, m=m, admin_csrf=_admin_csrf_token())
+         # 管理者/オーナーは常に通す
+         if session.get('user') == 'admin' or (session.get('user') and session.get('user') == meta.get('owner')):
+             _grant_album_auth(album_id)
+             return redirect(url_for('album.album_home', album_id=album_id))
  
+         # イベントモード：承認済みのみ
+         if meta.get("access_mode") == "event" and meta.get("event_id"):
+             if _is_event_member_approved(int(meta["event_id"])):  # 承認済み
+                 _grant_album_auth(album_id)
+                 return redirect(url_for('album.album_home', album_id=album_id))
+             flash('このアルバムはイベント参加者専用です。まずは参加申請/承認を受けてください。', 'warning')
+             join_url = _event_join_url(int(meta["event_id"]))
+             return redirect(join_url) if join_url else ("イベントが見つかりません", 404)
  
- # ============= 参加削除 実行（POST） =============
- @bp.post("/admin/ext-users/<int:user_id>/membership/<int:member_id>/delete",
-          endpoint="admin_ext_users_member_delete")
- def admin_ext_users_member_delete(user_id: int, member_id: int):
--    """ユーザーのイベント参加レコードを削除する"""
-+    """ユーザーのイベント参加レコードをキャンセル済みにする"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     # CSRF
-     token_req = (request.form.get("csrf_token") or "").strip()
-     if not token_req or token_req != _admin_csrf_token():
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page",
-                                 user_id=user_id, error="csrf"))
- 
-     db = get_db(); cur = db.cursor()
-     try:
--        # 所有確認してから削除
-+        # 所有確認してからキャンセル
-         cur.execute("SELECT 1 FROM mfu_event_member WHERE id=%s AND user_id=%s LIMIT 1",
-                     (member_id, user_id))
-         if not cur.fetchone():
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page",
-                                     user_id=user_id, error="not_found"))
- 
--        cur.execute("DELETE FROM mfu_event_member WHERE id=%s LIMIT 1", (member_id,))
-+        canceled_by = (session.get("user") or "admin")
-+        cur.execute("""
-+            UPDATE mfu_event_member
-+               SET is_canceled=1,
-+                   canceled_at=NOW(),
-+                   canceled_by=%s
-+             WHERE id=%s
-+             LIMIT 1
-+        """, (canceled_by, member_id))
-         db.commit()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return redirect(url_for("external_login_user.admin_ext_users_edit_page",
--                            user_id=user_id, deleted="1"))
-+                            user_id=user_id, canceled="1"))
-diff --git a/external_login_user/schema.py b/external_login_user/schema.py
-index 0967d87f75d76fd07e009b9c29128ed759e223cd..1acf0a61382c53551456565bd1b7d1ad8d889c2b 100644
---- a/external_login_user/schema.py
-+++ b/external_login_user/schema.py
-@@ -52,50 +52,53 @@ CREATE TABLE IF NOT EXISTS mfu_event (
-   google_form_url VARCHAR(512)    NULL,
-   album_id        CHAR(36)        NULL,
-   payment_uuid    CHAR(32)        NULL,
-   created_at      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-   PRIMARY KEY (id),
-   UNIQUE KEY uniq_event_uuid (event_uuid)
- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
- """
- 
- DDL_EVENT_MEMBER = """
- CREATE TABLE IF NOT EXISTS mfu_event_member (
-   id                 BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-   event_id           BIGINT UNSIGNED NOT NULL,
-   user_id            BIGINT UNSIGNED NOT NULL,
-   role               ENUM('viewer','editor') NOT NULL DEFAULT 'viewer',
-   status             ENUM('pending','approved','rejected') NOT NULL DEFAULT 'pending',
-   payment_status     ENUM('unpaid','pending','paid','refunded') NOT NULL DEFAULT 'unpaid',
-   require_payment    TINYINT(1) NOT NULL DEFAULT 1,
-   process            TINYINT(1) NOT NULL DEFAULT 0,
-   paid_at            DATETIME NULL,
-   payment_row_id     BIGINT UNSIGNED NULL,
-   receipt_url        VARCHAR(512) NULL,
-   paid_amount_yen    INT UNSIGNED NULL,
-   custom_fee_yen     INT UNSIGNED NULL,
-   receipt_note       TEXT NULL,
-+  is_canceled        TINYINT(1) NOT NULL DEFAULT 0,
-+  canceled_at        DATETIME NULL,
-+  canceled_by        VARCHAR(80) NULL,
-   joined_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-   PRIMARY KEY (id),
-   UNIQUE KEY uniq_member (event_id, user_id),
-   KEY idx_event (event_id),
-   KEY idx_status (status),
-   KEY idx_pstatus (payment_status),
-   KEY idx_em_require_payment (require_payment)
- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
- """
- 
- DDL_ALBUM_PROCESS = """
- CREATE TABLE IF NOT EXISTS album_process (
-   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-   ext_user_id   BIGINT UNSIGNED NOT NULL,
-   album_id      CHAR(36) NOT NULL,
-   child_id      CHAR(36) NOT NULL,
-   request_flag  TINYINT(1) NOT NULL DEFAULT 0,
-   complete_flag TINYINT(1) NOT NULL DEFAULT 0,
-   updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-   created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-   PRIMARY KEY (id),
-   UNIQUE KEY uniq_album_process (ext_user_id, album_id, child_id),
-   KEY idx_album_process_album (album_id, child_id),
-   KEY idx_album_process_user (ext_user_id)
- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-@@ -217,50 +220,53 @@ def _on_bp_registered(state) -> None:
-             cur.execute(DDL_EXTERNAL_LOGIN_RESUME_TOKEN)
-             cur.execute(DDL_PRIVACY_POLICY_CONFIG)
- 
-             # 後方互換ALTER（存在しなければADD）
-             def _ensure_col(table: str, col: str, ddl_after_add: str) -> None:
-                 try:
-                     cur.execute("""
-                         SELECT COUNT(*) FROM information_schema.COLUMNS
-                          WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s AND COLUMN_NAME=%s
-                     """, (table, col))
-                     has = cur.fetchone()[0]
-                 except Exception:
-                     has = 0
-                 if not has:
-                     try:
-                         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl_after_add}")
-                     except Exception as e:
-                         if not (mysql_errors and getattr(e, "errno", None) == 1060):
-                             raise
- 
-             # 既存のゆるいALTER群
-             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
-             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
-             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
-             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
-+            _ensure_col("mfu_event_member", "is_canceled", "is_canceled TINYINT(1) NOT NULL DEFAULT 0 AFTER receipt_note")
-+            _ensure_col("mfu_event_member", "canceled_at", "canceled_at DATETIME NULL AFTER is_canceled")
-+            _ensure_col("mfu_event_member", "canceled_by", "canceled_by VARCHAR(80) NULL AFTER canceled_at")
-             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
-             _ensure_col(
-                 "external_login_user",
-                 "notification_unread_reminder_last_sent_at",
-                 "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
-             )
-             _ensure_col(
-                 "external_login_user",
-                 "privacy_policy_agreed_at",
-                 "privacy_policy_agreed_at DATETIME NULL AFTER notification_unread_reminder_last_sent_at",
-             )
-             _ensure_col(
-                 "external_login_user",
-                 "privacy_policy_agreed_revised_date",
-                 "privacy_policy_agreed_revised_date DATE NULL AFTER privacy_policy_agreed_at",
-             )
-             _ensure_col(
-                 "mfu_external_privacy_policy_config",
-                 "commerce_law_url",
-                 "commerce_law_url VARCHAR(2048) NULL AFTER privacy_policy_revised_date",
-             )
-             _ensure_col(
-                 "mfu_external_privacy_policy_config",
-                 "participant_terms_url",
-                 "participant_terms_url VARCHAR(2048) NULL AFTER commerce_law_url",
-diff --git a/external_login_user/template/admin_event_view.html b/external_login_user/template/admin_event_view.html
-index c4495af440aefbfc05b4e79ddb7c339d2055bce9..ce7b4fee2c89e6a859e63c86be3cef2bdf91399e 100644
---- a/external_login_user/template/admin_event_view.html
-+++ b/external_login_user/template/admin_event_view.html
-@@ -217,51 +217,51 @@
-                     </div>
-                   {% endif %}
-                   {% if an %}
-                     <div>
-                       <div class="small text-muted mb-1">管理者備考（非公開）</div>
-                       <div class="p-2 border rounded" style="white-space:pre-line; word-break:break-word;">{{- an -}}</div>
-                     </div>
-                   {% endif %}
-                 </div>
-               </div>
-             </div>
-           {% endif %}
-         {% endfor %}
-       </div>
-     {% endif %}
-   </div>
- </div>
- <!-- ===== /メモ一覧 ===== -->
- 
- <div class="card mt-3">
-   <div class="card-body">
-     <div class="d-flex justify-content-between align-items-center">
-       <div>
-         <h2 class="h6 mb-2">参加者一覧</h2>
-         <div class="small text-muted">
--          全体人数：{{ total_member_count }}名<br>
-+          現役参加人数：{{ total_member_count }}名<br>
-           カメラマン：{{ camera_count }}名<br>
-           アシスタント：{{ assistant_count }}名<br>
-           衣装：{{ cosplayer_count }}名<br>
-           その他：{{ other_count }}名<br>
-           支払有りの人：{{ require_payment_count }}名 / 支払済みの人：{{ paid_count }}名
-         </div>
-       </div>
-       <!-- 凡例 -->
-       <div class="small">
-         凡例：
-         <span class="badge bg-danger">未</span>
-         <span class="badge bg-warning text-dark">確認</span>
-         <span class="badge bg-success">済</span>
-       </div>
-     </div>
- 
-     {% if members|length == 0 %}
-       <div class="text-muted">参加者はまだいません。</div>
-     {% else %}
-       <div class="table-responsive">
-         <table class="table align-middle">
-           <thead>
-             <tr>
-               <th>ユーザー</th>
-               <th>承認</th>
-@@ -312,51 +312,53 @@
-         {% set xid_raw = m.x_id or '' %}
-         {% set igid_raw = m.instagram_id or '' %}
-         {% set xid = xid_raw.lstrip('@') %}
-         {% set igid = igid_raw.lstrip('@') %}
-         <div class="text-mono small text-muted">
-           {% if m.x_id %}
-             X:
-             <a href="https://x.com/{{ xid }}" target="_blank" rel="noopener" class="text-reset">
-               {{ xid_raw }}
-             </a>
-           {% endif %}
-           {% if m.x_id and m.instagram_id %}<br>{% endif %}
-           {% if m.instagram_id %}
-             Instagram:
-             <a href="https://www.instagram.com/{{ igid }}/" target="_blank" rel="noopener" class="text-reset">
-               {{ igid_raw }}
-             </a>
-           {% endif %}
-         </div>
-       {% endif %}
-     </div>
-   </div>
- </td>
- 
-               <td>
--                {% if m.status == 'approved' %}
-+                {% if m.is_canceled == 1 %}
-+                  <span class="badge bg-dark">キャンセル済み</span>
-+                {% elif m.status == 'approved' %}
-                   <span class="badge bg-success">承認</span>
-                 {% elif m.status == 'pending' %}
-                   <span class="badge bg-secondary">保留</span>
-                 {% elif m.status == 'rejected' %}
-                   <span class="badge bg-danger">拒否</span>
-                 {% else %}
-                   <span class="badge bg-light text-dark">—</span>
-                 {% endif %}
-               </td>
- 
-               <td class="text-center">
-                 {% if m.process == 1 %}
-                   ★
-                 {% else %}
-                   <span class="text-muted">—</span>
-                 {% endif %}
-               </td>
- 
-               <td>
-                 {% if pr %}{{ my_role_label(pr) }}{% else %}—{% endif %}
-                 {% if m.costume_label %}
-                   <span class="text-muted small">（{{ m.costume_label }}）</span>
-                 {% endif %}
-               </td>
- 
-@@ -389,57 +391,70 @@
- <td>
-   {% if m.require_payment != 1 %}
-     <span class="badge bg-secondary">無</span>
-   {% else %}
-     {% if m.pay_status_html %}
-       {{ m.pay_status_html|safe }}
-     {% else %}
-       {% if m.payment_status == 'paid' %}
-         <span class="badge bg-success">済</span>
-       {% elif m.payment_status == 'checking' %}
-         <span class="badge bg-warning text-dark">確認</span>
-       {% else %}
-         <span class="badge bg-danger">未</span>
-       {% endif %}
-     {% endif %}
-   {% endif %}
- </td>
-               <td class="text-end">
-                 {% if m.paid_amount_yen is not none %}
-                   ¥{{ "{:,}".format(m.paid_amount_yen|int) }}
-                 {% else %}
-                   <span class="text-muted">—</span>
-                 {% endif %}
-               </td>
- 
--              <td class="small">{{ m.joined_at or '—' }}</td>
-+              <td class="small">
-+                {{ m.joined_at or '—' }}
-+                {% if m.is_canceled == 1 and m.canceled_at %}
-+                  <br><span class="text-danger">キャンセル: {{ m.canceled_at }}{% if m.canceled_by %} ({{ m.canceled_by }}){% endif %}</span>
-+                {% endif %}
-+              </td>
- 
-               <td class="text-end">
--                <a class="btn btn-sm btn-outline-primary"
--                   href="{{ url_for('external_login_user.admin_member_edit', event_id=ev.id, user_id=m.user_id) }}">
--                  編集
--                </a>
-+                <div class="btn-group" role="group">
-+                  <a class="btn btn-sm btn-outline-primary"
-+                     href="{{ url_for('external_login_user.admin_member_edit', event_id=ev.id, user_id=m.user_id) }}">
-+                    編集
-+                  </a>
-+                  {% if m.is_canceled == 1 %}
-+                    <form method="post" action="{{ url_for('external_login_user.admin_event_member_action', event_id=ev.id, user_id=m.user_id, action='uncancel') }}" class="d-inline">
-+                      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-+                      <button class="btn btn-sm btn-outline-success" type="submit">キャンセル解除</button>
-+                    </form>
-+                  {% endif %}
-+                </div>
-               </td>
-             </tr>
- 
-             <!-- ★ メモ詳細行（折りたたみ） -->
-             <tr>
-               <td colspan="10" class="p-0">
-                 <div id="memo-{{ m.user_id }}" class="collapse">
-                   <div class="p-3 border-top bg-body">
-                     {% if cm %}
-                       <div class="mb-3">
-                         <div class="small text-muted mb-1">個別連絡メモ（参加者にも表示）</div>
-                         <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">{{- cm | linkify -}}</div>
-                       </div>
-                     {% endif %}
-                     {% if an %}
-                       <div>
-                         <div class="small text-muted mb-1">管理者備考（非公開）</div>
-                         <div class="p-2 border rounded" style="white-space:pre-line; word-break:break-word;">{{- an -}}</div>
-                       </div>
-                     {% endif %}
-                     {% if not cm and not an %}
-                       <div class="text-muted">メモはありません。</div>
-                     {% endif %}
-                   </div>
-                 </div>
-diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
-index 09e24b8e1e8b19342724758795cbc3c6a6564ccc..e73038caad4fdc1e6cb5dafc52c15a2a9157347e 100644
---- a/external_login_user/template/admin_ext_users_edit.html
-+++ b/external_login_user/template/admin_ext_users_edit.html
-@@ -1,36 +1,40 @@
- {% extends "base.html" %}
- {% block title %}外部ログインユーザー編集 #{{ u.id }}{% endblock %}
- 
- {% block content %}
- <meta name="x-csrf-token" content="{{ admin_csrf }}">
- 
- {# ---- フラッシュ/通知 ---- #}
- {% if request.args.get('sent') %}
-   <div class="alert alert-success" role="alert">確認コードを送信しました。</div>
- {% elif request.args.get('assigned') %}
-   <div class="alert alert-success" role="alert">イベントに参加として追加しました。</div>
-+{% elif request.args.get('revived') %}
-+  <div class="alert alert-success" role="alert">キャンセル済みの参加を復帰しました。</div>
-+{% elif request.args.get('canceled') %}
-+  <div class="alert alert-success" role="alert">参加をキャンセル済みに変更しました（履歴は保持されています）。</div>
- {% elif request.args.get('duplicated') %}
-   <div class="alert alert-info" role="alert">このユーザーは既にそのイベントに参加しています。</div>
- {% elif request.args.get('error') == 'csrf' %}
-   <div class="alert alert-danger" role="alert">CSRFエラーのため処理できませんでした。もう一度お試しください。</div>
- {% elif request.args.get('error') == 'no_email' %}
-   <div class="alert alert-warning" role="alert">メールアドレスが未設定のため送信できませんでした。</div>
- {% elif request.args.get('error') == 'smtp' %}
-   <div class="alert alert-danger" role="alert">メール送信に失敗しました（SMTP）。時間をおいて再度お試しください。</div>
- {% elif request.args.get('error') == 'bad_event' %}
-   <div class="alert alert-warning" role="alert">イベントの指定が不正です。</div>
- {% elif request.args.get('error') == 'not_found' %}
-   <div class="alert alert-warning" role="alert">対象のデータが見つかりません。</div>
- {% endif %}
- 
- <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1 class="h4 mb-0">外部ログインユーザー編集 <span class="text-muted">#{{ u.id }}</span></h1>
-   <div class="d-flex gap-2">
-     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
-     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">一覧へ戻る</a>
-   </div>
- </div>
- 
- {# ---- 基本情報 ---- #}
- <div class="card mb-4">
-   <div class="card-body">
-@@ -184,124 +188,124 @@
-           現在の有効版に対して再同意が必要です。
-         {% else %}
-           現在の有効版との差分はありません。
-         {% endif %}
-       </dd>
-     </dl>
-   </div>
- </div>
- 
- {# =========================================
-    参加中イベント一覧（直近→遠い順 & タイトルに管理リンク）
-    日本語表示: 参加状態/支払状態
-    ========================================= #}
- {% set status_map = {
-   'approved':'承認済', 'pending':'保留', 'rejected':'拒否',
-   'confirmed':'参加', 'cancelled':'キャンセル', 'canceled':'キャンセル',
-   'owner':'主催', 'guest':'ゲスト'
- } %}
- {% set pay_map = {
-   'unpaid':'未払い', 'pending':'確認中', 'paid':'支払済み',
-   'refunded':'返金済み', 'failed':'失敗', 'canceled':'取消', 'cancelled':'取消'
- } %}
- 
- <div class="card mb-4">
-   <div class="card-header">
--    <strong>参加中イベント</strong>
-+    <strong>参加イベント（キャンセル済み含む）</strong>
-   </div>
-   <div class="card-body p-0">
-     <div class="table-responsive">
-       <table class="table table-sm mb-0 align-middle">
-         <thead class="table-light">
-           <tr>
-             <th style="width:80px;">ID</th>
-             <th>タイトル</th>
-             <th style="width:180px;">開催日時</th>
-             <th style="width:120px;">参加状態</th>
-             <th style="width:120px;">支払状態</th>
-             <th style="width:120px;">操作</th>
-           </tr>
-         </thead>
-         <tbody>
-           {% if memberships and memberships|length %}
-             {# 開催日時ありを昇順（直近→遠い）、未設定は最後 #}
-             {% set mm_has = memberships | selectattr('starts_at') | list %}
-             {% set mm_none = memberships | rejectattr('starts_at') | list %}
- 
-             {% for m in mm_has|sort(attribute='starts_at') %}
-               <tr>
-                 <td class="text-muted">#{{ m.event_id }}</td>
-                 <td>
-                   <a href="https://mfu.iori0624.jp/external-login/admin/events/{{ m.event_id }}">
-                     {{ m.title or '(無題イベント)' }}
-                   </a>
-                 </td>
-                 <td class="text-muted">{{ m.starts_at }}</td>
-                 <td>
-                   <span class="badge bg-outline-secondary text-dark">
--                    {{ status_map.get(m.status|string, m.status) }}
-+                    {{ status_map.get(m.status|string, m.status) }}{% if m.is_canceled|int == 1 %} / キャンセル済み{% endif %}
-                   </span>
-                 </td>
-                 <td>
-                   <span class="badge bg-outline-secondary text-dark">
-                     {{ pay_map.get(m.payment_status|string, m.payment_status) }}
-                   </span>
-                 </td>
-                 <td>
-                   <a class="btn btn-sm btn-outline-danger"
-                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
-                                       user_id=u.id, member_id=m.member_id) }}">
--                    削除
-+                    キャンセルにする
-                   </a>
-                 </td>
-               </tr>
-             {% endfor %}
- 
-             {% for m in mm_none %}
-               <tr>
-                 <td class="text-muted">#{{ m.event_id }}</td>
-                 <td>
-                   <a href="https://mfu.iori0624.jp/external-login/admin/events/{{ m.event_id }}">
-                     {{ m.title or '(無題イベント)' }}
-                   </a>
-                 </td>
-                 <td class="text-muted">-</td>
-                 <td>
-                   <span class="badge bg-outline-secondary text-dark">
--                    {{ status_map.get(m.status|string, m.status) }}
-+                    {{ status_map.get(m.status|string, m.status) }}{% if m.is_canceled|int == 1 %} / キャンセル済み{% endif %}
-                   </span>
-                 </td>
-                 <td>
-                   <span class="badge bg-outline-secondary text-dark">
-                     {{ pay_map.get(m.payment_status|string, m.payment_status) }}
-                   </span>
-                 </td>
-                 <td>
-                   <a class="btn btn-sm btn-outline-danger"
-                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
-                                       user_id=u.id, member_id=m.member_id) }}">
--                    削除
-+                    キャンセルにする
-                   </a>
-                 </td>
-               </tr>
-             {% endfor %}
-           {% else %}
-             <tr><td colspan="6" class="text-center text-muted py-3">参加中のイベントはありません。</td></tr>
-           {% endif %}
-         </tbody>
-       </table>
-     </div>
-   </div>
- </div>
- 
- {# =========================================
-    別イベントに参加させる（直近→遠い順のプルダウン）
-    ========================================= #}
- <div class="card mb-5">
-   <div class="card-header">
-     <strong>このユーザーを別のイベントに参加させる</strong>
-   </div>
-   <div class="card-body">
-     <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
-       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
- 
-       <div class="col-md-6">
-diff --git a/external_login_user/template/admin_ext_users_member_delete_confirm.html b/external_login_user/template/admin_ext_users_member_delete_confirm.html
-index 897e209dbe395e933f4ba5a2a80cbc9597c7f582..2998b1d2f034917a62287aad3c53b1e36654c295 100644
---- a/external_login_user/template/admin_ext_users_member_delete_confirm.html
-+++ b/external_login_user/template/admin_ext_users_member_delete_confirm.html
-@@ -1,38 +1,39 @@
- {% extends "base.html" %}
--{% block title %}参加削除の確認{% endblock %}
-+{% block title %}参加キャンセルの確認{% endblock %}
- 
- {% block content %}
- <div class="d-flex justify-content-between align-items-center mb-3">
--  <h1 class="h4 mb-0">参加削除の確認</h1>
-+  <h1 class="h4 mb-0">参加キャンセルの確認</h1>
-   <div>
-     <a class="btn btn-sm btn-outline-secondary"
-        href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u_id) }}">編集に戻る</a>
-   </div>
- </div>
- 
- <div class="alert alert-warning">
--  このユーザーを次のイベントの「参加中」から削除します。よろしいですか？
-+  このユーザーを次のイベントの参加者としてはキャンセル済みに変更します。参加履歴と支払情報は保持されます。
- </div>
- 
- <div class="card mb-3">
-   <div class="card-body">
-     <dl class="row mb-0">
-       <dt class="col-sm-3">イベントID</dt><dd class="col-sm-9">#{{ m.event_id }}</dd>
-       <dt class="col-sm-3">タイトル</dt><dd class="col-sm-9">{{ m.title or '(無題イベント)' }}</dd>
-       <dt class="col-sm-3">開催日時</dt><dd class="col-sm-9">{{ m.starts_at or '-' }}</dd>
-       <dt class="col-sm-3">参加状態</dt><dd class="col-sm-9">{{ m.status }}</dd>
-       <dt class="col-sm-3">支払状態</dt><dd class="col-sm-9">{{ m.payment_status }}</dd>
-+      <dt class="col-sm-3">キャンセル状態</dt><dd class="col-sm-9">{% if m.is_canceled|int == 1 %}キャンセル済み{% else %}未キャンセル{% endif %}</dd>
-     </dl>
-   </div>
- </div>
- 
- <form method="post"
-       action="{{ url_for('external_login_user.admin_ext_users_member_delete', user_id=u_id, member_id=m.member_id) }}">
-   <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-   <div class="d-flex gap-2">
-     <a class="btn btn-outline-secondary"
-        href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u_id) }}">キャンセル</a>
--    <button class="btn btn-danger" type="submit">削除する</button>
-+    <button class="btn btn-danger" type="submit">キャンセル済みにする</button>
-   </div>
- </form>
- {% endblock %}
-diff --git a/external_login_user/template/admin_member_edit.html b/external_login_user/template/admin_member_edit.html
-index 403676836d3e036d825bf9155d277463eebc5578..54c69a6013111a1dd3776d24f6f1db0d1928f801 100644
---- a/external_login_user/template/admin_member_edit.html
-+++ b/external_login_user/template/admin_member_edit.html
-@@ -145,52 +145,52 @@
-           </div>
-         {% else %}
-           <div class="p-2 border rounded">未払い</div>
-         {% endif %}
-       </div>
- 
-       <!-- 個別連絡メモ（参加者にも表示） -->
-       <div class="mb-3">
-         <label class="form-label small text-muted">個別連絡メモ（参加者にも表示）</label>
-         <textarea class="form-control" name="contact_memo" rows="3" placeholder="参加者と共有したい連絡事項など">{{ m.contact_memo or '' }}</textarea>
-       </div>
- 
-       <!-- 管理者備考（非公開） -->
-       <div class="mb-4">
-         <label class="form-label small text-muted">管理者備考（非公開）</label>
-         <textarea class="form-control" name="admin_note" rows="3" placeholder="内部用メモ（参加者には見えません）">{{ m.admin_note or '' }}</textarea>
-       </div>
- 
-       <div class="d-flex justify-content-between align-items-center">
-         <button class="btn btn-primary" type="submit">保存</button>
- 
-         <!-- 解除ボタンは別フォームをform属性で送信（入れ子フォーム回避） -->
-         <button class="btn btn-outline-danger"
-                 type="submit"
-                 form="remove-member-{{m.user_id}}"
--                onclick="return confirm('この参加者を解除します。よろしいですか？');">
--          参加者を解除
-+                onclick="return confirm('この参加者をキャンセル済みにします。よろしいですか？');">
-+          参加者をキャンセル
-         </button>
-       </div>
-     </form>
- 
-     <!-- 参加者解除のための独立フォーム（入れ子禁止のため外に置く） -->
-     <form id="remove-member-{{m.user_id}}" method="post"
-           action="{{ url_for('external_login_user.admin_event_member_action', event_id=ev.id, user_id=m.user_id, action='remove') }}">
-       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-     </form>
-   </div>
- </div>
- 
- {% set _member_id = (request.view_args.get('member_id') if request.view_args else None)
-                     or (m.id if m.id is defined else None)
-                     or (m.member_id if m.member_id is defined else None)
-                     or m.user_id %}
- 
- <!-- ================= 支払い ================= -->
- <div class="card my-4">
-   <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
-     <div class="h6 mb-0">支払い</div>
-     <div class="d-flex flex-wrap gap-2 align-items-center">
-       <span class="badge {{ 'text-bg-success' if (m.payment_status=='paid') else 'text-bg-secondary' }}">
-         現在のステータス：{{ m.payment_status or '—' }}
-       </span>
-diff --git a/external_login_user/template/event_join.html b/external_login_user/template/event_join.html
-index d44aafc2301c9ee636b31a59765b703441b5a435..fc03854b74a2be6ff42b9b52f6de21b0db27b45f 100644
---- a/external_login_user/template/event_join.html
-+++ b/external_login_user/template/event_join.html
-@@ -14,50 +14,54 @@
-       <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
-     {% endfor %}
-   {% endwith %}
- 
-   <h1 class="h5 mb-3">イベント参加</h1>
- 
-   <div class="card mb-3">
-     <div class="card-body">
-       <div class="fw-bold mb-1">{{ ev.title }}</div>
-       <div class="small text-muted mb-2">UUID：{{ ev.event_uuid_str }}</div>
-       <div><strong>開始:</strong> {{ ev.starts_at or '—' }}</div>
-       <div><strong>参加費:</strong> {% if ev.fee_yen is not none %}¥{{ "{:,}".format(ev.fee_yen) }}{% else %}—{% endif %}</div>
-       <div><strong>場所:</strong> {{ ev.place_name or '—' }}</div>
-       <div class="small text-muted">{{ ev.address or '' }}</div>
-     </div>
-   </div>
- 
-   {% if status == 'approved' %}
-     <div class="alert alert-success">すでに承認済みです。イベントページを開けます。</div>
-     <a class="btn btn-primary" href="{{ url_for('external_login_user.view_event', event_uuid=ev.event_uuid_str) }}">イベントページへ</a>
- 
-   {% elif status == 'pending' %}
-     <div class="alert alert-info">申請は承認待ちです。承認後にイベントページを閲覧できます。</div>
-     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
- 
-+  {% elif status == 'canceled' %}
-+    <div class="alert alert-warning">この参加はキャンセル済みです。再参加が必要な場合は主催者へご連絡ください。</div>
-+    <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
-+
-   {% elif status == 'rejected' %}
-     <div class="alert alert-danger">申請は拒否されています。主催者にお問い合わせください。</div>
-     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
- 
-   {% else %}
-     {% set default_role = form_role if form_role in ['camera','assistant','cosplayer','other'] else 'cosplayer' %}
- 
-     <!-- ✅ 単一フォーム：役割・（衣装／その他）メモ + 参加申請 -->
-     <form method="post" class="row gy-3">
-       <input type="hidden" name="csrf_token" value="{{ csrf_token or session.csrf_token or '' }}">
- 
-       <div class="col-12">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-2">参加される役割の入力をお願い致します</h2>
-             <p class="mb-2 small text-muted">衣装またはその他の方は、下の入力欄にメモ（衣装名など）の入力をお願い致します。</p>
- 
-             <!-- 役割（ボタン式） -->
-             <div class="btn-group mb-2" role="group" aria-label="participant role">
-               <input type="radio" class="btn-check" name="participant_role" id="role_camera" value="camera"
-                      {% if default_role == 'camera' %}checked{% endif %} autocomplete="off">
-               <label class="btn btn-outline-primary" for="role_camera">カメラマン</label>
- 
-               <input type="radio" class="btn-check" name="participant_role" id="role_assistant" value="assistant"
-                      {% if default_role == 'assistant' %}checked{% endif %} autocomplete="off">
+         # tokenモードは既存処理へ
 diff --git a/external_login_user/template/event_view.html b/external_login_user/template/event_view.html
-index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2adadcdc9739 100644
+index 0d301fbbec2f0b79f9a467952efd2adadcdc9739..73b3d9a0533c1e335c0045ace7986027b1d91c46 100644
 --- a/external_login_user/template/event_view.html
 +++ b/external_login_user/template/event_view.html
-@@ -37,84 +37,88 @@
+@@ -24,240 +24,252 @@
+   {%- endmacro %}
+ 
+   {# 0/1 正規化（BIT/TINYINT/str/Noneを吸収） #}
+   {% macro norm01(v, default_=1) -%}
+     {%- if v is none -%}
+       {{ default_ }}
+     {%- elif v is number -%}
+       {{ 0 if (v|int) == 0 else 1 }}
+     {%- elif v is string -%}
+       {%- set s = v|trim|lower -%}
+       {{ 1 if s in ['1','true','on','yes','y'] else 0 }}
+     {%- else -%} {# bytes 等 #}
+       {%- set s = (v|string) -%}
        {{ 1 if ('\\x01' in s or s.endswith('1')) else 0 }}
      {%- endif -%}
    {%- endmacro %}
@@ -1315,6 +90,8 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
    {% set memo_all = ev.memo_all if ev.memo_all is defined else None %}
    {% set sns_tag_raw = (ev.sns_hashtag or '')|trim %}
    {% set sns_tag = ('#' ~ sns_tag_raw.lstrip('#')) if sns_tag_raw else None %}
++  {% set member_active = (my_status == 'approved' and my_is_canceled|default(0)|int == 0) %}
++  {% set member_limited = (my_is_canceled|default(0)|int == 1) or (my_status in ['pending', 'rejected']) %}
  
    {% with messages = get_flashed_messages(with_categories=true) %}
      {% for cat, msg in messages %}
@@ -1328,12 +105,11 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
    {% elif view_mode == 'member' %}
      <div class="alert alert-success">承認済みの参加者として閲覧中です。</div>
    {% elif view_mode == 'member_limited' %}
--    <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
-+    {% if my_is_canceled|default(0)|int == 1 %}
-+      <div class="alert alert-warning">この参加はキャンセル済みです。領収書がある場合のみ引き続き確認できます。</div>
-+    {% else %}
-+      <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
-+    {% endif %}
+     {% if my_is_canceled|default(0)|int == 1 %}
+       <div class="alert alert-warning">この参加はキャンセル済みです。領収書がある場合のみ引き続き確認できます。</div>
+     {% else %}
+       <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
+     {% endif %}
    {% endif %}
  
    <a class="btn btn-sm btn-outline-secondary mb-3" href="{{ url_for('external_login_user.index') }}">← マイページ</a>
@@ -1366,8 +142,8 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
      </div>
    {% endif %}
  
--  {% if view_mode == "member" %}
-+  {% if view_mode == "member" and my_is_canceled|default(0)|int == 0 %}
+-  {% if view_mode == "member" and my_is_canceled|default(0)|int == 0 %}
++  {% if view_mode == "member" and member_active %}
      <div class="mt-3">
        <a class="btn btn-lg btn-primary w-100"
           href="{{ url_for('external_login_user.event_pass', event_uuid=ev.event_uuid_str) }}">
@@ -1393,10 +169,24 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
            {% endif %}
          </div>
        </div>
-@@ -134,94 +138,98 @@
+     </div>
+ 
+-    {% if memo_all %}
++    {% if memo_all and member_active %}
+       <div class="col-12">
+         <div class="card h-100">
+           <div class="card-body">
+             <h2 class="h6 mb-2">連絡メモ（全体向け）</h2>
+             <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">
+               {{- ev.memo_all | trim | linkify -}}
+             </div>
+           </div>
+         </div>
+       </div>
      {% endif %}
  
-     {% if sns_tag %}
+-    {% if sns_tag %}
++    {% if sns_tag and member_active %}
        <div class="col-12">
          <div class="card h-100">
            <div class="card-body">
@@ -1419,24 +209,19 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
          <div class="card-body">
            <h2 class="h6 mb-3">各種リンク</h2>
  
--          <!-- 参加者一覧 -->
--          <div class="mb-2">
--            <a class="btn btn-sm btn-outline-dark w-100 text-start"
--               href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
--              参加者一覧を開く
--            </a>
--          </div>
-+          {% if my_is_canceled|default(0)|int == 0 %}
-+            <!-- 参加者一覧 -->
-+            <div class="mb-2">
-+              <a class="btn btn-sm btn-outline-dark w-100 text-start"
-+                 href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
-+                参加者一覧を開く
-+              </a>
-+            </div>
-+          {% endif %}
+-          {% if my_is_canceled|default(0)|int == 0 %}
++          {% if member_active %}
+             <!-- 参加者一覧 -->
+             <div class="mb-2">
+               <a class="btn btn-sm btn-outline-dark w-100 text-start"
+                  href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
+                 参加者一覧を開く
+               </a>
+             </div>
+           {% endif %}
  
-           {% if has_openchat %}
+-          {% if has_openchat %}
++          {% if has_openchat and member_active %}
              <!-- LINEオープンチャット -->
              <div class="mb-2">
                {% if oc_pass %}
@@ -1455,7 +240,8 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
                  </a>
                {% endif %}
              </div>
-           {% else %}
+-          {% else %}
++          {% elif member_active %}
              <!-- チャット -->
              <div class="mb-2">
                <a class="btn btn-sm btn-outline-info w-100 text-start"
@@ -1465,925 +251,443 @@ index fe4f858d1179e1ffdfce35d4f3bee8fec7003a93..0d301fbbec2f0b79f9a467952efd2ada
              </div>
            {% endif %}
  
--          <!-- SNS貼付用 -->
+-          {% if my_is_canceled|default(0)|int == 0 %}
++          {% if member_active %}
+             <!-- SNS貼付用 -->
+             <div class="mb-2">
+               <a class="btn btn-sm btn-outline-info w-100 text-start"
+                  href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
+                 SNS貼付用
+               </a>
+             </div>
+           {% endif %}
+ 
+           <!-- アルバム -->
 -          <div class="mb-2">
--            <a class="btn btn-sm btn-outline-info w-100 text-start"
--               href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
--              SNS貼付用
--            </a>
+-            {% if album_url %}
+-              <a class="btn btn-sm btn-outline-success w-100 text-start"
+-                 href="{{ album_url }}" target="_blank" rel="noopener">
+-                アルバムを開く
+-              </a>
+-            {% else %}
+-              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+-                アルバム未設定
+-              </button>
+-            {% endif %}
 -          </div>
-+          {% if my_is_canceled|default(0)|int == 0 %}
-+            <!-- SNS貼付用 -->
++          {% if member_active %}
 +            <div class="mb-2">
-+              <a class="btn btn-sm btn-outline-info w-100 text-start"
-+                 href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
-+                SNS貼付用
-+              </a>
++              {% if album_url %}
++                <a class="btn btn-sm btn-outline-success w-100 text-start"
++                   href="{{ album_url }}" target="_blank" rel="noopener">
++                  アルバムを開く
++                </a>
++              {% else %}
++                <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
++                  アルバム未設定
++                </button>
++              {% endif %}
 +            </div>
 +          {% endif %}
  
-           <!-- アルバム -->
-           <div class="mb-2">
-             {% if album_url %}
-               <a class="btn btn-sm btn-outline-success w-100 text-start"
-                  href="{{ album_url }}" target="_blank" rel="noopener">
-                 アルバムを開く
-               </a>
-             {% else %}
-               <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
-                 アルバム未設定
-               </button>
-             {% endif %}
-           </div>
- 
            <!-- アンケート -->
-           <div class="mb-2">
-             {% if gf_url %}
-               <a class="btn btn-sm btn-outline-success w-100 text-start"
-                  href="{{ gf_url }}" target="_blank" rel="noopener">
-                 アンケートに回答する
-               </a>
-             {% else %}
-               <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
-                 アンケート（準備中）
-@@ -254,105 +262,105 @@
+-          <div class="mb-2">
+-            {% if gf_url %}
+-              <a class="btn btn-sm btn-outline-success w-100 text-start"
+-                 href="{{ gf_url }}" target="_blank" rel="noopener">
+-                アンケートに回答する
+-              </a>
+-            {% else %}
+-              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+-                アンケート（準備中）
+-              </button>
+-            {% endif %}
+-          </div>
++          {% if member_active %}
++            <div class="mb-2">
++              {% if gf_url %}
++                <a class="btn btn-sm btn-outline-success w-100 text-start"
++                   href="{{ gf_url }}" target="_blank" rel="noopener">
++                  アンケートに回答する
++                </a>
++              {% else %}
++                <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
++                  アンケート（準備中）
++                </button>
++              {% endif %}
++            </div>
++          {% endif %}
++
++          {% if member_limited %}
++            <div class="text-muted small mt-1">
++              現在の状態では、参加者向け機能（連絡メモ・参加者一覧・LINEオープンチャット・SNS貼付用・アルバム・アンケート）は利用できません。
++            </div>
++          {% endif %}
+ 
+         </div>
+       </div>
+     </div>
+ 
+     {% if me %}
+       <!-- 支払状況（拡張表示） -->
+       <div class="col-md-6">
+         <div class="card h-100">
+           <div class="card-body">
+             <h2 class="h6 mb-3">支払状況</h2>
+ 
+             {# ★ require_payment を厳密に 0/1 へ正規化してから判定 #}
+             {% set rp = norm01(my_require_payment, 1)|int %}
+             {% set fee = (my_custom_fee_yen if my_custom_fee_yen is defined and my_custom_fee_yen is not none else ev.fee_yen)|default(0)|int %}
+             {% set needs_pay = (rp == 1) and (fee > 0) %}
+ 
+             {# 受け取りの揺れ: my_paid_amount_yen / my_paid_amount のどちらでもOKに #}
+             {% set paid_amt = (my_paid_amount_yen if my_paid_amount_yen is defined else my_paid_amount) %}
+             {# レシートURLはPDF生成エンドポイントのみを利用 #}
+             {% set rcpt_url = (my_receipt_pdf_url if my_receipt_pdf_url is defined else None) %}
+ 
+             <!-- 上段：現在の状況 / 日付 / 金額 / リンク -->
              <div class="mb-1"><strong>支払状況：</strong>
                {% if my_payment_status == 'paid' %}支払済{% elif needs_pay %}未支払{% else %}支払不要{% endif %}
-             </div>
+diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
+index d74c0a21dca5caae3ade986151925347f8a5bd25..b4c176d5309242b159fe66d2b677eaefcfe07d69 100644
+--- a/external_login_user/template/ext_index.html
++++ b/external_login_user/template/ext_index.html
+@@ -148,163 +148,193 @@
+       <div class="card-body">
+         <!-- 見出し -->
+         <div class="d-flex align-items-center justify-content-between mb-3">
+           <h2 class="h5 mb-0">参加イベント一覧</h2>
+         </div>
  
-             <div class="mb-1"><strong>支払日：</strong>
-               {% if my_payment_status == 'paid' and my_paid_at %}
-                 {{ ymd(my_paid_at) }}
-               {% else %}
-                 <span class="text-muted">—</span>
-               {% endif %}
-             </div>
+         <!-- ========= 開催予定（開催日が近い順＝昇順） ========= -->
+         <h3 class="h6 text-muted mb-2">開催予定</h3>
  
-             <div class="mb-1"><strong>支払金額：</strong>
-               {% if my_payment_status == 'paid' and paid_amt is not none %}
-                 ¥{{ "{:,}".format(paid_amt|int) }}
-               {% elif my_payment_status == 'paid' and paid_amt is none and fee %}
-                 ¥{{ "{:,}".format(fee|int) }}
-               {% else %}
-                 <span class="text-muted">—</span>
-               {% endif %}
-             </div>
+         {% set upcoming = events_upcoming or [] %}
+         {% if upcoming|length == 0 %}
+           <div class="text-muted">現在、開催予定のイベントはありません。</div>
+         {% else %}
+           <!-- PC/スマホ共通：カード表示に統一 -->
+           <div class="d-flex flex-column gap-3">
+             {% for e in upcoming %}
+               {% set rp = rp_of(e)|int %}
+               {% set fee = e.fee_yen|default(0)|int %}
+               {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
+               {% set ps  = ps0 if ps0 else 'unpaid' %}
+               {% set rcpt = (e.receipt_pdf_url if e.receipt_pdf_url is defined else None) %}
+               {% set needs_pay = (rp == 1) and (fee > 0) %}
+               {% set start = e.starts_at %}
+               {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
+               {% set album_url = e.album_url %}
++              {% set member_active = (e.status == 'approved' and (e.is_canceled|default(0)|int == 0)) %}
++              {% set member_limited = (not member_active) %}
+               <div class="card">
+                 <div class="card-body">
+                   <div class="fw-bold">
+                     <a class="text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">
+                       {{ e.title }}
+                     </a>
+                   </div>
+                   <div class="text-muted small mb-2">
+                     {% if start %}
+                       {% if start is string %}
+                         {{ start }}
+                       {% else %}
+                         {{ start.strftime("%Y/%m/%d %H:%M") }}
+                       {% endif %}
+                     {% else %}—{% endif %}
+                   </div>
++                  {% if member_limited %}
++                    <div class="small text-warning mb-2">
++                      {% if e.is_canceled|default(0)|int == 1 %}
++                        キャンセル済みのため、詳細のみ利用できます。
++                      {% elif e.status == 'pending' %}
++                        保留中のため、承認後に各種機能が利用できます。
++                      {% elif e.status == 'rejected' %}
++                        現在は各種機能を利用できません。
++                      {% endif %}
++                    </div>
++                  {% endif %}
  
-             <div class="mb-3"><strong>リンク：</strong>
-               {% if my_payment_status == 'paid' and rcpt_url %}
-                 <a href="{{ rcpt_url }}" target="_blank" rel="noopener">レシート</a>
--              {% elif needs_pay and my_status == 'approved' %}
-+              {% elif needs_pay and my_status == 'approved' and my_is_canceled|default(0)|int == 0 %}
-                 <a href="{{ url_for('external_login_user.pay_start', event_uuid=ev.event_uuid_str) }}">支払ページ</a>
-               {% else %}
-                 <span class="text-muted">—</span>
-               {% endif %}
-             </div>
+                   <div class="d-flex flex-wrap gap-2">
+-                    {% if ps == 'paid' and rcpt %}
+-                      <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
+-                    {% elif ps == 'paid' %}
+-                      <button class="btn btn-sm btn-success" disabled>支払済</button>
+-                    {% elif needs_pay %}
+-                      <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
+-                    {% else %}
+-                      <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
+-                    {% endif %}
++                    {% if not member_limited %}
++                      {% if ps == 'paid' and rcpt %}
++                        <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
++                      {% elif ps == 'paid' %}
++                        <button class="btn btn-sm btn-success" disabled>支払済</button>
++                      {% elif needs_pay %}
++                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
++                      {% else %}
++                        <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
++                      {% endif %}
  
-             <div class="mb-1"><strong>支払開始日：</strong>{{ ymd(ev.pay_from) }}</div>
-             <div><strong>支払終了日：</strong>{{ ymd(ev.pay_until) }}</div>
+-                    {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
+-                    {% if not has_openchat %}
+-                      <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+-                      {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
+-                      <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
+-                    {% endif %}
++                      {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
++                      {% if not has_openchat %}
++                        <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
++                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
++                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
++                      {% endif %}
+ 
+-                    {% if album_url %}
+-                      <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
+-                    {% else %}
+-                      <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
++                      {% if album_url %}
++                        <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
++                      {% else %}
++                        <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
++                      {% endif %}
+                     {% endif %}
+ 
+                     <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+                   </div>
+                 </div>
+               </div>
+             {% endfor %}
            </div>
+         {% endif %}
+ 
+         <!-- ========= 終了イベント ========= -->
+         <div class="mt-4">
+           <h3 class="h6 text-muted mb-2">終了イベント</h3>
+           {% set past = events_past or [] %}
+ 
+           {% if past|length == 0 %}
+             <div class="text-muted">終了イベントはありません。</div>
+           {% else %}
+             <!-- PC/スマホ共通：カード表示に統一 -->
+             <div class="d-flex flex-column gap-3">
+               {% for e in past %}
+                 {% set rp = rp_of(e)|int %}
+                 {% set fee = e.fee_yen|default(0)|int %}
+                 {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
+                 {% set ps  = ps0 if ps0 else 'unpaid' %}
+                 {% set rcpt = (e.receipt_pdf_url if e.receipt_pdf_url is defined else None) %}
+                 {% set needs_pay = (rp == 1) and (fee > 0) %}
+                 {% set start = e.starts_at %}
+                 {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
+                 {% set album_url = e.album_url %}
++                {% set member_active = (e.status == 'approved' and (e.is_canceled|default(0)|int == 0)) %}
++                {% set member_limited = (not member_active) %}
+                 <div class="card">
+                   <div class="card-body">
+                     <div class="fw-bold">
+                       <a class="text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">
+                         {{ e.title }}
+                       </a>
+                     </div>
+                     <div class="text-muted small mb-2">
+                       {% if start %}
+                         {% if start is string %}
+                           {{ start }}
+                         {% else %}
+                           {{ start.strftime("%Y/%m/%d %H:%M") }}
+                         {% endif %}
+                       {% else %}—{% endif %}
+                     </div>
++                    {% if member_limited %}
++                      <div class="small text-warning mb-2">
++                        {% if e.is_canceled|default(0)|int == 1 %}
++                          キャンセル済みのため、詳細のみ利用できます。
++                        {% elif e.status == 'pending' %}
++                          保留中のため、承認後に各種機能が利用できます。
++                        {% elif e.status == 'rejected' %}
++                          現在は各種機能を利用できません。
++                        {% endif %}
++                      </div>
++                    {% endif %}
+ 
+                     <div class="d-flex flex-wrap gap-2">
+-                      {% if ps == 'paid' and rcpt %}
+-                        <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
+-                      {% elif ps == 'paid' %}
+-                        <button class="btn btn-sm btn-success" disabled>支払済</button>
+-                      {% elif needs_pay %}
+-                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
+-                      {% else %}
+-                        <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
+-                      {% endif %}
++                      {% if not member_limited %}
++                        {% if ps == 'paid' and rcpt %}
++                          <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
++                        {% elif ps == 'paid' %}
++                          <button class="btn btn-sm btn-success" disabled>支払済</button>
++                        {% elif needs_pay %}
++                          <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
++                        {% else %}
++                          <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
++                        {% endif %}
+ 
+-                      {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
+-                      {% if not has_openchat %}
+-                        <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
+-                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
+-                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
+-                      {% endif %}
++                        {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
++                        {% if not has_openchat %}
++                          <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
++                          {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
++                          <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
++                        {% endif %}
+ 
+-                      {% if album_url %}
+-                        <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
+-                      {% else %}
+-                        <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
++                        {% if album_url %}
++                          <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
++                        {% else %}
++                          <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
++                        {% endif %}
+                       {% endif %}
+ 
+                       <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
+ 
+-                      {% if (e.tip_enabled|default(0)|int) == 1 %}
++                      {% if (e.tip_enabled|default(0)|int) == 1 and not member_limited %}
+                         <button
+                           type="button"
+                           class="btn btn-sm btn-warning js-tip-open"
+                           data-bs-toggle="modal"
+                           data-bs-target="#tipModal"
+                           data-event-id="{{ e.id }}"
+                           data-event-title="{{ e.title|e }}"
+                         >投げ銭</button>
+                       {% endif %}
+                     </div>
+                   </div>
+                 </div>
+               {% endfor %}
+             </div>
+           {% endif %}
          </div>
        </div>
- 
-       <!-- 加工回し -->
-       <div class="col-md-6">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-3">加工回し</h2>
-             <div class="mb-2">
-               <strong>現在：</strong>
-               {% if my_process|default(0)|int == 1 %}必要{% else %}不要{% endif %}
-             </div>
- 
--            {% if my_status == 'approved' %}
-+            {% if my_status == 'approved' and my_is_canceled|default(0)|int == 0 %}
-               <form method="post" action="{{ url_for('external_login_user.update_my_process', event_uuid=ev.event_uuid_str) }}" class="d-flex flex-wrap gap-2 align-items-center">
-                 <div class="form-check">
-                   <input class="form-check-input" type="checkbox" id="processCheck" name="process" value="1"
-                          {{ 'checked' if my_process|default(0)|int == 1 else '' }}>
-                   <label class="form-check-label" for="processCheck">
-                     加工回しが必要
-                   </label>
-                 </div>
-                 <button class="btn btn-sm btn-outline-secondary">保存</button>
-               </form>
-               <div class="form-text mt-2">チェックを入れると加工回し対象として記録されます。</div>
-             {% else %}
-               <div class="text-muted small">承認後に編集できます。</div>
-             {% endif %}
-           </div>
-         </div>
-       </div>
- 
-       <!-- 役割（衣装／その他メモ） -->
-       <div class="col-md-6">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-3">役割（衣装／その他メモ）</h2>
- 
-             <div class="mb-2">
-               <strong>現在：</strong>
-               {{ my_role_label(my_participant_role or 'none') if (my_participant_role is defined) else '—' }}
-               {% if my_costume_label %}<span class="text-muted small">（{{ my_costume_label }}）</span>{% endif %}
-             </div>
- 
--            {% if my_status == 'approved' %}
-+            {% if my_status == 'approved' and my_is_canceled|default(0)|int == 0 %}
-               <form method="post" action="{{ url_for('external_login_user.update_my_role', event_uuid=ev.event_uuid_str) }}" class="d-flex flex-wrap gap-2 align-items-end" id="roleForm">
-                 <div>
-                   <label class="form-label mb-1">役割</label>
-                   {% set cur = (my_participant_role or 'none') if (my_participant_role is defined) else 'none' %}
-                   <select name="participant_role" class="form-select form-select-sm" id="participant_role">
-                     <option value="none"      {{ 'selected' if cur=='none' else '' }}>—（未設定）</option>
-                     <option value="camera"    {{ 'selected' if cur=='camera' else '' }}>カメラマン</option>
-                     <option value="assistant" {{ 'selected' if cur=='assistant' else '' }}>アシスタント</option>
-                     <option value="cosplayer" {{ 'selected' if cur=='cosplayer' else '' }}>衣装</option>
-                     <!-- ★ 追加：その他 -->
-                     <option value="other"     {{ 'selected' if cur=='other' else '' }}>その他</option>
-                   </select>
-                 </div>
-                 <div class="flex-grow-1">
-                   <label class="form-label mb-1">衣装／その他メモ（任意）</label>
-                   <input type="text" name="costume_label" maxlength="120" class="form-control form-control-sm"
-                          id="costume_label" value="{{ my_costume_label or '' }}"
-                          placeholder="例）白雪姫/アナ（戴冠式）/ベル（黄色） 等">
-                   <div class="form-text" id="memo_help">「衣装」または「その他」を選んだときのみ入力してください（最大120文字）。</div>
-                 </div>
-                 <button class="btn btn-sm btn-outline-secondary">保存</button>
-               </form>
- 
-               <script>
-                 (function(){
+     </div>
+   {% else %}
+     <div class="line-login-cta mb-3">
+       <p class="lead mb-2">はじめるには LINE ログインが必要です</p>
+       <ul class="mb-3 ps-3">
+         <li>参加イベントの確認・支払い・アルバム共有に使います</li>
+         <li>通知や連絡のため、ログイン後にプロフィールでメールも登録できます</li>
+       </ul>
 diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 970026502dda692cbe75b0fdcce6d32afc23574d..b41ae821cbb1eda0a0803d93c273216becd895a3 100644
+index b41ae821cbb1eda0a0803d93c273216becd895a3..6efb7eb4653404204077b520eb94b7f2d8745bd1 100644
 --- a/external_login_user/users.py
 +++ b/external_login_user/users.py
-@@ -2342,50 +2342,51 @@ def join_event(event_uuid: str):
-             user_id=ext_uid,
-             iv_token=iv_param,
-         )
+@@ -1055,99 +1055,101 @@ def index():
  
-     # 表示用 UUID 文字列 / 管理URL
-     ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
-     ev["event_uuid_str"] = ev_uuid_str
-     admin_url = f"https://mfu.iori0624.jp/external-login/admin/events/{ev['id']}"
-     privacy_config = _get_current_privacy_policy_config()
-     privacy_effective = _is_privacy_policy_effective(privacy_config)
-     privacy_required_for_user = _needs_privacy_policy_agreement(u, privacy_config)
-     participant_terms_config = _get_current_participant_terms_config()
-     participant_terms_effective = _is_participant_terms_effective(participant_terms_config)
-     privacy_error = ""
-     participant_terms_error = ""
+     social_id = session.get("ext_user_social_id")
+     me = _get_ext_user_by_social(social_id) if social_id else None
+     privacy_view = _build_privacy_policy_view_data(row or me)
+     if "ext_csrf" not in session:
+         session["ext_csrf"] = secrets.token_hex(16)
  
-     # 既存メンバー状況
-     cur.execute("""
-         SELECT id, COALESCE(status,'pending') AS status,
-                COALESCE(participant_role,'none') AS participant_role,
-                costume_label,
-                COALESCE(process, 0) AS process,
-                COALESCE(payment_status,'unpaid') AS payment_status,
-                payment_row_id,
-                COALESCE(require_payment,1) AS require_payment,
-+               COALESCE(is_canceled,0) AS is_canceled,
-                participant_terms_agreed_revised_date,
-                privacy_policy_join_agreed_revised_date
-           FROM mfu_event_member
-          WHERE event_id=%s AND user_id=%s
-          LIMIT 1
-     """, (ev["id"], ext_uid))
-     m = cur.fetchone()
+     if request.args.get("tip") == "done":
+         if request.args.get("status") == "ok":
+             flash("投げ銭ありがとうございます！", "success")
+         elif request.args.get("status") == "ng":
+             flash("投げ銭の決済が完了しませんでした。", "warning")
  
-     if is_lecture:
-         require_payment = int(m.get("require_payment") or 1) if m else 1
-         payment_status = (m.get("payment_status") or "unpaid").strip() if m else "unpaid"
-         if require_payment != 0 and payment_status != "paid":
-             iv_redirect = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or iv_param
-             if iv_redirect:
-                 return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid, iv=iv_redirect))
-             return redirect(url_for("external_login_user.lecture_start", event_uuid=event_uuid))
+     events_upcoming, events_past = [], []
+     if me:
+         db = get_db(); cur = db.cursor(dictionary=True)
+         has_deleted_at = _mfu_event_has_deleted_at_column()
+         where_deleted = "WHERE e.deleted_at IS NULL" if has_deleted_at else ""
+         cur.execute(f"""
+           SELECT
+             e.id, e.event_uuid, e.title,
+             e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
+             COALESCE(e.tip_enabled,0) AS tip_enabled,
+             m.id AS member_id,
+             COALESCE(m.status,'pending')                        AS status,
++            COALESCE(m.is_canceled,0)                          AS is_canceled,
+             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
+             m.receipt_url,
+             COALESCE(m.bank_transfer,0) AS bank_transfer,
+             COALESCE(m.paypay_transfer,0) AS paypay_transfer,
+             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
+           FROM mfu_event e
+           JOIN (
+               SELECT MAX(id) AS id, event_id
+                 FROM mfu_event_member
+                WHERE user_id = %s
+                GROUP BY event_id
+           ) mm ON mm.event_id = e.id
+           JOIN mfu_event_member m ON m.id = mm.id
+           {where_deleted}
+           ORDER BY e.starts_at IS NULL, e.starts_at
+           LIMIT 200
+         """, (me["id"],))
+         raws = cur.fetchall()
+         cur.close(); db.close()
  
-     # 招待トークン一致（GET/POSTどちらでも query の iv を見て判定）
-     iv = (request.args.get("iv") or request.args.get("vi") or "").strip()
-     if not iv:
-         iv = (session.get("lecture_invite_tokens") or {}).get(event_uuid) or ""
-     auto_hit = bool(int(ev["auto_on"] or 0) == 1 and ev.get("invite_token") and iv and iv == ev["invite_token"])
-     auto_hit_by_lecture = False
-     if m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-         auto_hit_by_lecture = _lecture_auto_approve_from_payment_request(
-@@ -2458,50 +2459,53 @@ def join_event(event_uuid: str):
-                     ev=ev,
-                     status=None,
-                     form_role=role,
-                     form_costume=costume or "",
-                     form_process=bool(process_flag),
-                     csrf_token=csrf_token,
-                     privacy_policy_effective=privacy_effective,
-                     privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
-                     privacy_policy_error="プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。",
-                     privacy_policy_checked=privacy_agree_checked,
-                     privacy_policy_agreed_latest=False,
-                     participant_terms_effective=participant_terms_effective,
-                     participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
-                     participant_terms_error=participant_terms_error,
-                     participant_terms_checked=participant_terms_checked,
-                 ), 500
+         event_unread_counts: dict[int, int] = {}
+         if raws:
+             event_ids = [int(r["id"]) for r in raws if r.get("id")]
+             use_mfu_admin_scope = _is_chat_admin_alias_ext_user(int(me.get("id") or 0))
+             if event_ids:
+                 event_unread_counts = _load_event_chat_unread_counts(
+                     event_ids=event_ids,
+                     ext_user_id=int(me.get("id") or 0),
+                     use_mfu_admin_scope=use_mfu_admin_scope,
+                 )
  
-         update_event_member_status(
-             ev["id"],
-             ext_uid,
-             new_status,
-             extra_update_fields={
-                 "participant_role": role,
-                 "costume_label": costume,
-                 "process": process_flag,
-+                "is_canceled": 0,
-+                "canceled_at": None,
-+                "canceled_by": None,
-             },
-             extra_insert_fields={
-                 "participant_role": role,
-                 "costume_label": costume,
-                 "process": process_flag,
-             },
-         )
-         join_update_parts = ["joined_at=COALESCE(joined_at, NOW())"]
-         join_update_values: list[object] = []
-         if participant_terms_effective:
-             join_update_parts.extend([
-                 "participant_terms_agreed_at=%s",
-                 "participant_terms_agreed_revised_date=%s",
-             ])
-             join_update_values.extend([
-                 datetime.now(JST).replace(tzinfo=None),
-                 participant_terms_config.get("participant_terms_revised_date"),
-             ])
-         if privacy_effective and privacy_agree_checked:
-             join_update_parts.extend([
-                 "privacy_policy_join_agreed_at=%s",
-                 "privacy_policy_join_agreed_revised_date=%s",
-             ])
-             join_update_values.extend([
-                 datetime.now(JST).replace(tzinfo=None),
-@@ -2615,50 +2619,52 @@ def join_event(event_uuid: str):
-                 wh = _get_admin_webhook_url()
-                 if wh:
-                     r = requests.post(wh, json={"content": body_text}, timeout=7)
-                     if r.status_code >= 300:
-                         current_app.logger.error("join: discord webhook non-2xx %s, body=%s", r.status_code, r.text[:500])
-                 else:
-                     current_app.logger.warning("join: admin webhook_url not set")
+         from datetime import datetime as _dt
+         now = _dt.now()
  
+         def _to_dt(v):
+             try:
+                 if hasattr(v, "year"): return v
+                 return _dt.fromisoformat(str(v).replace(" ", "T"))
              except Exception:
-                 current_app.logger.exception("join: admin mail/discord failed")
+                 return None
  
-         # 送信後はイベントページへ
-         if new_status == "pending":
-             flash("参加申請を受け付けました。承認までお待ちください。", "success")
-         else:
-             flash("参加が承認されました。", "success")
-         return redirect(url_for("external_login_user.view_event", event_uuid=ev_uuid_str))
- 
-     # =========================
-     # GET: 表示
-     # =========================
-     for k in ("starts_at", "fee_yen", "place_name", "address"):
-         ev.setdefault(k, None)
- 
-     status = (m and m.get("status")) or None
-+    if m and int(m.get("is_canceled") or 0) == 1:
-+        status = "canceled"
-     if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
-         status = None
-     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
-     form_costume = (m and (m.get("costume_label") or "")) or ""
-     form_process = bool(m and int(m.get("process") or 0) == 1)
- 
-     cur.close(); db.close()
-     return render_template(
-         "event_join.html",
-         ev=ev,
-         status=status,
-         form_role=form_role,
-         form_costume=form_costume,
-         form_process=form_process,
-         csrf_token=csrf_token,
-         privacy_policy_effective=privacy_effective,
-         privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
-         privacy_policy_error=privacy_error,
-         privacy_policy_checked=False,
-         privacy_policy_agreed_latest=not privacy_required_for_user,
-         participant_terms_effective=participant_terms_effective,
-         participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
-         participant_terms_error=participant_terms_error,
-         participant_terms_checked=False,
-     )
-@@ -2798,93 +2804,99 @@ def view_event(event_uuid: str):
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
- 
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
-     if not me:
-         abort(401)
- 
-     # 参加状況（最新行） ← 役割/衣装を追加で取得
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT
-               m.id AS member_id,
-               COALESCE(m.status,'pending')                        AS status,
-               CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment,
-               COALESCE(m.payment_status,'unpaid')                 AS payment_status,
-               m.paid_amount_yen, m.paid_at, m.receipt_url,
-               COALESCE(m.bank_transfer,0) AS bank_transfer,
-               COALESCE(m.paypay_transfer,0) AS paypay_transfer,
-               COALESCE(m.process,0) AS process,
-               COALESCE(m.is_host,0) AS is_host,
-               COALESCE(m.is_subhost,0) AS is_subhost,
-               COALESCE(m.participant_role,'none') AS participant_role,
-               COALESCE(m.costume_label,'')        AS costume_label,
--              m.custom_fee_yen
-+              m.custom_fee_yen,
-+              COALESCE(m.is_canceled,0)           AS is_canceled,
-+              m.canceled_at
-             FROM mfu_event_member m
-             WHERE m.event_id=%s AND m.user_id=%s
-             ORDER BY m.id DESC
-             LIMIT 1
-         """, (ev["id"], me["id"]))
-         row = cur.fetchone()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     my_status              = (row["status"] if row else "pending") or "pending"
-     my_require_payment     = int(row["require_payment"]) if row else 1
-     my_payment_status      = (row["payment_status"] if row else "unpaid") or "unpaid"
-     my_paid_amount_yen     = row.get("paid_amount_yen") if row else None
-     my_paid_at             = row.get("paid_at") if row else None
-     my_receipt_url         = row.get("receipt_url") if row else None
-     my_member_id           = row.get("member_id") if row else None
-     my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
-     my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
-     my_process             = int(row.get("process")) if row else 0
-     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
-     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
-     my_costume_label       = (row.get("costume_label")  if row else "") or ""
-     my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
-+    my_is_canceled         = int(row.get("is_canceled") or 0) if row else 0
-+    my_canceled_at         = row.get("canceled_at") if row else None
- 
-     my_receipt_pdf_url = None
-     if (
-         my_payment_status == "paid"
-         and my_member_id
-         and (my_bank_transfer == 1 or my_paypay_transfer == 1 or my_receipt_url)
-     ):
-         my_receipt_pdf_url = url_for(
-             "external_login_user.member_receipt_pdf",
-             event_uuid=event_uuid,
-             member_id=my_member_id,
-         )
- 
-     # 表示モード
-     if _is_mfu_logged_in():
-         view_mode = "admin"
-     else:
--        if str(my_status).lower() == "approved":
-+        if my_is_canceled == 1:
-+            view_mode = "member_limited"
-+        elif str(my_status).lower() == "approved":
-             view_mode = "member"
-         elif str(my_status).lower() in ("pending", "rejected"):
-             view_mode = "member_limited"
-         else:
-             view_mode = "guest"
- 
-     # 各種リンク生成（略：元コードそのまま）
-     album_url = url_for("album.album_access", album_id=ev["album_id"]) if ev.get("album_id") else None
- 
-     def _pick_http_url(*keys) -> str | None:
-         for k in keys:
-             v = ev.get(k)
-             if isinstance(v, str):
-                 u = v.strip()
-                 if u.startswith(("http://", "https://")):
-                     return u
-         return None
- 
-     def _pick_str(*keys) -> str | None:
-         for k in keys:
-             v = ev.get(k)
-             if isinstance(v, str):
-                 u = v.strip()
-                 if u:
-                     return u
-@@ -2977,73 +2989,89 @@ def view_event(event_uuid: str):
-         "event_view.html",
-         ev=ev, me=me,
-         view_mode=view_mode,
-         my_status=my_status,
-         my_require_payment=my_require_payment,
-         my_payment_status=my_payment_status,
-         my_paid_amount_yen=my_paid_amount_yen,
-         my_paid_at=my_paid_at,
-         my_receipt_url=my_receipt_url,
-         my_receipt_pdf_url=my_receipt_pdf_url,
-         my_process=my_process,
-         album_url=album_url,
-         maps_link=maps_link,
-         openchat_url=openchat_url,
-         openchat_pass=openchat_pass,
-         google_form_url=google_form_url,
-         line_openchat_url=openchat_url,
-         survey_url=google_form_url,
-         # ★ 追加でテンプレに渡す（フォーム初期値用）
-         my_participant_role=my_participant_role,
-         my_costume_label=my_costume_label,
-         my_custom_fee_yen=my_custom_fee_yen,
-         # 互換エイリアス（テンプレが form_* を参照していても動くように）
-         form_role=my_participant_role,
-         form_costume=my_costume_label,
-+        my_is_canceled=my_is_canceled,
-+        my_canceled_at=my_canceled_at,
-     ))
-     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-     resp.headers["Pragma"] = "no-cache"
-     return resp
- 
- 
- # =========================
- # 役割（参加者自身が編集可）
- # =========================
- @bp.post("/events/<event_uuid>/my-role")
- def update_my_role(event_uuid: str):
-     guard = _require_ext_login()
-     if guard: return guard
- 
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
- 
-     status = _membership_status(ev["id"], me["id"])  # type: ignore
-     if status is None:
-         abort(403, "このイベントの参加者ではありません")
- 
-+    db_chk = get_db(); cur_chk = db_chk.cursor()
-+    try:
-+        cur_chk.execute(
-+            "SELECT COALESCE(is_canceled,0) FROM mfu_event_member WHERE event_id=%s AND user_id=%s LIMIT 1",
-+            (ev["id"], me["id"]),  # type: ignore
-+        )
-+        c_row = cur_chk.fetchone()
-+    finally:
-+        try: cur_chk.close(); db_chk.close()
-+        except Exception: pass
-+    if c_row and int(c_row[0] if isinstance(c_row, tuple) else (c_row.get("is_canceled") or 0)) == 1:
-+        flash("キャンセル済みのため、この操作はできません。", "warning")
-+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
-+
-     ui_role = (request.form.get("participant_role") or "none").strip().lower()
-     # ★ UIとして許容（otherを追加）
-     if ui_role not in ("none", "camera", "assistant", "cosplayer", "other"):
-         ui_role = "none"
- 
-     costume = (request.form.get("costume_label") or "").strip() or None
-     # ★ 「衣装 or その他」のときだけメモ保持
-     keep_costume = ui_role in ("cosplayer", "other")
-     if not keep_costume:
-         costume = None
- 
-     if costume and len(costume) > 120:
-         flash("衣装名は120文字以内で入力してください。", "warning")
-         return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     db = get_db(); cur = db.cursor()
-     # ★ DBのENUMに合わせて安全な値に正規化
-     save_role, degraded = _normalize_role_for_db(db, ui_role)
-     try:
-         cur.execute("""
-             UPDATE mfu_event_member
-                SET participant_role=%s,
-                    costume_label=%s
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-@@ -3060,50 +3088,64 @@ def update_my_role(event_uuid: str):
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
- 
- # =========================
- # 加工回し（参加者自身が編集可）
- # =========================
- @bp.post("/events/<event_uuid>/process")
- def update_my_process(event_uuid: str):
-     guard = _require_ext_login()
-     if guard:
-         return guard
- 
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
- 
-     status = _membership_status(ev["id"], me["id"])  # type: ignore
-     if status is None:
-         abort(403, "このイベントの参加者ではありません")
- 
-+    db_chk = get_db(); cur_chk = db_chk.cursor()
-+    try:
-+        cur_chk.execute(
-+            "SELECT COALESCE(is_canceled,0) FROM mfu_event_member WHERE event_id=%s AND user_id=%s LIMIT 1",
-+            (ev["id"], me["id"]),  # type: ignore
-+        )
-+        c_row = cur_chk.fetchone()
-+    finally:
-+        try: cur_chk.close(); db_chk.close()
-+        except Exception: pass
-+    if c_row and int(c_row[0] if isinstance(c_row, tuple) else (c_row.get("is_canceled") or 0)) == 1:
-+        flash("キャンセル済みのため、この操作はできません。", "warning")
-+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
-+
-     process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             UPDATE mfu_event_member
-                SET process=%s
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-         """, (process_flag, ev["id"], me["id"]))  # type: ignore
-         db.commit()
-         flash("加工回し設定を更新しました。", "success")
-     except Exception:
-         try: db.rollback()
-         except Exception: pass
-         flash("加工回し設定の更新に失敗しました。", "danger")
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
- 
- # =========================
- # ログアウト
-@@ -3147,50 +3189,51 @@ def member_list(event_uuid: str):
-         allow = (_membership_status(ev["id"], me["id"]) == "approved")  # type: ignore
-         if not allow:
-             flash("承認後に閲覧できます。", "info")
-             return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             SELECT
-               u.id,
-               u.nickname,
-               u.x_id,
-               u.instagram_id,
-               u.avatar_file,
-               u.avatar_url,
-               u.updated_at,
-               m.participant_role,
-               m.costume_label,
-               m.is_host,
-               m.is_subhost,
-               m.checkin_at
-             FROM mfu_event_member m
-             JOIN external_login_user u ON u.id = m.user_id
-             WHERE m.event_id = %s
-               AND m.status = 'approved'
-+              AND COALESCE(m.is_canceled,0)=0
-             ORDER BY
-               m.is_host DESC,
-               m.is_subhost DESC,
-               u.nickname ASC
-         """, (ev["id"],))
-         rows = cur.fetchall()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     members: list[dict] = []
-     for r in rows:
-         if isinstance(r, tuple):
-             (uid, nickname, x_id, ig_id, a_file, a_url, upd_at,
-              role, costume, is_host, is_subhost, checkin_at) = r
-         else:
-             uid        = r["id"]
-             nickname   = r["nickname"]
-             x_id       = r["x_id"]
-             ig_id      = r["instagram_id"]
-             a_file     = r["avatar_file"]
-             a_url      = r["avatar_url"]
-             upd_at     = r["updated_at"]
-             role       = r["participant_role"]
-             costume    = r["costume_label"]
-@@ -3267,50 +3310,51 @@ def member_sns_clip(event_uuid: str):
-         if not allow:
-             flash("承認後に閲覧できます。", "info")
-             return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
- 
-     # --- 参加者一覧取得（member_list と同じ SQL ベース） ---
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             SELECT
-               u.id,
-               u.nickname,
-               u.x_id,
-               u.instagram_id,
-               u.avatar_file,
-               u.avatar_url,
-               u.updated_at,
-               m.participant_role,
-               m.costume_label,
-               m.is_host,
-               m.is_subhost,
-               m.checkin_at
-             FROM mfu_event_member m
-             JOIN external_login_user u ON u.id = m.user_id
-             WHERE m.event_id = %s
-               AND m.status = 'approved'
-+              AND COALESCE(m.is_canceled,0)=0
-             ORDER BY
-               m.is_host DESC,
-               m.is_subhost DESC,
-               u.nickname ASC
-         """, (ev["id"],))
-         rows = cur.fetchall()
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
- 
-     members: list[dict] = []
-     for r in rows:
-         if isinstance(r, tuple):
-             (uid, nickname, x_id, ig_id, a_file, a_url, upd_at,
-              role, costume, is_host, is_subhost, checkin_at) = r
-         else:
-             uid        = r["id"]
-             nickname   = r["nickname"]
-             x_id       = r["x_id"]
-             ig_id      = r["instagram_id"]
-             a_file     = r["avatar_file"]
-             a_url      = r["avatar_url"]
-             upd_at     = r["updated_at"]
-@@ -3445,73 +3489,77 @@ def event_pass(event_uuid: str):
-     if guard:
-         return guard
- 
-     # イベント取得
-     ev = _event_by_uuid_str(event_uuid)
-     if not ev:
-         abort(404, "イベントが見つかりません")
- 
-     # ログイン中ユーザー
-     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
-     if not me:
-         abort(401)
- 
-     # 参加状況（最新行）取得（★ checkin_at も取得するように拡張）
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT
-               COALESCE(em.status,'pending')                    AS status,
-               CAST(COALESCE(em.require_payment,1) AS UNSIGNED) AS require_payment,
-               COALESCE(em.payment_status,'unpaid')             AS payment_status,
-               em.paid_amount_yen,
-               em.paid_at,
-               em.receipt_url,
-               em.checkin_at,
--              em.checkin_method
-+              em.checkin_method,
-+              COALESCE(em.is_canceled,0) AS is_canceled
-             FROM mfu_event_member em
-             WHERE em.event_id=%s AND em.user_id=%s
-             ORDER BY em.id DESC
-             LIMIT 1
-         """, (ev["id"], me["id"]))
-         row = cur.fetchone()
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
- 
-     # 正規化（従来の支払系）
-     my_status          = (row["status"] if row else "pending") or "pending"
-     my_require_payment = int(row["require_payment"]) if row else 1
-     my_payment_status  = (row["payment_status"] if row else "unpaid") or "unpaid"
-     my_paid_amount_yen = row.get("paid_amount_yen") if row else None
-     my_paid_at         = row.get("paid_at") if row else None
-     my_receipt_url     = row.get("receipt_url") if row else None
- 
-     # ★ チェックイン情報
-     raw_checkin_at = row.get("checkin_at") if row else None
-+    if row and int(row.get("is_canceled") or 0) == 1:
-+        flash("キャンセル済みのため参加証は利用できません。", "warning")
-+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
-     if isinstance(raw_checkin_at, _dt):
-         checkin_at_str = raw_checkin_at.strftime("%Y-%m-%d %H:%M:%S")
-     else:
-         # 文字列などの場合はそのまま or None
-         checkin_at_str = str(raw_checkin_at) if raw_checkin_at else None
- 
-     checked_in = bool(raw_checkin_at)
-     checkin_method = (row.get("checkin_method") if row else None)
- 
-     # 支払表示キーワード（テンプレ側ではもう使ってなくても互換のため残す）
-     fee = int(ev.get("fee_yen") or 0)
-     needs_pay = (my_require_payment == 1) and (fee > 0)
-     if needs_pay:
-         if my_payment_status == "paid":
-             payment_key, payment_label = "paid", "支払済"
-         else:
-             payment_key, payment_label = "unpaid", "未支払"
-     else:
-         payment_key, payment_label = "free", "支払不要"
- 
-     # アバターURL算出
-     def _pick(*keys):
-         for k in keys:
-             v = me.get(k) if isinstance(me, dict) else getattr(me, k, None)
-             if isinstance(v, (str, bytes)) and str(v).strip():
-@@ -3669,50 +3717,51 @@ def event_pass_checkin(event_uuid: str):
-         return jsonify(ok=False, error="このイベントは会場QRコード受付のみ有効です。"), 400
-     ev_uuid_str = ev.get("event_uuid_str") or ""
-     if not ev_uuid_str and ev.get("event_uuid") is not None:
-         # 念のため bytes から変換する fallback
-         try:
-             ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"]) or ""
-         except Exception:
-             ev_uuid_str = ""
- 
-     # 参加メンバー（自分）を特定（最新1件）
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             """
-             SELECT
-                 m.id,
-                 m.checkin_at,
-                 m.checkin_lat,
-                 m.checkin_lng,
-                 COALESCE(m.participant_role,'') AS participant_role,
-                 COALESCE(m.costume_label,'') AS costume_label
-             FROM mfu_event_member AS m
-             WHERE m.event_id = %s
-               AND m.user_id = %s
-               AND m.status = 'approved'
-+              AND COALESCE(m.is_canceled,0)=0
-             ORDER BY m.id DESC
-             LIMIT 1
-             """,
-             (event_id, me["id"]),
-         )
-         member = cur.fetchone()
-     finally:
-         try:
-             cur.close()
-         except Exception:
-             pass
- 
-     if not member:
-         return jsonify(ok=False, error="このイベントの参加情報が見つかりませんでした。"), 404
- 
-     # すでに受付済みなら何もしない（通知も出さない）
-     if member.get("checkin_at"):
-         return jsonify(
-             ok=True,
-             already=True,
-             message="すでに受付済みです。",
-         )
- 
-     # --- 会場側の座標決定 --------------------------------------
-     # 優先: event_lat / event_lng カラム（あれば）
-@@ -3867,50 +3916,51 @@ def event_qr_checkin(token: str):
-         return make_response("このチェックインは現在無効です。", 400)
- 
-     expires_at = ev.get("checkin_qr_expires_at")
-     if isinstance(expires_at, str):
-         try:
-             expires_at = datetime.fromisoformat(expires_at.replace(" ", "T"))
-         except Exception:
-             expires_at = None
-     if expires_at and expires_at < datetime.now():
-         return make_response("このチェックイン用トークンは期限切れです。", 400)
- 
-     event_id = ev["id"]
-     ev_title = ev.get("title") or "イベント"
-     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid")) or ""
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("""
-             SELECT id, checkin_at,
-                    COALESCE(participant_role,'') AS participant_role,
-                    COALESCE(costume_label,'') AS costume_label
-               FROM mfu_event_member
-              WHERE event_id=%s
-                AND user_id=%s
-                AND status='approved'
-+               AND COALESCE(is_canceled,0)=0
-              ORDER BY id DESC
-              LIMIT 1
-         """, (event_id, me["id"]))
-         member = cur.fetchone()
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
- 
-     if not member:
-         return make_response("このイベントの参加情報が見つかりませんでした。", 404)
- 
-     if member.get("checkin_at"):
-         return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
- 
-     now = datetime.now()
-     now_str = now.strftime("%Y-%m-%d %H:%M:%S")
- 
-     updated = _update_checkin_member_row(
-         member_id=member["id"],
-         checked_at=now,
-         lat=None,
-         lng=None,
-         method="qr",
-diff --git a/external_login_user/utils.py b/external_login_user/utils.py
-index 2988df26b6eca967d48aaeb048595c2b0c4d3eb2..9e14bd54323c07d762737c9cf2aed4f0439bf0e6 100644
---- a/external_login_user/utils.py
-+++ b/external_login_user/utils.py
-@@ -583,54 +583,57 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
-     return d
- 
- def _upsert_ext_user(*, social_id: str, nickname: str,
-                      email: Optional[str], x_id: Optional[str], instagram_id: Optional[str]) -> None:
-     sql = """
-     INSERT INTO external_login_user
-       (mfu_uuid, social_id, nickname, x_id, instagram_id, email)
-     VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, %s, %s)
-     ON DUPLICATE KEY UPDATE
-       nickname=VALUES(nickname), x_id=VALUES(x_id), instagram_id=VALUES(instagram_id),
-       email=VALUES(email), updated_at=CURRENT_TIMESTAMP
-     """
-     db = get_db(); cur = db.cursor()
-     cur.execute(sql, (social_id, nickname, x_id, instagram_id, email))
-     db.commit(); cur.close(); db.close()
- 
- def _update_profile(user_id: int, nickname: str,
-                     x_id: Optional[str], instagram_id: Optional[str], email: Optional[str]) -> None:
-     db = get_db(); cur = db.cursor()
-     cur.execute("UPDATE external_login_user SET nickname=%s, x_id=%s, instagram_id=%s, email=%s WHERE id=%s",
-                 (nickname, x_id, instagram_id, email, user_id))
-     db.commit(); cur.close(); db.close()
- 
- def _membership_status(event_id: int, ext_user_id: int) -> Optional[str]:
-     db = get_db(); cur = db.cursor()
--    cur.execute("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
-+    cur.execute("SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
-     row = cur.fetchone(); cur.close(); db.close()
--    if not row: return None
--    return row[0] if isinstance(row, tuple) else row["status"]
-+    if not row:
-+        return None
-+    status = row[0] if isinstance(row, tuple) else row["status"]
-+    is_canceled = (row[1] if isinstance(row, tuple) else row.get("is_canceled", 0))
-+    return None if int(is_canceled or 0) == 1 else status
- 
- def _member_payment_status(event_id: int, ext_user_id: int) -> str:
-     db = get_db(); cur = db.cursor()
-     cur.execute("SELECT payment_status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
-     row = cur.fetchone(); cur.close(); db.close()
-     if not row: return "unpaid"
-     return row[0] if isinstance(row, tuple) else row["payment_status"]
- 
- 
- def update_event_member_status(
-     event_id: int,
-     user_id: int,
-     new_status: str,
-     *,
-     extra_update_fields: dict[str, Any] | None = None,
-     extra_insert_fields: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
-     """
-     mfu_event_member.status の更新を共通化し、
-     未承認→承認済み遷移時だけチャットへSystem投稿する。
-     """
-     if new_status not in {"approved", "pending", "rejected"}:
-         raise ValueError("invalid status")
- 
-     extra_update_fields = dict(extra_update_fields or {})
+         for r in raws:
+             euuid_str = _uuid_bytes_to_str(r["event_uuid"])
+             item = {
+                 "id": r["id"],
+                 "event_uuid_str": euuid_str,
+                 "title": r["title"],
+                 "starts_at": r["starts_at"],
+                 "status": r["status"] or "pending",
++                "is_canceled": int(r.get("is_canceled") or 0),
+                 "payment_status": r["payment_status"] or "unpaid",
+                 "receipt_url": r["receipt_url"],
+                 "member_id": r.get("member_id"),
+                 "bank_transfer": int(r.get("bank_transfer") or 0),
+                 "paypay_transfer": int(r.get("paypay_transfer") or 0),
+                 "fee_yen": r["fee_yen"],
+                 "album_id": r["album_id"],
+                 "album_url": (url_for("album.album_access", album_id=r["album_id"]) if r["album_id"] else None),
+                 "pay_url": url_for("external_login_user.pay_start", event_uuid=euuid_str),
+                 "require_payment": int(r["require_payment"]),
+                 "tip_enabled": int(r.get("tip_enabled") or 0),
+                 "my_payment_status": r["payment_status"] or "unpaid",
+                 "my_receipt_url": r["receipt_url"],
+                 "line_openchat_url": _normalize_external_url(r.get("line_openchat_url")),
+                 "chat_unread_count": int(event_unread_counts.get(int(r["id"]), 0)),
+             }
+             receipt_pdf_url = None
+             if (
+                 item["my_payment_status"] == "paid"
+                 and item["member_id"]
+                 and (
+                     item["bank_transfer"] == 1
+                     or item["paypay_transfer"] == 1
+                     or item["receipt_url"]
+                 )
