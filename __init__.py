@@ -770,8 +770,7 @@ def login():
 
             session["user"] = username
             session["nickname"] = row["nickname"]
-            session["login_expires_at"] = datetime.now() + timedelta(hours=24)
-            session["login_extension_count"] = 0
+            session.permanent = True
             write_login_log(username, request.remote_addr)
 
             if username == "admin" and row.get("webhook_url"):
