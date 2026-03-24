@@ -1335,6 +1335,7 @@ def _safe_png_download_filename(event_id: int, title: str | None) -> str:
 
 
 PNG_FONT_PATH = "/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf"
+PNG_EMOJI_FONT_PATH = "/mnt/mfu/app/PDF_Font/seguiemj.ttf"
 
 
 @lru_cache(maxsize=1)
@@ -1346,7 +1347,7 @@ def _get_png_font_path() -> str:
 
 
 @lru_cache(maxsize=16)
-def _get_png_font(size: int):
+def _get_png_text_font(size: int):
     font_path = _get_png_font_path()
     try:
         return ImageFont.truetype(font_path, size=size)
@@ -1355,7 +1356,116 @@ def _get_png_font(size: int):
         raise RuntimeError(f"PNG日本語フォントの読込に失敗しました: {font_path}")
 
 
-def _split_multiline(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
+@lru_cache(maxsize=1)
+def _get_png_emoji_font_path() -> str:
+    if os.path.exists(PNG_EMOJI_FONT_PATH):
+        return PNG_EMOJI_FONT_PATH
+    current_app.logger.error("PNG emoji font file not found: %s", PNG_EMOJI_FONT_PATH)
+    raise RuntimeError(f"PNG絵文字フォントが見つかりません: {PNG_EMOJI_FONT_PATH}")
+
+
+@lru_cache(maxsize=16)
+def _get_png_emoji_font(size: int):
+    font_path = _get_png_emoji_font_path()
+    try:
+        return ImageFont.truetype(font_path, size=size)
+    except Exception:
+        current_app.logger.exception("Failed to load PNG emoji font: path=%s size=%s", font_path, size)
+        raise RuntimeError(f"PNG絵文字フォントの読込に失敗しました: {font_path}")
+
+
+def _iter_text_clusters(text: str):
+    """
+    絵文字連結（VS16, ZWJ, 絵文字修飾子）を最低限まとめたクラスターを返す。
+    完全な grapheme cluster ではないが、参加者名に含まれる単純絵文字には十分。
+    """
+    chars = list(str(text or ""))
+    i = 0
+    while i < len(chars):
+        cluster = chars[i]
+        i += 1
+        while i < len(chars):
+            cp = ord(chars[i])
+            prev_cp = ord(cluster[-1])
+            is_vs16 = cp == 0xFE0F
+            is_zwj = cp == 0x200D
+            is_emoji_modifier = 0x1F3FB <= cp <= 0x1F3FF
+            continue_after_zwj = prev_cp == 0x200D
+            if is_vs16 or is_zwj or is_emoji_modifier or continue_after_zwj:
+                cluster += chars[i]
+                i += 1
+                continue
+            break
+        yield cluster
+
+
+def _font_has_renderable_glyph(font, text: str) -> bool:
+    """
+    Pillow単体で厳密なグリフ判定は難しいため、以下の順で判定する:
+    - getbbox が存在する
+    - 置換文字(U+FFFD)と同じ描画形状にならない
+    """
+    candidate = str(text or "")
+    if not candidate:
+        return True
+    try:
+        bbox = font.getbbox(candidate)
+        if bbox is None:
+            return False
+        replacement_bbox = font.getbbox("\uFFFD")
+        if replacement_bbox is None:
+            return True
+        # 幅・高さ・オフセットが完全一致する場合は「置換グリフと同型」とみなして未対応扱いにする。
+        return bbox != replacement_bbox
+    except Exception:
+        return False
+
+
+def _split_text_runs_for_fonts(text: str, text_font, emoji_font):
+    runs = []
+    current_kind = None
+    current_text = []
+    for cluster in _iter_text_clusters(text):
+        if _font_has_renderable_glyph(text_font, cluster):
+            kind = "text"
+        elif _font_has_renderable_glyph(emoji_font, cluster):
+            kind = "emoji"
+        else:
+            # どちらでも判定不可の場合は本文フォントに寄せる（黙って default には落とさない）
+            kind = "text"
+
+        if kind != current_kind and current_text:
+            runs.append({"text": "".join(current_text), "font_kind": current_kind})
+            current_text = []
+        current_kind = kind
+        current_text.append(cluster)
+
+    if current_text:
+        runs.append({"text": "".join(current_text), "font_kind": current_kind})
+    return runs
+
+
+def _measure_mixed_font_text(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font) -> float:
+    width = 0.0
+    for run in _split_text_runs_for_fonts(text, text_font, emoji_font):
+        font = text_font if run["font_kind"] == "text" else emoji_font
+        width += draw.textlength(run["text"], font=font)
+    return width
+
+
+def _draw_mixed_font_text(draw: ImageDraw.ImageDraw, xy, text: str, text_font, emoji_font, fill):
+    x, y = xy
+    for run in _split_text_runs_for_fonts(text, text_font, emoji_font):
+        font = text_font if run["font_kind"] == "text" else emoji_font
+        run_text = run["text"]
+        if not run_text:
+            continue
+        draw.text((x, y), run_text, fill=fill, font=font)
+        x += draw.textlength(run_text, font=font)
+    return x
+
+
+def _split_multiline(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font, max_width: int):
     lines = []
     for raw_line in str(text or "").splitlines() or [""]:
         chunks = textwrap.wrap(raw_line, width=80, break_long_words=True, break_on_hyphens=False) or [raw_line]
@@ -1365,14 +1475,15 @@ def _split_multiline(draw: ImageDraw.ImageDraw, text: str, font, max_width: int)
                 continue
             line = c
             while line:
-                if draw.textlength(line, font=font) <= max_width:
+                if _measure_mixed_font_text(draw, line, text_font, emoji_font) <= max_width:
                     lines.append(line)
                     break
-                cut = max(1, int(len(line) * max_width / max(draw.textlength(line, font=font), 1)))
+                line_width = _measure_mixed_font_text(draw, line, text_font, emoji_font)
+                cut = max(1, int(len(line) * max_width / max(line_width, 1)))
                 found = False
                 for i in range(min(len(line), cut + 2), 0, -1):
                     piece = line[:i]
-                    if draw.textlength(piece, font=font) <= max_width:
+                    if _measure_mixed_font_text(draw, piece, text_font, emoji_font) <= max_width:
                         lines.append(piece)
                         line = line[i:]
                         found = True
@@ -1439,11 +1550,16 @@ def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
     divider_gap_top = 14
     min_block_height = 110
 
-    title_font = _get_png_font(42)
-    summary_font = _get_png_font(28)
-    name_font = _get_png_font(34)
-    body_font = _get_png_font(25)
-    role_font = _get_png_font(25)
+    title_font = _get_png_text_font(42)
+    title_emoji_font = _get_png_emoji_font(42)
+    summary_font = _get_png_text_font(28)
+    summary_emoji_font = _get_png_emoji_font(28)
+    name_font = _get_png_text_font(34)
+    name_emoji_font = _get_png_emoji_font(34)
+    body_font = _get_png_text_font(25)
+    body_emoji_font = _get_png_emoji_font(25)
+    role_font = _get_png_text_font(25)
+    role_emoji_font = _get_png_emoji_font(25)
 
     temp = Image.new("RGB", (width, 500), "white")
     draw = ImageDraw.Draw(temp)
@@ -1455,15 +1571,15 @@ def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
     total_height += int(summary_font.size * 2.0)
 
     for member in members:
-        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, content_width)
+        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, name_emoji_font, content_width)
         sns_parts = []
         if member.get("x_id"):
             sns_parts.append(f"X: {member.get('x_id')}")
         if member.get("instagram_id"):
             sns_parts.append(f"IG: {member.get('instagram_id')}")
         sns_text = " / ".join(sns_parts)
-        sns_lines = _split_multiline(draw, sns_text, body_font, content_width) if sns_text else []
-        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, content_width)
+        sns_lines = _split_multiline(draw, sns_text, body_font, body_emoji_font, content_width) if sns_text else []
+        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, role_emoji_font, content_width)
         lines_cache.append((name_lines, sns_lines, role_lines))
 
         block_h = 0
@@ -1477,9 +1593,9 @@ def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
     total_height = max(total_height + 24, 260)
     image = Image.new("RGB", (width, total_height), "white")
     draw = ImageDraw.Draw(image)
-    draw.text((padding_x, top_pad), event_title or "イベント参加者一覧", fill="#111111", font=title_font)
+    _draw_mixed_font_text(draw, (padding_x, top_pad), event_title or "イベント参加者一覧", title_font, title_emoji_font, "#111111")
     summary_text = f"参加者 {len(members)} 名（approved / 非キャンセル）"
-    draw.text((padding_x, top_pad + 64), summary_text, fill="#444444", font=summary_font)
+    _draw_mixed_font_text(draw, (padding_x, top_pad + 64), summary_text, summary_font, summary_emoji_font, "#444444")
 
     y = top_pad + 120
     avatar_x = padding_x
@@ -1491,13 +1607,13 @@ def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
 
         text_y = y
         for line in name_lines:
-            draw.text((text_x, text_y), line, fill="#111111", font=name_font)
+            _draw_mixed_font_text(draw, (text_x, text_y), line, name_font, name_emoji_font, "#111111")
             text_y += name_font.size + line_gap
         for line in sns_lines:
-            draw.text((text_x, text_y), line, fill="#4b5563", font=body_font)
+            _draw_mixed_font_text(draw, (text_x, text_y), line, body_font, body_emoji_font, "#4b5563")
             text_y += body_font.size + line_gap
         for line in role_lines:
-            draw.text((text_x, text_y), line, fill="#1f2937", font=role_font)
+            _draw_mixed_font_text(draw, (text_x, text_y), line, role_font, role_emoji_font, "#1f2937")
             text_y += role_font.size + line_gap
 
         block_bottom = max(y + min_block_height, text_y + divider_gap_top)
