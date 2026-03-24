@@ -1,8 +1,8 @@
 diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abbe3e745c2 100644
+index abcb663213a7bf41ab0a99fd75150abbe3e745c2..e4fbefe15f3a18448df565543179f6e6c3fc1e6c 100644
 --- a/external_login_user/admin.py
 +++ b/external_login_user/admin.py
-@@ -1313,88 +1313,199 @@ def _compose_member_role_label(member: dict) -> str:
+@@ -1313,199 +1313,275 @@ def _compose_member_role_label(member: dict) -> str:
          role_label = f"衣装（{costume_label}）" if costume_label else "衣装"
      elif role_raw == "other":
          role_label = f"その他（{costume_label}）" if costume_label else "その他"
@@ -28,7 +28,9 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
  
  
  PNG_FONT_PATH = "/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf"
-+PNG_EMOJI_FONT_PATH = "/mnt/mfu/app/PDF_Font/seguiemj.ttf"
+-PNG_EMOJI_FONT_PATH = "/mnt/mfu/app/PDF_Font/seguiemj.ttf"
++TWEMOJI_CACHE_DIR = "/mnt/mfu/app/static/twemoji_cache"
++TWEMOJI_CDN_BASE = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72"
  
  
  @lru_cache(maxsize=1)
@@ -40,8 +42,7 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
  
  
  @lru_cache(maxsize=16)
--def _get_png_font(size: int):
-+def _get_png_text_font(size: int):
+ def _get_png_text_font(size: int):
      font_path = _get_png_font_path()
      try:
          return ImageFont.truetype(font_path, size=size)
@@ -50,117 +51,249 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
          raise RuntimeError(f"PNG日本語フォントの読込に失敗しました: {font_path}")
  
  
--def _split_multiline(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
-+@lru_cache(maxsize=1)
-+def _get_png_emoji_font_path() -> str:
-+    if os.path.exists(PNG_EMOJI_FONT_PATH):
-+        return PNG_EMOJI_FONT_PATH
-+    current_app.logger.error("PNG emoji font file not found: %s", PNG_EMOJI_FONT_PATH)
-+    raise RuntimeError(f"PNG絵文字フォントが見つかりません: {PNG_EMOJI_FONT_PATH}")
-+
-+
-+@lru_cache(maxsize=16)
-+def _get_png_emoji_font(size: int):
-+    font_path = _get_png_emoji_font_path()
-+    try:
-+        return ImageFont.truetype(font_path, size=size)
-+    except Exception:
-+        current_app.logger.exception("Failed to load PNG emoji font: path=%s size=%s", font_path, size)
-+        raise RuntimeError(f"PNG絵文字フォントの読込に失敗しました: {font_path}")
-+
-+
-+def _iter_text_clusters(text: str):
-+    """
-+    絵文字連結（VS16, ZWJ, 絵文字修飾子）を最低限まとめたクラスターを返す。
-+    完全な grapheme cluster ではないが、参加者名に含まれる単純絵文字には十分。
-+    """
-+    chars = list(str(text or ""))
-+    i = 0
-+    while i < len(chars):
-+        cluster = chars[i]
-+        i += 1
-+        while i < len(chars):
-+            cp = ord(chars[i])
-+            prev_cp = ord(cluster[-1])
-+            is_vs16 = cp == 0xFE0F
-+            is_zwj = cp == 0x200D
-+            is_emoji_modifier = 0x1F3FB <= cp <= 0x1F3FF
-+            continue_after_zwj = prev_cp == 0x200D
-+            if is_vs16 or is_zwj or is_emoji_modifier or continue_after_zwj:
-+                cluster += chars[i]
-+                i += 1
-+                continue
-+            break
-+        yield cluster
-+
-+
-+def _font_has_renderable_glyph(font, text: str) -> bool:
-+    """
-+    Pillow単体で厳密なグリフ判定は難しいため、以下の順で判定する:
-+    - getbbox が存在する
-+    - 置換文字(U+FFFD)と同じ描画形状にならない
-+    """
-+    candidate = str(text or "")
-+    if not candidate:
+-@lru_cache(maxsize=1)
+-def _get_png_emoji_font_path() -> str:
+-    if os.path.exists(PNG_EMOJI_FONT_PATH):
+-        return PNG_EMOJI_FONT_PATH
+-    current_app.logger.error("PNG emoji font file not found: %s", PNG_EMOJI_FONT_PATH)
+-    raise RuntimeError(f"PNG絵文字フォントが見つかりません: {PNG_EMOJI_FONT_PATH}")
+-
+-
+-@lru_cache(maxsize=16)
+-def _get_png_emoji_font(size: int):
+-    font_path = _get_png_emoji_font_path()
+-    try:
+-        return ImageFont.truetype(font_path, size=size)
+-    except Exception:
+-        current_app.logger.exception("Failed to load PNG emoji font: path=%s size=%s", font_path, size)
+-        raise RuntimeError(f"PNG絵文字フォントの読込に失敗しました: {font_path}")
+-
+-
+ def _iter_text_clusters(text: str):
+     """
+     絵文字連結（VS16, ZWJ, 絵文字修飾子）を最低限まとめたクラスターを返す。
+     完全な grapheme cluster ではないが、参加者名に含まれる単純絵文字には十分。
+     """
+     chars = list(str(text or ""))
+     i = 0
+     while i < len(chars):
+         cluster = chars[i]
+         i += 1
+         while i < len(chars):
+             cp = ord(chars[i])
+             prev_cp = ord(cluster[-1])
+             is_vs16 = cp == 0xFE0F
+             is_zwj = cp == 0x200D
+             is_emoji_modifier = 0x1F3FB <= cp <= 0x1F3FF
+             continue_after_zwj = prev_cp == 0x200D
+             if is_vs16 or is_zwj or is_emoji_modifier or continue_after_zwj:
+                 cluster += chars[i]
+                 i += 1
+                 continue
+             break
+         yield cluster
+ 
+ 
+-def _font_has_renderable_glyph(font, text: str) -> bool:
+-    """
+-    Pillow単体で厳密なグリフ判定は難しいため、以下の順で判定する:
+-    - getbbox が存在する
+-    - 置換文字(U+FFFD)と同じ描画形状にならない
+-    """
+-    candidate = str(text or "")
+-    if not candidate:
++def _is_emoji_codepoint(cp: int) -> bool:
++    if 0x1F1E6 <= cp <= 0x1F1FF:
+         return True
+-    try:
+-        bbox = font.getbbox(candidate)
+-        if bbox is None:
+-            return False
+-        replacement_bbox = font.getbbox("\uFFFD")
+-        if replacement_bbox is None:
+-            return True
+-        # 幅・高さ・オフセットが完全一致する場合は「置換グリフと同型」とみなして未対応扱いにする。
+-        return bbox != replacement_bbox
+-    except Exception:
++    if 0x1F300 <= cp <= 0x1FAFF:
 +        return True
-+    try:
-+        bbox = font.getbbox(candidate)
-+        if bbox is None:
-+            return False
-+        replacement_bbox = font.getbbox("\uFFFD")
-+        if replacement_bbox is None:
-+            return True
-+        # 幅・高さ・オフセットが完全一致する場合は「置換グリフと同型」とみなして未対応扱いにする。
-+        return bbox != replacement_bbox
-+    except Exception:
-+        return False
++    return cp in {
++        0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139,
++        0x2194, 0x2195, 0x2196, 0x2197, 0x2198, 0x2199, 0x21A9, 0x21AA,
++        0x231A, 0x231B, 0x2328, 0x23CF, 0x23E9, 0x23EA, 0x23ED, 0x23EE, 0x23EF,
++        0x23F0, 0x23F1, 0x23F2, 0x23F3, 0x23F8, 0x23F9, 0x23FA,
++        0x24C2, 0x25AA, 0x25AB, 0x25B6, 0x25C0, 0x25FB, 0x25FC, 0x25FD, 0x25FE,
++        0x2600, 0x2601, 0x2602, 0x2603, 0x2604, 0x260E, 0x2611, 0x2614, 0x2615,
++        0x2618, 0x261D, 0x2620, 0x2622, 0x2623, 0x2626, 0x262A, 0x262E, 0x262F,
++        0x2638, 0x2639, 0x263A, 0x2640, 0x2642, 0x2648, 0x2649, 0x264A, 0x264B,
++        0x264C, 0x264D, 0x264E, 0x264F, 0x2650, 0x2651, 0x2652, 0x2653, 0x265F,
++        0x2660, 0x2663, 0x2665, 0x2666, 0x2668, 0x267B, 0x267E, 0x267F, 0x2692,
++        0x2693, 0x2694, 0x2695, 0x2696, 0x2697, 0x2699, 0x269B, 0x269C, 0x26A0,
++        0x26A1, 0x26A7, 0x26AA, 0x26AB, 0x26B0, 0x26B1, 0x26BD, 0x26BE, 0x26C4,
++        0x26C5, 0x26C8, 0x26CE, 0x26CF, 0x26D1, 0x26D3, 0x26D4, 0x26E9, 0x26EA,
++        0x26F0, 0x26F1, 0x26F2, 0x26F3, 0x26F4, 0x26F5, 0x26F7, 0x26F8, 0x26F9,
++        0x26FA, 0x26FD, 0x2702, 0x2705, 0x2708, 0x2709, 0x270A, 0x270B, 0x270C,
++        0x270D, 0x270F, 0x2712, 0x2714, 0x2716, 0x271D, 0x2721, 0x2728, 0x2733,
++        0x2734, 0x2744, 0x2747, 0x274C, 0x274E, 0x2753, 0x2754, 0x2755, 0x2757,
++        0x2763, 0x2764, 0x2795, 0x2796, 0x2797, 0x27A1, 0x27B0, 0x27BF, 0x2934,
++        0x2935, 0x2B05, 0x2B06, 0x2B07, 0x2B1B, 0x2B1C, 0x2B50, 0x2B55, 0x3030,
++        0x303D, 0x3297, 0x3299,
++    }
 +
 +
-+def _split_text_runs_for_fonts(text: str, text_font, emoji_font):
-+    runs = []
-+    current_kind = None
-+    current_text = []
-+    for cluster in _iter_text_clusters(text):
-+        if _font_has_renderable_glyph(text_font, cluster):
-+            kind = "text"
-+        elif _font_has_renderable_glyph(emoji_font, cluster):
-+            kind = "emoji"
-+        else:
-+            # どちらでも判定不可の場合は本文フォントに寄せる（黙って default には落とさない）
-+            kind = "text"
-+
-+        if kind != current_kind and current_text:
-+            runs.append({"text": "".join(current_text), "font_kind": current_kind})
-+            current_text = []
-+        current_kind = kind
-+        current_text.append(cluster)
-+
-+    if current_text:
-+        runs.append({"text": "".join(current_text), "font_kind": current_kind})
-+    return runs
-+
-+
-+def _measure_mixed_font_text(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font) -> float:
-+    width = 0.0
-+    for run in _split_text_runs_for_fonts(text, text_font, emoji_font):
-+        font = text_font if run["font_kind"] == "text" else emoji_font
-+        width += draw.textlength(run["text"], font=font)
-+    return width
-+
-+
-+def _draw_mixed_font_text(draw: ImageDraw.ImageDraw, xy, text: str, text_font, emoji_font, fill):
-+    x, y = xy
-+    for run in _split_text_runs_for_fonts(text, text_font, emoji_font):
-+        font = text_font if run["font_kind"] == "text" else emoji_font
-+        run_text = run["text"]
-+        if not run_text:
++def _is_emoji_cluster(cluster: str) -> bool:
++    if not cluster:
+         return False
++    cps = [ord(ch) for ch in cluster]
++    for cp in cps:
++        if cp in (0x200D, 0xFE0F, 0x20E3) or (0x1F3FB <= cp <= 0x1F3FF):
 +            continue
-+        draw.text((x, y), run_text, fill=fill, font=font)
-+        x += draw.textlength(run_text, font=font)
-+    return x
++        if _is_emoji_codepoint(cp):
++            return True
++    return False
+ 
+ 
+-def _split_text_runs_for_fonts(text: str, text_font, emoji_font):
++def _split_text_and_emoji_runs(text: str):
+     runs = []
+     current_kind = None
+     current_text = []
+     for cluster in _iter_text_clusters(text):
+-        if _font_has_renderable_glyph(text_font, cluster):
+-            kind = "text"
+-        elif _font_has_renderable_glyph(emoji_font, cluster):
+-            kind = "emoji"
+-        else:
+-            # どちらでも判定不可の場合は本文フォントに寄せる（黙って default には落とさない）
+-            kind = "text"
++        kind = "emoji" if _is_emoji_cluster(cluster) else "text"
+ 
+         if kind != current_kind and current_text:
+-            runs.append({"text": "".join(current_text), "font_kind": current_kind})
++            key = "emoji" if current_kind == "emoji" else "text"
++            runs.append({"kind": current_kind, key: "".join(current_text)})
+             current_text = []
+         current_kind = kind
+         current_text.append(cluster)
+ 
+     if current_text:
+-        runs.append({"text": "".join(current_text), "font_kind": current_kind})
++        key = "emoji" if current_kind == "emoji" else "text"
++        runs.append({"kind": current_kind, key: "".join(current_text)})
+     return runs
+ 
+ 
+-def _measure_mixed_font_text(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font) -> float:
++def _emoji_to_twemoji_codepoints(emoji_text: str) -> str:
++    cps = []
++    for ch in str(emoji_text or ""):
++        cp = ord(ch)
++        if cp == 0xFE0F:
++            continue
++        cps.append(f"{cp:x}")
++    return "-".join(cps)
 +
 +
-+def _split_multiline(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font, max_width: int):
++def _emoji_draw_size(text_font) -> int:
++    return max(12, int(round(float(getattr(text_font, "size", 24)) * 1.05)))
++
++
++@lru_cache(maxsize=512)
++def _load_twemoji_image_cached(emoji_text: str):
++    if not emoji_text:
++        return None
++    codepoints = _emoji_to_twemoji_codepoints(emoji_text)
++    if not codepoints:
++        return None
++
++    try:
++        os.makedirs(TWEMOJI_CACHE_DIR, exist_ok=True)
++    except Exception:
++        current_app.logger.warning("twemoji cache dir create failed: %s", TWEMOJI_CACHE_DIR)
++
++    local_path = os.path.join(TWEMOJI_CACHE_DIR, f"{codepoints}.png")
++    if not os.path.exists(local_path):
++        remote_url = f"{TWEMOJI_CDN_BASE}/{codepoints}.png"
++        try:
++            response = requests.get(remote_url, timeout=2.0)
++            response.raise_for_status()
++            with open(local_path, "wb") as f:
++                f.write(response.content)
++        except Exception as exc:
++            current_app.logger.warning("twemoji download failed: emoji=%s code=%s url=%s err=%s", emoji_text, codepoints, remote_url, exc)
++            return None
++
++    try:
++        return Image.open(local_path).convert("RGBA")
++    except Exception as exc:
++        current_app.logger.warning("twemoji cache load failed: emoji=%s path=%s err=%s", emoji_text, local_path, exc)
++        return None
++
++
++def _get_twemoji_image(emoji_text: str, size: int):
++    base = _load_twemoji_image_cached(emoji_text)
++    if base is None:
++        return None
++    try:
++        return base.resize((size, size), Image.Resampling.LANCZOS)
++    except Exception as exc:
++        current_app.logger.warning("twemoji resize failed: emoji=%s size=%s err=%s", emoji_text, size, exc)
++        return None
++
++
++def _measure_text_with_twemoji(draw: ImageDraw.ImageDraw, text: str, text_font) -> float:
+     width = 0.0
+-    for run in _split_text_runs_for_fonts(text, text_font, emoji_font):
+-        font = text_font if run["font_kind"] == "text" else emoji_font
+-        width += draw.textlength(run["text"], font=font)
++    emoji_size = _emoji_draw_size(text_font)
++    for run in _split_text_and_emoji_runs(text):
++        if run["kind"] == "text":
++            width += draw.textlength(run["text"], font=text_font)
++        else:
++            for cluster in _iter_text_clusters(run["emoji"]):
++                width += emoji_size if _is_emoji_cluster(cluster) else draw.textlength(cluster, font=text_font)
+     return width
+ 
+ 
+-def _draw_mixed_font_text(draw: ImageDraw.ImageDraw, xy, text: str, text_font, emoji_font, fill):
++def _draw_text_with_twemoji(draw: ImageDraw.ImageDraw, base_image: Image.Image, xy, text: str, text_font, fill):
+     x, y = xy
+-    for run in _split_text_runs_for_fonts(text, text_font, emoji_font):
+-        font = text_font if run["font_kind"] == "text" else emoji_font
+-        run_text = run["text"]
+-        if not run_text:
++    emoji_size = _emoji_draw_size(text_font)
++    metrics = text_font.getmetrics() if hasattr(text_font, "getmetrics") else (text_font.size, 0)
++    ascent = metrics[0] if isinstance(metrics, tuple) and metrics else text_font.size
++    emoji_y = int(y + ascent - emoji_size * 0.84)
++    for run in _split_text_and_emoji_runs(text):
++        if run["kind"] == "text":
++            run_text = run["text"]
++            if not run_text:
++                continue
++            draw.text((x, y), run_text, fill=fill, font=text_font)
++            x += draw.textlength(run_text, font=text_font)
+             continue
+-        draw.text((x, y), run_text, fill=fill, font=font)
+-        x += draw.textlength(run_text, font=font)
++
++        for cluster in _iter_text_clusters(run["emoji"]):
++            if not _is_emoji_cluster(cluster):
++                draw.text((x, y), cluster, fill=fill, font=text_font)
++                x += draw.textlength(cluster, font=text_font)
++                continue
++            emoji_img = _get_twemoji_image(cluster, emoji_size)
++            if emoji_img is None:
++                # 取得/読込失敗時は該当絵文字のみ安全にスキップ（PNG全体は継続）
++                continue
++            base_image.paste(emoji_img, (int(x), emoji_y), emoji_img)
++            x += emoji_size
+     return x
+ 
+ 
+-def _split_multiline(draw: ImageDraw.ImageDraw, text: str, text_font, emoji_font, max_width: int):
++def _split_multiline(draw: ImageDraw.ImageDraw, text: str, text_font, max_width: int):
      lines = []
      for raw_line in str(text or "").splitlines() or [""]:
          chunks = textwrap.wrap(raw_line, width=80, break_long_words=True, break_on_hyphens=False) or [raw_line]
@@ -170,18 +303,18 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
                  continue
              line = c
              while line:
--                if draw.textlength(line, font=font) <= max_width:
-+                if _measure_mixed_font_text(draw, line, text_font, emoji_font) <= max_width:
+-                if _measure_mixed_font_text(draw, line, text_font, emoji_font) <= max_width:
++                if _measure_text_with_twemoji(draw, line, text_font) <= max_width:
                      lines.append(line)
                      break
--                cut = max(1, int(len(line) * max_width / max(draw.textlength(line, font=font), 1)))
-+                line_width = _measure_mixed_font_text(draw, line, text_font, emoji_font)
-+                cut = max(1, int(len(line) * max_width / max(line_width, 1)))
+-                line_width = _measure_mixed_font_text(draw, line, text_font, emoji_font)
++                line_width = _measure_text_with_twemoji(draw, line, text_font)
+                 cut = max(1, int(len(line) * max_width / max(line_width, 1)))
                  found = False
                  for i in range(min(len(line), cut + 2), 0, -1):
                      piece = line[:i]
--                    if draw.textlength(piece, font=font) <= max_width:
-+                    if _measure_mixed_font_text(draw, piece, text_font, emoji_font) <= max_width:
+-                    if _measure_mixed_font_text(draw, piece, text_font, emoji_font) <= max_width:
++                    if _measure_text_with_twemoji(draw, piece, text_font) <= max_width:
                          lines.append(piece)
                          line = line[i:]
                          found = True
@@ -207,8 +340,7 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
      candidate_urls = []
      if avatar_file:
          local_url = url_for("external_login_user.avatar_file", name=avatar_file, _external=True)
-@@ -1417,109 +1528,114 @@ def _download_avatar_image(member: dict, size: int):
-             continue
+@@ -1529,113 +1605,108 @@ def _download_avatar_image(member: dict, size: int):
          except Exception:
              current_app.logger.exception("avatar fetch failed unexpectedly: %s", candidate)
  
@@ -233,21 +365,16 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
      divider_gap_top = 14
      min_block_height = 110
  
--    title_font = _get_png_font(42)
--    summary_font = _get_png_font(28)
--    name_font = _get_png_font(34)
--    body_font = _get_png_font(25)
--    role_font = _get_png_font(25)
-+    title_font = _get_png_text_font(42)
-+    title_emoji_font = _get_png_emoji_font(42)
-+    summary_font = _get_png_text_font(28)
-+    summary_emoji_font = _get_png_emoji_font(28)
-+    name_font = _get_png_text_font(34)
-+    name_emoji_font = _get_png_emoji_font(34)
-+    body_font = _get_png_text_font(25)
-+    body_emoji_font = _get_png_emoji_font(25)
-+    role_font = _get_png_text_font(25)
-+    role_emoji_font = _get_png_emoji_font(25)
+     title_font = _get_png_text_font(42)
+-    title_emoji_font = _get_png_emoji_font(42)
+     summary_font = _get_png_text_font(28)
+-    summary_emoji_font = _get_png_emoji_font(28)
+     name_font = _get_png_text_font(34)
+-    name_emoji_font = _get_png_emoji_font(34)
+     body_font = _get_png_text_font(25)
+-    body_emoji_font = _get_png_emoji_font(25)
+     role_font = _get_png_text_font(25)
+-    role_emoji_font = _get_png_emoji_font(25)
  
      temp = Image.new("RGB", (width, 500), "white")
      draw = ImageDraw.Draw(temp)
@@ -259,18 +386,18 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
      total_height += int(summary_font.size * 2.0)
  
      for member in members:
--        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, content_width)
-+        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, name_emoji_font, content_width)
+-        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, name_emoji_font, content_width)
++        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, content_width)
          sns_parts = []
          if member.get("x_id"):
              sns_parts.append(f"X: {member.get('x_id')}")
          if member.get("instagram_id"):
              sns_parts.append(f"IG: {member.get('instagram_id')}")
          sns_text = " / ".join(sns_parts)
--        sns_lines = _split_multiline(draw, sns_text, body_font, content_width) if sns_text else []
--        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, content_width)
-+        sns_lines = _split_multiline(draw, sns_text, body_font, body_emoji_font, content_width) if sns_text else []
-+        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, role_emoji_font, content_width)
+-        sns_lines = _split_multiline(draw, sns_text, body_font, body_emoji_font, content_width) if sns_text else []
+-        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, role_emoji_font, content_width)
++        sns_lines = _split_multiline(draw, sns_text, body_font, content_width) if sns_text else []
++        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, content_width)
          lines_cache.append((name_lines, sns_lines, role_lines))
  
          block_h = 0
@@ -284,11 +411,11 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
      total_height = max(total_height + 24, 260)
      image = Image.new("RGB", (width, total_height), "white")
      draw = ImageDraw.Draw(image)
--    draw.text((padding_x, top_pad), event_title or "イベント参加者一覧", fill="#111111", font=title_font)
-+    _draw_mixed_font_text(draw, (padding_x, top_pad), event_title or "イベント参加者一覧", title_font, title_emoji_font, "#111111")
+-    _draw_mixed_font_text(draw, (padding_x, top_pad), event_title or "イベント参加者一覧", title_font, title_emoji_font, "#111111")
++    _draw_text_with_twemoji(draw, image, (padding_x, top_pad), event_title or "イベント参加者一覧", title_font, "#111111")
      summary_text = f"参加者 {len(members)} 名（approved / 非キャンセル）"
--    draw.text((padding_x, top_pad + 64), summary_text, fill="#444444", font=summary_font)
-+    _draw_mixed_font_text(draw, (padding_x, top_pad + 64), summary_text, summary_font, summary_emoji_font, "#444444")
+-    _draw_mixed_font_text(draw, (padding_x, top_pad + 64), summary_text, summary_font, summary_emoji_font, "#444444")
++    _draw_text_with_twemoji(draw, image, (padding_x, top_pad + 64), summary_text, summary_font, "#444444")
  
      y = top_pad + 120
      avatar_x = padding_x
@@ -300,16 +427,16 @@ index 95f4ce8dd46b368f878507a08b863a450bf3c113..abcb663213a7bf41ab0a99fd75150abb
  
          text_y = y
          for line in name_lines:
--            draw.text((text_x, text_y), line, fill="#111111", font=name_font)
-+            _draw_mixed_font_text(draw, (text_x, text_y), line, name_font, name_emoji_font, "#111111")
+-            _draw_mixed_font_text(draw, (text_x, text_y), line, name_font, name_emoji_font, "#111111")
++            _draw_text_with_twemoji(draw, image, (text_x, text_y), line, name_font, "#111111")
              text_y += name_font.size + line_gap
          for line in sns_lines:
--            draw.text((text_x, text_y), line, fill="#4b5563", font=body_font)
-+            _draw_mixed_font_text(draw, (text_x, text_y), line, body_font, body_emoji_font, "#4b5563")
+-            _draw_mixed_font_text(draw, (text_x, text_y), line, body_font, body_emoji_font, "#4b5563")
++            _draw_text_with_twemoji(draw, image, (text_x, text_y), line, body_font, "#4b5563")
              text_y += body_font.size + line_gap
          for line in role_lines:
--            draw.text((text_x, text_y), line, fill="#1f2937", font=role_font)
-+            _draw_mixed_font_text(draw, (text_x, text_y), line, role_font, role_emoji_font, "#1f2937")
+-            _draw_mixed_font_text(draw, (text_x, text_y), line, role_font, role_emoji_font, "#1f2937")
++            _draw_text_with_twemoji(draw, image, (text_x, text_y), line, role_font, "#1f2937")
              text_y += role_font.size + line_gap
  
          block_bottom = max(y + min_block_height, text_y + divider_gap_top)
