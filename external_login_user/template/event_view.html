@@ -46,6 +46,8 @@
   {% set memo_all = ev.memo_all if ev.memo_all is defined else None %}
   {% set sns_tag_raw = (ev.sns_hashtag or '')|trim %}
   {% set sns_tag = ('#' ~ sns_tag_raw.lstrip('#')) if sns_tag_raw else None %}
+  {% set member_active = (my_status == 'approved' and my_is_canceled|default(0)|int == 0) %}
+  {% set member_limited = (my_is_canceled|default(0)|int == 1) or (my_status in ['pending', 'rejected']) %}
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% for cat, msg in messages %}
@@ -96,7 +98,7 @@
     </div>
   {% endif %}
 
-  {% if view_mode == "member" and my_is_canceled|default(0)|int == 0 %}
+  {% if view_mode == "member" and member_active %}
     <div class="mt-3">
       <a class="btn btn-lg btn-primary w-100"
          href="{{ url_for('external_login_user.event_pass', event_uuid=ev.event_uuid_str) }}">
@@ -124,7 +126,7 @@
       </div>
     </div>
 
-    {% if memo_all %}
+    {% if memo_all and member_active %}
       <div class="col-12">
         <div class="card h-100">
           <div class="card-body">
@@ -137,7 +139,7 @@
       </div>
     {% endif %}
 
-    {% if sns_tag %}
+    {% if sns_tag and member_active %}
       <div class="col-12">
         <div class="card h-100">
           <div class="card-body">
@@ -160,7 +162,7 @@
         <div class="card-body">
           <h2 class="h6 mb-3">各種リンク</h2>
 
-          {% if my_is_canceled|default(0)|int == 0 %}
+          {% if member_active %}
             <!-- 参加者一覧 -->
             <div class="mb-2">
               <a class="btn btn-sm btn-outline-dark w-100 text-start"
@@ -170,7 +172,7 @@
             </div>
           {% endif %}
 
-          {% if has_openchat %}
+          {% if has_openchat and member_active %}
             <!-- LINEオープンチャット -->
             <div class="mb-2">
               {% if oc_pass %}
@@ -189,7 +191,7 @@
                 </a>
               {% endif %}
             </div>
-          {% else %}
+          {% elif member_active %}
             <!-- チャット -->
             <div class="mb-2">
               <a class="btn btn-sm btn-outline-info w-100 text-start"
@@ -199,7 +201,7 @@
             </div>
           {% endif %}
 
-          {% if my_is_canceled|default(0)|int == 0 %}
+          {% if member_active %}
             <!-- SNS貼付用 -->
             <div class="mb-2">
               <a class="btn btn-sm btn-outline-info w-100 text-start"
@@ -210,32 +212,42 @@
           {% endif %}
 
           <!-- アルバム -->
-          <div class="mb-2">
-            {% if album_url %}
-              <a class="btn btn-sm btn-outline-success w-100 text-start"
-                 href="{{ album_url }}" target="_blank" rel="noopener">
-                アルバムを開く
-              </a>
-            {% else %}
-              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
-                アルバム未設定
-              </button>
-            {% endif %}
-          </div>
+          {% if member_active %}
+            <div class="mb-2">
+              {% if album_url %}
+                <a class="btn btn-sm btn-outline-success w-100 text-start"
+                   href="{{ album_url }}" target="_blank" rel="noopener">
+                  アルバムを開く
+                </a>
+              {% else %}
+                <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+                  アルバム未設定
+                </button>
+              {% endif %}
+            </div>
+          {% endif %}
 
           <!-- アンケート -->
-          <div class="mb-2">
-            {% if gf_url %}
-              <a class="btn btn-sm btn-outline-success w-100 text-start"
-                 href="{{ gf_url }}" target="_blank" rel="noopener">
-                アンケートに回答する
-              </a>
-            {% else %}
-              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
-                アンケート（準備中）
-              </button>
-            {% endif %}
-          </div>
+          {% if member_active %}
+            <div class="mb-2">
+              {% if gf_url %}
+                <a class="btn btn-sm btn-outline-success w-100 text-start"
+                   href="{{ gf_url }}" target="_blank" rel="noopener">
+                  アンケートに回答する
+                </a>
+              {% else %}
+                <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
+                  アンケート（準備中）
+                </button>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {% if member_limited %}
+            <div class="text-muted small mt-1">
+              現在の状態では、参加者向け機能（連絡メモ・参加者一覧・LINEオープンチャット・SNS貼付用・アルバム・アンケート）は利用できません。
+            </div>
+          {% endif %}
 
         </div>
       </div>
