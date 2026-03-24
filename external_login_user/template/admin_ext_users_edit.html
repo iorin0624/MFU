@@ -339,43 +339,49 @@
     <strong>このユーザーを別のイベントに参加させる</strong>
   </div>
   <div class="card-body">
-    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
-      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+    {% if can_assign_events %}
+      <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
 
-      <div class="col-md-6">
-        <label class="form-label">イベント</label>
+        <div class="col-md-6">
+          <label class="form-label">イベント</label>
 
-        {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
-        {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
+          {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
+          {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
 
-        <select name="event_id" class="form-select" required>
-          <option value="">選択してください</option>
+          <select name="event_id" class="form-select" required>
+            <option value="">選択してください</option>
 
-          {% for ev in ev_has|sort(attribute='starts_at') %}
-            <option value="{{ ev.id }}">
-              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
-            </option>
-          {% endfor %}
+            {% for ev in ev_has|sort(attribute='starts_at') %}
+              <option value="{{ ev.id }}">
+                #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
+              </option>
+            {% endfor %}
 
-          {% for ev in ev_none %}
-            <option value="{{ ev.id }}">
-              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
-            </option>
-          {% endfor %}
-        </select>
+            {% for ev in ev_none %}
+              <option value="{{ ev.id }}">
+                #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
+              </option>
+            {% endfor %}
+          </select>
 
-        {% if not assignable_events or assignable_events|length == 0 %}
-          <div class="form-text text-muted">未参加のイベントがありません。</div>
-        {% endif %}
+          {% if not assignable_events or assignable_events|length == 0 %}
+            <div class="form-text text-muted">未参加のイベントがありません。</div>
+          {% endif %}
+        </div>
+
+        <div class="col-auto">
+          <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
+            参加として追加
+          </button>
+        </div>
+      </form>
+      <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
+    {% else %}
+      <div class="alert alert-warning mb-0" role="alert">
+        このユーザーは削除済みのため、イベント参加追加はできません。
       </div>
-
-      <div class="col-auto">
-        <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
-          参加として追加
-        </button>
-      </div>
-    </form>
-    <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

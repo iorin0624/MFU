@@ -1,253 +1,37 @@
-diff --git a/external_login_user/__init__.py b/external_login_user/__init__.py
-index 8de2c785f7049dd1361ed9b01df79bef06bcf4ff..7d7d3db369a25814700991d92850caa54b7d76da 100644
---- a/external_login_user/__init__.py
-+++ b/external_login_user/__init__.py
-@@ -251,50 +251,80 @@ from .utils import (
-     _needs_privacy_policy_agreement,
-     _sanitize_ext_local_url,
-     _is_disallowed_ext_redirect_path,
- )
- 
- _ALLOW_UNVERIFIED_ENDPOINTS = {
-     # プロフィール編集、ログアウト、再送、確認リンク、未確認専用ページ、アバター配信
-     "external_login_user.profile",
-     "external_login_user.logout",
-     "external_login_user.resend_verify_email",
-     "external_login_user.unverified",
-     "external_login_user.verify_email_pin",
-     "external_login_user.email_verify",
-     "external_login_user.avatar_file",   # ★ 追加：アバター画像の配信は許可
- }
- 
- def _endpoint_allowed_when_unverified(ep: str | None) -> bool:
-     if not ep:
-         return False
-     if ep in _ALLOW_UNVERIFIED_ENDPOINTS:
-         return True
-     if ep == "static":
-         return True
-     return False
- 
-+
-+@bp.before_app_request
-+def _lock_deleted_external_user():
-+    try:
-+        uid = int(session.get("ext_user_id") or 0)
-+    except Exception:
-+        uid = 0
-+    if uid <= 0:
-+        return None
-+
-+    db = get_db(); cur = db.cursor(dictionary=True)
-+    try:
-+        try:
-+            cur.execute("SELECT id, COALESCE(is_deleted, 0) AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
-+        except Exception:
-+            cur.execute("SELECT id, 0 AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
-+        row = cur.fetchone() or {}
-+    finally:
-+        try:
-+            cur.close(); db.close()
-+        except Exception:
-+            pass
-+
-+    if not row or int(row.get("is_deleted") or 0) == 1:
-+        for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname", "ext_after_login_next", "ext_after_verify_next"):
-+            session.pop(k, None)
-+        if request.blueprint == "external_login_user":
-+            return redirect(url_for("external_login_user.index"))
-+    return None
-+
- def _is_email_unverified() -> bool:
-     """email 登録済み かつ email_verified_at が NULL なら True（g にキャッシュ）"""
-     if hasattr(g, "_ext_email_unverified"):
-         return g._ext_email_unverified
-     uid = session.get("ext_user_id")
-     if not uid:
-         g._ext_email_unverified = False
-         return False
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT email, email_verified_at FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
-         row = cur.fetchone()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
-     email = (row.get("email") or "").strip() if row else ""
-     g._ext_email_unverified = bool(email and row and not row.get("email_verified_at"))
-     return g._ext_email_unverified
- 
- @bp.before_app_request
- def _lock_unverified_globally():
-     try:
-         # 未ログインは対象外
-         if not session.get("ext_user_id"):
-             return None
 diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
-index 8c9575a994590c94f634be271550c7aedc6a9bae..49fd87119412d6a0ea4d1a2cfcdf98e56e83ac46 100644
+index 49fd87119412d6a0ea4d1a2cfcdf98e56e83ac46..9ac114b5397f59da7718e82f69d5da7b513cec76 100644
 --- a/external_login_user/admin_users.py
 +++ b/external_login_user/admin_users.py
-@@ -1,41 +1,42 @@
- # -*- coding: utf-8 -*-
- from __future__ import annotations
+@@ -656,101 +656,122 @@ def admin_ext_users_edit_page(user_id: int):
+               m.canceled_at,
+               m.canceled_by
+             FROM mfu_event_member AS m
+             JOIN mfu_event AS e ON e.id = m.event_id
+             WHERE m.user_id=%s
+             ORDER BY COALESCE(e.starts_at, '9999-12-31') DESC, e.id DESC
+             """,
+             (user_id,),
+         )
+         memberships = cur.fetchall() or []
  
- import re
- from datetime import datetime, timezone, timedelta
- from email.utils import parsedate_to_datetime
--from flask import request, render_template, jsonify, abort, url_for, redirect, session
-+from flask import request, render_template, jsonify, abort, url_for, redirect, session, current_app
- from . import bp
- from app.utils.db import get_db
- from .utils import _require_mfu_login_redirect, _admin_csrf_token
- from .utils import (
-     _get_current_privacy_policy_config,
-     _needs_privacy_policy_agreement,
-     _privacy_policy_status,
-     _privacy_policy_date_label,
- )
-+from .deletion_service import anonymize_external_user
- 
- # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
- try:
-     from .users import _issue_verify_pin, _send_verify_pin_mail  # type: ignore
- except Exception:
-     _issue_verify_pin = None  # type: ignore
-     _send_verify_pin_mail = None  # type: ignore
- 
- 
- # ============= 内部ヘルパ =============
- def _column_exists(table: str, column: str) -> bool:
-     """information_schema で列の有無を確認（email_verified_at 非存在でも動かす）"""
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute("SELECT DATABASE()")
-         dbname = (cur.fetchone() or [None])[0]
-         if not dbname:
-             return False
+         # 参加可能イベント（未参加のもの）
          cur.execute(
              """
-             SELECT 1
-               FROM information_schema.COLUMNS
-              WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND COLUMN_NAME=%s
-              LIMIT 1
-@@ -81,91 +82,107 @@ def _format_datetime_jst(value) -> str | None:
-         return str(value)
- 
-     if dt.tzinfo is None:
-         dt = dt.replace(tzinfo=timezone.utc)
- 
-     jst = timezone(timedelta(hours=9))
-     return dt.astimezone(jst).strftime("%Y年%m月%d日 %H:%M:%S")
- 
- 
- def _format_email_verified_at_rows(rows: list[dict]) -> None:
-     for r in rows:
-         r["email_verified_at"] = _format_datetime_jst(r.get("email_verified_at"))
- 
- def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, str]:
-     """一覧API向けのソートキーを正規化する。"""
-     key = (sort_key or "id").strip().lower()
-     if key not in ("id", "nickname"):
-         key = "id"
- 
-     order = (sort_order or "asc").strip().lower()
-     if order not in ("asc", "desc"):
-         order = "asc"
-     return key, order
- 
- 
-+def _normalize_deleted_filter(raw: str | None) -> str:
-+    mode = (raw or "active").strip().lower()
-+    if mode not in {"active", "deleted", "all"}:
-+        return "active"
-+    return mode
-+
-+
- _PUSH_SUBSCRIPTION_COUNT_SQL = """
-     (
-       SELECT COUNT(*)
-         FROM chat_push_subscriptions cps
-        WHERE cps.actor_type = 'line'
-          AND cps.actor_id = CAST(external_login_user.id AS CHAR)
-     ) AS push_subscription_count
- """
- 
- 
- # ============= 画面（一覧） =============
- @bp.route("/admin/ext-users")
- def admin_ext_users_index():
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     q = (request.args.get("q") or "").strip()
-     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
-+    deleted_filter = _normalize_deleted_filter(request.args.get("deleted"))
- 
-     params: list = []
-     where = []
-+    has_deleted = _column_exists("external_login_user", "is_deleted")
-+    if has_deleted:
-+        if deleted_filter == "active":
-+            where.append("COALESCE(is_deleted, 0)=0")
-+        elif deleted_filter == "deleted":
-+            where.append("COALESCE(is_deleted, 0)=1")
-     if q:
-         like = f"%{q}%"
-         where.append(
-             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
+             SELECT e.id, e.title, e.starts_at
+               FROM mfu_event AS e
+              WHERE e.id NOT IN (
+                     SELECT event_id FROM mfu_event_member WHERE user_id=%s
+                    )
+              ORDER BY COALESCE(e.starts_at, '9999-12-31') ASC, e.id ASC
+              LIMIT 200
+             """,
+             (user_id,),
          )
-         params += [like, like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
+         assignable = cur.fetchall() or []
++        can_assign_events = int(user.get("is_deleted") or 0) != 1
++        if not can_assign_events:
++            assignable = []
  
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-+        deleted_cols = "COALESCE(is_deleted, 0) AS is_deleted, deleted_at" if has_deleted else "0 AS is_deleted, NULL AS deleted_at"
-         cols = f"""
-             id,
-             nickname,
-             x_id,
-             instagram_id,
-             email,
-             social_id,
-+            {deleted_cols},
-             avatar_file,
-             avatar_url,
-             created_at,
-             updated_at,
-             admin_note,
-             privacy_policy_agreed_at,
-             privacy_policy_agreed_revised_date,
-             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-             COALESCE(notify_album_process, 1) AS notify_album_process,
-             {_PUSH_SUBSCRIPTION_COUNT_SQL},
-             (
-               SELECT COUNT(*)
-                 FROM external_login_user_card_data c
-                WHERE c.user_id = external_login_user.id
-                  AND c.deleted_at IS NULL
-             ) AS card_count
-         """
-         if has_verified:
-             cols += ", email_verified_at"
- 
-         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
-         cur.execute(f"""
-             SELECT {cols}
-               FROM external_login_user
-@@ -180,85 +197,95 @@ def admin_ext_users_index():
-         current_privacy_config = _get_current_privacy_policy_config()
-         for r in initial_items:
-             r["privacy_policy_status"] = _privacy_policy_status(r, current_privacy_config)
-             r["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(r.get("privacy_policy_agreed_revised_date"))
-             r["privacy_policy_agreed_at_label"] = _format_datetime_jst(r.get("privacy_policy_agreed_at"))
- 
-         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
-         total = int((cur.fetchone() or {}).get("c", 0))
      finally:
          try:
              cur.close()
@@ -255,1452 +39,194 @@ index 8c9575a994590c94f634be271550c7aedc6a9bae..49fd87119412d6a0ea4d1a2cfcdf98e5
          except Exception:
              pass
  
+     current_privacy_config = _get_current_privacy_policy_config()
+     user["privacy_policy_status"] = _privacy_policy_status(user, current_privacy_config)
+     user["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(user.get("privacy_policy_agreed_revised_date"))
+     user["privacy_policy_agreed_at_label"] = _format_datetime_jst(user.get("privacy_policy_agreed_at"))
+     user["privacy_policy_current_revised_date_label"] = _privacy_policy_date_label(current_privacy_config.get("privacy_policy_revised_date"))
+     user["privacy_policy_needs_reagreement"] = _needs_privacy_policy_agreement(user, current_privacy_config)
+ 
      return render_template(
-         "admin_ext_users.html",
+         "admin_ext_users_edit.html",
+         u=user,
+         memberships=memberships,
+         assignable_events=assignable,
++        can_assign_events=can_assign_events,
          admin_csrf=_admin_csrf_token(),
-         initial_items=initial_items,
-         initial_total=total,
-         initial_per_page=total,
-         initial_page=1,
-         initial_q=q,
-         initial_sort=sort_key,
-         initial_order=sort_order,
-+        initial_deleted=deleted_filter,
          current_privacy_config=current_privacy_config,
      )
  
  
- # ============= API（一括） =============
- @bp.get("/admin/ext-users/data")
- def admin_ext_users_data():
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     q = (request.args.get("q") or "").strip()
-     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
-+    deleted_filter = _normalize_deleted_filter(request.args.get("deleted"))
-     try:
-         page = max(int(request.args.get("page") or 1), 1)
-     except Exception:
-         page = 1
-     try:
-         per_page = min(max(int(request.args.get("per_page") or 1000), 1), 10000)
-     except Exception:
-         per_page = 1000
- 
-     params: list = []
-     where = []
-+    has_deleted = _column_exists("external_login_user", "is_deleted")
-+    if has_deleted:
-+        if deleted_filter == "active":
-+            where.append("COALESCE(is_deleted, 0)=0")
-+        elif deleted_filter == "deleted":
-+            where.append("COALESCE(is_deleted, 0)=1")
-     if q:
-         like = f"%{q}%"
-         where.append(
-             "(CAST(id AS CHAR) LIKE %s OR nickname LIKE %s OR x_id LIKE %s OR instagram_id LIKE %s OR email LIKE %s OR social_id LIKE %s)"
-         )
-         params += [like, like, like, like, like, like]
-     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
-+    deleted_cols = "COALESCE(is_deleted, 0) AS is_deleted, deleted_at" if has_deleted else "0 AS is_deleted, NULL AS deleted_at"
-     cols = f"""
-         id, nickname, x_id, instagram_id, email, social_id,
-+        {deleted_cols},
-         avatar_file, avatar_url, created_at, updated_at,
-         admin_note,
-         privacy_policy_agreed_at,
-         privacy_policy_agreed_revised_date,
-         COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-         COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-         COALESCE(notify_album_process, 1) AS notify_album_process,
-         {_PUSH_SUBSCRIPTION_COUNT_SQL},
-         (
-           SELECT COUNT(*)
-             FROM external_login_user_card_data c
-            WHERE c.user_id = external_login_user.id
-              AND c.deleted_at IS NULL
-         ) AS card_count
+ # ============= 参加追加（POST） =============
+ @bp.post("/admin/ext-users/<int:user_id>/assign")
+ def admin_ext_users_assign(user_id: int):
      """
-     if has_verified:
-         cols += ", email_verified_at"
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(f"SELECT COUNT(*) AS c FROM external_login_user {sql_where}", params)
-         total = int(cur.fetchone()["c"])
-         offset = (page - 1) * per_page
- 
-         order_by = f"id {sort_order}" if sort_key == "id" else f"nickname {sort_order}, id {sort_order}"
-@@ -269,71 +296,79 @@ def admin_ext_users_data():
-              ORDER BY {order_by}
-              LIMIT %s OFFSET %s
-         """, params + [per_page, offset])
-         rows = cur.fetchall() or []
-         if not has_verified:
-             for r in rows:
-                 r["email_verified_at"] = None
-         _format_email_verified_at_rows(rows)
-         current_privacy_config = _get_current_privacy_policy_config()
-         for r in rows:
-             r["privacy_policy_status"] = _privacy_policy_status(r, current_privacy_config)
-             r["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(r.get("privacy_policy_agreed_revised_date"))
-             r["privacy_policy_agreed_at_label"] = _format_datetime_jst(r.get("privacy_policy_agreed_at"))
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     return jsonify({
-         "ok": True,
-         "items": rows,
-         "total": total,
-         "page": page,
-         "per_page": per_page,
-         "sort": sort_key,
-         "order": sort_order,
-+        "deleted": deleted_filter,
-         "q": q,
-     })
- 
- # ============= API（単票：旧モーダル用） =============
- @bp.get("/admin/ext-users/<int:user_id>/detail")
- def admin_ext_users_detail(user_id: int):
-     """（旧モーダル用）単票取得。"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
- 
-     db = get_db(); cur = db.cursor(dictionary=True)
-     try:
-+        has_deleted = _column_exists("external_login_user", "is_deleted")
-+        deleted_cols = (
-+            "COALESCE(is_deleted, 0) AS is_deleted, deleted_at, deleted_by, deletion_reason,"
-+            if has_deleted else
-+            "0 AS is_deleted, NULL AS deleted_at, NULL AS deleted_by, NULL AS deletion_reason,"
-+        )
-         cur.execute(f"""
-             SELECT
-               id,
-               nickname,
-               x_id,
-               instagram_id,
-               email,
-               social_id,
-+              {deleted_cols}
-               avatar_file,
-               avatar_url,
-               created_at,
-               updated_at,
-               admin_note,
-               COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-               COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-               COALESCE(notify_album_process, 1) AS notify_album_process,
-               {_PUSH_SUBSCRIPTION_COUNT_SQL}
-             FROM external_login_user
-             WHERE id=%s
-             LIMIT 1
-         """, (user_id,))
-         row = cur.fetchone()
-         if not row:
-             abort(404)
-     finally:
-         try:
-             cur.close()
-             db.close()
-         except Exception:
-             pass
- 
-     return jsonify({"ok": True, "item": row})
- 
-@@ -361,129 +396,179 @@ def admin_ext_users_update(user_id: int):
-     ig_raw     = (data.get("instagram_id") or "").strip().lstrip("@")
-     email      = (data.get("email") or "").strip() or None
-     admin_note = (data.get("admin_note") or "").strip() or None  # ★追加: 内部メモ
-     chat_admin_alias = "1" if str(data.get("chat_admin_alias") or "").strip().lower() in {"1", "true", "on", "yes"} else "0"
- 
-     errors = {}
-     if not nickname:
-         errors["nickname"] = "ニックネームは必須です。"
-     if x_id_raw and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", x_id_raw):
-         errors["x_id"] = "X IDは @なし、半角英数と_で1〜15文字。"
-     if ig_raw:
-         ok = re.fullmatch(r"[A-Za-z0-9._]{1,30}", ig_raw) and not ig_raw.startswith(".") and not ig_raw.endswith(".") and ".." not in ig_raw
-         if not ok:
-             errors["instagram_id"] = "Instagram IDは英数・.・_で1〜30文字。先頭/末尾の . と .. は不可。"
- 
-     if errors:
-         if request.is_json:
-             return jsonify({"ok": False, "errors": errors}), 400
-         # フォームの場合は編集ページに戻してエラー表示（簡易）
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="validate"))
- 
-     has_verified = _column_exists("external_login_user", "email_verified_at")
- 
-     db = get_db(); cur = db.cursor()
-     try:
--        cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-+        cur.execute("SELECT email, COALESCE(is_deleted, 0) AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         row = cur.fetchone()
-         if not row:
-             if request.is_json:
-                 return jsonify({"ok": False, "error": "not_found"}), 404
-             return redirect(url_for("external_login_user.admin_ext_users_index"))
- 
-+        if int((row[1] if isinstance(row, tuple) else row.get("is_deleted", 0)) or 0) == 1:
-+            if request.is_json:
-+                return jsonify({"ok": False, "error": "deleted_user"}), 409
-+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
-         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
-         email_changed = (email or None) != (email_before or None)
- 
-         if email_changed and has_verified:
-             cur.execute("""
-                 UPDATE external_login_user
-                    SET nickname=%s,
-                        x_id=%s,
-                        instagram_id=%s,
-                        email=%s,
-                        admin_note=%s,
-                        chat_admin_alias=%s,
-                        email_verified_at=NULL
-                  WHERE id=%s
-                  LIMIT 1
-             """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
-         else:
-             cur.execute("""
-                 UPDATE external_login_user
-                    SET nickname=%s,
-                        x_id=%s,
-                        instagram_id=%s,
-                        email=%s,
-                        admin_note=%s,
-                        chat_admin_alias=%s
-                  WHERE id=%s
-                  LIMIT 1
-             """, (nickname, x_id_raw or None, ig_raw or None, email, admin_note, chat_admin_alias, user_id))
-         db.commit()
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
-     # 成功時の応答
-     if request.is_json:
-         return jsonify({"ok": True})
-     # フォームは一覧へ
-     return redirect(url_for("external_login_user.admin_ext_users_index", saved=1))
- 
- 
-+@bp.post("/admin/ext-users/<int:user_id>/anonymize-delete")
-+def admin_ext_users_anonymize_delete(user_id: int):
-+    guard = _require_mfu_login_redirect()
-+    if guard:
-+        return guard
-+
-+    token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
-+    if not token_req or token_req != _admin_csrf_token():
-+        if request.is_json:
-+            return jsonify({"ok": False, "error": "invalid_csrf"}), 400
-+        return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
-+
-+    reason = (request.form.get("reason") or (request.get_json(silent=True) or {}).get("reason") or "").strip() or None
-+    executed_by = (session.get("user") or "admin")
-+    try:
-+        result = anonymize_external_user(
-+            user_id=int(user_id),
-+            executed_by=str(executed_by)[:80],
-+            reason=(reason[:255] if reason else None),
-+        )
-+    except ValueError:
-+        if request.is_json:
-+            return jsonify({"ok": False, "error": "not_found"}), 404
-+        return redirect(url_for("external_login_user.admin_ext_users_index", error="not_found"))
-+    except Exception:
-+        current_app.logger.exception("admin anonymize delete failed user_id=%s", user_id)
-+        if request.is_json:
-+            return jsonify({"ok": False, "error": "internal_error"}), 500
-+        return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="anonymize"))
-+
-+    if request.is_json:
-+        return jsonify(result)
-+    return redirect(
-+        url_for(
-+            "external_login_user.admin_ext_users_edit_page",
-+            user_id=user_id,
-+            anonymized="1",
-+            already_deleted=("1" if result.get("already_deleted") else "0"),
-+        )
-+    )
-+
-+
- # ============= 再送（送信） =============
- @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
- def admin_ext_users_resend_verify(user_id: int):
-     """
-     確認コードの再送
-     - Form投稿: 成功時は編集ページへリダイレクト（?sent=1）
-     - JSON投稿(AJAX): 互換のため JSON を返す
+     指定ユーザーをイベントに参加追加する
+     - Form POST（csrf必須）
+     - 既に参加済みなら duplicated=1 を付けて編集ページに戻す
      """
      guard = _require_mfu_login_redirect()
      if guard:
          return guard
  
-     token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+     token_req = (request.form.get("csrf_token") or "").strip()
      if not token_req or token_req != _admin_csrf_token():
-         if request.is_json:
-             return jsonify({"ok": False, "error": "invalid_csrf"}), 400
          return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
  
-     if not _issue_verify_pin or not _send_verify_pin_mail:
-         if request.is_json:
-             return jsonify({"ok": False, "error": "pin_issuer_unavailable"}), 500
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="pin"))
- 
-     db = get_db(); cur = db.cursor()
      try:
--        cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-+        cur.execute("SELECT email, COALESCE(is_deleted, 0) AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         row = cur.fetchone()
-         if not row:
-             if request.is_json:
-                 return jsonify({"ok": False, "error": "not_found"}), 404
-             return redirect(url_for("external_login_user.admin_ext_users_index"))
- 
-+        if int((row[1] if isinstance(row, tuple) else row.get("is_deleted", 0)) or 0) == 1:
-+            if request.is_json:
-+                return jsonify({"ok": False, "error": "deleted_user"}), 409
-+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
-         email = row[0] if isinstance(row, tuple) else row.get("email")
-         if not email:
-             if request.is_json:
-                 return jsonify({"ok": False, "error": "no_email"}), 400
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
- 
-         ok_pin, reason, pin_raw = _issue_verify_pin(user_id, email)  # type: ignore
-         if not ok_pin or not pin_raw:
-             if request.is_json:
-                 return jsonify({"ok": False, "error": reason}), 429 if reason in ("cooldown", "rate_limited") else 400
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error=reason))
- 
-         try:
-             _send_verify_pin_mail(email, pin_raw)  # type: ignore
-         except Exception:
-             if request.is_json:
-                 return jsonify({"ok": False, "error": "smtp_error"}), 502
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="smtp"))
- 
-         if request.is_json:
-             return jsonify({"ok": True})
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, sent="1"))
-     finally:
-         try:
-             cur.close(); db.close()
-@@ -508,52 +593,59 @@ def admin_ext_users_resend_confirm(user_id: int):
-             abort(404)
-         if not u.get("email"):
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
-     finally:
-         try:
-             cur.close()
-             db.close()
-         except Exception:
-             pass
- 
-     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
- 
- 
- # ============= 別ページ編集（GET） =============
- @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
- def admin_ext_users_edit_page(user_id: int):
-     """外部ログインユーザー 編集ページ（別ページ実装）"""
-     guard = _require_mfu_login_redirect()
-     if guard:
-         return guard
+         event_id = int(request.form.get("event_id") or "0")
+     except Exception:
+         event_id = 0
+     if event_id <= 0:
+         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="bad_event"))
  
      db = get_db()
-     cur = db.cursor(dictionary=True)
+     cur = db.cursor()
      try:
-         has_verified = _column_exists("external_login_user", "email_verified_at")
-+        has_deleted = _column_exists("external_login_user", "is_deleted")
-+        deleted_cols = (
-+            "COALESCE(is_deleted, 0) AS is_deleted, deleted_at, deleted_by, deletion_reason,"
-+            if has_deleted else
-+            "0 AS is_deleted, NULL AS deleted_at, NULL AS deleted_by, NULL AS deletion_reason,"
++        cur.execute(
++            """
++            SELECT id, COALESCE(is_deleted,0) AS is_deleted
++              FROM external_login_user
++             WHERE id=%s
++             LIMIT 1
++            """,
++            (user_id,),
 +        )
-         cols = f"""
-             id, nickname, x_id, instagram_id, email, social_id,
-+            {deleted_cols}
-             avatar_file, avatar_url, created_at, updated_at,
-             admin_note,
-             privacy_policy_agreed_at,
-             privacy_policy_agreed_revised_date,
-             COALESCE(chat_admin_alias, 0) AS chat_admin_alias,
-             COALESCE(notify_album_upload, 1)  AS notify_album_upload,
-             COALESCE(notify_album_process, 1) AS notify_album_process,
-             {_PUSH_SUBSCRIPTION_COUNT_SQL}
-         """
-         if has_verified:
-             cols += ", email_verified_at"
-         cur.execute(f"SELECT {cols} FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
-         user = cur.fetchone()
-         if not user:
-             abort(404)
-         if not has_verified:
-             user["email_verified_at"] = None
++        user_row = cur.fetchone()
++        if not user_row:
++            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="not_found"))
++        is_deleted = user_row[1] if isinstance(user_row, tuple) else user_row.get("is_deleted", 0)
++        if int(is_deleted or 0) == 1:
++            current_app.logger.warning("deleted external user assign blocked: user_id=%s event_id=%s", user_id, event_id)
++            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
++
+         # すでに参加済みか軽く確認（UNIQUE制約もあるが事前チェックでメッセージを素直に）
+         cur.execute("SELECT id, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
+         existing = cur.fetchone()
+         if existing:
+             existing_id = existing[0] if isinstance(existing, tuple) else existing.get("id")
+             existing_canceled = existing[1] if isinstance(existing, tuple) else existing.get("is_canceled", 0)
+             if int(existing_canceled or 0) == 1:
+                 cur.execute("""
+                     UPDATE mfu_event_member
+                        SET is_canceled=0,
+                            canceled_at=NULL,
+                            canceled_by=NULL
+                      WHERE id=%s
+                      LIMIT 1
+                 """, (existing_id,))
+                 db.commit()
+                 return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, revived=1))
+             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, duplicated=1))
  
-         # 参加中イベント一覧
+         # 追加：初期は pending / unpaid で登録
          cur.execute(
              """
-             SELECT
-               m.id AS member_id,
-               e.id AS event_id,
-               e.title,
-diff --git a/external_login_user/auto_payment.py b/external_login_user/auto_payment.py
-index d13964d75fe434b3a8d56f88bbce4498ebc04940..a0a6e878f87ae0298a43d230969e9447791bc15b 100644
---- a/external_login_user/auto_payment.py
-+++ b/external_login_user/auto_payment.py
-@@ -263,50 +263,51 @@ def card():
-     social_id = session.get("ext_user_social_id")
-     current_app.logger.debug(
-         "[auto_payment.card] session.ext_user_social_id=%r", social_id
-     )
-     if not social_id:
-         return redirect(url_for(
-             "external_login_user.line_login",
-             next=session.get("ext_after_login_next") or request.url
-         ))
- 
-     # CSRF トークン
-     if "ext_csrf" not in session:
-         session["ext_csrf"] = secrets.token_hex(16)
-         current_app.logger.debug("[auto_payment.card] generated new ext_csrf")
-     csrf_token = session["ext_csrf"]
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
- 
-     # ログインユーザー取得
-     cur.execute(
-         """
-         SELECT id, nickname, email
-           FROM external_login_user
-          WHERE social_id=%s
-+           AND COALESCE(is_deleted, 0)=0
-          LIMIT 1
-         """,
-         (social_id,),
-     )
-     me = cur.fetchone()
-     current_app.logger.debug("[auto_payment.card] me=%r", me)
-     if not me:
-         cur.close()
-         db.close()
-         return redirect(url_for(
-             "external_login_user.line_login",
-             next=session.get("ext_after_login_next") or request.url
-         ))
- 
-     # 既存カードサマリ
-     has_card, card_summary = load_default_card_summary(cur, me["id"])
- 
-     cur.close()
-     db.close()
- 
-     # Square の AppId / LocationId は external_login_user/.env から読み込んだ値を渡す
-     square_app_id, square_location_id, _ = _load_square_creds()
-     current_app.logger.debug(
-         "[auto_payment.card] square_app_id=%r, square_location_id=%r",
-         square_app_id,
-@@ -386,50 +387,51 @@ def card_token():
-     if not req_csrf or req_csrf != session.get("ext_csrf"):
-         current_app.logger.error(
-             "[auto_payment.card_token] CSRF mismatch: req=%r, sess=%r",
-             req_csrf,
-             session.get("ext_csrf"),
-         )
-         return jsonify({"ok": False, "message": "CSRF 検証エラーです。再読み込みしてください。"}), 400
- 
-     social_id = session.get("ext_user_social_id")
-     current_app.logger.debug(
-         "[auto_payment.card_token] session.ext_user_social_id=%r",
-         social_id,
-     )
-     if not social_id:
-         return jsonify({"ok": False, "message": "ログインが切れています。再ログインしてください。"}), 401
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
- 
-     # ログインユーザー取得
-     cur.execute(
-         """
-         SELECT id, nickname, email
-           FROM external_login_user
-          WHERE social_id=%s
-+           AND COALESCE(is_deleted, 0)=0
-          LIMIT 1
-         """,
-         (social_id,),
-     )
-     me = cur.fetchone()
-     current_app.logger.debug("[auto_payment.card_token] me=%r", me)
-     if not me:
-         cur.close()
-         db.close()
-         return jsonify({"ok": False, "message": "ユーザー情報が見つかりません。"}), 404
- 
-     user_id = me["id"]
- 
-     # 既存の Square カスタマーID があれば再利用
-     cur.execute(
-         """
-         SELECT square_customer_id
-           FROM external_login_user_card_data
-          WHERE user_id=%s
-            AND deleted_at IS NULL
-            AND square_customer_id IS NOT NULL
-          ORDER BY id ASC
-          LIMIT 1
-         """,
-         (user_id,),
-diff --git a/external_login_user/deletion_service.py b/external_login_user/deletion_service.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..5fe418ca2e2a8d9371cf44c406f0923061d854c2
---- /dev/null
-+++ b/external_login_user/deletion_service.py
-@@ -0,0 +1,236 @@
-+# -*- coding: utf-8 -*-
-+from __future__ import annotations
-+
-+import time
-+from pathlib import Path
-+from typing import Any
-+
-+from flask import current_app
-+
-+from app.utils.db import get_db
-+
-+_AVATAR_ROOT = Path("/mnt/mfu/avatars")
-+
-+
-+def _table_columns(cur, table: str) -> set[str]:
-+    cur.execute(
-+        """
-+        SELECT COLUMN_NAME
-+          FROM information_schema.COLUMNS
-+         WHERE TABLE_SCHEMA=DATABASE()
-+           AND TABLE_NAME=%s
-+        """,
-+        (table,),
-+    )
-+    rows = cur.fetchall() or []
-+    cols: set[str] = set()
-+    for row in rows:
-+        if isinstance(row, tuple):
-+            cols.add(str(row[0]))
-+        else:
-+            cols.add(str(row.get("COLUMN_NAME")))
-+    return cols
-+
-+
-+def anonymize_external_user(*, user_id: int, executed_by: str, reason: str | None = None) -> dict[str, Any]:
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    now_token = int(time.time())
-+    avatar_file_for_delete = None
-+    changed = {
-+        "cards_soft_deleted": 0,
-+        "push_deleted": 0,
-+        "resume_tokens_deleted": 0,
-+        "email_verifications_deleted": 0,
-+        "notifications_deleted": 0,
-+        "album_process_deleted": 0,
-+        "payment_requests_canceled": 0,
-+        "future_memberships_canceled": 0,
-+        "past_memberships_scrubbed": 0,
-+    }
-+    try:
-+        cur.execute("START TRANSACTION")
-+
-+        cur.execute("SELECT * FROM external_login_user WHERE id=%s FOR UPDATE", (int(user_id),))
-+        user = cur.fetchone()
-+        if not user:
-+            raise ValueError("external user not found")
-+
-+        user_cols = _table_columns(cur, "external_login_user")
-+        if int(user.get("is_deleted") or 0) == 1:
-+            db.commit()
-+            return {
-+                "ok": True,
-+                "already_deleted": True,
-+                "user_id": int(user_id),
-+                "anonymized_nickname": f"退会済みユーザー#{int(user_id)}",
-+                "changed": changed,
-+            }
-+
-+        anonymized_nickname = f"退会済みユーザー#{int(user_id)}"
-+        deleted_social_id = f"deleted:{int(user_id)}:{now_token}"
-+        avatar_file_for_delete = (user.get("avatar_file") or "").strip() or None
-+        deletion_note = f"[anonymized {time.strftime('%Y-%m-%d %H:%M:%S')} by {executed_by}]"
-+
-+        set_sql = [
-+            "nickname=%s",
-+            "social_id=%s",
-+            "x_id=NULL",
-+            "instagram_id=NULL",
-+            "email=NULL",
-+            "avatar_file=NULL",
-+            "avatar_url=NULL",
-+            "chat_admin_alias=0",
-+            "notification_unread_reminder_last_sent_at=NULL",
-+            "privacy_policy_agreed_at=NULL",
-+            "privacy_policy_agreed_revised_date=NULL",
-+            "is_deleted=1",
-+            "deleted_at=NOW()",
-+            "deleted_by=%s",
-+            "deletion_reason=%s",
-+            "anonymized_at=NOW()",
-+        ]
-+        vals: list[Any] = [anonymized_nickname, deleted_social_id, (executed_by or "admin")[:80], (reason or None)]
-+        if "admin_note" in user_cols:
-+            set_sql.append("admin_note=%s")
-+            vals.append(deletion_note)
-+        if "email_verified_at" in user_cols:
-+            set_sql.append("email_verified_at=NULL")
-+        if "notify_album_upload" in user_cols:
-+            set_sql.append("notify_album_upload=0")
-+        if "notify_album_process" in user_cols:
-+            set_sql.append("notify_album_process=0")
-+        if "payment_mode" in user_cols:
-+            set_sql.append("payment_mode='manual'")
-+        if "updated_at" in user_cols:
-+            set_sql.append("updated_at=NOW()")
-+        vals.append(int(user_id))
-+        cur.execute(
-+            f"UPDATE external_login_user SET {', '.join(set_sql)} WHERE id=%s LIMIT 1",
-+            tuple(vals),
-+        )
-+
-+        card_cols = _table_columns(cur, "external_login_user_card_data")
-+        card_set = ["deleted_at=NOW()"]
-+        if "is_default" in card_cols:
-+            card_set.append("is_default=0")
-+        cur.execute(
-+            f"""
-+            UPDATE external_login_user_card_data
-+               SET {", ".join(card_set)}
-+             WHERE user_id=%s
-+               AND deleted_at IS NULL
-+            """,
-+            (int(user_id),),
-+        )
-+        changed["cards_soft_deleted"] = int(cur.rowcount or 0)
-+
-+        cur.execute(
-+            """
-+            DELETE FROM chat_push_subscriptions
-+             WHERE actor_type='line'
-+               AND actor_id=CAST(%s AS CHAR)
-+            """,
-+            (int(user_id),),
-+        )
-+        changed["push_deleted"] = int(cur.rowcount or 0)
-+
-+        cur.execute("DELETE FROM external_login_resume_token WHERE ext_user_id=%s", (int(user_id),))
-+        changed["resume_tokens_deleted"] = int(cur.rowcount or 0)
-+
-+        cur.execute("DELETE FROM mfu_email_verification WHERE user_id=%s", (int(user_id),))
-+        changed["email_verifications_deleted"] = int(cur.rowcount or 0)
-+
-+        cur.execute("DELETE FROM mfu_notifications WHERE user_kind='external' AND user_id=%s", (int(user_id),))
-+        changed["notifications_deleted"] = int(cur.rowcount or 0)
-+
-+        cur.execute("DELETE FROM album_process WHERE ext_user_id=%s", (int(user_id),))
-+        changed["album_process_deleted"] = int(cur.rowcount or 0)
-+
-+        cur.execute(
-+            """
-+            UPDATE mfu_payment_request
-+               SET nickname=%s,
-+                   x_id=NULL,
-+                   instagram_id=NULL,
-+                   buyer_email=NULL,
-+                   status=CASE WHEN status='pending' THEN 'canceled' ELSE status END
-+             WHERE user_id=%s
-+            """,
-+            (anonymized_nickname, int(user_id)),
-+        )
-+        changed["payment_requests_canceled"] = int(cur.rowcount or 0)
-+
-+        member_cols = _table_columns(cur, "mfu_event_member")
-+        scrub_parts = []
-+        if "contact_memo" in member_cols:
-+            scrub_parts.append("contact_memo=NULL")
-+        if "admin_note" in member_cols:
-+            scrub_parts.append("admin_note=NULL")
-+        if "receipt_note" in member_cols:
-+            scrub_parts.append("receipt_note=NULL")
-+        if "costume_label" in member_cols:
-+            scrub_parts.append("costume_label=NULL")
-+        if scrub_parts:
-+            cur.execute(
-+                f"UPDATE mfu_event_member SET {', '.join(scrub_parts)} WHERE user_id=%s",
-+                (int(user_id),),
-+            )
-+            changed["past_memberships_scrubbed"] = int(cur.rowcount or 0)
-+
-+        cancel_parts = []
-+        if "is_canceled" in member_cols:
-+            cancel_parts.append("m.is_canceled=1")
-+        if "canceled_at" in member_cols:
-+            cancel_parts.append("m.canceled_at=NOW()")
-+        if "canceled_by" in member_cols:
-+            cancel_parts.append("m.canceled_by='user_deleted'")
-+        if cancel_parts:
-+            cur.execute(
-+                f"""
-+                UPDATE mfu_event_member AS m
-+                JOIN mfu_event AS e ON e.id=m.event_id
-+                   SET {', '.join(cancel_parts)}
-+                 WHERE m.user_id=%s
-+                   AND (e.starts_at IS NULL OR e.starts_at >= NOW())
-+                """,
-+                (int(user_id),),
-+            )
-+            changed["future_memberships_canceled"] = int(cur.rowcount or 0)
-+
-+        db.commit()
-+    except Exception:
-+        try:
-+            db.rollback()
-+        except Exception:
-+            pass
-+        current_app.logger.exception("external user anonymize failed user_id=%s", user_id)
-+        raise
-+    finally:
-+        try:
-+            cur.close()
-+            db.close()
-+        except Exception:
-+            pass
-+
-+    if avatar_file_for_delete:
-+        try:
-+            path = (_AVATAR_ROOT / avatar_file_for_delete).resolve()
-+            if path.exists() and str(path).startswith(str(_AVATAR_ROOT.resolve())):
-+                path.unlink(missing_ok=True)
-+        except Exception:
-+            current_app.logger.warning("avatar unlink failed user_id=%s file=%s", user_id, avatar_file_for_delete)
-+
-+    current_app.logger.info(
-+        "external user anonymized user_id=%s executed_by=%s changed=%s",
-+        user_id,
-+        executed_by,
-+        changed,
-+    )
-+    return {
-+        "ok": True,
-+        "already_deleted": False,
-+        "user_id": int(user_id),
-+        "anonymized_nickname": f"退会済みユーザー#{int(user_id)}",
-+        "changed": changed,
-+    }
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index d732bfabb2ba5be93a504c965fc044d4513e4300..1e61e24753650c86cb02895d7f4175dcba0938bf 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -26,59 +26,71 @@ _JST = timezone(timedelta(hours=9))
- mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
- _EXTERNAL_UNREAD_REMINDER_COLUMN = "notification_unread_reminder_last_sent_at"
- 
- 
- def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
-     if str(user_kind) == "mfu":
-         return (recipient_key or "").strip()
-     return str(int(user_id or 0))
- 
- 
- def _notification_storage_user_id(user_kind: str, user_id: int, recipient_key: str | None = None) -> int:
-     if str(user_kind) != "mfu":
-         return int(user_id or 0)
-     recipient = (recipient_key or "").strip()
-     if not recipient:
-         return 0
-     digest = hashlib.sha1(recipient.encode("utf-8")).digest()
-     return int.from_bytes(digest[:8], "big", signed=False)
- 
- def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | None:
-     if int(ext_user_id or 0) <= 0:
-         return None
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
--        cur.execute(
--            """
--            SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
--              FROM external_login_user
--             WHERE id=%s
--             LIMIT 1
--            """,
--            (int(ext_user_id),),
--        )
-+        try:
-+            cur.execute(
-+                """
-+                SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-+                  FROM external_login_user
-+                 WHERE id=%s
-+                   AND COALESCE(is_deleted, 0)=0
-+                 LIMIT 1
-+                """,
-+                (int(ext_user_id),),
-+            )
-+        except Exception:
-+            cur.execute(
-+                """
-+                SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-+                  FROM external_login_user
-+                 WHERE id=%s
-+                 LIMIT 1
-+                """,
-+                (int(ext_user_id),),
-+            )
-         row = cur.fetchone()
-         if not row:
-             return None
-         if int(row.get("chat_admin_alias") or 0) != 1:
-             return None
-         return row
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _resolve_mfu_notification_recipient_for_session() -> tuple[str | None, str | None]:
-     username = str(session.get("user") or "").strip()
-     if username:
-         role = "admin" if username == "admin" else "acl"
-         return username, role
- 
-     ext_user_id = int(session.get("ext_user_id") or 0)
-     if ext_user_id <= 0:
-         return None, None
-     alias_row = _get_chat_admin_alias_ext_user_row(ext_user_id)
-     if not alias_row:
-         return None, None
-     current_app.logger.info(
-         "mfu notifications admin alias ext_user_id=%s social_id=%s",
-diff --git a/external_login_user/schema.py b/external_login_user/schema.py
-index 9ba4d95cebe0772852c18793a64dc1cd64407d0d..24cf5e597b0cddc9f260401d011d8dab634667fc 100644
---- a/external_login_user/schema.py
-+++ b/external_login_user/schema.py
-@@ -242,50 +242,75 @@ def _on_bp_registered(state) -> None:
- 
-             # 既存のゆるいALTER群
-             _ensure_col("mfu_event_member", "paid_amount_yen", "paid_amount_yen INT UNSIGNED NULL AFTER paid_at")
-             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
-             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
-             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
-             _ensure_col("mfu_event_member", "is_canceled", "is_canceled TINYINT(1) NOT NULL DEFAULT 0 AFTER receipt_note")
-             _ensure_col("mfu_event_member", "canceled_at", "canceled_at DATETIME NULL AFTER is_canceled")
-             _ensure_col("mfu_event_member", "canceled_by", "canceled_by VARCHAR(80) NULL AFTER canceled_at")
-             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
-             _ensure_col(
-                 "external_login_user",
-                 "notification_unread_reminder_last_sent_at",
-                 "notification_unread_reminder_last_sent_at DATETIME NULL AFTER chat_admin_alias",
-             )
-             _ensure_col(
-                 "external_login_user",
-                 "privacy_policy_agreed_at",
-                 "privacy_policy_agreed_at DATETIME NULL AFTER notification_unread_reminder_last_sent_at",
-             )
-             _ensure_col(
-                 "external_login_user",
-                 "privacy_policy_agreed_revised_date",
-                 "privacy_policy_agreed_revised_date DATE NULL AFTER privacy_policy_agreed_at",
-             )
-+            _ensure_col(
-+                "external_login_user",
-+                "is_deleted",
-+                "is_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER privacy_policy_agreed_revised_date",
-+            )
-+            _ensure_col(
-+                "external_login_user",
-+                "deleted_at",
-+                "deleted_at DATETIME NULL AFTER is_deleted",
-+            )
-+            _ensure_col(
-+                "external_login_user",
-+                "deleted_by",
-+                "deleted_by VARCHAR(80) NULL AFTER deleted_at",
-+            )
-+            _ensure_col(
-+                "external_login_user",
-+                "deletion_reason",
-+                "deletion_reason VARCHAR(255) NULL AFTER deleted_by",
-+            )
-+            _ensure_col(
-+                "external_login_user",
-+                "anonymized_at",
-+                "anonymized_at DATETIME NULL AFTER deletion_reason",
-+            )
-             _ensure_col(
-                 "mfu_external_privacy_policy_config",
-                 "commerce_law_url",
-                 "commerce_law_url VARCHAR(2048) NULL AFTER privacy_policy_revised_date",
-             )
-             _ensure_col(
-                 "mfu_external_privacy_policy_config",
-                 "participant_terms_url",
-                 "participant_terms_url VARCHAR(2048) NULL AFTER commerce_law_url",
-             )
-             _ensure_col(
-                 "mfu_external_privacy_policy_config",
-                 "participant_terms_revised_date",
-                 "participant_terms_revised_date DATE NULL AFTER participant_terms_url",
-             )
-             _ensure_col(
-                 "mfu_event_member",
-                 "participant_terms_agreed_at",
-                 "participant_terms_agreed_at DATETIME NULL AFTER joined_at",
-             )
-             _ensure_col(
-                 "mfu_event_member",
-                 "participant_terms_agreed_revised_date",
-                 "participant_terms_agreed_revised_date DATE NULL AFTER participant_terms_agreed_at",
-             )
-diff --git a/external_login_user/template/admin_ext_users.html b/external_login_user/template/admin_ext_users.html
-index 4c66c12fee7b25abfa660fa4bc062b4ba96821e2..6e4aa08fd9f6d4d310b5af8005fbac72a0a4aee8 100644
---- a/external_login_user/template/admin_ext_users.html
-+++ b/external_login_user/template/admin_ext_users.html
-@@ -12,80 +12,93 @@
- 
- <meta name="x-csrf-token" content="{{ admin_csrf }}">
- 
- <div class="card mb-3">
-   <div class="card-body">
-     <div class="row g-2 align-items-center">
-       <div class="col-sm-6 col-md-5">
-         <input id="searchInput" type="search" class="form-control" placeholder="ID / ニックネーム / X / Instagram / メール / social_id を検索" value="{{ initial_q or '' }}">
-       </div>
-       <div class="col-auto">
-         <button id="searchBtn" class="btn btn-outline-primary">検索</button>
-       </div>
-       <div class="col-auto">
-         <button id="clearBtn" class="btn btn-outline-secondary">クリア</button>
-       </div>
-       <div class="col-auto">
-         <div class="btn-group" role="group" aria-label="Sort buttons">
-           <button id="sortIdBtn" type="button" class="btn btn-outline-secondary btn-sm">
-             ID順
-           </button>
-           <button id="sortNickBtn" type="button" class="btn btn-outline-secondary btn-sm">
-             ニックネーム順
-           </button>
-         </div>
-       </div>
-+      <div class="col-auto">
-+        <select id="deletedFilter" class="form-select form-select-sm">
-+          <option value="active" {% if (initial_deleted or 'active') == 'active' %}selected{% endif %}>通常のみ</option>
-+          <option value="deleted" {% if (initial_deleted or 'active') == 'deleted' %}selected{% endif %}>削除済みのみ</option>
-+          <option value="all" {% if (initial_deleted or 'active') == 'all' %}selected{% endif %}>すべて</option>
-+        </select>
-+      </div>
+             INSERT INTO mfu_event_member (event_id, user_id, status, payment_status)
+             VALUES (%s, %s, 'pending', 'unpaid')
+             """,
+diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
+index 27f8f3cdbd5adec4d5145e53bb8af07106aed2d7..a57886ae0739907671a051c6388409a628a9483f 100644
+--- a/external_login_user/template/admin_ext_users_edit.html
++++ b/external_login_user/template/admin_ext_users_edit.html
+@@ -317,65 +317,71 @@
+                   <a class="btn btn-sm btn-outline-danger"
+                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
+                                       user_id=u.id, member_id=m.member_id) }}">
+                     キャンセルにする
+                   </a>
+                 </td>
+               </tr>
+             {% endfor %}
+           {% else %}
+             <tr><td colspan="6" class="text-center text-muted py-3">参加中のイベントはありません。</td></tr>
+           {% endif %}
+         </tbody>
+       </table>
      </div>
    </div>
  </div>
  
- <div class="table-responsive">
-   <table class="table table-sm align-middle">
-     <thead class="table-light">
-       <tr>
-         <th style="width:72px;">ID</th>
-         <th style="width:72px;">Avatar</th>
-         <th>ニックネーム</th>
-         <th>メール</th>
-         <th style="min-width:180px;">SNS</th>
-         <th style="min-width:180px;">プライバシーポリシー</th>
-         <th style="min-width:200px;">通知状態</th>
-         <th style="width:140px;">クレカ登録（将来用）</th>
-         <th style="width:120px;"></th>
-       </tr>
-     </thead>
-     <tbody id="userTbody">
-       {% for it in initial_items %}
-       <tr data-id="{{ it.id }}">
-         <td class="text-muted">#{{ it.id }}</td>
-         <td>
-           {% set avatar = it.avatar_file and ("/external-login/avatars/" ~ it.avatar_file) or it.avatar_url or "https://via.placeholder.com/48?text=—" %}
-           <img src="{{ avatar }}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">
-         </td>
-         <td>
-           <div class="fw-semibold">{{ it.nickname }}</div>
-           <div class="small text-muted">social_id: {{ it.social_id or '-' }}</div>
-+          {% if (it.is_deleted or 0)|int == 1 %}
-+            <div class="small mt-1">
-+              <span class="badge bg-danger">削除済み</span>
-+              <span class="text-muted ms-1">{{ it.deleted_at or '-' }}</span>
-+            </div>
-+          {% endif %}
-         </td>
-         <td>
-           {% if it.email %}
-             <div>{{ it.email }}</div>
-             <div class="small mt-1">
-               {% if it.email_verified_at %}
-                 <span class="badge bg-success">確認済</span>
-                 <span class="text-muted ms-1">{{ it.email_verified_at }}</span>
-               {% else %}
-                 <span class="badge bg-secondary">未確認</span>
-               {% endif %}
-             </div>
-           {% else %}
-             <span class="text-muted">-</span>
-           {% endif %}
-         </td>
-         <td>
-           {% if it.x_id %}
-             <a href="https://x.com/{{ it.x_id|e }}" target="_blank" rel="noopener">X: @{{ it.x_id }}</a>{% if it.instagram_id %}<br>{% endif %}
-           {% endif %}
-           {% if it.instagram_id %}
-             <a href="https://www.instagram.com/{{ it.instagram_id|e }}/" target="_blank" rel="noopener">IG: @{{ it.instagram_id }}</a>
-           {% endif %}
-           {% if not it.x_id and not it.instagram_id %}
-             <span class="text-muted">-</span>
-@@ -132,177 +145,191 @@
-         <td class="text-end">
-           <a class="btn btn-sm btn-outline-primary"
-              href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=it.id) }}">編集</a>
-         </td>
-       </tr>
-       {% endfor %}
- 
-       {% if not initial_items %}
-       <tr><td colspan="9" class="text-center text-muted py-4">データがありません。</td></tr>
-       {% endif %}
-     </tbody>
-   </table>
- </div>
- 
- <div class="small text-muted mt-3">1ページに全件表示しています。</div>
- 
- {# 初期化用データ（JSが無効でも初期表示はサーバー側でOK） #}
- <script>
-   window.__EXT_USERS__ = {
-     total: {{ initial_total|int }},
-     perPage: {{ (initial_total if initial_total > 0 else 1000)|int }},
-     page: {{ initial_page|int }},
-     q: {{ (initial_q or '')|tojson }},
-     sort: {{ (initial_sort or 'id')|tojson }},
-     order: {{ (initial_order or 'asc')|tojson }},
-+    deleted: {{ (initial_deleted or 'active')|tojson }},
-     dataUrl: "{{ url_for('external_login_user.admin_ext_users_data') }}"
-   };
- </script>
- 
- {# 検索/並び替え（サーバー側処理） #}
- <script>
-   (function () {
-     const config = window.__EXT_USERS__ || {};
-     const tbody = document.getElementById('userTbody');
-     const searchInput = document.getElementById('searchInput');
-     const searchBtn = document.getElementById('searchBtn');
-     const clearBtn = document.getElementById('clearBtn');
-     const totalCount = document.getElementById('totalCount');
-     const sortIdBtn = document.getElementById('sortIdBtn');
-     const sortNickBtn = document.getElementById('sortNickBtn');
--    if (!tbody || !searchInput || !searchBtn || !clearBtn || !sortIdBtn || !sortNickBtn) return;
-+    const deletedFilter = document.getElementById('deletedFilter');
-+    if (!tbody || !searchInput || !searchBtn || !clearBtn || !sortIdBtn || !sortNickBtn || !deletedFilter) return;
- 
-     let state = {
-       q: config.q || '',
-       sort: config.sort || 'id',
-       order: config.order || 'asc',
-+      deleted: config.deleted || 'active',
-       perPage: Math.max(Number(config.perPage || 1000), 1),
-     };
- 
-     function escapeHtml(text) {
-       const div = document.createElement('div');
-       div.textContent = text == null ? '' : String(text);
-       return div.innerHTML;
-     }
- 
-     function makeAvatar(item) {
-       const avatar = item.avatar_file
-         ? `/external-login/avatars/${encodeURIComponent(item.avatar_file)}`
-         : (item.avatar_url || 'https://via.placeholder.com/48?text=—');
-       return `<img src="${escapeHtml(avatar)}" alt="avatar" width="40" height="40" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;">`;
-     }
- 
-     function renderRows(items) {
-       if (!items || !items.length) {
-         tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">データがありません。</td></tr>';
-         return;
-       }
-       tbody.innerHTML = items.map((it) => {
-         const isEnabled = (value) => {
-           if (value === true) return true;
-           if (value === false || value == null) return false;
-           const n = Number(value);
-           return Number.isFinite(n) ? n === 1 : String(value).toLowerCase() === 'true';
-         };
-         const nick = escapeHtml(it.nickname || '');
-         const socialId = escapeHtml(it.social_id || '-');
-         const emailBlock = it.email
-           ? `<div>${escapeHtml(it.email)}</div>
-              <div class="small mt-1">${it.email_verified_at ? '<span class="badge bg-success">確認済</span><span class="text-muted ms-1">' + escapeHtml(it.email_verified_at) + '</span>' : '<span class="badge bg-secondary">未確認</span>'}</div>`
-           : '<span class="text-muted">-</span>';
-         let sns = '<span class="text-muted">-</span>';
-         if (it.x_id || it.instagram_id) {
-           sns = `${it.x_id ? `<a href="https://x.com/${encodeURIComponent(it.x_id)}" target="_blank" rel="noopener">X: @${escapeHtml(it.x_id)}</a>` : ''}${(it.x_id && it.instagram_id) ? '<br>' : ''}${it.instagram_id ? `<a href="https://www.instagram.com/${encodeURIComponent(it.instagram_id)}/" target="_blank" rel="noopener">IG: @${escapeHtml(it.instagram_id)}</a>` : ''}`;
-         }
-         const privacyStatus = escapeHtml(it.privacy_policy_status || '未同意');
-         const privacyBadge = privacyStatus === '同意済'
-           ? 'bg-success'
-           : (privacyStatus === '旧版' ? 'bg-warning text-dark' : (privacyStatus === '未設定' ? 'bg-secondary' : 'bg-danger'));
-         const notifyPush = Number(it.push_subscription_count || 0) > 0 ? '🔵' : '🔴';
-         const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
-         const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
-         const cardText = (it.card_count && Number(it.card_count) > 0) ? '登録あり' : '未登録';
-+        const deletedMark = Number(it.is_deleted || 0) === 1
-+          ? `<div class="small mt-1"><span class="badge bg-danger">削除済み</span><span class="text-muted ms-1">${escapeHtml(it.deleted_at || '-')}</span></div>`
-+          : '';
-         return `<tr data-id="${Number(it.id || 0)}">
-           <td class="text-muted">#${Number(it.id || 0)}</td>
-           <td>${makeAvatar(it)}</td>
--          <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
-+          <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div>${deletedMark}</td>
-           <td>${emailBlock}</td>
-           <td>${sns}</td>
-           <td><div><span class="badge ${privacyBadge}">${privacyStatus}</span></div><div class="small text-muted mt-1">改定日: ${escapeHtml(it.privacy_policy_agreed_revised_date_label || '-')}</div><div class="small text-muted">同意日時: ${escapeHtml(it.privacy_policy_agreed_at_label || '-')}</div></td>
-           <td><div>Push通知 ${notifyPush}</div><div>アップ ${notifyUpload}</div><div>加工 ${notifyProcess}</div></td>
-           <td>${cardText}</td>
-           <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="/external-login/admin/ext-users/${Number(it.id || 0)}/edit">編集</a></td>
-         </tr>`;
-       }).join('');
-     }
- 
-     function updateSortButtonStyles() {
-       const isId = state.sort === 'id';
-       sortIdBtn.classList.toggle('btn-primary', isId);
-       sortIdBtn.classList.toggle('btn-outline-secondary', !isId);
-       sortNickBtn.classList.toggle('btn-primary', !isId);
-       sortNickBtn.classList.toggle('btn-outline-secondary', isId);
-       sortIdBtn.textContent = `ID順${isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
-       sortNickBtn.textContent = `ニックネーム順${!isId ? (state.order === 'asc' ? ' ▲' : ' ▼') : ''}`;
-     }
- 
-     async function fetchAndRender() {
-       const url = new URL(config.dataUrl, window.location.origin);
-       url.searchParams.set('q', state.q);
-       url.searchParams.set('sort', state.sort);
-       url.searchParams.set('order', state.order);
-+      url.searchParams.set('deleted', state.deleted);
-       url.searchParams.set('page', '1');
-       url.searchParams.set('per_page', String(state.perPage));
- 
-       const res = await fetch(url.toString(), { credentials: 'same-origin' });
-       const data = await res.json();
-       renderRows(data.items || []);
-       if (totalCount) totalCount.textContent = String(data.total || 0);
-       const historyUrl = new URL(window.location.href);
-       historyUrl.searchParams.set('q', state.q);
-       historyUrl.searchParams.set('sort', state.sort);
-       historyUrl.searchParams.set('order', state.order);
-+      historyUrl.searchParams.set('deleted', state.deleted);
-       window.history.replaceState({}, '', historyUrl.toString());
-       updateSortButtonStyles();
-     }
- 
-     searchBtn.addEventListener('click', function () {
-       state.q = searchInput.value.trim();
-       fetchAndRender();
-     });
- 
-     searchInput.addEventListener('keydown', function (ev) {
-       if (ev.key === 'Enter') {
-         ev.preventDefault();
-         state.q = searchInput.value.trim();
-         fetchAndRender();
-       }
-     });
- 
-     clearBtn.addEventListener('click', function () {
-       searchInput.value = '';
-       state.q = '';
-+      state.deleted = 'active';
-+      deletedFilter.value = 'active';
-+      fetchAndRender();
-+    });
-+    deletedFilter.addEventListener('change', () => {
-+      state.deleted = deletedFilter.value || 'active';
-       fetchAndRender();
-     });
- 
-     sortIdBtn.addEventListener('click', function () {
-       if (state.sort === 'id') {
-         state.order = state.order === 'asc' ? 'desc' : 'asc';
-       } else {
-         state.sort = 'id';
-         state.order = 'asc';
-       }
-       fetchAndRender();
-     });
- 
-     sortNickBtn.addEventListener('click', function () {
-       if (state.sort === 'nickname') {
-         state.order = state.order === 'asc' ? 'desc' : 'asc';
-       } else {
-         state.sort = 'nickname';
-         state.order = 'asc';
-       }
-       fetchAndRender();
-     });
- 
-     updateSortButtonStyles();
-   })();
-diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
-index e73038caad4fdc1e6cb5dafc52c15a2a9157347e..27f8f3cdbd5adec4d5145e53bb8af07106aed2d7 100644
---- a/external_login_user/template/admin_ext_users_edit.html
-+++ b/external_login_user/template/admin_ext_users_edit.html
-@@ -3,55 +3,67 @@
- 
- {% block content %}
- <meta name="x-csrf-token" content="{{ admin_csrf }}">
- 
- {# ---- フラッシュ/通知 ---- #}
- {% if request.args.get('sent') %}
-   <div class="alert alert-success" role="alert">確認コードを送信しました。</div>
- {% elif request.args.get('assigned') %}
-   <div class="alert alert-success" role="alert">イベントに参加として追加しました。</div>
- {% elif request.args.get('revived') %}
-   <div class="alert alert-success" role="alert">キャンセル済みの参加を復帰しました。</div>
- {% elif request.args.get('canceled') %}
-   <div class="alert alert-success" role="alert">参加をキャンセル済みに変更しました（履歴は保持されています）。</div>
- {% elif request.args.get('duplicated') %}
-   <div class="alert alert-info" role="alert">このユーザーは既にそのイベントに参加しています。</div>
- {% elif request.args.get('error') == 'csrf' %}
-   <div class="alert alert-danger" role="alert">CSRFエラーのため処理できませんでした。もう一度お試しください。</div>
- {% elif request.args.get('error') == 'no_email' %}
-   <div class="alert alert-warning" role="alert">メールアドレスが未設定のため送信できませんでした。</div>
- {% elif request.args.get('error') == 'smtp' %}
-   <div class="alert alert-danger" role="alert">メール送信に失敗しました（SMTP）。時間をおいて再度お試しください。</div>
- {% elif request.args.get('error') == 'bad_event' %}
-   <div class="alert alert-warning" role="alert">イベントの指定が不正です。</div>
- {% elif request.args.get('error') == 'not_found' %}
-   <div class="alert alert-warning" role="alert">対象のデータが見つかりません。</div>
-+{% elif request.args.get('error') == 'deleted' %}
-+  <div class="alert alert-warning" role="alert">削除済みユーザーのため、この操作は実行できません。</div>
-+{% elif request.args.get('error') == 'anonymize' %}
-+  <div class="alert alert-danger" role="alert">匿名化削除に失敗しました。ログを確認してください。</div>
-+{% elif request.args.get('anonymized') %}
-+  <div class="alert alert-success" role="alert">
-+    匿名化削除を実行しました。
-+    {% if request.args.get('already_deleted') == '1' %}（すでに削除済みでした）{% endif %}
-+  </div>
- {% endif %}
- 
- <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1 class="h4 mb-0">外部ログインユーザー編集 <span class="text-muted">#{{ u.id }}</span></h1>
-   <div class="d-flex gap-2">
-+    {% if (u.is_deleted or 0)|int == 1 %}
-+      <span class="badge bg-danger align-self-center">削除済み</span>
-+    {% endif %}
-     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
-     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">一覧へ戻る</a>
-   </div>
- </div>
- 
- {# ---- 基本情報 ---- #}
- <div class="card mb-4">
-   <div class="card-body">
-     <form method="post" action="{{ url_for('external_login_user.admin_ext_users_update', user_id=u.id) }}">
-       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-       <div class="row g-3">
-         <div class="col-md-8">
-           <div class="mb-3">
-             <label class="form-label">ニックネーム</label>
-             <input type="text" class="form-control" name="nickname" value="{{ u.nickname or '' }}" required>
-           </div>
-           <div class="row g-2">
-             <div class="col-md-6">
-               <label class="form-label">X（@不要）</label>
-               <input type="text" class="form-control" name="x_id" value="{{ u.x_id or '' }}" placeholder="example">
-             </div>
-             <div class="col-md-6">
-               <label class="form-label">Instagram（@不要）</label>
-               <input type="text" class="form-control" name="instagram_id" value="{{ u.instagram_id or '' }}" placeholder="example">
-             </div>
-@@ -126,60 +138,82 @@
-           {% set avatar = u.avatar_file and ("/external-login/avatars/" ~ u.avatar_file) or u.avatar_url or "https://via.placeholder.com/120?text=—" %}
-           <div class="text-center">
-             <img src="{{ avatar }}" width="120" height="120" style="object-fit:cover;border-radius:50%;border:1px solid #ddd;" alt="avatar">
-             <div class="small text-muted mt-2">social_id: {{ u.social_id or '-' }}</div>
-             <div class="d-grid gap-2 mt-3">
-               <a
-                 class="btn btn-outline-primary btn-sm {% if not u.email %}disabled{% endif %}"
-                 {% if u.email %}
-                   href="{{ url_for('external_login_user.admin_ext_users_resend_confirm', user_id=u.id) }}"
-                 {% else %}
-                   href="#"
-                 {% endif %}
-               >確認コードを再送</a>
-               {% if not u.email %}
-                 <div class="small text-muted">※メール未設定のため送信できません。</div>
-               {% endif %}
-             </div>
-           </div>
-         </div>
-       </div>
- 
-       <hr class="my-4">
-       <div class="d-flex justify-content-between">
-         <div class="small text-muted">
-           作成: {{ u.created_at }} / 更新: {{ u.updated_at }}
-+          {% if (u.is_deleted or 0)|int == 1 %}
-+            <br>削除日時: {{ u.deleted_at or '-' }} / 実行者: {{ u.deleted_by or '-' }}
-+          {% endif %}
-         </div>
-         <div class="d-flex gap-2">
-           <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">キャンセル</a>
-           <button class="btn btn-primary" type="submit">保存</button>
-         </div>
-       </div>
-     </form>
-   </div>
- </div>
- 
-+<div class="card border-danger mb-4">
-+  <div class="card-header bg-danger-subtle">
-+    <strong class="text-danger">危険操作: 匿名化削除</strong>
-+  </div>
-+  <div class="card-body">
-+    <p class="small text-muted mb-3">
-+      外部ログイン不能化・個人情報匿名化・周辺データ切り離しを実行します。過去参加履歴は匿名名で保持されます。
-+    </p>
-+    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_anonymize_delete', user_id=u.id) }}" onsubmit="return window.confirm('このユーザーを匿名化削除します。実行してよろしいですか？');">
-+      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-+      <div class="mb-2">
-+        <label class="form-label">理由（任意）</label>
-+        <input type="text" class="form-control" name="reason" maxlength="255" placeholder="削除依頼対応">
-+      </div>
-+      <button type="submit" class="btn btn-danger">匿名化削除を実行</button>
-+    </form>
-+  </div>
-+</div>
-+
- <div class="card mb-4">
+ {# =========================================
+    別イベントに参加させる（直近→遠い順のプルダウン）
+    ========================================= #}
+ <div class="card mb-5">
    <div class="card-header">
-     <strong>プライバシーポリシー同意状況</strong>
+     <strong>このユーザーを別のイベントに参加させる</strong>
    </div>
    <div class="card-body">
-     <dl class="row mb-0">
-       <dt class="col-md-3">現在の状態</dt>
-       <dd class="col-md-9">
-         <span class="badge {% if u.privacy_policy_status == '同意済' %}bg-success{% elif u.privacy_policy_status == '旧版' %}bg-warning text-dark{% elif u.privacy_policy_status == '未設定' %}bg-secondary{% else %}bg-danger{% endif %}">
-           {{ u.privacy_policy_status }}
-         </span>
-       </dd>
+-    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
+-      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
++    {% if can_assign_events %}
++      <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
++        <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
  
-       <dt class="col-md-3">同意した改定日</dt>
-       <dd class="col-md-9">{{ u.privacy_policy_agreed_revised_date_label or '—' }}</dd>
+-      <div class="col-md-6">
+-        <label class="form-label">イベント</label>
++        <div class="col-md-6">
++          <label class="form-label">イベント</label>
  
-       <dt class="col-md-3">同意日時</dt>
-       <dd class="col-md-9">{{ u.privacy_policy_agreed_at_label or '—' }}</dd>
+-        {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
+-        {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
++          {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
++          {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
  
-       <dt class="col-md-3">現在有効な改定日</dt>
-       <dd class="col-md-9">{{ u.privacy_policy_current_revised_date_label or '—' }}</dd>
+-        <select name="event_id" class="form-select" required>
+-          <option value="">選択してください</option>
++          <select name="event_id" class="form-select" required>
++            <option value="">選択してください</option>
  
-       <dt class="col-md-3">差分</dt>
-       <dd class="col-md-9">
-         {% if u.privacy_policy_status == '未設定' %}
-diff --git a/external_login_user/utils.py b/external_login_user/utils.py
-index 9e14bd54323c07d762737c9cf2aed4f0439bf0e6..6e858d4d898eb33b96e6ec238022fe85f080d871 100644
---- a/external_login_user/utils.py
-+++ b/external_login_user/utils.py
-@@ -529,59 +529,71 @@ def consume_external_login_resume_token(*, token: str | None = None, pwa_client_
-         row["consumed_at"] = consumed_at
-         return row
-     finally:
-         try:
-             cur.close(); db.close()
-         except Exception:
-             pass
+-          {% for ev in ev_has|sort(attribute='starts_at') %}
+-            <option value="{{ ev.id }}">
+-              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
+-            </option>
+-          {% endfor %}
++            {% for ev in ev_has|sort(attribute='starts_at') %}
++              <option value="{{ ev.id }}">
++                #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
++              </option>
++            {% endfor %}
  
- # ---- ID/DB ヘルパ ----
- def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:
-     if not b: return None
-     try:
-         return str(uuid.UUID(bytes=b))
-     except Exception:
-         try:
-             return str(uuid.UUID(hex=b.hex()))
-         except Exception:
-             return None
+-          {% for ev in ev_none %}
+-            <option value="{{ ev.id }}">
+-              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
+-            </option>
+-          {% endfor %}
+-        </select>
++            {% for ev in ev_none %}
++              <option value="{{ ev.id }}">
++                #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
++              </option>
++            {% endfor %}
++          </select>
  
- def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
-     """
-     external_login_user を social_id で1件取得して dict で返す。
-     avatar_url / avatar_file も取得して、イベント参加証などでのアイコン表示に使えるようにする。
-     """
-     db = get_db(); cur = db.cursor()
--    cur.execute("""
--        SELECT
--          id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
--          avatar_url, avatar_file,
--          created_at, updated_at
--        FROM external_login_user
--        WHERE social_id=%s
--        LIMIT 1
--    """, (social_id,))
-+    try:
-+        cur.execute("""
-+            SELECT
-+              id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
-+              avatar_url, avatar_file,
-+              created_at, updated_at
-+            FROM external_login_user
-+            WHERE social_id=%s
-+              AND COALESCE(is_deleted, 0)=0
-+            LIMIT 1
-+        """, (social_id,))
-+    except Exception:
-+        cur.execute("""
-+            SELECT
-+              id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
-+              avatar_url, avatar_file,
-+              created_at, updated_at
-+            FROM external_login_user
-+            WHERE social_id=%s
-+            LIMIT 1
-+        """, (social_id,))
-     row = cur.fetchone()
+-        {% if not assignable_events or assignable_events|length == 0 %}
+-          <div class="form-text text-muted">未参加のイベントがありません。</div>
+-        {% endif %}
+-      </div>
++          {% if not assignable_events or assignable_events|length == 0 %}
++            <div class="form-text text-muted">未参加のイベントがありません。</div>
++          {% endif %}
++        </div>
  
-     if not row:
-         cur.close(); db.close()
-         return None
- 
-     # カラム名をカーソルから動的取得（dictカーソルでなくてもOK）
-     try:
-         col_names = [d[0] for d in (cur.description or [])]
-         d = dict(zip(col_names, row))
-     except Exception:
-         # タプルでも安全に復元
-         keys = ["id","mfu_uuid","social_id","nickname","x_id","instagram_id","email",
-                 "avatar_url","avatar_file","created_at","updated_at"]
-         d = dict(zip(keys, row))
- 
-     cur.close(); db.close()
- 
-     # 互換フィールド
-     d["mfu_uuid_str"] = _uuid_bytes_to_str(d.get("mfu_uuid"))
-     return d
- 
- def _upsert_ext_user(*, social_id: str, nickname: str,
-                      email: Optional[str], x_id: Optional[str], instagram_id: Optional[str]) -> None:
-     sql = """
+-      <div class="col-auto">
+-        <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
+-          参加として追加
+-        </button>
++        <div class="col-auto">
++          <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
++            参加として追加
++          </button>
++        </div>
++      </form>
++      <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
++    {% else %}
++      <div class="alert alert-warning mb-0" role="alert">
++        このユーザーは削除済みのため、イベント参加追加はできません。
+       </div>
+-    </form>
+-    <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
++    {% endif %}
+   </div>
+ </div>
+ {% endblock %}
