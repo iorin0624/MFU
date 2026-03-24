@@ -1,37 +1,53 @@
 diff --git a/external_login_user/admin_users.py b/external_login_user/admin_users.py
-index 49fd87119412d6a0ea4d1a2cfcdf98e56e83ac46..9ac114b5397f59da7718e82f69d5da7b513cec76 100644
+index 9ac114b5397f59da7718e82f69d5da7b513cec76..5c7283a16f55e07b443b3d9b6c507388de22dbb6 100644
 --- a/external_login_user/admin_users.py
 +++ b/external_login_user/admin_users.py
-@@ -656,101 +656,122 @@ def admin_ext_users_edit_page(user_id: int):
-               m.canceled_at,
-               m.canceled_by
-             FROM mfu_event_member AS m
-             JOIN mfu_event AS e ON e.id = m.event_id
-             WHERE m.user_id=%s
-             ORDER BY COALESCE(e.starts_at, '9999-12-31') DESC, e.id DESC
-             """,
-             (user_id,),
-         )
-         memberships = cur.fetchall() or []
+@@ -565,54 +565,67 @@ def admin_ext_users_resend_verify(user_id: int):
+             if request.is_json:
+                 return jsonify({"ok": False, "error": "smtp_error"}), 502
+             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="smtp"))
  
-         # 参加可能イベント（未参加のもの）
-         cur.execute(
-             """
-             SELECT e.id, e.title, e.starts_at
-               FROM mfu_event AS e
-              WHERE e.id NOT IN (
-                     SELECT event_id FROM mfu_event_member WHERE user_id=%s
-                    )
-              ORDER BY COALESCE(e.starts_at, '9999-12-31') ASC, e.id ASC
-              LIMIT 200
-             """,
-             (user_id,),
-         )
-         assignable = cur.fetchall() or []
-+        can_assign_events = int(user.get("is_deleted") or 0) != 1
-+        if not can_assign_events:
-+            assignable = []
+         if request.is_json:
+             return jsonify({"ok": True})
+         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, sent="1"))
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
  
+ 
+ # ============= 再送の確認ページ（GET） =============
+ @bp.get("/admin/ext-users/<int:user_id>/resend-confirm", endpoint="admin_ext_users_resend_confirm")
+ def admin_ext_users_resend_confirm(user_id: int):
+     """再送のサーバー確認ページ（JS不要）"""
+     guard = _require_mfu_login_redirect()
+     if guard:
+         return guard
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+-        cur.execute("SELECT id, email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
++        cur.execute(
++            """
++            SELECT
++              id,
++              email,
++              COALESCE(is_deleted, 0) AS is_deleted
++            FROM external_login_user
++            WHERE id=%s
++            LIMIT 1
++            """,
++            (user_id,),
++        )
+         u = cur.fetchone()
+         if not u:
+             abort(404)
++        if int(u.get("is_deleted") or 0) == 1:
++            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
+         if not u.get("email"):
+             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
      finally:
          try:
              cur.close()
@@ -39,194 +55,19 @@ index 49fd87119412d6a0ea4d1a2cfcdf98e56e83ac46..9ac114b5397f59da7718e82f69d5da7b
          except Exception:
              pass
  
-     current_privacy_config = _get_current_privacy_policy_config()
-     user["privacy_policy_status"] = _privacy_policy_status(user, current_privacy_config)
-     user["privacy_policy_agreed_revised_date_label"] = _privacy_policy_date_label(user.get("privacy_policy_agreed_revised_date"))
-     user["privacy_policy_agreed_at_label"] = _format_datetime_jst(user.get("privacy_policy_agreed_at"))
-     user["privacy_policy_current_revised_date_label"] = _privacy_policy_date_label(current_privacy_config.get("privacy_policy_revised_date"))
-     user["privacy_policy_needs_reagreement"] = _needs_privacy_policy_agreement(user, current_privacy_config)
- 
-     return render_template(
-         "admin_ext_users_edit.html",
-         u=user,
-         memberships=memberships,
-         assignable_events=assignable,
-+        can_assign_events=can_assign_events,
-         admin_csrf=_admin_csrf_token(),
-         current_privacy_config=current_privacy_config,
-     )
+     return render_template("admin_ext_users_resend_confirm.html", u=u, admin_csrf=_admin_csrf_token())
  
  
- # ============= 参加追加（POST） =============
- @bp.post("/admin/ext-users/<int:user_id>/assign")
- def admin_ext_users_assign(user_id: int):
-     """
-     指定ユーザーをイベントに参加追加する
-     - Form POST（csrf必須）
-     - 既に参加済みなら duplicated=1 を付けて編集ページに戻す
-     """
+ # ============= 別ページ編集（GET） =============
+ @bp.get("/admin/ext-users/<int:user_id>/edit", endpoint="admin_ext_users_edit_page")
+ def admin_ext_users_edit_page(user_id: int):
+     """外部ログインユーザー 編集ページ（別ページ実装）"""
      guard = _require_mfu_login_redirect()
      if guard:
          return guard
  
-     token_req = (request.form.get("csrf_token") or "").strip()
-     if not token_req or token_req != _admin_csrf_token():
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
- 
-     try:
-         event_id = int(request.form.get("event_id") or "0")
-     except Exception:
-         event_id = 0
-     if event_id <= 0:
-         return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="bad_event"))
- 
      db = get_db()
-     cur = db.cursor()
+     cur = db.cursor(dictionary=True)
      try:
-+        cur.execute(
-+            """
-+            SELECT id, COALESCE(is_deleted,0) AS is_deleted
-+              FROM external_login_user
-+             WHERE id=%s
-+             LIMIT 1
-+            """,
-+            (user_id,),
-+        )
-+        user_row = cur.fetchone()
-+        if not user_row:
-+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="not_found"))
-+        is_deleted = user_row[1] if isinstance(user_row, tuple) else user_row.get("is_deleted", 0)
-+        if int(is_deleted or 0) == 1:
-+            current_app.logger.warning("deleted external user assign blocked: user_id=%s event_id=%s", user_id, event_id)
-+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
-+
-         # すでに参加済みか軽く確認（UNIQUE制約もあるが事前チェックでメッセージを素直に）
-         cur.execute("SELECT id, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
-         existing = cur.fetchone()
-         if existing:
-             existing_id = existing[0] if isinstance(existing, tuple) else existing.get("id")
-             existing_canceled = existing[1] if isinstance(existing, tuple) else existing.get("is_canceled", 0)
-             if int(existing_canceled or 0) == 1:
-                 cur.execute("""
-                     UPDATE mfu_event_member
-                        SET is_canceled=0,
-                            canceled_at=NULL,
-                            canceled_by=NULL
-                      WHERE id=%s
-                      LIMIT 1
-                 """, (existing_id,))
-                 db.commit()
-                 return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, revived=1))
-             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, duplicated=1))
- 
-         # 追加：初期は pending / unpaid で登録
-         cur.execute(
-             """
-             INSERT INTO mfu_event_member (event_id, user_id, status, payment_status)
-             VALUES (%s, %s, 'pending', 'unpaid')
-             """,
-diff --git a/external_login_user/template/admin_ext_users_edit.html b/external_login_user/template/admin_ext_users_edit.html
-index 27f8f3cdbd5adec4d5145e53bb8af07106aed2d7..a57886ae0739907671a051c6388409a628a9483f 100644
---- a/external_login_user/template/admin_ext_users_edit.html
-+++ b/external_login_user/template/admin_ext_users_edit.html
-@@ -317,65 +317,71 @@
-                   <a class="btn btn-sm btn-outline-danger"
-                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
-                                       user_id=u.id, member_id=m.member_id) }}">
-                     キャンセルにする
-                   </a>
-                 </td>
-               </tr>
-             {% endfor %}
-           {% else %}
-             <tr><td colspan="6" class="text-center text-muted py-3">参加中のイベントはありません。</td></tr>
-           {% endif %}
-         </tbody>
-       </table>
-     </div>
-   </div>
- </div>
- 
- {# =========================================
-    別イベントに参加させる（直近→遠い順のプルダウン）
-    ========================================= #}
- <div class="card mb-5">
-   <div class="card-header">
-     <strong>このユーザーを別のイベントに参加させる</strong>
-   </div>
-   <div class="card-body">
--    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
--      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-+    {% if can_assign_events %}
-+      <form method="post" action="{{ url_for('external_login_user.admin_ext_users_assign', user_id=u.id) }}" class="row g-2 align-items-end">
-+        <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
- 
--      <div class="col-md-6">
--        <label class="form-label">イベント</label>
-+        <div class="col-md-6">
-+          <label class="form-label">イベント</label>
- 
--        {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
--        {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
-+          {% set ev_has = (assignable_events or []) | selectattr('starts_at') | list %}
-+          {% set ev_none = (assignable_events or []) | rejectattr('starts_at') | list %}
- 
--        <select name="event_id" class="form-select" required>
--          <option value="">選択してください</option>
-+          <select name="event_id" class="form-select" required>
-+            <option value="">選択してください</option>
- 
--          {% for ev in ev_has|sort(attribute='starts_at') %}
--            <option value="{{ ev.id }}">
--              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
--            </option>
--          {% endfor %}
-+            {% for ev in ev_has|sort(attribute='starts_at') %}
-+              <option value="{{ ev.id }}">
-+                #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}（{{ ev.starts_at }}）
-+              </option>
-+            {% endfor %}
- 
--          {% for ev in ev_none %}
--            <option value="{{ ev.id }}">
--              #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
--            </option>
--          {% endfor %}
--        </select>
-+            {% for ev in ev_none %}
-+              <option value="{{ ev.id }}">
-+                #{{ ev.id }} — {{ ev.title or '(無題イベント)' }}
-+              </option>
-+            {% endfor %}
-+          </select>
- 
--        {% if not assignable_events or assignable_events|length == 0 %}
--          <div class="form-text text-muted">未参加のイベントがありません。</div>
--        {% endif %}
--      </div>
-+          {% if not assignable_events or assignable_events|length == 0 %}
-+            <div class="form-text text-muted">未参加のイベントがありません。</div>
-+          {% endif %}
-+        </div>
- 
--      <div class="col-auto">
--        <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
--          参加として追加
--        </button>
-+        <div class="col-auto">
-+          <button class="btn btn-primary" type="submit" {% if not assignable_events or assignable_events|length == 0 %}disabled{% endif %}>
-+            参加として追加
-+          </button>
-+        </div>
-+      </form>
-+      <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
-+    {% else %}
-+      <div class="alert alert-warning mb-0" role="alert">
-+        このユーザーは削除済みのため、イベント参加追加はできません。
-       </div>
--    </form>
--    <div class="form-text mt-2">追加時の初期状態は <code>status=pending</code> / <code>payment_status=unpaid</code> です。</div>
-+    {% endif %}
-   </div>
- </div>
- {% endblock %}
+         has_verified = _column_exists("external_login_user", "email_verified_at")
+         has_deleted = _column_exists("external_login_user", "is_deleted")
