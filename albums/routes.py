@@ -996,8 +996,11 @@ def _is_event_member_approved(event_id: int) -> bool:
         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
         return False
     ext_user_id = int(u["id"])
-    mem = db_get_one("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
-    return bool(mem and mem.get("status") == "approved")
+    mem = db_get_one(
+        "SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s",
+        (event_id, ext_user_id),
+    )
+    return bool(mem and mem.get("status") == "approved" and int(mem.get("is_canceled") or 0) == 0)
 
 def event_gate(view_func):
     """イベント連携アルバム用ゲート（access_mode='event' だけ処理）。他はスルー"""
