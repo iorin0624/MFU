@@ -1,693 +1,184 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index e180021e4d6d0128200cd545adad8f8f6f0d104d..99dfdd47542254285db1d0de81c6c402940351e4 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -974,52 +974,55 @@ def _uuid_bytes_to_str(b):
-         return str(uuid.UUID(bytes=b))
-     except Exception:
-         try:
-             return str(uuid.UUID(hex=b.hex()))
-         except Exception:
-             return None
+diff --git a/external_login_user/admin.py b/external_login_user/admin.py
+index 67fdb18c4f1cea5c65d12ca26f14f74b7da34861..f12b916d83c271090327b21ebb162743d6e574be 100644
+--- a/external_login_user/admin.py
++++ b/external_login_user/admin.py
+@@ -1,32 +1,33 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import csv
+ import math
+ import os
+ import re
+ import textwrap
++from functools import lru_cache
+ from flask import request, jsonify
+ from email.mime.text import MIMEText
+ from email.header import Header
+ from email.utils import formataddr
+ import smtplib
+ from flask import current_app
+ from .utils import (
+     _event_admin_can_view,
+     _event_admin_can_manage,
+     _ensure_event_invite_token,
+     _event_invite_url,
+     extract_lat_lng_from_maps_url,  # 追加
+     QR_TRADEMARK_NOTICE,
+     _get_external_document_config,
+     _get_current_privacy_policy_config,
+     _get_current_commerce_law_config,
+     _get_current_participant_terms_config,
+     _is_privacy_policy_effective,
+     _is_participant_terms_effective,
+     _privacy_policy_date_label,
+ )
  
- def _event_join_url(event_id: int) -> str | None:
-     ev = db_get_one("SELECT event_uuid FROM mfu_event WHERE id=%s", (event_id,))
-     if not ev: return None
-     ev_uuid_str = _uuid_bytes_to_str(ev.get("event_uuid"))
-     if not ev_uuid_str: return None
-     return url_for('external_login_user.join_event', event_uuid=ev_uuid_str)
+ from app.utils.mail import send_mail
  
- def _is_event_member_approved(event_id: int) -> bool:
-     sid = session.get("ext_user_social_id")
-     if not sid:
-         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
-         return False
-     u = db_get_one("SELECT id FROM external_login_user WHERE social_id=%s", (sid,))
-     if not u:
-         session["ext_user_onboarding"] = True
-         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
-         return False
-     ext_user_id = int(u["id"])
--    mem = db_get_one("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
--    return bool(mem and mem.get("status") == "approved")
-+    mem = db_get_one(
-+        "SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s",
-+        (event_id, ext_user_id),
-+    )
-+    return bool(mem and mem.get("status") == "approved" and int(mem.get("is_canceled") or 0) == 0)
  
- def event_gate(view_func):
-     """イベント連携アルバム用ゲート（access_mode='event' だけ処理）。他はスルー"""
-     @wraps(view_func)
-     def _wrapped(album_id, *args, **kwargs):
-         session["_gate_album_id"] = album_id  # ログイン後の戻り先
-         meta = _fetch_album_meta(album_id)
-         if not meta:
-             return "アルバムが存在しません", 404
+@@ -1321,65 +1322,69 @@ def _compose_member_role_label(member: dict) -> str:
+     elif role_raw == "cosplayer":
+         role_label = f"衣装（{costume_label}）" if costume_label else "衣装"
+     elif role_raw == "other":
+         role_label = f"その他（{costume_label}）" if costume_label else "その他"
  
-         # 管理者/オーナーは常に通す
-         if session.get('user') == 'admin' or (session.get('user') and session.get('user') == meta.get('owner')):
-             _grant_album_auth(album_id)
-             return redirect(url_for('album.album_home', album_id=album_id))
+     if admin_prefix and role_label:
+         return f"{admin_prefix}＆{role_label}"
+     if admin_prefix:
+         return admin_prefix
+     if role_label:
+         return role_label
+     return "その他"
  
-         # イベントモード：承認済みのみ
-         if meta.get("access_mode") == "event" and meta.get("event_id"):
-             if _is_event_member_approved(int(meta["event_id"])):  # 承認済み
-                 _grant_album_auth(album_id)
-                 return redirect(url_for('album.album_home', album_id=album_id))
-             flash('このアルバムはイベント参加者専用です。まずは参加申請/承認を受けてください。', 'warning')
-             join_url = _event_join_url(int(meta["event_id"]))
-             return redirect(join_url) if join_url else ("イベントが見つかりません", 404)
  
-         # tokenモードは既存処理へ
-diff --git a/external_login_user/template/event_view.html b/external_login_user/template/event_view.html
-index 0d301fbbec2f0b79f9a467952efd2adadcdc9739..73b3d9a0533c1e335c0045ace7986027b1d91c46 100644
---- a/external_login_user/template/event_view.html
-+++ b/external_login_user/template/event_view.html
-@@ -24,240 +24,252 @@
-   {%- endmacro %}
+ def _safe_png_download_filename(event_id: int, title: str | None) -> str:
+     base = (title or "").strip()
+     if not base:
+         return f"participants_{event_id}.png"
+     safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", base)
+     safe = re.sub(r"\s+", "_", safe).strip("._")
+     if not safe:
+         safe = f"event_{event_id}"
+     return f"{safe}_参加者一覧.png"
  
-   {# 0/1 正規化（BIT/TINYINT/str/Noneを吸収） #}
-   {% macro norm01(v, default_=1) -%}
-     {%- if v is none -%}
-       {{ default_ }}
-     {%- elif v is number -%}
-       {{ 0 if (v|int) == 0 else 1 }}
-     {%- elif v is string -%}
-       {%- set s = v|trim|lower -%}
-       {{ 1 if s in ['1','true','on','yes','y'] else 0 }}
-     {%- else -%} {# bytes 等 #}
-       {%- set s = (v|string) -%}
-       {{ 1 if ('\\x01' in s or s.endswith('1')) else 0 }}
-     {%- endif -%}
-   {%- endmacro %}
  
-   {# === ここでテンプレ側フォールバックを定義（キー揺れ対策） === #}
-   {% set oc_url  = (openchat_url if openchat_url is defined and openchat_url else (line_openchat_url if line_openchat_url is defined else None)) %}
-   {% set has_openchat = ((oc_url or '')|trim) %}
-   {% set oc_pass = (openchat_pass if openchat_pass is defined and openchat_pass else (line_openchat_pass if line_openchat_pass is defined else None)) %}
-   {% set gf_url  = (google_form_url if google_form_url is defined and google_form_url else (survey_url if survey_url is defined else None)) %}
-   {% set memo_all = ev.memo_all if ev.memo_all is defined else None %}
-   {% set sns_tag_raw = (ev.sns_hashtag or '')|trim %}
-   {% set sns_tag = ('#' ~ sns_tag_raw.lstrip('#')) if sns_tag_raw else None %}
-+  {% set member_active = (my_status == 'approved' and my_is_canceled|default(0)|int == 0) %}
-+  {% set member_limited = (my_is_canceled|default(0)|int == 1) or (my_status in ['pending', 'rejected']) %}
- 
-   {% with messages = get_flashed_messages(with_categories=true) %}
-     {% for cat, msg in messages %}
-       <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg }}</div>
-     {% endfor %}
-   {% endwith %}
- 
-   {% if view_mode == 'admin' %}
-     <div class="alert alert-info">管理者ビューです。参加者・支払いの詳細は管理画面から操作してください。</div>
-     <a class="btn btn-outline-primary" href="{{ url_for('external_login_user.admin_event_view', event_id=ev.id) }}">管理画面へ</a>
-   {% elif view_mode == 'member' %}
-     <div class="alert alert-success">承認済みの参加者として閲覧中です。</div>
-   {% elif view_mode == 'member_limited' %}
-     {% if my_is_canceled|default(0)|int == 1 %}
-       <div class="alert alert-warning">この参加はキャンセル済みです。領収書がある場合のみ引き続き確認できます。</div>
-     {% else %}
-       <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
-     {% endif %}
-   {% endif %}
- 
-   <a class="btn btn-sm btn-outline-secondary mb-3" href="{{ url_for('external_login_user.index') }}">← マイページ</a>
- 
-   <h1 class="h4 mb-1">{{ ev.title }}</h1>
-   <div class="text-muted">
-     {% if ev.starts_at %}
-       {% if ev.starts_at.__class__.__name__ in ('datetime','date') %}
-         {{ ev.starts_at.strftime('%Y/%m/%d %H:%M') if ev.starts_at.__class__.__name__ == 'datetime' else ev.starts_at.strftime('%Y/%m/%d') }}
-       {% else %}
-         {{ ev.starts_at }}
-       {% endif %}
-     {% else %}—{% endif %}
-   </div>
- 
-   {% if me %}
-     <div class="mt-2">
-       <div class="mb-1">
-         <strong>承認状態：</strong>
-         {% if my_status == 'approved' %}
-           <span class="btn btn-sm btn-success">承認</span>
-         {% elif my_status == 'pending' %}
-           <span class="btn btn-sm btn-secondary">保留</span>
-         {% elif my_status == 'rejected' %}
-           <span class="btn btn-sm btn-danger">拒否</span>
-         {% else %}
-           <span class="btn btn-sm btn-outline-secondary">未申請</span>
-         {% endif %}
-       </div>
-     </div>
-   {% endif %}
- 
--  {% if view_mode == "member" and my_is_canceled|default(0)|int == 0 %}
-+  {% if view_mode == "member" and member_active %}
-     <div class="mt-3">
-       <a class="btn btn-lg btn-primary w-100"
-          href="{{ url_for('external_login_user.event_pass', event_uuid=ev.event_uuid_str) }}">
-         参加証を開く（主催提示用）
-       </a>
-     </div>
-   {% endif %}
- 
-   <!-- ===== カード郡 ===== -->
-   <div class="row g-3 my-3">
- 
-     <!-- イベント詳細 -->
-     <div class="col-md-6">
-       <div class="card h-100">
-         <div class="card-body">
-           <h2 class="h6 mb-3">イベント詳細</h2>
-           {% set display_fee = (my_custom_fee_yen if my_custom_fee_yen is defined and my_custom_fee_yen is not none else ev.fee_yen) %}
-           <div><strong>参加費:</strong> {% if display_fee is not none %}¥{{ "{:,}".format(display_fee|int) }}{% else %}—{% endif %}</div>
-           <div><strong>場所:</strong> {{ ev.place_name or '—' }}</div>
-           <div class="small text-muted mb-2">{{ ev.address or '' }}</div>
-           {% if maps_link %}
-             <a class="btn btn-sm btn-outline-primary" href="{{ maps_link }}" target="_blank" rel="noopener">地図を開く</a>
-           {% endif %}
-         </div>
-       </div>
-     </div>
- 
--    {% if memo_all %}
-+    {% if memo_all and member_active %}
-       <div class="col-12">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-2">連絡メモ（全体向け）</h2>
-             <div class="p-2 border rounded bg-light" style="white-space:pre-line; word-break:break-word;">
-               {{- ev.memo_all | trim | linkify -}}
-             </div>
-           </div>
-         </div>
-       </div>
-     {% endif %}
- 
--    {% if sns_tag %}
-+    {% if sns_tag and member_active %}
-       <div class="col-12">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-2">ハッシュタグ</h2>
-             <div class="d-flex flex-wrap align-items-center gap-2">
-               <span class="badge text-bg-light border" id="snsHashtagText">{{ sns_tag }}</span>
-               <button class="btn btn-sm btn-outline-secondary" type="button" id="snsHashtagCopy" data-copy-text="{{ sns_tag }}">
-                 コピー
-               </button>
-               <span class="small text-muted" id="snsHashtagCopied" aria-live="polite"></span>
-             </div>
-           </div>
-         </div>
-       </div>
-     {% endif %}
- 
-     <!-- 各種リンク -->
-     <div class="col-md-6">
-       <div class="card h-100">
-         <div class="card-body">
-           <h2 class="h6 mb-3">各種リンク</h2>
- 
--          {% if my_is_canceled|default(0)|int == 0 %}
-+          {% if member_active %}
-             <!-- 参加者一覧 -->
-             <div class="mb-2">
-               <a class="btn btn-sm btn-outline-dark w-100 text-start"
-                  href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
-                 参加者一覧を開く
-               </a>
-             </div>
-           {% endif %}
- 
--          {% if has_openchat %}
-+          {% if has_openchat and member_active %}
-             <!-- LINEオープンチャット -->
-             <div class="mb-2">
-               {% if oc_pass %}
-                 {# パスあり: まずモーダルを出してから参加 #}
-                 <button type="button"
-                         class="btn btn-sm btn-outline-primary w-100 text-start"
-                         data-bs-toggle="modal"
-                         data-bs-target="#ocPassModal">
-                   LINEオープンチャットに参加する
-                 </button>
-               {% else %}
-                 {# パスなし: そのまま遷移 #}
-                 <a class="btn btn-sm btn-outline-primary w-100 text-start"
-                    href="{{ oc_url }}" target="_blank" rel="noopener noreferrer">
-                   LINEオープンチャットに参加する
-                 </a>
-               {% endif %}
-             </div>
--          {% else %}
-+          {% elif member_active %}
-             <!-- チャット -->
-             <div class="mb-2">
-               <a class="btn btn-sm btn-outline-info w-100 text-start"
-                  href="/chat/events/{{ ev.id }}">
-                 チャット
-               </a>
-             </div>
-           {% endif %}
- 
--          {% if my_is_canceled|default(0)|int == 0 %}
-+          {% if member_active %}
-             <!-- SNS貼付用 -->
-             <div class="mb-2">
-               <a class="btn btn-sm btn-outline-info w-100 text-start"
-                  href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
-                 SNS貼付用
-               </a>
-             </div>
-           {% endif %}
- 
-           <!-- アルバム -->
--          <div class="mb-2">
--            {% if album_url %}
--              <a class="btn btn-sm btn-outline-success w-100 text-start"
--                 href="{{ album_url }}" target="_blank" rel="noopener">
--                アルバムを開く
--              </a>
--            {% else %}
--              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
--                アルバム未設定
--              </button>
--            {% endif %}
--          </div>
-+          {% if member_active %}
-+            <div class="mb-2">
-+              {% if album_url %}
-+                <a class="btn btn-sm btn-outline-success w-100 text-start"
-+                   href="{{ album_url }}" target="_blank" rel="noopener">
-+                  アルバムを開く
-+                </a>
-+              {% else %}
-+                <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
-+                  アルバム未設定
-+                </button>
-+              {% endif %}
-+            </div>
-+          {% endif %}
- 
-           <!-- アンケート -->
--          <div class="mb-2">
--            {% if gf_url %}
--              <a class="btn btn-sm btn-outline-success w-100 text-start"
--                 href="{{ gf_url }}" target="_blank" rel="noopener">
--                アンケートに回答する
--              </a>
--            {% else %}
--              <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
--                アンケート（準備中）
--              </button>
--            {% endif %}
--          </div>
-+          {% if member_active %}
-+            <div class="mb-2">
-+              {% if gf_url %}
-+                <a class="btn btn-sm btn-outline-success w-100 text-start"
-+                   href="{{ gf_url }}" target="_blank" rel="noopener">
-+                  アンケートに回答する
-+                </a>
-+              {% else %}
-+                <button class="btn btn-sm btn-outline-secondary w-100 text-start" disabled>
-+                  アンケート（準備中）
-+                </button>
-+              {% endif %}
-+            </div>
-+          {% endif %}
+-def _load_png_font(size: int, bold: bool = False):
+-    font_candidates = []
+-    if bold:
+-        font_candidates.append("/workspace/MFU/PDF_Font/BIZUDPGothic-Bold.ttf")
+-    font_candidates.extend([
+-        "/workspace/MFU/PDF_Font/BIZUDPGothic-Regular.ttf",
+-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+-    ])
+-    for fp in font_candidates:
+-        if fp and os.path.exists(fp):
+-            try:
+-                return ImageFont.truetype(fp, size)
+-            except Exception:
+-                continue
+-    return ImageFont.load_default()
++PNG_FONT_PATH = "/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf"
 +
-+          {% if member_limited %}
-+            <div class="text-muted small mt-1">
-+              現在の状態では、参加者向け機能（連絡メモ・参加者一覧・LINEオープンチャット・SNS貼付用・アルバム・アンケート）は利用できません。
-+            </div>
-+          {% endif %}
++
++@lru_cache(maxsize=1)
++def _get_png_font_path() -> str:
++    if os.path.exists(PNG_FONT_PATH):
++        return PNG_FONT_PATH
++    current_app.logger.error("PNG Japanese font file not found: %s", PNG_FONT_PATH)
++    raise RuntimeError(f"PNG日本語フォントが見つかりません: {PNG_FONT_PATH}")
++
++
++@lru_cache(maxsize=16)
++def _get_png_font(size: int):
++    font_path = _get_png_font_path()
++    try:
++        return ImageFont.truetype(font_path, size=size)
++    except Exception:
++        current_app.logger.exception("Failed to load PNG Japanese font: path=%s size=%s", font_path, size)
++        raise RuntimeError(f"PNG日本語フォントの読込に失敗しました: {font_path}")
  
-         </div>
-       </div>
-     </div>
  
-     {% if me %}
-       <!-- 支払状況（拡張表示） -->
-       <div class="col-md-6">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-3">支払状況</h2>
+ def _split_multiline(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
+     lines = []
+     for raw_line in str(text or "").splitlines() or [""]:
+         chunks = textwrap.wrap(raw_line, width=80, break_long_words=True, break_on_hyphens=False) or [raw_line]
+         for c in chunks:
+             if not c:
+                 lines.append("")
+                 continue
+             line = c
+             while line:
+                 if draw.textlength(line, font=font) <= max_width:
+                     lines.append(line)
+                     break
+                 cut = max(1, int(len(line) * max_width / max(draw.textlength(line, font=font), 1)))
+                 found = False
+                 for i in range(min(len(line), cut + 2), 0, -1):
+                     piece = line[:i]
+                     if draw.textlength(piece, font=font) <= max_width:
+                         lines.append(piece)
+                         line = line[i:]
+                         found = True
+                         break
+                 if not found:
+@@ -1422,55 +1427,55 @@ def _download_avatar_image(member: dict, size: int):
+             continue
+         except Exception:
+             current_app.logger.exception("avatar fetch failed unexpectedly: %s", candidate)
  
-             {# ★ require_payment を厳密に 0/1 へ正規化してから判定 #}
-             {% set rp = norm01(my_require_payment, 1)|int %}
-             {% set fee = (my_custom_fee_yen if my_custom_fee_yen is defined and my_custom_fee_yen is not none else ev.fee_yen)|default(0)|int %}
-             {% set needs_pay = (rp == 1) and (fee > 0) %}
+     if avatar_image is None:
+         avatar_image = Image.new("RGB", (size, size), (220, 226, 234))
  
-             {# 受け取りの揺れ: my_paid_amount_yen / my_paid_amount のどちらでもOKに #}
-             {% set paid_amt = (my_paid_amount_yen if my_paid_amount_yen is defined else my_paid_amount) %}
-             {# レシートURLはPDF生成エンドポイントのみを利用 #}
-             {% set rcpt_url = (my_receipt_pdf_url if my_receipt_pdf_url is defined else None) %}
+     mask = Image.new("L", (size, size), 0)
+     mask_draw = ImageDraw.Draw(mask)
+     mask_draw.ellipse((0, 0, size, size), fill=255)
+     rounded = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+     rounded.paste(avatar_image, (0, 0), mask)
+     return rounded
  
-             <!-- 上段：現在の状況 / 日付 / 金額 / リンク -->
-             <div class="mb-1"><strong>支払状況：</strong>
-               {% if my_payment_status == 'paid' %}支払済{% elif needs_pay %}未支払{% else %}支払不要{% endif %}
-diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
-index d74c0a21dca5caae3ade986151925347f8a5bd25..b4c176d5309242b159fe66d2b677eaefcfe07d69 100644
---- a/external_login_user/template/ext_index.html
-+++ b/external_login_user/template/ext_index.html
-@@ -148,163 +148,193 @@
-       <div class="card-body">
-         <!-- 見出し -->
-         <div class="d-flex align-items-center justify-content-between mb-3">
-           <h2 class="h5 mb-0">参加イベント一覧</h2>
-         </div>
  
-         <!-- ========= 開催予定（開催日が近い順＝昇順） ========= -->
-         <h3 class="h6 text-muted mb-2">開催予定</h3>
+ def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
+     width = 1200
+     padding_x = 56
+     top_pad = 44
+     avatar_size = 68
+     block_gap = 20
+     line_gap = 8
+     divider_gap_top = 14
+     min_block_height = 110
  
-         {% set upcoming = events_upcoming or [] %}
-         {% if upcoming|length == 0 %}
-           <div class="text-muted">現在、開催予定のイベントはありません。</div>
-         {% else %}
-           <!-- PC/スマホ共通：カード表示に統一 -->
-           <div class="d-flex flex-column gap-3">
-             {% for e in upcoming %}
-               {% set rp = rp_of(e)|int %}
-               {% set fee = e.fee_yen|default(0)|int %}
-               {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
-               {% set ps  = ps0 if ps0 else 'unpaid' %}
-               {% set rcpt = (e.receipt_pdf_url if e.receipt_pdf_url is defined else None) %}
-               {% set needs_pay = (rp == 1) and (fee > 0) %}
-               {% set start = e.starts_at %}
-               {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
-               {% set album_url = e.album_url %}
-+              {% set member_active = (e.status == 'approved' and (e.is_canceled|default(0)|int == 0)) %}
-+              {% set member_limited = (not member_active) %}
-               <div class="card">
-                 <div class="card-body">
-                   <div class="fw-bold">
-                     <a class="text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">
-                       {{ e.title }}
-                     </a>
-                   </div>
-                   <div class="text-muted small mb-2">
-                     {% if start %}
-                       {% if start is string %}
-                         {{ start }}
-                       {% else %}
-                         {{ start.strftime("%Y/%m/%d %H:%M") }}
-                       {% endif %}
-                     {% else %}—{% endif %}
-                   </div>
-+                  {% if member_limited %}
-+                    <div class="small text-warning mb-2">
-+                      {% if e.is_canceled|default(0)|int == 1 %}
-+                        キャンセル済みのため、詳細のみ利用できます。
-+                      {% elif e.status == 'pending' %}
-+                        保留中のため、承認後に各種機能が利用できます。
-+                      {% elif e.status == 'rejected' %}
-+                        現在は各種機能を利用できません。
-+                      {% endif %}
-+                    </div>
-+                  {% endif %}
+-    title_font = _load_png_font(42, bold=True)
+-    summary_font = _load_png_font(28)
+-    name_font = _load_png_font(34, bold=True)
+-    body_font = _load_png_font(25)
+-    role_font = _load_png_font(25, bold=True)
++    title_font = _get_png_font(42)
++    summary_font = _get_png_font(28)
++    name_font = _get_png_font(34)
++    body_font = _get_png_font(25)
++    role_font = _get_png_font(25)
  
-                   <div class="d-flex flex-wrap gap-2">
--                    {% if ps == 'paid' and rcpt %}
--                      <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
--                    {% elif ps == 'paid' %}
--                      <button class="btn btn-sm btn-success" disabled>支払済</button>
--                    {% elif needs_pay %}
--                      <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
--                    {% else %}
--                      <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
--                    {% endif %}
-+                    {% if not member_limited %}
-+                      {% if ps == 'paid' and rcpt %}
-+                        <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
-+                      {% elif ps == 'paid' %}
-+                        <button class="btn btn-sm btn-success" disabled>支払済</button>
-+                      {% elif needs_pay %}
-+                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
-+                      {% else %}
-+                        <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
-+                      {% endif %}
+     temp = Image.new("RGB", (width, 500), "white")
+     draw = ImageDraw.Draw(temp)
+     content_width = width - (padding_x * 2) - avatar_size - 28
  
--                    {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
--                    {% if not has_openchat %}
--                      <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
--                      {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
--                      <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
--                    {% endif %}
-+                      {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
-+                      {% if not has_openchat %}
-+                        <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
-+                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
-+                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
-+                      {% endif %}
+     lines_cache = []
+     total_height = top_pad + 30
+     total_height += int(title_font.size * 1.8)
+     total_height += int(summary_font.size * 2.0)
  
--                    {% if album_url %}
--                      <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
--                    {% else %}
--                      <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
-+                      {% if album_url %}
-+                        <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
-+                      {% else %}
-+                        <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
-+                      {% endif %}
-                     {% endif %}
+     for member in members:
+         name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, content_width)
+         sns_parts = []
+         if member.get("x_id"):
+             sns_parts.append(f"X: {member.get('x_id')}")
+         if member.get("instagram_id"):
+             sns_parts.append(f"IG: {member.get('instagram_id')}")
+         sns_text = " / ".join(sns_parts)
+         sns_lines = _split_multiline(draw, sns_text, body_font, content_width) if sns_text else []
+         role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, content_width)
+         lines_cache.append((name_lines, sns_lines, role_lines))
  
-                     <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
-                   </div>
-                 </div>
-               </div>
-             {% endfor %}
-           </div>
-         {% endif %}
- 
-         <!-- ========= 終了イベント ========= -->
-         <div class="mt-4">
-           <h3 class="h6 text-muted mb-2">終了イベント</h3>
-           {% set past = events_past or [] %}
- 
-           {% if past|length == 0 %}
-             <div class="text-muted">終了イベントはありません。</div>
-           {% else %}
-             <!-- PC/スマホ共通：カード表示に統一 -->
-             <div class="d-flex flex-column gap-3">
-               {% for e in past %}
-                 {% set rp = rp_of(e)|int %}
-                 {% set fee = e.fee_yen|default(0)|int %}
-                 {% set ps0 = (e.my_payment_status if e.my_payment_status is defined else e.payment_status) %}
-                 {% set ps  = ps0 if ps0 else 'unpaid' %}
-                 {% set rcpt = (e.receipt_pdf_url if e.receipt_pdf_url is defined else None) %}
-                 {% set needs_pay = (rp == 1) and (fee > 0) %}
-                 {% set start = e.starts_at %}
-                 {% set uuid_str = (e.event_uuid_str if e.event_uuid_str is defined else e.event_uuid) %}
-                 {% set album_url = e.album_url %}
-+                {% set member_active = (e.status == 'approved' and (e.is_canceled|default(0)|int == 0)) %}
-+                {% set member_limited = (not member_active) %}
-                 <div class="card">
-                   <div class="card-body">
-                     <div class="fw-bold">
-                       <a class="text-decoration-none" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">
-                         {{ e.title }}
-                       </a>
-                     </div>
-                     <div class="text-muted small mb-2">
-                       {% if start %}
-                         {% if start is string %}
-                           {{ start }}
-                         {% else %}
-                           {{ start.strftime("%Y/%m/%d %H:%M") }}
-                         {% endif %}
-                       {% else %}—{% endif %}
-                     </div>
-+                    {% if member_limited %}
-+                      <div class="small text-warning mb-2">
-+                        {% if e.is_canceled|default(0)|int == 1 %}
-+                          キャンセル済みのため、詳細のみ利用できます。
-+                        {% elif e.status == 'pending' %}
-+                          保留中のため、承認後に各種機能が利用できます。
-+                        {% elif e.status == 'rejected' %}
-+                          現在は各種機能を利用できません。
-+                        {% endif %}
-+                      </div>
-+                    {% endif %}
- 
-                     <div class="d-flex flex-wrap gap-2">
--                      {% if ps == 'paid' and rcpt %}
--                        <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
--                      {% elif ps == 'paid' %}
--                        <button class="btn btn-sm btn-success" disabled>支払済</button>
--                      {% elif needs_pay %}
--                        <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
--                      {% else %}
--                        <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
--                      {% endif %}
-+                      {% if not member_limited %}
-+                        {% if ps == 'paid' and rcpt %}
-+                          <a class="btn btn-sm btn-success" href="{{ rcpt }}" target="_blank" rel="noopener">支払済（レシート）</a>
-+                        {% elif ps == 'paid' %}
-+                          <button class="btn btn-sm btn-success" disabled>支払済</button>
-+                        {% elif needs_pay %}
-+                          <a class="btn btn-sm btn-primary" href="{{ url_for('external_login_user.pay_start', event_uuid=uuid_str) }}">支払</a>
-+                        {% else %}
-+                          <button class="btn btn-sm btn-outline-secondary" disabled>支払不要</button>
-+                        {% endif %}
- 
--                      {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
--                      {% if not has_openchat %}
--                        <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
--                        {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
--                        <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
--                      {% endif %}
-+                        {% set has_openchat = ((e.line_openchat_url or '')|trim) %}
-+                        {% if not has_openchat %}
-+                          <a class="btn btn-sm btn-outline-info" href="/chat/events/{{ e.id }}">チャット</a>
-+                          {% set _chat_unread = (e.chat_unread_count|default(0)|int) %}
-+                          <span class="badge rounded-pill bg-danger text-white align-self-center js-chat-unread-badge {{ 'd-none' if _chat_unread <= 0 else '' }}" data-event-id="{{ e.id }}">{{ _chat_unread if _chat_unread > 0 else '0' }}</span>
-+                        {% endif %}
- 
--                      {% if album_url %}
--                        <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
--                      {% else %}
--                        <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
-+                        {% if album_url %}
-+                          <a class="btn btn-sm btn-outline-success" href="{{ album_url }}" target="_blank" rel="noopener">アルバム</a>
-+                        {% else %}
-+                          <button class="btn btn-sm btn-outline-secondary" disabled>アルバム未設定</button>
-+                        {% endif %}
-                       {% endif %}
- 
-                       <a class="btn btn-sm btn-outline-primary" href="{{ url_for('external_login_user.view_event', event_uuid=uuid_str) }}">詳細</a>
- 
--                      {% if (e.tip_enabled|default(0)|int) == 1 %}
-+                      {% if (e.tip_enabled|default(0)|int) == 1 and not member_limited %}
-                         <button
-                           type="button"
-                           class="btn btn-sm btn-warning js-tip-open"
-                           data-bs-toggle="modal"
-                           data-bs-target="#tipModal"
-                           data-event-id="{{ e.id }}"
-                           data-event-title="{{ e.title|e }}"
-                         >投げ銭</button>
-                       {% endif %}
-                     </div>
-                   </div>
-                 </div>
-               {% endfor %}
-             </div>
-           {% endif %}
-         </div>
-       </div>
-     </div>
-   {% else %}
-     <div class="line-login-cta mb-3">
-       <p class="lead mb-2">はじめるには LINE ログインが必要です</p>
-       <ul class="mb-3 ps-3">
-         <li>参加イベントの確認・支払い・アルバム共有に使います</li>
-         <li>通知や連絡のため、ログイン後にプロフィールでメールも登録できます</li>
-       </ul>
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index b41ae821cbb1eda0a0803d93c273216becd895a3..6efb7eb4653404204077b520eb94b7f2d8745bd1 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -1055,99 +1055,101 @@ def index():
- 
-     social_id = session.get("ext_user_social_id")
-     me = _get_ext_user_by_social(social_id) if social_id else None
-     privacy_view = _build_privacy_policy_view_data(row or me)
-     if "ext_csrf" not in session:
-         session["ext_csrf"] = secrets.token_hex(16)
- 
-     if request.args.get("tip") == "done":
-         if request.args.get("status") == "ok":
-             flash("投げ銭ありがとうございます！", "success")
-         elif request.args.get("status") == "ng":
-             flash("投げ銭の決済が完了しませんでした。", "warning")
- 
-     events_upcoming, events_past = [], []
-     if me:
-         db = get_db(); cur = db.cursor(dictionary=True)
-         has_deleted_at = _mfu_event_has_deleted_at_column()
-         where_deleted = "WHERE e.deleted_at IS NULL" if has_deleted_at else ""
-         cur.execute(f"""
-           SELECT
-             e.id, e.event_uuid, e.title,
-             e.starts_at, e.fee_yen, e.album_id, e.line_openchat_url,
-             COALESCE(e.tip_enabled,0) AS tip_enabled,
-             m.id AS member_id,
-             COALESCE(m.status,'pending')                        AS status,
-+            COALESCE(m.is_canceled,0)                          AS is_canceled,
-             COALESCE(m.payment_status,'unpaid')                 AS payment_status,
-             m.receipt_url,
-             COALESCE(m.bank_transfer,0) AS bank_transfer,
-             COALESCE(m.paypay_transfer,0) AS paypay_transfer,
-             CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment
-           FROM mfu_event e
-           JOIN (
-               SELECT MAX(id) AS id, event_id
-                 FROM mfu_event_member
-                WHERE user_id = %s
-                GROUP BY event_id
-           ) mm ON mm.event_id = e.id
-           JOIN mfu_event_member m ON m.id = mm.id
-           {where_deleted}
-           ORDER BY e.starts_at IS NULL, e.starts_at
-           LIMIT 200
-         """, (me["id"],))
-         raws = cur.fetchall()
-         cur.close(); db.close()
- 
-         event_unread_counts: dict[int, int] = {}
-         if raws:
-             event_ids = [int(r["id"]) for r in raws if r.get("id")]
-             use_mfu_admin_scope = _is_chat_admin_alias_ext_user(int(me.get("id") or 0))
-             if event_ids:
-                 event_unread_counts = _load_event_chat_unread_counts(
-                     event_ids=event_ids,
-                     ext_user_id=int(me.get("id") or 0),
-                     use_mfu_admin_scope=use_mfu_admin_scope,
-                 )
- 
-         from datetime import datetime as _dt
-         now = _dt.now()
- 
-         def _to_dt(v):
-             try:
-                 if hasattr(v, "year"): return v
-                 return _dt.fromisoformat(str(v).replace(" ", "T"))
-             except Exception:
-                 return None
- 
-         for r in raws:
-             euuid_str = _uuid_bytes_to_str(r["event_uuid"])
-             item = {
-                 "id": r["id"],
-                 "event_uuid_str": euuid_str,
-                 "title": r["title"],
-                 "starts_at": r["starts_at"],
-                 "status": r["status"] or "pending",
-+                "is_canceled": int(r.get("is_canceled") or 0),
-                 "payment_status": r["payment_status"] or "unpaid",
-                 "receipt_url": r["receipt_url"],
-                 "member_id": r.get("member_id"),
-                 "bank_transfer": int(r.get("bank_transfer") or 0),
-                 "paypay_transfer": int(r.get("paypay_transfer") or 0),
-                 "fee_yen": r["fee_yen"],
-                 "album_id": r["album_id"],
-                 "album_url": (url_for("album.album_access", album_id=r["album_id"]) if r["album_id"] else None),
-                 "pay_url": url_for("external_login_user.pay_start", event_uuid=euuid_str),
-                 "require_payment": int(r["require_payment"]),
-                 "tip_enabled": int(r.get("tip_enabled") or 0),
-                 "my_payment_status": r["payment_status"] or "unpaid",
-                 "my_receipt_url": r["receipt_url"],
-                 "line_openchat_url": _normalize_external_url(r.get("line_openchat_url")),
-                 "chat_unread_count": int(event_unread_counts.get(int(r["id"]), 0)),
-             }
-             receipt_pdf_url = None
-             if (
-                 item["my_payment_status"] == "paid"
-                 and item["member_id"]
-                 and (
-                     item["bank_transfer"] == 1
-                     or item["paypay_transfer"] == 1
-                     or item["receipt_url"]
-                 )
+         block_h = 0
+         block_h += len(name_lines) * (name_font.size + line_gap)
+         block_h += len(sns_lines) * (body_font.size + line_gap)

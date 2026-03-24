@@ -2,6 +2,10 @@
 from __future__ import annotations
 import csv
 import math
+import os
+import re
+import textwrap
+from functools import lru_cache
 from flask import request, jsonify
 from email.mime.text import MIMEText
 from email.header import Header
@@ -27,8 +31,8 @@ from .utils import (
 from app.utils.mail import send_mail
 
 
-from io import StringIO
-from flask import request, session, redirect, url_for, render_template, abort, flash, make_response
+from io import StringIO, BytesIO
+from flask import request, session, redirect, url_for, render_template, abort, flash, make_response, send_file
 from . import bp
 from .utils import (
     _require_mfu_login_redirect, _admin_csrf_token, _uuid_bytes_to_str, _event_admin_can_view, update_event_member_status,
@@ -126,6 +130,8 @@ def _recalc_event_fee_if_auto(event_id: int) -> bool:
 from urllib.parse import quote_plus
 from flask import request, jsonify
 from app.utils.db import get_db
+import requests
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 # 既存の import 群と同じファイル内（関数定義の上の方）に追加
 def _update_member_status_and_notify(event_id: int, user_id: int, new_status: str):
@@ -1256,6 +1262,264 @@ def admin_event_edit(event_id: int):
         require_payment_count=require_payment_count, admin_csrf=admin_csrf,
         qr_trademark_notice=QR_TRADEMARK_NOTICE)
 
+
+def _fetch_event_members_in_admin_order(event_id: int):
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+          SELECT
+            m.user_id,
+            u.nickname,
+            u.x_id,
+            u.instagram_id,
+            u.avatar_file,
+            u.avatar_url,
+            u.updated_at,
+            COALESCE(m.is_host, 0)              AS is_host,
+            COALESCE(m.is_subhost, 0)           AS is_subhost,
+            COALESCE(m.participant_role, 'none') AS participant_role,
+            m.costume_label,
+            m.status,
+            COALESCE(m.is_canceled, 0)          AS is_canceled,
+            m.joined_at,
+            CASE
+              WHEN COALESCE(m.is_host, 0)=1 THEN 0
+              WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
+              WHEN LOWER(COALESCE(m.participant_role,''))='camera' THEN 2
+              WHEN LOWER(COALESCE(m.participant_role,''))='assistant' THEN 3
+              WHEN LOWER(COALESCE(m.participant_role,''))='cosplayer' THEN 4
+              ELSE 5
+            END AS role_rank
+          FROM mfu_event_member m
+          JOIN external_login_user u ON u.id = m.user_id
+         WHERE m.event_id=%s
+         ORDER BY role_rank ASC, u.nickname ASC, m.joined_at ASC
+        """, (event_id,))
+        return cur.fetchall() or []
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except Exception:
+            pass
+
+
+def _compose_member_role_label(member: dict) -> str:
+    admin_prefix = ""
+    if int(member.get("is_host") or 0) == 1:
+        admin_prefix = "主催"
+    elif int(member.get("is_subhost") or 0) == 1:
+        admin_prefix = "副主催"
+
+    role_raw = str(member.get("participant_role") or "").strip().lower()
+    costume_label = (member.get("costume_label") or "").strip()
+    role_label = ""
+    if role_raw == "camera":
+        role_label = "カメラマン"
+    elif role_raw == "assistant":
+        role_label = "アシスタント"
+    elif role_raw == "cosplayer":
+        role_label = f"衣装（{costume_label}）" if costume_label else "衣装"
+    elif role_raw == "other":
+        role_label = f"その他（{costume_label}）" if costume_label else "その他"
+
+    if admin_prefix and role_label:
+        return f"{admin_prefix}＆{role_label}"
+    if admin_prefix:
+        return admin_prefix
+    if role_label:
+        return role_label
+    return "その他"
+
+
+def _safe_png_download_filename(event_id: int, title: str | None) -> str:
+    base = (title or "").strip()
+    if not base:
+        return f"participants_{event_id}.png"
+    safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", base)
+    safe = re.sub(r"\s+", "_", safe).strip("._")
+    if not safe:
+        safe = f"event_{event_id}"
+    return f"{safe}_参加者一覧.png"
+
+
+PNG_FONT_PATH = "/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf"
+
+
+@lru_cache(maxsize=1)
+def _get_png_font_path() -> str:
+    if os.path.exists(PNG_FONT_PATH):
+        return PNG_FONT_PATH
+    current_app.logger.error("PNG Japanese font file not found: %s", PNG_FONT_PATH)
+    raise RuntimeError(f"PNG日本語フォントが見つかりません: {PNG_FONT_PATH}")
+
+
+@lru_cache(maxsize=16)
+def _get_png_font(size: int):
+    font_path = _get_png_font_path()
+    try:
+        return ImageFont.truetype(font_path, size=size)
+    except Exception:
+        current_app.logger.exception("Failed to load PNG Japanese font: path=%s size=%s", font_path, size)
+        raise RuntimeError(f"PNG日本語フォントの読込に失敗しました: {font_path}")
+
+
+def _split_multiline(draw: ImageDraw.ImageDraw, text: str, font, max_width: int):
+    lines = []
+    for raw_line in str(text or "").splitlines() or [""]:
+        chunks = textwrap.wrap(raw_line, width=80, break_long_words=True, break_on_hyphens=False) or [raw_line]
+        for c in chunks:
+            if not c:
+                lines.append("")
+                continue
+            line = c
+            while line:
+                if draw.textlength(line, font=font) <= max_width:
+                    lines.append(line)
+                    break
+                cut = max(1, int(len(line) * max_width / max(draw.textlength(line, font=font), 1)))
+                found = False
+                for i in range(min(len(line), cut + 2), 0, -1):
+                    piece = line[:i]
+                    if draw.textlength(piece, font=font) <= max_width:
+                        lines.append(piece)
+                        line = line[i:]
+                        found = True
+                        break
+                if not found:
+                    lines.append(line[:1])
+                    line = line[1:]
+    return lines or [""]
+
+
+def _download_avatar_image(member: dict, size: int):
+    avatar_image = None
+    avatar_file = member.get("avatar_file")
+    avatar_url = member.get("avatar_url")
+    updated_at = member.get("updated_at")
+    version = ""
+    try:
+        if updated_at:
+            version = str(int(updated_at.timestamp()))
+    except Exception:
+        version = ""
+
+    candidate_urls = []
+    if avatar_file:
+        local_url = url_for("external_login_user.avatar_file", name=avatar_file, _external=True)
+        candidate_urls.append(f"{local_url}?v={version}" if version else local_url)
+    if avatar_url:
+        if version:
+            sep = "&" if "?" in avatar_url else "?"
+            candidate_urls.append(f"{avatar_url}{sep}v={version}")
+        else:
+            candidate_urls.append(avatar_url)
+
+    for candidate in candidate_urls:
+        try:
+            response = requests.get(candidate, timeout=2.5)
+            response.raise_for_status()
+            img = Image.open(BytesIO(response.content)).convert("RGB")
+            avatar_image = ImageOps.fit(img, (size, size), method=Image.Resampling.LANCZOS)
+            break
+        except (requests.RequestException, OSError, UnidentifiedImageError, ValueError):
+            continue
+        except Exception:
+            current_app.logger.exception("avatar fetch failed unexpectedly: %s", candidate)
+
+    if avatar_image is None:
+        avatar_image = Image.new("RGB", (size, size), (220, 226, 234))
+
+    mask = Image.new("L", (size, size), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.ellipse((0, 0, size, size), fill=255)
+    rounded = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    rounded.paste(avatar_image, (0, 0), mask)
+    return rounded
+
+
+def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
+    width = 1200
+    padding_x = 56
+    top_pad = 44
+    avatar_size = 68
+    block_gap = 20
+    line_gap = 8
+    divider_gap_top = 14
+    min_block_height = 110
+
+    title_font = _get_png_font(42)
+    summary_font = _get_png_font(28)
+    name_font = _get_png_font(34)
+    body_font = _get_png_font(25)
+    role_font = _get_png_font(25)
+
+    temp = Image.new("RGB", (width, 500), "white")
+    draw = ImageDraw.Draw(temp)
+    content_width = width - (padding_x * 2) - avatar_size - 28
+
+    lines_cache = []
+    total_height = top_pad + 30
+    total_height += int(title_font.size * 1.8)
+    total_height += int(summary_font.size * 2.0)
+
+    for member in members:
+        name_lines = _split_multiline(draw, member.get("nickname") or "（名前未設定）", name_font, content_width)
+        sns_parts = []
+        if member.get("x_id"):
+            sns_parts.append(f"X: {member.get('x_id')}")
+        if member.get("instagram_id"):
+            sns_parts.append(f"IG: {member.get('instagram_id')}")
+        sns_text = " / ".join(sns_parts)
+        sns_lines = _split_multiline(draw, sns_text, body_font, content_width) if sns_text else []
+        role_lines = _split_multiline(draw, _compose_member_role_label(member), role_font, content_width)
+        lines_cache.append((name_lines, sns_lines, role_lines))
+
+        block_h = 0
+        block_h += len(name_lines) * (name_font.size + line_gap)
+        block_h += len(sns_lines) * (body_font.size + line_gap)
+        block_h += len(role_lines) * (role_font.size + line_gap)
+        block_h += divider_gap_top + 8
+        block_h = max(min_block_height, block_h)
+        total_height += block_h + block_gap
+
+    total_height = max(total_height + 24, 260)
+    image = Image.new("RGB", (width, total_height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.text((padding_x, top_pad), event_title or "イベント参加者一覧", fill="#111111", font=title_font)
+    summary_text = f"参加者 {len(members)} 名（approved / 非キャンセル）"
+    draw.text((padding_x, top_pad + 64), summary_text, fill="#444444", font=summary_font)
+
+    y = top_pad + 120
+    avatar_x = padding_x
+    text_x = avatar_x + avatar_size + 28
+    for idx, member in enumerate(members):
+        name_lines, sns_lines, role_lines = lines_cache[idx]
+        avatar = _download_avatar_image(member, avatar_size)
+        image.paste(avatar, (avatar_x, y + 4), avatar)
+
+        text_y = y
+        for line in name_lines:
+            draw.text((text_x, text_y), line, fill="#111111", font=name_font)
+            text_y += name_font.size + line_gap
+        for line in sns_lines:
+            draw.text((text_x, text_y), line, fill="#4b5563", font=body_font)
+            text_y += body_font.size + line_gap
+        for line in role_lines:
+            draw.text((text_x, text_y), line, fill="#1f2937", font=role_font)
+            text_y += role_font.size + line_gap
+
+        block_bottom = max(y + min_block_height, text_y + divider_gap_top)
+        draw.line((padding_x, block_bottom, width - padding_x, block_bottom), fill="#e5e7eb", width=2)
+        y = block_bottom + block_gap
+
+    output = BytesIO()
+    image.save(output, format="PNG")
+    output.seek(0)
+    return output
+
+
 # 以降（CSV出力・役割/支払金額の更新・他）は既存そのまま
 @bp.route("/admin/events/<int:event_id>/export.csv")
 def admin_event_export_csv(event_id: int):
@@ -1386,6 +1650,48 @@ def admin_event_export_csv(event_id: int):
         filename = f"event_{event_id}_members.csv"
     resp.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
     return resp
+
+
+@bp.route("/admin/events/<int:event_id>/participants.png", endpoint="admin_event_export_participants_png")
+def admin_event_export_participants_png(event_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT id, title FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+        ev = cur.fetchone()
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except Exception:
+            pass
+    if not ev:
+        abort(404, "イベントが見つかりません")
+    if not _event_admin_can_view(event_id):
+        abort(403, "このイベントへのアクセス権がありません。")
+
+    rows = _fetch_event_members_in_admin_order(event_id)
+    target_members = [
+        r for r in rows
+        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
+    ]
+    try:
+        png_data = _render_participants_png(ev.get("title") or "", target_members)
+    except Exception:
+        current_app.logger.exception("participants png export failed (event_id=%s)", event_id)
+        abort(500, "PNG生成に失敗しました")
+
+    download_name = _safe_png_download_filename(event_id, ev.get("title"))
+    return send_file(
+        png_data,
+        mimetype="image/png",
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 @bp.post("/admin/events/<int:event_id>/members/<int:user_id>/toggle-payment")
 def admin_event_member_toggle_payment(event_id: int, user_id: int):

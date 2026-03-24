@@ -21,6 +21,10 @@
    href="{{ url_for('external_login_user.admin_event_export_csv', event_id=ev.id) }}">
   CSVダウンロード
 </a>
+<a class="btn btn-sm btn-outline-secondary"
+   href="{{ url_for('external_login_user.admin_event_export_participants_png', event_id=ev.id) }}">
+  参加者一覧PNG
+</a>
   </div>
 </div>
 
