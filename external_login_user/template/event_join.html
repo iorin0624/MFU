@@ -104,35 +104,6 @@
         </div>
       </div>
 
-      {% if privacy_policy_effective %}
-      <div class="col-12">
-        <div class="card h-100">
-          <div class="card-body">
-            <h2 class="h6 mb-3">プライバシーポリシー</h2>
-            <div class="form-check">
-              <input
-                class="form-check-input {% if privacy_policy_error %}is-invalid{% endif %}"
-                type="checkbox"
-                id="privacyPolicyAgree"
-                name="privacy_policy_agree"
-                value="1"
-                {% if privacy_policy_checked %}checked{% endif %}>
-              <label class="form-check-label" for="privacyPolicyAgree">
-                プライバシーポリシーに同意する
-                <a href="{{ privacy_policy_url }}" target="_blank" rel="noopener">（リンク）</a>
-              </label>
-              {% if privacy_policy_error %}
-                <div class="invalid-feedback d-block">{{ privacy_policy_error }}</div>
-              {% endif %}
-            </div>
-            {% if privacy_policy_agreed_latest %}
-              <div class="form-text mt-2">現在有効な版には既に同意済みですが、参加申請時は再度チェックが必要です。</div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-      {% endif %}
-
       {% if participant_terms_effective %}
       <div class="col-12">
         <div class="card h-100">

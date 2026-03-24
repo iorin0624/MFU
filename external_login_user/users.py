@@ -287,6 +287,56 @@ def _resolve_privacy_policy_post_agree_next() -> str:
     return next_url or url_for("external_login_user.index")
 
 
+def _is_ext_profile_incomplete(user_row: dict | None, *, force_profile: bool = False) -> bool:
+    if force_profile:
+        return True
+    nick = str((user_row or {}).get("nickname") or "").strip()
+    return (not nick) or nick == "（未設定）"
+
+
+def _resolve_ext_login_prerequisite_redirect(
+    user_row: dict | None,
+    next_url: str | None,
+    *,
+    force_profile: bool = False,
+    skip_privacy: bool = False,
+):
+    """
+    外部ログイン導線の前段ステップを優先順位で解決する。
+      privacy -> profile -> unverified -> join(=next_url)
+    条件に当てはまらなければ None を返す。
+    """
+    safe_next = _sanitize_ext_local_url(next_url, default="/external-login/")
+    if _is_disallowed_ext_redirect_path(safe_next):
+        safe_next = url_for("external_login_user.index")
+    if not safe_next:
+        safe_next = url_for("external_login_user.index")
+
+    if not skip_privacy:
+        privacy_required = _needs_privacy_policy_agreement(
+            user_row or {},
+            _get_current_privacy_policy_config(),
+        )
+        if privacy_required:
+            session["ext_after_privacy_policy_next"] = safe_next
+            return redirect(url_for("external_login_user.index"))
+
+    if _is_ext_profile_incomplete(user_row, force_profile=force_profile):
+        profile_next = _sanitize_ext_local_url(
+            url_for("external_login_user.profile", next=safe_next),
+            default=url_for("external_login_user.profile"),
+        )
+        return redirect(profile_next)
+
+    email = str((user_row or {}).get("email") or "").strip()
+    email_verified_at = (user_row or {}).get("email_verified_at")
+    if email and not email_verified_at:
+        session["ext_after_verify_next"] = safe_next
+        return redirect(url_for("external_login_user.unverified", next=safe_next))
+
+    return None
+
+
 def _fetchone_dict(cur):
     row = cur.fetchone()
     if row is None:
@@ -1168,8 +1218,34 @@ def privacy_policy_agree():
             flash("プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。", "danger")
             return redirect(url_for("external_login_user.index"))
         flash("プライバシーポリシーに同意しました。", "success")
+    next_url = _resolve_privacy_policy_post_agree_next()
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id, nickname, email, email_verified_at, privacy_policy_agreed_revised_date
+              FROM external_login_user
+             WHERE id=%s
+             LIMIT 1
+            """,
+            (ext_user_id,),
+        )
+        me = cur.fetchone() or {}
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
 
-    return redirect(_resolve_privacy_policy_post_agree_next())
+    gate = _resolve_ext_login_prerequisite_redirect(
+        me,
+        next_url,
+        force_profile=bool(session.get("ext_user_onboarding")),
+        skip_privacy=True,
+    )
+    if gate:
+        return gate
+    return redirect(next_url)
 
 
 
@@ -1463,6 +1539,7 @@ def line_callback():
         # email を含めて取得（既存未保存時に保存するため avatar_file / avatar_url も取る）
         cur.execute("""
             SELECT id, nickname, avatar_file, avatar_url, email,
+                   email_verified_at,
                    privacy_policy_agreed_revised_date
             FROM external_login_user
             WHERE social_id=%s
@@ -1572,13 +1649,26 @@ def line_callback():
     privacy_user_row = {}
     if row:
         if isinstance(row, dict):
-            privacy_user_row["privacy_policy_agreed_revised_date"] = row.get("privacy_policy_agreed_revised_date")
-        elif isinstance(row, tuple) and len(row) >= 6:
-            privacy_user_row["privacy_policy_agreed_revised_date"] = row[5]
-    privacy_required = _needs_privacy_policy_agreement(
-        privacy_user_row,
-        _get_current_privacy_policy_config(),
-    )
+            privacy_user_row = {
+                "nickname": row.get("nickname"),
+                "email": row.get("email"),
+                "email_verified_at": row.get("email_verified_at"),
+                "privacy_policy_agreed_revised_date": row.get("privacy_policy_agreed_revised_date"),
+            }
+        elif isinstance(row, tuple) and len(row) >= 7:
+            privacy_user_row = {
+                "nickname": row[1],
+                "email": row[4],
+                "email_verified_at": row[5],
+                "privacy_policy_agreed_revised_date": row[6],
+            }
+    else:
+        privacy_user_row = {
+            "nickname": nickname_for_log,
+            "email": "",
+            "email_verified_at": None,
+            "privacy_policy_agreed_revised_date": None,
+        }
 
     # ---- リダイレクト方針 ----
     # ・初回: ext_user_onboarding=True（テンプレの「初回だけプロフィール作成…」を出したいケース）
@@ -1602,17 +1692,14 @@ def line_callback():
         # \n を <br> にして安全にマーク
         email_notice_markup = Markup("<br>".join(escape(email_notice).split("\n")))
         flash(email_notice_markup, "info")
-        if login_mode != EXT_LOGIN_MODE_PWA:
-            # プロフィール画面へ誘導（reason=email を付与しておくとテンプレ側で出し分けもしやすい）
-            profile_next_url = url_for("external_login_user.profile", next=next_path, reason="email")
-            if privacy_required:
-                session["ext_after_privacy_policy_next"] = profile_next_url
-                return redirect(url_for("external_login_user.index"))
-            return redirect(profile_next_url)
     else:
         session.pop("ext_user_need_email", None)
 
     if login_mode == EXT_LOGIN_MODE_PWA:
+        privacy_required = _needs_privacy_policy_agreement(
+            privacy_user_row,
+            _get_current_privacy_policy_config(),
+        )
         pwa_next_path = url_for("external_login_user.index") if privacy_required else next_path
         if privacy_required:
             session["ext_after_privacy_policy_next"] = _sanitize_ext_local_url(next_path, default="/external-login/")
@@ -1624,12 +1711,13 @@ def line_callback():
             pwa_client_id=pwa_client_id or None,
         )
         return redirect(url_for("external_login_user.pwa_resume_page", rt=resume_token))
-
-    if privacy_required:
-        session["ext_after_privacy_policy_next"] = _sanitize_ext_local_url(next_path, default="/external-login/")
-        return redirect(url_for("external_login_user.index"))
-
-    # メール登録済みなら通常遷移
+    gate = _resolve_ext_login_prerequisite_redirect(
+        privacy_user_row,
+        next_path,
+        force_profile=bool(onboarding),
+    )
+    if gate:
+        return gate
     return redirect(next_path or session.pop("ext_after_login_next", None) or url_for("external_login_user.index"))
 
 
@@ -2234,7 +2322,7 @@ def join_event(event_uuid: str):
 
     # --- 外部ユーザーを取得（social_id → external_login_user.id） ---
     cur.execute("""
-        SELECT id, email, nickname, x_id, instagram_id,
+        SELECT id, email, email_verified_at, nickname, x_id, instagram_id,
                privacy_policy_agreed_revised_date,
                privacy_policy_agreed_at
           FROM external_login_user
@@ -2252,13 +2340,16 @@ def join_event(event_uuid: str):
     xid      = u.get("x_id") or ""
     igid     = u.get("instagram_id") or ""
 
-    # --- プロフィール未設定チェック ---
-    # ニックネームが未設定、または「（未設定）」の場合はプロフィール編集へ誘導
-    is_profile_incomplete = not (nick and str(nick).strip()) or nick == "（未設定）"
-    if is_profile_incomplete:
-        session["ext_after_login_next"] = request.url
-        flash("イベントに参加する前に、プロフィールの作成をお願いします。", "info")
-        return redirect(url_for("external_login_user.profile", next=request.url))
+    # --- join 前段導線ガード（privacy -> profile -> unverified） ---
+    gate = _resolve_ext_login_prerequisite_redirect(
+        u,
+        request.url,
+        force_profile=bool(session.get("ext_user_onboarding")),
+    )
+    if gate:
+        if bool(session.get("ext_user_onboarding")) or _is_ext_profile_incomplete(u):
+            flash("イベントに参加する前に、プロフィールの作成をお願いします。", "info")
+        return gate
 
     # --- イベント本体（テンプレが参照する列は必ず選ぶ） ---
     cur.execute("""
@@ -2291,12 +2382,8 @@ def join_event(event_uuid: str):
     ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"])
     ev["event_uuid_str"] = ev_uuid_str
     admin_url = f"https://mfu.iori0624.jp/external-login/admin/events/{ev['id']}"
-    privacy_config = _get_current_privacy_policy_config()
-    privacy_effective = _is_privacy_policy_effective(privacy_config)
-    privacy_required_for_user = _needs_privacy_policy_agreement(u, privacy_config)
     participant_terms_config = _get_current_participant_terms_config()
     participant_terms_effective = _is_participant_terms_effective(participant_terms_config)
-    privacy_error = ""
     participant_terms_error = ""
 
     # 既存メンバー状況
@@ -2350,10 +2437,7 @@ def join_event(event_uuid: str):
             cur.close(); db.close()
             abort(400, "invalid csrf token")
 
-        privacy_agree_checked = request.form.get("privacy_policy_agree") in ("1", "on", "true", "yes")
         participant_terms_checked = request.form.get("participant_terms_agree") in ("1", "on", "true", "yes")
-        if privacy_effective and not privacy_agree_checked:
-            privacy_error = "参加申請にはプライバシーポリシーへの同意が必要です。"
         if participant_terms_effective and not participant_terms_checked:
             participant_terms_error = "参加申請には参加条件・支払・キャンセル規定・返金規定への同意が必要です。"
 
@@ -2368,7 +2452,7 @@ def join_event(event_uuid: str):
             costume = None  # サーバ側でも空に
         process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
 
-        if privacy_error or participant_terms_error:
+        if participant_terms_error:
             status = (m and m.get("status")) or None
             cur.close(); db.close()
             return render_template(
@@ -2379,11 +2463,6 @@ def join_event(event_uuid: str):
                 form_costume=costume or "",
                 form_process=bool(process_flag),
                 csrf_token=csrf_token,
-                privacy_policy_effective=privacy_effective,
-                privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
-                privacy_policy_error=privacy_error,
-                privacy_policy_checked=privacy_agree_checked,
-                privacy_policy_agreed_latest=not privacy_required_for_user,
                 participant_terms_effective=participant_terms_effective,
                 participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
                 participant_terms_error=participant_terms_error,
@@ -2394,28 +2473,6 @@ def join_event(event_uuid: str):
         already_approved = bool(m and (m.get("status") or "").strip().lower() == "approved")
         new_status = "approved" if (auto_hit or already_approved) else "pending"
         should_notify = not (already_approved and auto_hit_by_lecture)
-
-        if privacy_effective and privacy_required_for_user:
-            if not _agree_current_privacy_policy(ext_uid, source="join"):
-                cur.close(); db.close()
-                return render_template(
-                    "event_join.html",
-                    ev=ev,
-                    status=None,
-                    form_role=role,
-                    form_costume=costume or "",
-                    form_process=bool(process_flag),
-                    csrf_token=csrf_token,
-                    privacy_policy_effective=privacy_effective,
-                    privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
-                    privacy_policy_error="プライバシーポリシーへの同意保存に失敗しました。時間をおいて再度お試しください。",
-                    privacy_policy_checked=privacy_agree_checked,
-                    privacy_policy_agreed_latest=False,
-                    participant_terms_effective=participant_terms_effective,
-                    participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
-                    participant_terms_error=participant_terms_error,
-                    participant_terms_checked=participant_terms_checked,
-                ), 500
 
         update_event_member_status(
             ev["id"],
@@ -2445,15 +2502,6 @@ def join_event(event_uuid: str):
             join_update_values.extend([
                 datetime.now(JST).replace(tzinfo=None),
                 participant_terms_config.get("participant_terms_revised_date"),
-            ])
-        if privacy_effective and privacy_agree_checked:
-            join_update_parts.extend([
-                "privacy_policy_join_agreed_at=%s",
-                "privacy_policy_join_agreed_revised_date=%s",
-            ])
-            join_update_values.extend([
-                datetime.now(JST).replace(tzinfo=None),
-                privacy_config.get("privacy_policy_revised_date"),
             ])
         join_update_values.extend([ev["id"], ext_uid])
         cur.execute(
@@ -2602,11 +2650,6 @@ def join_event(event_uuid: str):
         form_costume=form_costume,
         form_process=form_process,
         csrf_token=csrf_token,
-        privacy_policy_effective=privacy_effective,
-        privacy_policy_url=privacy_config.get("privacy_policy_url") or "",
-        privacy_policy_error=privacy_error,
-        privacy_policy_checked=False,
-        privacy_policy_agreed_latest=not privacy_required_for_user,
         participant_terms_effective=participant_terms_effective,
         participant_terms_url=participant_terms_config.get("participant_terms_url") or "",
         participant_terms_error=participant_terms_error,
@@ -3953,8 +3996,14 @@ def verify_email_pin():
     ok, reason = _consume_verify_pin(uid, email, pin)
     if ok:
         flash("メールアドレスの確認が完了しました。", "success")
-        next_url = (request.form.get("next") or "").strip() or session.pop("ext_after_verify_next", None) or session.pop("ext_after_login_next", None) or url_for("external_login_user.index")
-        if not (next_url.startswith("/") and not next_url.startswith("//")):
+        raw_next_url = (
+            (request.form.get("next") or "").strip()
+            or session.pop("ext_after_verify_next", None)
+            or session.pop("ext_after_login_next", None)
+            or url_for("external_login_user.index")
+        )
+        next_url = _sanitize_ext_local_url(raw_next_url, default=url_for("external_login_user.index"))
+        if _is_disallowed_ext_redirect_path(next_url):
             next_url = url_for("external_login_user.index")
         return redirect(next_url)
 

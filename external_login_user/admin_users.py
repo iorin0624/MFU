@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 from flask import request, render_template, jsonify, abort, url_for, redirect, session, current_app
 from . import bp
@@ -55,7 +55,7 @@ def _column_exists(table: str, column: str) -> bool:
 
 
 def _format_datetime_jst(value) -> str | None:
-    """日時を JST の yyyy年mm月dd日 hh:mm:ss に整形する。"""
+    """日時を表示用の yyyy年mm月dd日 hh:mm:ss に整形する。"""
     if not value:
         return None
 
@@ -87,11 +87,7 @@ def _format_datetime_jst(value) -> str | None:
     if dt is None:
         return str(value)
 
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-
-    jst = timezone(timedelta(hours=9))
-    return dt.astimezone(jst).strftime("%Y年%m月%d日 %H:%M:%S")
+    return dt.strftime("%Y年%m月%d日 %H:%M:%S")
 
 
 def _format_email_verified_at_rows(rows: list[dict]) -> None:
