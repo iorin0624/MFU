@@ -678,6 +678,9 @@ def admin_ext_users_edit_page(user_id: int):
             (user_id,),
         )
         assignable = cur.fetchall() or []
+        can_assign_events = int(user.get("is_deleted") or 0) != 1
+        if not can_assign_events:
+            assignable = []
 
     finally:
         try:
@@ -698,6 +701,7 @@ def admin_ext_users_edit_page(user_id: int):
         u=user,
         memberships=memberships,
         assignable_events=assignable,
+        can_assign_events=can_assign_events,
         admin_csrf=_admin_csrf_token(),
         current_privacy_config=current_privacy_config,
     )
@@ -729,6 +733,23 @@ def admin_ext_users_assign(user_id: int):
     db = get_db()
     cur = db.cursor()
     try:
+        cur.execute(
+            """
+            SELECT id, COALESCE(is_deleted,0) AS is_deleted
+              FROM external_login_user
+             WHERE id=%s
+             LIMIT 1
+            """,
+            (user_id,),
+        )
+        user_row = cur.fetchone()
+        if not user_row:
+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="not_found"))
+        is_deleted = user_row[1] if isinstance(user_row, tuple) else user_row.get("is_deleted", 0)
+        if int(is_deleted or 0) == 1:
+            current_app.logger.warning("deleted external user assign blocked: user_id=%s event_id=%s", user_id, event_id)
+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
+
         # すでに参加済みか軽く確認（UNIQUE制約もあるが事前チェックでメッセージを素直に）
         cur.execute("SELECT id, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
         existing = cur.fetchone()
