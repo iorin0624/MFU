@@ -25,11 +25,23 @@
   <div class="alert alert-warning" role="alert">イベントの指定が不正です。</div>
 {% elif request.args.get('error') == 'not_found' %}
   <div class="alert alert-warning" role="alert">対象のデータが見つかりません。</div>
+{% elif request.args.get('error') == 'deleted' %}
+  <div class="alert alert-warning" role="alert">削除済みユーザーのため、この操作は実行できません。</div>
+{% elif request.args.get('error') == 'anonymize' %}
+  <div class="alert alert-danger" role="alert">匿名化削除に失敗しました。ログを確認してください。</div>
+{% elif request.args.get('anonymized') %}
+  <div class="alert alert-success" role="alert">
+    匿名化削除を実行しました。
+    {% if request.args.get('already_deleted') == '1' %}（すでに削除済みでした）{% endif %}
+  </div>
 {% endif %}
 
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">外部ログインユーザー編集 <span class="text-muted">#{{ u.id }}</span></h1>
   <div class="d-flex gap-2">
+    {% if (u.is_deleted or 0)|int == 1 %}
+      <span class="badge bg-danger align-self-center">削除済み</span>
+    {% endif %}
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_privacy_policy') }}">プライバシーポリシー設定</a>
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">一覧へ戻る</a>
   </div>
@@ -148,12 +160,34 @@
       <div class="d-flex justify-content-between">
         <div class="small text-muted">
           作成: {{ u.created_at }} / 更新: {{ u.updated_at }}
+          {% if (u.is_deleted or 0)|int == 1 %}
+            <br>削除日時: {{ u.deleted_at or '-' }} / 実行者: {{ u.deleted_by or '-' }}
+          {% endif %}
         </div>
         <div class="d-flex gap-2">
           <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.admin_ext_users_index') }}">キャンセル</a>
           <button class="btn btn-primary" type="submit">保存</button>
         </div>
       </div>
+    </form>
+  </div>
+</div>
+
+<div class="card border-danger mb-4">
+  <div class="card-header bg-danger-subtle">
+    <strong class="text-danger">危険操作: 匿名化削除</strong>
+  </div>
+  <div class="card-body">
+    <p class="small text-muted mb-3">
+      外部ログイン不能化・個人情報匿名化・周辺データ切り離しを実行します。過去参加履歴は匿名名で保持されます。
+    </p>
+    <form method="post" action="{{ url_for('external_login_user.admin_ext_users_anonymize_delete', user_id=u.id) }}" onsubmit="return window.confirm('このユーザーを匿名化削除します。実行してよろしいですか？');">
+      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+      <div class="mb-2">
+        <label class="form-label">理由（任意）</label>
+        <input type="text" class="form-control" name="reason" maxlength="255" placeholder="削除依頼対応">
+      </div>
+      <button type="submit" class="btn btn-danger">匿名化削除を実行</button>
     </form>
   </div>
 </div>

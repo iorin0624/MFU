@@ -273,6 +273,36 @@ def _endpoint_allowed_when_unverified(ep: str | None) -> bool:
         return True
     return False
 
+
+@bp.before_app_request
+def _lock_deleted_external_user():
+    try:
+        uid = int(session.get("ext_user_id") or 0)
+    except Exception:
+        uid = 0
+    if uid <= 0:
+        return None
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        try:
+            cur.execute("SELECT id, COALESCE(is_deleted, 0) AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
+        except Exception:
+            cur.execute("SELECT id, 0 AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (uid,))
+        row = cur.fetchone() or {}
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    if not row or int(row.get("is_deleted") or 0) == 1:
+        for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname", "ext_after_login_next", "ext_after_verify_next"):
+            session.pop(k, None)
+        if request.blueprint == "external_login_user":
+            return redirect(url_for("external_login_user.index"))
+    return None
+
 def _is_email_unverified() -> bool:
     """email 登録済み かつ email_verified_at が NULL なら True（g にキャッシュ）"""
     if hasattr(g, "_ext_email_unverified"):

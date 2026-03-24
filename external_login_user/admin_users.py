@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from flask import request, render_template, jsonify, abort, url_for, redirect, session
+from flask import request, render_template, jsonify, abort, url_for, redirect, session, current_app
 from . import bp
 from app.utils.db import get_db
 from .utils import _require_mfu_login_redirect, _admin_csrf_token
@@ -14,6 +14,7 @@ from .utils import (
     _privacy_policy_status,
     _privacy_policy_date_label,
 )
+from .deletion_service import anonymize_external_user
 
 # users.py のトークン発行ユーティリティ（無い環境でも落ちないように）
 try:
@@ -103,6 +104,13 @@ def _normalize_sort(sort_key: str | None, sort_order: str | None) -> tuple[str, 
     return key, order
 
 
+def _normalize_deleted_filter(raw: str | None) -> str:
+    mode = (raw or "active").strip().lower()
+    if mode not in {"active", "deleted", "all"}:
+        return "active"
+    return mode
+
+
 _PUSH_SUBSCRIPTION_COUNT_SQL = """
     (
       SELECT COUNT(*)
@@ -122,9 +130,16 @@ def admin_ext_users_index():
 
     q = (request.args.get("q") or "").strip()
     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
+    deleted_filter = _normalize_deleted_filter(request.args.get("deleted"))
 
     params: list = []
     where = []
+    has_deleted = _column_exists("external_login_user", "is_deleted")
+    if has_deleted:
+        if deleted_filter == "active":
+            where.append("COALESCE(is_deleted, 0)=0")
+        elif deleted_filter == "deleted":
+            where.append("COALESCE(is_deleted, 0)=1")
     if q:
         like = f"%{q}%"
         where.append(
@@ -137,6 +152,7 @@ def admin_ext_users_index():
     cur = db.cursor(dictionary=True)
     try:
         has_verified = _column_exists("external_login_user", "email_verified_at")
+        deleted_cols = "COALESCE(is_deleted, 0) AS is_deleted, deleted_at" if has_deleted else "0 AS is_deleted, NULL AS deleted_at"
         cols = f"""
             id,
             nickname,
@@ -144,6 +160,7 @@ def admin_ext_users_index():
             instagram_id,
             email,
             social_id,
+            {deleted_cols},
             avatar_file,
             avatar_url,
             created_at,
@@ -202,6 +219,7 @@ def admin_ext_users_index():
         initial_q=q,
         initial_sort=sort_key,
         initial_order=sort_order,
+        initial_deleted=deleted_filter,
         current_privacy_config=current_privacy_config,
     )
 
@@ -215,6 +233,7 @@ def admin_ext_users_data():
 
     q = (request.args.get("q") or "").strip()
     sort_key, sort_order = _normalize_sort(request.args.get("sort"), request.args.get("order"))
+    deleted_filter = _normalize_deleted_filter(request.args.get("deleted"))
     try:
         page = max(int(request.args.get("page") or 1), 1)
     except Exception:
@@ -226,6 +245,12 @@ def admin_ext_users_data():
 
     params: list = []
     where = []
+    has_deleted = _column_exists("external_login_user", "is_deleted")
+    if has_deleted:
+        if deleted_filter == "active":
+            where.append("COALESCE(is_deleted, 0)=0")
+        elif deleted_filter == "deleted":
+            where.append("COALESCE(is_deleted, 0)=1")
     if q:
         like = f"%{q}%"
         where.append(
@@ -235,8 +260,10 @@ def admin_ext_users_data():
     sql_where = ("WHERE " + " AND ".join(where)) if where else ""
 
     has_verified = _column_exists("external_login_user", "email_verified_at")
+    deleted_cols = "COALESCE(is_deleted, 0) AS is_deleted, deleted_at" if has_deleted else "0 AS is_deleted, NULL AS deleted_at"
     cols = f"""
         id, nickname, x_id, instagram_id, email, social_id,
+        {deleted_cols},
         avatar_file, avatar_url, created_at, updated_at,
         admin_note,
         privacy_policy_agreed_at,
@@ -291,6 +318,7 @@ def admin_ext_users_data():
         "per_page": per_page,
         "sort": sort_key,
         "order": sort_order,
+        "deleted": deleted_filter,
         "q": q,
     })
 
@@ -304,6 +332,12 @@ def admin_ext_users_detail(user_id: int):
 
     db = get_db(); cur = db.cursor(dictionary=True)
     try:
+        has_deleted = _column_exists("external_login_user", "is_deleted")
+        deleted_cols = (
+            "COALESCE(is_deleted, 0) AS is_deleted, deleted_at, deleted_by, deletion_reason,"
+            if has_deleted else
+            "0 AS is_deleted, NULL AS deleted_at, NULL AS deleted_by, NULL AS deletion_reason,"
+        )
         cur.execute(f"""
             SELECT
               id,
@@ -312,6 +346,7 @@ def admin_ext_users_detail(user_id: int):
               instagram_id,
               email,
               social_id,
+              {deleted_cols}
               avatar_file,
               avatar_url,
               created_at,
@@ -383,13 +418,17 @@ def admin_ext_users_update(user_id: int):
 
     db = get_db(); cur = db.cursor()
     try:
-        cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+        cur.execute("SELECT email, COALESCE(is_deleted, 0) AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
         row = cur.fetchone()
         if not row:
             if request.is_json:
                 return jsonify({"ok": False, "error": "not_found"}), 404
             return redirect(url_for("external_login_user.admin_ext_users_index"))
 
+        if int((row[1] if isinstance(row, tuple) else row.get("is_deleted", 0)) or 0) == 1:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "deleted_user"}), 409
+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
         email_before = (row[0] if isinstance(row, tuple) else row.get("email")) if row else None
         email_changed = (email or None) != (email_before or None)
 
@@ -430,6 +469,48 @@ def admin_ext_users_update(user_id: int):
     return redirect(url_for("external_login_user.admin_ext_users_index", saved=1))
 
 
+@bp.post("/admin/ext-users/<int:user_id>/anonymize-delete")
+def admin_ext_users_anonymize_delete(user_id: int):
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+
+    token_req = (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+    if not token_req or token_req != _admin_csrf_token():
+        if request.is_json:
+            return jsonify({"ok": False, "error": "invalid_csrf"}), 400
+        return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="csrf"))
+
+    reason = (request.form.get("reason") or (request.get_json(silent=True) or {}).get("reason") or "").strip() or None
+    executed_by = (session.get("user") or "admin")
+    try:
+        result = anonymize_external_user(
+            user_id=int(user_id),
+            executed_by=str(executed_by)[:80],
+            reason=(reason[:255] if reason else None),
+        )
+    except ValueError:
+        if request.is_json:
+            return jsonify({"ok": False, "error": "not_found"}), 404
+        return redirect(url_for("external_login_user.admin_ext_users_index", error="not_found"))
+    except Exception:
+        current_app.logger.exception("admin anonymize delete failed user_id=%s", user_id)
+        if request.is_json:
+            return jsonify({"ok": False, "error": "internal_error"}), 500
+        return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="anonymize"))
+
+    if request.is_json:
+        return jsonify(result)
+    return redirect(
+        url_for(
+            "external_login_user.admin_ext_users_edit_page",
+            user_id=user_id,
+            anonymized="1",
+            already_deleted=("1" if result.get("already_deleted") else "0"),
+        )
+    )
+
+
 # ============= 再送（送信） =============
 @bp.post("/admin/ext-users/<int:user_id>/resend-verify")
 def admin_ext_users_resend_verify(user_id: int):
@@ -455,13 +536,17 @@ def admin_ext_users_resend_verify(user_id: int):
 
     db = get_db(); cur = db.cursor()
     try:
-        cur.execute("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+        cur.execute("SELECT email, COALESCE(is_deleted, 0) AS is_deleted FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
         row = cur.fetchone()
         if not row:
             if request.is_json:
                 return jsonify({"ok": False, "error": "not_found"}), 404
             return redirect(url_for("external_login_user.admin_ext_users_index"))
 
+        if int((row[1] if isinstance(row, tuple) else row.get("is_deleted", 0)) or 0) == 1:
+            if request.is_json:
+                return jsonify({"ok": False, "error": "deleted_user"}), 409
+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
         email = row[0] if isinstance(row, tuple) else row.get("email")
         if not email:
             if request.is_json:
@@ -530,8 +615,15 @@ def admin_ext_users_edit_page(user_id: int):
     cur = db.cursor(dictionary=True)
     try:
         has_verified = _column_exists("external_login_user", "email_verified_at")
+        has_deleted = _column_exists("external_login_user", "is_deleted")
+        deleted_cols = (
+            "COALESCE(is_deleted, 0) AS is_deleted, deleted_at, deleted_by, deletion_reason,"
+            if has_deleted else
+            "0 AS is_deleted, NULL AS deleted_at, NULL AS deleted_by, NULL AS deletion_reason,"
+        )
         cols = f"""
             id, nickname, x_id, instagram_id, email, social_id,
+            {deleted_cols}
             avatar_file, avatar_url, created_at, updated_at,
             admin_note,
             privacy_policy_agreed_at,
