@@ -239,7 +239,7 @@
       <div>
         <h2 class="h6 mb-2">参加者一覧</h2>
         <div class="small text-muted">
-          全体人数：{{ total_member_count }}名<br>
+          現役参加人数：{{ total_member_count }}名<br>
           カメラマン：{{ camera_count }}名<br>
           アシスタント：{{ assistant_count }}名<br>
           衣装：{{ cosplayer_count }}名<br>
@@ -334,7 +334,9 @@
 </td>
 
               <td>
-                {% if m.status == 'approved' %}
+                {% if m.is_canceled == 1 %}
+                  <span class="badge bg-dark">キャンセル済み</span>
+                {% elif m.status == 'approved' %}
                   <span class="badge bg-success">承認</span>
                 {% elif m.status == 'pending' %}
                   <span class="badge bg-secondary">保留</span>
@@ -411,13 +413,26 @@
                 {% endif %}
               </td>
 
-              <td class="small">{{ m.joined_at or '—' }}</td>
+              <td class="small">
+                {{ m.joined_at or '—' }}
+                {% if m.is_canceled == 1 and m.canceled_at %}
+                  <br><span class="text-danger">キャンセル: {{ m.canceled_at }}{% if m.canceled_by %} ({{ m.canceled_by }}){% endif %}</span>
+                {% endif %}
+              </td>
 
               <td class="text-end">
-                <a class="btn btn-sm btn-outline-primary"
-                   href="{{ url_for('external_login_user.admin_member_edit', event_id=ev.id, user_id=m.user_id) }}">
-                  編集
-                </a>
+                <div class="btn-group" role="group">
+                  <a class="btn btn-sm btn-outline-primary"
+                     href="{{ url_for('external_login_user.admin_member_edit', event_id=ev.id, user_id=m.user_id) }}">
+                    編集
+                  </a>
+                  {% if m.is_canceled == 1 %}
+                    <form method="post" action="{{ url_for('external_login_user.admin_event_member_action', event_id=ev.id, user_id=m.user_id, action='uncancel') }}" class="d-inline">
+                      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+                      <button class="btn btn-sm btn-outline-success" type="submit">キャンセル解除</button>
+                    </form>
+                  {% endif %}
+                </div>
               </td>
             </tr>
 

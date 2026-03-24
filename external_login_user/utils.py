@@ -605,10 +605,13 @@ def _update_profile(user_id: int, nickname: str,
 
 def _membership_status(event_id: int, ext_user_id: int) -> Optional[str]:
     db = get_db(); cur = db.cursor()
-    cur.execute("SELECT status FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
+    cur.execute("SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, ext_user_id))
     row = cur.fetchone(); cur.close(); db.close()
-    if not row: return None
-    return row[0] if isinstance(row, tuple) else row["status"]
+    if not row:
+        return None
+    status = row[0] if isinstance(row, tuple) else row["status"]
+    is_canceled = (row[1] if isinstance(row, tuple) else row.get("is_canceled", 0))
+    return None if int(is_canceled or 0) == 1 else status
 
 def _member_payment_status(event_id: int, ext_user_id: int) -> str:
     db = get_db(); cur = db.cursor()

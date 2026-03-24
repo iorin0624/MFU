@@ -504,6 +504,7 @@ def admin_events_list():
                    FROM mfu_event_member m
                   WHERE m.event_id=e.id
                     AND (m.status='approved' OR m.status IS NULL)
+                    AND COALESCE(m.is_canceled,0)=0
                 ) AS members
               FROM mfu_event e
               WHERE e.deleted_at IS NULL
@@ -528,6 +529,7 @@ def admin_events_list():
                        FROM mfu_event_member m
                       WHERE m.event_id=e.id
                         AND (m.status='approved' OR m.status IS NULL)
+                        AND COALESCE(m.is_canceled,0)=0
                     ) AS members
                   FROM mfu_event e
                   JOIN mfu_event_admin_acl a ON a.event_id = e.id
@@ -780,6 +782,9 @@ def admin_event_view(event_id: int):
         m.contact_memo,
         m.admin_note,
         m.receipt_note,
+        COALESCE(m.is_canceled,0) AS is_canceled,
+        m.canceled_at,
+        m.canceled_by,
         CASE
           WHEN COALESCE(m.is_host, 0)=1 THEN 0
           WHEN COALESCE(m.is_subhost, 0)=1 THEN 1
@@ -819,7 +824,8 @@ def admin_event_view(event_id: int):
              avatar_file, avatar_url, updated_at,
              status, payment_status, paid_at, receipt_url, joined_at, checkin_at,
              require_payment, process, is_host, is_subhost, participant_role, costume_label,
-             paid_amount_yen, contact_memo, admin_note, receipt_note, _role_rank) = r
+             paid_amount_yen, contact_memo, admin_note, receipt_note,
+             is_canceled, canceled_at, canceled_by, _role_rank) = r
         else:
             user_id          = r["user_id"]
             nickname         = r["nickname"]
@@ -845,17 +851,21 @@ def admin_event_view(event_id: int):
             contact_memo     = r.get("contact_memo")
             admin_note       = r.get("admin_note")
             receipt_note     = r.get("receipt_note")
+            is_canceled      = int(r.get("is_canceled") or 0)
+            canceled_at      = r.get("canceled_at")
+            canceled_by      = r.get("canceled_by")
 
-        total_member_count += 1
-        normalized_role = str(participant_role or "none").strip().lower()
-        if normalized_role == "camera":
-            camera_count += 1
-        elif normalized_role == "assistant":
-            assistant_count += 1
-        elif normalized_role == "cosplayer":
-            cosplayer_count += 1
-        else:
-            other_count += 1
+        if int(is_canceled or 0) == 0:
+            total_member_count += 1
+            normalized_role = str(participant_role or "none").strip().lower()
+            if normalized_role == "camera":
+                camera_count += 1
+            elif normalized_role == "assistant":
+                assistant_count += 1
+            elif normalized_role == "cosplayer":
+                cosplayer_count += 1
+            else:
+                other_count += 1
 
         # --- 支払状況バッジ（既存ロジック） ---
         status_s = (payment_status or "").strip().lower()
@@ -869,7 +879,7 @@ def admin_event_view(event_id: int):
             pay_status_html = _badge("未", "danger")
 
         require_payment_flag = 1 if (require_payment is None) else int(require_payment)
-        if require_payment_flag == 1:
+        if int(is_canceled or 0) == 0 and require_payment_flag == 1:
             require_payment_count += 1
             if paid_at or status_s == "paid":
                 paid_count += 1
@@ -900,6 +910,9 @@ def admin_event_view(event_id: int):
             "contact_memo": contact_memo,
             "admin_note": admin_note,
             "receipt_note": receipt_note,
+            "is_canceled": int(is_canceled or 0),
+            "canceled_at": canceled_at,
+            "canceled_by": canceled_by,
             "pay_status_html": pay_status_html,
         })
 
@@ -1192,10 +1205,11 @@ def admin_event_edit(event_id: int):
                 try:
                     curn.execute("""
                         SELECT DISTINCT u.email
-                          FROM mfu_event_member m
+                         FROM mfu_event_member m
                           JOIN external_login_user u ON u.id = m.user_id
                          WHERE m.event_id=%s
                            AND (m.status='approved' OR m.status IS NULL)
+                           AND COALESCE(m.is_canceled,0)=0
                            AND u.email IS NOT NULL
                     """, (event_id,))
                     rows = curn.fetchall() or []
@@ -1598,16 +1612,42 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
         return guard
     if request.form.get("csrf_token") != session.get("admin_csrf"):
         abort(400, "CSRF token mismatch")
+    if action == "uncancel":
+        db = get_db(); cur = db.cursor()
+        try:
+            cur.execute("""
+                UPDATE mfu_event_member
+                   SET is_canceled=0,
+                       canceled_at=NULL,
+                       canceled_by=NULL
+                 WHERE event_id=%s AND user_id=%s
+                 LIMIT 1
+            """, (event_id, user_id))
+            db.commit()
+        finally:
+            cur.close(); db.close()
+        _recalc_event_fee_if_auto(event_id)
+        flash("参加キャンセルを解除しました。", "success")
+        return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+
     if action not in ("approve", "reject"):
         if action == "remove":
             db = get_db(); cur = db.cursor()
             try:
-                cur.execute("DELETE FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
+                canceled_by = (session.get("user") or "admin")
+                cur.execute("""
+                    UPDATE mfu_event_member
+                       SET is_canceled=1,
+                           canceled_at=NOW(),
+                           canceled_by=%s
+                     WHERE event_id=%s AND user_id=%s
+                     LIMIT 1
+                """, (canceled_by, event_id, user_id))
                 db.commit()
             finally:
                 cur.close(); db.close()
             _recalc_event_fee_if_auto(event_id)
-            flash("更新しました。", "success")
+            flash("参加者をキャンセル済みにしました。", "success")
             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
         abort(400, "unsupported action")
 

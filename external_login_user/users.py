@@ -2364,6 +2364,7 @@ def join_event(event_uuid: str):
                COALESCE(payment_status,'unpaid') AS payment_status,
                payment_row_id,
                COALESCE(require_payment,1) AS require_payment,
+               COALESCE(is_canceled,0) AS is_canceled,
                participant_terms_agreed_revised_date,
                privacy_policy_join_agreed_revised_date
           FROM mfu_event_member
@@ -2480,6 +2481,9 @@ def join_event(event_uuid: str):
                 "participant_role": role,
                 "costume_label": costume,
                 "process": process_flag,
+                "is_canceled": 0,
+                "canceled_at": None,
+                "canceled_by": None,
             },
             extra_insert_fields={
                 "participant_role": role,
@@ -2637,6 +2641,8 @@ def join_event(event_uuid: str):
         ev.setdefault(k, None)
 
     status = (m and m.get("status")) or None
+    if m and int(m.get("is_canceled") or 0) == 1:
+        status = "canceled"
     if status == "pending" and m and m.get("payment_status") == "paid" and _is_lecture_event_from_event(ev):
         status = None
     form_role = (m and (m.get("participant_role") or "cosplayer")) or "cosplayer"
@@ -2820,7 +2826,9 @@ def view_event(event_uuid: str):
               COALESCE(m.is_subhost,0) AS is_subhost,
               COALESCE(m.participant_role,'none') AS participant_role,
               COALESCE(m.costume_label,'')        AS costume_label,
-              m.custom_fee_yen
+              m.custom_fee_yen,
+              COALESCE(m.is_canceled,0)           AS is_canceled,
+              m.canceled_at
             FROM mfu_event_member m
             WHERE m.event_id=%s AND m.user_id=%s
             ORDER BY m.id DESC
@@ -2845,6 +2853,8 @@ def view_event(event_uuid: str):
     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
     my_costume_label       = (row.get("costume_label")  if row else "") or ""
     my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
+    my_is_canceled         = int(row.get("is_canceled") or 0) if row else 0
+    my_canceled_at         = row.get("canceled_at") if row else None
 
     my_receipt_pdf_url = None
     if (
@@ -2862,7 +2872,9 @@ def view_event(event_uuid: str):
     if _is_mfu_logged_in():
         view_mode = "admin"
     else:
-        if str(my_status).lower() == "approved":
+        if my_is_canceled == 1:
+            view_mode = "member_limited"
+        elif str(my_status).lower() == "approved":
             view_mode = "member"
         elif str(my_status).lower() in ("pending", "rejected"):
             view_mode = "member_limited"
@@ -2999,6 +3011,8 @@ def view_event(event_uuid: str):
         # 互換エイリアス（テンプレが form_* を参照していても動くように）
         form_role=my_participant_role,
         form_costume=my_costume_label,
+        my_is_canceled=my_is_canceled,
+        my_canceled_at=my_canceled_at,
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -3021,6 +3035,20 @@ def update_my_role(event_uuid: str):
     status = _membership_status(ev["id"], me["id"])  # type: ignore
     if status is None:
         abort(403, "このイベントの参加者ではありません")
+
+    db_chk = get_db(); cur_chk = db_chk.cursor()
+    try:
+        cur_chk.execute(
+            "SELECT COALESCE(is_canceled,0) FROM mfu_event_member WHERE event_id=%s AND user_id=%s LIMIT 1",
+            (ev["id"], me["id"]),  # type: ignore
+        )
+        c_row = cur_chk.fetchone()
+    finally:
+        try: cur_chk.close(); db_chk.close()
+        except Exception: pass
+    if c_row and int(c_row[0] if isinstance(c_row, tuple) else (c_row.get("is_canceled") or 0)) == 1:
+        flash("キャンセル済みのため、この操作はできません。", "warning")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
     ui_role = (request.form.get("participant_role") or "none").strip().lower()
     # ★ UIとして許容（otherを追加）
@@ -3081,6 +3109,20 @@ def update_my_process(event_uuid: str):
     status = _membership_status(ev["id"], me["id"])  # type: ignore
     if status is None:
         abort(403, "このイベントの参加者ではありません")
+
+    db_chk = get_db(); cur_chk = db_chk.cursor()
+    try:
+        cur_chk.execute(
+            "SELECT COALESCE(is_canceled,0) FROM mfu_event_member WHERE event_id=%s AND user_id=%s LIMIT 1",
+            (ev["id"], me["id"]),  # type: ignore
+        )
+        c_row = cur_chk.fetchone()
+    finally:
+        try: cur_chk.close(); db_chk.close()
+        except Exception: pass
+    if c_row and int(c_row[0] if isinstance(c_row, tuple) else (c_row.get("is_canceled") or 0)) == 1:
+        flash("キャンセル済みのため、この操作はできません。", "warning")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
     process_flag = 1 if request.form.get("process") in ("1", "on", "true") else 0
 
@@ -3169,6 +3211,7 @@ def member_list(event_uuid: str):
             JOIN external_login_user u ON u.id = m.user_id
             WHERE m.event_id = %s
               AND m.status = 'approved'
+              AND COALESCE(m.is_canceled,0)=0
             ORDER BY
               m.is_host DESC,
               m.is_subhost DESC,
@@ -3289,6 +3332,7 @@ def member_sns_clip(event_uuid: str):
             JOIN external_login_user u ON u.id = m.user_id
             WHERE m.event_id = %s
               AND m.status = 'approved'
+              AND COALESCE(m.is_canceled,0)=0
             ORDER BY
               m.is_host DESC,
               m.is_subhost DESC,
@@ -3467,7 +3511,8 @@ def event_pass(event_uuid: str):
               em.paid_at,
               em.receipt_url,
               em.checkin_at,
-              em.checkin_method
+              em.checkin_method,
+              COALESCE(em.is_canceled,0) AS is_canceled
             FROM mfu_event_member em
             WHERE em.event_id=%s AND em.user_id=%s
             ORDER BY em.id DESC
@@ -3490,6 +3535,9 @@ def event_pass(event_uuid: str):
 
     # ★ チェックイン情報
     raw_checkin_at = row.get("checkin_at") if row else None
+    if row and int(row.get("is_canceled") or 0) == 1:
+        flash("キャンセル済みのため参加証は利用できません。", "warning")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
     if isinstance(raw_checkin_at, _dt):
         checkin_at_str = raw_checkin_at.strftime("%Y-%m-%d %H:%M:%S")
     else:
@@ -3691,6 +3739,7 @@ def event_pass_checkin(event_uuid: str):
             WHERE m.event_id = %s
               AND m.user_id = %s
               AND m.status = 'approved'
+              AND COALESCE(m.is_canceled,0)=0
             ORDER BY m.id DESC
             LIMIT 1
             """,
@@ -3889,6 +3938,7 @@ def event_qr_checkin(token: str):
              WHERE event_id=%s
                AND user_id=%s
                AND status='approved'
+               AND COALESCE(is_canceled,0)=0
              ORDER BY id DESC
              LIMIT 1
         """, (event_id, me["id"]))

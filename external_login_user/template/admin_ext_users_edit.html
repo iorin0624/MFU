@@ -9,6 +9,10 @@
   <div class="alert alert-success" role="alert">確認コードを送信しました。</div>
 {% elif request.args.get('assigned') %}
   <div class="alert alert-success" role="alert">イベントに参加として追加しました。</div>
+{% elif request.args.get('revived') %}
+  <div class="alert alert-success" role="alert">キャンセル済みの参加を復帰しました。</div>
+{% elif request.args.get('canceled') %}
+  <div class="alert alert-success" role="alert">参加をキャンセル済みに変更しました（履歴は保持されています）。</div>
 {% elif request.args.get('duplicated') %}
   <div class="alert alert-info" role="alert">このユーザーは既にそのイベントに参加しています。</div>
 {% elif request.args.get('error') == 'csrf' %}
@@ -206,7 +210,7 @@
 
 <div class="card mb-4">
   <div class="card-header">
-    <strong>参加中イベント</strong>
+    <strong>参加イベント（キャンセル済み含む）</strong>
   </div>
   <div class="card-body p-0">
     <div class="table-responsive">
@@ -238,7 +242,7 @@
                 <td class="text-muted">{{ m.starts_at }}</td>
                 <td>
                   <span class="badge bg-outline-secondary text-dark">
-                    {{ status_map.get(m.status|string, m.status) }}
+                    {{ status_map.get(m.status|string, m.status) }}{% if m.is_canceled|int == 1 %} / キャンセル済み{% endif %}
                   </span>
                 </td>
                 <td>
@@ -250,7 +254,7 @@
                   <a class="btn btn-sm btn-outline-danger"
                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
                                       user_id=u.id, member_id=m.member_id) }}">
-                    削除
+                    キャンセルにする
                   </a>
                 </td>
               </tr>
@@ -267,7 +271,7 @@
                 <td class="text-muted">-</td>
                 <td>
                   <span class="badge bg-outline-secondary text-dark">
-                    {{ status_map.get(m.status|string, m.status) }}
+                    {{ status_map.get(m.status|string, m.status) }}{% if m.is_canceled|int == 1 %} / キャンセル済み{% endif %}
                   </span>
                 </td>
                 <td>
@@ -279,7 +283,7 @@
                   <a class="btn btn-sm btn-outline-danger"
                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
                                       user_id=u.id, member_id=m.member_id) }}">
-                    削除
+                    キャンセルにする
                   </a>
                 </td>
               </tr>

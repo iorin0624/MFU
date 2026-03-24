@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}参加削除の確認{% endblock %}
+{% block title %}参加キャンセルの確認{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h4 mb-0">参加削除の確認</h1>
+  <h1 class="h4 mb-0">参加キャンセルの確認</h1>
   <div>
     <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u_id) }}">編集に戻る</a>
@@ -11,7 +11,7 @@
 </div>
 
 <div class="alert alert-warning">
-  このユーザーを次のイベントの「参加中」から削除します。よろしいですか？
+  このユーザーを次のイベントの参加者としてはキャンセル済みに変更します。参加履歴と支払情報は保持されます。
 </div>
 
 <div class="card mb-3">
@@ -22,6 +22,7 @@
       <dt class="col-sm-3">開催日時</dt><dd class="col-sm-9">{{ m.starts_at or '-' }}</dd>
       <dt class="col-sm-3">参加状態</dt><dd class="col-sm-9">{{ m.status }}</dd>
       <dt class="col-sm-3">支払状態</dt><dd class="col-sm-9">{{ m.payment_status }}</dd>
+      <dt class="col-sm-3">キャンセル状態</dt><dd class="col-sm-9">{% if m.is_canceled|int == 1 %}キャンセル済み{% else %}未キャンセル{% endif %}</dd>
     </dl>
   </div>
 </div>
@@ -32,7 +33,7 @@
   <div class="d-flex gap-2">
     <a class="btn btn-outline-secondary"
        href="{{ url_for('external_login_user.admin_ext_users_edit_page', user_id=u_id) }}">キャンセル</a>
-    <button class="btn btn-danger" type="submit">削除する</button>
+    <button class="btn btn-danger" type="submit">キャンセル済みにする</button>
   </div>
 </form>
 {% endblock %}
