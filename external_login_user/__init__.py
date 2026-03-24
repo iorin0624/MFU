@@ -347,8 +347,6 @@ def _lock_unverified_globally():
 _ALLOW_PRIVACY_POLICY_ENDPOINTS = {
     "external_login_user.index",
     "external_login_user.privacy_policy_agree",
-    "external_login_user.profile",
-    "external_login_user.profile_setup",
     "external_login_user.line_login",
     "external_login_user.line_login_shortcut",
     "external_login_user.line_callback",
