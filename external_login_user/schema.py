@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS mfu_event_member (
   paid_amount_yen    INT UNSIGNED NULL,
   custom_fee_yen     INT UNSIGNED NULL,
   receipt_note       TEXT NULL,
+  is_canceled        TINYINT(1) NOT NULL DEFAULT 0,
+  canceled_at        DATETIME NULL,
+  canceled_by        VARCHAR(80) NULL,
   joined_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uniq_member (event_id, user_id),
@@ -239,6 +242,9 @@ def _on_bp_registered(state) -> None:
             _ensure_col("mfu_event_member", "custom_fee_yen", "custom_fee_yen INT UNSIGNED NULL AFTER paid_amount_yen")
             _ensure_col("mfu_event_member", "receipt_note", "receipt_note TEXT NULL AFTER custom_fee_yen")
             _ensure_col("mfu_event_member", "process", "process TINYINT(1) NOT NULL DEFAULT 0 AFTER require_payment")
+            _ensure_col("mfu_event_member", "is_canceled", "is_canceled TINYINT(1) NOT NULL DEFAULT 0 AFTER receipt_note")
+            _ensure_col("mfu_event_member", "canceled_at", "canceled_at DATETIME NULL AFTER is_canceled")
+            _ensure_col("mfu_event_member", "canceled_by", "canceled_by VARCHAR(80) NULL AFTER canceled_at")
             _ensure_col("external_login_user", "chat_admin_alias", "chat_admin_alias TINYINT(1) NOT NULL DEFAULT 0 AFTER admin_note")
             _ensure_col(
                 "external_login_user",

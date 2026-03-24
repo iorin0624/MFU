@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from flask import request, render_template, jsonify, abort, url_for, redirect
+from flask import request, render_template, jsonify, abort, url_for, redirect, session
 from . import bp
 from app.utils.db import get_db
 from .utils import _require_mfu_login_redirect, _admin_csrf_token
@@ -559,7 +559,10 @@ def admin_ext_users_edit_page(user_id: int):
               e.title,
               e.starts_at,
               m.status,
-              m.payment_status
+              m.payment_status,
+              COALESCE(m.is_canceled,0) AS is_canceled,
+              m.canceled_at,
+              m.canceled_by
             FROM mfu_event_member AS m
             JOIN mfu_event AS e ON e.id = m.event_id
             WHERE m.user_id=%s
@@ -635,8 +638,22 @@ def admin_ext_users_assign(user_id: int):
     cur = db.cursor()
     try:
         # すでに参加済みか軽く確認（UNIQUE制約もあるが事前チェックでメッセージを素直に）
-        cur.execute("SELECT 1 FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
-        if cur.fetchone():
+        cur.execute("SELECT id, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s", (event_id, user_id))
+        existing = cur.fetchone()
+        if existing:
+            existing_id = existing[0] if isinstance(existing, tuple) else existing.get("id")
+            existing_canceled = existing[1] if isinstance(existing, tuple) else existing.get("is_canceled", 0)
+            if int(existing_canceled or 0) == 1:
+                cur.execute("""
+                    UPDATE mfu_event_member
+                       SET is_canceled=0,
+                           canceled_at=NULL,
+                           canceled_by=NULL
+                     WHERE id=%s
+                     LIMIT 1
+                """, (existing_id,))
+                db.commit()
+                return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, revived=1))
             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, duplicated=1))
 
         # 追加：初期は pending / unpaid で登録
@@ -661,7 +678,7 @@ def admin_ext_users_assign(user_id: int):
 @bp.get("/admin/ext-users/<int:user_id>/membership/<int:member_id>/delete-confirm",
         endpoint="admin_ext_users_member_delete_confirm")
 def admin_ext_users_member_delete_confirm(user_id: int, member_id: int):
-    """ユーザーのイベント参加レコードを削除する前の確認ページ"""
+    """ユーザーのイベント参加レコードをキャンセルする前の確認ページ"""
     guard = _require_mfu_login_redirect()
     if guard:
         return guard
@@ -671,6 +688,7 @@ def admin_ext_users_member_delete_confirm(user_id: int, member_id: int):
         # 該当の membership がユーザーのものか検証して情報取得
         cur.execute("""
             SELECT m.id AS member_id, m.user_id, m.event_id, m.status, m.payment_status,
+                   COALESCE(m.is_canceled,0) AS is_canceled, m.canceled_at, m.canceled_by,
                    e.title, e.starts_at
               FROM mfu_event_member AS m
               JOIN mfu_event AS e ON e.id = m.event_id
@@ -694,7 +712,7 @@ def admin_ext_users_member_delete_confirm(user_id: int, member_id: int):
 @bp.post("/admin/ext-users/<int:user_id>/membership/<int:member_id>/delete",
          endpoint="admin_ext_users_member_delete")
 def admin_ext_users_member_delete(user_id: int, member_id: int):
-    """ユーザーのイベント参加レコードを削除する"""
+    """ユーザーのイベント参加レコードをキャンセル済みにする"""
     guard = _require_mfu_login_redirect()
     if guard:
         return guard
@@ -707,18 +725,26 @@ def admin_ext_users_member_delete(user_id: int, member_id: int):
 
     db = get_db(); cur = db.cursor()
     try:
-        # 所有確認してから削除
+        # 所有確認してからキャンセル
         cur.execute("SELECT 1 FROM mfu_event_member WHERE id=%s AND user_id=%s LIMIT 1",
                     (member_id, user_id))
         if not cur.fetchone():
             return redirect(url_for("external_login_user.admin_ext_users_edit_page",
                                     user_id=user_id, error="not_found"))
 
-        cur.execute("DELETE FROM mfu_event_member WHERE id=%s LIMIT 1", (member_id,))
+        canceled_by = (session.get("user") or "admin")
+        cur.execute("""
+            UPDATE mfu_event_member
+               SET is_canceled=1,
+                   canceled_at=NOW(),
+                   canceled_by=%s
+             WHERE id=%s
+             LIMIT 1
+        """, (canceled_by, member_id))
         db.commit()
     finally:
         try: cur.close(); db.close()
         except Exception: pass
 
     return redirect(url_for("external_login_user.admin_ext_users_edit_page",
-                            user_id=user_id, deleted="1"))
+                            user_id=user_id, canceled="1"))

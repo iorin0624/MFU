@@ -36,6 +36,10 @@
     <div class="alert alert-info">申請は承認待ちです。承認後にイベントページを閲覧できます。</div>
     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
 
+  {% elif status == 'canceled' %}
+    <div class="alert alert-warning">この参加はキャンセル済みです。再参加が必要な場合は主催者へご連絡ください。</div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>
+
   {% elif status == 'rejected' %}
     <div class="alert alert-danger">申請は拒否されています。主催者にお問い合わせください。</div>
     <a class="btn btn-outline-secondary" href="{{ url_for('external_login_user.index') }}">戻る</a>

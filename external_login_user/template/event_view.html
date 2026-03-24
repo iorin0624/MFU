@@ -59,7 +59,11 @@
   {% elif view_mode == 'member' %}
     <div class="alert alert-success">承認済みの参加者として閲覧中です。</div>
   {% elif view_mode == 'member_limited' %}
-    <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
+    {% if my_is_canceled|default(0)|int == 1 %}
+      <div class="alert alert-warning">この参加はキャンセル済みです。領収書がある場合のみ引き続き確認できます。</div>
+    {% else %}
+      <div class="alert alert-warning">承認前のため、一部情報のみ表示しています。承認後に全情報が閲覧できます。</div>
+    {% endif %}
   {% endif %}
 
   <a class="btn btn-sm btn-outline-secondary mb-3" href="{{ url_for('external_login_user.index') }}">← マイページ</a>
@@ -92,7 +96,7 @@
     </div>
   {% endif %}
 
-  {% if view_mode == "member" %}
+  {% if view_mode == "member" and my_is_canceled|default(0)|int == 0 %}
     <div class="mt-3">
       <a class="btn btn-lg btn-primary w-100"
          href="{{ url_for('external_login_user.event_pass', event_uuid=ev.event_uuid_str) }}">
@@ -156,13 +160,15 @@
         <div class="card-body">
           <h2 class="h6 mb-3">各種リンク</h2>
 
-          <!-- 参加者一覧 -->
-          <div class="mb-2">
-            <a class="btn btn-sm btn-outline-dark w-100 text-start"
-               href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
-              参加者一覧を開く
-            </a>
-          </div>
+          {% if my_is_canceled|default(0)|int == 0 %}
+            <!-- 参加者一覧 -->
+            <div class="mb-2">
+              <a class="btn btn-sm btn-outline-dark w-100 text-start"
+                 href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
+                参加者一覧を開く
+              </a>
+            </div>
+          {% endif %}
 
           {% if has_openchat %}
             <!-- LINEオープンチャット -->
@@ -193,13 +199,15 @@
             </div>
           {% endif %}
 
-          <!-- SNS貼付用 -->
-          <div class="mb-2">
-            <a class="btn btn-sm btn-outline-info w-100 text-start"
-               href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
-              SNS貼付用
-            </a>
-          </div>
+          {% if my_is_canceled|default(0)|int == 0 %}
+            <!-- SNS貼付用 -->
+            <div class="mb-2">
+              <a class="btn btn-sm btn-outline-info w-100 text-start"
+                 href="{{ url_for('external_login_user.member_sns_clip', event_uuid=ev.event_uuid_str) }}">
+                SNS貼付用
+              </a>
+            </div>
+          {% endif %}
 
           <!-- アルバム -->
           <div class="mb-2">
@@ -276,7 +284,7 @@
             <div class="mb-3"><strong>リンク：</strong>
               {% if my_payment_status == 'paid' and rcpt_url %}
                 <a href="{{ rcpt_url }}" target="_blank" rel="noopener">レシート</a>
-              {% elif needs_pay and my_status == 'approved' %}
+              {% elif needs_pay and my_status == 'approved' and my_is_canceled|default(0)|int == 0 %}
                 <a href="{{ url_for('external_login_user.pay_start', event_uuid=ev.event_uuid_str) }}">支払ページ</a>
               {% else %}
                 <span class="text-muted">—</span>
@@ -299,7 +307,7 @@
               {% if my_process|default(0)|int == 1 %}必要{% else %}不要{% endif %}
             </div>
 
-            {% if my_status == 'approved' %}
+            {% if my_status == 'approved' and my_is_canceled|default(0)|int == 0 %}
               <form method="post" action="{{ url_for('external_login_user.update_my_process', event_uuid=ev.event_uuid_str) }}" class="d-flex flex-wrap gap-2 align-items-center">
                 <div class="form-check">
                   <input class="form-check-input" type="checkbox" id="processCheck" name="process" value="1"
@@ -330,7 +338,7 @@
               {% if my_costume_label %}<span class="text-muted small">（{{ my_costume_label }}）</span>{% endif %}
             </div>
 
-            {% if my_status == 'approved' %}
+            {% if my_status == 'approved' and my_is_canceled|default(0)|int == 0 %}
               <form method="post" action="{{ url_for('external_login_user.update_my_role', event_uuid=ev.event_uuid_str) }}" class="d-flex flex-wrap gap-2 align-items-end" id="roleForm">
                 <div>
                   <label class="form-label mb-1">役割</label>
