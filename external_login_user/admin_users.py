@@ -587,10 +587,23 @@ def admin_ext_users_resend_confirm(user_id: int):
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT id, email FROM external_login_user WHERE id=%s LIMIT 1", (user_id,))
+        cur.execute(
+            """
+            SELECT
+              id,
+              email,
+              COALESCE(is_deleted, 0) AS is_deleted
+            FROM external_login_user
+            WHERE id=%s
+            LIMIT 1
+            """,
+            (user_id,),
+        )
         u = cur.fetchone()
         if not u:
             abort(404)
+        if int(u.get("is_deleted") or 0) == 1:
+            return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="deleted"))
         if not u.get("email"):
             return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, error="no_email"))
     finally:
