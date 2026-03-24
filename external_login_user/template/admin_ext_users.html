@@ -34,6 +34,13 @@
           </button>
         </div>
       </div>
+      <div class="col-auto">
+        <select id="deletedFilter" class="form-select form-select-sm">
+          <option value="active" {% if (initial_deleted or 'active') == 'active' %}selected{% endif %}>通常のみ</option>
+          <option value="deleted" {% if (initial_deleted or 'active') == 'deleted' %}selected{% endif %}>削除済みのみ</option>
+          <option value="all" {% if (initial_deleted or 'active') == 'all' %}selected{% endif %}>すべて</option>
+        </select>
+      </div>
     </div>
   </div>
 </div>
@@ -64,6 +71,12 @@
         <td>
           <div class="fw-semibold">{{ it.nickname }}</div>
           <div class="small text-muted">social_id: {{ it.social_id or '-' }}</div>
+          {% if (it.is_deleted or 0)|int == 1 %}
+            <div class="small mt-1">
+              <span class="badge bg-danger">削除済み</span>
+              <span class="text-muted ms-1">{{ it.deleted_at or '-' }}</span>
+            </div>
+          {% endif %}
         </td>
         <td>
           {% if it.email %}
@@ -154,6 +167,7 @@
     q: {{ (initial_q or '')|tojson }},
     sort: {{ (initial_sort or 'id')|tojson }},
     order: {{ (initial_order or 'asc')|tojson }},
+    deleted: {{ (initial_deleted or 'active')|tojson }},
     dataUrl: "{{ url_for('external_login_user.admin_ext_users_data') }}"
   };
 </script>
@@ -169,12 +183,14 @@
     const totalCount = document.getElementById('totalCount');
     const sortIdBtn = document.getElementById('sortIdBtn');
     const sortNickBtn = document.getElementById('sortNickBtn');
-    if (!tbody || !searchInput || !searchBtn || !clearBtn || !sortIdBtn || !sortNickBtn) return;
+    const deletedFilter = document.getElementById('deletedFilter');
+    if (!tbody || !searchInput || !searchBtn || !clearBtn || !sortIdBtn || !sortNickBtn || !deletedFilter) return;
 
     let state = {
       q: config.q || '',
       sort: config.sort || 'id',
       order: config.order || 'asc',
+      deleted: config.deleted || 'active',
       perPage: Math.max(Number(config.perPage || 1000), 1),
     };
 
@@ -221,10 +237,13 @@
         const notifyUpload = isEnabled(it.notify_album_upload) ? '🔵' : '🔴';
         const notifyProcess = isEnabled(it.notify_album_process) ? '🔵' : '🔴';
         const cardText = (it.card_count && Number(it.card_count) > 0) ? '登録あり' : '未登録';
+        const deletedMark = Number(it.is_deleted || 0) === 1
+          ? `<div class="small mt-1"><span class="badge bg-danger">削除済み</span><span class="text-muted ms-1">${escapeHtml(it.deleted_at || '-')}</span></div>`
+          : '';
         return `<tr data-id="${Number(it.id || 0)}">
           <td class="text-muted">#${Number(it.id || 0)}</td>
           <td>${makeAvatar(it)}</td>
-          <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div></td>
+          <td><div class="fw-semibold">${nick}</div><div class="small text-muted">social_id: ${socialId}</div>${deletedMark}</td>
           <td>${emailBlock}</td>
           <td>${sns}</td>
           <td><div><span class="badge ${privacyBadge}">${privacyStatus}</span></div><div class="small text-muted mt-1">改定日: ${escapeHtml(it.privacy_policy_agreed_revised_date_label || '-')}</div><div class="small text-muted">同意日時: ${escapeHtml(it.privacy_policy_agreed_at_label || '-')}</div></td>
@@ -250,6 +269,7 @@
       url.searchParams.set('q', state.q);
       url.searchParams.set('sort', state.sort);
       url.searchParams.set('order', state.order);
+      url.searchParams.set('deleted', state.deleted);
       url.searchParams.set('page', '1');
       url.searchParams.set('per_page', String(state.perPage));
 
@@ -261,6 +281,7 @@
       historyUrl.searchParams.set('q', state.q);
       historyUrl.searchParams.set('sort', state.sort);
       historyUrl.searchParams.set('order', state.order);
+      historyUrl.searchParams.set('deleted', state.deleted);
       window.history.replaceState({}, '', historyUrl.toString());
       updateSortButtonStyles();
     }
@@ -281,6 +302,12 @@
     clearBtn.addEventListener('click', function () {
       searchInput.value = '';
       state.q = '';
+      state.deleted = 'active';
+      deletedFilter.value = 'active';
+      fetchAndRender();
+    });
+    deletedFilter.addEventListener('change', () => {
+      state.deleted = deletedFilter.value || 'active';
       fetchAndRender();
     });
 

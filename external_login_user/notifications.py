@@ -48,15 +48,27 @@ def _get_chat_admin_alias_ext_user_row(ext_user_id: int) -> dict[str, Any] | Non
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute(
-            """
-            SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
-              FROM external_login_user
-             WHERE id=%s
-             LIMIT 1
-            """,
-            (int(ext_user_id),),
-        )
+        try:
+            cur.execute(
+                """
+                SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+                  FROM external_login_user
+                 WHERE id=%s
+                   AND COALESCE(is_deleted, 0)=0
+                 LIMIT 1
+                """,
+                (int(ext_user_id),),
+            )
+        except Exception:
+            cur.execute(
+                """
+                SELECT id, social_id, COALESCE(chat_admin_alias, 0) AS chat_admin_alias
+                  FROM external_login_user
+                 WHERE id=%s
+                 LIMIT 1
+                """,
+                (int(ext_user_id),),
+            )
         row = cur.fetchone()
         if not row:
             return None

@@ -285,6 +285,7 @@ def card():
         SELECT id, nickname, email
           FROM external_login_user
          WHERE social_id=%s
+           AND COALESCE(is_deleted, 0)=0
          LIMIT 1
         """,
         (social_id,),
@@ -408,6 +409,7 @@ def card_token():
         SELECT id, nickname, email
           FROM external_login_user
          WHERE social_id=%s
+           AND COALESCE(is_deleted, 0)=0
          LIMIT 1
         """,
         (social_id,),

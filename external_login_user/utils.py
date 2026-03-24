@@ -551,15 +551,27 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
     avatar_url / avatar_file も取得して、イベント参加証などでのアイコン表示に使えるようにする。
     """
     db = get_db(); cur = db.cursor()
-    cur.execute("""
-        SELECT
-          id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
-          avatar_url, avatar_file,
-          created_at, updated_at
-        FROM external_login_user
-        WHERE social_id=%s
-        LIMIT 1
-    """, (social_id,))
+    try:
+        cur.execute("""
+            SELECT
+              id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
+              avatar_url, avatar_file,
+              created_at, updated_at
+            FROM external_login_user
+            WHERE social_id=%s
+              AND COALESCE(is_deleted, 0)=0
+            LIMIT 1
+        """, (social_id,))
+    except Exception:
+        cur.execute("""
+            SELECT
+              id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
+              avatar_url, avatar_file,
+              created_at, updated_at
+            FROM external_login_user
+            WHERE social_id=%s
+            LIMIT 1
+        """, (social_id,))
     row = cur.fetchone()
 
     if not row:

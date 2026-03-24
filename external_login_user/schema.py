@@ -265,6 +265,31 @@ def _on_bp_registered(state) -> None:
                 "privacy_policy_agreed_revised_date DATE NULL AFTER privacy_policy_agreed_at",
             )
             _ensure_col(
+                "external_login_user",
+                "is_deleted",
+                "is_deleted TINYINT(1) NOT NULL DEFAULT 0 AFTER privacy_policy_agreed_revised_date",
+            )
+            _ensure_col(
+                "external_login_user",
+                "deleted_at",
+                "deleted_at DATETIME NULL AFTER is_deleted",
+            )
+            _ensure_col(
+                "external_login_user",
+                "deleted_by",
+                "deleted_by VARCHAR(80) NULL AFTER deleted_at",
+            )
+            _ensure_col(
+                "external_login_user",
+                "deletion_reason",
+                "deletion_reason VARCHAR(255) NULL AFTER deleted_by",
+            )
+            _ensure_col(
+                "external_login_user",
+                "anonymized_at",
+                "anonymized_at DATETIME NULL AFTER deletion_reason",
+            )
+            _ensure_col(
                 "mfu_external_privacy_policy_config",
                 "commerce_law_url",
                 "commerce_law_url VARCHAR(2048) NULL AFTER privacy_policy_revised_date",
