@@ -445,8 +445,7 @@ def auth_verify():
 
     session["user"] = username
     session["nickname"] = user.get("nickname")
-    session["login_expires_at"] = datetime.now() + timedelta(hours=24)
-    session["login_extension_count"] = 0
+    session.permanent = True
     write_login_log(username, request.remote_addr, tag="LOGIN_PASSKEY")
 
     if username == "admin" and user.get("webhook_url"):

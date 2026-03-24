@@ -134,8 +134,7 @@ def _establish_login(username: str, *, tag: str) -> None:
         return
     session["user"] = username
     session["nickname"] = user.get("nickname")
-    session["login_expires_at"] = _now() + timedelta(hours=24)
-    session["login_extension_count"] = 0
+    session.permanent = True
     write_login_log(username, request.remote_addr, tag=tag)
     if username == "admin" and user.get("webhook_url"):
         try:
