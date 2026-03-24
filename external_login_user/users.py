@@ -19,7 +19,6 @@ from ipaddress import ip_address, IPv4Address, IPv6Address, ip_network
 from app.utils.logs import write_line_login_log  # 追加
 from jinja2 import TemplateNotFound
 import math
-from urllib.parse import urlparse, parse_qs, unquote
 
 
 # =========================
@@ -909,63 +908,6 @@ def _maybe_flash_email_verify_banner_for_top():
 
     except Exception:
         current_app.logger.exception("top email verify banner flash failed")
-
-# --- GoogleマップURL からイベント座標を抜く -------------------------------
-def _parse_lat_lng_from_maps_url(maps_url: str):
-    """
-    GoogleマップURLから (lat, lng) を頑張って抜き出す。
-    取れなければ (None, None) を返す。
-    """
-    if not maps_url:
-        return None, None
-
-    s = str(maps_url).strip()
-    try:
-        s = unquote(s)
-    except Exception:
-        pass
-
-    # パターン1: ".../@35.1234567,139.9876543,"
-    m = re.search(r"@(-?\d+\.\d+),\s*(-?\d+\.\d+)", s)
-    if m:
-        try:
-            return float(m.group(1)), float(m.group(2))
-        except Exception:
-            pass
-
-    # パターン2: クエリに ll=lat,lng or q=lat,lng or query=lat,lng
-    parsed = urlparse(s)
-    q = parse_qs(parsed.query)
-    for key in ("ll", "q", "query"):
-        if key in q:
-            for v in q[key]:
-                m2 = re.search(r"(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)", v)
-                if m2:
-                    try:
-                        return float(m2.group(1)), float(m2.group(2))
-                    except Exception:
-                        pass
-
-    return None, None
-
-
-# --- 2点間距離[m]（ハーサイン） -----------------------------------------
-def _calc_distance_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
-    """
-    2点の距離[m]をざっくり計算。
-    イベント会場付近かどうか判定する用途なら十分な精度。
-    """
-    R = 6371000.0  # 地球半径[m]
-
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lng2 - lng1)
-
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
-
 
 
 # =========================
@@ -3513,7 +3455,6 @@ def event_pass(event_uuid: str):
               em.paid_at,
               em.receipt_url,
               em.checkin_at,
-              em.checkin_method,
               COALESCE(em.is_canceled,0) AS is_canceled
             FROM mfu_event_member em
             WHERE em.event_id=%s AND em.user_id=%s
@@ -3547,7 +3488,6 @@ def event_pass(event_uuid: str):
         checkin_at_str = str(raw_checkin_at) if raw_checkin_at else None
 
     checked_in = bool(raw_checkin_at)
-    checkin_method = (row.get("checkin_method") if row else None)
 
     # 支払表示キーワード（テンプレ側ではもう使ってなくても互換のため残す）
     fee = int(ev.get("fee_yen") or 0)
@@ -3607,12 +3547,6 @@ def event_pass(event_uuid: str):
 
     now_str = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # ★ イベントに座標 or maps_url があれば「GPS受付有効」とみなす
-    ev_lat  = ev.get("event_lat")
-    ev_lng  = ev.get("event_lng")
-    maps_url = (ev.get("maps_url") or "").strip()
-    checkin_qr_enabled = bool(ev.get("checkin_qr_enabled"))
-    gps_checkin_enabled = ((ev_lat is not None and ev_lng is not None) or bool(maps_url)) and (not checkin_qr_enabled)
 
     resp = make_response(render_template(
         "event_pass.html",
@@ -3630,254 +3564,32 @@ def event_pass(event_uuid: str):
         # ★ ここから GPS 受付用
         checked_in=checked_in,
         checkin_at_str=checkin_at_str,
-        checkin_method=checkin_method,
-        gps_checkin_enabled=gps_checkin_enabled,
-        checkin_qr_enabled=checkin_qr_enabled,
+        checkin_method="qr" if checked_in else None,
         qr_trademark_notice=QR_TRADEMARK_NOTICE,
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
 
-def _update_checkin_member_row(*, member_id: int, checked_at, lat, lng, method: str) -> int:
-    """checkin_method列のENUM差異に備え、失敗時はmethod更新なしへフォールバック。"""
+def _update_checkin_member_row(*, member_id: int, checked_at) -> int:
     db = get_db(); cur = db.cursor()
     try:
-        try:
-            cur.execute(
-                """
-                UPDATE mfu_event_member
-                   SET checkin_at = %s,
-                       checkin_lat = %s,
-                       checkin_lng = %s,
-                       checkin_method = %s
-                 WHERE id = %s
-                   AND checkin_at IS NULL
-                """,
-                (checked_at, lat, lng, method, member_id),
-            )
-            db.commit()
-            return cur.rowcount
-        except Exception as e:
-            msg = str(e)
-            if ("checkin_method" not in msg) and ("1265" not in msg):
-                raise
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            current_app.logger.warning("checkin_method update skipped due to schema mismatch: %s", msg)
-            cur.execute(
-                """
-                UPDATE mfu_event_member
-                   SET checkin_at = %s,
-                       checkin_lat = %s,
-                       checkin_lng = %s
-                 WHERE id = %s
-                   AND checkin_at IS NULL
-                """,
-                (checked_at, lat, lng, member_id),
-            )
-            db.commit()
-            return cur.rowcount
+        cur.execute(
+            """
+            UPDATE mfu_event_member
+               SET checkin_at = %s
+             WHERE id = %s
+               AND checkin_at IS NULL
+            """,
+            (checked_at, member_id),
+        )
+        db.commit()
+        return cur.rowcount
     finally:
         try:
             cur.close(); db.close()
         except Exception:
             pass
-
-
-@bp.route("/events/pass/<event_uuid>/checkin", methods=["POST"])
-def event_pass_checkin(event_uuid: str):
-    """
-    参加証画面からの GPS チェックインAPI。
-
-    - URLの event_uuid からイベント特定
-    - ログイン中ユーザー + イベントID から mfu_event_member を特定
-    - イベントの座標（event_lat/event_lng or maps_url）と現在位置の距離を計算
-    - 半径内なら mfu_event_member.checkin_* を更新
-    - 初回のみ Discord + ACL メール通知
-    """
-    # 外部ログイン必須
-    guard = _require_ext_login()
-    if guard:
-        return guard
-
-    # ログイン中ユーザー
-    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
-    if not me:
-        abort(401)
-
-    # イベント取得
-    ev = _event_by_uuid_str(event_uuid)
-    if not ev:
-        return jsonify(ok=False, error="イベントが見つかりませんでした。"), 404
-
-    event_id = ev["id"]
-    ev_title = ev.get("title") or "イベント"
-    if bool(ev.get("checkin_qr_enabled")):
-        return jsonify(ok=False, error="このイベントは会場QRコード受付のみ有効です。"), 400
-    ev_uuid_str = ev.get("event_uuid_str") or ""
-    if not ev_uuid_str and ev.get("event_uuid") is not None:
-        # 念のため bytes から変換する fallback
-        try:
-            ev_uuid_str = _uuid_bytes_to_str(ev["event_uuid"]) or ""
-        except Exception:
-            ev_uuid_str = ""
-
-    # 参加メンバー（自分）を特定（最新1件）
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        cur.execute(
-            """
-            SELECT
-                m.id,
-                m.checkin_at,
-                m.checkin_lat,
-                m.checkin_lng,
-                COALESCE(m.participant_role,'') AS participant_role,
-                COALESCE(m.costume_label,'') AS costume_label
-            FROM mfu_event_member AS m
-            WHERE m.event_id = %s
-              AND m.user_id = %s
-              AND m.status = 'approved'
-              AND COALESCE(m.is_canceled,0)=0
-            ORDER BY m.id DESC
-            LIMIT 1
-            """,
-            (event_id, me["id"]),
-        )
-        member = cur.fetchone()
-    finally:
-        try:
-            cur.close()
-        except Exception:
-            pass
-
-    if not member:
-        return jsonify(ok=False, error="このイベントの参加情報が見つかりませんでした。"), 404
-
-    # すでに受付済みなら何もしない（通知も出さない）
-    if member.get("checkin_at"):
-        return jsonify(
-            ok=True,
-            already=True,
-            message="すでに受付済みです。",
-        )
-
-    # --- 会場側の座標決定 --------------------------------------
-    # 優先: event_lat / event_lng カラム（あれば）
-    ev_lat = ev.get("event_lat")
-    ev_lng = ev.get("event_lng")
-
-    # なければ maps_url からパース
-    if ev_lat is None or ev_lng is None:
-        maps_url = ev.get("maps_url") or ""
-        from_lat, from_lng = _parse_lat_lng_from_maps_url(maps_url)
-        ev_lat = ev_lat if ev_lat is not None else from_lat
-        ev_lng = ev_lng if ev_lng is not None else from_lng
-
-    if ev_lat is None or ev_lng is None:
-        return jsonify(ok=False, error="このイベントではGPS受付が有効化されていません。"), 400
-
-    # 受付許容半径[m]（イベントにカラムがあれば利用、なければ300m）
-    try:
-        radius_m = int(ev.get("checkin_radius_m") or 300)
-        if radius_m <= 0:
-            radius_m = 300
-    except Exception:
-        radius_m = 300
-
-    # --- 端末からの位置情報を取得（JSON / form 両対応） ---------
-    lat_raw = None
-    lng_raw = None
-
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-        lat_raw = data.get("lat")
-        lng_raw = data.get("lng")
-    else:
-        lat_raw = request.form.get("lat")
-        lng_raw = request.form.get("lng")
-
-    try:
-        user_lat = float(lat_raw)
-        user_lng = float(lng_raw)
-    except (TypeError, ValueError):
-        return jsonify(ok=False, error="位置情報の形式が不正です。"), 400
-
-    # 距離計算
-    distance_m = _calc_distance_m(float(ev_lat), float(ev_lng), user_lat, user_lng)
-
-    if distance_m > radius_m:
-        return jsonify(
-            ok=False,
-            error=f"会場から少し離れすぎています（約 {distance_m:.0f} m）。受付は会場付近で行ってください。",
-            distance_m=round(distance_m),
-            radius_m=radius_m,
-        ), 400
-
-    # --- 会場付近 → チェックイン登録 ------------------------------
-    now = datetime.now()
-
-    updated = _update_checkin_member_row(
-        member_id=member["id"],
-        checked_at=now,
-        lat=user_lat,
-        lng=user_lng,
-        method="gps",
-    )
-
-    # UPDATE に失敗（他プロセスが先にチェックイン済みにした等）の場合はここで終了
-    if not updated:
-        return jsonify(
-            ok=True,
-            already=True,
-            message="すでに受付処理が完了しています。",
-        )
-
-    # --- 通知処理（初回チェックインのみ） -------------------------
-    nickname = me.get("nickname") or "参加者"
-    admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
-    notice_body = _build_checkin_notice_body(
-        nickname=nickname,
-        checked_at=now,
-        event_title=ev_title,
-        participant_role=member.get("participant_role"),
-        costume_label=member.get("costume_label"),
-        method_label="GPS",
-        admin_url=admin_url,
-    )
-
-    # 1) Discord（adminユーザー向け）
-    try:
-        _notify_discord(notice_body)
-    except Exception:
-        current_app.logger.exception("Discord 受付通知でエラーが発生しました")
-
-    # 2) ACL メンバーにメール通知
-    try:
-        acl_emails = _get_acl_admin_emails(event_id)
-        if acl_emails:
-            subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん"
-            for addr in acl_emails:
-                send_mail(
-                    to=addr,
-                    subject=subject,
-                    body=notice_body,
-                    event_uuid=ev_uuid_str or None,
-                )
-    except Exception:
-        current_app.logger.exception("ACL向け受付メール通知でエラーが発生しました")
-
-    return jsonify(
-        ok=True,
-        message="受付が完了しました。",
-        distance_m=round(distance_m),
-        radius_m=radius_m,
-        checkin_at=now_str,
-    )
-
 
 @bp.route("/checkin/<token>")
 def event_qr_checkin(token: str):
@@ -3898,7 +3610,6 @@ def event_qr_checkin(token: str):
     try:
         cur.execute("""
             SELECT id, title, event_uuid,
-                   COALESCE(checkin_qr_enabled, 0) AS checkin_qr_enabled,
                    checkin_qr_token,
                    checkin_qr_expires_at
               FROM mfu_event
@@ -3914,9 +3625,6 @@ def event_qr_checkin(token: str):
 
     if not ev:
         return make_response("チェックイン用トークンが無効です。", 404)
-    if int(ev.get("checkin_qr_enabled") or 0) != 1:
-        return make_response("このチェックインは現在無効です。", 400)
-
     expires_at = ev.get("checkin_qr_expires_at")
     if isinstance(expires_at, str):
         try:
@@ -3963,9 +3671,6 @@ def event_qr_checkin(token: str):
     updated = _update_checkin_member_row(
         member_id=member["id"],
         checked_at=now,
-        lat=None,
-        lng=None,
-        method="qr",
     )
 
     if not updated:

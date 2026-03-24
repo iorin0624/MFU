@@ -17,7 +17,6 @@ from .utils import (
     _event_admin_can_manage,
     _ensure_event_invite_token,
     _event_invite_url,
-    extract_lat_lng_from_maps_url,  # 追加
     QR_TRADEMARK_NOTICE,
     _get_external_document_config,
     _get_current_privacy_policy_config,
@@ -709,9 +708,10 @@ def admin_event_new():
       INSERT INTO mfu_event (
         event_uuid, title, owner_user_id, starts_at, fee_yen,
         pay_from, pay_until,
-        place_name, address, maps_url
+        place_name, address, maps_url,
+        checkin_qr_enabled
       )
-      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s)
+      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1)
     """, (title, (starts_at or None), (int(fee_yen) if fee_yen else None),
           pay_from, pay_until,
           (place or None), (address or None), (maps_url or None)))
@@ -1082,8 +1082,6 @@ def admin_event_edit(event_id: int):
         maps_url    = (request.form.get("maps_url") or "").strip() or None
         sns_hashtag = (request.form.get("sns_hashtag") or "").strip() or None
 
-        auto_lat, auto_lng = extract_lat_lng_from_maps_url(maps_url) if maps_url else (None, None)
-
         line_openchat_url  = (request.form.get("line_openchat_url")  or "").strip() or None
         line_openchat_pass = (request.form.get("line_openchat_pass") or "").strip() or None
         google_form_url    = (request.form.get("google_form_url")    or "").strip() or None
@@ -1187,14 +1185,6 @@ def admin_event_edit(event_id: int):
                   album_id, memo_all,
                   allow_square, allow_paypay, allow_bank, tip_enabled, paypay_display,
                   event_id))
-
-            if auto_lat is not None and auto_lng is not None:
-                curu.execute("""
-                    UPDATE mfu_event
-                       SET event_lat=%s, event_lng=%s
-                     WHERE id=%s
-                     LIMIT 1
-                """, (auto_lat, auto_lng, event_id))
 
             dbu.commit()
         finally:
@@ -3003,50 +2993,6 @@ def admin_rotate_invite_token(event_id: int):
     return jsonify({"ok": True, "invite_token": new_tok})
 
 
-@bp.post("/external-login/admin/event/<int:event_id>/checkin-qr")
-def admin_toggle_checkin_qr(event_id: int):
-    guard = _require_mfu_login_redirect()
-    if guard: return guard
-    if not _event_admin_can_manage(event_id):
-        abort(403, "このイベントを管理する権限がありません。")
-    _assert_admin_csrf()
-
-    enable = 1 if (request.form.get("enable") == "1") else 0
-
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        cur.execute("""
-            SELECT checkin_qr_token
-              FROM mfu_event
-             WHERE id=%s
-             LIMIT 1
-        """, (event_id,))
-        row = cur.fetchone() or {}
-        token = (row.get("checkin_qr_token") or "").strip()
-        if enable == 1 and (not token or len(token) != 64):
-            token = os.urandom(32).hex()
-            cur.execute("""
-                UPDATE mfu_event
-                   SET checkin_qr_enabled=%s,
-                       checkin_qr_token=%s
-                 WHERE id=%s
-            """, (enable, token, event_id))
-        else:
-            cur.execute("UPDATE mfu_event SET checkin_qr_enabled=%s WHERE id=%s", (enable, event_id))
-        db.commit()
-    finally:
-        try: cur.close(); db.close()
-        except Exception: pass
-
-    return jsonify({
-        "ok": True,
-        "checkin_qr_enabled": enable,
-        "checkin_qr_token": (token if token else None),
-        "checkin_qr_url": _build_checkin_qr_url(token),
-        "qr_trademark_notice": QR_TRADEMARK_NOTICE,
-    })
-
-
 @bp.post("/external-login/admin/event/<int:event_id>/checkin-qr/rotate")
 def admin_rotate_checkin_qr_token(event_id: int):
     guard = _require_mfu_login_redirect()
@@ -3058,7 +3004,7 @@ def admin_rotate_checkin_qr_token(event_id: int):
     new_tok = os.urandom(32).hex()
     db = get_db(); cur = db.cursor()
     try:
-        cur.execute("UPDATE mfu_event SET checkin_qr_token=%s WHERE id=%s", (new_tok, event_id))
+        cur.execute("UPDATE mfu_event SET checkin_qr_enabled=1, checkin_qr_token=%s WHERE id=%s", (new_tok, event_id))
         db.commit()
     finally:
         try: cur.close(); db.close()
@@ -3247,6 +3193,7 @@ def admin_event_copy(event_id: int):
           fee_yen,
           place_name, address, maps_url,
           pay_from, pay_until,
+          checkin_qr_enabled,
           line_openchat_url, line_openchat_pass,
           google_form_url,
           memo_all,
@@ -3259,6 +3206,7 @@ def admin_event_copy(event_id: int):
           %s,
           %s, %s, %s,
           %s, %s,
+          1,
           %s, %s,
           %s,
           %s,
