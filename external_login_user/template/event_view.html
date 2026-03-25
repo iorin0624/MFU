@@ -171,6 +171,17 @@
             </div>
           {% endif %}
 
+          {% if can_request_participants_png_email %}
+            <div class="mb-2">
+              <form method="post" action="{{ url_for('external_login_user.request_participants_png_email', event_uuid=ev.event_uuid_str) }}">
+                <input type="hidden" name="csrf_token" value="{{ ext_csrf }}">
+                <button type="submit" class="btn btn-sm btn-outline-dark w-100 text-start">
+                  参加者一覧PNGをメールで受け取る
+                </button>
+              </form>
+            </div>
+          {% endif %}
+
           {% if member_active %}
             <!-- 参加者一覧 -->
             <div class="mb-2">

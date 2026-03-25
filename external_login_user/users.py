@@ -9,6 +9,7 @@ import re
 import io
 import uuid
 import time
+import threading
 import secrets
 import hashlib
 from pathlib import Path
@@ -127,6 +128,147 @@ def _is_chat_admin_alias_ext_user(ext_user_id: int) -> bool:
             cur.close(); db.close()
         except Exception:
             pass
+
+
+def _get_event_membership_row(event_id: int, user_id: int) -> dict | None:
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT
+              COALESCE(m.status,'pending')      AS status,
+              COALESCE(m.is_host,0)             AS is_host,
+              COALESCE(m.is_subhost,0)          AS is_subhost,
+              COALESCE(m.is_canceled,0)         AS is_canceled
+            FROM mfu_event_member m
+            WHERE m.event_id=%s AND m.user_id=%s
+            ORDER BY m.id DESC
+            LIMIT 1
+            """,
+            (int(event_id), int(user_id)),
+        )
+        return cur.fetchone()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+
+def _can_send_participants_png_mail(membership: dict | None) -> bool:
+    if not membership:
+        return False
+    if int(membership.get("is_canceled") or 0) == 1:
+        return False
+    is_host = int(membership.get("is_host") or 0) == 1
+    is_subhost = int(membership.get("is_subhost") or 0) == 1
+    return is_host or is_subhost
+
+
+def _build_participants_png_payload(event_id: int, event_title: str) -> tuple[bytes, str]:
+    rows = _fetch_event_members_in_admin_order(int(event_id))
+    target_members = [
+        r for r in rows
+        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
+    ]
+    png_data = _render_participants_png(event_title or "", target_members)
+    png_data.seek(0)
+    download_name = _safe_png_download_filename(int(event_id), event_title)
+    return png_data.getvalue(), download_name
+
+
+def _send_participants_png_email_to_ext_user(*, event_uuid: str, ext_user_id: int) -> None:
+    ev = _event_by_uuid_str(event_uuid)
+    if not ev:
+        current_app.logger.warning("participants png email job skipped: event not found event_uuid=%s", event_uuid)
+        return
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id, nickname, email, email_verified_at FROM external_login_user WHERE id=%s LIMIT 1",
+            (int(ext_user_id),),
+        )
+        me = cur.fetchone() or {}
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    if not me:
+        current_app.logger.warning("participants png email job skipped: user not found ext_user_id=%s", ext_user_id)
+        return
+
+    email = str(me.get("email") or "").strip()
+    if not email or not me.get("email_verified_at"):
+        current_app.logger.warning(
+            "participants png email job skipped: email unverified ext_user_id=%s event_id=%s",
+            ext_user_id,
+            ev["id"],
+        )
+        return
+
+    membership = _get_event_membership_row(ev["id"], me["id"])
+    if not _can_send_participants_png_mail(membership):
+        current_app.logger.warning(
+            "participants png email job skipped: unauthorized ext_user_id=%s event_id=%s",
+            ext_user_id,
+            ev["id"],
+        )
+        return
+
+    png_bytes, png_filename = _build_participants_png_payload(ev["id"], ev.get("title") or "")
+    event_title = (ev.get("title") or "イベント").strip() or "イベント"
+    nickname = (me.get("nickname") or "").strip() or "参加者"
+    view_url = f"https://mfu.iori0624.jp/external-login/events/view/{event_uuid}"
+    subject = f"【{event_title}】参加者一覧PNGをお送りします"
+    body = (
+        f"{nickname} 様\n\n"
+        f"イベント「{event_title}」の参加者一覧PNGを添付しました。\n"
+        "必要に応じて以下のイベントページもご確認ください。\n"
+        f"{view_url}\n"
+    )
+
+    send_mail(
+        to=email,
+        subject=subject,
+        body=body,
+        event_uuid=event_uuid,
+        external_login_user_id=int(me["id"]),
+        mail_kind="participants_png_export",
+        attachments=[
+            {
+                "filename": png_filename,
+                "content_type": "image/png",
+                "data": png_bytes,
+            }
+        ],
+    )
+    current_app.logger.info(
+        "participants png email sent: event_id=%s ext_user_id=%s to=%s",
+        ev["id"],
+        me["id"],
+        email,
+    )
+
+
+def _start_participants_png_email_job(*, event_uuid: str, ext_user_id: int) -> None:
+    app = current_app._get_current_object()
+
+    def _runner():
+        with app.app_context():
+            try:
+                _send_participants_png_email_to_ext_user(event_uuid=event_uuid, ext_user_id=ext_user_id)
+            except Exception:
+                app.logger.exception(
+                    "participants png email job failed: event_uuid=%s ext_user_id=%s",
+                    event_uuid,
+                    ext_user_id,
+                )
+
+    th = threading.Thread(target=_runner, daemon=True, name=f"participants-png-mail-{ext_user_id}")
+    th.start()
 
 
 def _load_event_chat_unread_counts(*, event_ids: list[int], ext_user_id: int, use_mfu_admin_scope: bool = False) -> dict[int, int]:
@@ -2801,56 +2943,59 @@ def event_participants_png(event_uuid: str):
     if not me:
         abort(401)
 
-    db = get_db(); cur = db.cursor(dictionary=True)
-    try:
-        cur.execute(
-            """
-            SELECT
-              COALESCE(m.status,'pending')      AS status,
-              COALESCE(m.is_host,0)             AS is_host,
-              COALESCE(m.is_subhost,0)          AS is_subhost,
-              COALESCE(m.is_canceled,0)         AS is_canceled
-            FROM mfu_event_member m
-            WHERE m.event_id=%s AND m.user_id=%s
-            ORDER BY m.id DESC
-            LIMIT 1
-            """,
-            (ev["id"], me["id"]),
-        )
-        row = cur.fetchone()
-    finally:
-        try:
-            cur.close(); db.close()
-        except Exception:
-            pass
+    row = _get_event_membership_row(ev["id"], me["id"])
 
     if not row:
         abort(403, "このイベントの参加者ではありません")
     if int(row.get("is_canceled") or 0) == 1:
         abort(403, "キャンセル済みのためダウンロードできません")
-    is_host = int(row.get("is_host") or 0) == 1
-    is_subhost = int(row.get("is_subhost") or 0) == 1
-    if not (is_host or is_subhost):
+    if not _can_send_participants_png_mail(row):
         abort(403, "この操作の権限がありません")
 
-    rows = _fetch_event_members_in_admin_order(ev["id"])
-    target_members = [
-        r for r in rows
-        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
-    ]
     try:
-        png_data = _render_participants_png(ev.get("title") or "", target_members)
+        png_bytes, download_name = _build_participants_png_payload(ev["id"], ev.get("title") or "")
     except Exception:
         current_app.logger.exception("external participants png export failed (event_id=%s user_id=%s)", ev["id"], me["id"])
         abort(500, "PNG生成に失敗しました")
 
-    download_name = _safe_png_download_filename(int(ev["id"]), ev.get("title"))
     return send_file(
-        png_data,
+        io.BytesIO(png_bytes),
         mimetype="image/png",
         as_attachment=True,
         download_name=download_name,
     )
+
+
+@bp.post("/events/view/<event_uuid>/participants-email")
+def request_participants_png_email(event_uuid: str):
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    token = (request.form.get("csrf_token") or "").strip()
+    if not token or token != session.get("ext_csrf"):
+        abort(400, "invalid csrf token")
+
+    ev = _event_by_uuid_str(event_uuid)
+    if not ev:
+        abort(404, "イベントが見つかりません")
+
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    if not me:
+        abort(401)
+
+    membership = _get_event_membership_row(ev["id"], me["id"])
+    if not membership or not _can_send_participants_png_mail(membership):
+        abort(403, "この操作の権限がありません")
+
+    email = str(me.get("email") or "").strip()
+    if not email or not me.get("email_verified_at"):
+        flash("確認済みメールアドレスが必要です。", "warning")
+        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+
+    _start_participants_png_email_job(event_uuid=event_uuid, ext_user_id=int(me["id"]))
+    flash("参加者一覧PNGの作成を受け付けました。完了後、確認済みメールアドレスへ送信します。", "success")
+    return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 
 
 @bp.route("/events/view/<event_uuid>")
@@ -2866,6 +3011,8 @@ def view_event(event_uuid: str):
     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
     if not me:
         abort(401)
+    if "ext_csrf" not in session:
+        session["ext_csrf"] = secrets.token_hex(16)
 
     # 参加状況（最新行） ← 役割/衣装を追加で取得
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -2919,6 +3066,11 @@ def view_event(event_uuid: str):
         row is not None
         and my_is_canceled == 0
         and (my_is_host == 1 or my_is_subhost == 1)
+    )
+    can_request_participants_png_email = (
+        can_download_participants_png
+        and bool(str(me.get("email") or "").strip())
+        and bool(me.get("email_verified_at"))
     )
     participants_png_url = (
         url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
@@ -3084,6 +3236,8 @@ def view_event(event_uuid: str):
         my_canceled_at=my_canceled_at,
         can_download_participants_png=can_download_participants_png,
         participants_png_url=participants_png_url,
+        can_request_participants_png_email=can_request_participants_png_email,
+        ext_csrf=session.get("ext_csrf"),
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"

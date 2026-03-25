@@ -1,17 +1,8 @@
 diff --git a/external_login_user/template/event_view.html b/external_login_user/template/event_view.html
-index 73b3d9a0533c1e335c0045ace7986027b1d91c46..62a7101a9b729303ad671c22b4c041582b72d6c8 100644
+index 62a7101a9b729303ad671c22b4c041582b72d6c8..1066937eabe5886abfa93bf93e7eacdb1693e90e 100644
 --- a/external_login_user/template/event_view.html
 +++ b/external_login_user/template/event_view.html
-@@ -140,50 +140,59 @@
-     {% endif %}
- 
-     {% if sns_tag and member_active %}
-       <div class="col-12">
-         <div class="card h-100">
-           <div class="card-body">
-             <h2 class="h6 mb-2">ハッシュタグ</h2>
-             <div class="d-flex flex-wrap align-items-center gap-2">
-               <span class="badge text-bg-light border" id="snsHashtagText">{{ sns_tag }}</span>
+@@ -149,50 +149,61 @@
                <button class="btn btn-sm btn-outline-secondary" type="button" id="snsHashtagCopy" data-copy-text="{{ sns_tag }}">
                  コピー
                </button>
@@ -28,12 +19,23 @@ index 73b3d9a0533c1e335c0045ace7986027b1d91c46..62a7101a9b729303ad671c22b4c04158
          <div class="card-body">
            <h2 class="h6 mb-3">各種リンク</h2>
  
-+          {% if can_download_participants_png and participants_png_url %}
+           {% if can_download_participants_png and participants_png_url %}
+             <div class="mb-2">
+               <a class="btn btn-sm btn-outline-dark w-100 text-start"
+                  href="{{ participants_png_url }}">
+                 参加者一覧PNGダウンロード
+               </a>
+             </div>
+           {% endif %}
+ 
++          {% if can_request_participants_png_email %}
 +            <div class="mb-2">
-+              <a class="btn btn-sm btn-outline-dark w-100 text-start"
-+                 href="{{ participants_png_url }}">
-+                参加者一覧PNGダウンロード
-+              </a>
++              <form method="post" action="{{ url_for('external_login_user.request_participants_png_email', event_uuid=ev.event_uuid_str) }}">
++                <input type="hidden" name="csrf_token" value="{{ ext_csrf }}">
++                <button type="submit" class="btn btn-sm btn-outline-dark w-100 text-start">
++                  参加者一覧PNGをメールで受け取る
++                </button>
++              </form>
 +            </div>
 +          {% endif %}
 +
@@ -63,10 +65,22 @@ index 73b3d9a0533c1e335c0045ace7986027b1d91c46..62a7101a9b729303ad671c22b4c04158
                  <a class="btn btn-sm btn-outline-primary w-100 text-start"
                     href="{{ oc_url }}" target="_blank" rel="noopener noreferrer">
 diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c890bc458 100644
+index 5081ba93d0d8d54686fd2913e512e47c890bc458..9210e27dd0aa3be5b0d34a5fd78e7486794bd1ca 100644
 --- a/external_login_user/users.py
 +++ b/external_login_user/users.py
-@@ -12,88 +12,93 @@ import time
+@@ -1,36 +1,37 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ 
+ # =========================
+ # 標準ライブラリ
+ # =========================
+ import os
+ import re
+ import io
+ import uuid
+ import time
++import threading
  import secrets
  import hashlib
  from pathlib import Path
@@ -92,95 +106,25 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
  # =========================
  from flask import (
      request, session, redirect, url_for, render_template,
--    abort, flash, current_app, send_from_directory, make_response, jsonify
-+    abort, flash, current_app, send_from_directory, make_response, jsonify, send_file
- )
- from werkzeug.utils import secure_filename
- from werkzeug.exceptions import HTTPException
- 
- # Blueprint は必ず先に import
- from . import bp, oauth
- 
- from app.utils.db import get_db
- from app.utils.mail import send_mail
- from .utils import (
-     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
-     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
-     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
-     _event_by_uuid_str, _membership_status,
-     update_event_member_status,
-     avatar_url_for,  # ← 追加
-     QR_TRADEMARK_NOTICE,
-     remember_session_map_value,
-     EXT_LOGIN_MODE_PWA,
-     PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
-     PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
-     normalize_ext_login_mode,
-     create_external_login_resume_token,
-     get_external_login_resume_token_summary,
-     consume_external_login_resume_token,
-     _get_current_commerce_law_config,
-     _get_current_participant_terms_config,
-     _get_current_privacy_policy_config,
-     _is_participant_terms_effective,
-     _is_privacy_policy_effective,
-     _needs_privacy_policy_agreement,
-     _agree_current_privacy_policy,
-     _privacy_policy_date_label,
-     _sanitize_ext_local_url,
-     _is_disallowed_ext_redirect_path,
- )
--from .admin import _recalc_event_fee_if_auto
-+from .admin import (
-+    _recalc_event_fee_if_auto,
-+    _safe_png_download_filename,
-+    _render_participants_png,
-+    _fetch_event_members_in_admin_order,
-+)
- #from .auto_payment import load_default_card_summary
+@@ -107,50 +108,191 @@ def _normalize_external_url(raw: str | None) -> str | None:
+     if url.startswith(("http://", "https://")):
+         return url
+     return f"https://{url}"
  
  
- # ==== アバター保存設定 ====
- AVATAR_ROOT = Path("/mnt/mfu/avatars")
- ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
- AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
- 
- 
- JST = timezone(timedelta(hours=9))
- 
- # =========================
- # 便利ヘルパ（このファイル内限定）
- # =========================
- def _normalize_email(s: str) -> str | None:
-     s = (s or "").strip()
-     if not s or "@" not in s or len(s) > 255:
-         return None
-     return s
- 
- 
- def _normalize_external_url(raw: str | None) -> str | None:
-     if not isinstance(raw, str):
-         return None
-     url = raw.strip()
-@@ -2760,50 +2765,116 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
-         resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
-         return resp
-     except HTTPException:
-         raise
-     except ValueError:
-         current_app.logger.exception(
-             "receipt pdf validation failed: event_uuid=%s member_id=%s",
-             event_uuid,
-             member_id,
+ def _is_chat_admin_alias_ext_user(ext_user_id: int) -> bool:
+     if int(ext_user_id or 0) <= 0:
+         return False
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             "SELECT COALESCE(chat_admin_alias, 0) AS chat_admin_alias FROM external_login_user WHERE id=%s LIMIT 1",
+             (int(ext_user_id),),
          )
-         abort(400, "領収書の情報が不足しています")
+         row = cur.fetchone() or {}
+         return int(row.get("chat_admin_alias") or 0) == 1
      except Exception:
-         current_app.logger.exception(
-             "receipt pdf generation failed: event_uuid=%s member_id=%s",
-             event_uuid,
-             member_id,
-         )
-         abort(500, "領収書の生成に失敗しました")
+         return False
      finally:
          try:
              cur.close(); db.close()
@@ -188,20 +132,7 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
              pass
  
  
-+@bp.route("/events/view/<event_uuid>/participants.png", endpoint="event_participants_png")
-+def event_participants_png(event_uuid: str):
-+    guard = _require_ext_login()
-+    if guard:
-+        return guard
-+
-+    ev = _event_by_uuid_str(event_uuid)
-+    if not ev:
-+        abort(404, "イベントが見つかりません")
-+
-+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
-+    if not me:
-+        abort(401)
-+
++def _get_event_membership_row(event_id: int, user_id: int) -> dict | None:
 +    db = get_db(); cur = db.cursor(dictionary=True)
 +    try:
 +        cur.execute(
@@ -216,42 +147,269 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
 +            ORDER BY m.id DESC
 +            LIMIT 1
 +            """,
-+            (ev["id"], me["id"]),
++            (int(event_id), int(user_id)),
 +        )
-+        row = cur.fetchone()
++        return cur.fetchone()
 +    finally:
 +        try:
 +            cur.close(); db.close()
 +        except Exception:
 +            pass
 +
-+    if not row:
-+        abort(403, "このイベントの参加者ではありません")
-+    if int(row.get("is_canceled") or 0) == 1:
-+        abort(403, "キャンセル済みのためダウンロードできません")
-+    is_host = int(row.get("is_host") or 0) == 1
-+    is_subhost = int(row.get("is_subhost") or 0) == 1
-+    if not (is_host or is_subhost):
-+        abort(403, "この操作の権限がありません")
 +
-+    rows = _fetch_event_members_in_admin_order(ev["id"])
++def _can_send_participants_png_mail(membership: dict | None) -> bool:
++    if not membership:
++        return False
++    if int(membership.get("is_canceled") or 0) == 1:
++        return False
++    is_host = int(membership.get("is_host") or 0) == 1
++    is_subhost = int(membership.get("is_subhost") or 0) == 1
++    return is_host or is_subhost
++
++
++def _build_participants_png_payload(event_id: int, event_title: str) -> tuple[bytes, str]:
++    rows = _fetch_event_members_in_admin_order(int(event_id))
 +    target_members = [
 +        r for r in rows
 +        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
 +    ]
-+    try:
-+        png_data = _render_participants_png(ev.get("title") or "", target_members)
-+    except Exception:
-+        current_app.logger.exception("external participants png export failed (event_id=%s user_id=%s)", ev["id"], me["id"])
-+        abort(500, "PNG生成に失敗しました")
++    png_data = _render_participants_png(event_title or "", target_members)
++    png_data.seek(0)
++    download_name = _safe_png_download_filename(int(event_id), event_title)
++    return png_data.getvalue(), download_name
 +
-+    download_name = _safe_png_download_filename(int(ev["id"]), ev.get("title"))
-+    return send_file(
-+        png_data,
-+        mimetype="image/png",
-+        as_attachment=True,
-+        download_name=download_name,
++
++def _send_participants_png_email_to_ext_user(*, event_uuid: str, ext_user_id: int) -> None:
++    ev = _event_by_uuid_str(event_uuid)
++    if not ev:
++        current_app.logger.warning("participants png email job skipped: event not found event_uuid=%s", event_uuid)
++        return
++
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            "SELECT id, nickname, email, email_verified_at FROM external_login_user WHERE id=%s LIMIT 1",
++            (int(ext_user_id),),
++        )
++        me = cur.fetchone() or {}
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++
++    if not me:
++        current_app.logger.warning("participants png email job skipped: user not found ext_user_id=%s", ext_user_id)
++        return
++
++    email = str(me.get("email") or "").strip()
++    if not email or not me.get("email_verified_at"):
++        current_app.logger.warning(
++            "participants png email job skipped: email unverified ext_user_id=%s event_id=%s",
++            ext_user_id,
++            ev["id"],
++        )
++        return
++
++    membership = _get_event_membership_row(ev["id"], me["id"])
++    if not _can_send_participants_png_mail(membership):
++        current_app.logger.warning(
++            "participants png email job skipped: unauthorized ext_user_id=%s event_id=%s",
++            ext_user_id,
++            ev["id"],
++        )
++        return
++
++    png_bytes, png_filename = _build_participants_png_payload(ev["id"], ev.get("title") or "")
++    event_title = (ev.get("title") or "イベント").strip() or "イベント"
++    nickname = (me.get("nickname") or "").strip() or "参加者"
++    view_url = f"https://mfu.iori0624.jp/external-login/events/view/{event_uuid}"
++    subject = f"【{event_title}】参加者一覧PNGをお送りします"
++    body = (
++        f"{nickname} 様\n\n"
++        f"イベント「{event_title}」の参加者一覧PNGを添付しました。\n"
++        "必要に応じて以下のイベントページもご確認ください。\n"
++        f"{view_url}\n"
 +    )
++
++    send_mail(
++        to=email,
++        subject=subject,
++        body=body,
++        event_uuid=event_uuid,
++        external_login_user_id=int(me["id"]),
++        mail_kind="participants_png_export",
++        attachments=[
++            {
++                "filename": png_filename,
++                "content_type": "image/png",
++                "data": png_bytes,
++            }
++        ],
++    )
++    current_app.logger.info(
++        "participants png email sent: event_id=%s ext_user_id=%s to=%s",
++        ev["id"],
++        me["id"],
++        email,
++    )
++
++
++def _start_participants_png_email_job(*, event_uuid: str, ext_user_id: int) -> None:
++    app = current_app._get_current_object()
++
++    def _runner():
++        with app.app_context():
++            try:
++                _send_participants_png_email_to_ext_user(event_uuid=event_uuid, ext_user_id=ext_user_id)
++            except Exception:
++                app.logger.exception(
++                    "participants png email job failed: event_uuid=%s ext_user_id=%s",
++                    event_uuid,
++                    ext_user_id,
++                )
++
++    th = threading.Thread(target=_runner, daemon=True, name=f"participants-png-mail-{ext_user_id}")
++    th.start()
++
++
+ def _load_event_chat_unread_counts(*, event_ids: list[int], ext_user_id: int, use_mfu_admin_scope: bool = False) -> dict[int, int]:
+     if not event_ids:
+         return {}
+ 
+     counts: dict[int, int] = {}
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         placeholders = ",".join(["%s"] * len(event_ids))
+         if use_mfu_admin_scope:
+             current_app.logger.info("event chat unread counts scope=mfu_admin_alias ext_user_id=%s events=%s", ext_user_id, len(event_ids))
+             cur.execute(
+                 f"""
+                 SELECT target_url
+                   FROM mfu_notifications
+                  WHERE user_kind='mfu'
+                    AND recipient_key='admin'
+                    AND kind='event_chat'
+                    AND read_at IS NULL
+                    AND target_url LIKE '/chat/events/%'
+                 """
+             )
+             for row in (cur.fetchall() or []):
+                 target_url = str((row or {}).get("target_url") or "")
+                 m = re.search(r"/chat/events/(\d+)", target_url)
+                 if not m:
+@@ -2779,115 +2921,120 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
+             event_uuid,
+             member_id,
+         )
+         abort(500, "領収書の生成に失敗しました")
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
+ 
+ 
+ @bp.route("/events/view/<event_uuid>/participants.png", endpoint="event_participants_png")
+ def event_participants_png(event_uuid: str):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+     if not me:
+         abort(401)
+ 
+-    db = get_db(); cur = db.cursor(dictionary=True)
+-    try:
+-        cur.execute(
+-            """
+-            SELECT
+-              COALESCE(m.status,'pending')      AS status,
+-              COALESCE(m.is_host,0)             AS is_host,
+-              COALESCE(m.is_subhost,0)          AS is_subhost,
+-              COALESCE(m.is_canceled,0)         AS is_canceled
+-            FROM mfu_event_member m
+-            WHERE m.event_id=%s AND m.user_id=%s
+-            ORDER BY m.id DESC
+-            LIMIT 1
+-            """,
+-            (ev["id"], me["id"]),
+-        )
+-        row = cur.fetchone()
+-    finally:
+-        try:
+-            cur.close(); db.close()
+-        except Exception:
+-            pass
++    row = _get_event_membership_row(ev["id"], me["id"])
+ 
+     if not row:
+         abort(403, "このイベントの参加者ではありません")
+     if int(row.get("is_canceled") or 0) == 1:
+         abort(403, "キャンセル済みのためダウンロードできません")
+-    is_host = int(row.get("is_host") or 0) == 1
+-    is_subhost = int(row.get("is_subhost") or 0) == 1
+-    if not (is_host or is_subhost):
++    if not _can_send_participants_png_mail(row):
+         abort(403, "この操作の権限がありません")
+ 
+-    rows = _fetch_event_members_in_admin_order(ev["id"])
+-    target_members = [
+-        r for r in rows
+-        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
+-    ]
+     try:
+-        png_data = _render_participants_png(ev.get("title") or "", target_members)
++        png_bytes, download_name = _build_participants_png_payload(ev["id"], ev.get("title") or "")
+     except Exception:
+         current_app.logger.exception("external participants png export failed (event_id=%s user_id=%s)", ev["id"], me["id"])
+         abort(500, "PNG生成に失敗しました")
+ 
+-    download_name = _safe_png_download_filename(int(ev["id"]), ev.get("title"))
+     return send_file(
+-        png_data,
++        io.BytesIO(png_bytes),
+         mimetype="image/png",
+         as_attachment=True,
+         download_name=download_name,
+     )
+ 
+ 
++@bp.post("/events/view/<event_uuid>/participants-email")
++def request_participants_png_email(event_uuid: str):
++    guard = _require_ext_login()
++    if guard:
++        return guard
++
++    token = (request.form.get("csrf_token") or "").strip()
++    if not token or token != session.get("ext_csrf"):
++        abort(400, "invalid csrf token")
++
++    ev = _event_by_uuid_str(event_uuid)
++    if not ev:
++        abort(404, "イベントが見つかりません")
++
++    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
++    if not me:
++        abort(401)
++
++    membership = _get_event_membership_row(ev["id"], me["id"])
++    if not membership or not _can_send_participants_png_mail(membership):
++        abort(403, "この操作の権限がありません")
++
++    email = str(me.get("email") or "").strip()
++    if not email or not me.get("email_verified_at"):
++        flash("確認済みメールアドレスが必要です。", "warning")
++        return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
++
++    _start_participants_png_email_job(event_uuid=event_uuid, ext_user_id=int(me["id"]))
++    flash("参加者一覧PNGの作成を受け付けました。完了後、確認済みメールアドレスへ送信します。", "success")
++    return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
 +
 +
  @bp.route("/events/view/<event_uuid>")
@@ -267,6 +425,8 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
      me = _get_ext_user_by_social(session.get("ext_user_social_id"))
      if not me:
          abort(401)
++    if "ext_csrf" not in session:
++        session["ext_csrf"] = secrets.token_hex(16)
  
      # 参加状況（最新行） ← 役割/衣装を追加で取得
      db = get_db(); cur = db.cursor(dictionary=True)
@@ -279,7 +439,10 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
                COALESCE(m.payment_status,'unpaid')                 AS payment_status,
                m.paid_amount_yen, m.paid_at, m.receipt_url,
                COALESCE(m.bank_transfer,0) AS bank_transfer,
-@@ -2814,56 +2885,67 @@ def view_event(event_uuid: str):
+               COALESCE(m.paypay_transfer,0) AS paypay_transfer,
+               COALESCE(m.process,0) AS process,
+               COALESCE(m.is_host,0) AS is_host,
+               COALESCE(m.is_subhost,0) AS is_subhost,
                COALESCE(m.participant_role,'none') AS participant_role,
                COALESCE(m.costume_label,'')        AS costume_label,
                m.custom_fee_yen,
@@ -289,10 +452,7 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
              WHERE m.event_id=%s AND m.user_id=%s
              ORDER BY m.id DESC
              LIMIT 1
-         """, (ev["id"], me["id"]))
-         row = cur.fetchone()
-     finally:
-         try: cur.close(); db.close()
+@@ -2898,50 +3045,55 @@ def view_event(event_uuid: str):
          except Exception: pass
  
      my_status              = (row["status"] if row else "pending") or "pending"
@@ -305,23 +465,28 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
      my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
      my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
      my_process             = int(row.get("process")) if row else 0
-+    my_is_host            = int(row.get("is_host") or 0) if row else 0
-+    my_is_subhost         = int(row.get("is_subhost") or 0) if row else 0
+     my_is_host            = int(row.get("is_host") or 0) if row else 0
+     my_is_subhost         = int(row.get("is_subhost") or 0) if row else 0
      # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
      my_participant_role    = (row.get("participant_role") if row else "none") or "none"
      my_costume_label       = (row.get("costume_label")  if row else "") or ""
      my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
      my_is_canceled         = int(row.get("is_canceled") or 0) if row else 0
      my_canceled_at         = row.get("canceled_at") if row else None
-+    can_download_participants_png = (
-+        row is not None
-+        and my_is_canceled == 0
-+        and (my_is_host == 1 or my_is_subhost == 1)
+     can_download_participants_png = (
+         row is not None
+         and my_is_canceled == 0
+         and (my_is_host == 1 or my_is_subhost == 1)
+     )
++    can_request_participants_png_email = (
++        can_download_participants_png
++        and bool(str(me.get("email") or "").strip())
++        and bool(me.get("email_verified_at"))
 +    )
-+    participants_png_url = (
-+        url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
-+        if can_download_participants_png else None
-+    )
+     participants_png_url = (
+         url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
+         if can_download_participants_png else None
+     )
  
      my_receipt_pdf_url = None
      if (
@@ -343,13 +508,7 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
              view_mode = "member_limited"
          elif str(my_status).lower() == "approved":
              view_mode = "member"
-         elif str(my_status).lower() in ("pending", "rejected"):
-             view_mode = "member_limited"
-         else:
-             view_mode = "guest"
-@@ -2978,50 +3060,52 @@ def view_event(event_uuid: str):
-         view_mode=view_mode,
-         my_status=my_status,
+@@ -3062,50 +3214,52 @@ def view_event(event_uuid: str):
          my_require_payment=my_require_payment,
          my_payment_status=my_payment_status,
          my_paid_amount_yen=my_paid_amount_yen,
@@ -373,8 +532,10 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
          form_costume=my_costume_label,
          my_is_canceled=my_is_canceled,
          my_canceled_at=my_canceled_at,
-+        can_download_participants_png=can_download_participants_png,
-+        participants_png_url=participants_png_url,
+         can_download_participants_png=can_download_participants_png,
+         participants_png_url=participants_png_url,
++        can_request_participants_png_email=can_request_participants_png_email,
++        ext_csrf=session.get("ext_csrf"),
      ))
      resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
      resp.headers["Pragma"] = "no-cache"
@@ -400,3 +561,175 @@ index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c
  
      db_chk = get_db(); cur_chk = db_chk.cursor()
      try:
+diff --git a/utils/mail.py b/utils/mail.py
+index 2ecab5b35ee6076647be6cd264ce841f4a91b4f6..ae50233b11259ec8f0e66e7a8dd9b30466cbe451 100644
+--- a/utils/mail.py
++++ b/utils/mail.py
+@@ -1,30 +1,33 @@
+ import logging
+ import re
+ import smtplib
+ import ssl
++from email import encoders
+ from email.header import Header
++from email.mime.base import MIMEBase
++from email.mime.multipart import MIMEMultipart
+ from email.mime.text import MIMEText
+ from email.utils import formataddr, formatdate, getaddresses, parseaddr
+ from pathlib import Path
+ 
+ from app.utils.logs import write_smtp_log
+ from app.utils.mail_delivery import generate_message_id, record_mail_submission
+ 
+ 
+ EXTERNAL_UNREAD_REMINDER_SUBJECT = "【お知らせ】未読があるのでご確認よろしくお願いします。"
+ EXTERNAL_UNREAD_REMINDER_BODY = """こんにちは、いおりん写真室です！
+ 
+ イベント管理システムにて、未読になっているチャットまたは通知が1件以上あります！
+ お知らせがある可能性もあるため、ご確認よろしくお願いします。
+ 
+ https://mfu.iori0624.jp/external-login/
+ 
+ 【プッシュ通知のお願い】
+ Androidご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）からプッシュ通知の有効で問題無いです。
+ iPhoneご使用の方は、トップページ（　https://mfu.iori0624.jp/external-login/　）をホーム画面に追加して欲しいです。
+ やり方はリンクがありますのでご確認よろしくお願いします。
+ ホーム画面に追加後、プッシュ通知の有効をお願い致します。
+ 
+ よろしくお願いします。"""
+ 
+ 
+@@ -37,50 +40,51 @@ try:
+     if DEFAULT_SIGNATURE:
+         DEFAULT_SIGNATURE = "\n\n" + DEFAULT_SIGNATURE.lstrip("\n")
+ except Exception as e:
+     DEFAULT_SIGNATURE = ""
+     logging.getLogger("mfu.smtp").warning(
+         f"署名ファイルの読み込みに失敗しました: {SIGNATURE_FILE} - {e}"
+     )
+ 
+ 
+ def send_mail(
+     to,
+     subject: str,
+     body: str,
+     *,
+     event_uuid: str | None = None,    # 後方互換性のため残す
+     event_name: str | None = None,
+     smtp_host: str = "192.168.103.15",
+     smtp_port: int = 25,
+     timeout: int = 45,
+     debug: bool = False,
+     starttls: bool | None = None,
+     ignore_quit_errors: bool = True,
+     external_login_user_id: int | None = None,
+     mail_kind: str | None = None,
+     append_signature: bool = True,
++    attachments: list[dict] | None = None,
+ ) -> None:
+     """
+     メール送信ユーティリティ。
+ 
+     - From: noreply@mail.iori0624.jp（表示名はイベント名 or システム名）
+     - Reply-To: admin@mail.iori0624.jp（固定）
+     - 本文末尾に signature.txt の内容を自動追加（存在する場合）
+     """
+     log = logging.getLogger("mfu.smtp")
+ 
+     def _summary_log(ok: bool, to_text: str, subj: str, extra: str | None = None):
+         status = "OK" if ok else "NG"
+         msg = f'送信{status}: to="{to_text}" subj="{subj}"'
+         if extra:
+             msg += f" detail={extra}"
+ 
+         log.info(msg)
+         line = f"[SMTP] {msg}"
+         print(line)
+         try:
+             write_smtp_log(line)
+         except Exception:
+             log.warning("write_smtp_log failed", exc_info=True)
+ 
+     from_address = "noreply@mail.iori0624.jp"
+@@ -96,52 +100,79 @@ def send_mail(
+     if not to_list:
+         _summary_log(False, "(none)", subject or "", "no recipients")
+         return
+ 
+     # 表示名の決定
+     is_event = event_uuid or event_name
+     display_name = None
+ 
+     if is_event:
+         # 【【講座】テストイベント0002】のような複合形式に対応
+         m = re.match(r"^(【[^】]*】[^】]*】)", subject or "")
+         if m:
+             display_name = Header(m.group(1), "utf-8").encode()
+         else:
+             m = re.match(r"^【([^】]+)】", subject or "")
+             if m:
+                 display_name = Header(m.group(1), "utf-8").encode()
+             else:
+                 display_name = Header(event_name or "イベント", "utf-8").encode()
+     else:
+         display_name = Header("IORI0624_MFUシステム", "utf-8").encode()
+ 
+     # 本文に署名を追加
+     final_body = body + DEFAULT_SIGNATURE if append_signature else body
+ 
+-    # メッセージ作成
+-    msg = MIMEText(final_body, "plain", "utf-8")
++    # メッセージ作成（添付があれば multipart）
++    has_attachments = bool(attachments)
++    if has_attachments:
++        msg = MIMEMultipart()
++        msg.attach(MIMEText(final_body, "plain", "utf-8"))
++        for idx, att in enumerate(attachments or []):
++            if not isinstance(att, dict):
++                raise ValueError(f"attachments[{idx}] must be dict")
++            filename = str(att.get("filename") or "").strip()
++            data = att.get("data")
++            content_type = str(att.get("content_type") or "application/octet-stream").strip()
++            if not filename:
++                raise ValueError(f"attachments[{idx}].filename is required")
++            if not isinstance(data, (bytes, bytearray)):
++                raise ValueError(f"attachments[{idx}].data must be bytes")
++
++            maintype, subtype = ("application", "octet-stream")
++            if "/" in content_type:
++                mt, st = content_type.split("/", 1)
++                maintype = (mt or "application").strip() or "application"
++                subtype = (st or "octet-stream").strip() or "octet-stream"
++            part = MIMEBase(maintype, subtype)
++            part.set_payload(bytes(data))
++            encoders.encode_base64(part)
++            part.add_header("Content-Type", content_type)
++            part.add_header("Content-Disposition", "attachment", filename=filename)
++            msg.attach(part)
++    else:
++        msg = MIMEText(final_body, "plain", "utf-8")
+     msg["Subject"] = subject or ""
+     msg["From"] = formataddr((display_name, from_address))
+     msg["To"] = to_header
+     msg["Reply-To"] = "admin@mail.iori0624.jp"  # 固定
+     msg["Date"] = formatdate(localtime=True)
+     mfu_mail_uuid, message_id = generate_message_id()
+     message_id_header = f"<{message_id}>"
+     if msg.get("Message-ID"):
+         msg.replace_header("Message-ID", message_id_header)
+     else:
+         msg["Message-ID"] = message_id_header
+     if msg.get("X-MFU-Mail-ID"):
+         msg.replace_header("X-MFU-Mail-ID", mfu_mail_uuid)
+     else:
+         msg["X-MFU-Mail-ID"] = mfu_mail_uuid
+ 
+     # STARTTLS 自動判定
+     if starttls is None:
+         starttls = (smtp_port == 587)
+ 
+     smtp = None
+     sent_ok = False
+     try:
+         smtp = smtplib.SMTP(
+             host=smtp_host,
