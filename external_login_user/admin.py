@@ -1336,7 +1336,9 @@ def _safe_png_download_filename(event_id: int, title: str | None) -> str:
 
 PNG_FONT_PATH = "/mnt/mfu/app/PDF_Font/BIZUDPGothic-Regular.ttf"
 TWEMOJI_CACHE_DIR = "/mnt/mfu/app/static/twemoji_cache"
-TWEMOJI_CDN_BASE = "https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72"
+# twitter/twemoji は更新停止のため、メンテ継続中の jdecked/twemoji に移行する。
+TWEMOJI_VERSION = "17.0.2"
+TWEMOJI_CDN_BASE = f"https://cdn.jsdelivr.net/gh/jdecked/twemoji@{TWEMOJI_VERSION}/assets/72x72"
 
 
 @lru_cache(maxsize=1)
@@ -1447,6 +1449,8 @@ def _emoji_to_twemoji_codepoints(emoji_text: str) -> str:
     cps = []
     for ch in str(emoji_text or ""):
         cp = ord(ch)
+        # Twemoji のファイル名規則に合わせて FE0F(VS16) は除外する。
+        # 例: "☃️" は "2603"。ZWJ(200D) は結合絵文字識別に必要なため保持する。
         if cp == 0xFE0F:
             continue
         cps.append(f"{cp:x}")
@@ -1457,13 +1461,13 @@ def _emoji_draw_size(text_font) -> int:
     return max(12, int(round(float(getattr(text_font, "size", 24)) * 1.05)))
 
 
-@lru_cache(maxsize=512)
 def _load_twemoji_image_cached(emoji_text: str):
     if not emoji_text:
         return None
     codepoints = _emoji_to_twemoji_codepoints(emoji_text)
     if not codepoints:
         return None
+    remote_url = f"{TWEMOJI_CDN_BASE}/{codepoints}.png"
 
     try:
         os.makedirs(TWEMOJI_CACHE_DIR, exist_ok=True)
@@ -1471,27 +1475,57 @@ def _load_twemoji_image_cached(emoji_text: str):
         current_app.logger.warning("twemoji cache dir create failed: %s", TWEMOJI_CACHE_DIR)
 
     local_path = os.path.join(TWEMOJI_CACHE_DIR, f"{codepoints}.png")
-    if not os.path.exists(local_path):
-        remote_url = f"{TWEMOJI_CDN_BASE}/{codepoints}.png"
+
+    def _download_to_local() -> bool:
         try:
             response = requests.get(remote_url, timeout=2.0)
             response.raise_for_status()
             with open(local_path, "wb") as f:
                 f.write(response.content)
+            return True
         except Exception as exc:
-            current_app.logger.warning("twemoji download failed: emoji=%s code=%s url=%s err=%s", emoji_text, codepoints, remote_url, exc)
+            current_app.logger.warning(
+                "twemoji download failed: emoji=%s codepoints=%s remote_url=%s reason=%s",
+                emoji_text, codepoints, remote_url, exc
+            )
+            return False
+
+    if not os.path.exists(local_path):
+        if not _download_to_local():
             return None
 
+    def _load_local_image():
+        with Image.open(local_path) as img:
+            return img.convert("RGBA")
+
     try:
-        return Image.open(local_path).convert("RGBA")
+        return _load_local_image()
     except Exception as exc:
-        current_app.logger.warning("twemoji cache load failed: emoji=%s path=%s err=%s", emoji_text, local_path, exc)
+        current_app.logger.warning(
+            "twemoji cache load failed: emoji=%s codepoints=%s remote_url=%s path=%s reason=%s",
+            emoji_text, codepoints, remote_url, local_path, exc
+        )
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        except Exception:
+            current_app.logger.debug("twemoji cache remove failed: path=%s", local_path)
+        if not _download_to_local():
+            return None
+        try:
+            return _load_local_image()
+        except Exception as exc2:
+            current_app.logger.warning(
+                "twemoji cache reload failed: emoji=%s codepoints=%s remote_url=%s path=%s reason=%s",
+                emoji_text, codepoints, remote_url, local_path, exc2
+            )
         return None
 
 
 def _get_twemoji_image(emoji_text: str, size: int):
     base = _load_twemoji_image_cached(emoji_text)
     if base is None:
+        current_app.logger.debug("twemoji image unavailable, fallback required: emoji=%s size=%s", emoji_text, size)
         return None
     try:
         return base.resize((size, size), Image.Resampling.LANCZOS)
@@ -1534,7 +1568,31 @@ def _draw_text_with_twemoji(draw: ImageDraw.ImageDraw, base_image: Image.Image, 
                 continue
             emoji_img = _get_twemoji_image(cluster, emoji_size)
             if emoji_img is None:
-                # 取得/読込失敗時は該当絵文字のみ安全にスキップ（PNG全体は継続）
+                fallback_advance = 0.0
+                fallback_drawn = False
+                try:
+                    draw.text((x, y), cluster, fill=fill, font=text_font)
+                    fallback_advance = float(draw.textlength(cluster, font=text_font))
+                    fallback_drawn = True
+                except Exception as exc:
+                    current_app.logger.warning("emoji fallback draw failed: emoji=%s reason=%s", cluster, exc)
+
+                if not fallback_drawn:
+                    for symbol in ("□", "〓"):
+                        try:
+                            draw.text((x, y), symbol, fill=fill, font=text_font)
+                            fallback_advance = float(draw.textlength(symbol, font=text_font))
+                            fallback_drawn = True
+                            break
+                        except Exception:
+                            continue
+
+                advance = max(float(emoji_size), fallback_advance)
+                current_app.logger.warning(
+                    "twemoji fallback rendering applied: emoji=%s codepoints=%s advance=%s drawn=%s",
+                    cluster, _emoji_to_twemoji_codepoints(cluster), advance, fallback_drawn
+                )
+                x += advance
                 continue
             base_image.paste(emoji_img, (int(x), emoji_y), emoji_img)
             x += emoji_size
