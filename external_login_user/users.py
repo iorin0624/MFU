@@ -3067,10 +3067,10 @@ def view_event(event_uuid: str):
         and my_is_canceled == 0
         and (my_is_host == 1 or my_is_subhost == 1)
     )
-    can_request_participants_png_email = (
-        can_download_participants_png
-        and bool(str(me.get("email") or "").strip())
-        and bool(me.get("email_verified_at"))
+    can_request_participants_png_email = bool(
+        _can_send_participants_png_mail(row)
+        and str(me.get("email") or "").strip()
+        and me.get("email_verified_at")
     )
     participants_png_url = (
         url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
