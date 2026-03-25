@@ -1,151 +1,197 @@
-diff --git a/external_login_user/users.py b/external_login_user/users.py
-index 9210e27dd0aa3be5b0d34a5fd78e7486794bd1ca..0e97b1a1ed64ce5f0fd91e69fb57f329cf618924 100644
---- a/external_login_user/users.py
-+++ b/external_login_user/users.py
-@@ -3045,54 +3045,54 @@ def view_event(event_uuid: str):
-         except Exception: pass
+diff --git a/external_login_user/admin.py b/external_login_user/admin.py
+index 089218cc39e01cccbffcb7c3e13ed27610362de3..660e64b13f969cedb66220a3fe52d9974417782e 100644
+--- a/external_login_user/admin.py
++++ b/external_login_user/admin.py
+@@ -1,32 +1,33 @@
+ # -*- coding: utf-8 -*-
+ from __future__ import annotations
+ import csv
+ import math
+ import os
+ import re
+ import textwrap
++from pathlib import Path
+ from functools import lru_cache
+ from flask import request, jsonify
+ from email.mime.text import MIMEText
+ from email.header import Header
+ from email.utils import formataddr
+ import smtplib
+ from flask import current_app
+ from .utils import (
+     _event_admin_can_view,
+     _event_admin_can_manage,
+     _ensure_event_invite_token,
+     _event_invite_url,
+     QR_TRADEMARK_NOTICE,
+     _get_external_document_config,
+     _get_current_privacy_policy_config,
+     _get_current_commerce_law_config,
+     _get_current_participant_terms_config,
+     _is_privacy_policy_effective,
+     _is_participant_terms_effective,
+     _privacy_policy_date_label,
+ )
  
-     my_status              = (row["status"] if row else "pending") or "pending"
-     my_require_payment     = int(row["require_payment"]) if row else 1
-     my_payment_status      = (row["payment_status"] if row else "unpaid") or "unpaid"
-     my_paid_amount_yen     = row.get("paid_amount_yen") if row else None
-     my_paid_at             = row.get("paid_at") if row else None
-     my_receipt_url         = row.get("receipt_url") if row else None
-     my_member_id           = row.get("member_id") if row else None
-     my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
-     my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
-     my_process             = int(row.get("process")) if row else 0
-     my_is_host            = int(row.get("is_host") or 0) if row else 0
-     my_is_subhost         = int(row.get("is_subhost") or 0) if row else 0
-     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
-     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
-     my_costume_label       = (row.get("costume_label")  if row else "") or ""
-     my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
-     my_is_canceled         = int(row.get("is_canceled") or 0) if row else 0
-     my_canceled_at         = row.get("canceled_at") if row else None
-     can_download_participants_png = (
-         row is not None
-         and my_is_canceled == 0
-         and (my_is_host == 1 or my_is_subhost == 1)
-     )
--    can_request_participants_png_email = (
--        can_download_participants_png
--        and bool(str(me.get("email") or "").strip())
--        and bool(me.get("email_verified_at"))
-+    can_request_participants_png_email = bool(
-+        _can_send_participants_png_mail(row)
-+        and str(me.get("email") or "").strip()
-+        and me.get("email_verified_at")
-     )
-     participants_png_url = (
-         url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
-         if can_download_participants_png else None
-     )
+ from app.utils.mail import send_mail
  
-     my_receipt_pdf_url = None
-     if (
-         my_payment_status == "paid"
-         and my_member_id
-         and (my_bank_transfer == 1 or my_paypay_transfer == 1 or my_receipt_url)
-     ):
-         my_receipt_pdf_url = url_for(
-             "external_login_user.member_receipt_pdf",
-             event_uuid=event_uuid,
-             member_id=my_member_id,
+ 
+@@ -109,50 +110,54 @@ def _recalc_event_fee_if_auto(event_id: int) -> bool:
          )
+         if total is None:
+             return False
  
-     # 表示モード
-     if _is_mfu_logged_in():
-         view_mode = "admin"
-     else:
-         if my_is_canceled == 1:
-             view_mode = "member_limited"
-         elif str(my_status).lower() == "approved":
-diff --git a/external_login_user/utils.py b/external_login_user/utils.py
-index 6e858d4d898eb33b96e6ec238022fe85f080d871..b388cc44052ab35c37e2780caefb452241303a73 100644
---- a/external_login_user/utils.py
-+++ b/external_login_user/utils.py
-@@ -534,80 +534,82 @@ def consume_external_login_resume_token(*, token: str | None = None, pwa_client_
-         except Exception:
-             pass
- 
- # ---- ID/DB ヘルパ ----
- def _uuid_bytes_to_str(b: bytes | None) -> Optional[str]:
-     if not b: return None
-     try:
-         return str(uuid.UUID(bytes=b))
+         cur.execute("""
+             UPDATE mfu_event
+                SET fee_yen=%s
+              WHERE id=%s
+              LIMIT 1
+         """, (total, event_id))
+         db.commit()
+         return True
      except Exception:
-         try:
-             return str(uuid.UUID(hex=b.hex()))
-         except Exception:
-             return None
+         try: db.rollback()
+         except Exception: pass
+         current_app.logger.exception("auto fee calc failed (event_id=%s)", event_id)
+         return False
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ from urllib.parse import quote_plus
+ from flask import request, jsonify
+ from app.utils.db import get_db
+ import requests
+ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
++from werkzeug.utils import secure_filename
++
++
++_AVATAR_ROOT = Path("/mnt/mfu/avatars")
  
- def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
+ # 既存の import 群と同じファイル内（関数定義の上の方）に追加
+ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: str):
      """
-     external_login_user を social_id で1件取得して dict で返す。
-     avatar_url / avatar_file も取得して、イベント参加証などでのアイコン表示に使えるようにする。
+     mfu_event_member.status を new_status に更新。
+     変化があれば対象者へ「イベント名 <UUID@mail.iori0624.jp>」でメール通知。
+     戻り: (ok: bool, msg: str, applied_status: str)
      """
+     if new_status not in ("approved", "rejected", "pending"):
+         return False, "invalid status", new_status
+ 
+     starts_at = None
      db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             SELECT
-               id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
-               avatar_url, avatar_file,
-+              email_verified_at,
-               created_at, updated_at
-             FROM external_login_user
-             WHERE social_id=%s
-               AND COALESCE(is_deleted, 0)=0
-             LIMIT 1
-         """, (social_id,))
-     except Exception:
-         cur.execute("""
-             SELECT
-               id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
-               avatar_url, avatar_file,
-+              email_verified_at,
-               created_at, updated_at
-             FROM external_login_user
-             WHERE social_id=%s
-             LIMIT 1
-         """, (social_id,))
-     row = cur.fetchone()
  
-     if not row:
+     # イベント基本情報（件名/From生成）
+     cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id, ))
+     ev_row = cur.fetchone()
+     if not ev_row:
          cur.close(); db.close()
-         return None
+         return False, "event not found", new_status
+     ev_title  = ev_row[0] if isinstance(ev_row, tuple) else ev_row["title"]
+     ev_uuid_b = ev_row[1] if isinstance(ev_row, tuple) else ev_row["event_uuid"]
+     ev_uuid_str = _uuid_bytes_to_str(ev_uuid_b) or ""
+     view_url = f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}"
  
-     # カラム名をカーソルから動的取得（dictカーソルでなくてもOK）
+@@ -1618,67 +1623,97 @@ def _split_multiline(draw: ImageDraw.ImageDraw, text: str, text_font, max_width:
+                 for i in range(min(len(line), cut + 2), 0, -1):
+                     piece = line[:i]
+                     if _measure_text_with_twemoji(draw, piece, text_font) <= max_width:
+                         lines.append(piece)
+                         line = line[i:]
+                         found = True
+                         break
+                 if not found:
+                     lines.append(line[:1])
+                     line = line[1:]
+     return lines or [""]
+ 
+ 
+ def _download_avatar_image(member: dict, size: int):
+     avatar_image = None
+     avatar_file = member.get("avatar_file")
+     avatar_url = member.get("avatar_url")
+     updated_at = member.get("updated_at")
+     version = ""
      try:
-         col_names = [d[0] for d in (cur.description or [])]
-         d = dict(zip(col_names, row))
+         if updated_at:
+             version = str(int(updated_at.timestamp()))
      except Exception:
-         # タプルでも安全に復元
-         keys = ["id","mfu_uuid","social_id","nickname","x_id","instagram_id","email",
--                "avatar_url","avatar_file","created_at","updated_at"]
-+                "avatar_url","avatar_file","email_verified_at","created_at","updated_at"]
-         d = dict(zip(keys, row))
+         version = ""
  
-     cur.close(); db.close()
+-    candidate_urls = []
++    def _resolve_avatar_file_path(name: str | None) -> Path | None:
++        raw_name = (name or "").strip()
++        if not raw_name:
++            return None
++        safe_name = secure_filename(raw_name)
++        if not safe_name or safe_name != raw_name:
++            current_app.logger.warning("invalid avatar_file name skipped: %s", raw_name)
++            return None
++        root = _AVATAR_ROOT.resolve()
++        candidate = (root / safe_name).resolve()
++        if root not in candidate.parents:
++            current_app.logger.warning("avatar_file path traversal blocked: %s", raw_name)
++            return None
++        return candidate
++
++    def _open_local_avatar_image(path: Path | None, image_size: int):
++        if not path or not path.exists() or not path.is_file():
++            return None
++        try:
++            with Image.open(path) as img:
++                normalized = ImageOps.exif_transpose(img).convert("RGB")
++                return ImageOps.fit(normalized, (image_size, image_size), method=Image.Resampling.LANCZOS)
++        except (OSError, UnidentifiedImageError, ValueError):
++            current_app.logger.debug("local avatar image load failed: %s", path, exc_info=True)
++            return None
++        except Exception:
++            current_app.logger.warning("local avatar image load failed unexpectedly: %s", path, exc_info=True)
++            return None
++
+     if avatar_file:
+-        local_url = url_for("external_login_user.avatar_file", name=avatar_file, _external=True)
+-        candidate_urls.append(f"{local_url}?v={version}" if version else local_url)
++        avatar_image = _open_local_avatar_image(_resolve_avatar_file_path(avatar_file), size)
++
++    candidate_urls = []
+     if avatar_url:
+         if version:
+             sep = "&" if "?" in avatar_url else "?"
+             candidate_urls.append(f"{avatar_url}{sep}v={version}")
+         else:
+             candidate_urls.append(avatar_url)
  
-     # 互換フィールド
-     d["mfu_uuid_str"] = _uuid_bytes_to_str(d.get("mfu_uuid"))
-     return d
+-    for candidate in candidate_urls:
++    for candidate in candidate_urls if avatar_image is None else []:
+         try:
+             response = requests.get(candidate, timeout=2.5)
+             response.raise_for_status()
+-            img = Image.open(BytesIO(response.content)).convert("RGB")
+-            avatar_image = ImageOps.fit(img, (size, size), method=Image.Resampling.LANCZOS)
++            with Image.open(BytesIO(response.content)) as img:
++                normalized = ImageOps.exif_transpose(img).convert("RGB")
++                avatar_image = ImageOps.fit(normalized, (size, size), method=Image.Resampling.LANCZOS)
+             break
+         except (requests.RequestException, OSError, UnidentifiedImageError, ValueError):
+             continue
+         except Exception:
+             current_app.logger.exception("avatar fetch failed unexpectedly: %s", candidate)
  
- def _upsert_ext_user(*, social_id: str, nickname: str,
-                      email: Optional[str], x_id: Optional[str], instagram_id: Optional[str]) -> None:
-     sql = """
-     INSERT INTO external_login_user
-       (mfu_uuid, social_id, nickname, x_id, instagram_id, email)
-     VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, %s, %s, %s, %s)
-     ON DUPLICATE KEY UPDATE
-       nickname=VALUES(nickname), x_id=VALUES(x_id), instagram_id=VALUES(instagram_id),
-       email=VALUES(email), updated_at=CURRENT_TIMESTAMP
-     """
-     db = get_db(); cur = db.cursor()
-     cur.execute(sql, (social_id, nickname, x_id, instagram_id, email))
-     db.commit(); cur.close(); db.close()
+     if avatar_image is None:
+         avatar_image = Image.new("RGB", (size, size), (220, 226, 234))
  
- def _update_profile(user_id: int, nickname: str,
-                     x_id: Optional[str], instagram_id: Optional[str], email: Optional[str]) -> None:
-     db = get_db(); cur = db.cursor()
+     mask = Image.new("L", (size, size), 0)
+     mask_draw = ImageDraw.Draw(mask)
+     mask_draw.ellipse((0, 0, size, size), fill=255)
+     rounded = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+     rounded.paste(avatar_image, (0, 0), mask)
+     return rounded
+ 
+ 
+ def _render_participants_png(event_title: str, members: list[dict]) -> BytesIO:
+     width = 1200
+     padding_x = 56
+     top_pad = 44
+     avatar_size = 68
+     block_gap = 20
+     line_gap = 8
+     divider_gap_top = 14
