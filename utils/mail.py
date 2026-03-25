@@ -2,7 +2,10 @@ import logging
 import re
 import smtplib
 import ssl
+from email import encoders
 from email.header import Header
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, getaddresses, parseaddr
 from pathlib import Path
@@ -59,6 +62,7 @@ def send_mail(
     external_login_user_id: int | None = None,
     mail_kind: str | None = None,
     append_signature: bool = True,
+    attachments: list[dict] | None = None,
 ) -> None:
     """
     メール送信ユーティリティ。
@@ -118,8 +122,35 @@ def send_mail(
     # 本文に署名を追加
     final_body = body + DEFAULT_SIGNATURE if append_signature else body
 
-    # メッセージ作成
-    msg = MIMEText(final_body, "plain", "utf-8")
+    # メッセージ作成（添付があれば multipart）
+    has_attachments = bool(attachments)
+    if has_attachments:
+        msg = MIMEMultipart()
+        msg.attach(MIMEText(final_body, "plain", "utf-8"))
+        for idx, att in enumerate(attachments or []):
+            if not isinstance(att, dict):
+                raise ValueError(f"attachments[{idx}] must be dict")
+            filename = str(att.get("filename") or "").strip()
+            data = att.get("data")
+            content_type = str(att.get("content_type") or "application/octet-stream").strip()
+            if not filename:
+                raise ValueError(f"attachments[{idx}].filename is required")
+            if not isinstance(data, (bytes, bytearray)):
+                raise ValueError(f"attachments[{idx}].data must be bytes")
+
+            maintype, subtype = ("application", "octet-stream")
+            if "/" in content_type:
+                mt, st = content_type.split("/", 1)
+                maintype = (mt or "application").strip() or "application"
+                subtype = (st or "octet-stream").strip() or "octet-stream"
+            part = MIMEBase(maintype, subtype)
+            part.set_payload(bytes(data))
+            encoders.encode_base64(part)
+            part.add_header("Content-Type", content_type)
+            part.add_header("Content-Disposition", "attachment", filename=filename)
+            msg.attach(part)
+    else:
+        msg = MIMEText(final_body, "plain", "utf-8")
     msg["Subject"] = subject or ""
     msg["From"] = formataddr((display_name, from_address))
     msg["To"] = to_header
