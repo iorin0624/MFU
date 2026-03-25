@@ -111,6 +111,8 @@ def _fetch_event_process_members(event_id: int) -> list[dict]:
             FROM mfu_event_member m
             JOIN external_login_user u ON u.id = m.user_id
             WHERE m.event_id=%s
+              AND m.status='approved'
+              AND COALESCE(m.is_canceled, 0)=0
             ORDER BY u.nickname ASC, m.user_id ASC
             """,
             (event_id,),
