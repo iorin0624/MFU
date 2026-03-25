@@ -556,6 +556,7 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
             SELECT
               id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
               avatar_url, avatar_file,
+              email_verified_at,
               created_at, updated_at
             FROM external_login_user
             WHERE social_id=%s
@@ -567,6 +568,7 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
             SELECT
               id, mfu_uuid, social_id, nickname, x_id, instagram_id, email,
               avatar_url, avatar_file,
+              email_verified_at,
               created_at, updated_at
             FROM external_login_user
             WHERE social_id=%s
@@ -585,7 +587,7 @@ def _get_ext_user_by_social(social_id: str) -> Optional[dict]:
     except Exception:
         # タプルでも安全に復元
         keys = ["id","mfu_uuid","social_id","nickname","x_id","instagram_id","email",
-                "avatar_url","avatar_file","created_at","updated_at"]
+                "avatar_url","avatar_file","email_verified_at","created_at","updated_at"]
         d = dict(zip(keys, row))
 
     cur.close(); db.close()
