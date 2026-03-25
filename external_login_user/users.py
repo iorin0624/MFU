@@ -34,7 +34,7 @@ from weasyprint import HTML
 # =========================
 from flask import (
     request, session, redirect, url_for, render_template,
-    abort, flash, current_app, send_from_directory, make_response, jsonify
+    abort, flash, current_app, send_from_directory, make_response, jsonify, send_file
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import HTTPException
@@ -71,7 +71,12 @@ from .utils import (
     _sanitize_ext_local_url,
     _is_disallowed_ext_redirect_path,
 )
-from .admin import _recalc_event_fee_if_auto
+from .admin import (
+    _recalc_event_fee_if_auto,
+    _safe_png_download_filename,
+    _render_participants_png,
+    _fetch_event_members_in_admin_order,
+)
 #from .auto_payment import load_default_card_summary
 
 
@@ -2782,6 +2787,72 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
             pass
 
 
+@bp.route("/events/view/<event_uuid>/participants.png", endpoint="event_participants_png")
+def event_participants_png(event_uuid: str):
+    guard = _require_ext_login()
+    if guard:
+        return guard
+
+    ev = _event_by_uuid_str(event_uuid)
+    if not ev:
+        abort(404, "イベントが見つかりません")
+
+    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+    if not me:
+        abort(401)
+
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT
+              COALESCE(m.status,'pending')      AS status,
+              COALESCE(m.is_host,0)             AS is_host,
+              COALESCE(m.is_subhost,0)          AS is_subhost,
+              COALESCE(m.is_canceled,0)         AS is_canceled
+            FROM mfu_event_member m
+            WHERE m.event_id=%s AND m.user_id=%s
+            ORDER BY m.id DESC
+            LIMIT 1
+            """,
+            (ev["id"], me["id"]),
+        )
+        row = cur.fetchone()
+    finally:
+        try:
+            cur.close(); db.close()
+        except Exception:
+            pass
+
+    if not row:
+        abort(403, "このイベントの参加者ではありません")
+    if int(row.get("is_canceled") or 0) == 1:
+        abort(403, "キャンセル済みのためダウンロードできません")
+    is_host = int(row.get("is_host") or 0) == 1
+    is_subhost = int(row.get("is_subhost") or 0) == 1
+    if not (is_host or is_subhost):
+        abort(403, "この操作の権限がありません")
+
+    rows = _fetch_event_members_in_admin_order(ev["id"])
+    target_members = [
+        r for r in rows
+        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
+    ]
+    try:
+        png_data = _render_participants_png(ev.get("title") or "", target_members)
+    except Exception:
+        current_app.logger.exception("external participants png export failed (event_id=%s user_id=%s)", ev["id"], me["id"])
+        abort(500, "PNG生成に失敗しました")
+
+    download_name = _safe_png_download_filename(int(ev["id"]), ev.get("title"))
+    return send_file(
+        png_data,
+        mimetype="image/png",
+        as_attachment=True,
+        download_name=download_name,
+    )
+
+
 @bp.route("/events/view/<event_uuid>")
 def view_event(event_uuid: str):
     guard = _require_ext_login()
@@ -2836,12 +2907,23 @@ def view_event(event_uuid: str):
     my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
     my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
     my_process             = int(row.get("process")) if row else 0
+    my_is_host            = int(row.get("is_host") or 0) if row else 0
+    my_is_subhost         = int(row.get("is_subhost") or 0) if row else 0
     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
     my_costume_label       = (row.get("costume_label")  if row else "") or ""
     my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
     my_is_canceled         = int(row.get("is_canceled") or 0) if row else 0
     my_canceled_at         = row.get("canceled_at") if row else None
+    can_download_participants_png = (
+        row is not None
+        and my_is_canceled == 0
+        and (my_is_host == 1 or my_is_subhost == 1)
+    )
+    participants_png_url = (
+        url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
+        if can_download_participants_png else None
+    )
 
     my_receipt_pdf_url = None
     if (
@@ -3000,6 +3082,8 @@ def view_event(event_uuid: str):
         form_costume=my_costume_label,
         my_is_canceled=my_is_canceled,
         my_canceled_at=my_canceled_at,
+        can_download_participants_png=can_download_participants_png,
+        participants_png_url=participants_png_url,
     ))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"

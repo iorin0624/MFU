@@ -1,63 +1,402 @@
-diff --git a/utils/upload_history.py b/utils/upload_history.py
-index a04fa0526df83ab40021a4c915433c3715356caf..c42c432ff9b368063479b722a52d096ebbca811b 100644
---- a/utils/upload_history.py
-+++ b/utils/upload_history.py
-@@ -136,58 +136,50 @@ def _layer_summary(uuid: str):
+diff --git a/external_login_user/template/event_view.html b/external_login_user/template/event_view.html
+index 73b3d9a0533c1e335c0045ace7986027b1d91c46..62a7101a9b729303ad671c22b4c041582b72d6c8 100644
+--- a/external_login_user/template/event_view.html
++++ b/external_login_user/template/event_view.html
+@@ -140,50 +140,59 @@
+     {% endif %}
+ 
+     {% if sns_tag and member_active %}
+       <div class="col-12">
+         <div class="card h-100">
+           <div class="card-body">
+             <h2 class="h6 mb-2">ハッシュタグ</h2>
+             <div class="d-flex flex-wrap align-items-center gap-2">
+               <span class="badge text-bg-light border" id="snsHashtagText">{{ sns_tag }}</span>
+               <button class="btn btn-sm btn-outline-secondary" type="button" id="snsHashtagCopy" data-copy-text="{{ sns_tag }}">
+                 コピー
+               </button>
+               <span class="small text-muted" id="snsHashtagCopied" aria-live="polite"></span>
+             </div>
+           </div>
+         </div>
+       </div>
+     {% endif %}
+ 
+     <!-- 各種リンク -->
+     <div class="col-md-6">
+       <div class="card h-100">
+         <div class="card-body">
+           <h2 class="h6 mb-3">各種リンク</h2>
+ 
++          {% if can_download_participants_png and participants_png_url %}
++            <div class="mb-2">
++              <a class="btn btn-sm btn-outline-dark w-100 text-start"
++                 href="{{ participants_png_url }}">
++                参加者一覧PNGダウンロード
++              </a>
++            </div>
++          {% endif %}
++
+           {% if member_active %}
+             <!-- 参加者一覧 -->
+             <div class="mb-2">
+               <a class="btn btn-sm btn-outline-dark w-100 text-start"
+                  href="{{ url_for('external_login_user.member_list', event_uuid=ev.event_uuid_str) }}">
+                 参加者一覧を開く
+               </a>
+             </div>
+           {% endif %}
+ 
+           {% if has_openchat and member_active %}
+             <!-- LINEオープンチャット -->
+             <div class="mb-2">
+               {% if oc_pass %}
+                 {# パスあり: まずモーダルを出してから参加 #}
+                 <button type="button"
+                         class="btn btn-sm btn-outline-primary w-100 text-start"
+                         data-bs-toggle="modal"
+                         data-bs-target="#ocPassModal">
+                   LINEオープンチャットに参加する
+                 </button>
+               {% else %}
+                 {# パスなし: そのまま遷移 #}
+                 <a class="btn btn-sm btn-outline-primary w-100 text-start"
+                    href="{{ oc_url }}" target="_blank" rel="noopener noreferrer">
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 02e88c353025f9eacf65ea4fff38d0a8285620eb..5081ba93d0d8d54686fd2913e512e47c890bc458 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -12,88 +12,93 @@ import time
+ import secrets
+ import hashlib
+ from pathlib import Path
+ from datetime import datetime, timedelta, timezone
+ from mimetypes import guess_extension
+ from urllib.parse import quote_plus, urlparse
+ from ipaddress import ip_address, IPv4Address, IPv6Address, ip_network
+ from app.utils.logs import write_line_login_log  # 追加
+ from jinja2 import TemplateNotFound
+ import math
  
  
- @upload_history_bp.route("/upload_list")
- def upload_list():
-     if "user" not in session:
-         return redirect(url_for("login"))
+ # =========================
+ # サードパーティ
+ # =========================
+ from PIL import Image
+ import requests
+ from itsdangerous import URLSafeSerializer, BadSignature
+ from weasyprint import HTML
  
-     username = session["user"]
-     uploads = _fetch_uploads_for_user(username)
+ # =========================
+ # Flask / アプリ内部
+ # =========================
+ from flask import (
+     request, session, redirect, url_for, render_template,
+-    abort, flash, current_app, send_from_directory, make_response, jsonify
++    abort, flash, current_app, send_from_directory, make_response, jsonify, send_file
+ )
+ from werkzeug.utils import secure_filename
+ from werkzeug.exceptions import HTTPException
  
-     return render_template("upload_list.html", uploads=uploads, is_admin=_is_admin(username))
+ # Blueprint は必ず先に import
+ from . import bp, oauth
+ 
+ from app.utils.db import get_db
+ from app.utils.mail import send_mail
+ from .utils import (
+     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
+     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
+     _get_ext_user_by_social, _upsert_ext_user, _update_profile,
+     _event_by_uuid_str, _membership_status,
+     update_event_member_status,
+     avatar_url_for,  # ← 追加
+     QR_TRADEMARK_NOTICE,
+     remember_session_map_value,
+     EXT_LOGIN_MODE_PWA,
+     PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY,
+     PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY,
+     normalize_ext_login_mode,
+     create_external_login_resume_token,
+     get_external_login_resume_token_summary,
+     consume_external_login_resume_token,
+     _get_current_commerce_law_config,
+     _get_current_participant_terms_config,
+     _get_current_privacy_policy_config,
+     _is_participant_terms_effective,
+     _is_privacy_policy_effective,
+     _needs_privacy_policy_agreement,
+     _agree_current_privacy_policy,
+     _privacy_policy_date_label,
+     _sanitize_ext_local_url,
+     _is_disallowed_ext_redirect_path,
+ )
+-from .admin import _recalc_event_fee_if_auto
++from .admin import (
++    _recalc_event_fee_if_auto,
++    _safe_png_download_filename,
++    _render_participants_png,
++    _fetch_event_members_in_admin_order,
++)
+ #from .auto_payment import load_default_card_summary
  
  
- @upload_history_bp.route("/layer_upload_list")
- def layer_upload_list():
-     if "user" not in session:
-         return redirect(url_for("login"))
- 
-     username = session["user"]
-     uploads = _fetch_uploads_for_user(username)
- 
-     rows = []
-     for upload in uploads:
-         rows.append({**upload, **_layer_summary(upload["uuid"])})
- 
--    rows.sort(
--        key=lambda row: (
--            row["latest_mtime"] or 0,
--            row["created_at"].timestamp() if row.get("created_at") else 0,
--        ),
--        reverse=True,
--    )
--
-     return render_template("layer_upload_list.html", uploads=rows)
+ # ==== アバター保存設定 ====
+ AVATAR_ROOT = Path("/mnt/mfu/avatars")
+ ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+ AVATAR_ROOT.mkdir(parents=True, exist_ok=True)
  
  
- @upload_history_bp.route("/layer_upload_list/<uuid>")
- def layer_upload_detail(uuid):
-     if "user" not in session:
-         return redirect(url_for("login"))
+ JST = timezone(timedelta(hours=9))
  
-     username = session["user"]
-     upload = _fetch_upload_by_uuid(uuid)
-     _ensure_upload_permission(upload, username)
- 
-     groups = _list_layer_groups(uuid)
-     groups.sort(key=lambda group: group["updated_at"], reverse=True)
-     return render_template("layer_upload_detail.html", upload=upload, groups=groups)
+ # =========================
+ # 便利ヘルパ（このファイル内限定）
+ # =========================
+ def _normalize_email(s: str) -> str | None:
+     s = (s or "").strip()
+     if not s or "@" not in s or len(s) > 255:
+         return None
+     return s
  
  
- @upload_history_bp.route("/layer_upload_list/<uuid>/image/<reply_uuid>/<filename>")
- def layer_upload_image(uuid, reply_uuid, filename):
-     if "user" not in session:
-         return redirect(url_for("login"))
+ def _normalize_external_url(raw: str | None) -> str | None:
+     if not isinstance(raw, str):
+         return None
+     url = raw.strip()
+@@ -2760,50 +2765,116 @@ def member_receipt_pdf(event_uuid: str, member_id: int):
+         resp.headers["Content-Disposition"] = f'inline; filename="{filename}"'
+         return resp
+     except HTTPException:
+         raise
+     except ValueError:
+         current_app.logger.exception(
+             "receipt pdf validation failed: event_uuid=%s member_id=%s",
+             event_uuid,
+             member_id,
+         )
+         abort(400, "領収書の情報が不足しています")
+     except Exception:
+         current_app.logger.exception(
+             "receipt pdf generation failed: event_uuid=%s member_id=%s",
+             event_uuid,
+             member_id,
+         )
+         abort(500, "領収書の生成に失敗しました")
+     finally:
+         try:
+             cur.close(); db.close()
+         except Exception:
+             pass
  
-     username = session["user"]
-     upload = _fetch_upload_by_uuid(uuid)
-     _ensure_upload_permission(upload, username)
+ 
++@bp.route("/events/view/<event_uuid>/participants.png", endpoint="event_participants_png")
++def event_participants_png(event_uuid: str):
++    guard = _require_ext_login()
++    if guard:
++        return guard
++
++    ev = _event_by_uuid_str(event_uuid)
++    if not ev:
++        abort(404, "イベントが見つかりません")
++
++    me = _get_ext_user_by_social(session.get("ext_user_social_id"))
++    if not me:
++        abort(401)
++
++    db = get_db(); cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT
++              COALESCE(m.status,'pending')      AS status,
++              COALESCE(m.is_host,0)             AS is_host,
++              COALESCE(m.is_subhost,0)          AS is_subhost,
++              COALESCE(m.is_canceled,0)         AS is_canceled
++            FROM mfu_event_member m
++            WHERE m.event_id=%s AND m.user_id=%s
++            ORDER BY m.id DESC
++            LIMIT 1
++            """,
++            (ev["id"], me["id"]),
++        )
++        row = cur.fetchone()
++    finally:
++        try:
++            cur.close(); db.close()
++        except Exception:
++            pass
++
++    if not row:
++        abort(403, "このイベントの参加者ではありません")
++    if int(row.get("is_canceled") or 0) == 1:
++        abort(403, "キャンセル済みのためダウンロードできません")
++    is_host = int(row.get("is_host") or 0) == 1
++    is_subhost = int(row.get("is_subhost") or 0) == 1
++    if not (is_host or is_subhost):
++        abort(403, "この操作の権限がありません")
++
++    rows = _fetch_event_members_in_admin_order(ev["id"])
++    target_members = [
++        r for r in rows
++        if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
++    ]
++    try:
++        png_data = _render_participants_png(ev.get("title") or "", target_members)
++    except Exception:
++        current_app.logger.exception("external participants png export failed (event_id=%s user_id=%s)", ev["id"], me["id"])
++        abort(500, "PNG生成に失敗しました")
++
++    download_name = _safe_png_download_filename(int(ev["id"]), ev.get("title"))
++    return send_file(
++        png_data,
++        mimetype="image/png",
++        as_attachment=True,
++        download_name=download_name,
++    )
++
++
+ @bp.route("/events/view/<event_uuid>")
+ def view_event(event_uuid: str):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))
+     if not me:
+         abort(401)
+ 
+     # 参加状況（最新行） ← 役割/衣装を追加で取得
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               m.id AS member_id,
+               COALESCE(m.status,'pending')                        AS status,
+               CAST(COALESCE(m.require_payment,1) AS UNSIGNED)     AS require_payment,
+               COALESCE(m.payment_status,'unpaid')                 AS payment_status,
+               m.paid_amount_yen, m.paid_at, m.receipt_url,
+               COALESCE(m.bank_transfer,0) AS bank_transfer,
+@@ -2814,56 +2885,67 @@ def view_event(event_uuid: str):
+               COALESCE(m.participant_role,'none') AS participant_role,
+               COALESCE(m.costume_label,'')        AS costume_label,
+               m.custom_fee_yen,
+               COALESCE(m.is_canceled,0)           AS is_canceled,
+               m.canceled_at
+             FROM mfu_event_member m
+             WHERE m.event_id=%s AND m.user_id=%s
+             ORDER BY m.id DESC
+             LIMIT 1
+         """, (ev["id"], me["id"]))
+         row = cur.fetchone()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     my_status              = (row["status"] if row else "pending") or "pending"
+     my_require_payment     = int(row["require_payment"]) if row else 1
+     my_payment_status      = (row["payment_status"] if row else "unpaid") or "unpaid"
+     my_paid_amount_yen     = row.get("paid_amount_yen") if row else None
+     my_paid_at             = row.get("paid_at") if row else None
+     my_receipt_url         = row.get("receipt_url") if row else None
+     my_member_id           = row.get("member_id") if row else None
+     my_bank_transfer       = int(row.get("bank_transfer") or 0) if row else 0
+     my_paypay_transfer     = int(row.get("paypay_transfer") or 0) if row else 0
+     my_process             = int(row.get("process")) if row else 0
++    my_is_host            = int(row.get("is_host") or 0) if row else 0
++    my_is_subhost         = int(row.get("is_subhost") or 0) if row else 0
+     # ★ ここを追加：現在の役割/衣装（未設定時の既定値も整える）
+     my_participant_role    = (row.get("participant_role") if row else "none") or "none"
+     my_costume_label       = (row.get("costume_label")  if row else "") or ""
+     my_custom_fee_yen      = row.get("custom_fee_yen") if row else None
+     my_is_canceled         = int(row.get("is_canceled") or 0) if row else 0
+     my_canceled_at         = row.get("canceled_at") if row else None
++    can_download_participants_png = (
++        row is not None
++        and my_is_canceled == 0
++        and (my_is_host == 1 or my_is_subhost == 1)
++    )
++    participants_png_url = (
++        url_for("external_login_user.event_participants_png", event_uuid=event_uuid)
++        if can_download_participants_png else None
++    )
+ 
+     my_receipt_pdf_url = None
+     if (
+         my_payment_status == "paid"
+         and my_member_id
+         and (my_bank_transfer == 1 or my_paypay_transfer == 1 or my_receipt_url)
+     ):
+         my_receipt_pdf_url = url_for(
+             "external_login_user.member_receipt_pdf",
+             event_uuid=event_uuid,
+             member_id=my_member_id,
+         )
+ 
+     # 表示モード
+     if _is_mfu_logged_in():
+         view_mode = "admin"
+     else:
+         if my_is_canceled == 1:
+             view_mode = "member_limited"
+         elif str(my_status).lower() == "approved":
+             view_mode = "member"
+         elif str(my_status).lower() in ("pending", "rejected"):
+             view_mode = "member_limited"
+         else:
+             view_mode = "guest"
+@@ -2978,50 +3060,52 @@ def view_event(event_uuid: str):
+         view_mode=view_mode,
+         my_status=my_status,
+         my_require_payment=my_require_payment,
+         my_payment_status=my_payment_status,
+         my_paid_amount_yen=my_paid_amount_yen,
+         my_paid_at=my_paid_at,
+         my_receipt_url=my_receipt_url,
+         my_receipt_pdf_url=my_receipt_pdf_url,
+         my_process=my_process,
+         album_url=album_url,
+         maps_link=maps_link,
+         openchat_url=openchat_url,
+         openchat_pass=openchat_pass,
+         google_form_url=google_form_url,
+         line_openchat_url=openchat_url,
+         survey_url=google_form_url,
+         # ★ 追加でテンプレに渡す（フォーム初期値用）
+         my_participant_role=my_participant_role,
+         my_costume_label=my_costume_label,
+         my_custom_fee_yen=my_custom_fee_yen,
+         # 互換エイリアス（テンプレが form_* を参照していても動くように）
+         form_role=my_participant_role,
+         form_costume=my_costume_label,
+         my_is_canceled=my_is_canceled,
+         my_canceled_at=my_canceled_at,
++        can_download_participants_png=can_download_participants_png,
++        participants_png_url=participants_png_url,
+     ))
+     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+     resp.headers["Pragma"] = "no-cache"
+     return resp
+ 
+ 
+ # =========================
+ # 役割（参加者自身が編集可）
+ # =========================
+ @bp.post("/events/<event_uuid>/my-role")
+ def update_my_role(event_uuid: str):
+     guard = _require_ext_login()
+     if guard: return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     status = _membership_status(ev["id"], me["id"])  # type: ignore
+     if status is None:
+         abort(403, "このイベントの参加者ではありません")
+ 
+     db_chk = get_db(); cur_chk = db_chk.cursor()
+     try:

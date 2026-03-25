@@ -162,6 +162,15 @@
         <div class="card-body">
           <h2 class="h6 mb-3">各種リンク</h2>
 
+          {% if can_download_participants_png and participants_png_url %}
+            <div class="mb-2">
+              <a class="btn btn-sm btn-outline-dark w-100 text-start"
+                 href="{{ participants_png_url }}">
+                参加者一覧PNGダウンロード
+              </a>
+            </div>
+          {% endif %}
+
           {% if member_active %}
             <!-- 参加者一覧 -->
             <div class="mb-2">
