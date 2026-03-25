@@ -158,14 +158,6 @@ def layer_upload_list():
     for upload in uploads:
         rows.append({**upload, **_layer_summary(upload["uuid"])})
 
-    rows.sort(
-        key=lambda row: (
-            row["latest_mtime"] or 0,
-            row["created_at"].timestamp() if row.get("created_at") else 0,
-        ),
-        reverse=True,
-    )
-
     return render_template("layer_upload_list.html", uploads=rows)
 
 
