@@ -1,57 +1,177 @@
 diff --git a/__init__.py b/__init__.py
-index 63b5df8e368570146b6d3932472777562ff0c1c8..9b6a361f71aac9f3d76c0ea328c8c811d649f44c 100644
+index 9b6a361f71aac9f3d76c0ea328c8c811d649f44c..5c43e2e32fc775111114efdcd579f475fb783eab 100644
 --- a/__init__.py
 +++ b/__init__.py
-@@ -107,51 +107,51 @@ INAPP_BROWSER_DEFAULT_SKIP_PATHS = [
-     "/static",
-     "/favicon",
-     "/api",
-     "/admin",
-     "/maintenance",
-     "/suc",
-     "/external-login/",
-     "/e/",
- ]
- INAPP_BROWSER_SETTINGS_DEFAULTS = {
-     INAPP_BROWSER_WARNING_ENABLED_KEY: INAPP_BROWSER_DEFAULT_ENABLED,
-     INAPP_BROWSER_KEYWORDS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_KEYWORDS),
-     INAPP_BROWSER_REFERRER_PREFIXES_KEY: "\n".join(INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES),
-     INAPP_BROWSER_SKIP_PATHS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_SKIP_PATHS),
- }
- 
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
- )
--app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
-+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+@@ -281,92 +281,165 @@ def _can_access_upload_record(upload):
+ def _can_access_upload_uuid(uuid):
+     upload = _get_upload_access_record(uuid)
+     return bool(upload and _can_access_upload_record(upload))
  
  
- @app.get("/manifest.webmanifest")
- def root_manifest():
-     resp = jsonify(
-         {
-             "name": "MFU",
-             "short_name": "MFU",
-             "start_url": "/external-login/",
-             "scope": "/",
-             "display": "standalone",
-             "background_color": "#ffffff",
-             "theme_color": "#0d6efd",
-             "icons": [],
-         }
-     )
-     resp.mimetype = "application/manifest+json"
-     resp.headers["Cache-Control"] = "no-cache"
-     return resp
+ def _get_csrf_token():
+     token = session.get(CSRF_SESSION_KEY)
+     if not token:
+         token = secrets.token_urlsafe(32)
+         session[CSRF_SESSION_KEY] = token
+     return token
  
- def create_app():
-     return app
  
- load_dotenv()
- app.secret_key = os.environ.get("SECRET_KEY")
+ def _is_same_origin_request():
+     expected = urlparse(request.host_url)
+     for header_name in ("Origin", "Referer"):
+         raw = request.headers.get(header_name)
+         if not raw:
+             continue
+         parsed = urlparse(raw)
+         if parsed.scheme != expected.scheme or parsed.netloc != expected.netloc:
+             return False
+     return True
+ 
+ 
++def _mask_csrf_token(token):
++    token_str = str(token or "")
++    if not token_str:
++        return {"exists": False, "length": 0, "sha256_prefix": ""}
++    return {
++        "exists": True,
++        "length": len(token_str),
++        "sha256_prefix": hashlib.sha256(token_str.encode("utf-8")).hexdigest()[:8],
++    }
++
++
++def _log_csrf_debug(reason, **extra):
++    expected = urlparse(request.host_url or "")
++    origin_raw = request.headers.get("Origin")
++    referer_raw = request.headers.get("Referer")
++    origin_parsed = urlparse(origin_raw) if origin_raw else None
++    referer_parsed = urlparse(referer_raw) if referer_raw else None
++    payload = {
++        "reason": reason,
++        "path": request.path,
++        "method": request.method,
++        "host": request.host,
++        "host_url": request.host_url,
++        "url": request.url,
++        "scheme": request.scheme,
++        "is_secure": request.is_secure,
++        "header_host": request.headers.get("Host"),
++        "header_origin": origin_raw,
++        "header_referer": referer_raw,
++        "x_forwarded_proto": request.headers.get("X-Forwarded-Proto"),
++        "x_forwarded_host": request.headers.get("X-Forwarded-Host"),
++        "x_forwarded_port": request.headers.get("X-Forwarded-Port"),
++        "x_forwarded_for": request.headers.get("X-Forwarded-For"),
++        "remote_addr": request.remote_addr,
++        "endpoint": request.endpoint,
++        "blueprint": request.blueprint,
++        "session_csrf_exists": bool(session.get(CSRF_SESSION_KEY)),
++        "form_csrf_exists": bool(request.form.get("csrf_token")),
++        "header_csrf_exists": bool(request.headers.get("X-CSRF-Token")),
++        "expected_scheme": expected.scheme,
++        "expected_netloc": expected.netloc,
++        "origin_scheme": origin_parsed.scheme if origin_parsed else "",
++        "origin_netloc": origin_parsed.netloc if origin_parsed else "",
++        "referer_scheme": referer_parsed.scheme if referer_parsed else "",
++        "referer_netloc": referer_parsed.netloc if referer_parsed else "",
++    }
++    payload.update(extra or {})
++    app.logger.warning("CSRF_DEBUG %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
++
++
+ def _is_json_error_response():
+     if request.path.startswith("/api/"):
+         return True
+     if request.is_json:
+         return True
+     best = request.accept_mimetypes.best
+     return best == "application/json"
+ 
+ 
+ def _csrf_error(message, status=403):
+     if _is_json_error_response():
+         return jsonify({"ok": False, "error": "csrf_failed", "message": message}), status
+     return message, status
+ 
+ 
+ def _requires_csrf_protection():
+     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+         return False
+     if request.path in _CSRF_EXEMPT_PATHS:
+         return False
+     if request.endpoint == "view_upload":
+         # 公開導線のパスワードフォームは今回のCSRF必須対象外。
+         return False
+     if request.path in _CSRF_PROTECTED_PATHS:
+         return True
+     return request.path.startswith(_CSRF_PROTECTED_PREFIXES)
+ 
+ 
+ def _validate_csrf_request():
++    session_token = session.get(CSRF_SESSION_KEY) or ""
++    header_token = request.headers.get("X-CSRF-Token") or ""
++    form_token = request.form.get("csrf_token") or ""
++    json_token = ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "") or ""
++    request_token = header_token or form_token or json_token or ""
++
+     if not _is_same_origin_request():
++        _log_csrf_debug(
++            "origin_mismatch",
++            session_token_meta=_mask_csrf_token(session_token),
++            request_token_meta=_mask_csrf_token(request_token),
++            header_token_meta=_mask_csrf_token(header_token),
++            form_token_meta=_mask_csrf_token(form_token),
++            json_token_meta=_mask_csrf_token(json_token),
++        )
+         return _csrf_error("CSRF origin check failed", 403)
+ 
+-    session_token = session.get(CSRF_SESSION_KEY) or ""
+-    request_token = (
+-        request.headers.get("X-CSRF-Token")
+-        or request.form.get("csrf_token")
+-        or ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "")
+-        or ""
+-    )
+     if not session_token or not request_token:
++        _log_csrf_debug(
++            "missing_token",
++            session_token_meta=_mask_csrf_token(session_token),
++            request_token_meta=_mask_csrf_token(request_token),
++            header_token_meta=_mask_csrf_token(header_token),
++            form_token_meta=_mask_csrf_token(form_token),
++            json_token_meta=_mask_csrf_token(json_token),
++        )
+         return _csrf_error("CSRF token is missing", 400)
+     if not hmac.compare_digest(str(session_token), str(request_token)):
++        _log_csrf_debug(
++            "invalid_token",
++            session_token_meta=_mask_csrf_token(session_token),
++            request_token_meta=_mask_csrf_token(request_token),
++            header_token_meta=_mask_csrf_token(header_token),
++            form_token_meta=_mask_csrf_token(form_token),
++            json_token_meta=_mask_csrf_token(json_token),
++        )
+         return _csrf_error("CSRF token is invalid", 403)
+     return None
+ 
+ 
+ @app.context_processor
+ def inject_csrf_token():
+     return {
+         "csrf_token": _get_csrf_token,
+         "csrf_token_value": _get_csrf_token(),
+     }
+ 
+ 
+ def _save_stream(file_storage, dest_path):
+     """アップロードストリームを保存（最小実装）"""
+     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+     file_storage.save(dest_path)
+     return os.path.basename(dest_path)
+ 
+ def delayed_restart():
+     try:
+         print("[delayed_restart] 🔁 サービス再起動処理を開始")
+         time.sleep(2)
+         print("[delayed_restart] 📤 systemctl restart 実行中...")
+         result = subprocess.run(
+             ["sudo", "systemctl", "restart", "mfu.service"],
