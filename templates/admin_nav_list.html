@@ -31,6 +31,7 @@
           <td>
             <a href="/admin/nav/{{ item.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
             <form method="post" action="/admin/nav/{{ item.id }}/delete" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
               <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
             </form>
           </td>
@@ -45,6 +46,7 @@
             <td>
               <a href="/admin/nav/{{ child.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
               <form method="post" action="/admin/nav/{{ child.id }}/delete" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
                 <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
               </form>
             </td>
