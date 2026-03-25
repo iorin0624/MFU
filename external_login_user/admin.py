@@ -5,6 +5,7 @@ import math
 import os
 import re
 import textwrap
+from pathlib import Path
 from functools import lru_cache
 from flask import request, jsonify
 from email.mime.text import MIMEText
@@ -131,6 +132,10 @@ from flask import request, jsonify
 from app.utils.db import get_db
 import requests
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from werkzeug.utils import secure_filename
+
+
+_AVATAR_ROOT = Path("/mnt/mfu/avatars")
 
 # 既存の import 群と同じファイル内（関数定義の上の方）に追加
 def _update_member_status_and_notify(event_id: int, user_id: int, new_status: str):
@@ -1640,10 +1645,39 @@ def _download_avatar_image(member: dict, size: int):
     except Exception:
         version = ""
 
-    candidate_urls = []
+    def _resolve_avatar_file_path(name: str | None) -> Path | None:
+        raw_name = (name or "").strip()
+        if not raw_name:
+            return None
+        safe_name = secure_filename(raw_name)
+        if not safe_name or safe_name != raw_name:
+            current_app.logger.warning("invalid avatar_file name skipped: %s", raw_name)
+            return None
+        root = _AVATAR_ROOT.resolve()
+        candidate = (root / safe_name).resolve()
+        if root not in candidate.parents:
+            current_app.logger.warning("avatar_file path traversal blocked: %s", raw_name)
+            return None
+        return candidate
+
+    def _open_local_avatar_image(path: Path | None, image_size: int):
+        if not path or not path.exists() or not path.is_file():
+            return None
+        try:
+            with Image.open(path) as img:
+                normalized = ImageOps.exif_transpose(img).convert("RGB")
+                return ImageOps.fit(normalized, (image_size, image_size), method=Image.Resampling.LANCZOS)
+        except (OSError, UnidentifiedImageError, ValueError):
+            current_app.logger.debug("local avatar image load failed: %s", path, exc_info=True)
+            return None
+        except Exception:
+            current_app.logger.warning("local avatar image load failed unexpectedly: %s", path, exc_info=True)
+            return None
+
     if avatar_file:
-        local_url = url_for("external_login_user.avatar_file", name=avatar_file, _external=True)
-        candidate_urls.append(f"{local_url}?v={version}" if version else local_url)
+        avatar_image = _open_local_avatar_image(_resolve_avatar_file_path(avatar_file), size)
+
+    candidate_urls = []
     if avatar_url:
         if version:
             sep = "&" if "?" in avatar_url else "?"
@@ -1651,12 +1685,13 @@ def _download_avatar_image(member: dict, size: int):
         else:
             candidate_urls.append(avatar_url)
 
-    for candidate in candidate_urls:
+    for candidate in candidate_urls if avatar_image is None else []:
         try:
             response = requests.get(candidate, timeout=2.5)
             response.raise_for_status()
-            img = Image.open(BytesIO(response.content)).convert("RGB")
-            avatar_image = ImageOps.fit(img, (size, size), method=Image.Resampling.LANCZOS)
+            with Image.open(BytesIO(response.content)) as img:
+                normalized = ImageOps.exif_transpose(img).convert("RGB")
+                avatar_image = ImageOps.fit(normalized, (size, size), method=Image.Resampling.LANCZOS)
             break
         except (requests.RequestException, OSError, UnidentifiedImageError, ValueError):
             continue
