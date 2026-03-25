@@ -303,6 +303,31 @@ def _is_same_origin_request():
     return True
 
 
+def _parse_comparable_source_url(raw_value):
+    value = (raw_value or "").strip()
+    if not value or value.lower() == "null":
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return parsed
+
+
+def _check_same_origin_from_headers():
+    expected = urlparse(request.host_url or "")
+    header_results = {}
+    for header_name in ("Origin", "Referer"):
+        parsed = _parse_comparable_source_url(request.headers.get(header_name))
+        if not parsed:
+            header_results[header_name] = "unavailable"
+            continue
+        is_match = parsed.scheme == expected.scheme and parsed.netloc == expected.netloc
+        header_results[header_name] = "match" if is_match else "mismatch"
+        if not is_match:
+            return False, header_results
+    return True, header_results
+
+
 def _mask_csrf_token(token):
     token_str = str(token or "")
     if not token_str:
@@ -388,9 +413,11 @@ def _validate_csrf_request():
     json_token = ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "") or ""
     request_token = header_token or form_token or json_token or ""
 
-    if not _is_same_origin_request():
+    is_same_origin, origin_check = _check_same_origin_from_headers()
+    if not is_same_origin:
         _log_csrf_debug(
             "origin_mismatch",
+            origin_check=origin_check,
             session_token_meta=_mask_csrf_token(session_token),
             request_token_meta=_mask_csrf_token(request_token),
             header_token_meta=_mask_csrf_token(header_token),
@@ -402,6 +429,7 @@ def _validate_csrf_request():
     if not session_token or not request_token:
         _log_csrf_debug(
             "missing_token",
+            origin_check=origin_check,
             session_token_meta=_mask_csrf_token(session_token),
             request_token_meta=_mask_csrf_token(request_token),
             header_token_meta=_mask_csrf_token(header_token),
@@ -412,6 +440,7 @@ def _validate_csrf_request():
     if not hmac.compare_digest(str(session_token), str(request_token)):
         _log_csrf_debug(
             "invalid_token",
+            origin_check=origin_check,
             session_token_meta=_mask_csrf_token(session_token),
             request_token_meta=_mask_csrf_token(request_token),
             header_token_meta=_mask_csrf_token(header_token),
@@ -419,6 +448,16 @@ def _validate_csrf_request():
             json_token_meta=_mask_csrf_token(json_token),
         )
         return _csrf_error("CSRF token is invalid", 403)
+    if origin_check.get("Origin") == "unavailable" and origin_check.get("Referer") == "unavailable":
+        _log_csrf_debug(
+            "origin_unavailable_token_valid",
+            origin_check=origin_check,
+            session_token_meta=_mask_csrf_token(session_token),
+            request_token_meta=_mask_csrf_token(request_token),
+            header_token_meta=_mask_csrf_token(header_token),
+            form_token_meta=_mask_csrf_token(form_token),
+            json_token_meta=_mask_csrf_token(json_token),
+        )
     return None
 
 
