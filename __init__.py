@@ -303,6 +303,56 @@ def _is_same_origin_request():
     return True
 
 
+def _mask_csrf_token(token):
+    token_str = str(token or "")
+    if not token_str:
+        return {"exists": False, "length": 0, "sha256_prefix": ""}
+    return {
+        "exists": True,
+        "length": len(token_str),
+        "sha256_prefix": hashlib.sha256(token_str.encode("utf-8")).hexdigest()[:8],
+    }
+
+
+def _log_csrf_debug(reason, **extra):
+    expected = urlparse(request.host_url or "")
+    origin_raw = request.headers.get("Origin")
+    referer_raw = request.headers.get("Referer")
+    origin_parsed = urlparse(origin_raw) if origin_raw else None
+    referer_parsed = urlparse(referer_raw) if referer_raw else None
+    payload = {
+        "reason": reason,
+        "path": request.path,
+        "method": request.method,
+        "host": request.host,
+        "host_url": request.host_url,
+        "url": request.url,
+        "scheme": request.scheme,
+        "is_secure": request.is_secure,
+        "header_host": request.headers.get("Host"),
+        "header_origin": origin_raw,
+        "header_referer": referer_raw,
+        "x_forwarded_proto": request.headers.get("X-Forwarded-Proto"),
+        "x_forwarded_host": request.headers.get("X-Forwarded-Host"),
+        "x_forwarded_port": request.headers.get("X-Forwarded-Port"),
+        "x_forwarded_for": request.headers.get("X-Forwarded-For"),
+        "remote_addr": request.remote_addr,
+        "endpoint": request.endpoint,
+        "blueprint": request.blueprint,
+        "session_csrf_exists": bool(session.get(CSRF_SESSION_KEY)),
+        "form_csrf_exists": bool(request.form.get("csrf_token")),
+        "header_csrf_exists": bool(request.headers.get("X-CSRF-Token")),
+        "expected_scheme": expected.scheme,
+        "expected_netloc": expected.netloc,
+        "origin_scheme": origin_parsed.scheme if origin_parsed else "",
+        "origin_netloc": origin_parsed.netloc if origin_parsed else "",
+        "referer_scheme": referer_parsed.scheme if referer_parsed else "",
+        "referer_netloc": referer_parsed.netloc if referer_parsed else "",
+    }
+    payload.update(extra or {})
+    app.logger.warning("CSRF_DEBUG %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
 def _is_json_error_response():
     if request.path.startswith("/api/"):
         return True
@@ -332,19 +382,42 @@ def _requires_csrf_protection():
 
 
 def _validate_csrf_request():
+    session_token = session.get(CSRF_SESSION_KEY) or ""
+    header_token = request.headers.get("X-CSRF-Token") or ""
+    form_token = request.form.get("csrf_token") or ""
+    json_token = ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "") or ""
+    request_token = header_token or form_token or json_token or ""
+
     if not _is_same_origin_request():
+        _log_csrf_debug(
+            "origin_mismatch",
+            session_token_meta=_mask_csrf_token(session_token),
+            request_token_meta=_mask_csrf_token(request_token),
+            header_token_meta=_mask_csrf_token(header_token),
+            form_token_meta=_mask_csrf_token(form_token),
+            json_token_meta=_mask_csrf_token(json_token),
+        )
         return _csrf_error("CSRF origin check failed", 403)
 
-    session_token = session.get(CSRF_SESSION_KEY) or ""
-    request_token = (
-        request.headers.get("X-CSRF-Token")
-        or request.form.get("csrf_token")
-        or ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "")
-        or ""
-    )
     if not session_token or not request_token:
+        _log_csrf_debug(
+            "missing_token",
+            session_token_meta=_mask_csrf_token(session_token),
+            request_token_meta=_mask_csrf_token(request_token),
+            header_token_meta=_mask_csrf_token(header_token),
+            form_token_meta=_mask_csrf_token(form_token),
+            json_token_meta=_mask_csrf_token(json_token),
+        )
         return _csrf_error("CSRF token is missing", 400)
     if not hmac.compare_digest(str(session_token), str(request_token)):
+        _log_csrf_debug(
+            "invalid_token",
+            session_token_meta=_mask_csrf_token(session_token),
+            request_token_meta=_mask_csrf_token(request_token),
+            header_token_meta=_mask_csrf_token(header_token),
+            form_token_meta=_mask_csrf_token(form_token),
+            json_token_meta=_mask_csrf_token(json_token),
+        )
         return _csrf_error("CSRF token is invalid", 403)
     return None
 
