@@ -97,6 +97,9 @@ def _hash_with_salt(value: str, salt: str) -> str:
 
 
 def _new_csrf_token() -> str:
+    token = session.get("receipts_csrf")
+    if token:
+        return token
     token = secrets.token_urlsafe(16)
     session["receipts_csrf"] = token
     return token
@@ -133,7 +136,10 @@ def _can_manage_receipt(receipt: dict) -> bool:
 
 def _check_csrf(token: str | None) -> bool:
     saved = session.get("receipts_csrf")
-    return bool(token) and bool(saved) and token == saved
+    is_valid = bool(token) and bool(saved) and token == saved
+    if not is_valid:
+        current_app.logger.warning("receipts csrf mismatch endpoint=%s", request.path)
+    return is_valid
 
 
 def _new_sign_csrf() -> str:
@@ -1030,6 +1036,13 @@ def receipts_update_payer(receipt_id: int):
     db = get_db()
     cur = db.cursor()
     try:
+        cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
+        receipt = _fetchone_dict(cur)
+        if not receipt:
+            abort(404)
+        if not _can_manage_receipt(receipt):
+            abort(403)
+
         cur.execute(
             """
             UPDATE receipts
@@ -1091,6 +1104,8 @@ def receipts_send(receipt_id: int):
         receipt = _fetchone_dict(cur)
         if not receipt:
             abort(404)
+        if not _can_manage_receipt(receipt):
+            abort(403)
         cur.execute("SELECT * FROM receipt_versions WHERE id = %s", (receipt["current_version_id"],))
         version = _fetchone_dict(cur)
 
@@ -1162,6 +1177,8 @@ def receipts_reissue(receipt_id: int):
         receipt = _fetchone_dict(cur)
         if not receipt:
             abort(404)
+        if not _can_manage_receipt(receipt):
+            abort(403)
 
         cur.execute("SELECT MAX(version_no) FROM receipt_versions WHERE receipt_id = %s", (receipt_id,))
         row = cur.fetchone()
