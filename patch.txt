@@ -1,57 +1,263 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index 99dfdd47542254285db1d0de81c6c402940351e4..f49010466085453ece33f071551c28f82a3c1c75 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -89,50 +89,52 @@ def _get_ext_user_nickname() -> str | None:
-     nickname = (ext_user.get("nickname") or "").strip()
-     return nickname or None
+diff --git a/receipts/routes.py b/receipts/routes.py
+index d3617a7352d6ff4c8570efbb5c5da8eb47a9c657..beb31173ee30bd5317a30a431c9ef204f5e73dd7 100644
+--- a/receipts/routes.py
++++ b/receipts/routes.py
+@@ -75,87 +75,93 @@ def _fetchall_dict(cur):
+ def _now_jst() -> datetime:
+     return datetime.now(JST).replace(tzinfo=None)
  
- def _is_ext_logged_in() -> bool:
-     return bool(session.get("ext_user_social_id"))
  
- def _fetch_event_process_members(event_id: int) -> list[dict]:
-     """イベント参加者一覧を取得（process フラグ含む）"""
-     rows: list[dict] = []
+ def _ensure_dir(path: str) -> None:
+     os.makedirs(path, exist_ok=True)
+ 
+ 
+ def _sha256_text(text: str) -> str:
+     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+ 
+ 
+ def _sha256_file(path: str) -> str:
+     h = hashlib.sha256()
+     with open(path, "rb") as f:
+         for chunk in iter(lambda: f.read(8192), b""):
+             h.update(chunk)
+     return h.hexdigest()
+ 
+ 
+ def _hash_with_salt(value: str, salt: str) -> str:
+     return hashlib.sha256((salt + value).encode("utf-8")).hexdigest()
+ 
+ 
+ def _new_csrf_token() -> str:
++    token = session.get("receipts_csrf")
++    if token:
++        return token
+     token = secrets.token_urlsafe(16)
+     session["receipts_csrf"] = token
+     return token
+ 
+ 
+ def _status_label(status: str | None) -> str:
+     if not status:
+         return ""
+     return STATUS_LABELS.get(status, status)
+ 
+ 
+ def _status_badge(status: str | None) -> str:
+     if not status:
+         return "bg-secondary"
+     return STATUS_BADGES.get(status, "bg-secondary")
+ 
+ 
+ def _resolve_receipt_path(path: str | None) -> str | None:
+     if not path:
+         return None
+     if path.startswith(LEGACY_RECEIPTS_ROOT):
+         candidate = RECEIPTS_ROOT + path[len(LEGACY_RECEIPTS_ROOT):]
+         if os.path.exists(candidate):
+             return candidate
+     if os.path.exists(path):
+         return path
+     return path
+ 
+ 
+ def _can_manage_receipt(receipt: dict) -> bool:
+     user = session.get("user")
+     return bool(user) and (user == receipt.get("issuer_user_id") or user == "admin")
+ 
+ 
+ def _check_csrf(token: str | None) -> bool:
+     saved = session.get("receipts_csrf")
+-    return bool(token) and bool(saved) and token == saved
++    is_valid = bool(token) and bool(saved) and token == saved
++    if not is_valid:
++        current_app.logger.warning("receipts csrf mismatch endpoint=%s", request.path)
++    return is_valid
+ 
+ 
+ def _new_sign_csrf() -> str:
+     token = secrets.token_urlsafe(16)
+     session["receipts_sign_csrf"] = token
+     return token
+ 
+ 
+ def _check_sign_csrf(token: str | None) -> bool:
+     saved = session.get("receipts_sign_csrf")
+     return bool(token) and bool(saved) and token == saved
+ 
+ 
+ def _pad(n: int, width: int = 6) -> str:
+     return str(n).zfill(width)
+ 
+ 
+ def _make_receipt_no(cur, issue_date: datetime) -> str:
+     year = issue_date.year
+     prefix = f"{year}-"
+     cur.execute(
+         "SELECT receipt_no FROM receipts WHERE receipt_no LIKE %s ORDER BY receipt_no DESC LIMIT 1",
+         (f"{prefix}%",),
+     )
+     row = cur.fetchone()
+@@ -1008,50 +1014,57 @@ def receipts_delete(receipt_id: int):
+ 
+ 
+ @receipts_bp.route("/receipts/<int:receipt_id>/payer", methods=["POST"])
+ def receipts_update_payer(receipt_id: int):
+     if not _check_csrf(request.form.get("csrf_token")):
+         abort(400)
+ 
+     payer_name = request.form.get("payer_name", "").strip()
+     payer_address = request.form.get("payer_address", "").strip()
+     payer_phone = request.form.get("payer_phone", "").strip()
+     payer_email = request.form.get("payer_email", "").strip()
+     payer_invoice_no = request.form.get("payer_invoice_no", "").strip()
+     payer_bank_name = request.form.get("payer_bank_name", "").strip()
+     payer_bank_branch = request.form.get("payer_bank_branch", "").strip()
+     payer_bank_account = request.form.get("payer_bank_account", "").strip()
+     payer_bank_holder = request.form.get("payer_bank_holder", "").strip()
+     payer_note = request.form.get("payer_note", "").strip()
+ 
+     if not all([payer_name, payer_address, payer_phone]):
+         flash("支払者情報の必須項目（氏名/住所/電話）を入力してください。", "warning")
+         return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+ 
+     db = get_db()
+     cur = db.cursor()
      try:
-         conn = get_db()
-         try:
-             cur = conn.cursor(dictionary=True)
-         except Exception:
-             cur = conn.cursor()
++        cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
++        receipt = _fetchone_dict(cur)
++        if not receipt:
++            abort(404)
++        if not _can_manage_receipt(receipt):
++            abort(403)
++
          cur.execute(
              """
-             SELECT
-               m.user_id,
-               COALESCE(m.process, 0) AS process,
-               u.nickname,
-               u.email
-             FROM mfu_event_member m
-             JOIN external_login_user u ON u.id = m.user_id
-             WHERE m.event_id=%s
-+              AND m.status='approved'
-+              AND COALESCE(m.is_canceled, 0)=0
-             ORDER BY u.nickname ASC, m.user_id ASC
+             UPDATE receipts
+             SET payer_name = %s,
+                 payer_address = %s,
+                 payer_phone = %s,
+                 payer_email = %s,
+                 payer_invoice_no = %s,
+                 payer_bank_name = %s,
+                 payer_bank_branch = %s,
+                 payer_bank_account = %s,
+                 payer_bank_holder = %s,
+                 payer_note = %s,
+                 updated_at = %s
+             WHERE id = %s AND is_deleted = 0
              """,
-             (event_id,),
+             (
+                 payer_name,
+                 payer_address,
+                 payer_phone,
+                 payer_email,
+                 payer_invoice_no,
+                 payer_bank_name,
+                 payer_bank_branch,
+                 payer_bank_account,
+@@ -1069,50 +1082,52 @@ def receipts_update_payer(receipt_id: int):
+             receipt_id=receipt_id,
+             result="ok",
+             ip=request.remote_addr,
+             user_agent=request.headers.get("User-Agent"),
          )
-         fetched = cur.fetchall() or []
-         if fetched and not isinstance(fetched[0], dict):
-             cols = [d[0] for d in cur.description]
-             for r in fetched:
-                 rows.append({cols[i]: r[i] for i in range(len(cols))})
-         else:
-             rows = fetched
-         try:
-             cur.close()
-         except Exception:
-             pass
-         try:
-             conn.close()
-         except Exception:
-             pass
-     except Exception:
-         return []
-     return rows or []
+         db.commit()
+     finally:
+         db.close()
  
- def _fetch_album_process_status_map(album_id: str, child_id: str) -> dict[int, dict]:
-     """album_process の request/complete 状態を ext_user_id ごとに取得"""
+     flash("支払者情報を更新しました。", "success")
+     return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+ 
+ 
+ @receipts_bp.route("/receipts/<int:receipt_id>/send", methods=["POST"])
+ def receipts_send(receipt_id: int):
+     if not _check_csrf(request.form.get("csrf_token")):
+         abort(400)
+ 
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
+         receipt = _fetchone_dict(cur)
+         if not receipt:
+             abort(404)
++        if not _can_manage_receipt(receipt):
++            abort(403)
+         cur.execute("SELECT * FROM receipt_versions WHERE id = %s", (receipt["current_version_id"],))
+         version = _fetchone_dict(cur)
+ 
+         token = secrets.token_urlsafe(32)
+         token_hash = _sha256_text(token)
+         expires_at = _now_jst() + timedelta(hours=TOKEN_EXPIRES_HOURS)
+ 
+         cur.execute(
+             """
+             INSERT INTO receipt_tokens
+             (receipt_version_id, token_hash, expires_at, created_at)
+             VALUES (%s, %s, %s, %s)
+             """,
+             (version["id"], token_hash, expires_at, _now_jst()),
+         )
+         token_id = cur.lastrowid
+ 
+         sign_url = url_for("receipts.receipts_sign", token=token, _external=True)
+         subject = f"【受領書署名依頼】{receipt['receipt_no']}"
+         body = (
+             f"{receipt['recipient_name']} 様\n\n"
+             f"以下の受領書への署名をお願いします。\n"
+             f"署名リンク（48時間有効）: {sign_url}\n\n"
+             f"受領書番号: {receipt['receipt_no']}\n"
+             f"金額: {receipt['amount']} 円\n"
+@@ -1140,50 +1155,52 @@ def receipts_send(receipt_id: int):
+             token_id=token_id,
+             result=mail_result,
+             ip=request.remote_addr,
+             user_agent=request.headers.get("User-Agent"),
+         )
+         db.commit()
+     finally:
+         db.close()
+ 
+     flash("署名リンクを送信しました。", "success")
+     return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+ 
+ 
+ @receipts_bp.route("/receipts/<int:receipt_id>/reissue", methods=["POST"])
+ def receipts_reissue(receipt_id: int):
+     if not _check_csrf(request.form.get("csrf_token")):
+         abort(400)
+ 
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
+         receipt = _fetchone_dict(cur)
+         if not receipt:
+             abort(404)
++        if not _can_manage_receipt(receipt):
++            abort(403)
+ 
+         cur.execute("SELECT MAX(version_no) FROM receipt_versions WHERE receipt_id = %s", (receipt_id,))
+         row = cur.fetchone()
+         last_ver = row[0] if row else 0
+         version_no = (last_ver or 0) + 1
+ 
+         cur.execute(
+             """
+             INSERT INTO receipt_versions
+             (receipt_id, version_no, original_pdf_path, final_pdf_path,
+              hash_original, hash_final, created_at)
+             VALUES (%s, %s, '', '', '', '', %s)
+             """,
+             (receipt_id, version_no, _now_jst()),
+         )
+         version_id = cur.lastrowid
+ 
+         cur.execute(
+             "UPDATE receipts SET current_version_id = %s, status = 'reissued', updated_at = %s WHERE id = %s",
+             (version_id, _now_jst(), receipt_id),
+         )
+ 
+         receipt_data = {
+             "receipt_no": receipt["receipt_no"],
+             "issue_date": receipt["issue_date"],
