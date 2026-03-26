@@ -1,224 +1,154 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 25d46d019cdd3d24a256df5411dcde15ea0b78dc..4cf256869db13bb79dd30585088d5a5d9eb7d261 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -1,40 +1,40 @@
- from __future__ import annotations
- 
- import html
- import io
- import hashlib
- import json
- import os
- import random
- import re
- import secrets
- import threading
- import time
- import uuid
- from collections import deque
--from urllib.parse import urlencode
-+from urllib.parse import quote, urlencode
- from concurrent.futures import ThreadPoolExecutor
- from datetime import datetime, timedelta
- from typing import Any
- from zoneinfo import ZoneInfo
- 
- from PIL import Image, ImageOps, UnidentifiedImageError
- from flask import (
-     Blueprint,
-     abort,
-     current_app,
-     flash,
-     jsonify,
-     redirect,
-     render_template,
-     request,
-     send_from_directory,
-     session,
-     url_for,
- )
- from flask_socketio import disconnect, emit, join_room
- from requests.exceptions import ConnectionError as RequestsConnectionError
- from requests.exceptions import SSLError as RequestsSSLError
- from requests.exceptions import Timeout as RequestsTimeout
- 
- from app.chat.socketio_ext import socketio
-@@ -100,50 +100,51 @@ CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
- CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_EDIT_SCHEMA_READY: bool | None = None
- CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_SEARCH_SCHEMA_READY: bool | None = None
- CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_THREAD_SCHEMA_READY: bool | None = None
- CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_SCHEMA_READY: bool | None = None
- CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
- CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
- CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
- CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
- MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK = threading.Lock()
- MFU_EVENT_DELETED_AT_SCHEMA_READY: bool | None = None
- MFU_EVENT_DELETED_FLAG_SCHEMA_CHECK_LOCK = threading.Lock()
- MFU_EVENT_DELETED_FLAG_SCHEMA_READY: bool | None = None
- DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
- CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
- CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
- CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
- CHAT_UPLOAD_MAX_FILES = 6
-+SYSTEM_TEMPLATE_ASSET_ROOT = os.getenv("CHAT_SYSTEM_TEMPLATE_ASSET_ROOT", "/mnt/mfu/app/MIMOSA_Illustration")
- PUSH_REQUEST_TIMEOUT_SECONDS = 6
- PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
- PUSH_LOG_SUPPRESSION_SECONDS = 300
- CHAT_ACTIVE_VIEW_TTL_SECONDS = 60
- CHAT_ACTIVE_VIEW_HEARTBEAT_INTERVAL_SECONDS = 20
- PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
- PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
- PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
- PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
- PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
- PUSH_ASYNC_INFLIGHT = 0
- _LINKIFY_RE = re.compile(
-     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
- )
- _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
- CHAT_TYPING_STATE_LOCK = threading.Lock()
- CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
- CHAT_TYPING_TTL_SECONDS = 3
- SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
- SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
- 
- SYSTEM_TEMPLATE_DEFAULTS: dict[str, str] = {
-     "join_approved": "{nickname}さんが参加しました！",
- }
- SYSTEM_TEMPLATE_DEFAULT_ICON_URLS: dict[str, str] = {
-@@ -706,52 +707,63 @@ def get_external_user_display_name(external_user_id: int) -> str:
-     actor_id = str(external_user_id)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT id, nickname FROM external_login_user WHERE id=%s LIMIT 1", (external_user_id,))
-         row = cur.fetchone()
-     finally:
-         cur.close()
-         db.close()
- 
-     if not row:
-         return f"LINE-{actor_id}"
-     resolved_id = str(row.get("id") or actor_id)
-     return str(row.get("nickname") or f"LINE-{resolved_id}")
- 
- 
- def get_system_template(template_key: str) -> str:
-     payload = get_system_template_payload(template_key)
-     return str(payload.get("body_template") or "")
- 
- 
- def _normalize_system_sender_avatar_url(value: str, *, template_key: str) -> str:
-     normalized = str(value or "").strip()
-     if not normalized:
-         return str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
-+    if normalized.startswith("/chat/system-assets/"):
-+        return normalized
-     if normalized.startswith("/mnt/mfu/app/"):
--        normalized = "/" + normalized[len("/mnt/mfu/app/"):].lstrip("/")
-+        app_relative = normalized[len("/mnt/mfu/app/"):].lstrip("/")
-+        if app_relative.startswith("MIMOSA_Illustration/"):
-+            asset_name = app_relative[len("MIMOSA_Illustration/"):]
-+            if asset_name:
-+                return f"/chat/system-assets/{quote(asset_name)}"
-+        normalized = "/" + app_relative
-+    if normalized.startswith("/MIMOSA_Illustration/"):
-+        asset_name = normalized[len("/MIMOSA_Illustration/"):]
-+        if asset_name:
-+            return f"/chat/system-assets/{quote(asset_name)}"
-     return normalized
- 
- 
- def get_system_template_payload(template_key: str) -> dict[str, str]:
-     default = SYSTEM_TEMPLATE_DEFAULTS.get(template_key, "")
-     default_icon = _normalize_system_sender_avatar_url("", template_key=template_key)
-     if not _ensure_chat_system_template_schema():
-         return {"body_template": default, "sender_avatar_url": default_icon}
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             "SELECT body_template, sender_avatar_url FROM chat_system_templates WHERE template_key=%s LIMIT 1",
-             (template_key,),
-         )
-         row = cur.fetchone()
-         if not row:
-             return {"body_template": default, "sender_avatar_url": default_icon}
-         return {
-             "body_template": str(row.get("body_template") or default),
-             "sender_avatar_url": _normalize_system_sender_avatar_url(
-                 str(row.get("sender_avatar_url") or ""),
-                 template_key=template_key,
-             ),
-@@ -6036,50 +6048,60 @@ def dm_api_send():
-         return jsonify({"ok": False, "error": "not_found"}), 404
- 
-     body = _validate_body(payload.get("body") or "")
-     saved = _save_dm_message(conversation, actor_key, body)
-     saved["dm_uuid"] = dm_uuid
-     msg_payload = _dm_message_to_payload(saved, actor_key)
-     socketio.emit("chat_message", msg_payload, to=f"dm:{dm_uuid}")
-     _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
-     return jsonify({"ok": True, "message": msg_payload})
- 
- 
- @chat_bp.get("/dm/images/<uuid:dm_uuid>/<path:name>")
- def chat_dm_image(dm_uuid: str, name: str):
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     dm_uuid_str = str(dm_uuid)
-     if not actor or not actor_key:
-         abort(403)
-     if not can_access_dm(dm_uuid_str, actor_key):
-         abort(403)
-     if "/" in name or "\\" in name or ".." in name or name.startswith("."):
-         abort(404)
-     return send_from_directory(os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid_str), name)
- 
- 
-+@chat_bp.get("/system-assets/<path:name>")
-+def chat_system_asset(name: str):
-+    actor = get_chat_actor()
-+    if not actor:
-+        abort(403)
-+    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
-+        abort(404)
-+    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, name)
-+
-+
- @chat_bp.post("/dm/api/upload-image")
- def dm_upload_image():
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key:
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_message_images_schema():
-         return jsonify({"ok": False, "error": "DM画像機能の初期化に失敗しました"}), 500
- 
-     token = (request.form.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         return jsonify({"ok": False, "error": "csrf"}), 400
-     dm_uuid = str(request.form.get("dm_uuid") or "").strip()
-     if not dm_uuid:
-         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
-     if not can_access_dm(dm_uuid, actor_key):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     conversation = _get_dm_conversation_by_uuid(dm_uuid)
-     if not conversation:
-         return jsonify({"ok": False, "error": "not_found"}), 404
- 
-     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
-     if not raw_upload_files:
-         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
-     if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:
+MFUのチャット機能で、System通知テンプレート `join_approved` の送信者アイコンURLが反映されない不具合を修正してください。
+コードを書く前に、まず既存実装を読み、原因を特定したうえで、最小差分で安全に修正してください。
+
+【前提】
+- 対象URL:
+  - 管理画面: `/chat/admin/system-templates/join-approved`
+  - 実表示: 参加承認時に流れる system メッセージ
+- 関連しそうな既存要素:
+  - `_normalize_system_sender_avatar_url`
+  - `get_system_template_payload`
+  - `get_system_template_sender_avatar_url`
+  - `SYSTEM_TEMPLATE_DEFAULT_ICON_URLS`
+  - `/chat/system-assets/<path:name>`
+  - system actor の avatar 解決処理
+- 現在の不具合は「保存されない」ではなく、「最終的な img src が壊れて画像取得に失敗する」系の挙動です
+- 既存実装ではデフォルト値や `/mnt/mfu/app/...` の扱いが不統一で、正規化経路に穴があります
+
+【必須要件】
+1. 管理画面 `/chat/admin/system-templates/join-approved` で設定した `sender_avatar_url` が、実際の system メッセージ表示に反映されること
+2. 以下の入力をすべてサポートすること
+   - `https://...` または `http://...` の外部URL
+   - `/chat/system-assets/...`
+   - `/mnt/mfu/app/MIMOSA_Illustration/...`
+   - `/MIMOSA_Illustration/...`
+   - 空欄（デフォルト使用）
+3. ローカルファイル指定は、最終的に **ブラウザで取得可能なURL** に正規化されること
+4. 保存時・読込時・描画時で、同じ規則になること
+5. 既存DBに保存済みの旧形式の値も、読込時に後方互換で表示できること
+6. セキュリティ上危険なパストラバーサルは防ぐこと
+7. DBスキーマ変更は不要。必要ならバリデーションや正規化ロジックのみ修正すること
+
+【仕様を明確化する】
+### 1. canonical（正規形）の定義
+`sender_avatar_url` の内部的な正規形は次のようにすること。
+
+- 外部URL:
+  - `https://...`
+  - `http://...`
+  - → そのまま使う
+- ローカル画像:
+  - `/mnt/mfu/app/MIMOSA_Illustration/foo.png`
+  - `/MIMOSA_Illustration/foo.png`
+  - `/chat/system-assets/foo.png`
+  - → すべて canonical として `/chat/system-assets/foo.png` 系に統一する
+- 空欄:
+  - デフォルトアイコンを指す canonical URL を返すこと
+  - raw な `/MIMOSA_Illustration/pwa.png` のような未変換値を返してはいけない
+
+### 2. デフォルト値の扱い
+- `SYSTEM_TEMPLATE_DEFAULT_ICON_URLS["join_approved"]` を含むデフォルト処理も、必ず最終的にブラウザ参照可能な canonical URL になること
+- 「空欄のときだけ未変換値が返る」挙動は禁止
+- デフォルト値は保存時・読込時どちらでも矛盾なく扱うこと
+
+### 3. 後方互換
+既存DBに以下のような値が保存されていても表示できるようにすること。
+- `/MIMOSA_Illustration/pwa.png`
+- `/mnt/mfu/app/MIMOSA_Illustration/pwa.png`
+- `/chat/system-assets/pwa.png`
+- 外部URL
+読込時に canonical に寄せて扱うこと
+
+### 4. `/chat/system-assets/...` の配信
+- `SYSTEM_TEMPLATE_ASSET_ROOT` 配下の画像を安全に配信すること
+- 将来サブディレクトリを使っても壊れないよう、`<path:name>` を活かして安全に処理すること
+- ただし `..` や不正パスは拒否すること
+- 「スラッシュを含むだけで即404」のような雑な制限は見直し、**安全性を維持しつつ正当な相対パスは通す**方向で修正すること
+- ルート外参照は絶対に許可しないこと
+
+### 5. バリデーション
+管理画面で `sender_avatar_url` に不正値が来た場合は、黙って壊れた値を保存しないこと
+最低限以下を整理すること。
+- 外部URLとして妥当か
+- ローカル絶対パスとして許可対象か
+- `/MIMOSA_Illustration/...` として妥当か
+- `/chat/system-assets/...` として妥当か
+- それ以外はエラー扱いにするか、少なくとも unsafe な値を通さないこと
+
+【修正方針】
+- まず既存コードを読んで、実際にどの経路で `sender_avatar_url` が保存され、どの経路で system actor の avatar に使われるかを確認すること
+- 根本原因は「保存」「読込」「デフォルト」「描画」の正規化ルール不一致なので、場当たり的な if の継ぎ足しではなく、**正規化責務を1か所に寄せる**こと
+- ただし大規模リファクタは不要。最小差分でよい
+- 既存の system template 本文機能には影響を出さないこと
+- 他のチャット画像アップロード機能や一般ユーザーアバター機能には手を広げないこと
+
+【期待する実装結果】
+以下のケースで、最終的にチャット画面の `<img src>` が有効なURLになること。
+
+1.
+入力:
+`https://example.com/icon.png`
+期待:
+そのまま表示される
+
+2.
+入力:
+`/mnt/mfu/app/MIMOSA_Illustration/pwa.png`
+期待:
+`/chat/system-assets/pwa.png` として表示される
+
+3.
+入力:
+`/MIMOSA_Illustration/pwa.png`
+期待:
+`/chat/system-assets/pwa.png` として表示される
+
+4.
+入力:
+`/chat/system-assets/pwa.png`
+期待:
+そのまま表示される
+
+5.
+入力:
+空欄
+期待:
+デフォルトアイコンが canonical URL で表示される
+
+6.
+DBに旧値 `/MIMOSA_Illustration/pwa.png` が入っている
+期待:
+読込時に正常表示される
+
+7.
+DBに旧値 `/mnt/mfu/app/MIMOSA_Illustration/pwa.png` が入っている
+期待:
+読込時に正常表示される
+
+【確認観点】
+- 管理画面GETで表示される現在値が妥当か
+- 管理画面POST後、再表示値が壊れていないか
+- 実際の system メッセージ表示で反映されるか
+- ネットワークタブで画像リクエストが200になるか
+- 403/404になっていないか
+- 既存の外部URL設定を壊していないか
+- 未設定時に壊れた画像アイコンにならないか
+
+【禁止事項】
+- 無関係なリファクタ
+- DBマイグレーション追加
+- 他機能のUI改修を広げること
+- テンプレート本文機能への仕様変更
+- 画像URLを雑に文字列連結して、結果的にブラウザから見えないパスを返すこと
+
+【作業後の報告フォーマット】
+以下を必ず報告してください。
+1. 原因
+2. 変更したファイル一覧
+3. 変更内容の要約
+4. canonical URL の最終仕様
+5. 後方互換の扱い
+6. 手動確認した観点
+7. 未確認事項があれば正直に明記
+
+必要なら軽いログ出力やコメント追加は可。ただし本番動作を優先し、過剰なデバッグコードは残さないでください。
