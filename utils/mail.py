@@ -53,6 +53,7 @@ def send_mail(
     *,
     event_uuid: str | None = None,    # 後方互換性のため残す
     event_name: str | None = None,
+    from_display_name: str | None = None,
     smtp_host: str = "192.168.103.15",
     smtp_port: int = 25,
     timeout: int = 45,
@@ -105,7 +106,9 @@ def send_mail(
     is_event = event_uuid or event_name
     display_name = None
 
-    if is_event:
+    if from_display_name:
+        display_name = Header(str(from_display_name).strip(), "utf-8").encode()
+    elif is_event:
         # 【【講座】テストイベント0002】のような複合形式に対応
         m = re.match(r"^(【[^】]*】[^】]*】)", subject or "")
         if m:

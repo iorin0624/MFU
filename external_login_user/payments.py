@@ -573,7 +573,14 @@ def _post_discord(webhook_url: str | None, content: str) -> None:
 
 # /mnt/mfu/app/external_login_user/payments.py
 # ↓ この関数ブロックだけ置き換え
-def _send_mail_safe(to: str | list[str], subject: str, body: str, *, event_uuid: str | None) -> None:
+def _send_mail_safe(
+    to: str | list[str],
+    subject: str,
+    body: str,
+    *,
+    event_uuid: str | None,
+    from_display_name: str,
+) -> None:
     """メール送信は app.utils.mail.send_mail に統一。SMTP設定は mail.py 側の既定を使用。"""
     try:
         send_mail(
@@ -581,6 +588,7 @@ def _send_mail_safe(to: str | list[str], subject: str, body: str, *, event_uuid:
             subject=subject,
             body=body,
             event_uuid=event_uuid,
+            from_display_name=from_display_name,
             # smtp_host / smtp_port / timeout は渡さない（mail.py の既定に統一）
         )
     except Exception:
@@ -607,15 +615,29 @@ def _notify_payment_to_admin_and_acl(
     discord_text = "\n".join([s for s in (discord_lines or mail_lines or []) if s])
 
     # --- Adminへ ---
+    event_title = str(ev.get("title") or "イベント").strip() or "イベント"
+    from_display_name = f"{event_title} by Mimoria"
     if admin_email:
-        _send_mail_safe(admin_email, subject, body, event_uuid=event_uuid_str or ev.get("event_uuid_str"))
+        _send_mail_safe(
+            admin_email,
+            subject,
+            body,
+            event_uuid=event_uuid_str or ev.get("event_uuid_str"),
+            from_display_name=from_display_name,
+        )
     if admin_webhook:
         _post_discord(admin_webhook, discord_text)
 
     # --- ACLへ（adminは除外済み）---
     for rcpt in acl:
         if rcpt.get("email"):
-            _send_mail_safe(rcpt["email"], subject, body, event_uuid=event_uuid_str or ev.get("event_uuid_str"))
+            _send_mail_safe(
+                rcpt["email"],
+                subject,
+                body,
+                event_uuid=event_uuid_str or ev.get("event_uuid_str"),
+                from_display_name=from_display_name,
+            )
         if rcpt.get("webhook_url"):
             _post_discord(rcpt["webhook_url"], discord_text)
 
@@ -1061,6 +1083,7 @@ def pay_return(event_uuid: str):
                     subject=subject_user,
                     body=body_user,
                     event_uuid=event_uuid,
+                    from_display_name=f"{ev.get('title', 'イベント')} by Mimoria",
                 )
         except Exception:
             current_app.logger.exception("notify (user mail) failed")
@@ -1859,6 +1882,7 @@ def lecture_return(event_uuid: str):
                     subject=subject_user,
                     body=body_user,
                     event_uuid=event_uuid,
+                    from_display_name=f"{ev.get('title', 'イベント')} by Mimoria",
                 )
         except Exception:
             current_app.logger.exception("notify (lecture user mail) failed")

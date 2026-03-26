@@ -235,6 +235,7 @@ def _send_participants_png_email_to_ext_user(*, event_uuid: str, ext_user_id: in
         subject=subject,
         body=body,
         event_uuid=event_uuid,
+        from_display_name=f"{event_title} by Mimoria",
         external_login_user_id=int(me["id"]),
         mail_kind="participants_png_export",
         attachments=[
@@ -516,6 +517,7 @@ def _send_verify_mail(to_email: str, token_raw: str):
         subject=subject,
         body=body,
         event_uuid=None,
+        from_display_name="Mimoria",
     )
 
 
@@ -537,7 +539,13 @@ def _send_verify_pin_mail(email: str, pin: str) -> None:
         "このコードを未確認ページで入力してください。\n\n"
         "このメールに心当たりがない場合は破棄してください。"
     )
-    send_mail(to=email, subject=subject, body=body, event_uuid=None)
+    send_mail(
+        to=email,
+        subject=subject,
+        body=body,
+        event_uuid=None,
+        from_display_name="Mimoria",
+    )
 
 
 def _issue_verify_pin(user_id: int, email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tuple[bool, str, str | None]:
@@ -755,6 +763,7 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
                 subject=subject,
                 body=body,
                 event_uuid=ev_uuid_str,
+                from_display_name=f"{ev_title} by Mimoria",
             )
         except Exception as e:
             current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
@@ -2701,6 +2710,7 @@ def join_event(event_uuid: str):
                                   f"当日のご参加をお待ちしております！\n"
                                   f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
                             event_uuid=ev_uuid_str,
+                            from_display_name=f"{ev['title']} by Mimoria",
                         )
                     else:
                         send_mail(
@@ -2712,6 +2722,7 @@ def join_event(event_uuid: str):
                                   f"申請状況は以下のページで確認できます。\n"
                                   f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}\n"),
                             event_uuid=ev_uuid_str,
+                            from_display_name=f"{ev['title']} by Mimoria",
                         )
             except Exception:
                 current_app.logger.exception("join: user mail failed")
@@ -2752,6 +2763,7 @@ def join_event(event_uuid: str):
                         subject=subject_admin,
                         body=body_text,
                         event_uuid=ev_uuid_str,
+                        from_display_name=f"{ev['title']} by Mimoria",
                     )
 
                 # Discord も同文面
@@ -3984,6 +3996,7 @@ def event_qr_checkin(token: str):
                     subject=subject,
                     body=notice_body,
                     event_uuid=ev_uuid_str or None,
+                    from_display_name=f"{ev_title} by Mimoria",
                 )
     except Exception:
         current_app.logger.exception("ACL向けQR受付メール通知でエラーが発生しました")
@@ -4344,7 +4357,13 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
     )
     try:
         # event_uuid なし → noreply 送信（既存実装に合わせる）
-        send_mail(to=email, subject=subject, body=body, event_uuid=None)
+        send_mail(
+            to=email,
+            subject=subject,
+            body=body,
+            event_uuid=None,
+            from_display_name="Mimoria",
+        )
     except Exception:
         return False, "メール送信に失敗しました。時間を置いて再試行してください。"
 
