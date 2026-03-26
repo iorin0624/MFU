@@ -508,10 +508,17 @@
   transition: opacity 0.12s ease;
 }
 
-.chat-message:hover .chat-menu-open-btn,
 .chat-message.is-selected .chat-menu-open-btn {
   opacity: 1;
   pointer-events: auto;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-message:hover .chat-menu-open-btn,
+.chat-message.is-selected .chat-menu-open-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .chat-row.other .chat-status-meta {
@@ -526,13 +533,6 @@
 
 .chat-row.other .chat-meta-main {
   justify-content: flex-start;
-}
-
-@media (hover: none) {
-  .chat-message .chat-menu-open-btn {
-    opacity: 1;
-    pointer-events: auto;
-  }
 }
 
 .chat-ctx-menu {
@@ -1154,56 +1154,79 @@
     max-width: 100%;
   }
 
-  .chat-bubble-wrap,
-  .chat-row.me .chat-me-main-row {
+  .chat-bubble-wrap {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    align-items: flex-end;
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    gap: 6px;
+    gap: 8px;
   }
 
   .chat-row.me .chat-main-group {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
     width: 100%;
     min-width: 0;
     max-width: 100%;
-    gap: 6px;
+    gap: 0;
+  }
+
+  .chat-row.me .chat-me-main-row {
+    display: flex;
+    align-items: flex-end;
+    justify-content: flex-end;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    gap: 8px;
   }
 
   .chat-row.other .chat-bubble,
   .chat-row.me .chat-me-main-row .chat-bubble {
     min-width: 0;
     max-width: 100%;
+    flex: 1 1 auto;
     width: fit-content;
   }
 
   .chat-meta-col {
     display: flex;
-    width: 100%;
-    min-width: 0;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 3px;
+    flex: 0 0 56px;
+    width: 56px;
+    min-width: 56px;
+    max-width: 56px;
     white-space: nowrap;
   }
 
   .chat-row.other .chat-meta-col {
-    justify-content: flex-start;
     align-items: flex-start;
+    justify-content: flex-end;
   }
 
   .chat-row.me .chat-me-main-row .chat-meta-col {
-    justify-content: flex-end;
     align-items: flex-end;
-    order: 2;
+    justify-content: flex-end;
+    order: 1;
   }
 
   .chat-row.other .chat-meta-main,
   .chat-row.me .chat-me-main-row .chat-meta-main {
-    display: inline-flex;
-    width: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: inherit;
+    justify-content: flex-end;
+    gap: 2px;
+    width: 100%;
   }
 
   .chat-row.me .chat-me-main-row .chat-bubble {
-    order: 1;
+    order: 2;
     align-self: flex-end;
   }
 
@@ -1211,19 +1234,45 @@
     align-self: flex-start;
   }
 
-  .chat-row.me .chat-read-status {
+  .chat-meta-actions {
     width: 100%;
-    justify-content: flex-end;
+    min-width: 0;
+    flex: 0 0 auto;
+    justify-content: inherit;
+  }
+
+  .chat-row.other .chat-meta-actions {
+    order: 1;
+  }
+
+  .chat-row.other .chat-time {
+    order: 2;
+  }
+
+  .chat-row.me .chat-meta-actions {
+    order: 1;
+  }
+
+  .chat-row.me .chat-read-status {
+    order: 2;
+    width: 100%;
+    display: flex;
+    justify-content: inherit;
+    align-self: auto;
+  }
+
+  .chat-row.me .chat-time {
+    order: 3;
+  }
+
+  .chat-row.me .chat-read-status {
+    margin: 0;
   }
 
   .chat-row.me .chat-read-status .chat-read-inline,
   .chat-row.me .chat-read-status .chat-read-time {
     text-align: right;
-  }
-
-  .chat-message .chat-menu-open-btn {
-    opacity: 1;
-    pointer-events: auto;
+    width: 100%;
   }
 
   .chat-nav-label {
@@ -1593,9 +1642,12 @@
                         <div class="chat-meta-actions">
                           <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
                         </div>
-                        <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
                         {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
                       </div>
+                      <div class="chat-read-status">
+                        <div class="chat-read-inline d-none"></div>
+                      </div>
+                      <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
                     </div>
                     <div class="chat-bubble">
                       {% set image_items = m.images or [] %}
@@ -1629,9 +1681,6 @@
                         <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
                       {% endif %}
                     </div>
-                  </div>
-                  <div class="chat-read-status">
-                    <div class="chat-read-inline d-none"></div>
                   </div>
                 </div>
               {% endif %}
@@ -3177,16 +3226,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       const mainGroup = document.createElement('div');
       mainGroup.className = 'chat-main-group';
 
-      const readStatus = document.createElement('div');
-      readStatus.className = 'chat-read-status';
-      const readInline = document.createElement('div');
-      readInline.className = 'chat-read-inline d-none';
-      readStatus.appendChild(readInline);
-
       meMainRow.appendChild(metaCol);
       meMainRow.appendChild(bubble);
       mainGroup.appendChild(meMainRow);
-      mainGroup.appendChild(readStatus);
       wrap.appendChild(mainGroup);
     } else {
       wrap.appendChild(bubble);
@@ -3247,10 +3289,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     const metaMain = document.createElement('div');
     metaMain.className = 'chat-meta-main';
 
-    const time = document.createElement('div');
-    time.className = 'chat-time';
-    time.textContent = timeLabel || '';
-
     const actions = document.createElement('div');
     actions.className = 'chat-meta-actions';
 
@@ -3264,8 +3302,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     actions.appendChild(menuBtn);
     if (isMe) {
       metaMain.appendChild(actions);
-      metaMain.appendChild(time);
     } else {
+      const time = document.createElement('div');
+      time.className = 'chat-time';
+      time.textContent = timeLabel || '';
       metaMain.appendChild(time);
       metaMain.appendChild(actions);
     }
@@ -3277,6 +3317,19 @@ window.addEventListener('DOMContentLoaded', async () => {
       metaMain.appendChild(editedInline);
     }
     metaCol.appendChild(metaMain);
+    if (isMe) {
+      const readStatus = document.createElement('div');
+      readStatus.className = 'chat-read-status';
+      const readInline = document.createElement('div');
+      readInline.className = 'chat-read-inline d-none';
+      readStatus.appendChild(readInline);
+      metaCol.appendChild(readStatus);
+
+      const time = document.createElement('div');
+      time.className = 'chat-time';
+      time.textContent = timeLabel || '';
+      metaCol.appendChild(time);
+    }
     return metaCol;
   }
 
@@ -3923,12 +3976,9 @@ window.addEventListener('DOMContentLoaded', async () => {
       meMainRow.className = 'chat-me-main-row';
       const mainGroup = document.createElement('div');
       mainGroup.className = 'chat-main-group';
-      const readStatus = document.createElement('div');
-      readStatus.className = 'chat-read-status';
       meMainRow.appendChild(metaCol);
       meMainRow.appendChild(bubble);
       mainGroup.appendChild(meMainRow);
-      mainGroup.appendChild(readStatus);
       wrap.appendChild(mainGroup);
     } else {
       wrap.appendChild(bubble);
