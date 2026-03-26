@@ -1,524 +1,224 @@
-diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 07849c905665564d7884eea47efc9a941a6e4dfe..b26b2a74b31fa64258d9cf169996da38e41e2a6a 100644
---- a/chat/templates/chat/room.html
-+++ b/chat/templates/chat/room.html
-@@ -24,50 +24,51 @@
-   background: rgba(255, 255, 255, 0.95);
-   border-radius: 999px;
-   padding: 3px 12px;
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 25d46d019cdd3d24a256df5411dcde15ea0b78dc..4cf256869db13bb79dd30585088d5a5d9eb7d261 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -1,40 +1,40 @@
+ from __future__ import annotations
+ 
+ import html
+ import io
+ import hashlib
+ import json
+ import os
+ import random
+ import re
+ import secrets
+ import threading
+ import time
+ import uuid
+ from collections import deque
+-from urllib.parse import urlencode
++from urllib.parse import quote, urlencode
+ from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime, timedelta
+ from typing import Any
+ from zoneinfo import ZoneInfo
+ 
+ from PIL import Image, ImageOps, UnidentifiedImageError
+ from flask import (
+     Blueprint,
+     abort,
+     current_app,
+     flash,
+     jsonify,
+     redirect,
+     render_template,
+     request,
+     send_from_directory,
+     session,
+     url_for,
+ )
+ from flask_socketio import disconnect, emit, join_room
+ from requests.exceptions import ConnectionError as RequestsConnectionError
+ from requests.exceptions import SSLError as RequestsSSLError
+ from requests.exceptions import Timeout as RequestsTimeout
+ 
+ from app.chat.socketio_ext import socketio
+@@ -100,50 +100,51 @@ CHAT_MESSAGES_ROOM_SCHEMA_READY: bool | None = None
+ CHAT_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_EDIT_SCHEMA_READY: bool | None = None
+ CHAT_SEARCH_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_SEARCH_SCHEMA_READY: bool | None = None
+ CHAT_THREAD_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_THREAD_SCHEMA_READY: bool | None = None
+ CHAT_DM_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_SCHEMA_READY: bool | None = None
+ CHAT_DM_DELETE_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_DELETE_SCHEMA_READY: bool | None = None
+ CHAT_DM_MESSAGE_IMAGES_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_MESSAGE_IMAGES_SCHEMA_READY: bool | None = None
+ CHAT_DM_REACTION_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_REACTION_SCHEMA_READY: bool | None = None
+ CHAT_DM_EDIT_SCHEMA_CHECK_LOCK = threading.Lock()
+ CHAT_DM_EDIT_SCHEMA_READY: bool | None = None
+ MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK = threading.Lock()
+ MFU_EVENT_DELETED_AT_SCHEMA_READY: bool | None = None
+ MFU_EVENT_DELETED_FLAG_SCHEMA_CHECK_LOCK = threading.Lock()
+ MFU_EVENT_DELETED_FLAG_SCHEMA_READY: bool | None = None
+ DEFAULT_AVATAR_URL = "/static/img/avatar_default.png"
+ CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
+ CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
+ CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
+ CHAT_UPLOAD_MAX_FILES = 6
++SYSTEM_TEMPLATE_ASSET_ROOT = os.getenv("CHAT_SYSTEM_TEMPLATE_ASSET_ROOT", "/mnt/mfu/app/MIMOSA_Illustration")
+ PUSH_REQUEST_TIMEOUT_SECONDS = 6
+ PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
+ PUSH_LOG_SUPPRESSION_SECONDS = 300
+ CHAT_ACTIVE_VIEW_TTL_SECONDS = 60
+ CHAT_ACTIVE_VIEW_HEARTBEAT_INTERVAL_SECONDS = 20
+ PUSH_ENDPOINT_ERROR_LOCK = threading.Lock()
+ PUSH_ENDPOINT_ERROR_STATS: dict[str, dict[str, float | int]] = {}
+ PUSH_ASYNC_MAX_WORKERS = max(int(os.getenv("CHAT_PUSH_ASYNC_MAX_WORKERS", "4")), 1)
+ PUSH_ASYNC_EXECUTOR = ThreadPoolExecutor(max_workers=PUSH_ASYNC_MAX_WORKERS, thread_name_prefix="chat-push")
+ PUSH_ASYNC_INFLIGHT_LOCK = threading.Lock()
+ PUSH_ASYNC_INFLIGHT = 0
+ _LINKIFY_RE = re.compile(
+     r"(?P<url>(?:https?://|www\.)[^\s<]+)|(?P<email>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)"
+ )
+ _LINKIFY_TRAILING_CHARS = ".,!?)]}、。！？）】」』〉》〕＞\"'”’"
+ CHAT_TYPING_STATE_LOCK = threading.Lock()
+ CHAT_TYPING_STATE: dict[str, dict[str, Any]] = {}
+ CHAT_TYPING_TTL_SECONDS = 3
+ SYSTEM_TEMPLATE_SCHEMA_CHECK_LOCK = threading.Lock()
+ SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
+ 
+ SYSTEM_TEMPLATE_DEFAULTS: dict[str, str] = {
+     "join_approved": "{nickname}さんが参加しました！",
  }
+ SYSTEM_TEMPLATE_DEFAULT_ICON_URLS: dict[str, str] = {
+@@ -706,52 +707,63 @@ def get_external_user_display_name(external_user_id: int) -> str:
+     actor_id = str(external_user_id)
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("SELECT id, nickname FROM external_login_user WHERE id=%s LIMIT 1", (external_user_id,))
+         row = cur.fetchone()
+     finally:
+         cur.close()
+         db.close()
  
- .chat-row {
-   position: relative;
-   margin-bottom: 10px;
-   touch-action: pan-y;
- }
+     if not row:
+         return f"LINE-{actor_id}"
+     resolved_id = str(row.get("id") or actor_id)
+     return str(row.get("nickname") or f"LINE-{resolved_id}")
  
  
- .chat-line {
-   display: flex;
-   gap: 8px;
-   align-items: flex-start;
-   min-width: 0;
- }
+ def get_system_template(template_key: str) -> str:
+     payload = get_system_template_payload(template_key)
+     return str(payload.get("body_template") or "")
  
- .chat-line > * {
-   min-width: 0;
- }
  
- .chat-row.me .chat-line {
-   justify-content: flex-end;
-+  align-items: flex-end;
- }
+ def _normalize_system_sender_avatar_url(value: str, *, template_key: str) -> str:
+     normalized = str(value or "").strip()
+     if not normalized:
+         return str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
++    if normalized.startswith("/chat/system-assets/"):
++        return normalized
+     if normalized.startswith("/mnt/mfu/app/"):
+-        normalized = "/" + normalized[len("/mnt/mfu/app/"):].lstrip("/")
++        app_relative = normalized[len("/mnt/mfu/app/"):].lstrip("/")
++        if app_relative.startswith("MIMOSA_Illustration/"):
++            asset_name = app_relative[len("MIMOSA_Illustration/"):]
++            if asset_name:
++                return f"/chat/system-assets/{quote(asset_name)}"
++        normalized = "/" + app_relative
++    if normalized.startswith("/MIMOSA_Illustration/"):
++        asset_name = normalized[len("/MIMOSA_Illustration/"):]
++        if asset_name:
++            return f"/chat/system-assets/{quote(asset_name)}"
+     return normalized
  
- .chat-row.other .chat-line {
-   justify-content: flex-start;
- }
  
- .chat-main {
-   display: flex;
-   flex-direction: column;
-   flex: 0 1 auto;
-   min-width: 0;
-   width: fit-content;
-   max-width: min(100%, 560px);
- }
+ def get_system_template_payload(template_key: str) -> dict[str, str]:
+     default = SYSTEM_TEMPLATE_DEFAULTS.get(template_key, "")
+     default_icon = _normalize_system_sender_avatar_url("", template_key=template_key)
+     if not _ensure_chat_system_template_schema():
+         return {"body_template": default, "sender_avatar_url": default_icon}
  
- .chat-row.me .chat-main {
-   align-items: flex-end;
- }
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             "SELECT body_template, sender_avatar_url FROM chat_system_templates WHERE template_key=%s LIMIT 1",
+             (template_key,),
+         )
+         row = cur.fetchone()
+         if not row:
+             return {"body_template": default, "sender_avatar_url": default_icon}
+         return {
+             "body_template": str(row.get("body_template") or default),
+             "sender_avatar_url": _normalize_system_sender_avatar_url(
+                 str(row.get("sender_avatar_url") or ""),
+                 template_key=template_key,
+             ),
+@@ -6036,50 +6048,60 @@ def dm_api_send():
+         return jsonify({"ok": False, "error": "not_found"}), 404
  
- .chat-row.other .chat-main {
-   align-items: flex-start;
- }
+     body = _validate_body(payload.get("body") or "")
+     saved = _save_dm_message(conversation, actor_key, body)
+     saved["dm_uuid"] = dm_uuid
+     msg_payload = _dm_message_to_payload(saved, actor_key)
+     socketio.emit("chat_message", msg_payload, to=f"dm:{dm_uuid}")
+     _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
+     return jsonify({"ok": True, "message": msg_payload})
  
- .chat-sender {
-   font-size: 0.76rem;
-@@ -120,139 +121,157 @@
- }
  
- .chat-row.other .chat-bubble {
-   grid-column: 1;
- }
+ @chat_bp.get("/dm/images/<uuid:dm_uuid>/<path:name>")
+ def chat_dm_image(dm_uuid: str, name: str):
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+     dm_uuid_str = str(dm_uuid)
+     if not actor or not actor_key:
+         abort(403)
+     if not can_access_dm(dm_uuid_str, actor_key):
+         abort(403)
+     if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+         abort(404)
+     return send_from_directory(os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid_str), name)
  
- .chat-row.other .chat-meta-col {
-   grid-column: 2;
- }
  
- .chat-row.me .chat-bubble {
-   justify-self: end;
- }
- 
- .chat-row.me .chat-meta-col {
-   grid-column: 1;
- }
- 
- .chat-body {
-   min-width: 0;
-   /* 日本語本文に anywhere を広く適用すると 1〜2 文字単位で崩れるため通常改行へ戻す */
-   overflow-wrap: break-word;
-   word-break: normal;
- }
- 
-+.chat-row.me .chat-body {
-+  overflow-wrap: anywhere;
-+  word-break: break-all;
-+}
++@chat_bp.get("/system-assets/<path:name>")
++def chat_system_asset(name: str):
++    actor = get_chat_actor()
++    if not actor:
++        abort(403)
++    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
++        abort(404)
++    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, name)
 +
- /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
- .chat-bubble .chat-body,
- .chat-bubble .chat-body * {
-   -webkit-user-select: text;
-   user-select: text;
-   -webkit-touch-callout: default;
- }
- 
- /* リンクはタップできる */
- .chat-bubble .chat-body a {
-   -webkit-user-select: auto;
-   user-select: auto;
-   -webkit-touch-callout: default;
- }
- 
- .chat-body img {
-   max-width: 100%;
-   height: auto;
- }
- 
- .chat-body .chat-link {
-   text-decoration: underline;
-   color: #1f57d6;
-   /* URL/長い英数字のみ強制改行を許可してレイアウト崩れを防ぐ */
-   overflow-wrap: anywhere;
-   word-break: break-word;
- }
- 
- .chat-body p,
- .chat-body ul,
- .chat-body ol {
-   margin: 0;
- }
- 
- .chat-row.me .chat-bubble {
-   background: #4a8dff;
-   color: #fff;
-   border-bottom-right-radius: 6px;
-+  overflow-wrap: anywhere;
-+  word-break: break-all;
- }
- 
- .chat-row.other .chat-bubble {
-   background: #f1f3f5;
-   color: #222;
-   border-bottom-left-radius: 6px;
- }
- 
- .chat-row.me .chat-bubble-wrap {
-+  display: flex;
-+  flex-direction: column;
-+  align-items: flex-end;
-+  justify-content: flex-end;
-+  gap: 3px;
-+}
 +
-+.chat-row.me .chat-me-bottom-row {
-   display: flex;
-   flex-direction: row;
-   align-items: flex-end;
-   justify-content: flex-end;
-   gap: 12px;
-+  min-width: 0;
-+  max-width: 100%;
- }
+ @chat_bp.post("/dm/api/upload-image")
+ def dm_upload_image():
+     actor = get_chat_actor()
+     actor_key = _get_dm_actor_key(actor)
+     if not actor or not actor_key:
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_message_images_schema():
+         return jsonify({"ok": False, "error": "DM画像機能の初期化に失敗しました"}), 500
  
- .chat-row.me .chat-meta-col {
-   display: inline-flex;
-   align-items: flex-end;
-   justify-content: flex-end;
-   min-width: 0;
-   width: auto;
-   margin-right: 0;
- }
+     token = (request.form.get("csrf_token") or "").strip()
+     if token != session.get("chat_csrf"):
+         return jsonify({"ok": False, "error": "csrf"}), 400
+     dm_uuid = str(request.form.get("dm_uuid") or "").strip()
+     if not dm_uuid:
+         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
+     if not can_access_dm(dm_uuid, actor_key):
+         return jsonify({"ok": False, "error": "forbidden"}), 403
+     conversation = _get_dm_conversation_by_uuid(dm_uuid)
+     if not conversation:
+         return jsonify({"ok": False, "error": "not_found"}), 404
  
- .chat-row.me .chat-meta-main {
-   display: inline-flex;
-   align-items: flex-end;
-   justify-content: flex-end;
-   gap: 4px;
-   min-height: auto;
-   white-space: nowrap;
- }
- 
- .chat-row.me .chat-main-group {
-   display: flex;
-   flex-direction: column;
-   align-items: flex-end;
-   min-width: 0;
-   max-width: 100%;
- }
- 
- .chat-row.me .chat-main-group .chat-bubble {
-   max-width: 100%;
- }
- 
- .chat-row.me .chat-read-status {
--  margin-top: 3px;
--  width: 100%;
-+  width: fit-content;
-+  max-width: 100%;
-   display: flex;
-   justify-content: flex-end;
-+  align-self: flex-end;
- }
- 
- .chat-row.me .chat-read-status .chat-read-inline {
-   align-self: flex-end;
-   text-align: right;
- }
- 
- .chat-meta-col {
-   display: flex;
-   flex-direction: column;
-   align-items: flex-end;
-   justify-content: flex-end;
-   gap: 2px;
-   min-width: 72px;
-   width: max-content;
- }
- 
- .chat-meta-main {
-   display: flex;
-   align-items: baseline;
-   justify-content: flex-end;
-   gap: 4px;
-   min-height: 26px;
- }
- 
-@@ -1498,99 +1517,132 @@
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-           {% endif %}
- 
-           <div class="chat-main">
-             {% if not m.is_me %}<div class="chat-sender">{{ m.sender_display_name }}</div>{% endif %}
- 
-             {% if m.reply_to_message_id %}
-               <div class="chat-reply-quote" data-jump-to-id="{{ m.reply_to_message_id }}">
-                 <img class="chat-avatar-sm"
-                      src="{{ m.reply_to_sender_avatar_url or default_avatar_url }}"
-                      alt=""
-                      loading="lazy"
-                      referrerpolicy="no-referrer"
-                      onerror="this.onerror=null;this.src='{{ default_avatar_url }}';">
-                 <div class="rq-body">
-                   <div class="rq-name">{{ m.reply_to_sender_display_name }}</div>
-                   <div class="rq-text">{{ m.reply_to_body_plain_excerpt }}</div>
-                 </div>
-               </div>
-             {% endif %}
- 
-             <div class="chat-bubble-wrap">
-               {% if m.is_me %}
--                <div class="chat-meta-col">
--                  <div class="chat-meta-main">
--                    <div class="chat-meta-actions">
--                      <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-+                <div class="chat-main-group">
-+                  <div class="chat-me-bottom-row">
-+                    <div class="chat-meta-col">
-+                      <div class="chat-meta-main">
-+                        <div class="chat-meta-actions">
-+                          <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-+                        </div>
-+                        <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-+                        {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
-+                      </div>
-+                    </div>
-+                    <div class="chat-bubble">
-+                      {% set image_items = m.images or [] %}
-+                      {% if image_items|length == 1 %}
-+                        {% set image_item = image_items[0] %}
-+                        <a class="chat-image-link"
-+                           href="{{ image_item.url }}"
-+                           data-full-image-url="{{ image_item.url }}"
-+                           data-image-index="0"
-+                           data-image-list='{{ image_items|tojson }}'>
-+                          <img class="chat-image-thumb"
-+                               src="{{ image_item.thumb_url }}"
-+                               alt="画像"
-+                               loading="lazy"
-+                               {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
-+                        </a>
-+                      {% elif image_items|length >= 2 %}
-+                        <div class="chat-image-grid">
-+                          {% for image_item in image_items %}
-+                            <a class="chat-image-link chat-image-cell"
-+                               href="{{ image_item.url }}"
-+                               data-full-image-url="{{ image_item.url }}"
-+                               data-image-index="{{ loop.index0 }}"
-+                               data-image-list='{{ image_items|tojson }}'>
-+                              <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
-+                            </a>
-+                          {% endfor %}
-+                        </div>
-+                      {% endif %}
-+                      {% if (m.body_html or m.body or '')|trim %}
-+                        <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
-+                      {% endif %}
-                     </div>
--                    <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
--                    {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
-                   </div>
--                </div>
--                <div class="chat-main-group">
--              {% endif %}
--              <div class="chat-bubble">
--                {% set image_items = m.images or [] %}
--                {% if image_items|length == 1 %}
--                  {% set image_item = image_items[0] %}
--                  <a class="chat-image-link"
--                     href="{{ image_item.url }}"
--                     data-full-image-url="{{ image_item.url }}"
--                     data-image-index="0"
--                     data-image-list='{{ image_items|tojson }}'>
--                    <img class="chat-image-thumb"
--                         src="{{ image_item.thumb_url }}"
--                         alt="画像"
--                         loading="lazy"
--                         {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
--                  </a>
--                {% elif image_items|length >= 2 %}
--                  <div class="chat-image-grid">
--                    {% for image_item in image_items %}
--                      <a class="chat-image-link chat-image-cell"
--                         href="{{ image_item.url }}"
--                         data-full-image-url="{{ image_item.url }}"
--                         data-image-index="{{ loop.index0 }}"
--                         data-image-list='{{ image_items|tojson }}'>
--                        <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
--                      </a>
--                    {% endfor %}
-+                  <div class="chat-read-status">
-+                    <div class="chat-read-inline d-none"></div>
-                   </div>
--                {% endif %}
--                {% if (m.body_html or m.body or '')|trim %}
--                  <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
--                {% endif %}
--              </div>
--              {% if m.is_me %}
--                <div class="chat-read-status">
--                  <div class="chat-read-inline d-none"></div>
-                 </div>
-+              {% endif %}
-+              {% if not m.is_me %}
-+                <div class="chat-bubble">
-+                  {% set image_items = m.images or [] %}
-+                  {% if image_items|length == 1 %}
-+                    {% set image_item = image_items[0] %}
-+                    <a class="chat-image-link"
-+                       href="{{ image_item.url }}"
-+                       data-full-image-url="{{ image_item.url }}"
-+                       data-image-index="0"
-+                       data-image-list='{{ image_items|tojson }}'>
-+                      <img class="chat-image-thumb"
-+                           src="{{ image_item.thumb_url }}"
-+                           alt="画像"
-+                           loading="lazy"
-+                           {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
-+                    </a>
-+                  {% elif image_items|length >= 2 %}
-+                    <div class="chat-image-grid">
-+                      {% for image_item in image_items %}
-+                        <a class="chat-image-link chat-image-cell"
-+                           href="{{ image_item.url }}"
-+                           data-full-image-url="{{ image_item.url }}"
-+                           data-image-index="{{ loop.index0 }}"
-+                           data-image-list='{{ image_items|tojson }}'>
-+                          <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
-+                        </a>
-+                      {% endfor %}
-+                    </div>
-+                  {% endif %}
-+                  {% if (m.body_html or m.body or '')|trim %}
-+                    <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
-+                  {% endif %}
-                 </div>
--              {% else %}
-                 <div class="chat-meta-col">
-                   {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
-                   <div class="chat-meta-main">
-                     <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-                     <div class="chat-meta-actions">
-                       <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-                     </div>
-                   </div>
-                 </div>
-               {% endif %}
-             </div>
-             {% if m.is_me %}
-               <div class="chat-read-list d-none"></div>
-             {% endif %}
-             {% if (m.thread_reply_count or 0) > 0 %}
-               <button type="button" class="thread-summary-link" data-thread-open="{{ m.id }}">返信 {{ m.thread_reply_count }}</button>
-             {% endif %}
-             {% if not m.deleted_flag %}{{ render_reaction_box(m) }}{% endif %}
-           </div>
- 
-           {% if m.is_me %}
-             <img class="chat-avatar"
-                  src="{{ m.sender_avatar_url or default_avatar_url }}"
-                  alt=""
-                  loading="lazy"
-@@ -3059,62 +3111,65 @@ window.addEventListener('DOMContentLoaded', async () => {
-         const thumb = document.createElement('img');
-         thumb.src = imageItem.thumb_url;
-         thumb.alt = `画像 ${idx + 1}`;
-         thumb.loading = 'lazy';
-         imageLink.appendChild(thumb);
-         grid.appendChild(imageLink);
-       });
-       bubble.appendChild(grid);
-     }
- 
-     const rawBody = buildSafeBodyHtml(msg);
-     if (rawBody) {
-       const body = document.createElement('div');
-       body.className = Number(msg.deleted_flag || 0) === 1 ? 'chat-body chat-deleted-text' : 'chat-body';
-       body.innerHTML = rawBody;
-       bubble.appendChild(body);
-     }
- 
-     const metaCol = createMetaCol({
-       isMe,
-       timeLabel,
-       edited: Number(msg.edited_flag || 0) === 1,
-     });
- 
-     if (isMe) {
-+      const bottomRow = document.createElement('div');
-+      bottomRow.className = 'chat-me-bottom-row';
-       const mainGroup = document.createElement('div');
-       mainGroup.className = 'chat-main-group';
- 
-       const readStatus = document.createElement('div');
-       readStatus.className = 'chat-read-status';
-       const readInline = document.createElement('div');
-       readInline.className = 'chat-read-inline d-none';
-       readStatus.appendChild(readInline);
- 
--      mainGroup.appendChild(bubble);
-+      bottomRow.appendChild(metaCol);
-+      bottomRow.appendChild(bubble);
-+      mainGroup.appendChild(bottomRow);
-       mainGroup.appendChild(readStatus);
--      wrap.appendChild(metaCol);
-       wrap.appendChild(mainGroup);
-     } else {
-       wrap.appendChild(bubble);
-       wrap.appendChild(metaCol);
-     }
- 
-     main.appendChild(wrap);
- 
-     if (isMe) {
-       const readList = document.createElement('div');
-       readList.className = 'chat-read-list d-none';
-       main.appendChild(readList);
-     }
- 
-     const threadReplyCount = Number(msg.thread_reply_count || 0);
-     if (threadReplyCount > 0) {
-       const threadLink = document.createElement('button');
-       threadLink.type = 'button';
-       threadLink.className = 'thread-summary-link';
-       threadLink.dataset.threadOpen = String(msg.id || '');
-       threadLink.textContent = `返信 ${threadReplyCount}`;
-       main.appendChild(threadLink);
-     }
- 
-     if (Number(msg.deleted_flag || 0) !== 1) {
-@@ -3802,57 +3857,60 @@ window.addEventListener('DOMContentLoaded', async () => {
- 
-     if (!isMe) {
-       const sender = document.createElement('div');
-       sender.className = 'chat-sender';
-       sender.textContent = msg.sender_display_name || 'Unknown';
-       main.appendChild(sender);
-     }
- 
-     const wrap = document.createElement('div');
-     wrap.className = 'chat-bubble-wrap';
- 
-     const bubble = document.createElement('div');
-     bubble.className = 'chat-bubble';
- 
-     const body = document.createElement('div');
-     body.className = 'chat-body';
-     body.innerHTML = buildSafeBodyHtml(msg) || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
-     bubble.appendChild(body);
- 
-     const metaCol = createMetaCol({
-       isMe,
-       timeLabel: msg.created_at_jst_time_hm || '',
-       edited: Number(msg.edited_flag || 0) === 1,
-     });
-     if (isMe) {
-+      const bottomRow = document.createElement('div');
-+      bottomRow.className = 'chat-me-bottom-row';
-       const mainGroup = document.createElement('div');
-       mainGroup.className = 'chat-main-group';
-       const readStatus = document.createElement('div');
-       readStatus.className = 'chat-read-status';
--      mainGroup.appendChild(bubble);
-+      bottomRow.appendChild(metaCol);
-+      bottomRow.appendChild(bubble);
-+      mainGroup.appendChild(bottomRow);
-       mainGroup.appendChild(readStatus);
--      wrap.appendChild(metaCol);
-       wrap.appendChild(mainGroup);
-     } else {
-       wrap.appendChild(bubble);
-       wrap.appendChild(metaCol);
-     }
-     main.appendChild(wrap);
- 
-     if (Number(msg.deleted_flag || 0) !== 1) {
-       main.appendChild(createReactionBox(msg.reactions_summary || [], msg.my_reaction || null));
-     }
- 
-     line.appendChild(main);
-     item.appendChild(line);
-     return item;
-   }
- 
-   function submitThreadMessage() {
-     if (dmMode) return;
-     if (!threadBodyInput || !state.threadRootId) return;
-     const body = threadBodyInput.value || '';
-     if (!body.trim()) return;
-     socket.emit('chat_send', {
-       event_id: eventId,
-       room_id: roomId,
-       body,
+     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
+     if not raw_upload_files:
+         return jsonify({"ok": False, "error": "画像ファイルがありません"}), 400
+     if len(raw_upload_files) > CHAT_UPLOAD_MAX_FILES:

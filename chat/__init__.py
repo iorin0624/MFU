@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
@@ -122,6 +122,7 @@ CHAT_ALLOWED_REACTION_EMOJIS = ("💕", "👍", "😆", "😭", "😢", "🫶")
 CHAT_UPLOAD_DIR = os.getenv("CHAT_UPLOAD_DIR", "/mnt/mfu/chat_uploads")
 CHAT_UPLOAD_MAX_BYTES = max(int(os.getenv("CHAT_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024))), 1)
 CHAT_UPLOAD_MAX_FILES = 6
+SYSTEM_TEMPLATE_ASSET_ROOT = os.getenv("CHAT_SYSTEM_TEMPLATE_ASSET_ROOT", "/mnt/mfu/app/MIMOSA_Illustration")
 PUSH_REQUEST_TIMEOUT_SECONDS = 6
 PUSH_RETRY_BACKOFF_SECONDS = (0.3, 1.0)
 PUSH_LOG_SUPPRESSION_SECONDS = 300
@@ -145,6 +146,9 @@ SYSTEM_TEMPLATE_SCHEMA_READY: bool | None = None
 
 SYSTEM_TEMPLATE_DEFAULTS: dict[str, str] = {
     "join_approved": "{nickname}さんが参加しました！",
+}
+SYSTEM_TEMPLATE_DEFAULT_ICON_URLS: dict[str, str] = {
+    "join_approved": "/MIMOSA_Illustration/pwa.png",
 }
 SYSTEM_TEMPLATE_ALLOWED_PLACEHOLDERS: dict[str, set[str]] = {
     "join_approved": {"nickname"},
@@ -264,6 +268,8 @@ def _resolve_sender_avatar_url(actor_type: str, actor_id: str, avatar_cache: dic
         finally:
             cur.close()
             db.close()
+    elif actor_type == "system":
+        avatar_url = get_system_template_sender_avatar_url("join_approved")
 
     if avatar_cache is not None:
         avatar_cache[key] = avatar_url
@@ -665,6 +671,7 @@ def _ensure_chat_system_template_schema() -> bool:
                   id BIGINT NOT NULL AUTO_INCREMENT,
                   template_key VARCHAR(64) NOT NULL,
                   body_template TEXT NOT NULL,
+                  sender_avatar_url VARCHAR(1024) NULL,
                   updated_at DATETIME NOT NULL,
                   updated_by VARCHAR(64) NULL,
                   PRIMARY KEY (id),
@@ -672,6 +679,14 @@ def _ensure_chat_system_template_schema() -> bool:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                 """
             )
+            try:
+                cur.execute("SHOW COLUMNS FROM chat_system_templates LIKE 'sender_avatar_url'")
+                if not cur.fetchone():
+                    cur.execute(
+                        "ALTER TABLE chat_system_templates ADD COLUMN sender_avatar_url VARCHAR(1024) NULL AFTER body_template"
+                    )
+            except Exception:
+                current_app.logger.warning("chat auto-migration: add sender_avatar_url failed", exc_info=True)
             db.commit()
             SYSTEM_TEMPLATE_SCHEMA_READY = True
         except Exception:
@@ -706,24 +721,67 @@ def get_external_user_display_name(external_user_id: int) -> str:
 
 
 def get_system_template(template_key: str) -> str:
+    payload = get_system_template_payload(template_key)
+    return str(payload.get("body_template") or "")
+
+
+def _normalize_system_sender_avatar_url(value: str, *, template_key: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
+    if normalized.startswith("/chat/system-assets/"):
+        return normalized
+    if normalized.startswith("/mnt/mfu/app/"):
+        app_relative = normalized[len("/mnt/mfu/app/"):].lstrip("/")
+        if app_relative.startswith("MIMOSA_Illustration/"):
+            asset_name = app_relative[len("MIMOSA_Illustration/"):]
+            if asset_name:
+                return f"/chat/system-assets/{quote(asset_name)}"
+        normalized = "/" + app_relative
+    if normalized.startswith("/MIMOSA_Illustration/"):
+        asset_name = normalized[len("/MIMOSA_Illustration/"):]
+        if asset_name:
+            return f"/chat/system-assets/{quote(asset_name)}"
+    return normalized
+
+
+def get_system_template_payload(template_key: str) -> dict[str, str]:
     default = SYSTEM_TEMPLATE_DEFAULTS.get(template_key, "")
+    default_icon = _normalize_system_sender_avatar_url("", template_key=template_key)
     if not _ensure_chat_system_template_schema():
-        return default
+        return {"body_template": default, "sender_avatar_url": default_icon}
 
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT body_template FROM chat_system_templates WHERE template_key=%s LIMIT 1", (template_key,))
+        cur.execute(
+            "SELECT body_template, sender_avatar_url FROM chat_system_templates WHERE template_key=%s LIMIT 1",
+            (template_key,),
+        )
         row = cur.fetchone()
         if not row:
-            return default
-        return str(row.get("body_template") or default)
+            return {"body_template": default, "sender_avatar_url": default_icon}
+        return {
+            "body_template": str(row.get("body_template") or default),
+            "sender_avatar_url": _normalize_system_sender_avatar_url(
+                str(row.get("sender_avatar_url") or ""),
+                template_key=template_key,
+            ),
+        }
     except Exception:
         current_app.logger.warning("chat system template load failed key=%s", template_key, exc_info=True)
-        return default
+        return {"body_template": default, "sender_avatar_url": default_icon}
     finally:
         cur.close()
         db.close()
+
+
+def get_system_template_sender_avatar_url(template_key: str) -> str:
+    payload = get_system_template_payload(template_key)
+    avatar_url = str(payload.get("sender_avatar_url") or "").strip()
+    if avatar_url:
+        return avatar_url
+    return _default_avatar_url()
 
 
 def render_system_template(template_str: str, *, nickname: str) -> str:
@@ -752,7 +810,8 @@ def post_system_message_to_event_main_room(event_id: int, *, template_key: str, 
         return None
 
     actor = {"actor_type": "system", "actor_id": "system", "display_name": "System"}
-    template = get_system_template(template_key)
+    template_payload = get_system_template_payload(template_key)
+    template = str(template_payload.get("body_template") or "")
     body = render_system_template(template, nickname=nickname)
     message = _enrich_reply_fields(_save_message(event_id, room_id, actor, body))
     message_payload = _present_message(message, actor, avatar_cache={})
@@ -6011,6 +6070,16 @@ def chat_dm_image(dm_uuid: str, name: str):
     return send_from_directory(os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid_str), name)
 
 
+@chat_bp.get("/system-assets/<path:name>")
+def chat_system_asset(name: str):
+    actor = get_chat_actor()
+    if not actor:
+        abort(403)
+    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+        abort(404)
+    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, name)
+
+
 @chat_bp.post("/dm/api/upload-image")
 def dm_upload_image():
     actor = get_chat_actor()
@@ -6359,6 +6428,7 @@ def admin_system_template_join_approved_get():
         actor=actor,
         csrf_token=_chat_csrf(),
         body_template=get_system_template("join_approved"),
+        sender_avatar_url=get_system_template_sender_avatar_url("join_approved"),
         nav_mode="chat",
     )
 
@@ -6376,6 +6446,10 @@ def admin_system_template_join_approved_post():
         abort(400, "invalid csrf token")
 
     body_template = str(request.form.get("body_template") or "").strip()
+    sender_avatar_url = _normalize_system_sender_avatar_url(
+        str(request.form.get("sender_avatar_url") or ""),
+        template_key="join_approved",
+    )
     validation_error = _validate_system_template("join_approved", body_template)
     if validation_error:
         return jsonify({"ok": False, "error": validation_error}), 400
@@ -6389,14 +6463,15 @@ def admin_system_template_join_approved_post():
         now = datetime.utcnow()
         cur.execute(
             """
-            INSERT INTO chat_system_templates (template_key, body_template, updated_at, updated_by)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO chat_system_templates (template_key, body_template, sender_avatar_url, updated_at, updated_by)
+            VALUES (%s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 body_template=VALUES(body_template),
+                sender_avatar_url=VALUES(sender_avatar_url),
                 updated_at=VALUES(updated_at),
                 updated_by=VALUES(updated_by)
             """,
-            ("join_approved", body_template, now, str(actor.get("actor_id") or "admin")),
+            ("join_approved", body_template, sender_avatar_url, now, str(actor.get("actor_id") or "admin")),
         )
         db.commit()
     finally:
