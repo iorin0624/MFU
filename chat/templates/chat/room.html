@@ -46,6 +46,7 @@
 
 .chat-row.me .chat-line {
   justify-content: flex-end;
+  align-items: flex-end;
 }
 
 .chat-row.other .chat-line {
@@ -142,6 +143,11 @@
   word-break: normal;
 }
 
+.chat-row.me .chat-body {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
 .chat-bubble .chat-body,
 .chat-bubble .chat-body * {
@@ -180,6 +186,8 @@
   background: #4a8dff;
   color: #fff;
   border-bottom-right-radius: 6px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }
 
 .chat-row.other .chat-bubble {
@@ -190,10 +198,20 @@
 
 .chat-row.me .chat-bubble-wrap {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.chat-row.me .chat-me-bottom-row {
+  display: flex;
   flex-direction: row;
   align-items: flex-end;
   justify-content: flex-end;
   gap: 12px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .chat-row.me .chat-meta-col {
@@ -227,10 +245,11 @@
 }
 
 .chat-row.me .chat-read-status {
-  margin-top: 3px;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   display: flex;
   justify-content: flex-end;
+  align-self: flex-end;
 }
 
 .chat-row.me .chat-read-status .chat-read-inline {
@@ -1520,55 +1539,88 @@
 
             <div class="chat-bubble-wrap">
               {% if m.is_me %}
-                <div class="chat-meta-col">
-                  <div class="chat-meta-main">
-                    <div class="chat-meta-actions">
-                      <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
-                    </div>
-                    <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-                    {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
-                  </div>
-                </div>
                 <div class="chat-main-group">
-              {% endif %}
-              <div class="chat-bubble">
-                {% set image_items = m.images or [] %}
-                {% if image_items|length == 1 %}
-                  {% set image_item = image_items[0] %}
-                  <a class="chat-image-link"
-                     href="{{ image_item.url }}"
-                     data-full-image-url="{{ image_item.url }}"
-                     data-image-index="0"
-                     data-image-list='{{ image_items|tojson }}'>
-                    <img class="chat-image-thumb"
-                         src="{{ image_item.thumb_url }}"
-                         alt="画像"
-                         loading="lazy"
-                         {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
-                  </a>
-                {% elif image_items|length >= 2 %}
-                  <div class="chat-image-grid">
-                    {% for image_item in image_items %}
-                      <a class="chat-image-link chat-image-cell"
-                         href="{{ image_item.url }}"
-                         data-full-image-url="{{ image_item.url }}"
-                         data-image-index="{{ loop.index0 }}"
-                         data-image-list='{{ image_items|tojson }}'>
-                        <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
-                      </a>
-                    {% endfor %}
+                  <div class="chat-me-bottom-row">
+                    <div class="chat-meta-col">
+                      <div class="chat-meta-main">
+                        <div class="chat-meta-actions">
+                          <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+                        </div>
+                        <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+                        {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
+                      </div>
+                    </div>
+                    <div class="chat-bubble">
+                      {% set image_items = m.images or [] %}
+                      {% if image_items|length == 1 %}
+                        {% set image_item = image_items[0] %}
+                        <a class="chat-image-link"
+                           href="{{ image_item.url }}"
+                           data-full-image-url="{{ image_item.url }}"
+                           data-image-index="0"
+                           data-image-list='{{ image_items|tojson }}'>
+                          <img class="chat-image-thumb"
+                               src="{{ image_item.thumb_url }}"
+                               alt="画像"
+                               loading="lazy"
+                               {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
+                        </a>
+                      {% elif image_items|length >= 2 %}
+                        <div class="chat-image-grid">
+                          {% for image_item in image_items %}
+                            <a class="chat-image-link chat-image-cell"
+                               href="{{ image_item.url }}"
+                               data-full-image-url="{{ image_item.url }}"
+                               data-image-index="{{ loop.index0 }}"
+                               data-image-list='{{ image_items|tojson }}'>
+                              <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
+                            </a>
+                          {% endfor %}
+                        </div>
+                      {% endif %}
+                      {% if (m.body_html or m.body or '')|trim %}
+                        <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
+                      {% endif %}
+                    </div>
                   </div>
-                {% endif %}
-                {% if (m.body_html or m.body or '')|trim %}
-                  <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
-                {% endif %}
-              </div>
-              {% if m.is_me %}
-                <div class="chat-read-status">
-                  <div class="chat-read-inline d-none"></div>
+                  <div class="chat-read-status">
+                    <div class="chat-read-inline d-none"></div>
+                  </div>
                 </div>
+              {% endif %}
+              {% if not m.is_me %}
+                <div class="chat-bubble">
+                  {% set image_items = m.images or [] %}
+                  {% if image_items|length == 1 %}
+                    {% set image_item = image_items[0] %}
+                    <a class="chat-image-link"
+                       href="{{ image_item.url }}"
+                       data-full-image-url="{{ image_item.url }}"
+                       data-image-index="0"
+                       data-image-list='{{ image_items|tojson }}'>
+                      <img class="chat-image-thumb"
+                           src="{{ image_item.thumb_url }}"
+                           alt="画像"
+                           loading="lazy"
+                           {% if image_item.width and image_item.height %}style="aspect-ratio: {{ image_item.width }}/{{ image_item.height }};"{% endif %}>
+                    </a>
+                  {% elif image_items|length >= 2 %}
+                    <div class="chat-image-grid">
+                      {% for image_item in image_items %}
+                        <a class="chat-image-link chat-image-cell"
+                           href="{{ image_item.url }}"
+                           data-full-image-url="{{ image_item.url }}"
+                           data-image-index="{{ loop.index0 }}"
+                           data-image-list='{{ image_items|tojson }}'>
+                          <img src="{{ image_item.thumb_url }}" alt="画像 {{ loop.index }}" loading="lazy">
+                        </a>
+                      {% endfor %}
+                    </div>
+                  {% endif %}
+                  {% if (m.body_html or m.body or '')|trim %}
+                    <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
+                  {% endif %}
                 </div>
-              {% else %}
                 <div class="chat-meta-col">
                   {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
                   <div class="chat-meta-main">
@@ -3081,6 +3133,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     });
 
     if (isMe) {
+      const bottomRow = document.createElement('div');
+      bottomRow.className = 'chat-me-bottom-row';
       const mainGroup = document.createElement('div');
       mainGroup.className = 'chat-main-group';
 
@@ -3090,9 +3144,10 @@ window.addEventListener('DOMContentLoaded', async () => {
       readInline.className = 'chat-read-inline d-none';
       readStatus.appendChild(readInline);
 
-      mainGroup.appendChild(bubble);
+      bottomRow.appendChild(metaCol);
+      bottomRow.appendChild(bubble);
+      mainGroup.appendChild(bottomRow);
       mainGroup.appendChild(readStatus);
-      wrap.appendChild(metaCol);
       wrap.appendChild(mainGroup);
     } else {
       wrap.appendChild(bubble);
@@ -3824,13 +3879,16 @@ window.addEventListener('DOMContentLoaded', async () => {
       edited: Number(msg.edited_flag || 0) === 1,
     });
     if (isMe) {
+      const bottomRow = document.createElement('div');
+      bottomRow.className = 'chat-me-bottom-row';
       const mainGroup = document.createElement('div');
       mainGroup.className = 'chat-main-group';
       const readStatus = document.createElement('div');
       readStatus.className = 'chat-read-status';
-      mainGroup.appendChild(bubble);
+      bottomRow.appendChild(metaCol);
+      bottomRow.appendChild(bubble);
+      mainGroup.appendChild(bottomRow);
       mainGroup.appendChild(readStatus);
-      wrap.appendChild(metaCol);
       wrap.appendChild(mainGroup);
     } else {
       wrap.appendChild(bubble);
