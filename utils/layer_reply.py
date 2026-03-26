@@ -1,15 +1,15 @@
-from flask import Blueprint, render_template, request, abort, redirect, url_for
+from flask import Blueprint, render_template, request, abort, redirect, url_for, current_app
 import os
 import json
 import uuid as uuidlib
 import urllib.parse
 from datetime import datetime
-import requests
 
 from app.utils.db import get_db
 from app.utils.image import save_as_jpeg
 from app.utils.file_ops import create_zip
 from app.utils.mail import send_mail  # ← 追加：送信はmail.pyに統一
+from app.utils.upload_notifications import build_processed_upload_message, send_discord_upload_notification
 
 layer_reply_bp = Blueprint("layer_reply", __name__)
 UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
@@ -72,11 +72,10 @@ def layer_upload(uuid):
         zip_filename_encoded = urllib.parse.quote(os.path.basename(zip_path))
         zip_url = f"https://mfu.iori0624.jp/uploads/layer_uploads/{uuid}/{reply_uuid}/zip/{zip_filename_encoded}"
 
-        msg = (
-            f"📸 加工済み写真がアップロードされました\n"
-            f"📂 タイトル: {upload['title']}\n"
-            f"💬 コメント: {comment or '（なし）'}\n"
-            f"🔗 ダウンロード: {zip_url}"
+        msg = build_processed_upload_message(
+            title=upload["title"],
+            comment=comment,
+            download_url=zip_url,
         )
 
         if user:
@@ -84,13 +83,17 @@ def layer_upload(uuid):
             webhook_url = user.get("webhook_url")
             email = user.get("email")
 
-            if notify_method in ("discord", "both") and webhook_url:
-                try:
-                    requests.post(webhook_url, json={"content": msg})
-                except Exception as e:
-                    print(f"Discord通知に失敗しました: {e}")
+            send_discord_upload_notification(
+                logger=current_app.logger,
+                username=upload["username"],
+                notify_method=notify_method,
+                webhook_url=webhook_url,
+                upload_id=reply_uuid,
+                message=msg,
+                context_label="layer upload",
+            )
 
-            if notify_method in ("email", "both") and email:
+            if (notify_method or "").strip().lower() in ("email", "both") and (email or "").strip():
                 try:
                     # mail.py 統一呼び出し
                     send_mail(
@@ -103,7 +106,7 @@ def layer_upload(uuid):
                         timeout=10,
                     )
                 except Exception as e:
-                    print(f"メール通知に失敗しました: {e}")
+                    current_app.logger.exception("layer upload メール通知に失敗: user=%s upload_id=%s err=%r", upload["username"], reply_uuid, e)
 
         # レイヤーさん用の履歴ページへリダイレクト
         return redirect(url_for('layer_reply.view_reply', reply_uuid=reply_uuid))

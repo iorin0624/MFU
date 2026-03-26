@@ -83,6 +83,7 @@ from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
 from app.utils.mail import send_mail
+from app.utils.upload_notifications import send_discord_upload_notification
 from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
 from app.chat.socketio_ext import socketio
 
@@ -1171,12 +1172,15 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
             base_msg = generate_message(mode, context, username=context["username"])
             msg = base_msg + "\n（サムネイル生成はスキップしました）"
 
-            if notify_method in ("discord", "both") and user and user.get("webhook_url"):
-                try:
-                    requests.post(user["webhook_url"], json={"content": msg}, timeout=5)
-                    (logger.info if logger else print)(f"Discord通知送信完了 (uid={uid}, thumbs=off)")
-                except Exception as e:
-                    (logger.warning if logger else print)(f"[通知] Discord失敗: {e}")
+            send_discord_upload_notification(
+                logger=(logger or app.logger),
+                username=context["username"],
+                notify_method=notify_method,
+                webhook_url=user.get("webhook_url") if user else "",
+                upload_id=uid,
+                message=msg,
+                context_label="normal upload",
+            )
 
             if notify_method in ("email", "both") and user and user.get("email"):
                 try:
@@ -1243,12 +1247,15 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
         notify_method = user.get("notify_method", "discord") if user else "discord"
         msg = generate_message(mode, context, username=context["username"]) + "\n（サムネイル生成が完了しました）"
 
-        if notify_method in ("discord", "both") and user and user.get("webhook_url"):
-            try:
-                requests.post(user["webhook_url"], json={"content": msg}, timeout=5)
-                (logger.info if logger else print)(f"Discord通知送信完了 (uid={uid})")
-            except Exception as e:
-                (logger.warning if logger else print)(f"[通知] Discord失敗: {e}")
+        send_discord_upload_notification(
+            logger=(logger or app.logger),
+            username=context["username"],
+            notify_method=notify_method,
+            webhook_url=user.get("webhook_url") if user else "",
+            upload_id=uid,
+            message=msg,
+            context_label="normal upload",
+        )
 
         if notify_method in ("email", "both") and user and user.get("email"):
             try:

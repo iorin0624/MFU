@@ -1,263 +1,475 @@
-diff --git a/receipts/routes.py b/receipts/routes.py
-index d3617a7352d6ff4c8570efbb5c5da8eb47a9c657..beb31173ee30bd5317a30a431c9ef204f5e73dd7 100644
---- a/receipts/routes.py
-+++ b/receipts/routes.py
-@@ -75,87 +75,93 @@ def _fetchall_dict(cur):
- def _now_jst() -> datetime:
-     return datetime.now(JST).replace(tzinfo=None)
+diff --git a/__init__.py b/__init__.py
+index 2f16c4dd25420d6c891ca46909cb84e43a671603..d576f046339a8c56a21cdb09feec476de4ab230e 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -61,50 +61,51 @@ from app.utils.upload_security import (
+     DEFAULT_ALLOWED_EXTENSIONS,
+     can_access_upload_record,
+     cleanup_legacy_view_auth_keys,
+     detect_mime_from_bytes,
+     ensure_upload_password_schema,
+     fetch_upload_access_record,
+     grant_view_auth,
+     has_view_auth,
+     hash_upload_password,
+     migrate_upload_password_if_needed,
+     resolve_upload_subpath,
+     sanitize_filename,
+     validate_upload_file,
+     verify_upload_password,
+ )
+ from app.utils.image import save_as_jpeg
+ from app.utils.logs import log_request_raw, get_fw_404_settings, save_fw_404_settings
+ from app.utils.message import generate_message
+ from app.utils.storage_info import get_storage_info
+ from app.utils.thumbs import enqueue_thumb_job
+ from app.utils.totp_util import get_totp_status
+ from app.utils.whois_util import get_netinfo
+ from app.albums import album_bp
+ from app.receipts import receipts_bp
+ from app.utils.mail import send_mail
++from app.utils.upload_notifications import send_discord_upload_notification
+ from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
+ from app.chat.socketio_ext import socketio
  
+ # =====================================
+ # 🌏 タイムゾーン・定数
+ # =====================================
+ JST = timezone(timedelta(hours=9))
+ APP_DIR = os.path.abspath(os.path.dirname(__file__))
+ BASE_DIR = os.path.abspath(os.path.join(APP_DIR, ".."))
+ STATIC_DIR = os.path.abspath(os.path.join(APP_DIR, "static"))
+ UPLOAD_BASE_DIR = os.path.join(BASE_DIR, "uploads")
+ tempfile.tempdir = "/mnt/mfu/tmp"  # 明示
  
- def _ensure_dir(path: str) -> None:
-     os.makedirs(path, exist_ok=True)
- 
- 
- def _sha256_text(text: str) -> str:
-     return hashlib.sha256(text.encode("utf-8")).hexdigest()
- 
- 
- def _sha256_file(path: str) -> str:
-     h = hashlib.sha256()
-     with open(path, "rb") as f:
-         for chunk in iter(lambda: f.read(8192), b""):
-             h.update(chunk)
-     return h.hexdigest()
- 
- 
- def _hash_with_salt(value: str, salt: str) -> str:
-     return hashlib.sha256((salt + value).encode("utf-8")).hexdigest()
- 
- 
- def _new_csrf_token() -> str:
-+    token = session.get("receipts_csrf")
-+    if token:
-+        return token
-     token = secrets.token_urlsafe(16)
-     session["receipts_csrf"] = token
-     return token
- 
- 
- def _status_label(status: str | None) -> str:
-     if not status:
-         return ""
-     return STATUS_LABELS.get(status, status)
- 
- 
- def _status_badge(status: str | None) -> str:
-     if not status:
-         return "bg-secondary"
-     return STATUS_BADGES.get(status, "bg-secondary")
- 
- 
- def _resolve_receipt_path(path: str | None) -> str | None:
-     if not path:
-         return None
-     if path.startswith(LEGACY_RECEIPTS_ROOT):
-         candidate = RECEIPTS_ROOT + path[len(LEGACY_RECEIPTS_ROOT):]
-         if os.path.exists(candidate):
-             return candidate
-     if os.path.exists(path):
-         return path
-     return path
- 
- 
- def _can_manage_receipt(receipt: dict) -> bool:
-     user = session.get("user")
-     return bool(user) and (user == receipt.get("issuer_user_id") or user == "admin")
- 
- 
- def _check_csrf(token: str | None) -> bool:
-     saved = session.get("receipts_csrf")
--    return bool(token) and bool(saved) and token == saved
-+    is_valid = bool(token) and bool(saved) and token == saved
-+    if not is_valid:
-+        current_app.logger.warning("receipts csrf mismatch endpoint=%s", request.path)
-+    return is_valid
- 
- 
- def _new_sign_csrf() -> str:
-     token = secrets.token_urlsafe(16)
-     session["receipts_sign_csrf"] = token
-     return token
- 
- 
- def _check_sign_csrf(token: str | None) -> bool:
-     saved = session.get("receipts_sign_csrf")
-     return bool(token) and bool(saved) and token == saved
- 
- 
- def _pad(n: int, width: int = 6) -> str:
-     return str(n).zfill(width)
- 
- 
- def _make_receipt_no(cur, issue_date: datetime) -> str:
-     year = issue_date.year
-     prefix = f"{year}-"
-     cur.execute(
-         "SELECT receipt_no FROM receipts WHERE receipt_no LIKE %s ORDER BY receipt_no DESC LIMIT 1",
-         (f"{prefix}%",),
+ INAPP_BROWSER_WARNING_ENABLED_KEY = "inapp_browser_warning_enabled"
+ INAPP_BROWSER_KEYWORDS_KEY = "inapp_browser_keywords"
+ INAPP_BROWSER_REFERRER_PREFIXES_KEY = "inapp_browser_referrer_prefixes"
+ INAPP_BROWSER_SKIP_PATHS_KEY = "inapp_browser_skip_paths"
+ INAPP_BROWSER_DEFAULT_ENABLED = "1"
+ INAPP_BROWSER_DEFAULT_KEYWORDS = ["Line/", "Instagram", "Twitter", "FBAN", "FBAV"]
+ INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES = ["https://t.co/"]
+ INAPP_BROWSER_DEFAULT_SKIP_PATHS = [
+     "/static",
+     "/favicon",
+     "/api",
+     "/admin",
+@@ -1149,56 +1150,59 @@ def submit_upload():
+     # =====================================
+     return render_template(
+         "done.html",
+         uuid=uid, password=password, title=title,
+         mode=mode, mode_label=mode_config.get("label", mode),
+         date=date, message=message,
      )
-     row = cur.fetchone()
-@@ -1008,50 +1014,57 @@ def receipts_delete(receipt_id: int):
  
+ # --- サムネ完了待ち → 通知（バックグラウンド） ---
+ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, context, gen_thumbs: bool):
+     logger = getattr(app, "logger", None)
  
- @receipts_bp.route("/receipts/<int:receipt_id>/payer", methods=["POST"])
- def receipts_update_payer(receipt_id: int):
-     if not _check_csrf(request.form.get("csrf_token")):
-         abort(400)
+     # ▼ サムネ生成OFFならキュー投入も待機もスキップ
+     if not gen_thumbs:
+         try:
+             db = get_db()
+             cursor = db.cursor(dictionary=True)
+             cursor.execute("SELECT webhook_url, email, notify_method FROM users WHERE username = %s", (context["username"],))
+             user = cursor.fetchone()
+             db.close()
  
-     payer_name = request.form.get("payer_name", "").strip()
-     payer_address = request.form.get("payer_address", "").strip()
-     payer_phone = request.form.get("payer_phone", "").strip()
-     payer_email = request.form.get("payer_email", "").strip()
-     payer_invoice_no = request.form.get("payer_invoice_no", "").strip()
-     payer_bank_name = request.form.get("payer_bank_name", "").strip()
-     payer_bank_branch = request.form.get("payer_bank_branch", "").strip()
-     payer_bank_account = request.form.get("payer_bank_account", "").strip()
-     payer_bank_holder = request.form.get("payer_bank_holder", "").strip()
-     payer_note = request.form.get("payer_note", "").strip()
+             notify_method = user.get("notify_method", "discord") if user else "discord"
+             base_msg = generate_message(mode, context, username=context["username"])
+             msg = base_msg + "\n（サムネイル生成はスキップしました）"
  
-     if not all([payer_name, payer_address, payer_phone]):
-         flash("支払者情報の必須項目（氏名/住所/電話）を入力してください。", "warning")
-         return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+-            if notify_method in ("discord", "both") and user and user.get("webhook_url"):
+-                try:
+-                    requests.post(user["webhook_url"], json={"content": msg}, timeout=5)
+-                    (logger.info if logger else print)(f"Discord通知送信完了 (uid={uid}, thumbs=off)")
+-                except Exception as e:
+-                    (logger.warning if logger else print)(f"[通知] Discord失敗: {e}")
++            send_discord_upload_notification(
++                logger=(logger or app.logger),
++                username=context["username"],
++                notify_method=notify_method,
++                webhook_url=user.get("webhook_url") if user else "",
++                upload_id=uid,
++                message=msg,
++                context_label="normal upload",
++            )
  
-     db = get_db()
-     cur = db.cursor()
+             if notify_method in ("email", "both") and user and user.get("email"):
+                 try:
+                     # ★ mail.pyに統一
+                     send_mail(
+                         to=user["email"],
+                         subject="ファイルアップロード通知",
+                         body=msg,
+                         event_uuid="notify",          # From: notify@mail.iori0624.jp
+                         smtp_host="192.168.103.15",
+                         smtp_port=25,
+                         timeout=45,
+                     )
+                     (logger.info if logger else print)(f"メール通知送信完了 (uid={uid}, thumbs=off)")
+                 except Exception as e:
+                     (logger.warning if logger else print)(f"[通知] メール失敗: {e}")
+         except Exception as e:
+             (logger.error if logger else print)(f"[通知] 例外: {e}")
+         return
+ 
+     # ▼ 既存のサムネ生成キュー投入～完了待ち（ON時のみ動作）
      try:
-+        cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
-+        receipt = _fetchone_dict(cur)
-+        if not receipt:
-+            abort(404)
-+        if not _can_manage_receipt(receipt):
-+            abort(403)
+         enqueue_thumb_job("upload", uid, "thumb")
+         (logger.info if logger else print)(f"enqueue_thumb_job done: upload/{uid}/thumb")
+     except Exception as e:
+@@ -1221,56 +1225,59 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
+     while True:
+         done = _count_ready()
+         pct = int(done * 100 / expected) if expected else 100
+         if pct // 10 != last_report // 10:
+             (logger.info if logger else print)(f"[thumb] progress {done}/{expected} ({pct}%) uid={uid}")
+             last_report = pct
+         if done >= expected:
+             (logger.info if logger else print)(f"[thumb] all done {done}/{expected} uid={uid}")
+             break
+         if time.time() - start > timeout_sec:
+             (logger.warning if logger else print)(f"[thumb] timeout {done}/{expected} uid={uid}")
+             break
+         time.sleep(1.0)
+ 
+     # 完了通知（従来どおりの文面／件名で、送信のみ mail.py に統一）
+     try:
+         db = get_db()
+         cursor = db.cursor(dictionary=True)
+         cursor.execute("SELECT webhook_url, email, notify_method FROM users WHERE username = %s", (context["username"],))
+         user = cursor.fetchone()
+         db.close()
+ 
+         notify_method = user.get("notify_method", "discord") if user else "discord"
+         msg = generate_message(mode, context, username=context["username"]) + "\n（サムネイル生成が完了しました）"
+ 
+-        if notify_method in ("discord", "both") and user and user.get("webhook_url"):
+-            try:
+-                requests.post(user["webhook_url"], json={"content": msg}, timeout=5)
+-                (logger.info if logger else print)(f"Discord通知送信完了 (uid={uid})")
+-            except Exception as e:
+-                (logger.warning if logger else print)(f"[通知] Discord失敗: {e}")
++        send_discord_upload_notification(
++            logger=(logger or app.logger),
++            username=context["username"],
++            notify_method=notify_method,
++            webhook_url=user.get("webhook_url") if user else "",
++            upload_id=uid,
++            message=msg,
++            context_label="normal upload",
++        )
+ 
+         if notify_method in ("email", "both") and user and user.get("email"):
+             try:
+                 # ★ mail.pyに統一
+                 send_mail(
+                     to=user["email"],
+                     subject="ファイルアップロード通知",
+                     body=msg,
+                     event_uuid="notify",      # From: notify@mail.iori0624.jp
+                     smtp_host="192.168.103.15",
+                     smtp_port=25,
+                     timeout=45,
+                 )
+                 (logger.info if logger else print)(f"メール通知送信完了 (uid={uid})")
+             except Exception as e:
+                 (logger.warning if logger else print)(f"[通知] メール失敗: {e}")
+     except Exception as e:
+         (logger.error if logger else print)(f"[通知] 例外: {e}")
+ 
+ # =====================================
+ # ③ 表示／配信
+ # =====================================
+ @app.route("/view/<uuid>", methods=["GET", "POST"])
+ def view_upload(uuid):
+     upload = _get_upload_access_record(uuid)
+diff --git a/utils/layer_reply.py b/utils/layer_reply.py
+index fd21b9aed5808cf4f672790af6eb7a4280f340ba..7bc6ce3916d95bf0c649830cb0dc1a0da0c72d4b 100644
+--- a/utils/layer_reply.py
++++ b/utils/layer_reply.py
+@@ -1,37 +1,37 @@
+-from flask import Blueprint, render_template, request, abort, redirect, url_for
++from flask import Blueprint, render_template, request, abort, redirect, url_for, current_app
+ import os
+ import json
+ import uuid as uuidlib
+ import urllib.parse
+ from datetime import datetime
+-import requests
+ 
+ from app.utils.db import get_db
+ from app.utils.image import save_as_jpeg
+ from app.utils.file_ops import create_zip
+ from app.utils.mail import send_mail  # ← 追加：送信はmail.pyに統一
++from app.utils.upload_notifications import build_processed_upload_message, send_discord_upload_notification
+ 
+ layer_reply_bp = Blueprint("layer_reply", __name__)
+ UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
+ LAYER_ROOT = os.path.join(UPLOAD_BASE_DIR, "layer_uploads")
+ 
+ @layer_reply_bp.route("/layer_upload/<uuid>", methods=["GET", "POST"])
+ def layer_upload(uuid):
+     db = get_db()
+     cursor = db.cursor(dictionary=True)
+ 
+     cursor.execute("SELECT title, date, username FROM uploads WHERE uuid = %s AND mode = 'layer'", (uuid,))
+     upload = cursor.fetchone()
+ 
+     if not upload:
+         return "対象のアップロードが見つかりません", 404
+ 
+     cursor.execute("SELECT webhook_url, email, notify_method FROM users WHERE username = %s", (upload["username"],))
+     user = cursor.fetchone()
+     db.close()
+ 
+     if request.method == "POST":
+         comment = request.form.get("comment", "")
+         files = request.files.getlist("photos")
+         if not files:
+             return "ファイルが選択されていません", 400
+@@ -50,81 +50,84 @@ def layer_upload(uuid):
+         for idx, file in enumerate(files, 1):
+             filename = f"{prefix}_{idx:04}.jpg"
+             save_path = os.path.join(original_dir, filename)
+             success = save_as_jpeg(file.stream, save_path)
+             if not success:
+                 continue
+             saved_files.append(filename)
+ 
+         zip_path = os.path.join(zip_dir, f"{prefix}.zip")
+         create_zip(zip_path, [os.path.join(original_dir, f) for f in saved_files])
+ 
+         info = {
+             "reply_uuid": reply_uuid,
+             "comment": comment,
+             "title": upload["title"],
+             "filenames": saved_files,
+             "created": datetime.now().isoformat()
+         }
+         with open(os.path.join(base_dir, "info.json"), "w", encoding="utf-8") as f:
+             json.dump(info, f, ensure_ascii=False, indent=2)
+ 
+         # 通知URL
+         zip_filename_encoded = urllib.parse.quote(os.path.basename(zip_path))
+         zip_url = f"https://mfu.iori0624.jp/uploads/layer_uploads/{uuid}/{reply_uuid}/zip/{zip_filename_encoded}"
+ 
+-        msg = (
+-            f"📸 加工済み写真がアップロードされました\n"
+-            f"📂 タイトル: {upload['title']}\n"
+-            f"💬 コメント: {comment or '（なし）'}\n"
+-            f"🔗 ダウンロード: {zip_url}"
++        msg = build_processed_upload_message(
++            title=upload["title"],
++            comment=comment,
++            download_url=zip_url,
+         )
+ 
+         if user:
+             notify_method = user.get("notify_method", "discord")
+             webhook_url = user.get("webhook_url")
+             email = user.get("email")
+ 
+-            if notify_method in ("discord", "both") and webhook_url:
+-                try:
+-                    requests.post(webhook_url, json={"content": msg})
+-                except Exception as e:
+-                    print(f"Discord通知に失敗しました: {e}")
+-
+-            if notify_method in ("email", "both") and email:
++            send_discord_upload_notification(
++                logger=current_app.logger,
++                username=upload["username"],
++                notify_method=notify_method,
++                webhook_url=webhook_url,
++                upload_id=reply_uuid,
++                message=msg,
++                context_label="layer upload",
++            )
 +
-         cur.execute(
-             """
-             UPDATE receipts
-             SET payer_name = %s,
-                 payer_address = %s,
-                 payer_phone = %s,
-                 payer_email = %s,
-                 payer_invoice_no = %s,
-                 payer_bank_name = %s,
-                 payer_bank_branch = %s,
-                 payer_bank_account = %s,
-                 payer_bank_holder = %s,
-                 payer_note = %s,
-                 updated_at = %s
-             WHERE id = %s AND is_deleted = 0
-             """,
-             (
-                 payer_name,
-                 payer_address,
-                 payer_phone,
-                 payer_email,
-                 payer_invoice_no,
-                 payer_bank_name,
-                 payer_bank_branch,
-                 payer_bank_account,
-@@ -1069,50 +1082,52 @@ def receipts_update_payer(receipt_id: int):
-             receipt_id=receipt_id,
-             result="ok",
-             ip=request.remote_addr,
-             user_agent=request.headers.get("User-Agent"),
-         )
-         db.commit()
-     finally:
-         db.close()
++            if (notify_method or "").strip().lower() in ("email", "both") and (email or "").strip():
+                 try:
+                     # mail.py 統一呼び出し
+                     send_mail(
+                         to=email,
+                         subject="加工済み写真アップロード通知",
+                         body=msg,
+                         event_uuid="notify",               # From: notify@mail.iori0624.jp
+                         smtp_host="192.168.103.15",
+                         smtp_port=25,
+                         timeout=10,
+                     )
+                 except Exception as e:
+-                    print(f"メール通知に失敗しました: {e}")
++                    current_app.logger.exception("layer upload メール通知に失敗: user=%s upload_id=%s err=%r", upload["username"], reply_uuid, e)
  
-     flash("支払者情報を更新しました。", "success")
-     return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+         # レイヤーさん用の履歴ページへリダイレクト
+         return redirect(url_for('layer_reply.view_reply', reply_uuid=reply_uuid))
  
- 
- @receipts_bp.route("/receipts/<int:receipt_id>/send", methods=["POST"])
- def receipts_send(receipt_id: int):
-     if not _check_csrf(request.form.get("csrf_token")):
-         abort(400)
- 
-     db = get_db()
-     cur = db.cursor()
      try:
-         cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
-         receipt = _fetchone_dict(cur)
-         if not receipt:
-             abort(404)
-+        if not _can_manage_receipt(receipt):
-+            abort(403)
-         cur.execute("SELECT * FROM receipt_versions WHERE id = %s", (receipt["current_version_id"],))
-         version = _fetchone_dict(cur)
+         formatted_date = datetime.strptime(str(upload['date']), "%Y-%m-%d").strftime("%Y年%m月%d日")
+     except Exception:
+         formatted_date = upload['date']
  
-         token = secrets.token_urlsafe(32)
-         token_hash = _sha256_text(token)
-         expires_at = _now_jst() + timedelta(hours=TOKEN_EXPIRES_HOURS)
- 
-         cur.execute(
-             """
-             INSERT INTO receipt_tokens
-             (receipt_version_id, token_hash, expires_at, created_at)
-             VALUES (%s, %s, %s, %s)
-             """,
-             (version["id"], token_hash, expires_at, _now_jst()),
-         )
-         token_id = cur.lastrowid
- 
-         sign_url = url_for("receipts.receipts_sign", token=token, _external=True)
-         subject = f"【受領書署名依頼】{receipt['receipt_no']}"
-         body = (
-             f"{receipt['recipient_name']} 様\n\n"
-             f"以下の受領書への署名をお願いします。\n"
-             f"署名リンク（48時間有効）: {sign_url}\n\n"
-             f"受領書番号: {receipt['receipt_no']}\n"
-             f"金額: {receipt['amount']} 円\n"
-@@ -1140,50 +1155,52 @@ def receipts_send(receipt_id: int):
-             token_id=token_id,
-             result=mail_result,
-             ip=request.remote_addr,
-             user_agent=request.headers.get("User-Agent"),
-         )
-         db.commit()
-     finally:
-         db.close()
- 
-     flash("署名リンクを送信しました。", "success")
-     return redirect(url_for("receipts.receipts_detail", receipt_id=receipt_id))
+     return render_template("layer_upload.html", title=upload['title'], uuid=uuid, date=formatted_date)
  
  
- @receipts_bp.route("/receipts/<int:receipt_id>/reissue", methods=["POST"])
- def receipts_reissue(receipt_id: int):
-     if not _check_csrf(request.form.get("csrf_token")):
-         abort(400)
- 
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute("SELECT * FROM receipts WHERE id = %s AND is_deleted = 0", (receipt_id,))
-         receipt = _fetchone_dict(cur)
-         if not receipt:
-             abort(404)
-+        if not _can_manage_receipt(receipt):
-+            abort(403)
- 
-         cur.execute("SELECT MAX(version_no) FROM receipt_versions WHERE receipt_id = %s", (receipt_id,))
-         row = cur.fetchone()
-         last_ver = row[0] if row else 0
-         version_no = (last_ver or 0) + 1
- 
-         cur.execute(
-             """
-             INSERT INTO receipt_versions
-             (receipt_id, version_no, original_pdf_path, final_pdf_path,
-              hash_original, hash_final, created_at)
-             VALUES (%s, %s, '', '', '', '', %s)
-             """,
-             (receipt_id, version_no, _now_jst()),
-         )
-         version_id = cur.lastrowid
- 
-         cur.execute(
-             "UPDATE receipts SET current_version_id = %s, status = 'reissued', updated_at = %s WHERE id = %s",
-             (version_id, _now_jst(), receipt_id),
-         )
- 
-         receipt_data = {
-             "receipt_no": receipt["receipt_no"],
-             "issue_date": receipt["issue_date"],
+ @layer_reply_bp.route("/layer_reply/<reply_uuid>")
+ def view_reply(reply_uuid):
+     # reply_uuid を含むパスを探索
+     for parent_uuid in os.listdir(LAYER_ROOT):
+         candidate = os.path.join(LAYER_ROOT, parent_uuid, reply_uuid)
+         if os.path.isdir(candidate):
+             info_path = os.path.join(candidate, "info.json")
+             if os.path.exists(info_path):
+                 with open(info_path, "r", encoding="utf-8") as f:
+                     info = json.load(f)
+                 return render_template("layer_reply.html", info=info, uuid=parent_uuid, reply_uuid=reply_uuid)
+     return abort(404)
+diff --git a/utils/upload_notifications.py b/utils/upload_notifications.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b6756e26a6a7855b43d8d2f484afcd55e5288f8d
+--- /dev/null
++++ b/utils/upload_notifications.py
+@@ -0,0 +1,139 @@
++import re
++from typing import Optional
++
++import requests
++
++DISCORD_CONTENT_LIMIT = 2000
++DISCORD_RESPONSE_BODY_LOG_LIMIT = 400
++COMMENT_PREVIEW_LIMIT = 500
++
++
++def normalize_notification_settings(notify_method: Optional[str], webhook_url: Optional[str]) -> tuple[str, str]:
++    return (notify_method or "").strip().lower(), (webhook_url or "").strip()
++
++
++def _mask_webhook(webhook_url: str) -> str:
++    if not webhook_url:
++        return "none"
++    if len(webhook_url) <= 12:
++        return "set(masked)"
++    return f"set({webhook_url[:8]}...{webhook_url[-4:]})"
++
++
++def _truncate(text: str, limit: int) -> str:
++    if len(text) <= limit:
++        return text
++    if limit <= 1:
++        return "…"[:limit]
++    return text[: limit - 1].rstrip() + "…"
++
++
++def _fit_discord_content(content: str, limit: int = DISCORD_CONTENT_LIMIT) -> str:
++    if len(content) <= limit:
++        return content
++
++    urls = re.findall(r"https?://\S+", content)
++    trailing_url = urls[-1] if urls else ""
++    if trailing_url:
++        sep = "\n"
++        reserve = len(sep) + len(trailing_url)
++        if reserve < limit:
++            head = _truncate(content, limit - reserve)
++            return f"{head}{sep}{trailing_url}"
++    return _truncate(content, limit)
++
++
++def build_processed_upload_message(*, title: str, comment: str, download_url: str) -> str:
++    comment_text = (comment or "").strip() or "（なし）"
++    comment_text = _truncate(comment_text, COMMENT_PREVIEW_LIMIT)
++    raw = (
++        "📸 加工済み写真がアップロードされました\n"
++        f"📂 タイトル: {title}\n"
++        f"💬 コメント: {comment_text}\n"
++        f"🔗 ダウンロード: {download_url}"
++    )
++    return _fit_discord_content(raw)
++
++
++def send_discord_upload_notification(
++    *,
++    logger,
++    username: str,
++    notify_method: Optional[str],
++    webhook_url: Optional[str],
++    upload_id: str,
++    message: str,
++    context_label: str,
++) -> bool:
++    normalized_method, normalized_webhook = normalize_notification_settings(notify_method, webhook_url)
++    webhook_masked = _mask_webhook(normalized_webhook)
++
++    if normalized_method not in ("discord", "both"):
++        logger.info(
++            "%s Discord通知スキップ: reason=notify_method user=%s notify_method=%s upload_id=%s webhook=%s",
++            context_label,
++            username,
++            normalized_method or "(empty)",
++            upload_id,
++            webhook_masked,
++        )
++        return False
++
++    if not normalized_webhook:
++        logger.warning(
++            "%s Discord通知スキップ: reason=no_webhook user=%s notify_method=%s upload_id=%s webhook=%s",
++            context_label,
++            username,
++            normalized_method,
++            upload_id,
++            webhook_masked,
++        )
++        return False
++
++    payload_content = _fit_discord_content(message)
++    logger.info(
++        "%s Discord通知開始: user=%s notify_method=%s upload_id=%s webhook=%s content_len=%s",
++        context_label,
++        username,
++        normalized_method,
++        upload_id,
++        webhook_masked,
++        len(payload_content),
++    )
++
++    resp = None
++    try:
++        resp = requests.post(normalized_webhook, json={"content": payload_content}, timeout=10)
++        body_preview = _truncate((resp.text or "").replace("\n", "\\n"), DISCORD_RESPONSE_BODY_LOG_LIMIT)
++        logger.info(
++            "%s Discord response: user=%s upload_id=%s status=%s body=%s",
++            context_label,
++            username,
++            upload_id,
++            resp.status_code,
++            body_preview or "(empty)",
++        )
++        resp.raise_for_status()
++        logger.info(
++            "%s Discord通知成功: user=%s notify_method=%s upload_id=%s",
++            context_label,
++            username,
++            normalized_method,
++            upload_id,
++        )
++        return True
++    except Exception as exc:
++        status = getattr(resp, "status_code", "n/a")
++        body = _truncate((getattr(resp, "text", "") or "").replace("\n", "\\n"), DISCORD_RESPONSE_BODY_LOG_LIMIT)
++        logger.exception(
++            "%s Discord通知失敗: user=%s notify_method=%s upload_id=%s webhook=%s status=%s body=%s err=%r",
++            context_label,
++            username,
++            normalized_method or "(empty)",
++            upload_id,
++            webhook_masked,
++            status,
++            body or "(empty)",
++            exc,
++        )
++        return False
