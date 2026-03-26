@@ -128,7 +128,6 @@
 }
 
 .chat-row.me .chat-bubble {
-  grid-column: 2;
   justify-self: end;
 }
 
@@ -189,6 +188,56 @@
   border-bottom-left-radius: 6px;
 }
 
+.chat-row.me .chat-bubble-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.chat-row.me .chat-meta-col {
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  min-width: 0;
+  width: auto;
+  margin-right: 0;
+}
+
+.chat-row.me .chat-meta-main {
+  display: inline-flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: auto;
+  white-space: nowrap;
+}
+
+.chat-row.me .chat-main-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-row.me .chat-main-group .chat-bubble {
+  max-width: 100%;
+}
+
+.chat-row.me .chat-read-status {
+  margin-top: 3px;
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chat-row.me .chat-read-status .chat-read-inline {
+  align-self: flex-end;
+  text-align: right;
+}
+
 .chat-meta-col {
   display: flex;
   flex-direction: column;
@@ -214,10 +263,6 @@
   width: 26px;
   min-width: 26px;
   flex: 0 0 26px;
-}
-
-.chat-row.me .chat-meta-col {
-  margin-right: 8px;
 }
 
 .chat-time {
@@ -1474,6 +1519,18 @@
             {% endif %}
 
             <div class="chat-bubble-wrap">
+              {% if m.is_me %}
+                <div class="chat-meta-col">
+                  <div class="chat-meta-main">
+                    <div class="chat-meta-actions">
+                      <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+                    </div>
+                    <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+                    {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
+                  </div>
+                </div>
+                <div class="chat-main-group">
+              {% endif %}
               <div class="chat-bubble">
                 {% set image_items = m.images or [] %}
                 {% if image_items|length == 1 %}
@@ -1506,18 +1563,22 @@
                   <div class="chat-body{% if m.deleted_flag %} chat-deleted-text{% endif %}">{{ (m.body_html or m.body or '')|trim|safe }}</div>
                 {% endif %}
               </div>
-              <div class="chat-meta-col">
-                {% if m.is_me %}
+              {% if m.is_me %}
+                <div class="chat-read-status">
                   <div class="chat-read-inline d-none"></div>
-                {% endif %}
-                {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
-                <div class="chat-meta-main">
-                  <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
-                  <div class="chat-meta-actions">
-                    <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+                </div>
+                </div>
+              {% else %}
+                <div class="chat-meta-col">
+                  {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
+                  <div class="chat-meta-main">
+                    <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+                    <div class="chat-meta-actions">
+                      <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+                    </div>
                   </div>
                 </div>
-              </div>
+              {% endif %}
             </div>
             {% if m.is_me %}
               <div class="chat-read-list d-none"></div>
@@ -3019,8 +3080,24 @@ window.addEventListener('DOMContentLoaded', async () => {
       edited: Number(msg.edited_flag || 0) === 1,
     });
 
-    wrap.appendChild(bubble);
-    wrap.appendChild(metaCol);
+    if (isMe) {
+      const mainGroup = document.createElement('div');
+      mainGroup.className = 'chat-main-group';
+
+      const readStatus = document.createElement('div');
+      readStatus.className = 'chat-read-status';
+      const readInline = document.createElement('div');
+      readInline.className = 'chat-read-inline d-none';
+      readStatus.appendChild(readInline);
+
+      mainGroup.appendChild(bubble);
+      mainGroup.appendChild(readStatus);
+      wrap.appendChild(metaCol);
+      wrap.appendChild(mainGroup);
+    } else {
+      wrap.appendChild(bubble);
+      wrap.appendChild(metaCol);
+    }
 
     main.appendChild(wrap);
 
@@ -3070,13 +3147,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const metaCol = document.createElement('div');
     metaCol.className = 'chat-meta-col';
 
-    if (isMe) {
-      const readInline = document.createElement('div');
-      readInline.className = 'chat-read-inline d-none';
-      metaCol.appendChild(readInline);
-    }
-
-    if (edited) {
+    if (edited && !isMe) {
       const editedLabel = document.createElement('div');
       editedLabel.className = 'chat-edited-label';
       editedLabel.textContent = '編集済み';
@@ -3101,8 +3172,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     menuBtn.textContent = '⋯';
 
     actions.appendChild(menuBtn);
-    metaMain.appendChild(time);
     metaMain.appendChild(actions);
+    metaMain.appendChild(time);
+    if (isMe && edited) {
+      const editedInline = document.createElement('div');
+      editedInline.className = 'chat-edited-label';
+      editedInline.dataset.metaInline = '1';
+      editedInline.textContent = '編集済み';
+      metaMain.appendChild(editedInline);
+    }
     metaCol.appendChild(metaMain);
     return metaCol;
   }
@@ -3243,13 +3321,22 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     const metaCol = row.querySelector('.chat-meta-col');
     if (metaCol) {
-      let editedLabel = metaCol.querySelector('.chat-edited-label');
+      const isMeRow = row.classList.contains('me');
+      const metaMain = metaCol.querySelector('.chat-meta-main');
+      let editedLabel = isMeRow
+        ? metaCol.querySelector('.chat-meta-main .chat-edited-label')
+        : metaCol.querySelector('.chat-edited-label');
       if (editedFlag) {
         if (!editedLabel) {
           editedLabel = document.createElement('div');
           editedLabel.className = 'chat-edited-label';
           editedLabel.textContent = '編集済み';
-          metaCol.insertBefore(editedLabel, metaCol.querySelector('.chat-meta-main') || null);
+          if (isMeRow && metaMain) {
+            editedLabel.dataset.metaInline = '1';
+            metaMain.appendChild(editedLabel);
+          } else {
+            metaCol.insertBefore(editedLabel, metaMain || null);
+          }
         }
       } else if (editedLabel) {
         editedLabel.remove();
@@ -3731,12 +3818,24 @@ window.addEventListener('DOMContentLoaded', async () => {
     body.innerHTML = buildSafeBodyHtml(msg) || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
     bubble.appendChild(body);
 
-    wrap.appendChild(bubble);
-    wrap.appendChild(createMetaCol({
+    const metaCol = createMetaCol({
       isMe,
       timeLabel: msg.created_at_jst_time_hm || '',
       edited: Number(msg.edited_flag || 0) === 1,
-    }));
+    });
+    if (isMe) {
+      const mainGroup = document.createElement('div');
+      mainGroup.className = 'chat-main-group';
+      const readStatus = document.createElement('div');
+      readStatus.className = 'chat-read-status';
+      mainGroup.appendChild(bubble);
+      mainGroup.appendChild(readStatus);
+      wrap.appendChild(metaCol);
+      wrap.appendChild(mainGroup);
+    } else {
+      wrap.appendChild(bubble);
+      wrap.appendChild(metaCol);
+    }
     main.appendChild(wrap);
 
     if (Number(msg.deleted_flag || 0) !== 1) {
