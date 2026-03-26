@@ -1,13 +1,64 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index f81339422eab2d0f5ee3fa1cb2d37a2ca9516c9c..4b85f651285d770b2a8efaa5274458e6e8b2bd2c 100644
+index 4b85f651285d770b2a8efaa5274458e6e8b2bd2c..6bae5086f87211d7177519ff75616b50ed4b5a7e 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -1132,68 +1132,92 @@
-     flex: 1;
-     min-height: 0;
-     overflow: hidden;
-   }
+@@ -508,55 +508,50 @@
+   transition: opacity 0.12s ease;
+ }
  
+ .chat-message:hover .chat-menu-open-btn,
+ .chat-message.is-selected .chat-menu-open-btn {
+   opacity: 1;
+   pointer-events: auto;
+ }
+ 
+ .chat-row.other .chat-status-meta {
+   display: flex;
+   flex-direction: column;
+   align-items: flex-start;
+ }
+ 
+ .chat-row.other .chat-meta-col {
+   align-items: flex-start;
+ }
+ 
+ .chat-row.other .chat-meta-main {
+   justify-content: flex-start;
+ }
+ 
+ @media (hover: none) {
+   .chat-message .chat-menu-open-btn {
+-    opacity: 0;
+-    pointer-events: none;
+-  }
+-
+-  .chat-message.is-selected .chat-menu-open-btn {
+     opacity: 1;
+     pointer-events: auto;
+   }
+ }
+ 
+ .chat-ctx-menu {
+   position: fixed;
+   inset: 0;
+   z-index: 2000;
+   display: none;
+   align-items: center;
+   justify-content: center;
+   padding: 16px;
+ }
+ 
+ .chat-ctx-menu.d-none {
+   display: none;
+ }
+ 
+ .chat-ctx-menu.is-open {
+   display: flex;
+ }
+ 
+ .chat-ctx-backdrop {
+   position: absolute;
+@@ -1137,87 +1132,120 @@
    .chat-room-main {
      gap: .25rem;
    }
@@ -28,54 +79,96 @@ index f81339422eab2d0f5ee3fa1cb2d37a2ca9516c9c..4b85f651285d770b2a8efaa5274458e6
  
    /* iPhone 幅でもアバター・メタ列込みで自然に収める */
    .chat-main {
-+    flex: 1 1 auto;
-+    min-width: 0;
-+    max-width: 100%;
-+  }
-+
-+  .chat-bubble-wrap {
-+    display: flex;
-+    width: 100%;
-+    min-width: 0;
+     flex: 1 1 auto;
+     min-width: 0;
      max-width: 100%;
    }
  
-   .chat-row.me .chat-bubble-wrap {
-     gap: 8px;
-+    width: 100%;
-+    min-width: 0;
-+  }
-+
-+  .chat-row.me .chat-main-group,
+-  .chat-bubble-wrap {
++  .chat-bubble-wrap,
 +  .chat-row.me .chat-me-main-row {
-+    width: 100%;
-+    min-width: 0;
+     display: flex;
++    flex-direction: column;
+     width: 100%;
+     min-width: 0;
+     max-width: 100%;
++    gap: 6px;
+   }
+ 
+-  .chat-row.me .chat-bubble-wrap {
+-    gap: 8px;
++  .chat-row.me .chat-main-group {
+     width: 100%;
+     min-width: 0;
 +    max-width: 100%;
++    gap: 6px;
+   }
+ 
+-  .chat-row.me .chat-main-group,
+-  .chat-row.me .chat-me-main-row {
+-    width: 100%;
++  .chat-row.other .chat-bubble,
++  .chat-row.me .chat-me-main-row .chat-bubble {
+     min-width: 0;
+     max-width: 100%;
++    width: fit-content;
    }
  
    .chat-meta-col {
--    min-width: 68px;
-+    flex: 0 0 auto;
-+    min-width: 0;
-+    width: fit-content;
-+    white-space: nowrap;
+-    flex: 0 0 auto;
++    display: flex;
++    width: 100%;
+     min-width: 0;
+-    width: fit-content;
+     white-space: nowrap;
    }
  
--  /* スマホ幅では時刻/メニュー列のぶんだけ吹き出し幅を差し引き、時刻の見切れを防ぐ */
--  .chat-row.other .chat-bubble {
--    max-width: calc(100% - 76px);
-+  /* 吹き出し幅は calc 差し引きではなく、meta 列を flex 固定して残り幅を自然利用する */
-+  .chat-row.other .chat-bubble,
+-  /* 吹き出し幅は calc 差し引きではなく、meta 列を flex 固定して残り幅を自然利用する */
+-  .chat-row.other .chat-bubble,
+-  .chat-row.me .chat-me-main-row .chat-bubble {
+-    min-width: 0;
+-    max-width: 100%;
++  .chat-row.other .chat-meta-col {
++    justify-content: flex-start;
++    align-items: flex-start;
+   }
+ 
+-  .chat-row.other .chat-meta-col,
+   .chat-row.me .chat-me-main-row .chat-meta-col {
+-    flex: 0 0 auto;
++    justify-content: flex-end;
++    align-items: flex-end;
++    order: 2;
++  }
++
++  .chat-row.other .chat-meta-main,
++  .chat-row.me .chat-me-main-row .chat-meta-main {
++    display: inline-flex;
++    width: auto;
++  }
++
 +  .chat-row.me .chat-me-main-row .chat-bubble {
-+    min-width: 0;
-+    max-width: 100%;
-   }
- 
--  .chat-row.me .chat-main-group .chat-bubble {
--    max-width: calc(100% - 84px);
-+  .chat-row.other .chat-meta-col,
-+  .chat-row.me .chat-me-main-row .chat-meta-col {
-+    flex: 0 0 auto;
++    order: 1;
++    align-self: flex-end;
++  }
++
++  .chat-row.other .chat-bubble {
++    align-self: flex-start;
++  }
++
++  .chat-row.me .chat-read-status {
++    width: 100%;
++    justify-content: flex-end;
++  }
++
++  .chat-row.me .chat-read-status .chat-read-inline,
++  .chat-row.me .chat-read-status .chat-read-time {
++    text-align: right;
++  }
++
++  .chat-message .chat-menu-open-btn {
++    opacity: 1;
++    pointer-events: auto;
    }
  
    .chat-nav-label {
