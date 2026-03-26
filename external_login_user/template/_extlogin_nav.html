@@ -18,8 +18,9 @@
 
     <div class="collapse navbar-collapse" id="extNavCollapse">
       <ul class="navbar-nav ms-auto mb-2 mb-lg-0">
-        <li class="nav-item"><a class="nav-link" href="/external-login/">ホーム</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.profile') }}">プロフィール編集</a></li>
         <li class="nav-item"><a class="nav-link" href="/chat/dm">管理者DM</a></li>
+        <li class="nav-item"><a class="nav-link" href="{{ url_for('external_login_user.logout') }}">ログアウト</a></li>
       </ul>
     </div>
   </div>

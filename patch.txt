@@ -1,59 +1,59 @@
-diff --git a/__init__.py b/__init__.py
-index 218d68fbf8da3d3883822a20c44d8cb9169151cc..e585befb9ea54cb2fffd01e6b95bf2236da961c0 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -115,52 +115,52 @@ INAPP_BROWSER_DEFAULT_SKIP_PATHS = [
-     "/e/",
- ]
- INAPP_BROWSER_SETTINGS_DEFAULTS = {
-     INAPP_BROWSER_WARNING_ENABLED_KEY: INAPP_BROWSER_DEFAULT_ENABLED,
-     INAPP_BROWSER_KEYWORDS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_KEYWORDS),
-     INAPP_BROWSER_REFERRER_PREFIXES_KEY: "\n".join(INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES),
-     INAPP_BROWSER_SKIP_PATHS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_SKIP_PATHS),
- }
+diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
+index ec5821c8a42875c4fc776d8de4d376e02d40876e..46c8897cc9ddb76468ea80e61be563332498ecf3 100644
+--- a/external_login_user/template/ext_index.html
++++ b/external_login_user/template/ext_index.html
+@@ -419,50 +419,54 @@
+   <!-- ▼ アップデート情報リンク（特商法の「上あたり」に配置） -->
+   <div class="text-end mb-2">
+     <a href="#" id="linkUpdateInfo" class="link-primary small">アップデート情報</a>
+   </div>
  
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
- )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+   <!-- === 特定商取引法：ログイン前は既存表示、ログイン後はリンク ================= -->
+   <hr class="my-4">
+   {% if login and me %}
+     {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
+       <div class="card mb-3">
+         <div class="card-body">
+           <h2 class="h6 mb-3">各種ドキュメント</h2>
+           <div class="d-flex flex-column gap-2">
+             {% if privacy_policy_link_url %}
+               <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
+             {% endif %}
+             {% if commerce_law_url %}
+               <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
+             {% endif %}
+             {% if participant_terms_url %}
+               <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
+             {% endif %}
+           </div>
+         </div>
+       </div>
++      <div class="small text-center text-black mb-3" style="font-size:0.8rem;">
++        <div>Mimoria by IORI0624 MFU System</div>
++        <div>Illustration by Akamohashi</div>
++      </div>
+     {% endif %}
+   {% else %}
+     <p class="text-center mb-2">
+       <a href="#tokushohoCollapse"
+          class="link-secondary"
+          data-bs-toggle="collapse"
+          role="button"
+          aria-expanded="false"
+          aria-controls="tokushohoCollapse">
+         特定商取引法に基づく表記（クリックで表示）
+       </a>
+     </p>
  
- 
- @app.get("/manifest.webmanifest")
- def root_manifest():
-     resp = jsonify(
-         {
--            "name": "MFU",
--            "short_name": "MFU",
-+            "name": "Mimoria",
-+            "short_name": "Mimoria",
-             "start_url": "/external-login/",
-             "scope": "/",
-             "display": "standalone",
-             "background_color": "#ffffff",
-             "theme_color": "#0d6efd",
-             "icons": [
-                 {
-                     "src": "/static/icons/image-size192.png",
-                     "sizes": "192x192",
-                     "type": "image/png",
-                     "purpose": "any maskable",
-                 },
-                 {
-                     "src": "/static/icons/image-size512.png",
-                     "sizes": "512x512",
-                     "type": "image/png",
-                     "purpose": "any maskable",
-                 },
-             ],
-         }
-     )
-     resp.mimetype = "application/manifest+json"
-     resp.headers["Cache-Control"] = "no-cache"
-     return resp
- 
+     <div class="collapse" id="tokushohoCollapse">
+       <section id="tokushoho" class="mt-3">
+         <h2 class="h5 mb-3">特定商取引法に基づく表記</h2>
+         <div class="alert alert-info mb-0">
+           <div><strong>販売業者：</strong> 小松　伊織</div>
+           <div class="small text-muted mt-1">
+             そのほかの住所・電話番号・連絡先等の情報は、<u>請求があれば開示</u>します。<br>
+             ログイン後に、上記の全項目を確認できます。
+           </div>
+         </div>
+       </section>
+     </div>
