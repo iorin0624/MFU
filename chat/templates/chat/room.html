@@ -102,9 +102,11 @@
   border-radius: 16px;
   line-height: 1.4;
   white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-  flex: 0 1 auto;
+  /* 通常本文は日本語短文の不自然改行を避ける（URL はリンク側で個別に折り返す） */
+  overflow-wrap: break-word;
+  word-break: normal;
+  /* iOS Safari で flex 縮小が強すぎるケースを避ける */
+  flex: 0 0 auto;
   position: relative;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
@@ -122,8 +124,9 @@
 
 .chat-body {
   min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* 日本語本文に anywhere を広く適用すると 1〜2 文字単位で崩れるため通常改行へ戻す */
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
@@ -149,6 +152,7 @@
 .chat-body .chat-link {
   text-decoration: underline;
   color: #1f57d6;
+  /* URL/長い英数字のみ強制改行を許可してレイアウト崩れを防ぐ */
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -622,10 +626,9 @@
   background: #fff;
 }
 
-.chat-body,
-.chat-body *,
 .chat-body a,
 .chat-body .chat-link {
+  /* 後段で本文全体を上書きしない。anywhere はリンクなど長いトークンに限定する */
   overflow-wrap: anywhere;
   word-break: break-word;
 }
