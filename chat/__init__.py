@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, unquote, urlencode, urlsplit
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any
@@ -727,22 +727,51 @@ def get_system_template(template_key: str) -> str:
 
 def _normalize_system_sender_avatar_url(value: str, *, template_key: str) -> str:
     normalized = str(value or "").strip()
-    if not normalized:
-        return str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
-    if normalized.startswith("/chat/system-assets/"):
-        return normalized
-    if normalized.startswith("/mnt/mfu/app/"):
-        app_relative = normalized[len("/mnt/mfu/app/"):].lstrip("/")
+    canonical = _canonicalize_system_sender_avatar_url(normalized)
+    if canonical:
+        return canonical
+    default_icon = str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
+    default_canonical = _canonicalize_system_sender_avatar_url(default_icon)
+    if default_canonical:
+        return default_canonical
+    return _default_avatar_url()
+
+
+def _normalize_system_asset_name(name: str) -> str | None:
+    candidate = unquote(str(name or "")).replace("\\", "/").strip()
+    if not candidate:
+        return None
+    candidate = candidate.lstrip("/")
+    parts = [part for part in candidate.split("/") if part]
+    if not parts:
+        return None
+    for part in parts:
+        if part in {".", ".."}:
+            return None
+    return "/".join(parts)
+
+
+def _canonicalize_system_sender_avatar_url(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urlsplit(raw)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return raw
+
+    asset_name: str | None = None
+    if raw.startswith("/chat/system-assets/"):
+        asset_name = _normalize_system_asset_name(raw[len("/chat/system-assets/"):])
+    elif raw.startswith("/mnt/mfu/app/"):
+        app_relative = raw[len("/mnt/mfu/app/"):].lstrip("/")
         if app_relative.startswith("MIMOSA_Illustration/"):
-            asset_name = app_relative[len("MIMOSA_Illustration/"):]
-            if asset_name:
-                return f"/chat/system-assets/{quote(asset_name)}"
-        normalized = "/" + app_relative
-    if normalized.startswith("/MIMOSA_Illustration/"):
-        asset_name = normalized[len("/MIMOSA_Illustration/"):]
-        if asset_name:
-            return f"/chat/system-assets/{quote(asset_name)}"
-    return normalized
+            asset_name = _normalize_system_asset_name(app_relative[len("MIMOSA_Illustration/"):])
+    elif raw.startswith("/MIMOSA_Illustration/"):
+        asset_name = _normalize_system_asset_name(raw[len("/MIMOSA_Illustration/"):])
+
+    if asset_name:
+        return f"/chat/system-assets/{quote(asset_name, safe='/')}"
+    return None
 
 
 def get_system_template_payload(template_key: str) -> dict[str, str]:
@@ -6075,9 +6104,10 @@ def chat_system_asset(name: str):
     actor = get_chat_actor()
     if not actor:
         abort(403)
-    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
+    safe_name = _normalize_system_asset_name(name)
+    if not safe_name:
         abort(404)
-    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, name)
+    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, safe_name)
 
 
 @chat_bp.post("/dm/api/upload-image")
@@ -6446,13 +6476,13 @@ def admin_system_template_join_approved_post():
         abort(400, "invalid csrf token")
 
     body_template = str(request.form.get("body_template") or "").strip()
-    sender_avatar_url = _normalize_system_sender_avatar_url(
-        str(request.form.get("sender_avatar_url") or ""),
-        template_key="join_approved",
-    )
+    raw_sender_avatar_url = str(request.form.get("sender_avatar_url") or "").strip()
+    sender_avatar_url = _normalize_system_sender_avatar_url(raw_sender_avatar_url, template_key="join_approved")
     validation_error = _validate_system_template("join_approved", body_template)
     if validation_error:
         return jsonify({"ok": False, "error": validation_error}), 400
+    if raw_sender_avatar_url and not _canonicalize_system_sender_avatar_url(raw_sender_avatar_url):
+        return jsonify({"ok": False, "error": "アイコンURLは http(s) URL または許可されたローカル画像パスを指定してください"}), 400
 
     if not _ensure_chat_system_template_schema():
         abort(500)

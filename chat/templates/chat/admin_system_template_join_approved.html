@@ -14,8 +14,8 @@
     </div>
     <div class="mb-3">
       <label for="sender_avatar_url" class="form-label">System通知アイコンURL（または /mnt/mfu/app/ からの絶対パス）</label>
-      <input id="sender_avatar_url" name="sender_avatar_url" class="form-control" value="{{ sender_avatar_url }}" required>
-      <p class="small text-muted mb-0">例: /mnt/mfu/app/MIMOSA_Illustration/pwa.png（保存時に /MIMOSA_Illustration/pwa.png に変換されます）</p>
+      <input id="sender_avatar_url" name="sender_avatar_url" class="form-control" value="{{ sender_avatar_url }}">
+      <p class="small text-muted mb-0">例: https://example.com/icon.png / /chat/system-assets/pwa.png / /mnt/mfu/app/MIMOSA_Illustration/pwa.png（空欄時はデフォルト）</p>
     </div>
     <p class="small text-muted">使用可能プレースホルダ: <code>{nickname}</code></p>
     <button type="submit" class="btn btn-primary">保存</button>
