@@ -530,11 +530,6 @@
 
 @media (hover: none) {
   .chat-message .chat-menu-open-btn {
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .chat-message.is-selected .chat-menu-open-btn {
     opacity: 1;
     pointer-events: auto;
   }
@@ -1159,43 +1154,76 @@
     max-width: 100%;
   }
 
-  .chat-bubble-wrap {
-    display: flex;
-    width: 100%;
-    min-width: 0;
-    max-width: 100%;
-  }
-
-  .chat-row.me .chat-bubble-wrap {
-    gap: 8px;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .chat-row.me .chat-main-group,
+  .chat-bubble-wrap,
   .chat-row.me .chat-me-main-row {
+    display: flex;
+    flex-direction: column;
     width: 100%;
     min-width: 0;
     max-width: 100%;
+    gap: 6px;
   }
 
-  .chat-meta-col {
-    flex: 0 0 auto;
+  .chat-row.me .chat-main-group {
+    width: 100%;
     min-width: 0;
-    width: fit-content;
-    white-space: nowrap;
+    max-width: 100%;
+    gap: 6px;
   }
 
-  /* 吹き出し幅は calc 差し引きではなく、meta 列を flex 固定して残り幅を自然利用する */
   .chat-row.other .chat-bubble,
   .chat-row.me .chat-me-main-row .chat-bubble {
     min-width: 0;
     max-width: 100%;
+    width: fit-content;
   }
 
-  .chat-row.other .chat-meta-col,
+  .chat-meta-col {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  .chat-row.other .chat-meta-col {
+    justify-content: flex-start;
+    align-items: flex-start;
+  }
+
   .chat-row.me .chat-me-main-row .chat-meta-col {
-    flex: 0 0 auto;
+    justify-content: flex-end;
+    align-items: flex-end;
+    order: 2;
+  }
+
+  .chat-row.other .chat-meta-main,
+  .chat-row.me .chat-me-main-row .chat-meta-main {
+    display: inline-flex;
+    width: auto;
+  }
+
+  .chat-row.me .chat-me-main-row .chat-bubble {
+    order: 1;
+    align-self: flex-end;
+  }
+
+  .chat-row.other .chat-bubble {
+    align-self: flex-start;
+  }
+
+  .chat-row.me .chat-read-status {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .chat-row.me .chat-read-status .chat-read-inline,
+  .chat-row.me .chat-read-status .chat-read-time {
+    text-align: right;
+  }
+
+  .chat-message .chat-menu-open-btn {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .chat-nav-label {
