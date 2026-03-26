@@ -52,10 +52,6 @@
 
   {% if login and me %}
     <div class="alert alert-success">ログイン中：<strong>{{ me.nickname }}</strong></div>
-    <div class="d-flex flex-wrap gap-2 mb-2">
-      <a class="btn btn-primary" href="{{ url_for('external_login_user.profile') }}">プロフィール編集</a>
-      <a class="btn btn-outline-danger" href="{{ url_for('external_login_user.logout') }}">ログアウト</a>
-    </div>
     <div class="d-flex flex-wrap gap-2 mb-3">
       <button class="btn btn-outline-primary" type="button" id="enable-chat-push">プッシュ通知の有効</button>
     </div>
@@ -444,6 +440,10 @@
             {% endif %}
           </div>
         </div>
+      </div>
+      <div class="small text-center text-black mb-3" style="font-size:0.8rem;">
+        <div>Mimoria by IORI0624 MFU System</div>
+        <div>Illustration by Akamohashi</div>
       </div>
     {% endif %}
   {% else %}
