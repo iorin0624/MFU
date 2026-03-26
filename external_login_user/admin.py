@@ -206,6 +206,7 @@ def _update_member_status_and_notify(event_id: int, user_id: int, new_status: st
                 subject=subject,
                 body=body,
                 event_uuid=ev_uuid_str,  # From: <UUID@mail.iori0624.jp>
+                from_display_name=f"{ev_title} by Mimoria",
             )
         except Exception as e:
             current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
@@ -1237,6 +1238,7 @@ def admin_event_edit(event_id: int):
                                 subject=subject,
                                 body=body,
                                 event_uuid=ev["event_uuid_str"],
+                                from_display_name=f"{title or ev.get('title') or 'イベント'} by Mimoria",
                             )
                             sent += 1
                         except Exception:
@@ -2122,6 +2124,7 @@ def admin_set_paid_amount(event_id: int, user_id: int):
                     subject=f"【{ev_title}】お支払い状況の更新",
                     body=body,
                     event_uuid=ev_uuid_str,
+                    from_display_name=f"{ev_title} by Mimoria",
                 )
     except Exception:
         current_app.logger.exception("failed to send set-paid-amount mail (user_id=%s, event_id=%s)", user_id, event_id)
@@ -2280,6 +2283,7 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
                         subject=subject,
                         body=body,
                         event_uuid=ev_uuid_str,  # From: <UUID@mail.iori0624.jp>
+                        from_display_name=f"{ev_title} by Mimoria",
                     )
                 except Exception as e:
                     current_app.logger.exception("status notify mail failed to %s: %s", to_email, e)
@@ -2895,6 +2899,7 @@ def admin_member_set_payment_status(event_id: int, member_id: int):
                     subject=f"【{ev_title}】お支払い状況の更新",
                     body=body,
                     event_uuid=ev_uuid_str,  # From: <UUID>@mail.iori0624.jp
+                    from_display_name=f"{ev_title} by Mimoria",
                 )
     except Exception:
         current_app.logger.exception("failed to send payment-status mail (member_id=%s, event_id=%s)", member_id, event_id)
@@ -3183,6 +3188,7 @@ def admin_member_update_payment_details(event_id: int, member_id: int):
                     subject=f"【{ev_title}】お支払い状況の更新",
                     body=body,
                     event_uuid=ev_uuid_str,
+                    from_display_name=f"{ev_title} by Mimoria",
                 )
         except Exception:
             current_app.logger.exception("failed to send payment-details mail (member_id=%s, event_id=%s)", member_id, event_id)
@@ -3426,6 +3432,7 @@ def admin_member_update_status(event_id: int, member_id: int):
                 subject=jp[new_status]["subject"],
                 body=jp[new_status]["body"],
                 event_uuid=event_uuid_str,
+                from_display_name=f"{title} by Mimoria",
             )
             flash("ステータスを更新し、参加者へメール通知しました。", "success")
         except Exception:
