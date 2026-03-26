@@ -1,307 +1,101 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 4cf256869db13bb79dd30585088d5a5d9eb7d261..76cecd381a1186ad0b7feb45f9019bd5364ac87b 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -1,40 +1,40 @@
- from __future__ import annotations
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 4096f31aa05fac606a364ff4030d7f69cc907258..f81339422eab2d0f5ee3fa1cb2d37a2ca9516c9c 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -38,92 +38,92 @@
+   gap: 8px;
+   align-items: flex-end;
+   min-width: 0;
+ }
  
- import html
- import io
- import hashlib
- import json
- import os
- import random
- import re
- import secrets
- import threading
- import time
- import uuid
- from collections import deque
--from urllib.parse import quote, urlencode
-+from urllib.parse import quote, unquote, urlencode, urlsplit
- from concurrent.futures import ThreadPoolExecutor
- from datetime import datetime, timedelta
- from typing import Any
- from zoneinfo import ZoneInfo
+ .chat-line > * {
+   min-width: 0;
+ }
  
- from PIL import Image, ImageOps, UnidentifiedImageError
- from flask import (
-     Blueprint,
-     abort,
-     current_app,
-     flash,
-     jsonify,
-     redirect,
-     render_template,
-     request,
-     send_from_directory,
-     session,
-     url_for,
- )
- from flask_socketio import disconnect, emit, join_room
- from requests.exceptions import ConnectionError as RequestsConnectionError
- from requests.exceptions import SSLError as RequestsSSLError
- from requests.exceptions import Timeout as RequestsTimeout
+ .chat-row.me .chat-line {
+   justify-content: flex-end;
+   align-items: flex-end;
+ }
  
- from app.chat.socketio_ext import socketio
-@@ -705,66 +705,95 @@ def _ensure_chat_system_template_schema() -> bool:
+ .chat-row.other .chat-line {
+   justify-content: flex-start;
+   align-items: flex-end;
+   gap: 4px;
+ }
  
- def get_external_user_display_name(external_user_id: int) -> str:
-     actor_id = str(external_user_id)
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute("SELECT id, nickname FROM external_login_user WHERE id=%s LIMIT 1", (external_user_id,))
-         row = cur.fetchone()
-     finally:
-         cur.close()
-         db.close()
+ .chat-main {
+   display: flex;
+   flex-direction: column;
+   flex: 0 1 auto;
+   min-width: 0;
+-  width: fit-content;
++  width: auto;
+   max-width: min(100%, 560px);
+ }
  
-     if not row:
-         return f"LINE-{actor_id}"
-     resolved_id = str(row.get("id") or actor_id)
-     return str(row.get("nickname") or f"LINE-{resolved_id}")
+ .chat-row.me .chat-main {
+   align-items: flex-end;
+ }
  
+ .chat-row.other .chat-main {
+   align-items: flex-start;
+ }
  
- def get_system_template(template_key: str) -> str:
-     payload = get_system_template_payload(template_key)
-     return str(payload.get("body_template") or "")
+ .chat-row.other .chat-avatar {
+   align-self: flex-start;
+ }
  
+ .chat-sender {
+   font-size: 0.76rem;
+   color: #667;
+   margin: 0 8px 4px;
+ }
  
- def _normalize_system_sender_avatar_url(value: str, *, template_key: str) -> str:
-     normalized = str(value or "").strip()
--    if not normalized:
--        return str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
--    if normalized.startswith("/chat/system-assets/"):
--        return normalized
--    if normalized.startswith("/mnt/mfu/app/"):
--        app_relative = normalized[len("/mnt/mfu/app/"):].lstrip("/")
-+    canonical = _canonicalize_system_sender_avatar_url(normalized)
-+    if canonical:
-+        return canonical
-+    default_icon = str(SYSTEM_TEMPLATE_DEFAULT_ICON_URLS.get(template_key, "")).strip()
-+    default_canonical = _canonicalize_system_sender_avatar_url(default_icon)
-+    if default_canonical:
-+        return default_canonical
-+    return _default_avatar_url()
-+
-+
-+def _normalize_system_asset_name(name: str) -> str | None:
-+    candidate = unquote(str(name or "")).replace("\\", "/").strip()
-+    if not candidate:
-+        return None
-+    candidate = candidate.lstrip("/")
-+    parts = [part for part in candidate.split("/") if part]
-+    if not parts:
-+        return None
-+    for part in parts:
-+        if part in {".", ".."}:
-+            return None
-+    return "/".join(parts)
-+
-+
-+def _canonicalize_system_sender_avatar_url(value: str) -> str | None:
-+    raw = str(value or "").strip()
-+    if not raw:
-+        return None
-+    parsed = urlsplit(raw)
-+    if parsed.scheme in {"http", "https"} and parsed.netloc:
-+        return raw
-+
-+    asset_name: str | None = None
-+    if raw.startswith("/chat/system-assets/"):
-+        asset_name = _normalize_system_asset_name(raw[len("/chat/system-assets/"):])
-+    elif raw.startswith("/mnt/mfu/app/"):
-+        app_relative = raw[len("/mnt/mfu/app/"):].lstrip("/")
-         if app_relative.startswith("MIMOSA_Illustration/"):
--            asset_name = app_relative[len("MIMOSA_Illustration/"):]
--            if asset_name:
--                return f"/chat/system-assets/{quote(asset_name)}"
--        normalized = "/" + app_relative
--    if normalized.startswith("/MIMOSA_Illustration/"):
--        asset_name = normalized[len("/MIMOSA_Illustration/"):]
--        if asset_name:
--            return f"/chat/system-assets/{quote(asset_name)}"
--    return normalized
-+            asset_name = _normalize_system_asset_name(app_relative[len("MIMOSA_Illustration/"):])
-+    elif raw.startswith("/MIMOSA_Illustration/"):
-+        asset_name = _normalize_system_asset_name(raw[len("/MIMOSA_Illustration/"):])
-+
-+    if asset_name:
-+        return f"/chat/system-assets/{quote(asset_name, safe='/')}"
-+    return None
+ .chat-bubble-wrap {
+   display: inline-flex;
+   align-items: flex-end;
+   gap: 4px;
+-  width: fit-content;
++  width: auto;
+   min-width: 0;
+   max-width: 100%;
+   align-self: flex-start;
+ }
  
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row;
+   gap: 12px;
+   align-self: flex-end;
+ }
  
- def get_system_template_payload(template_key: str) -> dict[str, str]:
-     default = SYSTEM_TEMPLATE_DEFAULTS.get(template_key, "")
-     default_icon = _normalize_system_sender_avatar_url("", template_key=template_key)
-     if not _ensure_chat_system_template_schema():
-         return {"body_template": default, "sender_avatar_url": default_icon}
+ .chat-bubble {
+   display: block;
+-  width: fit-content;
+-  inline-size: fit-content;
++  width: auto;
++  inline-size: auto;
+   min-width: 0;
+   max-width: 100%;
+   max-inline-size: 100%;
+   padding: 8px 12px;
+   border-radius: 16px;
+   line-height: 1.4;
+   white-space: normal;
+   /* 通常本文は日本語短文の不自然改行を避ける（URL はリンク側で個別に折り返す） */
+   overflow-wrap: break-word;
+   word-break: normal;
+   justify-self: start;
+   position: relative;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
+   -webkit-user-select: none;
+   user-select: none;
+   -webkit-touch-callout: none;
+   touch-action: manipulation;
+   -webkit-tap-highlight-color: transparent;
+ }
  
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         cur.execute(
-             "SELECT body_template, sender_avatar_url FROM chat_system_templates WHERE template_key=%s LIMIT 1",
-             (template_key,),
-         )
-         row = cur.fetchone()
-         if not row:
-             return {"body_template": default, "sender_avatar_url": default_icon}
-         return {
-             "body_template": str(row.get("body_template") or default),
-             "sender_avatar_url": _normalize_system_sender_avatar_url(
-                 str(row.get("sender_avatar_url") or ""),
-                 template_key=template_key,
-             ),
-         }
-@@ -6053,53 +6082,54 @@ def dm_api_send():
-     msg_payload = _dm_message_to_payload(saved, actor_key)
-     socketio.emit("chat_message", msg_payload, to=f"dm:{dm_uuid}")
-     _send_dm_push(int(conversation["id"]), dm_uuid, actor_key, str(actor.get("display_name") or actor_key), body)
-     return jsonify({"ok": True, "message": msg_payload})
- 
- 
- @chat_bp.get("/dm/images/<uuid:dm_uuid>/<path:name>")
- def chat_dm_image(dm_uuid: str, name: str):
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     dm_uuid_str = str(dm_uuid)
-     if not actor or not actor_key:
-         abort(403)
-     if not can_access_dm(dm_uuid_str, actor_key):
-         abort(403)
-     if "/" in name or "\\" in name or ".." in name or name.startswith("."):
-         abort(404)
-     return send_from_directory(os.path.join(CHAT_UPLOAD_DIR, "dm", dm_uuid_str), name)
- 
- 
- @chat_bp.get("/system-assets/<path:name>")
- def chat_system_asset(name: str):
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
--    if "/" in name or "\\" in name or ".." in name or name.startswith("."):
-+    safe_name = _normalize_system_asset_name(name)
-+    if not safe_name:
-         abort(404)
--    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, name)
-+    return send_from_directory(SYSTEM_TEMPLATE_ASSET_ROOT, safe_name)
- 
- 
- @chat_bp.post("/dm/api/upload-image")
- def dm_upload_image():
-     actor = get_chat_actor()
-     actor_key = _get_dm_actor_key(actor)
-     if not actor or not actor_key:
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     if not _ensure_chat_dm_schema() or not _ensure_chat_dm_delete_schema() or not _ensure_chat_dm_message_images_schema():
-         return jsonify({"ok": False, "error": "DM画像機能の初期化に失敗しました"}), 500
- 
-     token = (request.form.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         return jsonify({"ok": False, "error": "csrf"}), 400
-     dm_uuid = str(request.form.get("dm_uuid") or "").strip()
-     if not dm_uuid:
-         return jsonify({"ok": False, "error": "dm_uuid_required"}), 400
-     if not can_access_dm(dm_uuid, actor_key):
-         return jsonify({"ok": False, "error": "forbidden"}), 403
-     conversation = _get_dm_conversation_by_uuid(dm_uuid)
-     if not conversation:
-         return jsonify({"ok": False, "error": "not_found"}), 404
- 
-     raw_upload_files = [f for f in (request.files.getlist("file") or []) if f]
-     if not raw_upload_files:
-@@ -6424,57 +6454,57 @@ def admin_system_template_join_approved_get():
-         abort(403)
- 
-     return render_template(
-         "chat/admin_system_template_join_approved.html",
-         actor=actor,
-         csrf_token=_chat_csrf(),
-         body_template=get_system_template("join_approved"),
-         sender_avatar_url=get_system_template_sender_avatar_url("join_approved"),
-         nav_mode="chat",
-     )
- 
- 
- @chat_bp.post("/admin/system-templates/join-approved")
- def admin_system_template_join_approved_post():
-     actor = get_chat_actor()
-     if not actor:
-         abort(403)
-     if actor.get("actor_type") != "admin":
-         abort(403)
- 
-     token = (request.form.get("csrf_token") or "").strip()
-     if token != session.get("chat_csrf"):
-         abort(400, "invalid csrf token")
- 
-     body_template = str(request.form.get("body_template") or "").strip()
--    sender_avatar_url = _normalize_system_sender_avatar_url(
--        str(request.form.get("sender_avatar_url") or ""),
--        template_key="join_approved",
--    )
-+    raw_sender_avatar_url = str(request.form.get("sender_avatar_url") or "").strip()
-+    sender_avatar_url = _normalize_system_sender_avatar_url(raw_sender_avatar_url, template_key="join_approved")
-     validation_error = _validate_system_template("join_approved", body_template)
-     if validation_error:
-         return jsonify({"ok": False, "error": validation_error}), 400
-+    if raw_sender_avatar_url and not _canonicalize_system_sender_avatar_url(raw_sender_avatar_url):
-+        return jsonify({"ok": False, "error": "アイコンURLは http(s) URL または許可されたローカル画像パスを指定してください"}), 400
- 
-     if not _ensure_chat_system_template_schema():
-         abort(500)
- 
-     db = get_db()
-     cur = db.cursor()
-     try:
-         now = datetime.utcnow()
-         cur.execute(
-             """
-             INSERT INTO chat_system_templates (template_key, body_template, sender_avatar_url, updated_at, updated_by)
-             VALUES (%s, %s, %s, %s, %s)
-             ON DUPLICATE KEY UPDATE
-                 body_template=VALUES(body_template),
-                 sender_avatar_url=VALUES(sender_avatar_url),
-                 updated_at=VALUES(updated_at),
-                 updated_by=VALUES(updated_by)
-             """,
-             ("join_approved", body_template, sender_avatar_url, now, str(actor.get("actor_id") or "admin")),
-         )
-         db.commit()
-     finally:
-         cur.close()
-         db.close()
- 
-diff --git a/chat/templates/chat/admin_system_template_join_approved.html b/chat/templates/chat/admin_system_template_join_approved.html
-index aa2ec8d3267093c79296286292b7abb6a8526d20..0ab31952dd0ee65a419dacfb87f616081e84d8d3 100644
---- a/chat/templates/chat/admin_system_template_join_approved.html
-+++ b/chat/templates/chat/admin_system_template_join_approved.html
-@@ -1,24 +1,24 @@
- {% extends "chat/base_chat.html" %}
- {% block content %}
- <div class="container py-4">
-   {% include "chat/_chat_nav.html" %}
- 
-   <h2 class="mt-3">Systemテンプレ（参加承認）</h2>
-   <p class="text-muted mb-3">このテンプレは全イベント・全ルーム共通で利用されます。</p>
- 
-   <form method="post" action="{{ url_for('chat.admin_system_template_join_approved_post') }}">
-     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-     <div class="mb-3">
-       <label for="body_template" class="form-label">テンプレ本文</label>
-       <textarea id="body_template" name="body_template" class="form-control" rows="5" required>{{ body_template }}</textarea>
-     </div>
-     <div class="mb-3">
-       <label for="sender_avatar_url" class="form-label">System通知アイコンURL（または /mnt/mfu/app/ からの絶対パス）</label>
--      <input id="sender_avatar_url" name="sender_avatar_url" class="form-control" value="{{ sender_avatar_url }}" required>
--      <p class="small text-muted mb-0">例: /mnt/mfu/app/MIMOSA_Illustration/pwa.png（保存時に /MIMOSA_Illustration/pwa.png に変換されます）</p>
-+      <input id="sender_avatar_url" name="sender_avatar_url" class="form-control" value="{{ sender_avatar_url }}">
-+      <p class="small text-muted mb-0">例: https://example.com/icon.png / /chat/system-assets/pwa.png / /mnt/mfu/app/MIMOSA_Illustration/pwa.png（空欄時はデフォルト）</p>
-     </div>
-     <p class="small text-muted">使用可能プレースホルダ: <code>{nickname}</code></p>
-     <button type="submit" class="btn btn-primary">保存</button>
-   </form>
- </div>
- {% endblock %}
+ .chat-row.other .chat-bubble {
+   align-self: flex-end;
+ }
