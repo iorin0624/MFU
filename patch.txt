@@ -1,101 +1,103 @@
 diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
-index 4096f31aa05fac606a364ff4030d7f69cc907258..f81339422eab2d0f5ee3fa1cb2d37a2ca9516c9c 100644
+index f81339422eab2d0f5ee3fa1cb2d37a2ca9516c9c..4b85f651285d770b2a8efaa5274458e6e8b2bd2c 100644
 --- a/chat/templates/chat/room.html
 +++ b/chat/templates/chat/room.html
-@@ -38,92 +38,92 @@
-   gap: 8px;
-   align-items: flex-end;
-   min-width: 0;
+@@ -1132,68 +1132,92 @@
+     flex: 1;
+     min-height: 0;
+     overflow: hidden;
+   }
+ 
+   .chat-room-main {
+     gap: .25rem;
+   }
+ 
+   .chat-messages {
+     flex: 1;
+     min-height: 0;
+     height: auto;
+     margin-bottom: 0 !important;
+     overflow-y: auto;
+     -webkit-overflow-scrolling: touch;
+     overscroll-behavior: contain;
+   }
+ 
+   #messages.chat-messages {
+     padding: .6rem !important;
+   }
+ 
+   /* iPhone 幅でもアバター・メタ列込みで自然に収める */
+   .chat-main {
++    flex: 1 1 auto;
++    min-width: 0;
++    max-width: 100%;
++  }
++
++  .chat-bubble-wrap {
++    display: flex;
++    width: 100%;
++    min-width: 0;
+     max-width: 100%;
+   }
+ 
+   .chat-row.me .chat-bubble-wrap {
+     gap: 8px;
++    width: 100%;
++    min-width: 0;
++  }
++
++  .chat-row.me .chat-main-group,
++  .chat-row.me .chat-me-main-row {
++    width: 100%;
++    min-width: 0;
++    max-width: 100%;
+   }
+ 
+   .chat-meta-col {
+-    min-width: 68px;
++    flex: 0 0 auto;
++    min-width: 0;
++    width: fit-content;
++    white-space: nowrap;
+   }
+ 
+-  /* スマホ幅では時刻/メニュー列のぶんだけ吹き出し幅を差し引き、時刻の見切れを防ぐ */
+-  .chat-row.other .chat-bubble {
+-    max-width: calc(100% - 76px);
++  /* 吹き出し幅は calc 差し引きではなく、meta 列を flex 固定して残り幅を自然利用する */
++  .chat-row.other .chat-bubble,
++  .chat-row.me .chat-me-main-row .chat-bubble {
++    min-width: 0;
++    max-width: 100%;
+   }
+ 
+-  .chat-row.me .chat-main-group .chat-bubble {
+-    max-width: calc(100% - 84px);
++  .chat-row.other .chat-meta-col,
++  .chat-row.me .chat-me-main-row .chat-meta-col {
++    flex: 0 0 auto;
+   }
+ 
+   .chat-nav-label {
+     display: none;
+   }
+ 
+   .chat-nav-link {
+     padding: .3rem .45rem;
+   }
+ 
+   #chat-search-input {
+     font-size: 16px;
+   }
+ 
+   .chat-nav-link-top .chat-nav-label {
+     display: inline;
+   }
+ 
+   .chat-bottom-jump-btn {
+     right: 8px;
+     bottom: calc(78px + env(safe-area-inset-bottom));
+   }
  }
  
- .chat-line > * {
-   min-width: 0;
- }
- 
- .chat-row.me .chat-line {
-   justify-content: flex-end;
-   align-items: flex-end;
- }
- 
- .chat-row.other .chat-line {
-   justify-content: flex-start;
-   align-items: flex-end;
-   gap: 4px;
- }
- 
- .chat-main {
-   display: flex;
-   flex-direction: column;
-   flex: 0 1 auto;
-   min-width: 0;
--  width: fit-content;
-+  width: auto;
-   max-width: min(100%, 560px);
- }
- 
- .chat-row.me .chat-main {
-   align-items: flex-end;
- }
- 
- .chat-row.other .chat-main {
-   align-items: flex-start;
- }
- 
- .chat-row.other .chat-avatar {
-   align-self: flex-start;
- }
- 
- .chat-sender {
-   font-size: 0.76rem;
-   color: #667;
-   margin: 0 8px 4px;
- }
- 
- .chat-bubble-wrap {
-   display: inline-flex;
-   align-items: flex-end;
-   gap: 4px;
--  width: fit-content;
-+  width: auto;
-   min-width: 0;
-   max-width: 100%;
-   align-self: flex-start;
- }
- 
- .chat-row.me .chat-bubble-wrap {
-   flex-direction: row;
-   gap: 12px;
-   align-self: flex-end;
- }
- 
- .chat-bubble {
-   display: block;
--  width: fit-content;
--  inline-size: fit-content;
-+  width: auto;
-+  inline-size: auto;
-   min-width: 0;
-   max-width: 100%;
-   max-inline-size: 100%;
-   padding: 8px 12px;
-   border-radius: 16px;
-   line-height: 1.4;
-   white-space: normal;
-   /* 通常本文は日本語短文の不自然改行を避ける（URL はリンク側で個別に折り返す） */
-   overflow-wrap: break-word;
-   word-break: normal;
-   justify-self: start;
-   position: relative;
-   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
-   cursor: pointer;
-   transition: box-shadow 0.2s ease, transform 0.2s ease;
-   -webkit-user-select: none;
-   user-select: none;
-   -webkit-touch-callout: none;
-   touch-action: manipulation;
-   -webkit-tap-highlight-color: transparent;
- }
- 
- .chat-row.other .chat-bubble {
-   align-self: flex-end;
- }
+ /* Bootstrap modal が transform 配下で backdrop に負けて操作不能になる対策 */
