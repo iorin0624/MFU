@@ -44,7 +44,7 @@ def _admin_csrf_token() -> str:
 
 def _require_mfu_login_redirect():
     if not session.get("user"):
-        flash("管理者ページはMFUログインが必要です。", "warning")
+        flash("管理者ページはMimoriaログインが必要です。", "warning")
         return redirect("/login")
     return None
 

@@ -1,59 +1,355 @@
-diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
-index ec5821c8a42875c4fc776d8de4d376e02d40876e..46c8897cc9ddb76468ea80e61be563332498ecf3 100644
---- a/external_login_user/template/ext_index.html
-+++ b/external_login_user/template/ext_index.html
-@@ -419,50 +419,54 @@
-   <!-- ▼ アップデート情報リンク（特商法の「上あたり」に配置） -->
-   <div class="text-end mb-2">
-     <a href="#" id="linkUpdateInfo" class="link-primary small">アップデート情報</a>
-   </div>
+diff --git a/external_login_user/users.py b/external_login_user/users.py
+index 0e97b1a1ed64ce5f0fd91e69fb57f329cf618924..347bef1e41f7b59af39c05e853959ef7ab42bafc 100644
+--- a/external_login_user/users.py
++++ b/external_login_user/users.py
+@@ -481,76 +481,76 @@ def _resolve_ext_login_prerequisite_redirect(
+         session["ext_after_verify_next"] = safe_next
+         return redirect(url_for("external_login_user.unverified", next=safe_next))
  
-   <!-- === 特定商取引法：ログイン前は既存表示、ログイン後はリンク ================= -->
-   <hr class="my-4">
-   {% if login and me %}
-     {% if privacy_policy_link_url or commerce_law_url or participant_terms_url %}
-       <div class="card mb-3">
-         <div class="card-body">
-           <h2 class="h6 mb-3">各種ドキュメント</h2>
-           <div class="d-flex flex-column gap-2">
-             {% if privacy_policy_link_url %}
-               <div><a href="{{ privacy_policy_link_url }}" target="_blank" rel="noopener">プライバシーポリシー（リンク）</a></div>
-             {% endif %}
-             {% if commerce_law_url %}
-               <div><a href="{{ commerce_law_url }}" target="_blank" rel="noopener">特定商取引法に基づく表記（リンク）</a></div>
-             {% endif %}
-             {% if participant_terms_url %}
-               <div><a href="{{ participant_terms_url }}" target="_blank" rel="noopener">参加条件・支払・キャンセル規定・返金規定（リンク）</a></div>
-             {% endif %}
-           </div>
-         </div>
-       </div>
-+      <div class="small text-center text-black mb-3" style="font-size:0.8rem;">
-+        <div>Mimoria by IORI0624 MFU System</div>
-+        <div>Illustration by Akamohashi</div>
-+      </div>
-     {% endif %}
-   {% else %}
-     <p class="text-center mb-2">
-       <a href="#tokushohoCollapse"
-          class="link-secondary"
-          data-bs-toggle="collapse"
-          role="button"
-          aria-expanded="false"
-          aria-controls="tokushohoCollapse">
-         特定商取引法に基づく表記（クリックで表示）
-       </a>
-     </p>
+     return None
  
-     <div class="collapse" id="tokushohoCollapse">
-       <section id="tokushoho" class="mt-3">
-         <h2 class="h5 mb-3">特定商取引法に基づく表記</h2>
-         <div class="alert alert-info mb-0">
-           <div><strong>販売業者：</strong> 小松　伊織</div>
-           <div class="small text-muted mt-1">
-             そのほかの住所・電話番号・連絡先等の情報は、<u>請求があれば開示</u>します。<br>
-             ログイン後に、上記の全項目を確認できます。
-           </div>
-         </div>
-       </section>
-     </div>
+ 
+ def _fetchone_dict(cur):
+     row = cur.fetchone()
+     if row is None:
+         return None
+     if isinstance(row, dict):
+         return row
+     cols = [d[0] for d in cur.description]
+     return dict(zip(cols, row))
+ 
+ 
+ def _get_admin_payer_profile(cur):
+     cur.execute("SELECT * FROM payer_profiles WHERE issuer_user_id = %s", ("admin",))
+     return _fetchone_dict(cur)
+ 
+ 
+ def _send_verify_mail(to_email: str, token_raw: str):
+     """legacy / no longer used for new verification flow."""
+     """メールアドレス確認コード（イベント非関連）→ send_mail に統一"""
+     verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
+-    subject = "イベント管理システムからメールアドレス確認のお願い"
++    subject = "Mimoriaからメールアドレス確認のお願い"
+     body = (
+         "メールアドレスの確認をお願いします。\n"
+         "下記の確認ページを開き、「確認する」ボタンを押してください（有効期限: 24時間）。\n\n"
+         f"{verify_url_get}\n\n"
+         "※このメールに心当たりがない場合は破棄してください。"
+     )
+     # イベント非関連なので event_uuid=None（From: noreply@mail.iori0624.jp）
+     send_mail(
+         to=to_email,
+         subject=subject,
+         body=body,
+         event_uuid=None,
+     )
+ 
+ 
+ def _generate_6digit_pin() -> str:
+     return f"{secrets.randbelow(1_000_000):06d}"
+ 
+ 
+ def _sender_ip() -> str:
+     return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")[:64]
+ 
+ 
+ def _send_verify_pin_mail(email: str, pin: str) -> None:
+-    subject = "イベント管理システムのメールアドレス確認コード"
++    subject = "Mimoriaのメールアドレス確認コード"
+     body = (
+         "メールアドレスの確認コードをお送りします。\n\n"
+         "確認コード:\n"
+         f"{pin}\n\n"
+         "有効期限は10分です。\n"
+         "このコードを未確認ページで入力してください。\n\n"
+         "このメールに心当たりがない場合は破棄してください。"
+     )
+     send_mail(to=email, subject=subject, body=body, event_uuid=None)
+ 
+ 
+ def _issue_verify_pin(user_id: int, email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tuple[bool, str, str | None]:
+     from .schema import ensure_email_verify_pin_schema
+     ensure_email_verify_pin_schema()
+ 
+     now = datetime.utcnow()
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             """
+             SELECT issued_at FROM mfu_email_verify_pin
+              WHERE email=%s
+              ORDER BY id DESC
+              LIMIT 1
+             """,
+@@ -1065,51 +1065,51 @@ def _maybe_flash_email_verify_banner_for_top():
+         uid = session.get("ext_user_id")
+         if not uid:
+             return
+ 
+         db = get_db(); cur = db.cursor(dictionary=True)
+         try:
+             cur.execute("""
+                 SELECT email, email_verified_at
+                   FROM external_login_user
+                  WHERE id=%s
+                  LIMIT 1
+             """, (uid,))
+             row = cur.fetchone()
+         finally:
+             try: cur.close(); db.close()
+             except Exception: pass
+ 
+         email = (row["email"] or "").strip() if row else ""
+         unverified = bool(email and row and not row["email_verified_at"])
+         if not unverified:
+             return
+ 
+         # メッセージ（改行→<br> 変換）
+         msg = (
+             "メールアドレスの確認が完了していません。\n"
+-            "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
++            "Mimoriaからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
+             "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
+         )
+         body = Markup("<br>".join(escape(msg).split("\n")))
+ 
+         btn = Markup(
+             f'''<form method="post" action="{escape(url_for('external_login_user.resend_verify_email'))}" style="display:inline;margin-left:8px;">
+                     <button type="submit" class="btn btn-sm btn-primary">確認コードを再送する</button>
+                 </form>'''
+         )
+ 
+         flash(Markup(
+             '<div style="font-weight:600;">メール確認のお願い</div>'
+             f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
+         ), "warning")
+ 
+     except Exception:
+         current_app.logger.exception("top email verify banner flash failed")
+ 
+ 
+ # =========================
+ # TOP（=マイページ）
+ # =========================
+ @bp.route("/")
+ def index():
+     row = None
+@@ -1145,51 +1145,51 @@ def index():
+     # ---- ログイン済みなら「未確認」バナーをここでだけ出す ------------------------
+     try:
+         uid = session.get("ext_user_id")
+         if uid:
+             db = get_db(); cur = db.cursor(dictionary=True)
+             try:
+                 cur.execute("""
+                     SELECT email, email_verified_at,
+                            privacy_policy_agreed_at,
+                            privacy_policy_agreed_revised_date
+                       FROM external_login_user
+                      WHERE id=%s
+                      LIMIT 1
+                 """, (uid,))
+                 row = cur.fetchone()
+             finally:
+                 try: cur.close(); db.close()
+                 except Exception: pass
+ 
+             email = (row.get("email") or "").strip() if row else ""
+             unverified = bool(email and row and not row.get("email_verified_at"))
+             if unverified:
+                 from markupsafe import Markup, escape
+                 msg = (
+                     "メールアドレスの確認が完了していません。\n"
+-                    "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
++                    "Mimoriaからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
+                     "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
+                 )
+                 body = Markup("<br>".join(escape(msg).split("\n")))
+                 resend_url = url_for("external_login_user.resend_verify_email")
+                 btn = Markup(
+                     f'''<form method="post" action="{escape(resend_url)}" style="display:inline;margin-left:8px;">
+                             <button type="submit" class="btn btn-sm btn-primary">確認コードを再送する</button>
+                         </form>'''
+                 )
+                 # ★ カテゴリ: "warning unverified_email"（黄色スタイル + 後段の特定しやすさ）
+                 flash(
+                     Markup(
+                         '<div style="font-weight:600;">メール確認のお願い</div>'
+                         f'<div style="margin-top:4px;line-height:1.6;">{body} {btn}</div>'
+                     ),
+                     "warning unverified_email"
+                 )
+     except Exception:
+         try:
+             current_app.logger.exception("top banner check failed")
+         except Exception:
+             pass
+     # -----------------------------------------------------------------------
+ 
+     social_id = session.get("ext_user_social_id")
+@@ -3955,51 +3955,51 @@ def event_qr_checkin(token: str):
+     )
+ 
+     if not updated:
+         return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 
+     nickname = me.get("nickname") or "参加者"
+     admin_url = url_for("external_login_user.admin_event_view", event_id=event_id, _external=True)
+     notice_body = _build_checkin_notice_body(
+         nickname=nickname,
+         checked_at=now,
+         event_title=ev_title,
+         participant_role=member.get("participant_role"),
+         costume_label=member.get("costume_label"),
+         method_label="QR",
+         admin_url=admin_url,
+     )
+ 
+     try:
+         _notify_discord(notice_body)
+     except Exception:
+         current_app.logger.exception("Discord QR受付通知でエラーが発生しました")
+ 
+     try:
+         acl_emails = _get_acl_admin_emails(event_id)
+         if acl_emails:
+-            subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん (QR)"
++            subject = f"【Mimoria】受付完了: {ev_title} / {nickname} さん (QR)"
+             for addr in acl_emails:
+                 send_mail(
+                     to=addr,
+                     subject=subject,
+                     body=notice_body,
+                     event_uuid=ev_uuid_str or None,
+                 )
+     except Exception:
+         current_app.logger.exception("ACL向けQR受付メール通知でエラーが発生しました")
+ 
+     return redirect(url_for("external_login_user.event_pass", event_uuid=ev_uuid_str))
+ 
+ 
+ # =========================
+ # アバター配信（Apache直配信なら不要）
+ # =========================
+ @bp.route("/avatars/<path:name>")
+ def avatar_file(name: str):
+     resp = send_from_directory(str(AVATAR_ROOT), name, as_attachment=False, max_age=0)
+     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+     resp.headers["Pragma"] = "no-cache"
+     resp.headers["Expires"] = "0"
+     return resp
+ 
+ # =========================
+@@ -4312,53 +4312,53 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
+         if row:
+             try:
+                 last = row["issued_at"] if hasattr(row["issued_at"], "timestamp") \
+                       else datetime.fromisoformat(str(row["issued_at"]).replace(" ", "T"))
+                 if (datetime.utcnow() - last).total_seconds() < cooldown_sec:
+                     return False, "送信間隔が短すぎます。しばらく経ってから再度お試しください。"
+             except Exception:
+                 pass
+ 
+         # 6桁 PIN 生成（先頭ゼロを許容）
+         pin = f"{secrets.randbelow(1_000_000):06d}"
+         pin_hash = _hash_pin(pin)
+         now = datetime.utcnow()
+         exp = now + timedelta(minutes=ttl_min)
+         cur.execute("""
+             INSERT INTO mfu_email_login_pin (email, pin_hash, issued_at, expires_at, sender_ip)
+             VALUES (%s,%s,%s,%s,%s)
+         """, (email, pin_hash, now, exp, (request.headers.get("X-Forwarded-For","").split(",")[0].strip()
+                                            or request.remote_addr or "")))
+         db.commit()
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ 
+     # メール送信（既存の send_mail を使用）
+-    subject = "【MFU】PINコードログイン用コードのお知らせ（有効10分）"
++    subject = "【Mimoria】PINコードログイン用コードのお知らせ（有効10分）"
+     body = (
+-        "MFU イベント管理システムです。\n"
++        "Mimoriaです。\n"
+         "以下のPINコードをログイン画面で入力してください。\n\n"
+         f"PINコード：{pin}\n"
+         "有効期限：10分\n\n"
+         "※このメールに心当たりが無い場合は破棄してください。"
+     )
+     try:
+         # event_uuid なし → noreply 送信（既存実装に合わせる）
+         send_mail(to=email, subject=subject, body=body, event_uuid=None)
+     except Exception:
+         return False, "メール送信に失敗しました。時間を置いて再試行してください。"
+ 
+     return True, "PINコードを送信しました。メールをご確認ください。（有効10分）"
+ 
+ 
+ def _resolve_user_by_email(email: str) -> dict | None:
+     """
+     external_login_user を email で1件返す。
+     同一メールが複数ある場合は updated_at の新しいもの優先 → 次に id 若いもの。
+     """
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT id, social_id, nickname, updated_at
+               FROM external_login_user
+              WHERE email=%s
+diff --git a/external_login_user/utils.py b/external_login_user/utils.py
+index b388cc44052ab35c37e2780caefb452241303a73..8df466b7b1a887c49804eebe7b7f782af007aa44 100644
+--- a/external_login_user/utils.py
++++ b/external_login_user/utils.py
+@@ -22,51 +22,51 @@ JST = timezone(timedelta(hours=9))
+ 
+ # ---- 環境値 → 関数 ----
+ def LINE_CLIENT_ID() -> str:
+     return os.getenv("LINE_CHANNEL_ID") or ""
+ 
+ def LINE_CLIENT_SECRET() -> str:
+     return os.getenv("LINE_CHANNEL_SECRET") or ""
+ 
+ def LINE_REDIRECT_URI() -> Optional[str]:
+     v = os.getenv("LINE_REDIRECT_URI")
+     return v.strip() if v else None
+ 
+ def PAYMENT_ENTRY_BASE() -> str:
+     return (os.getenv("PAYMENT_ENTRY_BASE") or "/payment/e/").rstrip("/") + "/"
+ 
+ # ---- CSRF, セッション ----
+ def _admin_csrf_token() -> str:
+     t = session.get("admin_csrf")
+     if not t:
+         t = secrets.token_urlsafe(16)
+         session["admin_csrf"] = t
+     return t
+ 
+ def _require_mfu_login_redirect():
+     if not session.get("user"):
+-        flash("管理者ページはMFUログインが必要です。", "warning")
++        flash("管理者ページはMimoriaログインが必要です。", "warning")
+         return redirect("/login")
+     return None
+ 
+ def _to_local_next(u: str) -> str:
+     # ここに“ログイン後に戻したい”プレフィックスを追加
+     ALLOW_PREFIXES = (
+         "/external-login/",      # 既定
+         # "/albums/share/",      # 例：共有アルバム系も戻したい場合
+         # "/payments/",          # 例：決済フローも戻したい場合
+     )
+ 
+     if not u:
+         return "/external-login/"
+ 
+     from urllib.parse import urlparse
+     try:
+         p = urlparse(u)
+         path = p.path or ""
+         qs   = ("?" + p.query) if p.query else ""
+     except Exception:
+         # 解析できない文字列は破棄
+         return "/external-login/"
+ 
+     # ローカル絶対パスのみ許可（//で始まるスキーム相対URLは拒否）
+     if path.startswith("/") and not path.startswith("//"):

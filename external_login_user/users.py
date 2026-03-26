@@ -503,7 +503,7 @@ def _send_verify_mail(to_email: str, token_raw: str):
     """legacy / no longer used for new verification flow."""
     """メールアドレス確認コード（イベント非関連）→ send_mail に統一"""
     verify_url_get = url_for("external_login_user.email_verify", _external=True) + f"?t={token_raw}"
-    subject = "イベント管理システムからメールアドレス確認のお願い"
+    subject = "Mimoriaからメールアドレス確認のお願い"
     body = (
         "メールアドレスの確認をお願いします。\n"
         "下記の確認ページを開き、「確認する」ボタンを押してください（有効期限: 24時間）。\n\n"
@@ -528,7 +528,7 @@ def _sender_ip() -> str:
 
 
 def _send_verify_pin_mail(email: str, pin: str) -> None:
-    subject = "イベント管理システムのメールアドレス確認コード"
+    subject = "Mimoriaのメールアドレス確認コード"
     body = (
         "メールアドレスの確認コードをお送りします。\n\n"
         "確認コード:\n"
@@ -1087,7 +1087,7 @@ def _maybe_flash_email_verify_banner_for_top():
         # メッセージ（改行→<br> 変換）
         msg = (
             "メールアドレスの確認が完了していません。\n"
-            "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
+            "Mimoriaからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
             "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
         )
         body = Markup("<br>".join(escape(msg).split("\n")))
@@ -1167,7 +1167,7 @@ def index():
                 from markupsafe import Markup, escape
                 msg = (
                     "メールアドレスの確認が完了していません。\n"
-                    "イベント管理システムからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
+                    "Mimoriaからお送りした『メールアドレス確認のお願い』内のリンクをタップして認証を完了してください。\n"
                     "届いていない場合は迷惑メールをご確認のうえ、下のボタンで再送できます。"
                 )
                 body = Markup("<br>".join(escape(msg).split("\n")))
@@ -3977,7 +3977,7 @@ def event_qr_checkin(token: str):
     try:
         acl_emails = _get_acl_admin_emails(event_id)
         if acl_emails:
-            subject = f"[MFU] 受付完了: {ev_title} / {nickname} さん (QR)"
+            subject = f"【Mimoria】受付完了: {ev_title} / {nickname} さん (QR)"
             for addr in acl_emails:
                 send_mail(
                     to=addr,
@@ -4334,9 +4334,9 @@ def _issue_pin(email: str, *, ttl_min: int = 10, cooldown_sec: int = 60) -> tupl
         except Exception: pass
 
     # メール送信（既存の send_mail を使用）
-    subject = "【MFU】PINコードログイン用コードのお知らせ（有効10分）"
+    subject = "【Mimoria】PINコードログイン用コードのお知らせ（有効10分）"
     body = (
-        "MFU イベント管理システムです。\n"
+        "Mimoriaです。\n"
         "以下のPINコードをログイン画面で入力してください。\n\n"
         f"PINコード：{pin}\n"
         "有効期限：10分\n\n"
