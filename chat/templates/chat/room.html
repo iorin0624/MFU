@@ -55,8 +55,9 @@
 .chat-main {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  width: fit-content;
   max-width: min(100%, 560px);
 }
 
@@ -65,8 +66,7 @@
 }
 
 .chat-row.other .chat-main {
-  /* 相手側は sender 行があるため、横幅を伸ばして吹き出しが極端に細くなるのを防ぐ */
-  align-items: stretch;
+  align-items: flex-start;
 }
 
 .chat-sender {
@@ -76,20 +76,21 @@
 }
 
 .chat-bubble-wrap {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 56px;
+  display: inline-grid;
+  grid-template-columns: auto auto;
   align-items: flex-end;
   gap: 6px;
-  width: 100%;
+  width: fit-content;
   min-width: 0;
   max-width: 100%;
-  flex: 1 1 auto;
   position: relative;
+  align-self: flex-start;
 }
 
 .chat-row.me .chat-bubble-wrap {
-  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-columns: auto auto;
   gap: 12px;
+  align-self: flex-end;
 }
 
 .chat-bubble {
@@ -116,10 +117,6 @@
   -webkit-touch-callout: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
-}
-
-.chat-row.other .chat-bubble-wrap {
-  align-self: stretch;
 }
 
 .chat-row.other .chat-bubble {
@@ -198,9 +195,25 @@
   align-items: flex-end;
   justify-content: flex-end;
   gap: 2px;
-  flex: 0 0 56px;
-  min-width: 56px;
-  width: 56px;
+  min-width: 72px;
+  width: max-content;
+}
+
+.chat-meta-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 26px;
+}
+
+.chat-meta-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  min-width: 26px;
+  flex: 0 0 26px;
 }
 
 .chat-row.me .chat-meta-col {
@@ -408,8 +421,15 @@
   margin-top: 4px;
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
+  align-self: flex-start;
+}
+
+.chat-row.me .chat-reaction-box {
+  align-self: flex-end;
 }
 
 .react-open-btn,
@@ -426,17 +446,16 @@
   justify-content: center;
   font-size: 18px;
   line-height: 1;
-  position: absolute;
-  top: -40px;
   box-shadow: 0 1px 2px rgba(45, 74, 154, 0.18);
 }
 
 .react-open-btn {
-  right: 38px;
+  position: static;
+  align-self: flex-start;
 }
 
 .chat-menu-open-btn {
-  right: 6px;
+  position: static;
   font-size: 15px;
   letter-spacing: 1px;
 }
@@ -444,8 +463,12 @@
 .chat-message .react-open-btn,
 .chat-message .chat-menu-open-btn {
   opacity: 0;
-  pointer-events: none;
   transition: opacity 0.12s ease;
+}
+
+.chat-message .react-open-btn,
+.chat-message .chat-menu-open-btn {
+  pointer-events: none;
 }
 
 .chat-message:hover .react-open-btn,
@@ -462,16 +485,6 @@
 
 .chat-row.me .react-open-btn {
   display: none !important;
-}
-
-.chat-row.me .chat-menu-open-btn {
-  left: -10px;
-  right: auto;
-}
-
-.chat-row.other .chat-menu-open-btn {
-  right: 6px;
-  left: auto;
 }
 
 @media (hover: none) {
@@ -1099,9 +1112,7 @@
   }
 
   .chat-meta-col {
-    flex-basis: 52px;
-    min-width: 52px;
-    width: 52px;
+    min-width: 68px;
   }
 
   .chat-nav-label {
@@ -1336,7 +1347,6 @@
        data-my-reaction="{{ message.my_reaction or '' }}"
        data-reactions-summary='{{ (message.reactions_summary or [])|tojson }}'>
     <button type="button" class="chat-reaction-toggle react-open-btn" aria-label="リアクション" title="リアクション">+</button>
-    <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
     <div class="chat-reaction-panel d-none"></div>
     <div class="chat-reaction-summary"></div>
   </div>
@@ -1501,7 +1511,12 @@
                   <div class="chat-read-inline d-none"></div>
                 {% endif %}
                 {% if m.edited_flag %}<div class="chat-edited-label">編集済み</div>{% endif %}
-                <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+                <div class="chat-meta-main">
+                  <div class="chat-time">{{ m.created_at_jst_time_hm }}</div>
+                  <div class="chat-meta-actions">
+                    <button type="button" class="chat-menu-toggle chat-menu-open-btn" aria-label="メニュー" title="メニュー">⋯</button>
+                  </div>
+                </div>
               </div>
             </div>
             {% if m.is_me %}
@@ -2998,26 +3013,11 @@ window.addEventListener('DOMContentLoaded', async () => {
       bubble.appendChild(body);
     }
 
-    const metaCol = document.createElement('div');
-    metaCol.className = 'chat-meta-col';
-
-    if (isMe) {
-      const readInline = document.createElement('div');
-      readInline.className = 'chat-read-inline d-none';
-      metaCol.appendChild(readInline);
-    }
-
-    const time = document.createElement('div');
-    time.className = 'chat-time';
-    time.textContent = timeLabel;
-
-    if (Number(msg.edited_flag || 0) === 1) {
-      const edited = document.createElement('div');
-      edited.className = 'chat-edited-label';
-      edited.textContent = '編集済み';
-      metaCol.appendChild(edited);
-    }
-    metaCol.appendChild(time);
+    const metaCol = createMetaCol({
+      isMe,
+      timeLabel,
+      edited: Number(msg.edited_flag || 0) === 1,
+    });
 
     wrap.appendChild(bubble);
     wrap.appendChild(metaCol);
@@ -3064,6 +3064,47 @@ window.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     msgBox.appendChild(row);
+  }
+
+  function createMetaCol({ isMe, timeLabel, edited }) {
+    const metaCol = document.createElement('div');
+    metaCol.className = 'chat-meta-col';
+
+    if (isMe) {
+      const readInline = document.createElement('div');
+      readInline.className = 'chat-read-inline d-none';
+      metaCol.appendChild(readInline);
+    }
+
+    if (edited) {
+      const editedLabel = document.createElement('div');
+      editedLabel.className = 'chat-edited-label';
+      editedLabel.textContent = '編集済み';
+      metaCol.appendChild(editedLabel);
+    }
+
+    const metaMain = document.createElement('div');
+    metaMain.className = 'chat-meta-main';
+
+    const time = document.createElement('div');
+    time.className = 'chat-time';
+    time.textContent = timeLabel || '';
+
+    const actions = document.createElement('div');
+    actions.className = 'chat-meta-actions';
+
+    const menuBtn = document.createElement('button');
+    menuBtn.type = 'button';
+    menuBtn.className = 'chat-menu-toggle chat-menu-open-btn';
+    menuBtn.setAttribute('aria-label', 'メニュー');
+    menuBtn.setAttribute('title', 'メニュー');
+    menuBtn.textContent = '⋯';
+
+    actions.appendChild(menuBtn);
+    metaMain.appendChild(time);
+    metaMain.appendChild(actions);
+    metaCol.appendChild(metaMain);
+    return metaCol;
   }
 
 
@@ -3208,7 +3249,7 @@ window.addEventListener('DOMContentLoaded', async () => {
           editedLabel = document.createElement('div');
           editedLabel.className = 'chat-edited-label';
           editedLabel.textContent = '編集済み';
-          metaCol.insertBefore(editedLabel, metaCol.querySelector('.chat-time') || null);
+          metaCol.insertBefore(editedLabel, metaCol.querySelector('.chat-meta-main') || null);
         }
       } else if (editedLabel) {
         editedLabel.remove();
@@ -3332,13 +3373,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     toggle.setAttribute('title', 'リアクション');
     toggle.textContent = '+';
 
-    const menuBtn = document.createElement('button');
-    menuBtn.type = 'button';
-    menuBtn.className = 'chat-menu-toggle chat-menu-open-btn';
-    menuBtn.setAttribute('aria-label', 'メニュー');
-    menuBtn.setAttribute('title', 'メニュー');
-    menuBtn.textContent = '⋯';
-
     const panel = document.createElement('div');
     panel.className = 'chat-reaction-panel d-none';
     for (const emoji of reactionEmojis) {
@@ -3354,7 +3388,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     summary.className = 'chat-reaction-summary';
 
     box.appendChild(toggle);
-    box.appendChild(menuBtn);
     box.appendChild(panel);
     box.appendChild(summary);
 
@@ -3698,12 +3731,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     body.innerHTML = buildSafeBodyHtml(msg) || `<span class="chat-deleted-text">${msg.deleted_text || ''}</span>`;
     bubble.appendChild(body);
 
-    const time = document.createElement('div');
-    time.className = 'chat-time';
-    time.textContent = msg.created_at_jst_time_hm || '';
-
     wrap.appendChild(bubble);
-    wrap.appendChild(time);
+    wrap.appendChild(createMetaCol({
+      isMe,
+      timeLabel: msg.created_at_jst_time_hm || '',
+      edited: Number(msg.edited_flag || 0) === 1,
+    }));
     main.appendChild(wrap);
 
     if (Number(msg.deleted_flag || 0) !== 1) {
