@@ -60,7 +60,7 @@
   flex-direction: column;
   flex: 0 1 auto;
   min-width: 0;
-  width: fit-content;
+  width: auto;
   max-width: min(100%, 560px);
 }
 
@@ -86,7 +86,7 @@
   display: inline-flex;
   align-items: flex-end;
   gap: 4px;
-  width: fit-content;
+  width: auto;
   min-width: 0;
   max-width: 100%;
   align-self: flex-start;
@@ -100,8 +100,8 @@
 
 .chat-bubble {
   display: block;
-  width: fit-content;
-  inline-size: fit-content;
+  width: auto;
+  inline-size: auto;
   min-width: 0;
   max-width: 100%;
   max-inline-size: 100%;
@@ -137,11 +137,6 @@
   /* 日本語本文に anywhere を広く適用すると 1〜2 文字単位で崩れるため通常改行へ戻す */
   overflow-wrap: break-word;
   word-break: normal;
-}
-
-.chat-row.me .chat-body {
-  overflow-wrap: anywhere;
-  word-break: break-all;
 }
 
 /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
@@ -182,8 +177,6 @@
   background: #4a8dff;
   color: #fff;
   border-bottom-right-radius: 6px;
-  overflow-wrap: anywhere;
-  word-break: break-all;
 }
 
 .chat-row.other .chat-bubble {
@@ -459,10 +452,10 @@
 .chat-reaction-box {
   position: relative;
   margin-top: 4px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
   width: fit-content;
   max-width: 100%;
   align-self: flex-start;
@@ -500,31 +493,25 @@
   letter-spacing: 1px;
 }
 
-.chat-message .react-open-btn,
-.chat-message .chat-menu-open-btn {
-  opacity: 0;
+.chat-message .react-open-btn {
+  opacity: 1;
   transition: opacity 0.12s ease;
 }
 
-.chat-message .react-open-btn,
-.chat-message .chat-menu-open-btn {
-  pointer-events: none;
-}
-
-.chat-message:hover .react-open-btn,
-.chat-message:hover .chat-menu-open-btn {
-  opacity: 1;
+.chat-message .react-open-btn {
   pointer-events: auto;
 }
 
-.chat-message.is-selected .react-open-btn,
+.chat-message .chat-menu-open-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.chat-message:hover .chat-menu-open-btn,
 .chat-message.is-selected .chat-menu-open-btn {
   opacity: 1;
   pointer-events: auto;
-}
-
-.chat-row.me .react-open-btn {
-  display: none !important;
 }
 
 .chat-row.other .chat-status-meta {
@@ -542,13 +529,11 @@
 }
 
 @media (hover: none) {
-  .chat-message .react-open-btn,
   .chat-message .chat-menu-open-btn {
     opacity: 0;
     pointer-events: none;
   }
 
-  .chat-message.is-selected .react-open-btn,
   .chat-message.is-selected .chat-menu-open-btn {
     opacity: 1;
     pointer-events: auto;
@@ -635,6 +620,15 @@
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  z-index: 15;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid #d7def5;
+  border-radius: 999px;
+  padding: 4px 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }
 
 .chat-reaction-panel.d-none {
@@ -658,7 +652,9 @@
 .chat-reaction-summary {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
+  min-width: 0;
 }
 
 .chat-reaction-chip {
@@ -1167,6 +1163,15 @@
 
   .chat-meta-col {
     min-width: 68px;
+  }
+
+  /* スマホ幅では時刻/メニュー列のぶんだけ吹き出し幅を差し引き、時刻の見切れを防ぐ */
+  .chat-row.other .chat-bubble {
+    max-width: calc(100% - 76px);
+  }
+
+  .chat-row.me .chat-main-group .chat-bubble {
+    max-width: calc(100% - 84px);
   }
 
   .chat-nav-label {
