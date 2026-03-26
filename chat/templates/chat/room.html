@@ -1154,24 +1154,48 @@
 
   /* iPhone 幅でもアバター・メタ列込みで自然に収める */
   .chat-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .chat-bubble-wrap {
+    display: flex;
+    width: 100%;
+    min-width: 0;
     max-width: 100%;
   }
 
   .chat-row.me .chat-bubble-wrap {
     gap: 8px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-row.me .chat-main-group,
+  .chat-row.me .chat-me-main-row {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .chat-meta-col {
-    min-width: 68px;
+    flex: 0 0 auto;
+    min-width: 0;
+    width: fit-content;
+    white-space: nowrap;
   }
 
-  /* スマホ幅では時刻/メニュー列のぶんだけ吹き出し幅を差し引き、時刻の見切れを防ぐ */
-  .chat-row.other .chat-bubble {
-    max-width: calc(100% - 76px);
+  /* 吹き出し幅は calc 差し引きではなく、meta 列を flex 固定して残り幅を自然利用する */
+  .chat-row.other .chat-bubble,
+  .chat-row.me .chat-me-main-row .chat-bubble {
+    min-width: 0;
+    max-width: 100%;
   }
 
-  .chat-row.me .chat-main-group .chat-bubble {
-    max-width: calc(100% - 84px);
+  .chat-row.other .chat-meta-col,
+  .chat-row.me .chat-me-main-row .chat-meta-col {
+    flex: 0 0 auto;
   }
 
   .chat-nav-label {
