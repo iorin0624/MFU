@@ -137,8 +137,8 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 def root_manifest():
     resp = jsonify(
         {
-            "name": "MFU",
-            "short_name": "MFU",
+            "name": "Mimoria",
+            "short_name": "Mimoria",
             "start_url": "/external-login/",
             "scope": "/",
             "display": "standalone",
