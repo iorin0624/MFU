@@ -65,7 +65,8 @@
 }
 
 .chat-row.other .chat-main {
-  align-items: flex-start;
+  /* 相手側は sender 行があるため、横幅を伸ばして吹き出しが極端に細くなるのを防ぐ */
+  align-items: stretch;
 }
 
 .chat-sender {
@@ -92,8 +93,9 @@
 
 .chat-bubble {
   /* メタ列ぶんを引いた残り幅で縮められる吹き出しにする */
-  display: block;
-  width: fit-content;
+  /* iOS Safari で fit-content が過度に縮むケースがあるため、安定した shrink-to-fit にする */
+  display: inline-block;
+  width: auto;
   min-width: 0;
   max-width: min(100%, calc(100% - 64px));
   padding: 8px 12px;
@@ -112,6 +114,10 @@
   -webkit-touch-callout: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+}
+
+.chat-row.other .chat-bubble-wrap {
+  align-self: stretch;
 }
 
 .chat-body {

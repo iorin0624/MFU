@@ -1,182 +1,113 @@
-diff --git a/__init__.py b/__init__.py
-index d576f046339a8c56a21cdb09feec476de4ab230e..218d68fbf8da3d3883822a20c44d8cb9169151cc 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -122,51 +122,64 @@ INAPP_BROWSER_SETTINGS_DEFAULTS = {
+diff --git a/chat/templates/chat/room.html b/chat/templates/chat/room.html
+index 5436cf503b7a3d11e6d66fac61ba9b5e49dfd25d..3413c5bef1f8af192d86b4eed59af2e5056170e4 100644
+--- a/chat/templates/chat/room.html
++++ b/chat/templates/chat/room.html
+@@ -43,99 +43,105 @@
+ .chat-line > * {
+   min-width: 0;
  }
  
- # =====================================
- # 🚀 Flask アプリ構成
- # =====================================
- app = Flask(
-     __name__,
-     template_folder=os.path.join(APP_DIR, "templates"),
-     static_folder=STATIC_DIR,
-     static_url_path="/static",
- )
- app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+ .chat-row.me .chat-line {
+   justify-content: flex-end;
+ }
  
+ .chat-row.other .chat-line {
+   justify-content: flex-start;
+ }
  
- @app.get("/manifest.webmanifest")
- def root_manifest():
-     resp = jsonify(
-         {
-             "name": "MFU",
-             "short_name": "MFU",
-             "start_url": "/external-login/",
-             "scope": "/",
-             "display": "standalone",
-             "background_color": "#ffffff",
-             "theme_color": "#0d6efd",
--            "icons": [],
-+            "icons": [
-+                {
-+                    "src": "/static/icons/image-size192.png",
-+                    "sizes": "192x192",
-+                    "type": "image/png",
-+                    "purpose": "any maskable",
-+                },
-+                {
-+                    "src": "/static/icons/image-size512.png",
-+                    "sizes": "512x512",
-+                    "type": "image/png",
-+                    "purpose": "any maskable",
-+                },
-+            ],
-         }
-     )
-     resp.mimetype = "application/manifest+json"
-     resp.headers["Cache-Control"] = "no-cache"
-     return resp
+ .chat-main {
+   display: flex;
+   flex-direction: column;
+   flex: 1 1 auto;
+   min-width: 0;
+   max-width: min(100%, 560px);
+ }
  
- def create_app():
-     return app
+ .chat-row.me .chat-main {
+   align-items: flex-end;
+ }
  
- load_dotenv()
- app.secret_key = os.environ.get("SECRET_KEY")
+ .chat-row.other .chat-main {
+-  align-items: flex-start;
++  /* 相手側は sender 行があるため、横幅を伸ばして吹き出しが極端に細くなるのを防ぐ */
++  align-items: stretch;
+ }
  
+ .chat-sender {
+   font-size: 0.76rem;
+   color: #667;
+   margin: 0 8px 4px;
+ }
  
- def _resolve_socketio_message_queue():
-     queue_url = (os.environ.get("SOCKETIO_MESSAGE_QUEUE") or "").strip()
-     if not queue_url:
-         return None
+ .chat-bubble-wrap {
+   display: flex;
+   align-items: flex-end;
+   gap: 6px;
+   width: 100%;
+   min-width: 0;
+   max-width: 100%;
+   flex: 1 1 auto;
+   position: relative;
+ }
  
-     try:
-         import importlib
-         if importlib.util.find_spec("redis") is None:
-             app.logger.warning("SOCKETIO_MESSAGE_QUEUE is set but redis package is not installed; fallback to local mode")
-             return None
-         redis = importlib.import_module("redis")
-         redis.Redis.from_url(queue_url, socket_connect_timeout=1, socket_timeout=1).ping()
-diff --git a/chat/templates/chat/base_chat.html b/chat/templates/chat/base_chat.html
-index 8b848aeb63b0a140a98127d17677588888ea9511..b66aab890623165ab3671c89e4c2988c82a1603a 100644
---- a/chat/templates/chat/base_chat.html
-+++ b/chat/templates/chat/base_chat.html
-@@ -1,29 +1,30 @@
- {% extends "base.html" %}
- {% block head_extra %}
-   {{ super() }}
-   <link rel="manifest" href="/manifest.webmanifest">
-+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/image-size180.png">
-   <meta name="theme-color" content="#0d6efd">
-   <meta name="apple-mobile-web-app-capable" content="yes">
-   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-   <link rel="stylesheet" href="{{ url_for('chat.static', filename='chat/css/chat.css') }}">
-   <script>
-     if ('serviceWorker' in navigator) {
-       navigator.serviceWorker.register('/sw.js', { scope: '/' });
-     }
+ .chat-row.me .chat-bubble-wrap {
+   flex-direction: row-reverse;
+   gap: 12px;
+ }
  
+ .chat-bubble {
+   /* メタ列ぶんを引いた残り幅で縮められる吹き出しにする */
+-  display: block;
+-  width: fit-content;
++  /* iOS Safari で fit-content が過度に縮むケースがあるため、安定した shrink-to-fit にする */
++  display: inline-block;
++  width: auto;
+   min-width: 0;
+   max-width: min(100%, calc(100% - 64px));
+   padding: 8px 12px;
+   border-radius: 16px;
+   line-height: 1.4;
+   white-space: normal;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+   flex: 0 1 auto;
+   position: relative;
+   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+   cursor: pointer;
+   transition: box-shadow 0.2s ease, transform 0.2s ease;
+   -webkit-user-select: none;
+   user-select: none;
+   -webkit-touch-callout: none;
+   touch-action: manipulation;
+   -webkit-tap-highlight-color: transparent;
+ }
  
-     (() => {
-       const BADGE_API_URL = {{ ((notification_api_map.unread_count if notification_api_map else '/external-login/api/notifications/unread-count'))|tojson }};
-       const SW_SYNC_TYPE = 'SYNC_BADGE';
-       const toSafeCount = (rawCount) => {
-         const value = Number(rawCount ?? 0);
-         if (!Number.isFinite(value)) return 0;
-         return Math.max(0, Math.floor(value));
-       };
++.chat-row.other .chat-bubble-wrap {
++  align-self: stretch;
++}
++
+ .chat-body {
+   min-width: 0;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
  
-       async function setAppBadgeSafe(rawCount) {
-         const count = toSafeCount(rawCount);
-         if (count <= 0) {
-           await clearAppBadgeSafe();
-           return;
-         }
-diff --git a/external_login_user/template/base_extlogin.html b/external_login_user/template/base_extlogin.html
-index 3125c3623b3142c55aae09ec6c96f10b0361e682..f1ec7a0fbc580bf4e3cc87dc7a5549900d94e969 100644
---- a/external_login_user/template/base_extlogin.html
-+++ b/external_login_user/template/base_extlogin.html
-@@ -1,31 +1,33 @@
- <!doctype html>
- <html lang="ja">
- <head>
-   <meta charset="utf-8">
-   <meta name="viewport" content="width=device-width,initial-scale=1">
-   <link rel="manifest" href="/manifest.webmanifest">
-+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/image-size180.png">
-+  <meta name="theme-color" content="#0d6efd">
-   <title>{% block title %}MFU{% endblock %}</title>
-   <!-- Bootstrap CDN（既に別のベースがあるなら不要）-->
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .container-narrow { max-width: 960px; }
-   </style>
- </head>
- <body>
- {% include "_extlogin_nav.html" %}
+ /* 本文は選択可能（メッセージメニューの「選択コピー」で利用） */
+ .chat-bubble .chat-body,
+ .chat-bubble .chat-body * {
+   -webkit-user-select: text;
+   user-select: text;
+   -webkit-touch-callout: default;
+ }
  
+ /* リンクはタップできる */
+ .chat-bubble .chat-body a {
+   -webkit-user-select: auto;
+   user-select: auto;
+   -webkit-touch-callout: default;
+ }
  
- 
- <main class="container container-narrow my-4">
-   {% with messages = get_flashed_messages(with_categories=true) %}
-     {% if messages %}
-       <div class="mb-3">
-         {% for cat, msg in messages %}
-           <div class="alert alert-{{ 'danger' if cat=='error' else cat }}">{{ msg }}</div>
-         {% endfor %}
-       </div>
-     {% endif %}
-   {% endwith %}
-   {% block content %}{% endblock %}
- </main>
- 
-diff --git a/external_login_user/template/ext_index.html b/external_login_user/template/ext_index.html
-index b4c176d5309242b159fe66d2b677eaefcfe07d69..3d2836703b89cfe76fbaafd1e26dfa4984242299 100644
---- a/external_login_user/template/ext_index.html
-+++ b/external_login_user/template/ext_index.html
-@@ -1,32 +1,34 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-   <meta charset="UTF-8">
-   <title>外部ログイン（利用者）</title>
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <link rel="manifest" href="/manifest.webmanifest">
-+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/image-size180.png">
-+  <meta name="theme-color" content="#0d6efd">
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     /* LINEボタン */
-     .btn-line { background:#06C755; border-color:#06C755; color:#fff; }
-     .btn-line:hover { background:#05b84d; border-color:#05b84d; color:#fff; }
-     /* 未ログイン時の案内ボックス */
-     .line-login-cta{
-       background:#f3fff6; border:1px solid #d8f2df;
-       border-radius:.75rem; padding:1rem;
-     }
-     .line-login-cta .lead{ font-weight:600; }
-   </style>
- </head>
- <body class="container py-4" style="max-width:900px;">
- {% include "_extlogin_nav.html" %}
- 
-   {% with messages = get_flashed_messages(with_categories=true) %}
-     {% for cat, msg in messages %}
-       <div class="alert alert-{{ 'warning' if cat=='error' else cat }} mb-3">{{ msg|safe }}</div>
-     {% endfor %}
-   {% endwith %}
- 
-   <h1 class="h4 mb-3">外部ログイン（LINE）</h1>
- 
-   {# === require_payment を 0/1 に正規化するマクロ === #}
+ .chat-body img {
+   max-width: 100%;
+   height: auto;
+ }
