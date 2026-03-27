@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -208,7 +208,12 @@ def _can_send_external_unread_reminder(last_sent_at: datetime | None, now_utc: d
         return False
     if last_sent_utc is None:
         return True
-    return current_utc >= (last_sent_utc + timedelta(days=2))
+
+    last_sent_jst = last_sent_utc.astimezone(_JST)
+    current_jst = current_utc.astimezone(_JST)
+    allowed_date = last_sent_jst.date() + timedelta(days=2)
+    allowed_at_jst = datetime.combine(allowed_date, time(10, 0, 0), tzinfo=_JST)
+    return current_jst >= allowed_at_jst
 
 
 def _relative_time_from(dt: datetime | None) -> str:
@@ -691,7 +696,7 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
             if not _can_send_external_unread_reminder(last_sent_at, now_utc):
                 summary["skipped_too_soon"] += 1
                 current_app.logger.info(
-                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=before resend window (2 days later 10:00 JST) last_sent_at=%s",
                     user_id,
                     email,
                     unread_count,

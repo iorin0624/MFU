@@ -2,7 +2,7 @@ import importlib.util
 import sys
 import types
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -92,7 +92,9 @@ def load_notifications_module():
     app_utils_db = types.ModuleType("app.utils.db")
     app_utils_db.get_db = lambda: None
     app_utils_mail = types.ModuleType("app.utils.mail")
-    app_utils_mail.send_external_unread_reminder_mail = lambda *args, **kwargs: None
+    app_utils_mail.EXTERNAL_UNREAD_REMINDER_SUBJECT = "subject"
+    app_utils_mail.EXTERNAL_UNREAD_REMINDER_BODY = "body"
+    app_utils_mail.send_mail = lambda *args, **kwargs: None
     app_chat = types.ModuleType("app.chat")
     app_chat.__path__ = []  # type: ignore[attr-defined]
     app_chat_socket = types.ModuleType("app.chat.socketio_ext")
@@ -181,6 +183,50 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             )
         )
 
+    def test_can_send_external_unread_reminder_allows_when_jst_resend_window_started(self):
+        notifications = load_notifications_module()
+        jst = timezone(timedelta(hours=9))
+
+        self.assertTrue(
+            notifications._can_send_external_unread_reminder(
+                datetime(2026, 3, 25, 10, 0, 19, tzinfo=jst),
+                datetime(2026, 3, 27, 1, 0, 7, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_can_send_external_unread_reminder_blocks_before_jst_resend_window(self):
+        notifications = load_notifications_module()
+        jst = timezone(timedelta(hours=9))
+
+        self.assertFalse(
+            notifications._can_send_external_unread_reminder(
+                datetime(2026, 3, 25, 10, 0, 19, tzinfo=jst),
+                datetime(2026, 3, 27, 0, 59, 59, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_can_send_external_unread_reminder_allows_even_if_not_48h_elapsed(self):
+        notifications = load_notifications_module()
+        jst = timezone(timedelta(hours=9))
+
+        self.assertTrue(
+            notifications._can_send_external_unread_reminder(
+                datetime(2026, 3, 25, 23, 50, 0, tzinfo=jst),
+                datetime(2026, 3, 27, 1, 0, 7, tzinfo=timezone.utc),
+            )
+        )
+
+    def test_can_send_external_unread_reminder_blocks_before_next_day_window(self):
+        notifications = load_notifications_module()
+        jst = timezone(timedelta(hours=9))
+
+        self.assertFalse(
+            notifications._can_send_external_unread_reminder(
+                datetime(2026, 3, 25, 9, 0, 0, tzinfo=jst),
+                datetime(2026, 3, 26, 1, 0, 0, tzinfo=timezone.utc),
+            )
+        )
+
     def test_send_external_unread_reminder_emails_skips_no_unread_before_too_soon(self):
         notifications = load_notifications_module()
         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 22, 9, 0, 0)}]
@@ -190,11 +236,11 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         with (
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
-            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+            patch.object(notifications, "send_mail") as mocked_send,
             patch.object(notifications, "_compute_unread_count_external", return_value=0) as mocked_unread,
         ):
             summary = notifications.send_external_unread_reminder_emails(
-                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
+                now_utc=datetime(2026, 3, 22, 0, 59, 59, tzinfo=timezone.utc)
             )
 
         self.assertEqual(summary["candidates"], 1)
@@ -205,7 +251,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         mocked_unread.assert_called_once_with(10)
         self.assertEqual(update_db.update_cursor.executed, [])
 
-    def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
+    def test_send_external_unread_reminder_emails_skips_user_when_before_jst_resend_window(self):
         notifications = load_notifications_module()
         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
         select_db = self._FakeDB(rows)
@@ -214,11 +260,11 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         with (
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
-            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+            patch.object(notifications, "send_mail") as mocked_send,
             patch.object(notifications, "_compute_unread_count_external", return_value=2) as mocked_unread,
         ):
             summary = notifications.send_external_unread_reminder_emails(
-                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
+                now_utc=datetime(2026, 3, 22, 0, 59, 59, tzinfo=timezone.utc)
             )
 
         self.assertEqual(summary["candidates"], 1)
@@ -228,7 +274,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         mocked_unread.assert_called_once_with(10)
         self.assertEqual(update_db.update_cursor.executed, [])
 
-    def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
+    def test_send_external_unread_reminder_emails_sends_when_jst_resend_window_started(self):
         notifications = load_notifications_module()
         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
         select_db = self._FakeDB(rows)
@@ -239,14 +285,22 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         with (
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
-            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+            patch.object(notifications, "send_mail") as mocked_send,
             patch.object(notifications, "_compute_unread_count_external", return_value=3),
         ):
             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
 
         self.assertEqual(summary["sent"], 1)
         self.assertEqual(summary["failed"], 0)
-        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
+        mocked_send.assert_called_once_with(
+            "user@example.com",
+            notifications.EXTERNAL_UNREAD_REMINDER_SUBJECT,
+            notifications.EXTERNAL_UNREAD_REMINDER_BODY,
+            external_login_user_id=10,
+            mail_kind="external_unread_reminder",
+            append_signature=False,
+            from_display_name="Mimoria",
+        )
         self.assertTrue(update_db.committed)
         self.assertFalse(update_db.rolled_back)
         self.assertEqual(len(update_db.update_cursor.executed), 1)
@@ -268,13 +322,21 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
         with (
             patch.object(notifications, "_ensure_notification_schema"),
             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
-            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
+            patch.object(notifications, "send_mail") as mocked_send,
             patch.object(notifications, "_compute_unread_count_external", return_value=1),
         ):
             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
 
         self.assertEqual(summary["sent"], 1)
-        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
+        mocked_send.assert_called_once_with(
+            "user@example.com",
+            notifications.EXTERNAL_UNREAD_REMINDER_SUBJECT,
+            notifications.EXTERNAL_UNREAD_REMINDER_BODY,
+            external_login_user_id=10,
+            mail_kind="external_unread_reminder",
+            append_signature=False,
+            from_display_name="Mimoria",
+        )
         self.assertTrue(update_db.committed)
         self.assertEqual(len(update_db.update_cursor.executed), 1)
 
@@ -289,7 +351,7 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
             patch.object(
                 notifications,
-                "send_external_unread_reminder_mail",
+                "send_mail",
                 side_effect=RuntimeError("smtp error"),
             ) as mocked_send,
             patch.object(notifications, "_compute_unread_count_external", return_value=2),
@@ -300,7 +362,15 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
 
         self.assertEqual(summary["failed"], 1)
         self.assertEqual(summary["sent"], 0)
-        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
+        mocked_send.assert_called_once_with(
+            "user@example.com",
+            notifications.EXTERNAL_UNREAD_REMINDER_SUBJECT,
+            notifications.EXTERNAL_UNREAD_REMINDER_BODY,
+            external_login_user_id=10,
+            mail_kind="external_unread_reminder",
+            append_signature=False,
+            from_display_name="Mimoria",
+        )
         self.assertFalse(update_db.committed)
         self.assertEqual(update_db.update_cursor.executed, [])
 
