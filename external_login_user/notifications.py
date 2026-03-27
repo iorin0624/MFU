@@ -13,7 +13,7 @@ from flask import Blueprint, abort, current_app, jsonify, redirect, render_templ
 from . import bp
 from .utils import _require_ext_login
 from app.utils.db import get_db
-from app.utils.mail import send_external_unread_reminder_mail
+from app.utils.mail import EXTERNAL_UNREAD_REMINDER_BODY, EXTERNAL_UNREAD_REMINDER_SUBJECT, send_mail
 
 try:
     from app.chat.socketio_ext import socketio
@@ -700,7 +700,15 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) -> 
                 continue
 
             try:
-                send_external_unread_reminder_mail(email, external_login_user_id=user_id)
+                send_mail(
+                    email,
+                    EXTERNAL_UNREAD_REMINDER_SUBJECT,
+                    EXTERNAL_UNREAD_REMINDER_BODY,
+                    external_login_user_id=user_id,
+                    mail_kind="external_unread_reminder",
+                    append_signature=False,
+                    from_display_name="Mimoria",
+                )
                 try:
                     update_cur.execute(
                         f"""
