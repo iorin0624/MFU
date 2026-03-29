@@ -312,6 +312,39 @@ def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> li
     )
     return db_get_all(sql, (event_id, *user_ids)) or []
 
+
+def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
+    if not user_ids:
+        return set()
+    normalized_ids: list[int] = []
+    seen: set[int] = set()
+    for user_id in user_ids:
+        try:
+            value = int(user_id)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        normalized_ids.append(value)
+    if not normalized_ids:
+        return set()
+    placeholders = ",".join(["%s"] * len(normalized_ids))
+    sql = (
+        "SELECT DISTINCT actor_id "
+        "  FROM chat_push_subscriptions "
+        " WHERE actor_type='external_user_id' "
+        f"   AND actor_id IN ({placeholders})"
+    )
+    rows = db_get_all(sql, tuple(str(uid) for uid in normalized_ids)) or []
+    subscribed_ids: set[int] = set()
+    for row in rows:
+        try:
+            subscribed_ids.add(int(row.get("actor_id")))
+        except (TypeError, ValueError, AttributeError):
+            continue
+    return subscribed_ids
+
 # =============================================================================
 # 定数 / 設定
 # =============================================================================
@@ -1511,6 +1544,7 @@ def upload_child(album_id, child_id):
                 return True
 
             recipients = [r for r in rows if _is_kind_enabled(r)]
+            notify_kind_excluded_count = max(0, len(rows) - len(recipients))
             should_send_admin_push = kind in ("upload", "process_done")
             if not recipients and not should_send_admin_push:
                 current_app.logger.info(
@@ -1527,22 +1561,29 @@ def upload_child(album_id, child_id):
                 for r in recipients
                 if str(r.get("email") or "").strip()
             ]
-            push_recipients = []
+            push_candidate_user_ids = []
             for r in recipients:
                 try:
                     ext_user_id = int(r.get("ext_user_id") or 0)
                 except (TypeError, ValueError):
                     ext_user_id = 0
                 if ext_user_id > 0:
-                    push_recipients.append(ext_user_id)
+                    push_candidate_user_ids.append(ext_user_id)
+
+            push_subscribed_user_ids = _fetch_push_subscribed_ext_user_ids(push_candidate_user_ids)
+            push_recipients = [ext_user_id for ext_user_id in push_candidate_user_ids if ext_user_id in push_subscribed_user_ids]
+            push_subscription_excluded_count = max(0, len(push_candidate_user_ids) - len(push_recipients))
 
             current_app.logger.info(
-                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_recipients=%d",
+                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_candidates=%d push_recipients=%d notify_kind_excluded=%d push_subscription_excluded=%d",
                 len(recipients),
                 album_id,
                 child_id,
                 len(mail_recipients),
+                len(push_candidate_user_ids),
                 len(push_recipients),
+                notify_kind_excluded_count,
+                push_subscription_excluded_count,
             )
             request_by_email = None
             if _is_ext_logged_in():
@@ -1772,6 +1813,7 @@ def upload_child(album_id, child_id):
 
             current_app.logger.info(
                 "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s mail_recipients_count=%s push_recipients_count=%s "
+                "notify_kind_excluded_count=%s push_subscription_excluded_count=%s "
                 "relative_target_url=%s absolute_target_url=%s admin_target_url=%s dedup_key_samples=%s dedup_key_count=%s "
                 "mail_failed_count=%s push_failed_count=%s push_skipped_count=%s admin_push_attempted=%s admin_push_dedup_key=%s "
                 "admin_push_in_app=%s admin_push_web_push=%s admin_push_duplicate=%s admin_push_ok=%s admin_push_failure=%s",
@@ -1781,6 +1823,8 @@ def upload_child(album_id, child_id):
                 recipients_total,
                 len(mail_recipients),
                 len(push_recipients),
+                notify_kind_excluded_count,
+                push_subscription_excluded_count,
                 relative_target_url,
                 absolute_target_url,
                 admin_target_url,

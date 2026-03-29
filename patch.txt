@@ -1,471 +1,245 @@
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 63fbc387300aa8553bfa4d987004236b8390b7eb..7fc38128463d443c5905a42209e76d7543e3b92f 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -1,31 +1,31 @@
- from __future__ import annotations
- 
- import hashlib
- import hmac
- import os
--from datetime import datetime, timedelta, timezone
-+from datetime import datetime, time, timedelta, timezone
- from time import perf_counter
- from typing import Any
- from urllib.parse import parse_qs, urlparse
- 
- from flask import Blueprint, abort, current_app, jsonify, redirect, render_template, request, session
- 
- from . import bp
- from .utils import _require_ext_login
- from app.utils.db import get_db
- from app.utils.mail import EXTERNAL_UNREAD_REMINDER_BODY, EXTERNAL_UNREAD_REMINDER_SUBJECT, send_mail
- 
- try:
-     from app.chat.socketio_ext import socketio
- except Exception:  # pragma: no cover
-     socketio = None
- 
- 
- _READ_NOTIFICATIONS_KEEP_LIMIT = 30
- _JST = timezone(timedelta(hours=9))
- mfu_notifications_bp = Blueprint("mfu_notifications", __name__)
- _EXTERNAL_UNREAD_REMINDER_COLUMN = "notification_unread_reminder_last_sent_at"
- 
- 
- def _notification_recipient_key(user_kind: str, user_id: int, recipient_key: str | None = None) -> str:
-     if str(user_kind) == "mfu":
-@@ -186,51 +186,56 @@ def _require_mfu_admin_acl() -> tuple[str | None, Any | None]:
-         current_app.logger.info("mfu notification guard denied reason=forbidden username=%s role=%s", username, role)
-         return None, (jsonify({"ok": False, "reason": "forbidden"}), 403)
-     current_app.logger.info("mfu notification guard pass username=%s role=%s", username, role)
-     return username, None
- 
- 
- def _now_utc() -> datetime:
-     return datetime.now(timezone.utc)
- 
- 
- def _as_utc(dt: datetime | None) -> datetime | None:
-     if dt is None:
-         return None
-     if dt.tzinfo is None:
-         return dt.replace(tzinfo=timezone.utc)
-     return dt.astimezone(timezone.utc)
- 
- 
- def _can_send_external_unread_reminder(last_sent_at: datetime | None, now_utc: datetime | None) -> bool:
-     last_sent_utc = _as_utc(last_sent_at)
-     current_utc = _as_utc(now_utc)
-     if current_utc is None:
-         return False
-     if last_sent_utc is None:
-         return True
--    return current_utc >= (last_sent_utc + timedelta(days=2))
-+
-+    last_sent_jst = last_sent_utc.astimezone(_JST)
-+    current_jst = current_utc.astimezone(_JST)
-+    allowed_date = last_sent_jst.date() + timedelta(days=2)
-+    allowed_at_jst = datetime.combine(allowed_date, time(10, 0, 0), tzinfo=_JST)
-+    return current_jst >= allowed_at_jst
- 
- 
- def _relative_time_from(dt: datetime | None) -> str:
-     if not dt:
-         return ""
-     if dt.tzinfo is None:
-         dt = dt.replace(tzinfo=timezone.utc)
-     delta = max(0, int((_now_utc() - dt).total_seconds()))
-     if delta < 60:
-         return "たった今"
-     if delta < 3600:
-         return f"{delta // 60}分前"
-     if delta < 86400:
-         return f"{delta // 3600}時間前"
-     if delta < 86400 * 7:
-         return f"{delta // 86400}日前"
-     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
- 
- 
- def _parse_chat_room_context(row: dict[str, Any]) -> tuple[int | None, str | None]:
-     chat_room_id = str(row.get("chat_room_id") or "").strip()
-     chat_event_id = int(row.get("chat_event_id") or 0) or None
-     if chat_room_id:
-         return chat_event_id, chat_room_id
- 
-@@ -669,51 +674,51 @@ def send_external_unread_reminder_emails(*, now_utc: datetime | None = None) ->
- 
-             try:
-                 unread_count = _compute_unread_count_external(user_id)
-             except Exception:
-                 summary["failed"] += 1
-                 current_app.logger.exception(
-                     "external unread reminder unread count failed user_id=%s email=%s",
-                     user_id,
-                     email,
-                 )
-                 continue
- 
-             if unread_count <= 0:
-                 summary["skipped_no_unread"] += 1
-                 current_app.logger.info(
-                     "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=unreadなし",
-                     user_id,
-                     email,
-                     unread_count,
-                 )
-                 continue
- 
-             if not _can_send_external_unread_reminder(last_sent_at, now_utc):
-                 summary["skipped_too_soon"] += 1
-                 current_app.logger.info(
--                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=last sent < 2 days ago last_sent_at=%s",
-+                    "external unread reminder skipped user_id=%s email=%s unread_count=%s reason=before resend window (2 days later 10:00 JST) last_sent_at=%s",
-                     user_id,
-                     email,
-                     unread_count,
-                     last_sent_at.isoformat() if last_sent_at else None,
-                 )
-                 continue
- 
-             try:
-                 send_mail(
-                     email,
-                     EXTERNAL_UNREAD_REMINDER_SUBJECT,
-                     EXTERNAL_UNREAD_REMINDER_BODY,
-                     external_login_user_id=user_id,
-                     mail_kind="external_unread_reminder",
-                     append_signature=False,
-                     from_display_name="Mimoria",
-                 )
-                 try:
-                     update_cur.execute(
-                         f"""
-                         UPDATE external_login_user
-                            SET {_EXTERNAL_UNREAD_REMINDER_COLUMN}=%s
-                          WHERE id=%s
-                         """,
-                         (now_utc.replace(tzinfo=None), user_id),
-diff --git a/tests/test_external_unread_reminder.py b/tests/test_external_unread_reminder.py
-index f5a0f4ec9fd44212a3232cdfe3791c8f4147b041..9beac252b78ea1dace3ac55c600ec2c5d70491dc 100644
---- a/tests/test_external_unread_reminder.py
-+++ b/tests/test_external_unread_reminder.py
-@@ -1,30 +1,30 @@
- import importlib.util
- import sys
- import types
- import unittest
--from datetime import datetime, timezone
-+from datetime import datetime, timedelta, timezone
- from pathlib import Path
- from unittest.mock import patch
- 
- 
- class _DummyLogger:
-     def info(self, *args, **kwargs):
-         return None
- 
-     def warning(self, *args, **kwargs):
-         return None
- 
-     def exception(self, *args, **kwargs):
-         return None
- 
- 
- class _DummyBlueprint:
-     def __init__(self, *args, **kwargs):
-         return None
- 
-     def app_context_processor(self, func):
-         return func
- 
-     def record_once(self, func):
-         return func
- 
-@@ -70,51 +70,53 @@ def load_mail_module():
-     sys.modules["app.utils.mail"] = module
-     spec.loader.exec_module(module)
-     return module
- 
- 
- def load_notifications_module():
-     repo_root = Path(__file__).resolve().parents[1]
-     _install_flask_stub()
- 
-     package_module = types.ModuleType("external_login_user")
-     package_module.__path__ = [str(repo_root / "external_login_user")]  # type: ignore[attr-defined]
-     package_module.bp = _DummyBlueprint()
-     sys.modules["external_login_user"] = package_module
- 
-     ext_utils_module = types.ModuleType("external_login_user.utils")
-     ext_utils_module._require_ext_login = lambda: None
-     sys.modules["external_login_user.utils"] = ext_utils_module
- 
-     app_module = types.ModuleType("app")
-     app_module.__path__ = []  # type: ignore[attr-defined]
-     app_utils_module = types.ModuleType("app.utils")
-     app_utils_module.__path__ = []  # type: ignore[attr-defined]
-     app_utils_db = types.ModuleType("app.utils.db")
-     app_utils_db.get_db = lambda: None
-     app_utils_mail = types.ModuleType("app.utils.mail")
--    app_utils_mail.send_external_unread_reminder_mail = lambda *args, **kwargs: None
-+    app_utils_mail.EXTERNAL_UNREAD_REMINDER_SUBJECT = "subject"
-+    app_utils_mail.EXTERNAL_UNREAD_REMINDER_BODY = "body"
-+    app_utils_mail.send_mail = lambda *args, **kwargs: None
-     app_chat = types.ModuleType("app.chat")
-     app_chat.__path__ = []  # type: ignore[attr-defined]
-     app_chat_socket = types.ModuleType("app.chat.socketio_ext")
-     app_chat_socket.socketio = None
-     sys.modules["app"] = app_module
-     sys.modules["app.utils"] = app_utils_module
-     sys.modules["app.utils.db"] = app_utils_db
-     sys.modules["app.utils.mail"] = app_utils_mail
-     sys.modules["app.chat"] = app_chat
-     sys.modules["app.chat.socketio_ext"] = app_chat_socket
- 
-     spec = importlib.util.spec_from_file_location(
-         "external_login_user.notifications",
-         repo_root / "external_login_user" / "notifications.py",
+diff --git a/albums/routes.py b/albums/routes.py
+index f49010466085453ece33f071551c28f82a3c1c75..7f7e81deb1ae1a24ab8c76804e2c47d6bf77fa91 100644
+--- a/albums/routes.py
++++ b/albums/routes.py
+@@ -290,50 +290,83 @@ def _notify_requester_process_completion(
      )
-     module = importlib.util.module_from_spec(spec)
-     assert spec and spec.loader
-     sys.modules["external_login_user.notifications"] = module
-     spec.loader.exec_module(module)
-     return module
+     try:
+         from app.utils.mail import send_mail
+     except Exception:
+         try:
+             from app.mail import send_mail
+         except Exception:
+             send_mail = None
+     if send_mail:
+         send_mail(requester_email, subject, body)
  
+ def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
+     if not user_ids:
+         return []
+     placeholders = ",".join(["%s"] * len(user_ids))
+     sql = (
+         "SELECT m.user_id, u.nickname, u.email, "
+         "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
+         "  FROM mfu_event_member m "
+         "  JOIN external_login_user u ON u.id = m.user_id "
+         f" WHERE m.event_id=%s AND m.user_id IN ({placeholders}) "
+         " ORDER BY u.nickname ASC, m.user_id ASC"
+     )
+     return db_get_all(sql, (event_id, *user_ids)) or []
  
- class ExternalUnreadReminderMailTest(unittest.TestCase):
-     def test_send_external_unread_reminder_mail_uses_existing_send_mail(self):
-         mail_module = load_mail_module()
-@@ -159,151 +161,219 @@ class ExternalUnreadReminderNotificationTest(unittest.TestCase):
-             self.committed = False
-             self.rolled_back = False
++
++def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
++    if not user_ids:
++        return set()
++    normalized_ids: list[int] = []
++    seen: set[int] = set()
++    for user_id in user_ids:
++        try:
++            value = int(user_id)
++        except (TypeError, ValueError):
++            continue
++        if value <= 0 or value in seen:
++            continue
++        seen.add(value)
++        normalized_ids.append(value)
++    if not normalized_ids:
++        return set()
++    placeholders = ",".join(["%s"] * len(normalized_ids))
++    sql = (
++        "SELECT DISTINCT actor_id "
++        "  FROM chat_push_subscriptions "
++        " WHERE actor_type='external_user_id' "
++        f"   AND actor_id IN ({placeholders})"
++    )
++    rows = db_get_all(sql, tuple(str(uid) for uid in normalized_ids)) or []
++    subscribed_ids: set[int] = set()
++    for row in rows:
++        try:
++            subscribed_ids.add(int(row.get("actor_id")))
++        except (TypeError, ValueError, AttributeError):
++            continue
++    return subscribed_ids
++
+ # =============================================================================
+ # 定数 / 設定
+ # =============================================================================
+ # --- 写真(静止画/加工)のルート（切替対象） ---
+ SSD_ROOT = '/mnt/mfu/mfu_albums'                 # 従来のSSD保存先
+ HDD_ROOT = '/mnt/maildata/mfu_albums'            # 長期保管HDD保存先
+ DEFAULT_STORAGE = 'ssd'                           # 新規はSSDに作成
  
-         def cursor(self, dictionary=False):
-             return self.select_cursor if dictionary else self.update_cursor
+ # --- 互換のため残す（直接は使わず、storage_child_dir経由で解決） ---
+ ALBUM_ROOT = SSD_ROOT
  
-         def commit(self):
-             self.committed = True
+ # --- 動画のルート（固定・切替対象外） ---
+ MOVIE_ROOT = '/mnt/mfu/mfu_album_movie'
  
-         def rollback(self):
-             self.rolled_back = True
+ # 追加：動画サブディレクトリ
+ MOVIE_ORIG_SUB = 'original'
+ MOVIE_ENC_SUB  = 'encoded'
  
-         def close(self):
-             return None
+ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'webp'}
+ ALLOWED_MOVIE_EXTS = {'mp4', 'mov', 'm4v', 'webm'}
+ MAX_MOVIE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
  
-     def test_can_send_external_unread_reminder_allows_null_last_sent_at(self):
-         notifications = load_notifications_module()
+ # ffmpeg/ffprobe の検出（未導入なら None）
+ FFMPEG = shutil.which("ffmpeg")
+ FFPROBE = shutil.which("ffprobe")
+@@ -1489,82 +1522,90 @@ def upload_child(album_id, child_id):
+                     if not status:
+                         continue
+                     if int(status.get("request_flag", 0)) != 1:
+                         continue
+                     if int(status.get("complete_flag", 0)) == 1:
+                         continue
+                     filtered.append(r)
+                 rows = filtered
+                 current_app.logger.info(
+                     "notify: filter kind=%s album_id=%s child_id=%s sql_condition=%s candidates=%s",
+                     kind,
+                     album_id,
+                     child_id,
+                     "request_flag=1 AND complete_flag=0",
+                     len(rows),
+                 )
  
-         self.assertTrue(
-             notifications._can_send_external_unread_reminder(
-                 None,
-                 datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc),
+             def _is_kind_enabled(recipient: dict) -> bool:
+                 if kind == "upload":
+                     return int(recipient.get("notify_album_upload", 1) or 0) == 1
+                 if kind == "process_done":
+                     return int(recipient.get("notify_album_process", 1) or 0) == 1
+                 return True
+ 
+             recipients = [r for r in rows if _is_kind_enabled(r)]
++            notify_kind_excluded_count = max(0, len(rows) - len(recipients))
+             should_send_admin_push = kind in ("upload", "process_done")
+             if not recipients and not should_send_admin_push:
+                 current_app.logger.info(
+                     "notify: skip no recipients kind=%s album_id=%s child_id=%s recipients_total=%s",
+                     kind,
+                     album_id,
+                     child_id,
+                     recipients_total,
+                 )
+                 return
+ 
+             mail_recipients = [
+                 str(r.get("email") or "").strip()
+                 for r in recipients
+                 if str(r.get("email") or "").strip()
+             ]
+-            push_recipients = []
++            push_candidate_user_ids = []
+             for r in recipients:
+                 try:
+                     ext_user_id = int(r.get("ext_user_id") or 0)
+                 except (TypeError, ValueError):
+                     ext_user_id = 0
+                 if ext_user_id > 0:
+-                    push_recipients.append(ext_user_id)
++                    push_candidate_user_ids.append(ext_user_id)
++
++            push_subscribed_user_ids = _fetch_push_subscribed_ext_user_ids(push_candidate_user_ids)
++            push_recipients = [ext_user_id for ext_user_id in push_candidate_user_ids if ext_user_id in push_subscribed_user_ids]
++            push_subscription_excluded_count = max(0, len(push_candidate_user_ids) - len(push_recipients))
+ 
+             current_app.logger.info(
+-                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_recipients=%d",
++                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_candidates=%d push_recipients=%d notify_kind_excluded=%d push_subscription_excluded=%d",
+                 len(recipients),
+                 album_id,
+                 child_id,
+                 len(mail_recipients),
++                len(push_candidate_user_ids),
+                 len(push_recipients),
++                notify_kind_excluded_count,
++                push_subscription_excluded_count,
              )
-         )
- 
-+    def test_can_send_external_unread_reminder_allows_when_jst_resend_window_started(self):
-+        notifications = load_notifications_module()
-+        jst = timezone(timedelta(hours=9))
-+
-+        self.assertTrue(
-+            notifications._can_send_external_unread_reminder(
-+                datetime(2026, 3, 25, 10, 0, 19, tzinfo=jst),
-+                datetime(2026, 3, 27, 1, 0, 7, tzinfo=timezone.utc),
-+            )
-+        )
-+
-+    def test_can_send_external_unread_reminder_blocks_before_jst_resend_window(self):
-+        notifications = load_notifications_module()
-+        jst = timezone(timedelta(hours=9))
-+
-+        self.assertFalse(
-+            notifications._can_send_external_unread_reminder(
-+                datetime(2026, 3, 25, 10, 0, 19, tzinfo=jst),
-+                datetime(2026, 3, 27, 0, 59, 59, tzinfo=timezone.utc),
-+            )
-+        )
-+
-+    def test_can_send_external_unread_reminder_allows_even_if_not_48h_elapsed(self):
-+        notifications = load_notifications_module()
-+        jst = timezone(timedelta(hours=9))
-+
-+        self.assertTrue(
-+            notifications._can_send_external_unread_reminder(
-+                datetime(2026, 3, 25, 23, 50, 0, tzinfo=jst),
-+                datetime(2026, 3, 27, 1, 0, 7, tzinfo=timezone.utc),
-+            )
-+        )
-+
-+    def test_can_send_external_unread_reminder_blocks_before_next_day_window(self):
-+        notifications = load_notifications_module()
-+        jst = timezone(timedelta(hours=9))
-+
-+        self.assertFalse(
-+            notifications._can_send_external_unread_reminder(
-+                datetime(2026, 3, 25, 9, 0, 0, tzinfo=jst),
-+                datetime(2026, 3, 26, 1, 0, 0, tzinfo=timezone.utc),
-+            )
-+        )
-+
-     def test_send_external_unread_reminder_emails_skips_no_unread_before_too_soon(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 22, 9, 0, 0)}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
- 
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
--            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "send_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=0) as mocked_unread,
-         ):
-             summary = notifications.send_external_unread_reminder_emails(
--                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
-+                now_utc=datetime(2026, 3, 22, 0, 59, 59, tzinfo=timezone.utc)
-             )
- 
-         self.assertEqual(summary["candidates"], 1)
-         self.assertEqual(summary["skipped_no_unread"], 1)
-         self.assertEqual(summary["skipped_too_soon"], 0)
-         self.assertEqual(summary["sent"], 0)
-         mocked_send.assert_not_called()
-         mocked_unread.assert_called_once_with(10)
-         self.assertEqual(update_db.update_cursor.executed, [])
- 
--    def test_send_external_unread_reminder_emails_skips_user_when_last_send_is_less_than_48_hours(self):
-+    def test_send_external_unread_reminder_emails_skips_user_when_before_jst_resend_window(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
- 
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
--            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "send_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=2) as mocked_unread,
-         ):
-             summary = notifications.send_external_unread_reminder_emails(
--                now_utc=datetime(2026, 3, 22, 9, 59, 59, tzinfo=timezone.utc)
-+                now_utc=datetime(2026, 3, 22, 0, 59, 59, tzinfo=timezone.utc)
-             )
- 
-         self.assertEqual(summary["candidates"], 1)
-         self.assertEqual(summary["skipped_too_soon"], 1)
-         self.assertEqual(summary["sent"], 0)
-         mocked_send.assert_not_called()
-         mocked_unread.assert_called_once_with(10)
-         self.assertEqual(update_db.update_cursor.executed, [])
- 
--    def test_send_external_unread_reminder_emails_sends_when_last_send_is_exactly_48_hours_ago(self):
-+    def test_send_external_unread_reminder_emails_sends_when_jst_resend_window_started(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": datetime(2026, 3, 20, 10, 0, 0)}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
-         get_db_side_effect = [select_db, update_db]
-         now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
- 
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
--            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "send_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=3),
-         ):
-             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
- 
-         self.assertEqual(summary["sent"], 1)
-         self.assertEqual(summary["failed"], 0)
--        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-+        mocked_send.assert_called_once_with(
-+            "user@example.com",
-+            notifications.EXTERNAL_UNREAD_REMINDER_SUBJECT,
-+            notifications.EXTERNAL_UNREAD_REMINDER_BODY,
-+            external_login_user_id=10,
-+            mail_kind="external_unread_reminder",
-+            append_signature=False,
-+            from_display_name="Mimoria",
-+        )
-         self.assertTrue(update_db.committed)
-         self.assertFalse(update_db.rolled_back)
-         self.assertEqual(len(update_db.update_cursor.executed), 1)
-         executed_query, executed_params = update_db.update_cursor.executed[0]
-         self.assertEqual(
-             " ".join(executed_query.split()),
-             "UPDATE external_login_user SET notification_unread_reminder_last_sent_at=%s WHERE id=%s",
-         )
-         self.assertEqual(executed_params, (now_utc.replace(tzinfo=None), 10))
- 
-     def test_send_external_unread_reminder_emails_updates_last_sent_at_only_on_success(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
-         get_db_side_effect = [select_db, update_db]
-         now_utc = datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
- 
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=get_db_side_effect),
--            patch.object(notifications, "send_external_unread_reminder_mail") as mocked_send,
-+            patch.object(notifications, "send_mail") as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=1),
-         ):
-             summary = notifications.send_external_unread_reminder_emails(now_utc=now_utc)
- 
-         self.assertEqual(summary["sent"], 1)
--        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-+        mocked_send.assert_called_once_with(
-+            "user@example.com",
-+            notifications.EXTERNAL_UNREAD_REMINDER_SUBJECT,
-+            notifications.EXTERNAL_UNREAD_REMINDER_BODY,
-+            external_login_user_id=10,
-+            mail_kind="external_unread_reminder",
-+            append_signature=False,
-+            from_display_name="Mimoria",
-+        )
-         self.assertTrue(update_db.committed)
-         self.assertEqual(len(update_db.update_cursor.executed), 1)
- 
-     def test_send_external_unread_reminder_emails_does_not_update_last_sent_at_on_failure(self):
-         notifications = load_notifications_module()
-         rows = [{"id": 10, "email": "user@example.com", "last_sent_at": None}]
-         select_db = self._FakeDB(rows)
-         update_db = self._FakeDB()
- 
-         with (
-             patch.object(notifications, "_ensure_notification_schema"),
-             patch.object(notifications, "get_db", side_effect=[select_db, update_db]),
-             patch.object(
-                 notifications,
--                "send_external_unread_reminder_mail",
-+                "send_mail",
-                 side_effect=RuntimeError("smtp error"),
-             ) as mocked_send,
-             patch.object(notifications, "_compute_unread_count_external", return_value=2),
-         ):
-             summary = notifications.send_external_unread_reminder_emails(
-                 now_utc=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc)
+             request_by_email = None
+             if _is_ext_logged_in():
+                 ext_user_id = session.get("ext_user_id")
+                 if ext_user_id:
+                     me = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (int(ext_user_id),))
+                     request_by_email = (me or {}).get("email")
+             current_app.logger.info(
+                 "notify: pre_send kind=%s album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
+                 kind,
+                 album_id,
+                 child_id,
+                 request_by_email,
+                 len(mail_recipients),
+                 _preview_recipients(mail_recipients),
+                 "request_flag=1 AND complete_flag=0" if (mode == "process" and kind in ("upload", "process_done")) else "n/a",
              )
  
-         self.assertEqual(summary["failed"], 1)
-         self.assertEqual(summary["sent"], 0)
--        mocked_send.assert_called_once_with("user@example.com", external_login_user_id=10)
-+        mocked_send.assert_called_once_with(
-+            "user@example.com",
-+            notifications.EXTERNAL_UNREAD_REMINDER_SUBJECT,
-+            notifications.EXTERNAL_UNREAD_REMINDER_BODY,
-+            external_login_user_id=10,
-+            mail_kind="external_unread_reminder",
-+            append_signature=False,
-+            from_display_name="Mimoria",
-+        )
-         self.assertFalse(update_db.committed)
-         self.assertEqual(update_db.update_cursor.executed, [])
+             # ★ クールタイム（uploadのみ対象／process_doneは対象外）
+             cooldown_state_path = os.path.join(child_path, ".notify_state.json")
+             cooldown_bucket = None
+             if kind == "upload":
+                 COOLDOWN_SEC = 300  # 5分
+                 now_ts = int(time.time())
+                 cooldown_bucket = now_ts // COOLDOWN_SEC
+@@ -1750,59 +1791,62 @@ def upload_child(album_id, child_id):
+                     )
+                 except Exception as e:
+                     admin_push_result["failure"] = str(e)
+                     current_app.logger.warning(
+                         "notify admin push failed admin_push_kind=%s album_id=%s child_id=%s admin_target_url=%s error=%s",
+                         kind,
+                         album_id,
+                         child_id,
+                         admin_target_url,
+                         e,
+                     )
  
+             # ★クールタイム記録（uploadのみ・送信が1件以上成功時）
+             if kind == "upload" and sent_ok:
+                 try:
+                     now_ts = int(time.time())
+                     tmp = cooldown_state_path + ".tmp"
+                     with open(tmp, "w", encoding="utf-8") as tf:
+                         json.dump({"last_upload_ts": now_ts}, tf, ensure_ascii=False, indent=2)
+                     os.replace(tmp, cooldown_state_path)
+                 except Exception as e:
+                     current_app.logger.warning("notify(cooldown write) failed: %s", e)
  
- if __name__ == "__main__":
-     unittest.main()
+             current_app.logger.info(
+                 "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s mail_recipients_count=%s push_recipients_count=%s "
++                "notify_kind_excluded_count=%s push_subscription_excluded_count=%s "
+                 "relative_target_url=%s absolute_target_url=%s admin_target_url=%s dedup_key_samples=%s dedup_key_count=%s "
+                 "mail_failed_count=%s push_failed_count=%s push_skipped_count=%s admin_push_attempted=%s admin_push_dedup_key=%s "
+                 "admin_push_in_app=%s admin_push_web_push=%s admin_push_duplicate=%s admin_push_ok=%s admin_push_failure=%s",
+                 kind,
+                 album_id,
+                 child_id,
+                 recipients_total,
+                 len(mail_recipients),
+                 len(push_recipients),
++                notify_kind_excluded_count,
++                push_subscription_excluded_count,
+                 relative_target_url,
+                 absolute_target_url,
+                 admin_target_url,
+                 dedup_key_samples,
+                 len(push_recipients),
+                 mail_failed_count,
+                 push_failed_count,
+                 push_skipped_count,
+                 admin_push_result["attempted"],
+                 admin_push_result["dedup_key"],
+                 admin_push_result["in_app"],
+                 admin_push_result["web_push"],
+                 admin_push_result["duplicate"],
+                 admin_push_result["ok"],
+                 admin_push_result["failure"],
+             )
+ 
+         except Exception as e:
+             current_app.logger.warning("notify(inner) failed: %s", e)
+ 
+     if request.method == 'POST':
+         files = request.files.getlist('file')
+         if not files or files[0].filename == '':
+             flash('ファイルが選択されていません', 'danger')
+             return redirect(request.url)
