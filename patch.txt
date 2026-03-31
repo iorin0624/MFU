@@ -1,55 +1,58 @@
 diff --git a/records/bp.py b/records/bp.py
-index b1bda10e24ef4cbee68ea642aeaa81ae9813fa2f..63ab2b9625e9d896a807abfc20a5c198fe62e291 100644
+index 63ab2b9625e9d896a807abfc20a5c198fe62e291..1b75c8086dc33fd90f80d342583ca744e10435a7 100644
 --- a/records/bp.py
 +++ b/records/bp.py
-@@ -449,61 +449,80 @@ def uber_list():
-             COALESCE(monthly_agg.net_sum, 0) AS net_sum,
-             COALESCE(monthly_agg.total_sum, 0) AS total_sum,
-             CASE
-                 WHEN COALESCE(monthly_agg.deliveries_sum, 0) = 0 THEN NULL
-                 ELSE ROUND(monthly_agg.net_sum / monthly_agg.deliveries_sum)
-             END AS net_avg,
-             net_median.net_median AS net_median,
-             CASE
-                 WHEN COALESCE(monthly_agg.deliveries_sum, 0) = 0 THEN NULL
-                 ELSE ROUND(monthly_agg.total_sum / monthly_agg.deliveries_sum)
-             END AS total_avg,
-             total_median.total_median AS total_median
-         FROM months
-         LEFT JOIN monthly_agg ON monthly_agg.month_start = months.month_start
-         LEFT JOIN net_median ON net_median.month_start = months.month_start
-         LEFT JOIN total_median ON total_median.month_start = months.month_start
-         ORDER BY months.month_start DESC
-         """,
-         (min_month_start, month_start, min_month_start, month_end),
-     )
-     monthly_rows = cur.fetchall()
+@@ -470,59 +470,86 @@ def uber_list():
      db.close()
  
      for row in rows:
          deliveries = row.get("deliveries") or 0
-+        net_yen = row.get("net_yen") or 0
+         net_yen = row.get("net_yen") or 0
          total_yen = row.get("total_yen") or 0
--        row["avg_yen"] = round(total_yen / deliveries) if deliveries else None
-+        row["net_avg_yen"] = round(net_yen / deliveries) if deliveries else None
-+        row["total_avg_yen"] = round(total_yen / deliveries) if deliveries else None
-+
-+    calc_basis = {
-+        "year": today.year,
-+        "month": today.month,
-+        "net_median": None,
-+        "total_median": None,
-+    }
+         row["net_avg_yen"] = round(net_yen / deliveries) if deliveries else None
+         row["total_avg_yen"] = round(total_yen / deliveries) if deliveries else None
+ 
+     calc_basis = {
+         "year": today.year,
+         "month": today.month,
+         "net_median": None,
+         "total_median": None,
+     }
+     for monthly_row in monthly_rows:
+         if (monthly_row.get("year") == today.year) and (monthly_row.get("month") == today.month):
+             calc_basis = {
+                 "year": today.year,
+                 "month": today.month,
+                 "net_median": monthly_row.get("net_median"),
+                 "total_median": monthly_row.get("total_median"),
+             }
+             break
+ 
++    estimate_month_options = []
 +    for monthly_row in monthly_rows:
-+        if (monthly_row.get("year") == today.year) and (monthly_row.get("month") == today.month):
-+            calc_basis = {
-+                "year": today.year,
-+                "month": today.month,
++        year = int(monthly_row.get("year"))
++        month = int(monthly_row.get("month"))
++        key = f"{year}-{month:02d}"
++        estimate_month_options.append(
++            {
++                "key": key,
++                "label": key,
++                "year": year,
++                "month": month,
 +                "net_median": monthly_row.get("net_median"),
 +                "total_median": monthly_row.get("total_median"),
 +            }
-+            break
- 
++        )
++
++    current_month_key = f"{today.year}-{today.month:02d}"
++    estimate_month_keys = {option["key"] for option in estimate_month_options}
++    if current_month_key in estimate_month_keys:
++        default_estimate_month_key = current_month_key
++    elif estimate_month_options:
++        default_estimate_month_key = estimate_month_options[0]["key"]
++    else:
++        default_estimate_month_key = current_month_key
++
      deliveries_sum = summary.get("deliveries_sum") or 0
      total_sum = summary.get("total_sum") or 0
      summary_avg = round(total_sum / deliveries_sum) if deliveries_sum else None
@@ -58,7 +61,9 @@ index b1bda10e24ef4cbee68ea642aeaa81ae9813fa2f..63ab2b9625e9d896a807abfc20a5c198
          "records/uber/list.html",
          rows=rows,
          monthly_rows=monthly_rows,
-+        calc_basis=calc_basis,
+         calc_basis=calc_basis,
++        estimate_month_options=estimate_month_options,
++        default_estimate_month_key=default_estimate_month_key,
          ocr_queue_pending_count=ocr_queue_pending_count,
          default_work_date=today,
          summary={
@@ -85,14 +90,10 @@ index b1bda10e24ef4cbee68ea642aeaa81ae9813fa2f..63ab2b9625e9d896a807abfc20a5c198
      if from_date is not None:
          where_clauses.append("work_date >= %s")
 diff --git a/records/templates/records/uber/list.html b/records/templates/records/uber/list.html
-index ed0476484382bc0e2884d5451dd16703fcbee5aa..0a8d0eacd7d36da2719ed94bdc6521c8457609af 100644
+index 0a8d0eacd7d36da2719ed94bdc6521c8457609af..0acb78635ea110b122e426440aeb2b6b9ee22b3e 100644
 --- a/records/templates/records/uber/list.html
 +++ b/records/templates/records/uber/list.html
-@@ -96,145 +96,218 @@
-         <th class="text-end">中央値（合計）</th>
-       </tr>
-     </thead>
-     <tbody>
+@@ -100,57 +100,62 @@
        {% for row in monthly_rows %}
        <tr>
          <td>{{ row.year }}-{{ '%02d'|format(row.month) }}</td>
@@ -114,85 +115,57 @@ index ed0476484382bc0e2884d5451dd16703fcbee5aa..0a8d0eacd7d36da2719ed94bdc6521c8
    </table>
  </div>
  
-+<div class="card shadow-sm mb-4">
-+  <div class="card-body">
-+    <h2 class="h5 mb-3">ざっくり売上試算</h2>
+ <div class="card shadow-sm mb-4">
+   <div class="card-body">
+     <h2 class="h5 mb-3">ざっくり売上試算</h2>
+     <div class="mb-3">
+-      <span class="me-3">基準月: {{ calc_basis.year }}-{{ '%02d'|format(calc_basis.month) }}</span>
+-      <span class="me-3">正味中央値: ¥{{ calc_basis.net_median|fmt_yen }}</span>
+-      <span>合計中央値: ¥{{ calc_basis.total_median|fmt_yen }}</span>
++      <label for="estimateMonthSelect" class="form-label">基準月</label>
++      <select id="estimateMonthSelect" class="form-select">
++        {% for option in estimate_month_options %}
++        <option value="{{ option.key }}" {% if option.key == default_estimate_month_key %}selected{% endif %}>{{ option.label }}</option>
++        {% endfor %}
++      </select>
+     </div>
+-    {% if calc_basis.net_median is none or calc_basis.total_median is none %}
+-    <div class="alert alert-warning py-2 mb-3">現在月の中央値データが無いため試算できません。</div>
+-    {% endif %}
 +    <div class="mb-3">
-+      <span class="me-3">基準月: {{ calc_basis.year }}-{{ '%02d'|format(calc_basis.month) }}</span>
-+      <span class="me-3">正味中央値: ¥{{ calc_basis.net_median|fmt_yen }}</span>
-+      <span>合計中央値: ¥{{ calc_basis.total_median|fmt_yen }}</span>
++      <span class="me-3">正味中央値: <span id="estimateNetMedianDisplay">-</span></span>
++      <span>合計中央値: <span id="estimateTotalMedianDisplay">-</span></span>
 +    </div>
-+    {% if calc_basis.net_median is none or calc_basis.total_median is none %}
-+    <div class="alert alert-warning py-2 mb-3">現在月の中央値データが無いため試算できません。</div>
-+    {% endif %}
-+    <div class="row g-3 mb-3">
-+      <div class="col-md-6">
-+        <label for="estimateDeliveriesPerDay" class="form-label">1日あたり件数</label>
-+        <input type="number" id="estimateDeliveriesPerDay" class="form-control" min="0" step="1">
-+      </div>
-+      <div class="col-md-6">
-+        <label for="estimateDays" class="form-label">日数</label>
-+        <input type="number" id="estimateDays" class="form-control" min="0" step="1">
-+      </div>
-+    </div>
-+    <div class="row g-3">
-+      <div class="col-md-6">
-+        <div class="text-muted small">正味金額</div>
-+        <div id="estimateNetAmount" class="fs-5 fw-bold">-</div>
-+      </div>
-+      <div class="col-md-6">
-+        <div class="text-muted small">合計金額</div>
-+        <div id="estimateTotalAmount" class="fs-5 fw-bold">-</div>
-+      </div>
-+    </div>
-+  </div>
-+</div>
-+
++    <div id="estimateUnavailableMessage" class="alert alert-warning py-2 mb-3 d-none">選択中の基準月の中央値データが無いため試算できません。</div>
+     <div class="row g-3 mb-3">
+       <div class="col-md-6">
+         <label for="estimateDeliveriesPerDay" class="form-label">1日あたり件数</label>
+         <input type="number" id="estimateDeliveriesPerDay" class="form-control" min="0" step="1">
+       </div>
+       <div class="col-md-6">
+         <label for="estimateDays" class="form-label">日数</label>
+         <input type="number" id="estimateDays" class="form-control" min="0" step="1">
+       </div>
+     </div>
+     <div class="row g-3">
+       <div class="col-md-6">
+         <div class="text-muted small">正味金額</div>
+         <div id="estimateNetAmount" class="fs-5 fw-bold">-</div>
+       </div>
+       <div class="col-md-6">
+         <div class="text-muted small">合計金額</div>
+         <div id="estimateTotalAmount" class="fs-5 fw-bold">-</div>
+       </div>
+     </div>
+   </div>
+ </div>
+ 
  <div class="table-responsive">
    <table class="table table-striped align-middle">
-     <thead class="table-light">
-       <tr>
-         <th class="text-center">選択</th>
-         <th>日付</th>
-         <th class="text-end">件数</th>
-         <th class="text-end">正味</th>
-         <th class="text-end">プロモ</th>
-         <th class="text-end">その他</th>
-         <th class="text-end">チップ</th>
-         <th class="text-end">合計</th>
--        <th class="text-end">平均</th>
-+        <th class="text-end">正味平均</th>
-+        <th class="text-end">合計平均</th>
-         <th class="text-end">操作</th>
-       </tr>
-     </thead>
-     <tbody>
-       {% for row in rows %}
-       <tr>
-         <td class="text-center">
-           <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" {% if not row.freee_exported_at %}checked{% endif %}>
-         </td>
-         <td>{{ row.work_date }}</td>
-         <td class="text-end">{{ row.deliveries|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.net_yen|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.promo_yen|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.other_yen|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.tip_yen|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.total_yen|fmt_yen }}</td>
--        <td class="text-end">{{ row.avg_yen|fmt_yen }}</td>
-+        <td class="text-end">{{ row.net_avg_yen|fmt_yen }}</td>
-+        <td class="text-end">{{ row.total_avg_yen|fmt_yen }}</td>
-         <td class="text-end">
-           <a class="btn btn-sm btn-outline-primary" href="{{ url_for('records.uber_edit', record_id=row.id) }}">編集</a>
-           <form method="post" action="{{ url_for('records.uber_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
-             <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
-           </form>
-         </td>
-       </tr>
+@@ -194,118 +199,161 @@
        {% else %}
        <tr>
--        <td colspan="10" class="text-center text-muted">データがありません。</td>
-+        <td colspan="11" class="text-center text-muted">データがありません。</td>
+         <td colspan="11" class="text-center text-muted">データがありません。</td>
        </tr>
        {% endfor %}
      </tbody>
@@ -211,12 +184,18 @@ index ed0476484382bc0e2884d5451dd16703fcbee5aa..0a8d0eacd7d36da2719ed94bdc6521c8
        const errorBox = document.getElementById('uberOcrError');
        const previewWrap = document.getElementById('uberOcrPreviewWrap');
        const previewImage = document.getElementById('uberOcrPreview');
-+      const estimateDeliveriesPerDay = document.getElementById('estimateDeliveriesPerDay');
-+      const estimateDays = document.getElementById('estimateDays');
-+      const estimateNetAmount = document.getElementById('estimateNetAmount');
-+      const estimateTotalAmount = document.getElementById('estimateTotalAmount');
-+      const estimateNetMedian = {{ calc_basis.net_median|tojson }};
-+      const estimateTotalMedian = {{ calc_basis.total_median|tojson }};
+       const estimateDeliveriesPerDay = document.getElementById('estimateDeliveriesPerDay');
+       const estimateDays = document.getElementById('estimateDays');
+       const estimateNetAmount = document.getElementById('estimateNetAmount');
+       const estimateTotalAmount = document.getElementById('estimateTotalAmount');
+-      const estimateNetMedian = {{ calc_basis.net_median|tojson }};
+-      const estimateTotalMedian = {{ calc_basis.total_median|tojson }};
++      const estimateMonthSelect = document.getElementById('estimateMonthSelect');
++      const estimateNetMedianDisplay = document.getElementById('estimateNetMedianDisplay');
++      const estimateTotalMedianDisplay = document.getElementById('estimateTotalMedianDisplay');
++      const estimateUnavailableMessage = document.getElementById('estimateUnavailableMessage');
++      const estimateMonthOptions = {{ estimate_month_options|tojson }};
++      const defaultEstimateMonthKey = {{ default_estimate_month_key|tojson }};
  
        const setError = function (message) {
          if (!message) {
@@ -254,37 +233,79 @@ index ed0476484382bc0e2884d5451dd16703fcbee5aa..0a8d0eacd7d36da2719ed94bdc6521c8
          });
        };
  
-+      const formatYen = function (value) {
-+        return '¥' + Number(value).toLocaleString('ja-JP');
+       const formatYen = function (value) {
+         return '¥' + Number(value).toLocaleString('ja-JP');
+       };
+ 
++      const getSelectedEstimateMonth = function () {
++        if (!estimateMonthSelect) {
++          return null;
++        }
++        return estimateMonthOptions.find(function (option) {
++          return option.key === estimateMonthSelect.value;
++        }) || null;
 +      };
 +
-+      const recalcEstimateBox = function () {
-+        if (!estimateNetAmount || !estimateTotalAmount) {
-+          return;
++      const updateEstimateMedianDisplay = function () {
++        const selectedMonth = getSelectedEstimateMonth();
++        const netMedian = selectedMonth ? selectedMonth.net_median : null;
++        const totalMedian = selectedMonth ? selectedMonth.total_median : null;
++        const unavailable = netMedian === null || totalMedian === null;
++
++        if (estimateNetMedianDisplay) {
++          estimateNetMedianDisplay.textContent = netMedian === null ? '-' : formatYen(Math.round(netMedian));
 +        }
-+        if (estimateNetMedian === null || estimateTotalMedian === null) {
-+          estimateNetAmount.textContent = '-';
-+          estimateTotalAmount.textContent = '-';
-+          return;
++        if (estimateTotalMedianDisplay) {
++          estimateTotalMedianDisplay.textContent = totalMedian === null ? '-' : formatYen(Math.round(totalMedian));
 +        }
-+        const deliveriesPerDayRaw = estimateDeliveriesPerDay ? Number(estimateDeliveriesPerDay.value || 0) : 0;
-+        const daysRaw = estimateDays ? Number(estimateDays.value || 0) : 0;
-+        const deliveriesPerDay = Number.isNaN(deliveriesPerDayRaw) ? 0 : deliveriesPerDayRaw;
-+        const days = Number.isNaN(daysRaw) ? 0 : daysRaw;
-+        const netAmount = Math.round(deliveriesPerDay * estimateNetMedian * days);
-+        const totalAmount = Math.round(deliveriesPerDay * estimateTotalMedian * days);
-+        estimateNetAmount.textContent = formatYen(netAmount);
-+        estimateTotalAmount.textContent = formatYen(totalAmount);
++        if (estimateUnavailableMessage) {
++          estimateUnavailableMessage.classList.toggle('d-none', !unavailable);
++        }
 +      };
 +
-+      if (estimateDeliveriesPerDay) {
-+        estimateDeliveriesPerDay.addEventListener('input', recalcEstimateBox);
+       const recalcEstimateBox = function () {
+         if (!estimateNetAmount || !estimateTotalAmount) {
+           return;
+         }
+-        if (estimateNetMedian === null || estimateTotalMedian === null) {
++        const selectedMonth = getSelectedEstimateMonth();
++        const netMedian = selectedMonth ? selectedMonth.net_median : null;
++        const totalMedian = selectedMonth ? selectedMonth.total_median : null;
++        if (netMedian === null || totalMedian === null) {
+           estimateNetAmount.textContent = '-';
+           estimateTotalAmount.textContent = '-';
+           return;
+         }
+         const deliveriesPerDayRaw = estimateDeliveriesPerDay ? Number(estimateDeliveriesPerDay.value || 0) : 0;
+         const daysRaw = estimateDays ? Number(estimateDays.value || 0) : 0;
+         const deliveriesPerDay = Number.isNaN(deliveriesPerDayRaw) ? 0 : deliveriesPerDayRaw;
+         const days = Number.isNaN(daysRaw) ? 0 : daysRaw;
+-        const netAmount = Math.round(deliveriesPerDay * estimateNetMedian * days);
+-        const totalAmount = Math.round(deliveriesPerDay * estimateTotalMedian * days);
++        const netAmount = Math.round(deliveriesPerDay * netMedian * days);
++        const totalAmount = Math.round(deliveriesPerDay * totalMedian * days);
+         estimateNetAmount.textContent = formatYen(netAmount);
+         estimateTotalAmount.textContent = formatYen(totalAmount);
+       };
+ 
++      if (estimateMonthSelect && defaultEstimateMonthKey) {
++        estimateMonthSelect.value = defaultEstimateMonthKey;
 +      }
-+      if (estimateDays) {
-+        estimateDays.addEventListener('input', recalcEstimateBox);
++      if (estimateMonthSelect) {
++        estimateMonthSelect.addEventListener('change', function () {
++          updateEstimateMedianDisplay();
++          recalcEstimateBox();
++        });
 +      }
-+      recalcEstimateBox();
-+
+       if (estimateDeliveriesPerDay) {
+         estimateDeliveriesPerDay.addEventListener('input', recalcEstimateBox);
+       }
+       if (estimateDays) {
+         estimateDays.addEventListener('input', recalcEstimateBox);
+       }
++      updateEstimateMedianDisplay();
+       recalcEstimateBox();
+ 
  
  
        const freeeDayCheckboxes = function () {
@@ -308,5 +329,3 @@ index ed0476484382bc0e2884d5451dd16703fcbee5aa..0a8d0eacd7d36da2719ed94bdc6521c8
        }
  
        if (clearAllBtn) {
-         clearAllBtn.addEventListener('click', function () {
-           setAllFreeeDayChecks(false);

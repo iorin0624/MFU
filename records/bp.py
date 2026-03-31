@@ -492,6 +492,31 @@ def uber_list():
             }
             break
 
+    estimate_month_options = []
+    for monthly_row in monthly_rows:
+        year = int(monthly_row.get("year"))
+        month = int(monthly_row.get("month"))
+        key = f"{year}-{month:02d}"
+        estimate_month_options.append(
+            {
+                "key": key,
+                "label": key,
+                "year": year,
+                "month": month,
+                "net_median": monthly_row.get("net_median"),
+                "total_median": monthly_row.get("total_median"),
+            }
+        )
+
+    current_month_key = f"{today.year}-{today.month:02d}"
+    estimate_month_keys = {option["key"] for option in estimate_month_options}
+    if current_month_key in estimate_month_keys:
+        default_estimate_month_key = current_month_key
+    elif estimate_month_options:
+        default_estimate_month_key = estimate_month_options[0]["key"]
+    else:
+        default_estimate_month_key = current_month_key
+
     deliveries_sum = summary.get("deliveries_sum") or 0
     total_sum = summary.get("total_sum") or 0
     summary_avg = round(total_sum / deliveries_sum) if deliveries_sum else None
@@ -501,6 +526,8 @@ def uber_list():
         rows=rows,
         monthly_rows=monthly_rows,
         calc_basis=calc_basis,
+        estimate_month_options=estimate_month_options,
+        default_estimate_month_key=default_estimate_month_key,
         ocr_queue_pending_count=ocr_queue_pending_count,
         default_work_date=today,
         summary={
