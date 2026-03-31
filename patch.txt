@@ -1,245 +1,312 @@
-diff --git a/albums/routes.py b/albums/routes.py
-index f49010466085453ece33f071551c28f82a3c1c75..7f7e81deb1ae1a24ab8c76804e2c47d6bf77fa91 100644
---- a/albums/routes.py
-+++ b/albums/routes.py
-@@ -290,50 +290,83 @@ def _notify_requester_process_completion(
+diff --git a/records/bp.py b/records/bp.py
+index b1bda10e24ef4cbee68ea642aeaa81ae9813fa2f..63ab2b9625e9d896a807abfc20a5c198fe62e291 100644
+--- a/records/bp.py
++++ b/records/bp.py
+@@ -449,61 +449,80 @@ def uber_list():
+             COALESCE(monthly_agg.net_sum, 0) AS net_sum,
+             COALESCE(monthly_agg.total_sum, 0) AS total_sum,
+             CASE
+                 WHEN COALESCE(monthly_agg.deliveries_sum, 0) = 0 THEN NULL
+                 ELSE ROUND(monthly_agg.net_sum / monthly_agg.deliveries_sum)
+             END AS net_avg,
+             net_median.net_median AS net_median,
+             CASE
+                 WHEN COALESCE(monthly_agg.deliveries_sum, 0) = 0 THEN NULL
+                 ELSE ROUND(monthly_agg.total_sum / monthly_agg.deliveries_sum)
+             END AS total_avg,
+             total_median.total_median AS total_median
+         FROM months
+         LEFT JOIN monthly_agg ON monthly_agg.month_start = months.month_start
+         LEFT JOIN net_median ON net_median.month_start = months.month_start
+         LEFT JOIN total_median ON total_median.month_start = months.month_start
+         ORDER BY months.month_start DESC
+         """,
+         (min_month_start, month_start, min_month_start, month_end),
      )
-     try:
-         from app.utils.mail import send_mail
-     except Exception:
-         try:
-             from app.mail import send_mail
-         except Exception:
-             send_mail = None
-     if send_mail:
-         send_mail(requester_email, subject, body)
+     monthly_rows = cur.fetchall()
+     db.close()
  
- def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
-     if not user_ids:
-         return []
-     placeholders = ",".join(["%s"] * len(user_ids))
-     sql = (
-         "SELECT m.user_id, u.nickname, u.email, "
-         "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
-         "  FROM mfu_event_member m "
-         "  JOIN external_login_user u ON u.id = m.user_id "
-         f" WHERE m.event_id=%s AND m.user_id IN ({placeholders}) "
-         " ORDER BY u.nickname ASC, m.user_id ASC"
+     for row in rows:
+         deliveries = row.get("deliveries") or 0
++        net_yen = row.get("net_yen") or 0
+         total_yen = row.get("total_yen") or 0
+-        row["avg_yen"] = round(total_yen / deliveries) if deliveries else None
++        row["net_avg_yen"] = round(net_yen / deliveries) if deliveries else None
++        row["total_avg_yen"] = round(total_yen / deliveries) if deliveries else None
++
++    calc_basis = {
++        "year": today.year,
++        "month": today.month,
++        "net_median": None,
++        "total_median": None,
++    }
++    for monthly_row in monthly_rows:
++        if (monthly_row.get("year") == today.year) and (monthly_row.get("month") == today.month):
++            calc_basis = {
++                "year": today.year,
++                "month": today.month,
++                "net_median": monthly_row.get("net_median"),
++                "total_median": monthly_row.get("total_median"),
++            }
++            break
+ 
+     deliveries_sum = summary.get("deliveries_sum") or 0
+     total_sum = summary.get("total_sum") or 0
+     summary_avg = round(total_sum / deliveries_sum) if deliveries_sum else None
+ 
+     return render_template(
+         "records/uber/list.html",
+         rows=rows,
+         monthly_rows=monthly_rows,
++        calc_basis=calc_basis,
+         ocr_queue_pending_count=ocr_queue_pending_count,
+         default_work_date=today,
+         summary={
+             "deliveries_sum": deliveries_sum,
+             "net_sum": summary.get("net_sum") or 0,
+             "total_sum": total_sum,
+             "avg_yen": summary_avg,
+             "month_start": month_start,
+         },
      )
-     return db_get_all(sql, (event_id, *user_ids)) or []
  
+ 
+ def _fetch_uber_daily_rows(
+     *,
+     from_date: date | None = None,
+     to_date: date | None = None,
+     dates: list[date] | None = None,
+     order_desc: bool = True,
+ ) -> list[dict]:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     where_clauses: list[str] = []
+     params: list[date] = []
+     if from_date is not None:
+         where_clauses.append("work_date >= %s")
+diff --git a/records/templates/records/uber/list.html b/records/templates/records/uber/list.html
+index ed0476484382bc0e2884d5451dd16703fcbee5aa..0a8d0eacd7d36da2719ed94bdc6521c8457609af 100644
+--- a/records/templates/records/uber/list.html
++++ b/records/templates/records/uber/list.html
+@@ -96,145 +96,218 @@
+         <th class="text-end">中央値（合計）</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for row in monthly_rows %}
+       <tr>
+         <td>{{ row.year }}-{{ '%02d'|format(row.month) }}</td>
+         <td class="text-end">{{ row.days_count|fmt_yen }}</td>
+         <td class="text-end">{{ row.deliveries_sum|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.net_sum|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.total_sum|fmt_yen }}</td>
+         <td class="text-end">{{ row.net_avg|fmt_yen }}</td>
+         <td class="text-end">{{ row.net_median|fmt_yen }}</td>
+         <td class="text-end">{{ row.total_avg|fmt_yen }}</td>
+         <td class="text-end">{{ row.total_median|fmt_yen }}</td>
+       </tr>
+       {% else %}
+       <tr>
+         <td colspan="9" class="text-center text-muted">データがありません。</td>
+       </tr>
+       {% endfor %}
+     </tbody>
+   </table>
+ </div>
+ 
++<div class="card shadow-sm mb-4">
++  <div class="card-body">
++    <h2 class="h5 mb-3">ざっくり売上試算</h2>
++    <div class="mb-3">
++      <span class="me-3">基準月: {{ calc_basis.year }}-{{ '%02d'|format(calc_basis.month) }}</span>
++      <span class="me-3">正味中央値: ¥{{ calc_basis.net_median|fmt_yen }}</span>
++      <span>合計中央値: ¥{{ calc_basis.total_median|fmt_yen }}</span>
++    </div>
++    {% if calc_basis.net_median is none or calc_basis.total_median is none %}
++    <div class="alert alert-warning py-2 mb-3">現在月の中央値データが無いため試算できません。</div>
++    {% endif %}
++    <div class="row g-3 mb-3">
++      <div class="col-md-6">
++        <label for="estimateDeliveriesPerDay" class="form-label">1日あたり件数</label>
++        <input type="number" id="estimateDeliveriesPerDay" class="form-control" min="0" step="1">
++      </div>
++      <div class="col-md-6">
++        <label for="estimateDays" class="form-label">日数</label>
++        <input type="number" id="estimateDays" class="form-control" min="0" step="1">
++      </div>
++    </div>
++    <div class="row g-3">
++      <div class="col-md-6">
++        <div class="text-muted small">正味金額</div>
++        <div id="estimateNetAmount" class="fs-5 fw-bold">-</div>
++      </div>
++      <div class="col-md-6">
++        <div class="text-muted small">合計金額</div>
++        <div id="estimateTotalAmount" class="fs-5 fw-bold">-</div>
++      </div>
++    </div>
++  </div>
++</div>
 +
-+def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
-+    if not user_ids:
-+        return set()
-+    normalized_ids: list[int] = []
-+    seen: set[int] = set()
-+    for user_id in user_ids:
-+        try:
-+            value = int(user_id)
-+        except (TypeError, ValueError):
-+            continue
-+        if value <= 0 or value in seen:
-+            continue
-+        seen.add(value)
-+        normalized_ids.append(value)
-+    if not normalized_ids:
-+        return set()
-+    placeholders = ",".join(["%s"] * len(normalized_ids))
-+    sql = (
-+        "SELECT DISTINCT actor_id "
-+        "  FROM chat_push_subscriptions "
-+        " WHERE actor_type='external_user_id' "
-+        f"   AND actor_id IN ({placeholders})"
-+    )
-+    rows = db_get_all(sql, tuple(str(uid) for uid in normalized_ids)) or []
-+    subscribed_ids: set[int] = set()
-+    for row in rows:
-+        try:
-+            subscribed_ids.add(int(row.get("actor_id")))
-+        except (TypeError, ValueError, AttributeError):
-+            continue
-+    return subscribed_ids
+ <div class="table-responsive">
+   <table class="table table-striped align-middle">
+     <thead class="table-light">
+       <tr>
+         <th class="text-center">選択</th>
+         <th>日付</th>
+         <th class="text-end">件数</th>
+         <th class="text-end">正味</th>
+         <th class="text-end">プロモ</th>
+         <th class="text-end">その他</th>
+         <th class="text-end">チップ</th>
+         <th class="text-end">合計</th>
+-        <th class="text-end">平均</th>
++        <th class="text-end">正味平均</th>
++        <th class="text-end">合計平均</th>
+         <th class="text-end">操作</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for row in rows %}
+       <tr>
+         <td class="text-center">
+           <input type="checkbox" class="form-check-input js-freee-day" data-date="{{ row.work_date.strftime('%Y-%m-%d') }}" {% if not row.freee_exported_at %}checked{% endif %}>
+         </td>
+         <td>{{ row.work_date }}</td>
+         <td class="text-end">{{ row.deliveries|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.net_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.promo_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.other_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.tip_yen|fmt_yen }}</td>
+         <td class="text-end">¥{{ row.total_yen|fmt_yen }}</td>
+-        <td class="text-end">{{ row.avg_yen|fmt_yen }}</td>
++        <td class="text-end">{{ row.net_avg_yen|fmt_yen }}</td>
++        <td class="text-end">{{ row.total_avg_yen|fmt_yen }}</td>
+         <td class="text-end">
+           <a class="btn btn-sm btn-outline-primary" href="{{ url_for('records.uber_edit', record_id=row.id) }}">編集</a>
+           <form method="post" action="{{ url_for('records.uber_delete', record_id=row.id) }}" class="d-inline" onsubmit="return confirm('削除しますか？');">
+             <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+           </form>
+         </td>
+       </tr>
+       {% else %}
+       <tr>
+-        <td colspan="10" class="text-center text-muted">データがありません。</td>
++        <td colspan="11" class="text-center text-muted">データがありません。</td>
+       </tr>
+       {% endfor %}
+     </tbody>
+   </table>
+ </div>
+ {% endblock %}
+ 
+ {% block body_extra %}
+   {{ super() }}
+   <script>
+     document.addEventListener('DOMContentLoaded', function () {
+       const fileInput = document.getElementById('uberOcrImage');
+       const analyzeBtn = document.getElementById('uberOcrAnalyzeBtn');
+       const warningWrap = document.getElementById('uberOcrWarningsWrap');
+       const warningList = document.getElementById('uberOcrWarnings');
+       const errorBox = document.getElementById('uberOcrError');
+       const previewWrap = document.getElementById('uberOcrPreviewWrap');
+       const previewImage = document.getElementById('uberOcrPreview');
++      const estimateDeliveriesPerDay = document.getElementById('estimateDeliveriesPerDay');
++      const estimateDays = document.getElementById('estimateDays');
++      const estimateNetAmount = document.getElementById('estimateNetAmount');
++      const estimateTotalAmount = document.getElementById('estimateTotalAmount');
++      const estimateNetMedian = {{ calc_basis.net_median|tojson }};
++      const estimateTotalMedian = {{ calc_basis.total_median|tojson }};
+ 
+       const setError = function (message) {
+         if (!message) {
+           errorBox.classList.add('d-none');
+           errorBox.textContent = '';
+           return;
+         }
+         errorBox.textContent = message;
+         errorBox.classList.remove('d-none');
+       };
+ 
+       const setWarnings = function (warnings) {
+         warningList.innerHTML = '';
+         if (!Array.isArray(warnings) || warnings.length === 0) {
+           warningWrap.classList.add('d-none');
+           return;
+         }
+         warnings.forEach(function (warning) {
+           const li = document.createElement('li');
+           li.textContent = warning;
+           warningList.appendChild(li);
+         });
+         warningWrap.classList.remove('d-none');
+       };
+ 
+       const setFields = function (fields) {
+         if (!fields || typeof fields !== 'object') {
+           return;
+         }
+         ['work_date', 'deliveries', 'net_yen', 'promo_yen', 'other_yen', 'tip_yen'].forEach(function (name) {
+           const input = document.querySelector('input[name="' + name + '"]');
+           if (input && fields[name] !== undefined && fields[name] !== null) {
+             input.value = fields[name];
+           }
+         });
+       };
+ 
++      const formatYen = function (value) {
++        return '¥' + Number(value).toLocaleString('ja-JP');
++      };
 +
- # =============================================================================
- # 定数 / 設定
- # =============================================================================
- # --- 写真(静止画/加工)のルート（切替対象） ---
- SSD_ROOT = '/mnt/mfu/mfu_albums'                 # 従来のSSD保存先
- HDD_ROOT = '/mnt/maildata/mfu_albums'            # 長期保管HDD保存先
- DEFAULT_STORAGE = 'ssd'                           # 新規はSSDに作成
- 
- # --- 互換のため残す（直接は使わず、storage_child_dir経由で解決） ---
- ALBUM_ROOT = SSD_ROOT
- 
- # --- 動画のルート（固定・切替対象外） ---
- MOVIE_ROOT = '/mnt/mfu/mfu_album_movie'
- 
- # 追加：動画サブディレクトリ
- MOVIE_ORIG_SUB = 'original'
- MOVIE_ENC_SUB  = 'encoded'
- 
- ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'heic', 'webp'}
- ALLOWED_MOVIE_EXTS = {'mp4', 'mov', 'm4v', 'webm'}
- MAX_MOVIE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
- 
- # ffmpeg/ffprobe の検出（未導入なら None）
- FFMPEG = shutil.which("ffmpeg")
- FFPROBE = shutil.which("ffprobe")
-@@ -1489,82 +1522,90 @@ def upload_child(album_id, child_id):
-                     if not status:
-                         continue
-                     if int(status.get("request_flag", 0)) != 1:
-                         continue
-                     if int(status.get("complete_flag", 0)) == 1:
-                         continue
-                     filtered.append(r)
-                 rows = filtered
-                 current_app.logger.info(
-                     "notify: filter kind=%s album_id=%s child_id=%s sql_condition=%s candidates=%s",
-                     kind,
-                     album_id,
-                     child_id,
-                     "request_flag=1 AND complete_flag=0",
-                     len(rows),
-                 )
- 
-             def _is_kind_enabled(recipient: dict) -> bool:
-                 if kind == "upload":
-                     return int(recipient.get("notify_album_upload", 1) or 0) == 1
-                 if kind == "process_done":
-                     return int(recipient.get("notify_album_process", 1) or 0) == 1
-                 return True
- 
-             recipients = [r for r in rows if _is_kind_enabled(r)]
-+            notify_kind_excluded_count = max(0, len(rows) - len(recipients))
-             should_send_admin_push = kind in ("upload", "process_done")
-             if not recipients and not should_send_admin_push:
-                 current_app.logger.info(
-                     "notify: skip no recipients kind=%s album_id=%s child_id=%s recipients_total=%s",
-                     kind,
-                     album_id,
-                     child_id,
-                     recipients_total,
-                 )
-                 return
- 
-             mail_recipients = [
-                 str(r.get("email") or "").strip()
-                 for r in recipients
-                 if str(r.get("email") or "").strip()
-             ]
--            push_recipients = []
-+            push_candidate_user_ids = []
-             for r in recipients:
-                 try:
-                     ext_user_id = int(r.get("ext_user_id") or 0)
-                 except (TypeError, ValueError):
-                     ext_user_id = 0
-                 if ext_user_id > 0:
--                    push_recipients.append(ext_user_id)
-+                    push_candidate_user_ids.append(ext_user_id)
++      const recalcEstimateBox = function () {
++        if (!estimateNetAmount || !estimateTotalAmount) {
++          return;
++        }
++        if (estimateNetMedian === null || estimateTotalMedian === null) {
++          estimateNetAmount.textContent = '-';
++          estimateTotalAmount.textContent = '-';
++          return;
++        }
++        const deliveriesPerDayRaw = estimateDeliveriesPerDay ? Number(estimateDeliveriesPerDay.value || 0) : 0;
++        const daysRaw = estimateDays ? Number(estimateDays.value || 0) : 0;
++        const deliveriesPerDay = Number.isNaN(deliveriesPerDayRaw) ? 0 : deliveriesPerDayRaw;
++        const days = Number.isNaN(daysRaw) ? 0 : daysRaw;
++        const netAmount = Math.round(deliveriesPerDay * estimateNetMedian * days);
++        const totalAmount = Math.round(deliveriesPerDay * estimateTotalMedian * days);
++        estimateNetAmount.textContent = formatYen(netAmount);
++        estimateTotalAmount.textContent = formatYen(totalAmount);
++      };
 +
-+            push_subscribed_user_ids = _fetch_push_subscribed_ext_user_ids(push_candidate_user_ids)
-+            push_recipients = [ext_user_id for ext_user_id in push_candidate_user_ids if ext_user_id in push_subscribed_user_ids]
-+            push_subscription_excluded_count = max(0, len(push_candidate_user_ids) - len(push_recipients))
++      if (estimateDeliveriesPerDay) {
++        estimateDeliveriesPerDay.addEventListener('input', recalcEstimateBox);
++      }
++      if (estimateDays) {
++        estimateDays.addEventListener('input', recalcEstimateBox);
++      }
++      recalcEstimateBox();
++
  
-             current_app.logger.info(
--                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_recipients=%d",
-+                "notify: recipients(after filter)=%d album_id=%s child_id=%s mail_recipients=%d push_candidates=%d push_recipients=%d notify_kind_excluded=%d push_subscription_excluded=%d",
-                 len(recipients),
-                 album_id,
-                 child_id,
-                 len(mail_recipients),
-+                len(push_candidate_user_ids),
-                 len(push_recipients),
-+                notify_kind_excluded_count,
-+                push_subscription_excluded_count,
-             )
-             request_by_email = None
-             if _is_ext_logged_in():
-                 ext_user_id = session.get("ext_user_id")
-                 if ext_user_id:
-                     me = db_get_one("SELECT email FROM external_login_user WHERE id=%s LIMIT 1", (int(ext_user_id),))
-                     request_by_email = (me or {}).get("email")
-             current_app.logger.info(
-                 "notify: pre_send kind=%s album_id=%s child_id=%s request_by=%s recipients_count=%s recipients=%s sql_condition=%s",
-                 kind,
-                 album_id,
-                 child_id,
-                 request_by_email,
-                 len(mail_recipients),
-                 _preview_recipients(mail_recipients),
-                 "request_flag=1 AND complete_flag=0" if (mode == "process" and kind in ("upload", "process_done")) else "n/a",
-             )
  
-             # ★ クールタイム（uploadのみ対象／process_doneは対象外）
-             cooldown_state_path = os.path.join(child_path, ".notify_state.json")
-             cooldown_bucket = None
-             if kind == "upload":
-                 COOLDOWN_SEC = 300  # 5分
-                 now_ts = int(time.time())
-                 cooldown_bucket = now_ts // COOLDOWN_SEC
-@@ -1750,59 +1791,62 @@ def upload_child(album_id, child_id):
-                     )
-                 except Exception as e:
-                     admin_push_result["failure"] = str(e)
-                     current_app.logger.warning(
-                         "notify admin push failed admin_push_kind=%s album_id=%s child_id=%s admin_target_url=%s error=%s",
-                         kind,
-                         album_id,
-                         child_id,
-                         admin_target_url,
-                         e,
-                     )
+       const freeeDayCheckboxes = function () {
+         return Array.from(document.querySelectorAll('.js-freee-day'));
+       };
  
-             # ★クールタイム記録（uploadのみ・送信が1件以上成功時）
-             if kind == "upload" and sent_ok:
-                 try:
-                     now_ts = int(time.time())
-                     tmp = cooldown_state_path + ".tmp"
-                     with open(tmp, "w", encoding="utf-8") as tf:
-                         json.dump({"last_upload_ts": now_ts}, tf, ensure_ascii=False, indent=2)
-                     os.replace(tmp, cooldown_state_path)
-                 except Exception as e:
-                     current_app.logger.warning("notify(cooldown write) failed: %s", e)
+       const setAllFreeeDayChecks = function (checked) {
+         freeeDayCheckboxes().forEach(function (checkbox) {
+           checkbox.checked = checked;
+         });
+       };
  
-             current_app.logger.info(
-                 "notify: summary kind=%s album_id=%s child_id=%s recipients_total=%s mail_recipients_count=%s push_recipients_count=%s "
-+                "notify_kind_excluded_count=%s push_subscription_excluded_count=%s "
-                 "relative_target_url=%s absolute_target_url=%s admin_target_url=%s dedup_key_samples=%s dedup_key_count=%s "
-                 "mail_failed_count=%s push_failed_count=%s push_skipped_count=%s admin_push_attempted=%s admin_push_dedup_key=%s "
-                 "admin_push_in_app=%s admin_push_web_push=%s admin_push_duplicate=%s admin_push_ok=%s admin_push_failure=%s",
-                 kind,
-                 album_id,
-                 child_id,
-                 recipients_total,
-                 len(mail_recipients),
-                 len(push_recipients),
-+                notify_kind_excluded_count,
-+                push_subscription_excluded_count,
-                 relative_target_url,
-                 absolute_target_url,
-                 admin_target_url,
-                 dedup_key_samples,
-                 len(push_recipients),
-                 mail_failed_count,
-                 push_failed_count,
-                 push_skipped_count,
-                 admin_push_result["attempted"],
-                 admin_push_result["dedup_key"],
-                 admin_push_result["in_app"],
-                 admin_push_result["web_push"],
-                 admin_push_result["duplicate"],
-                 admin_push_result["ok"],
-                 admin_push_result["failure"],
-             )
+       const selectAllBtn = document.getElementById('selectAllFreeeDays');
+       const clearAllBtn = document.getElementById('clearAllFreeeDays');
+       const downloadBtn = document.getElementById('downloadSelectedFreeeCsv');
  
-         except Exception as e:
-             current_app.logger.warning("notify(inner) failed: %s", e)
+       if (selectAllBtn) {
+         selectAllBtn.addEventListener('click', function () {
+           setAllFreeeDayChecks(true);
+         });
+       }
  
-     if request.method == 'POST':
-         files = request.files.getlist('file')
-         if not files or files[0].filename == '':
-             flash('ファイルが選択されていません', 'danger')
-             return redirect(request.url)
+       if (clearAllBtn) {
+         clearAllBtn.addEventListener('click', function () {
+           setAllFreeeDayChecks(false);
