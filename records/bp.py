@@ -471,8 +471,26 @@ def uber_list():
 
     for row in rows:
         deliveries = row.get("deliveries") or 0
+        net_yen = row.get("net_yen") or 0
         total_yen = row.get("total_yen") or 0
-        row["avg_yen"] = round(total_yen / deliveries) if deliveries else None
+        row["net_avg_yen"] = round(net_yen / deliveries) if deliveries else None
+        row["total_avg_yen"] = round(total_yen / deliveries) if deliveries else None
+
+    calc_basis = {
+        "year": today.year,
+        "month": today.month,
+        "net_median": None,
+        "total_median": None,
+    }
+    for monthly_row in monthly_rows:
+        if (monthly_row.get("year") == today.year) and (monthly_row.get("month") == today.month):
+            calc_basis = {
+                "year": today.year,
+                "month": today.month,
+                "net_median": monthly_row.get("net_median"),
+                "total_median": monthly_row.get("total_median"),
+            }
+            break
 
     deliveries_sum = summary.get("deliveries_sum") or 0
     total_sum = summary.get("total_sum") or 0
@@ -482,6 +500,7 @@ def uber_list():
         "records/uber/list.html",
         rows=rows,
         monthly_rows=monthly_rows,
+        calc_basis=calc_basis,
         ocr_queue_pending_count=ocr_queue_pending_count,
         default_work_date=today,
         summary={
