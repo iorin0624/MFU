@@ -122,13 +122,18 @@
   <div class="card-body">
     <h2 class="h5 mb-3">ざっくり売上試算</h2>
     <div class="mb-3">
-      <span class="me-3">基準月: {{ calc_basis.year }}-{{ '%02d'|format(calc_basis.month) }}</span>
-      <span class="me-3">正味中央値: ¥{{ calc_basis.net_median|fmt_yen }}</span>
-      <span>合計中央値: ¥{{ calc_basis.total_median|fmt_yen }}</span>
+      <label for="estimateMonthSelect" class="form-label">基準月</label>
+      <select id="estimateMonthSelect" class="form-select">
+        {% for option in estimate_month_options %}
+        <option value="{{ option.key }}" {% if option.key == default_estimate_month_key %}selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
     </div>
-    {% if calc_basis.net_median is none or calc_basis.total_median is none %}
-    <div class="alert alert-warning py-2 mb-3">現在月の中央値データが無いため試算できません。</div>
-    {% endif %}
+    <div class="mb-3">
+      <span class="me-3">正味中央値: <span id="estimateNetMedianDisplay">-</span></span>
+      <span>合計中央値: <span id="estimateTotalMedianDisplay">-</span></span>
+    </div>
+    <div id="estimateUnavailableMessage" class="alert alert-warning py-2 mb-3 d-none">選択中の基準月の中央値データが無いため試算できません。</div>
     <div class="row g-3 mb-3">
       <div class="col-md-6">
         <label for="estimateDeliveriesPerDay" class="form-label">1日あたり件数</label>
@@ -216,8 +221,12 @@
       const estimateDays = document.getElementById('estimateDays');
       const estimateNetAmount = document.getElementById('estimateNetAmount');
       const estimateTotalAmount = document.getElementById('estimateTotalAmount');
-      const estimateNetMedian = {{ calc_basis.net_median|tojson }};
-      const estimateTotalMedian = {{ calc_basis.total_median|tojson }};
+      const estimateMonthSelect = document.getElementById('estimateMonthSelect');
+      const estimateNetMedianDisplay = document.getElementById('estimateNetMedianDisplay');
+      const estimateTotalMedianDisplay = document.getElementById('estimateTotalMedianDisplay');
+      const estimateUnavailableMessage = document.getElementById('estimateUnavailableMessage');
+      const estimateMonthOptions = {{ estimate_month_options|tojson }};
+      const defaultEstimateMonthKey = {{ default_estimate_month_key|tojson }};
 
       const setError = function (message) {
         if (!message) {
@@ -259,11 +268,40 @@
         return '¥' + Number(value).toLocaleString('ja-JP');
       };
 
+      const getSelectedEstimateMonth = function () {
+        if (!estimateMonthSelect) {
+          return null;
+        }
+        return estimateMonthOptions.find(function (option) {
+          return option.key === estimateMonthSelect.value;
+        }) || null;
+      };
+
+      const updateEstimateMedianDisplay = function () {
+        const selectedMonth = getSelectedEstimateMonth();
+        const netMedian = selectedMonth ? selectedMonth.net_median : null;
+        const totalMedian = selectedMonth ? selectedMonth.total_median : null;
+        const unavailable = netMedian === null || totalMedian === null;
+
+        if (estimateNetMedianDisplay) {
+          estimateNetMedianDisplay.textContent = netMedian === null ? '-' : formatYen(Math.round(netMedian));
+        }
+        if (estimateTotalMedianDisplay) {
+          estimateTotalMedianDisplay.textContent = totalMedian === null ? '-' : formatYen(Math.round(totalMedian));
+        }
+        if (estimateUnavailableMessage) {
+          estimateUnavailableMessage.classList.toggle('d-none', !unavailable);
+        }
+      };
+
       const recalcEstimateBox = function () {
         if (!estimateNetAmount || !estimateTotalAmount) {
           return;
         }
-        if (estimateNetMedian === null || estimateTotalMedian === null) {
+        const selectedMonth = getSelectedEstimateMonth();
+        const netMedian = selectedMonth ? selectedMonth.net_median : null;
+        const totalMedian = selectedMonth ? selectedMonth.total_median : null;
+        if (netMedian === null || totalMedian === null) {
           estimateNetAmount.textContent = '-';
           estimateTotalAmount.textContent = '-';
           return;
@@ -272,18 +310,28 @@
         const daysRaw = estimateDays ? Number(estimateDays.value || 0) : 0;
         const deliveriesPerDay = Number.isNaN(deliveriesPerDayRaw) ? 0 : deliveriesPerDayRaw;
         const days = Number.isNaN(daysRaw) ? 0 : daysRaw;
-        const netAmount = Math.round(deliveriesPerDay * estimateNetMedian * days);
-        const totalAmount = Math.round(deliveriesPerDay * estimateTotalMedian * days);
+        const netAmount = Math.round(deliveriesPerDay * netMedian * days);
+        const totalAmount = Math.round(deliveriesPerDay * totalMedian * days);
         estimateNetAmount.textContent = formatYen(netAmount);
         estimateTotalAmount.textContent = formatYen(totalAmount);
       };
 
+      if (estimateMonthSelect && defaultEstimateMonthKey) {
+        estimateMonthSelect.value = defaultEstimateMonthKey;
+      }
+      if (estimateMonthSelect) {
+        estimateMonthSelect.addEventListener('change', function () {
+          updateEstimateMedianDisplay();
+          recalcEstimateBox();
+        });
+      }
       if (estimateDeliveriesPerDay) {
         estimateDeliveriesPerDay.addEventListener('input', recalcEstimateBox);
       }
       if (estimateDays) {
         estimateDays.addEventListener('input', recalcEstimateBox);
       }
+      updateEstimateMedianDisplay();
       recalcEstimateBox();
 
 
