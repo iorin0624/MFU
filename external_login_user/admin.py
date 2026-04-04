@@ -2222,6 +2222,17 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
                      WHERE event_id=%s AND user_id=%s
                      LIMIT 1
                 """, (canceled_by, event_id, user_id))
+                cur.execute(
+                    """
+                    DELETE FROM mfu_notifications
+                     WHERE user_kind='external'
+                       AND user_id=%s
+                       AND kind='chat_message'
+                       AND COALESCE(chat_event_id, event_id)=%s
+                       AND read_at IS NULL
+                    """,
+                    (user_id, event_id),
+                )
                 db.commit()
             finally:
                 cur.close(); db.close()

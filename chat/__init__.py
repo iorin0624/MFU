@@ -3157,25 +3157,55 @@ def _ensure_chat_dm_edit_schema() -> bool:
             db.close()
 
 
+def _get_latest_event_member_row(event_id: int, user_id: str | int) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT id,
+                   COALESCE(status,'pending') AS status,
+                   COALESCE(is_canceled,0) AS is_canceled,
+                   COALESCE(is_host,0) AS is_host,
+                   COALESCE(is_subhost,0) AS is_subhost
+              FROM mfu_event_member
+             WHERE event_id=%s AND user_id=%s
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (int(event_id), str(user_id)),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def _has_active_event_membership(event_id: int, user_id: str | int) -> bool:
+    try:
+        row = _get_latest_event_member_row(event_id, user_id)
+        if not row:
+            return False
+        return int(row.get("is_canceled") or 0) == 0
+    except Exception:
+        current_app.logger.warning(
+            "chat active membership check failed event=%s user_id=%s",
+            event_id,
+            user_id,
+            exc_info=True,
+        )
+        return False
+
+
 def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
     if actor["actor_type"] == "admin":
         return True
+    if actor["actor_type"] == "line":
+        return _has_active_event_membership(event_id, actor["actor_id"])
 
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        if actor["actor_type"] == "line":
-            cur.execute(
-                """
-                SELECT 1
-                  FROM mfu_event_member
-                 WHERE event_id=%s AND user_id=%s
-                 LIMIT 1
-                """,
-                (event_id, actor["actor_id"]),
-            )
-            return bool(cur.fetchone())
-
         # acl: mfu_event_admin_acl + users(admin系)
         cur.execute(
             """
@@ -4192,7 +4222,11 @@ def _can_notify_actor_in_room(event_id: int, room_id: str, actor_type: str, acto
     if not room:
         return False
     if int(room.get("is_main") or 0) == 1:
-        return True
+        if actor_type == "line":
+            return _has_active_event_membership(event_id, actor_id)
+        if actor_type in {"admin", "acl"}:
+            return True
+        return False
     return _is_room_member(room_id, {"actor_type": actor_type, "actor_id": actor_id})
 
 
@@ -4207,7 +4241,21 @@ def _build_chat_message_push_targets(event_id: int, room_id: str, sender_actor: 
     cur = db.cursor(dictionary=True)
     try:
         if int(room.get("is_main") or 0) == 1:
-            cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
+            cur.execute(
+                """
+                SELECT latest.user_id
+                  FROM (
+                        SELECT user_id, MAX(id) AS max_id
+                          FROM mfu_event_member
+                         WHERE event_id=%s
+                         GROUP BY user_id
+                       ) latest
+                  JOIN mfu_event_member m
+                    ON m.id = latest.max_id
+                 WHERE COALESCE(m.is_canceled,0)=0
+                """,
+                (event_id,),
+            )
             for row in cur.fetchall() or []:
                 targets.add(("line", str(row["user_id"])))
 
