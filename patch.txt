@@ -1,331 +1,399 @@
-diff --git a/records/bp.py b/records/bp.py
-index 63ab2b9625e9d896a807abfc20a5c198fe62e291..1b75c8086dc33fd90f80d342583ca744e10435a7 100644
---- a/records/bp.py
-+++ b/records/bp.py
-@@ -470,59 +470,86 @@ def uber_list():
-     db.close()
- 
-     for row in rows:
-         deliveries = row.get("deliveries") or 0
-         net_yen = row.get("net_yen") or 0
-         total_yen = row.get("total_yen") or 0
-         row["net_avg_yen"] = round(net_yen / deliveries) if deliveries else None
-         row["total_avg_yen"] = round(total_yen / deliveries) if deliveries else None
- 
-     calc_basis = {
-         "year": today.year,
-         "month": today.month,
-         "net_median": None,
-         "total_median": None,
-     }
-     for monthly_row in monthly_rows:
-         if (monthly_row.get("year") == today.year) and (monthly_row.get("month") == today.month):
-             calc_basis = {
-                 "year": today.year,
-                 "month": today.month,
-                 "net_median": monthly_row.get("net_median"),
-                 "total_median": monthly_row.get("total_median"),
+diff --git a/chat/__init__.py b/chat/__init__.py
+index 1f6594c68a585d912380fbd82f1c9eb90b0df46e..16aba5c1208060f542c54013e074760f6ee74028 100644
+--- a/chat/__init__.py
++++ b/chat/__init__.py
+@@ -3135,69 +3135,99 @@ def _ensure_chat_dm_edit_schema() -> bool:
+                 "edited_by_actor_key": "ALTER TABLE chat_dm_messages ADD COLUMN edited_by_actor_key VARCHAR(128) NULL AFTER edited_at",
              }
-             break
+             for column_name, ddl in definitions.items():
+                 cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
+                 if cur.fetchone():
+                     continue
+                 cur.execute(ddl)
  
-+    estimate_month_options = []
-+    for monthly_row in monthly_rows:
-+        year = int(monthly_row.get("year"))
-+        month = int(monthly_row.get("month"))
-+        key = f"{year}-{month:02d}"
-+        estimate_month_options.append(
-+            {
-+                "key": key,
-+                "label": key,
-+                "year": year,
-+                "month": month,
-+                "net_median": monthly_row.get("net_median"),
-+                "total_median": monthly_row.get("total_median"),
-+            }
+             db.commit()
+             missing_columns: list[str] = []
+             for column_name in definitions:
+                 cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
+                 if not cur.fetchone():
+                     missing_columns.append(column_name)
+             CHAT_DM_EDIT_SCHEMA_READY = len(missing_columns) == 0
+             return CHAT_DM_EDIT_SCHEMA_READY
+         except Exception:
+             current_app.logger.warning("chat dm edit schema ensure failed", exc_info=True)
+             CHAT_DM_EDIT_SCHEMA_READY = False
+             return False
+         finally:
+             cur.close()
+             db.close()
+ 
+ 
++def _get_latest_event_member_row(event_id: int, user_id: str | int) -> dict[str, Any] | None:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT id,
++                   COALESCE(status,'pending') AS status,
++                   COALESCE(is_canceled,0) AS is_canceled,
++                   COALESCE(is_host,0) AS is_host,
++                   COALESCE(is_subhost,0) AS is_subhost
++              FROM mfu_event_member
++             WHERE event_id=%s AND user_id=%s
++             ORDER BY id DESC
++             LIMIT 1
++            """,
++            (int(event_id), str(user_id)),
 +        )
++        return cur.fetchone()
++    finally:
++        cur.close()
++        db.close()
 +
-+    current_month_key = f"{today.year}-{today.month:02d}"
-+    estimate_month_keys = {option["key"] for option in estimate_month_options}
-+    if current_month_key in estimate_month_keys:
-+        default_estimate_month_key = current_month_key
-+    elif estimate_month_options:
-+        default_estimate_month_key = estimate_month_options[0]["key"]
-+    else:
-+        default_estimate_month_key = current_month_key
 +
-     deliveries_sum = summary.get("deliveries_sum") or 0
-     total_sum = summary.get("total_sum") or 0
-     summary_avg = round(total_sum / deliveries_sum) if deliveries_sum else None
++def _has_active_event_membership(event_id: int, user_id: str | int) -> bool:
++    try:
++        row = _get_latest_event_member_row(event_id, user_id)
++        if not row:
++            return False
++        return int(row.get("is_canceled") or 0) == 0
++    except Exception:
++        current_app.logger.warning(
++            "chat active membership check failed event=%s user_id=%s",
++            event_id,
++            user_id,
++            exc_info=True,
++        )
++        return False
++
++
+ def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
+     if actor["actor_type"] == "admin":
+         return True
++    if actor["actor_type"] == "line":
++        return _has_active_event_membership(event_id, actor["actor_id"])
  
-     return render_template(
-         "records/uber/list.html",
-         rows=rows,
-         monthly_rows=monthly_rows,
-         calc_basis=calc_basis,
-+        estimate_month_options=estimate_month_options,
-+        default_estimate_month_key=default_estimate_month_key,
-         ocr_queue_pending_count=ocr_queue_pending_count,
-         default_work_date=today,
-         summary={
-             "deliveries_sum": deliveries_sum,
-             "net_sum": summary.get("net_sum") or 0,
-             "total_sum": total_sum,
-             "avg_yen": summary_avg,
-             "month_start": month_start,
-         },
-     )
- 
- 
- def _fetch_uber_daily_rows(
-     *,
-     from_date: date | None = None,
-     to_date: date | None = None,
-     dates: list[date] | None = None,
-     order_desc: bool = True,
- ) -> list[dict]:
      db = get_db()
      cur = db.cursor(dictionary=True)
-     where_clauses: list[str] = []
-     params: list[date] = []
-     if from_date is not None:
-         where_clauses.append("work_date >= %s")
-diff --git a/records/templates/records/uber/list.html b/records/templates/records/uber/list.html
-index 0a8d0eacd7d36da2719ed94bdc6521c8457609af..0acb78635ea110b122e426440aeb2b6b9ee22b3e 100644
---- a/records/templates/records/uber/list.html
-+++ b/records/templates/records/uber/list.html
-@@ -100,57 +100,62 @@
-       {% for row in monthly_rows %}
-       <tr>
-         <td>{{ row.year }}-{{ '%02d'|format(row.month) }}</td>
-         <td class="text-end">{{ row.days_count|fmt_yen }}</td>
-         <td class="text-end">{{ row.deliveries_sum|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.net_sum|fmt_yen }}</td>
-         <td class="text-end">¥{{ row.total_sum|fmt_yen }}</td>
-         <td class="text-end">{{ row.net_avg|fmt_yen }}</td>
-         <td class="text-end">{{ row.net_median|fmt_yen }}</td>
-         <td class="text-end">{{ row.total_avg|fmt_yen }}</td>
-         <td class="text-end">{{ row.total_median|fmt_yen }}</td>
-       </tr>
-       {% else %}
-       <tr>
-         <td colspan="9" class="text-center text-muted">データがありません。</td>
-       </tr>
-       {% endfor %}
-     </tbody>
-   </table>
- </div>
+     try:
+-        if actor["actor_type"] == "line":
+-            cur.execute(
+-                """
+-                SELECT 1
+-                  FROM mfu_event_member
+-                 WHERE event_id=%s AND user_id=%s
+-                 LIMIT 1
+-                """,
+-                (event_id, actor["actor_id"]),
+-            )
+-            return bool(cur.fetchone())
+-
+         # acl: mfu_event_admin_acl + users(admin系)
+         cur.execute(
+             """
+             SELECT 1
+               FROM mfu_event_admin_acl
+              WHERE event_id=%s AND username=%s
+              LIMIT 1
+             """,
+             (event_id, actor["actor_id"]),
+         )
+         return bool(cur.fetchone())
+     except Exception:
+         current_app.logger.warning("chat access check failed event=%s actor=%s", event_id, actor, exc_info=True)
+         return False
+     finally:
+         cur.close()
+         db.close()
  
- <div class="card shadow-sm mb-4">
-   <div class="card-body">
-     <h2 class="h5 mb-3">ざっくり売上試算</h2>
-     <div class="mb-3">
--      <span class="me-3">基準月: {{ calc_basis.year }}-{{ '%02d'|format(calc_basis.month) }}</span>
--      <span class="me-3">正味中央値: ¥{{ calc_basis.net_median|fmt_yen }}</span>
--      <span>合計中央値: ¥{{ calc_basis.total_median|fmt_yen }}</span>
-+      <label for="estimateMonthSelect" class="form-label">基準月</label>
-+      <select id="estimateMonthSelect" class="form-select">
-+        {% for option in estimate_month_options %}
-+        <option value="{{ option.key }}" {% if option.key == default_estimate_month_key %}selected{% endif %}>{{ option.label }}</option>
-+        {% endfor %}
-+      </select>
-     </div>
--    {% if calc_basis.net_median is none or calc_basis.total_median is none %}
--    <div class="alert alert-warning py-2 mb-3">現在月の中央値データが無いため試算できません。</div>
--    {% endif %}
-+    <div class="mb-3">
-+      <span class="me-3">正味中央値: <span id="estimateNetMedianDisplay">-</span></span>
-+      <span>合計中央値: <span id="estimateTotalMedianDisplay">-</span></span>
-+    </div>
-+    <div id="estimateUnavailableMessage" class="alert alert-warning py-2 mb-3 d-none">選択中の基準月の中央値データが無いため試算できません。</div>
-     <div class="row g-3 mb-3">
-       <div class="col-md-6">
-         <label for="estimateDeliveriesPerDay" class="form-label">1日あたり件数</label>
-         <input type="number" id="estimateDeliveriesPerDay" class="form-control" min="0" step="1">
-       </div>
-       <div class="col-md-6">
-         <label for="estimateDays" class="form-label">日数</label>
-         <input type="number" id="estimateDays" class="form-control" min="0" step="1">
-       </div>
-     </div>
-     <div class="row g-3">
-       <div class="col-md-6">
-         <div class="text-muted small">正味金額</div>
-         <div id="estimateNetAmount" class="fs-5 fw-bold">-</div>
-       </div>
-       <div class="col-md-6">
-         <div class="text-muted small">合計金額</div>
-         <div id="estimateTotalAmount" class="fs-5 fw-bold">-</div>
-       </div>
-     </div>
-   </div>
- </div>
  
- <div class="table-responsive">
-   <table class="table table-striped align-middle">
-@@ -194,118 +199,161 @@
-       {% else %}
-       <tr>
-         <td colspan="11" class="text-center text-muted">データがありません。</td>
-       </tr>
-       {% endfor %}
-     </tbody>
-   </table>
- </div>
- {% endblock %}
+ def _mfu_event_has_deleted_at_column() -> bool:
+     global MFU_EVENT_DELETED_AT_SCHEMA_READY
+     if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
+         return MFU_EVENT_DELETED_AT_SCHEMA_READY
  
- {% block body_extra %}
-   {{ super() }}
-   <script>
-     document.addEventListener('DOMContentLoaded', function () {
-       const fileInput = document.getElementById('uberOcrImage');
-       const analyzeBtn = document.getElementById('uberOcrAnalyzeBtn');
-       const warningWrap = document.getElementById('uberOcrWarningsWrap');
-       const warningList = document.getElementById('uberOcrWarnings');
-       const errorBox = document.getElementById('uberOcrError');
-       const previewWrap = document.getElementById('uberOcrPreviewWrap');
-       const previewImage = document.getElementById('uberOcrPreview');
-       const estimateDeliveriesPerDay = document.getElementById('estimateDeliveriesPerDay');
-       const estimateDays = document.getElementById('estimateDays');
-       const estimateNetAmount = document.getElementById('estimateNetAmount');
-       const estimateTotalAmount = document.getElementById('estimateTotalAmount');
--      const estimateNetMedian = {{ calc_basis.net_median|tojson }};
--      const estimateTotalMedian = {{ calc_basis.total_median|tojson }};
-+      const estimateMonthSelect = document.getElementById('estimateMonthSelect');
-+      const estimateNetMedianDisplay = document.getElementById('estimateNetMedianDisplay');
-+      const estimateTotalMedianDisplay = document.getElementById('estimateTotalMedianDisplay');
-+      const estimateUnavailableMessage = document.getElementById('estimateUnavailableMessage');
-+      const estimateMonthOptions = {{ estimate_month_options|tojson }};
-+      const defaultEstimateMonthKey = {{ default_estimate_month_key|tojson }};
+     with MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK:
+@@ -4170,66 +4200,84 @@ def _lookup_mention_targets(event_id: int, room_id: str, names: list[str]) -> li
+             f"""
+             SELECT u.id, u.nickname
+               FROM external_login_user u
+               JOIN mfu_event_member m ON m.user_id = u.id
+              WHERE m.event_id = %s
+                AND u.nickname IN ({placeholders})
+             """,
+             tuple([event_id] + uniq_names),
+         )
+         rows = cur.fetchall() or []
+         return [
+             {"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]}
+             for r in rows
+             if _can_notify_actor_in_room(event_id, room_id, "line", str(r["id"]))
+         ]
+     finally:
+         cur.close()
+         db.close()
  
-       const setError = function (message) {
-         if (!message) {
-           errorBox.classList.add('d-none');
-           errorBox.textContent = '';
-           return;
-         }
-         errorBox.textContent = message;
-         errorBox.classList.remove('d-none');
-       };
  
-       const setWarnings = function (warnings) {
-         warningList.innerHTML = '';
-         if (!Array.isArray(warnings) || warnings.length === 0) {
-           warningWrap.classList.add('d-none');
-           return;
-         }
-         warnings.forEach(function (warning) {
-           const li = document.createElement('li');
-           li.textContent = warning;
-           warningList.appendChild(li);
-         });
-         warningWrap.classList.remove('d-none');
-       };
+ def _can_notify_actor_in_room(event_id: int, room_id: str, actor_type: str, actor_id: str) -> bool:
+     room = _get_room(event_id, room_id, allow_archived=True)
+     if not room:
+         return False
+     if int(room.get("is_main") or 0) == 1:
+-        return True
++        if actor_type == "line":
++            return _has_active_event_membership(event_id, actor_id)
++        if actor_type in {"admin", "acl"}:
++            return True
++        return False
+     return _is_room_member(room_id, {"actor_type": actor_type, "actor_id": actor_id})
  
-       const setFields = function (fields) {
-         if (!fields || typeof fields !== 'object') {
-           return;
-         }
-         ['work_date', 'deliveries', 'net_yen', 'promo_yen', 'other_yen', 'tip_yen'].forEach(function (name) {
-           const input = document.querySelector('input[name="' + name + '"]');
-           if (input && fields[name] !== undefined && fields[name] !== null) {
-             input.value = fields[name];
-           }
-         });
-       };
  
-       const formatYen = function (value) {
-         return '¥' + Number(value).toLocaleString('ja-JP');
-       };
+ def _build_chat_message_push_targets(event_id: int, room_id: str, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
+     sender_key = _actor_sender_id(sender_actor["actor_type"], str(sender_actor["actor_id"]))
+     targets: set[tuple[str, str]] = set()
+     room = _get_room(event_id, room_id, allow_archived=True)
+     if not room:
+         return []
  
-+      const getSelectedEstimateMonth = function () {
-+        if (!estimateMonthSelect) {
-+          return null;
-+        }
-+        return estimateMonthOptions.find(function (option) {
-+          return option.key === estimateMonthSelect.value;
-+        }) || null;
-+      };
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         if int(room.get("is_main") or 0) == 1:
+-            cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
++            cur.execute(
++                """
++                SELECT latest.user_id
++                  FROM (
++                        SELECT user_id, MAX(id) AS max_id
++                          FROM mfu_event_member
++                         WHERE event_id=%s
++                         GROUP BY user_id
++                       ) latest
++                  JOIN mfu_event_member m
++                    ON m.id = latest.max_id
++                 WHERE COALESCE(m.is_canceled,0)=0
++                """,
++                (event_id,),
++            )
+             for row in cur.fetchall() or []:
+                 targets.add(("line", str(row["user_id"])))
+ 
+             cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
+             for row in cur.fetchall() or []:
+                 username = str(row["username"])
+                 if username == "admin":
+                     targets.add(("admin", "admin"))
+                 else:
+                     targets.add(("acl", username))
+         else:
+             cur.execute(
+                 "SELECT actor_type, actor_id FROM chat_room_members WHERE room_id=%s",
+                 (room_id,),
+             )
+             for row in cur.fetchall() or []:
+                 actor_type = str(row.get("actor_type") or "")
+                 actor_id = str(row.get("actor_id") or "")
+                 if actor_type and actor_id:
+                     targets.add((actor_type, actor_id))
+     finally:
+         cur.close()
+         db.close()
+ 
+     muted_targets: set[tuple[str, str]] = set()
+diff --git a/external_login_user/admin.py b/external_login_user/admin.py
+index 2b59aa118a3e7e860589516f03b6dd83ee3e311d..a70710bff23859284671d81655dd46aeff7095ba 100644
+--- a/external_login_user/admin.py
++++ b/external_login_user/admin.py
+@@ -2200,50 +2200,61 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
+                        canceled_at=NULL,
+                        canceled_by=NULL
+                  WHERE event_id=%s AND user_id=%s
+                  LIMIT 1
+             """, (event_id, user_id))
+             db.commit()
+         finally:
+             cur.close(); db.close()
+         _recalc_event_fee_if_auto(event_id)
+         flash("参加キャンセルを解除しました。", "success")
+         return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+ 
+     if action not in ("approve", "reject"):
+         if action == "remove":
+             db = get_db(); cur = db.cursor()
+             try:
+                 canceled_by = (session.get("user") or "admin")
+                 cur.execute("""
+                     UPDATE mfu_event_member
+                        SET is_canceled=1,
+                            canceled_at=NOW(),
+                            canceled_by=%s
+                      WHERE event_id=%s AND user_id=%s
+                      LIMIT 1
+                 """, (canceled_by, event_id, user_id))
++                cur.execute(
++                    """
++                    DELETE FROM mfu_notifications
++                     WHERE user_kind='external'
++                       AND user_id=%s
++                       AND kind='chat_message'
++                       AND COALESCE(chat_event_id, event_id)=%s
++                       AND read_at IS NULL
++                    """,
++                    (user_id, event_id),
++                )
+                 db.commit()
+             finally:
+                 cur.close(); db.close()
+             _recalc_event_fee_if_auto(event_id)
+             flash("参加者をキャンセル済みにしました。", "success")
+             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+         abort(400, "unsupported action")
+ 
+     new_status = "approved" if action == "approve" else "rejected"
+     STATUS_JA = {"approved": "承認", "rejected": "拒否", "pending": "保留"}
+ 
+     db = get_db(); cur = db.cursor()
+     try:
+         # イベント情報
+         cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
+         ev = cur.fetchone()
+         if not ev:
+             abort(404, "event not found")
+         ev_title = ev[0] if isinstance(ev, tuple) else ev["title"]
+         ev_uuid_b = ev[1] if isinstance(ev, tuple) else ev["event_uuid"]
+         ev_uuid_str = _uuid_bytes_to_str(ev_uuid_b) or ""
+         view_url = f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}"
+ 
+         # 対象メンバー
+         cur.execute("""
+diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
+index 7fc38128463d443c5905a42209e76d7543e3b92f..4e5fee3e8d047eaabb26a15b8d7d2bc541d0358a 100644
+--- a/external_login_user/notifications.py
++++ b/external_login_user/notifications.py
+@@ -1650,96 +1650,124 @@ def api_notifications_mark_all_read():
+ 
+     uid = int(session.get("ext_user_id") or 0)
+     _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor()
+     try:
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=%s
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND read_at IS NULL
+             """,
+             (datetime.utcnow(), uid),
+         )
+         updated = int(cur.rowcount or 0)
+         db.commit()
+         _emit_notif_unread(uid, reason="read_all")
+         return jsonify({"ok": True, "updated": updated})
+     finally:
+         cur.close()
+         db.close()
+ 
+ 
++def _external_user_has_active_event_membership(event_id: int, user_id: int) -> bool:
++    db = get_db()
++    cur = db.cursor(dictionary=True)
++    try:
++        cur.execute(
++            """
++            SELECT COALESCE(is_canceled,0) AS is_canceled
++              FROM mfu_event_member
++             WHERE event_id=%s AND user_id=%s
++             ORDER BY id DESC
++             LIMIT 1
++            """,
++            (int(event_id), int(user_id)),
++        )
++        row = cur.fetchone()
++        if not row:
++            return False
++        return int(row.get("is_canceled") or 0) == 0
++    finally:
++        cur.close()
++        db.close()
 +
-+      const updateEstimateMedianDisplay = function () {
-+        const selectedMonth = getSelectedEstimateMonth();
-+        const netMedian = selectedMonth ? selectedMonth.net_median : null;
-+        const totalMedian = selectedMonth ? selectedMonth.total_median : null;
-+        const unavailable = netMedian === null || totalMedian === null;
 +
-+        if (estimateNetMedianDisplay) {
-+          estimateNetMedianDisplay.textContent = netMedian === null ? '-' : formatYen(Math.round(netMedian));
-+        }
-+        if (estimateTotalMedianDisplay) {
-+          estimateTotalMedianDisplay.textContent = totalMedian === null ? '-' : formatYen(Math.round(totalMedian));
-+        }
-+        if (estimateUnavailableMessage) {
-+          estimateUnavailableMessage.classList.toggle('d-none', !unavailable);
-+        }
-+      };
-+
-       const recalcEstimateBox = function () {
-         if (!estimateNetAmount || !estimateTotalAmount) {
-           return;
-         }
--        if (estimateNetMedian === null || estimateTotalMedian === null) {
-+        const selectedMonth = getSelectedEstimateMonth();
-+        const netMedian = selectedMonth ? selectedMonth.net_median : null;
-+        const totalMedian = selectedMonth ? selectedMonth.total_median : null;
-+        if (netMedian === null || totalMedian === null) {
-           estimateNetAmount.textContent = '-';
-           estimateTotalAmount.textContent = '-';
-           return;
-         }
-         const deliveriesPerDayRaw = estimateDeliveriesPerDay ? Number(estimateDeliveriesPerDay.value || 0) : 0;
-         const daysRaw = estimateDays ? Number(estimateDays.value || 0) : 0;
-         const deliveriesPerDay = Number.isNaN(deliveriesPerDayRaw) ? 0 : deliveriesPerDayRaw;
-         const days = Number.isNaN(daysRaw) ? 0 : daysRaw;
--        const netAmount = Math.round(deliveriesPerDay * estimateNetMedian * days);
--        const totalAmount = Math.round(deliveriesPerDay * estimateTotalMedian * days);
-+        const netAmount = Math.round(deliveriesPerDay * netMedian * days);
-+        const totalAmount = Math.round(deliveriesPerDay * totalMedian * days);
-         estimateNetAmount.textContent = formatYen(netAmount);
-         estimateTotalAmount.textContent = formatYen(totalAmount);
-       };
+ @bp.post("/api/notifications/read-by-room")
+ def api_notifications_mark_read_by_room():
+     guard = _require_ext_login()
+     if guard:
+         return guard
  
-+      if (estimateMonthSelect && defaultEstimateMonthKey) {
-+        estimateMonthSelect.value = defaultEstimateMonthKey;
-+      }
-+      if (estimateMonthSelect) {
-+        estimateMonthSelect.addEventListener('change', function () {
-+          updateEstimateMedianDisplay();
-+          recalcEstimateBox();
-+        });
-+      }
-       if (estimateDeliveriesPerDay) {
-         estimateDeliveriesPerDay.addEventListener('input', recalcEstimateBox);
-       }
-       if (estimateDays) {
-         estimateDays.addEventListener('input', recalcEstimateBox);
-       }
-+      updateEstimateMedianDisplay();
-       recalcEstimateBox();
+     uid = int(session.get("ext_user_id") or 0)
+     payload = request.get_json(silent=True) or {}
+     event_id_raw = payload.get("event_id")
+     room_id = str(payload.get("room_id") or "").strip()
+     if not room_id:
+         resp = jsonify({"ok": False, "reason": "room_id_required"})
+         resp.status_code = 400
+         return resp
  
+     event_id = None
+     if event_id_raw not in (None, "", 0, "0"):
+         try:
+             event_id = int(event_id_raw)
+         except Exception:
+             resp = jsonify({"ok": False, "reason": "invalid_event_id"})
+             resp.status_code = 400
+             return resp
  
+     _ensure_notification_schema()
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     try:
+         cur.execute(
+             "SELECT event_id, is_main FROM chat_rooms WHERE room_id=%s LIMIT 1",
+             (room_id,),
+         )
+         room = cur.fetchone() or {}
+         if not room:
+             resp = jsonify({"ok": False, "reason": "room_not_found"})
+             resp.status_code = 404
+             return resp
  
-       const freeeDayCheckboxes = function () {
-         return Array.from(document.querySelectorAll('.js-freee-day'));
-       };
+         room_event_id = int(room.get("event_id") or 0)
+         if event_id and room_event_id and event_id != room_event_id:
+             resp = jsonify({"ok": False, "reason": "event_room_mismatch"})
+             resp.status_code = 400
+             return resp
  
-       const setAllFreeeDayChecks = function (checked) {
-         freeeDayCheckboxes().forEach(function (checkbox) {
-           checkbox.checked = checked;
-         });
-       };
+         is_main = int(room.get("is_main") or 0)
+-        if is_main != 1:
++        if is_main == 1:
++            if room_event_id <= 0 or not _external_user_has_active_event_membership(room_event_id, uid):
++                resp = jsonify({"ok": False, "reason": "forbidden"})
++                resp.status_code = 403
++                return resp
++        else:
+             cur.execute(
+                 """
+                 SELECT 1
+                   FROM chat_room_members
+                  WHERE room_id=%s
+                    AND actor_type='line'
+                    AND actor_id=%s
+                  LIMIT 1
+                 """,
+                 (room_id, str(uid)),
+             )
+             if not cur.fetchone():
+                 resp = jsonify({"ok": False, "reason": "forbidden"})
+                 resp.status_code = 403
+                 return resp
  
-       const selectAllBtn = document.getElementById('selectAllFreeeDays');
-       const clearAllBtn = document.getElementById('clearAllFreeeDays');
-       const downloadBtn = document.getElementById('downloadSelectedFreeeCsv');
- 
-       if (selectAllBtn) {
-         selectAllBtn.addEventListener('click', function () {
-           setAllFreeeDayChecks(true);
-         });
-       }
- 
-       if (clearAllBtn) {
+         now = datetime.utcnow()
+         cur.execute(
+             """
+             UPDATE mfu_notifications
+                SET read_at=%s
+              WHERE user_kind='external'
+                AND user_id=%s
+                AND kind='chat_message'
+                AND chat_room_id=%s

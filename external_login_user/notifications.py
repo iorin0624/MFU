@@ -1672,6 +1672,29 @@ def api_notifications_mark_all_read():
         db.close()
 
 
+def _external_user_has_active_event_membership(event_id: int, user_id: int) -> bool:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT COALESCE(is_canceled,0) AS is_canceled
+              FROM mfu_event_member
+             WHERE event_id=%s AND user_id=%s
+             ORDER BY id DESC
+             LIMIT 1
+            """,
+            (int(event_id), int(user_id)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        return int(row.get("is_canceled") or 0) == 0
+    finally:
+        cur.close()
+        db.close()
+
+
 @bp.post("/api/notifications/read-by-room")
 def api_notifications_mark_read_by_room():
     guard = _require_ext_login()
@@ -1717,7 +1740,12 @@ def api_notifications_mark_read_by_room():
             return resp
 
         is_main = int(room.get("is_main") or 0)
-        if is_main != 1:
+        if is_main == 1:
+            if room_event_id <= 0 or not _external_user_has_active_event_membership(room_event_id, uid):
+                resp = jsonify({"ok": False, "reason": "forbidden"})
+                resp.status_code = 403
+                return resp
+        else:
             cur.execute(
                 """
                 SELECT 1
