@@ -3633,6 +3633,8 @@ def admin_nodes():
             data["host"] = data.get("host") or "unknown"
             data["os"] = data.get("os") or "unknown"
             data["os_version"] = data.get("os_version") or "unknown"
+            if "runtime" in data:
+                data["runtime"] = data.get("runtime")
             info["data"] = data
             info["ok"] = True
         except Exception as e:
@@ -3673,6 +3675,8 @@ def admin_nodes_data():
             data["host"] = data.get("host") or "unknown"
             data["os"] = data.get("os") or "unknown"
             data["os_version"] = data.get("os_version") or "unknown"
+            if "runtime" in data:
+                data["runtime"] = data.get("runtime")
             info["data"] = data
             info["ok"] = True
         except Exception as e:
