@@ -1,399 +1,892 @@
-diff --git a/chat/__init__.py b/chat/__init__.py
-index 1f6594c68a585d912380fbd82f1c9eb90b0df46e..16aba5c1208060f542c54013e074760f6ee74028 100644
---- a/chat/__init__.py
-+++ b/chat/__init__.py
-@@ -3135,69 +3135,99 @@ def _ensure_chat_dm_edit_schema() -> bool:
-                 "edited_by_actor_key": "ALTER TABLE chat_dm_messages ADD COLUMN edited_by_actor_key VARCHAR(128) NULL AFTER edited_at",
-             }
-             for column_name, ddl in definitions.items():
-                 cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
-                 if cur.fetchone():
-                     continue
-                 cur.execute(ddl)
+diff --git a/__init__.py b/__init__.py
+index e585befb9ea54cb2fffd01e6b95bf2236da961c0..a514be94a5fe3e47aa9eb4c575f125d1d8bcfce9 100644
+--- a/__init__.py
++++ b/__init__.py
+@@ -3611,90 +3611,94 @@ def admin_nodes():
  
-             db.commit()
-             missing_columns: list[str] = []
-             for column_name in definitions:
-                 cur.execute(f"SHOW COLUMNS FROM chat_dm_messages LIKE '{column_name}'")
-                 if not cur.fetchone():
-                     missing_columns.append(column_name)
-             CHAT_DM_EDIT_SCHEMA_READY = len(missing_columns) == 0
-             return CHAT_DM_EDIT_SCHEMA_READY
-         except Exception:
-             current_app.logger.warning("chat dm edit schema ensure failed", exc_info=True)
-             CHAT_DM_EDIT_SCHEMA_READY = False
-             return False
-         finally:
-             cur.close()
-             db.close()
+     targets = [
+         {"name": "103.15 (Raspberry Pi)", "url": "http://192.168.103.15:5055/metrics"},
+         {"name": "103.16 (x86)",   "url": "http://192.168.103.16:5055/metrics"},
+         {"name": "103.17 (MySQL)", "url": "http://192.168.103.17:5055/metrics"},
+         {"name": "103.21 (FreePBX)", "url": "http://192.168.103.21:5055/metrics"},
  
+     ]
  
-+def _get_latest_event_member_row(event_id: int, user_id: str | int) -> dict[str, Any] | None:
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT id,
-+                   COALESCE(status,'pending') AS status,
-+                   COALESCE(is_canceled,0) AS is_canceled,
-+                   COALESCE(is_host,0) AS is_host,
-+                   COALESCE(is_subhost,0) AS is_subhost
-+              FROM mfu_event_member
-+             WHERE event_id=%s AND user_id=%s
-+             ORDER BY id DESC
-+             LIMIT 1
-+            """,
-+            (int(event_id), str(user_id)),
-+        )
-+        return cur.fetchone()
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
-+def _has_active_event_membership(event_id: int, user_id: str | int) -> bool:
-+    try:
-+        row = _get_latest_event_member_row(event_id, user_id)
-+        if not row:
-+            return False
-+        return int(row.get("is_canceled") or 0) == 0
-+    except Exception:
-+        current_app.logger.warning(
-+            "chat active membership check failed event=%s user_id=%s",
-+            event_id,
-+            user_id,
-+            exc_info=True,
-+        )
-+        return False
-+
-+
- def _can_access_event(event_id: int, actor: dict[str, Any]) -> bool:
-     if actor["actor_type"] == "admin":
-         return True
-+    if actor["actor_type"] == "line":
-+        return _has_active_event_membership(event_id, actor["actor_id"])
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
--        if actor["actor_type"] == "line":
--            cur.execute(
--                """
--                SELECT 1
--                  FROM mfu_event_member
--                 WHERE event_id=%s AND user_id=%s
--                 LIMIT 1
--                """,
--                (event_id, actor["actor_id"]),
--            )
--            return bool(cur.fetchone())
--
-         # acl: mfu_event_admin_acl + users(admin系)
-         cur.execute(
-             """
-             SELECT 1
-               FROM mfu_event_admin_acl
-              WHERE event_id=%s AND username=%s
-              LIMIT 1
-             """,
-             (event_id, actor["actor_id"]),
-         )
-         return bool(cur.fetchone())
-     except Exception:
-         current_app.logger.warning("chat access check failed event=%s actor=%s", event_id, actor, exc_info=True)
-         return False
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _mfu_event_has_deleted_at_column() -> bool:
-     global MFU_EVENT_DELETED_AT_SCHEMA_READY
-     if MFU_EVENT_DELETED_AT_SCHEMA_READY is not None:
-         return MFU_EVENT_DELETED_AT_SCHEMA_READY
- 
-     with MFU_EVENT_DELETED_AT_SCHEMA_CHECK_LOCK:
-@@ -4170,66 +4200,84 @@ def _lookup_mention_targets(event_id: int, room_id: str, names: list[str]) -> li
-             f"""
-             SELECT u.id, u.nickname
-               FROM external_login_user u
-               JOIN mfu_event_member m ON m.user_id = u.id
-              WHERE m.event_id = %s
-                AND u.nickname IN ({placeholders})
-             """,
-             tuple([event_id] + uniq_names),
-         )
-         rows = cur.fetchall() or []
-         return [
-             {"actor_type": "line", "actor_id": str(r["id"]), "display_name": r["nickname"]}
-             for r in rows
-             if _can_notify_actor_in_room(event_id, room_id, "line", str(r["id"]))
-         ]
-     finally:
-         cur.close()
-         db.close()
- 
- 
- def _can_notify_actor_in_room(event_id: int, room_id: str, actor_type: str, actor_id: str) -> bool:
-     room = _get_room(event_id, room_id, allow_archived=True)
-     if not room:
-         return False
-     if int(room.get("is_main") or 0) == 1:
--        return True
-+        if actor_type == "line":
-+            return _has_active_event_membership(event_id, actor_id)
-+        if actor_type in {"admin", "acl"}:
-+            return True
-+        return False
-     return _is_room_member(room_id, {"actor_type": actor_type, "actor_id": actor_id})
- 
- 
- def _build_chat_message_push_targets(event_id: int, room_id: str, sender_actor: dict[str, Any]) -> list[tuple[str, str]]:
-     sender_key = _actor_sender_id(sender_actor["actor_type"], str(sender_actor["actor_id"]))
-     targets: set[tuple[str, str]] = set()
-     room = _get_room(event_id, room_id, allow_archived=True)
-     if not room:
-         return []
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     try:
-         if int(room.get("is_main") or 0) == 1:
--            cur.execute("SELECT DISTINCT user_id FROM mfu_event_member WHERE event_id=%s", (event_id,))
-+            cur.execute(
-+                """
-+                SELECT latest.user_id
-+                  FROM (
-+                        SELECT user_id, MAX(id) AS max_id
-+                          FROM mfu_event_member
-+                         WHERE event_id=%s
-+                         GROUP BY user_id
-+                       ) latest
-+                  JOIN mfu_event_member m
-+                    ON m.id = latest.max_id
-+                 WHERE COALESCE(m.is_canceled,0)=0
-+                """,
-+                (event_id,),
-+            )
-             for row in cur.fetchall() or []:
-                 targets.add(("line", str(row["user_id"])))
- 
-             cur.execute("SELECT DISTINCT username FROM mfu_event_admin_acl WHERE event_id=%s", (event_id,))
-             for row in cur.fetchall() or []:
-                 username = str(row["username"])
-                 if username == "admin":
-                     targets.add(("admin", "admin"))
-                 else:
-                     targets.add(("acl", username))
-         else:
-             cur.execute(
-                 "SELECT actor_type, actor_id FROM chat_room_members WHERE room_id=%s",
-                 (room_id,),
-             )
-             for row in cur.fetchall() or []:
-                 actor_type = str(row.get("actor_type") or "")
-                 actor_id = str(row.get("actor_id") or "")
-                 if actor_type and actor_id:
-                     targets.add((actor_type, actor_id))
-     finally:
-         cur.close()
-         db.close()
- 
-     muted_targets: set[tuple[str, str]] = set()
-diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index 2b59aa118a3e7e860589516f03b6dd83ee3e311d..a70710bff23859284671d81655dd46aeff7095ba 100644
---- a/external_login_user/admin.py
-+++ b/external_login_user/admin.py
-@@ -2200,50 +2200,61 @@ def admin_event_member_action(event_id: int, user_id: int, action: str):
-                        canceled_at=NULL,
-                        canceled_by=NULL
-                  WHERE event_id=%s AND user_id=%s
-                  LIMIT 1
-             """, (event_id, user_id))
-             db.commit()
-         finally:
-             cur.close(); db.close()
-         _recalc_event_fee_if_auto(event_id)
-         flash("参加キャンセルを解除しました。", "success")
-         return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
- 
-     if action not in ("approve", "reject"):
-         if action == "remove":
-             db = get_db(); cur = db.cursor()
-             try:
-                 canceled_by = (session.get("user") or "admin")
-                 cur.execute("""
-                     UPDATE mfu_event_member
-                        SET is_canceled=1,
-                            canceled_at=NOW(),
-                            canceled_by=%s
-                      WHERE event_id=%s AND user_id=%s
-                      LIMIT 1
-                 """, (canceled_by, event_id, user_id))
-+                cur.execute(
-+                    """
-+                    DELETE FROM mfu_notifications
-+                     WHERE user_kind='external'
-+                       AND user_id=%s
-+                       AND kind='chat_message'
-+                       AND COALESCE(chat_event_id, event_id)=%s
-+                       AND read_at IS NULL
-+                    """,
-+                    (user_id, event_id),
-+                )
-                 db.commit()
-             finally:
-                 cur.close(); db.close()
-             _recalc_event_fee_if_auto(event_id)
-             flash("参加者をキャンセル済みにしました。", "success")
-             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
-         abort(400, "unsupported action")
- 
-     new_status = "approved" if action == "approve" else "rejected"
-     STATUS_JA = {"approved": "承認", "rejected": "拒否", "pending": "保留"}
- 
-     db = get_db(); cur = db.cursor()
-     try:
-         # イベント情報
-         cur.execute("SELECT title, event_uuid FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-         ev = cur.fetchone()
-         if not ev:
-             abort(404, "event not found")
-         ev_title = ev[0] if isinstance(ev, tuple) else ev["title"]
-         ev_uuid_b = ev[1] if isinstance(ev, tuple) else ev["event_uuid"]
-         ev_uuid_str = _uuid_bytes_to_str(ev_uuid_b) or ""
-         view_url = f"https://mfu.iori0624.jp/external-login/events/view/{ev_uuid_str}"
- 
-         # 対象メンバー
-         cur.execute("""
-diff --git a/external_login_user/notifications.py b/external_login_user/notifications.py
-index 7fc38128463d443c5905a42209e76d7543e3b92f..4e5fee3e8d047eaabb26a15b8d7d2bc541d0358a 100644
---- a/external_login_user/notifications.py
-+++ b/external_login_user/notifications.py
-@@ -1650,96 +1650,124 @@ def api_notifications_mark_all_read():
- 
-     uid = int(session.get("ext_user_id") or 0)
-     _ensure_notification_schema()
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             UPDATE mfu_notifications
-                SET read_at=%s
-              WHERE user_kind='external'
-                AND user_id=%s
-                AND read_at IS NULL
-             """,
-             (datetime.utcnow(), uid),
-         )
-         updated = int(cur.rowcount or 0)
-         db.commit()
-         _emit_notif_unread(uid, reason="read_all")
-         return jsonify({"ok": True, "updated": updated})
-     finally:
-         cur.close()
-         db.close()
- 
- 
-+def _external_user_has_active_event_membership(event_id: int, user_id: int) -> bool:
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute(
-+            """
-+            SELECT COALESCE(is_canceled,0) AS is_canceled
-+              FROM mfu_event_member
-+             WHERE event_id=%s AND user_id=%s
-+             ORDER BY id DESC
-+             LIMIT 1
-+            """,
-+            (int(event_id), int(user_id)),
-+        )
-+        row = cur.fetchone()
-+        if not row:
-+            return False
-+        return int(row.get("is_canceled") or 0) == 0
-+    finally:
-+        cur.close()
-+        db.close()
-+
-+
- @bp.post("/api/notifications/read-by-room")
- def api_notifications_mark_read_by_room():
-     guard = _require_ext_login()
-     if guard:
-         return guard
- 
-     uid = int(session.get("ext_user_id") or 0)
-     payload = request.get_json(silent=True) or {}
-     event_id_raw = payload.get("event_id")
-     room_id = str(payload.get("room_id") or "").strip()
-     if not room_id:
-         resp = jsonify({"ok": False, "reason": "room_id_required"})
-         resp.status_code = 400
-         return resp
- 
-     event_id = None
-     if event_id_raw not in (None, "", 0, "0"):
+     results = []
+     for t in targets:
+         info = {
+             "name": t["name"],
+             "url": t["url"],
+             "ok": False,
+             "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
+             "error": None,
+         }
          try:
-             event_id = int(event_id_raw)
-         except Exception:
-             resp = jsonify({"ok": False, "reason": "invalid_event_id"})
-             resp.status_code = 400
-             return resp
+             r = requests.get(t["url"], headers=headers, timeout=2)
+             r.raise_for_status()
+             data = r.json() or {}
+             data["host"] = data.get("host") or "unknown"
+             data["os"] = data.get("os") or "unknown"
+             data["os_version"] = data.get("os_version") or "unknown"
++            if "runtime" in data:
++                data["runtime"] = data.get("runtime")
+             info["data"] = data
+             info["ok"] = True
+         except Exception as e:
+             info["error"] = str(e)
+         results.append(info)
  
-     _ensure_notification_schema()
-     db = get_db()
-     cur = db.cursor(dictionary=True)
+     return render_template("admin_nodes.html", nodes=results, now=int(time.time()))
+ 
+ # ─────────────────────────────────────────
+ # 管理: ノードメトリクス JSON（/admin/nodes/data）
+ # ─────────────────────────────────────────
+ @app.route("/admin/nodes/data")
+ @admin_required
+ def admin_nodes_data():
+     token = os.environ.get("NODE_METRICS_TOKEN", "")
+     headers = {"X-Node-Token": token} if token else {}
+ 
+     targets = [
+         {"name": "103.15 (Raspberry Pi)", "url": "http://192.168.103.15:5055/metrics"},
+         {"name": "103.16 (x86)",   "url": "http://192.168.103.16:5055/metrics"},
+         {"name": "103.17 (MySQL)", "url": "http://192.168.103.17:5055/metrics"},
+         {"name": "103.21 (FreePBX)", "url": "http://192.168.103.21:5055/metrics"},
+     ]
+ 
+     results = []
+     for t in targets:
+         info = {
+             "name": t["name"],
+             "url": t["url"],
+             "ok": False,
+             "data": {"host": "unknown", "os": "unknown", "os_version": "unknown"},
+             "error": None,
+         }
+         try:
+             r = requests.get(t["url"], headers=headers, timeout=2)
+             r.raise_for_status()
+             data = r.json() or {}
+             data["host"] = data.get("host") or "unknown"
+             data["os"] = data.get("os") or "unknown"
+             data["os_version"] = data.get("os_version") or "unknown"
++            if "runtime" in data:
++                data["runtime"] = data.get("runtime")
+             info["data"] = data
+             info["ok"] = True
+         except Exception as e:
+             info["error"] = str(e)
+         results.append(info)
+ 
+     return jsonify({"nodes": results, "now": int(time.time())})
+ 
+ # ─────────────────────────────────────────
+ # 管理: アクセスログから即BAN（103.15へSSH実行）
+ # POST /admin/fw/ban  {cidr:"146.70.194.0/24"} または {ip:"146.70.194.236"}
+ # 戻り: {"ok":true,"status":"added|already|ok","target":"146.70.194.0/24",...}
+ # ─────────────────────────────────────────
+ @app.post("/admin/fw/ban")
+ @admin_required
+ def admin_fw_ban():
+     data = request.get_json(silent=True) or request.form
+     cidr_raw = (data.get("cidr") or "").strip()
+     ip_raw = (data.get("ip") or "").strip()
+ 
      try:
-         cur.execute(
-             "SELECT event_id, is_main FROM chat_rooms WHERE room_id=%s LIMIT 1",
-             (room_id,),
-         )
-         room = cur.fetchone() or {}
-         if not room:
-             resp = jsonify({"ok": False, "reason": "room_not_found"})
-             resp.status_code = 404
-             return resp
+         target = normalize_ip_target(cidr=cidr_raw, ip=ip_raw)
+     except ValueError as e:
+         abort(400, str(e))
+     except Exception:
+diff --git a/templates/admin_nodes.html b/templates/admin_nodes.html
+index c4b8bb7efd154968a132b3b63bfd403e025cb9c7..e7a1bb90d4021c1b39b6a754f3f98913b9bd10fe 100644
+--- a/templates/admin_nodes.html
++++ b/templates/admin_nodes.html
+@@ -1,426 +1,475 @@
+ {% extends "base.html" %}
+ {% block title %}ノード監視（103.16 / 103.15）{% endblock %}
  
-         room_event_id = int(room.get("event_id") or 0)
-         if event_id and room_event_id and event_id != room_event_id:
-             resp = jsonify({"ok": False, "reason": "event_room_mismatch"})
-             resp.status_code = 400
-             return resp
+ {% block content %}
+ <div class="container py-3">
+   <div class="d-flex justify-content-between align-items-center mb-3">
+     <h3 class="mb-0">ノード監視
+       <small class="text-muted">（更新: <span id="js-now">{{ now }}</span> / 自動更新: 1秒）</small>
+     </h3>
+     <div class="d-flex align-items-center gap-2">
+       <button id="btnRefresh" class="btn btn-sm btn-outline-secondary">今すぐ更新</button>
+     </div>
+   </div>
  
-         is_main = int(room.get("is_main") or 0)
--        if is_main != 1:
-+        if is_main == 1:
-+            if room_event_id <= 0 or not _external_user_has_active_event_membership(room_event_id, uid):
-+                resp = jsonify({"ok": False, "reason": "forbidden"})
-+                resp.status_code = 403
-+                return resp
-+        else:
-             cur.execute(
-                 """
-                 SELECT 1
-                   FROM chat_room_members
-                  WHERE room_id=%s
-                    AND actor_type='line'
-                    AND actor_id=%s
-                  LIMIT 1
-                 """,
-                 (room_id, str(uid)),
-             )
-             if not cur.fetchone():
-                 resp = jsonify({"ok": False, "reason": "forbidden"})
-                 resp.status_code = 403
-                 return resp
+   <div id="nodesGrid" class="row g-3">
+-    {# 初期表示（サーバレンダリング）。以後はJSが差し替え #}
+     {% for n in nodes %}
+-      <div class="col-12 col-lg-6">
++      {% set d = n.data or {} %}
++      {% set rt = d.runtime or {} %}
++      <div class="col-12 col-lg-6" data-node-url="{{ n.url }}">
+         <div class="card shadow-sm">
+           <div class="card-header d-flex justify-content-between align-items-center">
+             <div>
+               <strong>{{ n.name }}</strong>
+-              {% if n.ok %}
+-                <span class="badge text-bg-success ms-2">正常</span>
+-              {% else %}
+-                <span class="badge text-bg-danger ms-2">異常</span>
+-              {% endif %}
++              <span class="badge ms-2 js-status-badge {% if n.ok %}text-bg-success{% else %}text-bg-danger{% endif %}">{% if n.ok %}正常{% else %}異常{% endif %}</span>
+             </div>
+             <small class="text-muted">{{ n.url }}</small>
+           </div>
+           <div class="card-body">
+-            {% if not n.ok %}
+-              {% set d = n.data or {} %}
+-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
+-              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
+-              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
+-              <div class="alert alert-danger mb-0">取得失敗: {{ n.error }}</div>
+-            {% else %}
+-              {% set d = n.data %}
+-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> {{ d.host or "unknown" }}</div></div>
+-              <div class="mb-2"><div><small class="text-muted">OS:</small> {{ d.os or "unknown" }}</div></div>
+-              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> {{ d.os_version or "unknown" }}</div></div>
+-
+-              <h6 class="mt-2">CPU</h6>
+-              <ul class="list-unstyled mb-2">
+-                <li>温度:
+-                  {% if d.cpu.temp_c is not none %} {{ d.cpu.temp_c }}℃
+-                  {% else %}<span class="text-muted">不明</span>{% endif %}
+-                </li>
+-                <li>周波数:
+-                  {% if d.cpu.freq_mhz %} {{ d.cpu.freq_mhz }} MHz
+-                  {% else %}<span class="text-muted">不明</span>{% endif %}
+-                </li>
+-              </ul>
+-
+-              {# ★ ラズパイ専用情報（あれば表示） #}
+-              {% if d.rpi and d.rpi.is_rpi %}
+-                {% set r = d.rpi %}
+-                <h6 class="mt-3">Raspberry Pi（電圧 / スロットル / ARMクロック）</h6>
+-                <ul class="list-unstyled mb-2 small">
+-                  <li>電圧:
+-                    Core {{ r.volts.core_v is not none and (r.volts.core_v ~ "V") or "-" }},
+-                    SDRAM C {{ r.volts.sdram_c_v is not none and (r.volts.sdram_c_v ~ "V") or "-" }},
+-                    I {{ r.volts.sdram_i_v is not none and (r.volts.sdram_i_v ~ "V") or "-" }},
+-                    P {{ r.volts.sdram_p_v is not none and (r.volts.sdram_p_v ~ "V") or "-" }}
+-                  </li>
+-                  <li>ARMクロック:
+-                    {% if r.arm_freq_mhz %} {{ r.arm_freq_mhz }} MHz
+-                    {% elif r.arm_freq_hz %} {{ r.arm_freq_hz / 1000000.0 }} MHz
+-                    {% else %}<span class="text-muted">不明</span>{% endif %}
+-                  </li>
+-                  <li>スロットル:
+-                    <code>{{ r.throttled.raw or "-" }}</code>
+-                    {% set f = (r.throttled.flags or {}) %}
+-                    <div class="mt-1">
+-                      <span class="badge {% if f.under_voltage_now %}text-bg-danger{% else %}text-bg-secondary{% endif %} me-1">電圧（現在）</span>
+-                      <span class="badge {% if f.freq_capped_now %}text-bg-warning{% else %}text-bg-secondary{% endif %} me-1">周波数（現在）</span>
+-                      <span class="badge {% if f.throttled_now %}text-bg-danger{% else %}text-bg-secondary{% endif %} me-1">スロットル（現在）</span>
+-                      <span class="badge {% if f.soft_temp_limit_now %}text-bg-warning{% else %}text-bg-secondary{% endif %} me-1">温度（現在）</span>
+-                      <span class="badge {% if f.under_voltage_occurred %}text-bg-danger{% else %}text-bg-secondary{% endif %} me-1">電圧（履歴）</span>
+-                      <span class="badge {% if f.freq_capped_occurred %}text-bg-warning{% else %}text-bg-secondary{% endif %} me-1">周波数（履歴）</span>
+-                      <span class="badge {% if f.throttled_occurred %}text-bg-danger{% else %}text-bg-secondary{% endif %} me-1">スロットル（履歴）</span>
+-                      <span class="badge {% if f.soft_temp_limit_occurred %}text-bg-warning{% else %}text-bg-secondary{% endif %}">温度（履歴）</span>
+-                    </div>
+-                  </li>
+-                </ul>
+-              {% endif %}
+-
+-              {# ★ コア別CPU使用率（プログレスバー） #}
+-              <div class="mb-3">
+-                <div class="small text-muted mb-1">CPU使用率（コア別）</div>
+-                {% if d.cpu.usage_percpu %}
+-                  {% for v in d.cpu.usage_percpu %}
+-                    <div class="mb-1">
+-                      <div class="d-flex justify-content-between small">
+-                        <span class="text-muted">コア {{ loop.index0 }}</span>
+-                        <span>{{ v }}%</span>
+-                      </div>
+-                      <div class="progress" style="height: 8px;">
+-                        <div class="progress-bar {% if v>=85 %}bg-danger{% elif v>=70 %}bg-warning{% else %}bg-success{% endif %}"
+-                             role="progressbar" style="width: {{ v }}%;"
+-                             aria-valuenow="{{ v }}" aria-valuemin="0" aria-valuemax="100"></div>
+-                      </div>
+-                    </div>
+-                  {% endfor %}
+-                {% else %}
+-                  <span class="text-muted">不明</span>
+-                {% endif %}
+-              </div>
+-
+-              <h6>メモリ</h6>
+-              <div class="mb-1 d-flex justify-content-between small">
+-                <span class="text-muted">RAM使用率</span>
+-                <span>
+-                  {{ d.ram.percent }}%
+-                  （{{ "%.2f"|format(d.ram.used / (1024*1024*1024)) }} / {{ "%.2f"|format(d.ram.total / (1024*1024*1024)) }} GB）
+-                </span>
+-              </div>
+-              <div class="progress mb-3" style="height: 10px;">
+-                <div class="progress-bar {% if d.ram.percent>=85 %}bg-danger{% elif d.ram.percent>=70 %}bg-warning{% else %}bg-info{% endif %}"
+-                     role="progressbar" style="width: {{ d.ram.percent }}%;"
+-                     aria-valuenow="{{ d.ram.percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+-              </div>
+-
+-              <h6>ストレージ使用率</h6>
+-              <div class="table-responsive">
+-                <table class="table table-sm align-middle">
+-                  <thead>
+-                    <tr><th style="width:35%;">マウント</th><th style="width:20%;">ファイルシステム</th><th style="width:45%;">使用状況</th></tr>
+-                  </thead>
+-                  <tbody>
+-                    {% for p in d.disks %}
+-                      <tr>
+-                        <td><code>{{ p.mountpoint }}</code></td>
+-                        <td>{{ p.fstype }}</td>
+-                        <td>
+-                          <div class="d-flex justify-content-between small">
+-                            <span class="text-muted">
+-                              {{ "%.2f"|format(p.used / (1024*1024*1024)) }} / {{ "%.2f"|format(p.total / (1024*1024*1024)) }} GB
+-                            </span>
+-                            <span>{{ p.percent }}%</span>
+-                          </div>
+-                          <div class="progress mt-1" style="height: 8px;">
+-                            <div class="progress-bar {% if p.percent>=90 %}bg-danger{% elif p.percent>=75 %}bg-warning{% else %}bg-success{% endif %}"
+-                                 role="progressbar" style="width: {{ p.percent }}%;"
+-                                 aria-valuenow="{{ p.percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+-                          </div>
+-                        </td>
+-                      </tr>
+-                    {% endfor %}
+-                  </tbody>
+-                </table>
+-              </div>
+-
+-              <h6>SMART（物理ディスク）</h6>
+-              {% if d.smart and d.smart|length > 0 %}
+-                <div class="table-responsive">
+-                  <table class="table table-sm align-middle">
+-                    <thead>
+-                      <tr><th>デバイス</th><th>モデル</th><th>シリアル</th><th>温度</th><th>健全性</th></tr>
+-                    </thead>
+-                    <tbody>
+-                      {% for s in d.smart %}
+-                        {% set jp = (s.health == "PASSED" and "正常") or (s.health == "FAILED" and "異常") or "不明" %}
+-                        {% set cls = (s.health == "PASSED" and "success") or (s.health == "FAILED" and "danger") or "secondary" %}
+-                        <tr>
+-                          <td><code>{{ s.device }}</code></td>
+-                          <td>{{ s.model or "-" }}</td>
+-                          <td><small>{{ s.serial or "-" }}</small></td>
+-                          <td>{% if s.temp_c is not none %}{{ s.temp_c }}℃{% else %}-{% endif %}</td>
+-                          <td>
+-                            <span class="badge text-bg-{{ cls }}">{{ jp }}</span>
+-                            {% if s.error %}<small class="text-danger ms-2">{{ s.error }}</small>{% endif %}
+-                          </td>
+-                        </tr>
+-                      {% endfor %}
+-                    </tbody>
+-                  </table>
+-                </div>
+-              {% else %}
+-                <div class="text-muted">SMART情報なし</div>
+-              {% endif %}
+-            {% endif %}
++            <div class="mb-1"><small class="text-muted">ホスト:</small> <span class="js-host">{{ d.host or 'unknown' }}</span></div>
++            <div class="mb-1"><small class="text-muted">OS:</small> <span class="js-os">{{ d.os or 'unknown' }}</span></div>
++            <div class="mb-2"><small class="text-muted">OSバージョン:</small> <span class="js-os-version">{{ d.os_version or 'unknown' }}</span></div>
++
++            <h6 class="mt-2">起動情報</h6>
++            <ul class="list-unstyled mb-3 small">
++              <li>アプリ起動日時: <span class="js-app-started-jst">{{ rt.app_started_at_jst or '不明' }}</span></li>
++              <li>アプリ経過時間: <span class="js-app-uptime">不明</span></li>
++              <li>システム起動日時: <span class="js-system-started-jst">{{ rt.system_booted_at_jst or '不明' }}</span></li>
++              <li>システム経過時間: <span class="js-system-uptime">不明</span></li>
++            </ul>
++
++            <h6>CPU</h6>
++            <ul class="list-unstyled mb-2">
++              <li>温度: <span class="js-cpu-temp text-muted">不明</span></li>
++              <li>周波数: <span class="js-cpu-freq text-muted">不明</span></li>
++            </ul>
++
++            <h6 class="mt-3">Raspberry Pi（電圧 / スロットル / ARMクロック）</h6>
++            <div class="js-rpi-wrap text-muted mb-3">情報なし</div>
++
++            <div class="mb-3">
++              <div class="small text-muted mb-1">CPU使用率（コア別）</div>
++              <div class="js-cpu-percore text-muted">不明</div>
++            </div>
++
++            <h6>メモリ</h6>
++            <div class="mb-1 d-flex justify-content-between small">
++              <span class="text-muted">RAM使用率</span>
++              <span class="js-ram-text">不明</span>
++            </div>
++            <div class="progress mb-3" style="height: 10px;">
++              <div class="progress-bar js-ram-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
++            </div>
++
++            <h6>ストレージ使用率</h6>
++            <div class="table-responsive mb-3">
++              <table class="table table-sm align-middle">
++                <thead>
++                  <tr><th style="width:35%;">マウント</th><th style="width:20%;">ファイルシステム</th><th style="width:45%;">使用状況</th></tr>
++                </thead>
++                <tbody class="js-disks-body">
++                  <tr><td colspan="3" class="text-muted">なし</td></tr>
++                </tbody>
++              </table>
++            </div>
++
++            <h6>SMART（物理ディスク）</h6>
++            <div class="table-responsive">
++              <table class="table table-sm align-middle">
++                <thead>
++                  <tr><th>デバイス</th><th>モデル</th><th>シリアル</th><th>温度</th><th>健全性</th></tr>
++                </thead>
++                <tbody class="js-smart-body">
++                  <tr><td colspan="5" class="text-muted">SMART情報なし</td></tr>
++                </tbody>
++              </table>
++            </div>
++
++            <div class="js-error-wrap mt-2"></div>
+           </div>
+         </div>
+       </div>
+     {% endfor %}
+   </div>
+ </div>
  
-         now = datetime.utcnow()
-         cur.execute(
-             """
-             UPDATE mfu_notifications
-                SET read_at=%s
-              WHERE user_kind='external'
-                AND user_id=%s
-                AND kind='chat_message'
-                AND chat_room_id=%s
+-<!-- JSONポーリング→DOM差し替え（1秒）／CPU=コア別表示／Raspberry Pi拡張：GBは小数2桁 -->
+ <script>
+ (() => {
+   const GRID = document.getElementById('nodesGrid');
+-  const NOW  = document.getElementById('js-now');
+-  const BTN  = document.getElementById('btnRefresh');
++  const NOW = document.getElementById('js-now');
++  const BTN = document.getElementById('btnRefresh');
+   const FETCH_URL = "{{ url_for('admin_nodes_data') }}";
+   const INTERVAL_MS = 1000;
+ 
+   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v || 0)));
+   const barClass = (pct, warn=70, danger=85) => (pct>=danger) ? 'bg-danger' : (pct>=warn) ? 'bg-warning' : 'bg-success';
+   const barClassRam = (pct) => (pct>=85) ? 'bg-danger' : (pct>=70) ? 'bg-warning' : 'bg-info';
+ 
+   function esc(s){
+-    return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
++    return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
++  }
++
++  function fmtGiB(u, t){
++    const gi = 1024 * 1024 * 1024;
++    const used = Number(u || 0);
++    const total = Number(t || 0);
++    return `${(used/gi).toFixed(2)} / ${(total/gi).toFixed(2)} GB`;
++  }
++
++  function formatDuration(sec){
++    if (sec == null || Number.isNaN(Number(sec)) || Number(sec) < 0) return '不明';
++    let s = Math.floor(Number(sec));
++    const d = Math.floor(s / 86400); s %= 86400;
++    const h = Math.floor(s / 3600); s %= 3600;
++    const m = Math.floor(s / 60); s %= 60;
++    return `${d}日 ${h}時間 ${m}分 ${s}秒`;
++  }
++
++  function pad2(n){ return String(n).padStart(2, '0'); }
++
++  function formatDateJstFromDateObj(date){
++    return `${date.getFullYear()}-${pad2(date.getMonth()+1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} JST`;
+   }
+-  function fmtGiB(u,t){
+-    const gi = 1024*1024*1024;
+-    return `${(u/gi).toFixed(2)} / ${(t/gi).toFixed(2)} GB`;
++
++  function formatDateByParts(str){
++    const m = String(str).trim().match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2}):(\d{2})/);
++    if (!m) return null;
++    return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]} JST`;
++  }
++
++  function formatJstDate(runtimeJstIso, tsFallback){
++    if (runtimeJstIso){
++      const s = String(runtimeJstIso);
++      const hasTz = /([+-]\d{2}:\d{2}|Z)$/i.test(s);
++      const jstTz = /[+-]09:00$/i.test(s);
++      if (!hasTz || jstTz){
++        return formatDateByParts(s) || '不明';
++      }
++      const d = new Date(s);
++      if (!Number.isNaN(d.getTime())){
++        const j = new Date(d.toLocaleString('en-US', {timeZone: 'Asia/Tokyo'}));
++        return formatDateJstFromDateObj(j);
++      }
++    }
++    if (tsFallback != null){
++      const d = new Date(Number(tsFallback) * 1000);
++      if (!Number.isNaN(d.getTime())){
++        const j = new Date(d.toLocaleString('en-US', {timeZone: 'Asia/Tokyo'}));
++        return formatDateJstFromDateObj(j);
++      }
++    }
++    return '不明';
+   }
+ 
+   function renderPerCore(percpu){
+     if (!Array.isArray(percpu) || percpu.length === 0){
+       return '<span class="text-muted">不明</span>';
+     }
+-    let html = '<div class="small text-muted mb-1">CPU使用率（コア別）</div>';
+-    for (let i=0;i<percpu.length;i++){
++    let html = '';
++    for (let i = 0; i < percpu.length; i++){
+       const v = clamp(percpu[i], 0, 100);
+       html += `
+         <div class="mb-1">
+           <div class="d-flex justify-content-between small">
+             <span class="text-muted">コア ${i}</span>
+             <span>${v}%</span>
+           </div>
+           <div class="progress" style="height: 8px;">
+-            <div class="progress-bar ${barClass(v)}" role="progressbar"
+-                 style="width: ${v}%;" aria-valuenow="${v}" aria-valuemin="0" aria-valuemax="100"></div>
++            <div class="progress-bar ${barClass(v)}" role="progressbar" style="width: ${v}%;" aria-valuenow="${v}" aria-valuemin="0" aria-valuemax="100"></div>
+           </div>
+         </div>`;
+     }
+     return html;
+   }
+ 
+   function renderRpi(rpi){
+-    if (!rpi || !rpi.is_rpi) return '';
++    if (!rpi || !rpi.is_rpi){
++      return '<span class="text-muted">情報なし</span>';
++    }
+     const v = rpi.volts || {};
+-    const coreV = (v.core_v == null) ? '-' : `${v.core_v}V`;
+-    const sC = (v.sdram_c_v == null) ? '-' : `${v.sdram_c_v}V`;
+-    const sI = (v.sdram_i_v == null) ? '-' : `${v.sdram_i_v}V`;
+-    const sP = (v.sdram_p_v == null) ? '-' : `${v.sdram_p_v}V`;
+-    const mhz = (rpi.arm_freq_mhz!=null) ? rpi.arm_freq_mhz
+-              : (rpi.arm_freq_hz!=null) ? (rpi.arm_freq_hz/1_000_000) : null;
+-
++    const mhz = (rpi.arm_freq_mhz != null) ? rpi.arm_freq_mhz : (rpi.arm_freq_hz != null) ? (rpi.arm_freq_hz / 1_000_000) : null;
+     const f = (rpi.throttled && rpi.throttled.flags) ? rpi.throttled.flags : {};
+     const raw = (rpi.throttled && rpi.throttled.raw) ? rpi.throttled.raw : '-';
+-
+     const badge = (on, label, level) => {
+       const cls = on ? (level === 'danger' ? 'text-bg-danger' : 'text-bg-warning') : 'text-bg-secondary';
+       return `<span class="badge ${cls} me-1">${label}</span>`;
+     };
+-
+     return `
+-      <h6 class="mt-3">Raspberry Pi（電圧 / スロットル / ARMクロック）</h6>
+       <ul class="list-unstyled mb-2 small">
+-        <li>電圧: Core ${coreV}, SDRAM C ${sC}, I ${sI}, P ${sP}</li>
+-        <li>ARMクロック: ${mhz ?? '<span class="text-muted">不明</span>'} MHz</li>
++        <li>電圧: Core ${v.core_v == null ? '-' : `${v.core_v}V`}, SDRAM C ${v.sdram_c_v == null ? '-' : `${v.sdram_c_v}V`}, I ${v.sdram_i_v == null ? '-' : `${v.sdram_i_v}V`}, P ${v.sdram_p_v == null ? '-' : `${v.sdram_p_v}V`}</li>
++        <li>ARMクロック: ${mhz == null ? '<span class="text-muted">不明</span>' : `${mhz} MHz`}</li>
+         <li>スロットル: <code>${esc(raw)}</code>
+           <div class="mt-1">
+-            ${badge(!!f.under_voltage_now,       '電圧（現在）',   'danger')}
+-            ${badge(!!f.freq_capped_now,         '周波数（現在）', 'warning')}
+-            ${badge(!!f.throttled_now,           'スロットル（現在）', 'danger')}
+-            ${badge(!!f.soft_temp_limit_now,     '温度（現在）',   'warning')}
+-            ${badge(!!f.under_voltage_occurred,  '電圧（履歴）',   'danger')}
+-            ${badge(!!f.freq_capped_occurred,    '周波数（履歴）', 'warning')}
+-            ${badge(!!f.throttled_occurred,      'スロットル（履歴）', 'danger')}
+-            ${badge(!!f.soft_temp_limit_occurred,'温度（履歴）',   'warning')}
++            ${badge(!!f.under_voltage_now, '電圧（現在）', 'danger')}
++            ${badge(!!f.freq_capped_now, '周波数（現在）', 'warning')}
++            ${badge(!!f.throttled_now, 'スロットル（現在）', 'danger')}
++            ${badge(!!f.soft_temp_limit_now, '温度（現在）', 'warning')}
++            ${badge(!!f.under_voltage_occurred, '電圧（履歴）', 'danger')}
++            ${badge(!!f.freq_capped_occurred, '周波数（履歴）', 'warning')}
++            ${badge(!!f.throttled_occurred, 'スロットル（履歴）', 'danger')}
++            ${badge(!!f.soft_temp_limit_occurred, '温度（履歴）', 'warning')}
+           </div>
+         </li>
+       </ul>`;
+   }
+ 
+-  function render(nodes){
+-    let html = '';
+-    for (const n of nodes){
+-      if (!n.ok){
+-        html += `
+-          <div class="col-12 col-lg-6">
+-            <div class="card shadow-sm">
+-              <div class="card-header d-flex justify-content-between align-items-center">
+-                <div><strong>${esc(n.name)}</strong> <span class="badge text-bg-danger ms-2">異常</span></div>
+-                <small class="text-muted">${esc(n.url)}</small>
+-              </div>
+-              <div class="card-body">
+-                <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc((n.data && n.data.host) || 'unknown')}</div></div>
+-                <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc((n.data && n.data.os) || 'unknown')}</div></div>
+-                <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc((n.data && n.data.os_version) || 'unknown')}</div></div>
+-                <div class="alert alert-danger mb-0">取得失敗: ${esc(n.error)}</div>
+-              </div>
++  function buildCardHtml(n){
++    return `
++      <div class="col-12 col-lg-6" data-node-url="${esc(n.url)}">
++        <div class="card shadow-sm">
++          <div class="card-header d-flex justify-content-between align-items-center">
++            <div>
++              <strong>${esc(n.name || n.url)}</strong>
++              <span class="badge ms-2 js-status-badge text-bg-secondary">不明</span>
+             </div>
+-          </div>`;
+-        continue;
+-      }
++            <small class="text-muted">${esc(n.url)}</small>
++          </div>
++          <div class="card-body">
++            <div class="mb-1"><small class="text-muted">ホスト:</small> <span class="js-host">unknown</span></div>
++            <div class="mb-1"><small class="text-muted">OS:</small> <span class="js-os">unknown</span></div>
++            <div class="mb-2"><small class="text-muted">OSバージョン:</small> <span class="js-os-version">unknown</span></div>
++
++            <h6 class="mt-2">起動情報</h6>
++            <ul class="list-unstyled mb-3 small">
++              <li>アプリ起動日時: <span class="js-app-started-jst">不明</span></li>
++              <li>アプリ経過時間: <span class="js-app-uptime">不明</span></li>
++              <li>システム起動日時: <span class="js-system-started-jst">不明</span></li>
++              <li>システム経過時間: <span class="js-system-uptime">不明</span></li>
++            </ul>
++
++            <h6>CPU</h6>
++            <ul class="list-unstyled mb-2">
++              <li>温度: <span class="js-cpu-temp text-muted">不明</span></li>
++              <li>周波数: <span class="js-cpu-freq text-muted">不明</span></li>
++            </ul>
++
++            <h6 class="mt-3">Raspberry Pi（電圧 / スロットル / ARMクロック）</h6>
++            <div class="js-rpi-wrap text-muted mb-3">情報なし</div>
++
++            <div class="mb-3">
++              <div class="small text-muted mb-1">CPU使用率（コア別）</div>
++              <div class="js-cpu-percore text-muted">不明</div>
++            </div>
++
++            <h6>メモリ</h6>
++            <div class="mb-1 d-flex justify-content-between small">
++              <span class="text-muted">RAM使用率</span>
++              <span class="js-ram-text">不明</span>
++            </div>
++            <div class="progress mb-3" style="height: 10px;">
++              <div class="progress-bar js-ram-bar bg-info" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
++            </div>
++
++            <h6>ストレージ使用率</h6>
++            <div class="table-responsive mb-3">
++              <table class="table table-sm align-middle">
++                <thead><tr><th style="width:35%;">マウント</th><th style="width:20%;">ファイルシステム</th><th style="width:45%;">使用状況</th></tr></thead>
++                <tbody class="js-disks-body"><tr><td colspan="3" class="text-muted">なし</td></tr></tbody>
++              </table>
++            </div>
++
++            <h6>SMART（物理ディスク）</h6>
++            <div class="table-responsive">
++              <table class="table table-sm align-middle">
++                <thead><tr><th>デバイス</th><th>モデル</th><th>シリアル</th><th>温度</th><th>健全性</th></tr></thead>
++                <tbody class="js-smart-body"><tr><td colspan="5" class="text-muted">SMART情報なし</td></tr></tbody>
++              </table>
++            </div>
++
++            <div class="js-error-wrap mt-2"></div>
++          </div>
++        </div>
++      </div>`;
++  }
++
++  function buildNodeSkeleton(nodes){
++    GRID.innerHTML = nodes.map((n) => buildCardHtml(n)).join('');
++  }
++
++  function currentNodeUrlsFromDom(){
++    return Array.from(GRID.querySelectorAll('[data-node-url]')).map((el) => el.getAttribute('data-node-url') || '');
++  }
++
++  function sameNodeLayout(nodes){
++    const a = currentNodeUrlsFromDom();
++    const b = (nodes || []).map((n) => String(n.url || ''));
++    if (a.length !== b.length) return false;
++    for (let i = 0; i < a.length; i++){
++      if (a[i] !== b[i]) return false;
++    }
++    return true;
++  }
++
++  function setText(el, value, fallback='不明'){
++    if (!el) return;
++    const v = (value == null || value === '') ? fallback : String(value);
++    el.textContent = v;
++  }
++
++  function applyNodeData(nodes, now){
++    for (const n of (nodes || [])){
++      const card = GRID.querySelector(`[data-node-url="${CSS.escape(String(n.url || ''))}"]`);
++      if (!card) continue;
++
++      const statusBadge = card.querySelector('.js-status-badge');
++      const hostEl = card.querySelector('.js-host');
++      const osEl = card.querySelector('.js-os');
++      const osVerEl = card.querySelector('.js-os-version');
++      const appStartedEl = card.querySelector('.js-app-started-jst');
++      const appUptimeEl = card.querySelector('.js-app-uptime');
++      const systemStartedEl = card.querySelector('.js-system-started-jst');
++      const systemUptimeEl = card.querySelector('.js-system-uptime');
++      const cpuTempEl = card.querySelector('.js-cpu-temp');
++      const cpuFreqEl = card.querySelector('.js-cpu-freq');
++      const perCoreEl = card.querySelector('.js-cpu-percore');
++      const ramTextEl = card.querySelector('.js-ram-text');
++      const ramBarEl = card.querySelector('.js-ram-bar');
++      const disksBodyEl = card.querySelector('.js-disks-body');
++      const smartBodyEl = card.querySelector('.js-smart-body');
++      const rpiWrapEl = card.querySelector('.js-rpi-wrap');
++      const errorWrapEl = card.querySelector('.js-error-wrap');
+ 
+       const d = n.data || {};
++      const rt = d.runtime || {};
+       const cpu = d.cpu || {};
+       const ram = d.ram || {};
+       const disks = Array.isArray(d.disks) ? d.disks : [];
+-      const sm = Array.isArray(d.smart) ? d.smart : [];
+-
+-      // ディスク行
+-      let diskRows = '';
+-      for (const p of disks){
+-        const pct = clamp(p.percent, 0, 100);
+-        diskRows += `
+-          <tr>
+-            <td><code>${esc(p.mountpoint)}</code></td>
+-            <td>${esc(p.fstype)}</td>
+-            <td>
+-              <div class="d-flex justify-content-between small">
+-                <span class="text-muted">${fmtGiB(p.used, p.total)}</span>
+-                <span>${pct}%</span>
+-              </div>
+-              <div class="progress mt-1" style="height: 8px;">
+-                <div class="progress-bar ${barClass(pct, 75, 90)}" role="progressbar"
+-                     style="width: ${pct}%;" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"></div>
+-              </div>
+-            </td>
+-          </tr>`;
++      const smart = Array.isArray(d.smart) ? d.smart : [];
++
++      if (statusBadge){
++        statusBadge.className = `badge ms-2 js-status-badge ${n.ok ? 'text-bg-success' : 'text-bg-danger'}`;
++        statusBadge.textContent = n.ok ? '正常' : '異常';
+       }
+-      if (!diskRows) diskRows = `<tr><td colspan="3" class="text-muted">なし</td></tr>`;
+-
+-      // SMART行
+-      let smartRows = '';
+-      for (const s of sm){
+-        const label = s.health === 'PASSED' ? '正常' : s.health === 'FAILED' ? '異常' : '不明';
+-        const cls   = s.health === 'PASSED' ? 'success' : s.health === 'FAILED' ? 'danger' : 'secondary';
+-        smartRows += `
+-          <tr>
+-            <td><code>${esc(s.device)}</code></td>
+-            <td>${esc(s.model || '-')}</td>
+-            <td><small>${esc(s.serial || '-')}</small></td>
+-            <td>${(s.temp_c==null)?'-':esc(String(s.temp_c))+'℃'}</td>
+-            <td>
+-              <span class="badge text-bg-${cls}">${label}</span>
+-              ${s.error ? `<small class="text-danger ms-2">${esc(s.error)}</small>` : ''}
+-            </td>
+-          </tr>`;
++
++      if (n.ok){
++        if (d.host && d.host !== 'unknown') setText(hostEl, d.host, 'unknown');
++        if (d.os && d.os !== 'unknown') setText(osEl, d.os, 'unknown');
++        if (d.os_version && d.os_version !== 'unknown') setText(osVerEl, d.os_version, 'unknown');
+       }
+-      const smartTable = sm.length ? `
+-        <div class="table-responsive">
+-          <table class="table table-sm align-middle">
+-            <thead><tr><th>デバイス</th><th>モデル</th><th>シリアル</th><th>温度</th><th>健全性</th></tr></thead>
+-            <tbody>${smartRows}</tbody>
+-          </table>
+-        </div>` : `<div class="text-muted">SMART情報なし</div>`;
+ 
+-      html += `
+-        <div class="col-12 col-lg-6">
+-          <div class="card shadow-sm">
+-            <div class="card-header d-flex justify-content-between align-items-center">
+-              <div><strong>${esc(n.name)}</strong> <span class="badge text-bg-success ms-2">正常</span></div>
+-              <small class="text-muted">${esc(n.url)}</small>
+-            </div>
+-            <div class="card-body">
+-              <div class="mb-2"><div><small class="text-muted">ホスト:</small> ${esc(d.host || 'unknown')}</div></div>
+-              <div class="mb-2"><div><small class="text-muted">OS:</small> ${esc(d.os || 'unknown')}</div></div>
+-              <div class="mb-2"><div><small class="text-muted">OSバージョン:</small> ${esc(d.os_version || 'unknown')}</div></div>
+-
+-              <h6 class="mt-2">CPU</h6>
+-              <ul class="list-unstyled mb-2">
+-                <li>温度: ${(cpu.temp_c==null)?'<span class="text-muted">不明</span>':`${cpu.temp_c}℃`}</li>
+-                <li>周波数: ${(cpu.freq_mhz==null||cpu.freq_mhz===0)?'<span class="text-muted">不明</span>':`${cpu.freq_mhz} MHz`}</li>
+-              </ul>
+-
+-              ${renderRpi(d.rpi)}
+-
+-              <div class="mb-3">
+-                ${renderPerCore(cpu.usage_percpu)}
+-              </div>
+-
+-              <h6>メモリ</h6>
+-              <div class="mb-1 d-flex justify-content-between small">
+-                <span class="text-muted">RAM使用率</span>
+-                <span>${(ram.percent==null?'-':ram.percent+'%')}（${fmtGiB(ram.used, ram.total)}）</span>
+-              </div>
+-              <div class="progress mb-3" style="height: 10px;">
+-                <div class="progress-bar ${barClassRam(Number(ram.percent||0))}" role="progressbar"
+-                     style="width: ${Number(ram.percent||0)}%;" aria-valuenow="${Number(ram.percent||0)}" aria-valuemin="0" aria-valuemax="100"></div>
+-              </div>
+-
+-              <h6>ストレージ使用率</h6>
+-              <div class="table-responsive">
+-                <table class="table table-sm align-middle">
+-                  <thead><tr><th style="width:35%;">マウント</th><th style="width:20%;">ファイルシステム</th><th style="width:45%;">使用状況</th></tr></thead>
+-                  <tbody>${diskRows}</tbody>
+-                </table>
+-              </div>
+-
+-              <h6>SMART（物理ディスク）</h6>
+-              ${smartTable}
+-            </div>
+-          </div>
+-        </div>`;
++      setText(appStartedEl, formatJstDate(rt.app_started_at_jst, rt.app_started_at_ts));
++      setText(systemStartedEl, formatJstDate(rt.system_booted_at_jst, rt.system_booted_at_ts));
++      setText(appUptimeEl, formatDuration(rt.app_uptime_sec));
++      setText(systemUptimeEl, formatDuration(rt.system_uptime_sec));
++
++      if (!n.ok){
++        setText(appUptimeEl, '不明');
++        setText(systemUptimeEl, '不明');
++        setText(cpuTempEl, '不明');
++        setText(cpuFreqEl, '不明');
++        if (perCoreEl) perCoreEl.innerHTML = '<span class="text-muted">不明</span>';
++        setText(ramTextEl, '不明');
++        if (ramBarEl){
++          ramBarEl.style.width = '0%';
++          ramBarEl.className = 'progress-bar js-ram-bar bg-info';
++          ramBarEl.setAttribute('aria-valuenow', '0');
++        }
++        if (errorWrapEl) errorWrapEl.innerHTML = `<div class="alert alert-danger mb-0">取得失敗: ${esc(n.error || 'unknown error')}</div>`;
++        continue;
++      }
++
++      if (errorWrapEl) errorWrapEl.innerHTML = '';
++
++      const tempText = (cpu.temp_c == null) ? '不明' : `${cpu.temp_c}℃`;
++      const freqText = (cpu.freq_mhz == null || Number(cpu.freq_mhz) === 0) ? '不明' : `${cpu.freq_mhz} MHz`;
++      setText(cpuTempEl, tempText);
++      setText(cpuFreqEl, freqText);
++      if (perCoreEl) perCoreEl.innerHTML = renderPerCore(cpu.usage_percpu);
++
++      const ramPct = clamp(ram.percent, 0, 100);
++      setText(ramTextEl, `${ramPct}%（${fmtGiB(ram.used, ram.total)}）`);
++      if (ramBarEl){
++        ramBarEl.style.width = `${ramPct}%`;
++        ramBarEl.className = `progress-bar js-ram-bar ${barClassRam(ramPct)}`;
++        ramBarEl.setAttribute('aria-valuenow', String(ramPct));
++      }
++
++      if (disksBodyEl){
++        if (!disks.length){
++          disksBodyEl.innerHTML = '<tr><td colspan="3" class="text-muted">なし</td></tr>';
++        } else {
++          let disksHtml = '';
++          for (const p of disks){
++            const pct = clamp(p.percent, 0, 100);
++            disksHtml += `
++              <tr>
++                <td><code>${esc(p.mountpoint)}</code></td>
++                <td>${esc(p.fstype)}</td>
++                <td>
++                  <div class="d-flex justify-content-between small">
++                    <span class="text-muted">${fmtGiB(p.used, p.total)}</span>
++                    <span>${pct}%</span>
++                  </div>
++                  <div class="progress mt-1" style="height: 8px;">
++                    <div class="progress-bar ${barClass(pct, 75, 90)}" role="progressbar" style="width: ${pct}%;" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"></div>
++                  </div>
++                </td>
++              </tr>`;
++          }
++          disksBodyEl.innerHTML = disksHtml;
++        }
++      }
++
++      if (smartBodyEl){
++        if (!smart.length){
++          smartBodyEl.innerHTML = '<tr><td colspan="5" class="text-muted">SMART情報なし</td></tr>';
++        } else {
++          let smartHtml = '';
++          for (const s of smart){
++            const label = s.health === 'PASSED' ? '正常' : s.health === 'FAILED' ? '異常' : '不明';
++            const cls = s.health === 'PASSED' ? 'success' : s.health === 'FAILED' ? 'danger' : 'secondary';
++            smartHtml += `
++              <tr>
++                <td><code>${esc(s.device)}</code></td>
++                <td>${esc(s.model || '-')}</td>
++                <td><small>${esc(s.serial || '-')}</small></td>
++                <td>${s.temp_c == null ? '-' : `${esc(String(s.temp_c))}℃`}</td>
++                <td><span class="badge text-bg-${cls}">${label}</span>${s.error ? `<small class="text-danger ms-2">${esc(s.error)}</small>` : ''}</td>
++              </tr>`;
++          }
++          smartBodyEl.innerHTML = smartHtml;
++        }
++      }
++
++      if (rpiWrapEl){
++        rpiWrapEl.innerHTML = renderRpi(d.rpi);
++      }
+     }
+-    GRID.innerHTML = html;
++
++    if (NOW) NOW.textContent = now ?? '';
+   }
+ 
+   async function loadOnce(){
+-    try{
++    try {
+       const res = await fetch(FETCH_URL, {cache: 'no-store'});
+-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
++      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+       const data = await res.json();
+-      if (data && Array.isArray(data.nodes)){
+-        render(data.nodes);
+-        if (NOW) NOW.textContent = data.now ?? '';
++      if (!data || !Array.isArray(data.nodes)) return;
++
++      if (!sameNodeLayout(data.nodes)){
++        buildNodeSkeleton(data.nodes);
+       }
+-    }catch(e){
++      applyNodeData(data.nodes, data.now);
++    } catch (e) {
+       console.warn('nodes refresh failed:', e);
+     }
+   }
+ 
+   let timer = null;
+   function start(){
+     if (timer) clearInterval(timer);
+-    timer = setInterval(() => { if (!document.hidden) loadOnce(); }, INTERVAL_MS);
++    timer = setInterval(() => {
++      if (!document.hidden) loadOnce();
++    }, INTERVAL_MS);
+   }
+ 
+   BTN.addEventListener('click', loadOnce);
+   document.addEventListener('visibilitychange', () => { if (!document.hidden) loadOnce(); });
+ 
+-  // 初回 & 起動
++  const initialNodes = {{ nodes|tojson }};
++  applyNodeData(initialNodes, {{ now|tojson }});
+   loadOnce();
+   start();
+ })();
+ </script>
+ {% endblock %}
