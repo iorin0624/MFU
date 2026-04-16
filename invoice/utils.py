@@ -219,9 +219,11 @@ def split_emails(value: str | None) -> list[str]:
     return [item.strip() for item in re.split(r"[,;\n]", value) if item.strip()]
 
 
-def build_mail_subject(issue_date: date | None) -> str:
-    base = issue_date or now_jst().date()
-    return f"【請求書送付】{base.year}年{base.month}月分のご請求"
+def build_mail_subject(subject: str | None) -> str:
+    normalized = str(subject or "").strip()
+    if not normalized:
+        normalized = "ご請求"
+    return f"【請求書送付】{normalized}"
 
 
 def ensure_dir(path: str) -> str:

@@ -367,7 +367,7 @@ def invoice_detail(invoice_id: int):
         effective_bank_info=get_invoice_effective_bank_info(invoice),
         status_labels=STATUS_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
-        default_mail_subject=build_mail_subject(invoice.get("issue_date")),
+        default_mail_subject=build_mail_subject(invoice.get("subject")),
         default_mail_body=build_default_invoice_mail_body(invoice),
         mail_to_default=invoice.get("contact_email_snapshot") or "",
         bank_info_mode_labels=BANK_INFO_MODE_LABELS,
@@ -429,7 +429,7 @@ def invoice_mail(invoice_id: int):
         "to_email": invoice.get("contact_email_snapshot") or "",
         "cc_email": effective_issuer_email,
         "bcc_email": "",
-        "subject": build_mail_subject(invoice.get("issue_date")),
+        "subject": build_mail_subject(invoice.get("subject")),
         "body": build_default_invoice_mail_body(mail_context),
     }
     if request.method == "POST":
