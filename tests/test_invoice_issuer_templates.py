@@ -227,6 +227,96 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
         self.assertEqual(payload["issuer_template_id"], 9)
         self.assertEqual(payload["issuer_email"], "template@example.com")
 
+    def test_build_invoice_mail_body_with_payment_guidance_case_a_payout_and_card(self):
+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
+            invoice={
+                "bank_info_mode": invoice_services.BANK_INFO_MODE_PAYOUT_LINK,
+                "card_payment_enabled": 1,
+                "status": "issued",
+            },
+            body="本文です",
+            payout_access_url="https://example.com/payout?iv=abc",
+            card_payment_url="https://example.com/invoice/pay/xyz",
+        )
+
+        self.assertEqual(body.count(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE), 1)
+        self.assertEqual(body.count("https://example.com/payout?iv=abc"), 1)
+        self.assertEqual(body.count(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE), 1)
+        self.assertEqual(body.count("https://example.com/invoice/pay/xyz"), 1)
+
+    def test_build_invoice_mail_body_with_payment_guidance_case_b_inline_with_card_only(self):
+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
+            invoice={
+                "bank_info_mode": invoice_services.BANK_INFO_MODE_INLINE,
+                "card_payment_enabled": 1,
+                "status": "issued",
+            },
+            body="本文です",
+            payout_access_url=None,
+            card_payment_url="https://example.com/invoice/pay/xyz",
+        )
+
+        self.assertNotIn(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE, body)
+        self.assertEqual(body.count(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE), 1)
+        self.assertEqual(body.count("https://example.com/invoice/pay/xyz"), 1)
+
+    def test_build_invoice_mail_body_with_payment_guidance_case_c_payout_only(self):
+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
+            invoice={
+                "bank_info_mode": invoice_services.BANK_INFO_MODE_PAYOUT_LINK,
+                "card_payment_enabled": 0,
+                "status": "issued",
+            },
+            body="本文です",
+            payout_access_url="https://example.com/payout?iv=abc",
+            card_payment_url=None,
+        )
+
+        self.assertEqual(body.count(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE), 1)
+        self.assertEqual(body.count("https://example.com/payout?iv=abc"), 1)
+        self.assertNotIn(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE, body)
+
+    def test_build_invoice_mail_body_with_payment_guidance_case_d_inline_without_payment_links(self):
+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
+            invoice={
+                "bank_info_mode": invoice_services.BANK_INFO_MODE_INLINE,
+                "card_payment_enabled": 0,
+                "status": "issued",
+            },
+            body="本文です",
+            payout_access_url=None,
+            card_payment_url=None,
+        )
+
+        self.assertEqual(body, "本文です")
+        self.assertNotIn(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE, body)
+        self.assertNotIn(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE, body)
+
+    def test_build_invoice_mail_body_with_payment_guidance_case_e_rebuilds_latest_links_without_duplicates(self):
+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
+            invoice={
+                "bank_info_mode": invoice_services.BANK_INFO_MODE_PAYOUT_LINK,
+                "card_payment_enabled": 1,
+                "status": "issued",
+            },
+            body=(
+                "既存本文\n"
+                f"{invoice_services.PAYOUT_LINK_MAIL_GUIDANCE}\n"
+                "https://example.com/payout?iv=old\n"
+                f"{invoice_services.CARD_PAYMENT_MAIL_GUIDANCE}\n"
+                "https://example.com/invoice/pay/old"
+            ),
+            payout_access_url="https://example.com/payout?iv=abc",
+            card_payment_url="https://example.com/invoice/pay/xyz",
+        )
+
+        self.assertEqual(body.count(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE), 1)
+        self.assertEqual(body.count("https://example.com/payout?iv=abc"), 1)
+        self.assertNotIn("https://example.com/payout?iv=old", body)
+        self.assertEqual(body.count(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE), 1)
+        self.assertEqual(body.count("https://example.com/invoice/pay/xyz"), 1)
+        self.assertNotIn("https://example.com/invoice/pay/old", body)
+
 
 if __name__ == "__main__":
     unittest.main()

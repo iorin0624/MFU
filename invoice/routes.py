@@ -47,6 +47,7 @@ from .services import (
     mark_invoice_issued,
     merge_invoice_cc_emails,
     notify_invoice_card_payment_if_needed,
+    normalize_bank_info_mode,
     parse_invoice_items,
     resolve_invoice_issuer_email,
     save_contact,
@@ -449,8 +450,9 @@ def invoice_mail(invoice_id: int):
             form_data = dict(request.form)
             form_data["body"] = body
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
+        normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
         payout_access_url = None
-        if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
+        if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
             try:
                 payout_access = issue_payout_access_token_for_invoice(invoice)
                 payout_access_url = payout_access.get("access_url") or ""

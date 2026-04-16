@@ -640,10 +640,23 @@ def build_invoice_mail_body_with_payment_guidance(
 
     cleaned_body = "\n".join(filtered_lines)
 
+    # payout案内の可否は bank_info_mode + payout URL のみで判定する
+    should_append_payout_guidance = (
+        normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK
+        and bool(normalized_payout_url)
+    )
+    # カード案内の可否は card_payment_enabled + status + card URL のみで判定する
+    # （bank_info_mode とは独立）
+    should_append_card_guidance = (
+        int(invoice.get("card_payment_enabled") or 0) == 1
+        and invoice.get("status") not in {"paid", "cancelled"}
+        and bool(normalized_card_url)
+    )
+
     payment_lines: list[str] = []
-    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and normalized_payout_url:
+    if should_append_payout_guidance:
         payment_lines.extend([PAYOUT_LINK_MAIL_GUIDANCE, normalized_payout_url])
-    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and normalized_card_url:
+    if should_append_card_guidance:
         payment_lines.extend([CARD_PAYMENT_MAIL_GUIDANCE, normalized_card_url])
 
     if payment_lines:
