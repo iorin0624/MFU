@@ -246,60 +246,112 @@ def parse_japanpost(html: str, tracking_number: str, tracking_url: str) -> dict[
     soup = BeautifulSoup(html, "html.parser")
     payload = _base_payload("japanpost", tracking_number, tracking_url)
 
-    payload["service_name"] = _find_value_near_label(soup, ["商品種別", "取扱商品"]) or "ゆうパック"
-    payload["scheduled_delivery_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["お届け予定日", "配達予定日"]))
-    payload["scheduled_delivery_time_slot"] = _find_value_near_label(soup, ["お届け予定時間帯", "配達予定時間帯"])
-    payload["size"] = _find_value_near_label(soup, ["サイズ"])
-    payload["delivery_office"]["name"] = _find_value_near_label(soup, ["配達予定局", "配達郵便局"])
+    def _table_row_map(table) -> dict[str, str]:
+        mapped: dict[str, str] = {}
+        if not table:
+            return mapped
+        for tr in table.select("tr"):
+            cells = tr.find_all(["th", "td"])
+            if len(cells) < 2:
+                continue
+            label = _text(cells[0]).rstrip("：:")
+            value = _text(cells[1])
+            if label:
+                mapped[label] = value
+        return mapped
 
-    for tr in soup.select("table tr"):
-        tds = tr.find_all("td")
-        if len(tds) < 2:
-            continue
-        values = [_text(td) for td in tds]
-        occurred = _parse_jp_datetime(values[0])
-        status = values[1] if len(values) > 1 else None
-        office_name = values[2] if len(values) > 2 else None
-        postal = None
-        prefecture = None
-        if office_name:
-            postal_match = re.search(r"〒?\s*(\d{3}-?\d{4})", office_name)
-            if postal_match:
-                postal = postal_match.group(1).replace("-", "")
-            pref_match = re.search(r"(北海道|東京都|(?:京都|大阪)府|.{2,3}県)", office_name)
-            if pref_match:
-                prefecture = pref_match.group(1)
-        if not status:
-            continue
-        payload["history"].append(
-            {
-                "status": status,
-                "occurred_at": occurred,
-                "office_name": office_name,
-                "office_code": None,
-                "postal_code": postal,
-                "prefecture": prefecture,
-                "detail": values[3] if len(values) > 3 else None,
-            }
-        )
+    # 1) 配達状況詳細テーブルのみを読む
+    detail_table = soup.select_one('table[summary="配達状況詳細"]')
+    detail_map = _table_row_map(detail_table)
 
-    payload["history"] = [h for h in payload["history"] if h.get("status")]
+    payload["service_name"] = detail_map.get("商品種別") or detail_map.get("取扱商品") or "ゆうパック"
+
+    additional_service = detail_map.get("付加サービス")
+    payload["additional_service"] = additional_service or None
+
+    payload["size"] = detail_map.get("サイズ") or None
+    payload["scheduled_delivery_date"] = _parse_jp_datetime(
+        detail_map.get("お届け予定日") or detail_map.get("配達予定日")
+    )
+    payload["scheduled_delivery_time_slot"] = (
+        detail_map.get("お届け予定時間帯") or detail_map.get("配達予定時間帯") or None
+    )
+    payload["delivery_office"]["name"] = detail_map.get("配達予定局") or detail_map.get("配達郵便局") or None
+
+    # 2) 履歴情報テーブルのみを読む（2行1組）
+    history_table = soup.select_one('table[summary="履歴情報"]')
+    if history_table:
+        history_rows = []
+        for tr in history_table.select("tr"):
+            if tr.find("th"):
+                continue
+            tds = tr.find_all("td")
+            values = [_text(td) for td in tds]
+            if any(values):
+                history_rows.append(values)
+
+        i = 0
+        while i < len(history_rows):
+            row1 = history_rows[i]
+            if len(row1) < 2:
+                i += 1
+                continue
+
+            row2 = history_rows[i + 1] if i + 1 < len(history_rows) else []
+            postal_code = row2[0] if len(row2) == 1 else None
+            if len(row2) != 1:
+                row2 = []
+
+            occurred_raw = row1[0] if len(row1) > 0 else ""
+            status = row1[1] if len(row1) > 1 else None
+            detail = row1[2] if len(row1) > 2 else None
+            office_name = row1[3] if len(row1) > 3 else None
+            prefecture = row1[4] if len(row1) > 4 else None
+
+            if status:
+                payload["history"].append(
+                    {
+                        "status": status,
+                        "occurred_at": _parse_jp_datetime(occurred_raw),
+                        "office_name": office_name or None,
+                        "office_code": None,
+                        "postal_code": postal_code or None,
+                        "prefecture": prefecture or None,
+                        "detail": detail or None,
+                    }
+                )
+
+            i += 2 if row2 else 1
+
+    # 3) 現在状態は履歴末尾から決定
     if payload["history"]:
         payload["current_status"] = payload["history"][-1].get("status")
         payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
+        payload["completed"] = payload["current_status"] == "お届け先にお届け済み"
+    else:
+        payload["current_status"] = None
+        payload["latest_event_at"] = None
+        payload["completed"] = False
 
-    office_section = _first_by_keywords(soup, ["お問合せ先"])
-    if office_section:
-        text = _text(office_section.parent if office_section.parent else office_section)
-        phone_matches = re.findall(r"(\d{2,4}-\d{2,4}-\d{3,4})", text)
-        if phone_matches:
-            payload["contact_offices"].append(
-                {
-                    "type": "お問合せ先",
-                    "office_name": _text(office_section),
-                    "phone": phone_matches[0],
-                }
-            )
+    # 4) 窓口店テーブルのみを contact_offices に格納
+    contact_table = soup.select_one('table[summary="窓口店"]')
+    if contact_table:
+        for tr in contact_table.select("tr"):
+            if tr.find("th"):
+                continue
+            tds = tr.find_all("td")
+            if len(tds) < 3:
+                continue
+            office_type = _text(tds[0]) or None
+            office_name = _text(tds[1]) or None
+            phone = _text(tds[2]) or None
+            if office_type or office_name or phone:
+                payload["contact_offices"].append(
+                    {
+                        "type": office_type,
+                        "office_name": office_name,
+                        "phone": phone,
+                    }
+                )
 
-    payload["completed"] = (payload.get("current_status") or "") == "お届け先にお届け済み"
     return payload
