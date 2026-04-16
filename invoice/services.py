@@ -612,15 +612,54 @@ def build_invoice_mail_body_with_payment_guidance(
     payout_access_url: str | None = None,
     card_payment_url: str | None = None,
 ) -> str:
-    final_body = str(body or "")
-    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
-        if payout_access_url in final_body:
-            final_body = final_body.replace(payout_access_url, "").rstrip()
-        final_body = append_payout_guidance_to_mail_body(final_body, payout_access_url)
-    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and card_payment_url:
-        if card_payment_url in final_body:
-            final_body = final_body.replace(card_payment_url, "").rstrip()
-        final_body = append_card_payment_guidance_to_mail_body(final_body, card_payment_url)
+    normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized_lines = [line.rstrip() for line in normalized_body.split("\n")]
+
+    normalized_payout_url = _normalize_stripped_text(payout_access_url)
+    normalized_card_url = _normalize_stripped_text(card_payment_url)
+
+    filtered_lines: list[str] = []
+    for line in normalized_lines:
+        stripped_line = line.strip()
+        if stripped_line == PAYOUT_LINK_MAIL_GUIDANCE:
+            continue
+        if stripped_line == CARD_PAYMENT_MAIL_GUIDANCE:
+            continue
+        if normalized_payout_url and stripped_line == normalized_payout_url:
+            continue
+        if normalized_card_url and stripped_line == normalized_card_url:
+            continue
+        if "/payout?iv=" in stripped_line:
+            continue
+        if "/invoice/pay/" in stripped_line:
+            continue
+        filtered_lines.append(line)
+
+    while filtered_lines and filtered_lines[-1] == "":
+        filtered_lines.pop()
+
+    cleaned_body = "\n".join(filtered_lines)
+
+    payment_lines: list[str] = []
+    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and normalized_payout_url:
+        payment_lines.extend([PAYOUT_LINK_MAIL_GUIDANCE, normalized_payout_url])
+    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and normalized_card_url:
+        payment_lines.extend([CARD_PAYMENT_MAIL_GUIDANCE, normalized_card_url])
+
+    if payment_lines:
+        if cleaned_body:
+            final_body = f"{cleaned_body}\n" + "\n".join(payment_lines)
+        else:
+            final_body = "\n".join(payment_lines)
+    else:
+        final_body = cleaned_body
+
+    if normalized_payout_url:
+        assert final_body.count(normalized_payout_url) == 1
+    if normalized_card_url:
+        assert final_body.count(normalized_card_url) == 1
+    assert final_body.count(PAYOUT_LINK_MAIL_GUIDANCE) <= 1
+    assert final_body.count(CARD_PAYMENT_MAIL_GUIDANCE) <= 1
     return final_body
 
 
