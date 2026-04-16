@@ -2,7 +2,9 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8" />
-  <title>{{ event.title }} - お支払い</title>
+  {% set checkout_mode = checkout_mode or 'event' %}
+  {% set is_invoice_mode = checkout_mode == 'invoice' %}
+  <title>{{ (invoice.subject if is_invoice_mode else event.title) }} - お支払い</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <script src="{{ square_js_url }}"></script>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -107,16 +109,41 @@
 <body>
   <div class="amount-hero">
     <div class="yen" id="heroAmount">—</div>
+    {% if is_invoice_mode %}
+    <div class="who">{{ (invoice.contact_name_snapshot or invoice.contact_person_snapshot or '（請求先未設定）') | e }} 様への請求</div>
+    <div class="title">{{ invoice.subject | e }}</div>
+    {% else %}
     <div class="who">
       {{ (autofill.nickname if autofill and autofill.nickname else '（ニックネーム未設定）') | e }} さんとしてのお支払い
     </div>
     <div class="title">{{ event.title }} {{ "投げ銭" if is_tip_payment else "参加費" }}</div>
+    {% endif %}
   </div>
 
-  <h1 class="page-title">{{ event.title }} お支払い</h1>
+  <h1 class="page-title">{% if is_invoice_mode %}請求書のお支払い{% else %}{{ event.title }} お支払い{% endif %}</h1>
 
   <div class="frame">
     <form id="pay-form" class="row gy-3" onsubmit="return false;">
+      {% if is_invoice_mode %}
+      <div class="col-12 col-md-6">
+        <label class="form-label">請求書番号</label>
+        <div class="form-control-plaintext fw-bold">{{ invoice.invoice_no | e }}</div>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label">件名</label>
+        <div class="form-control-plaintext">{{ invoice.subject | e }}</div>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label">相手名</label>
+        <div class="form-control-plaintext">
+          {{ (invoice.contact_name_snapshot or invoice.contact_person_snapshot or '（不明）') | e }}
+        </div>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label">請求金額（円）</label>
+        <div id="amountView" class="form-control-plaintext fw-bold">—</div>
+      </div>
+      {% else %}
       <div class="col-12 col-md-6">
         <label class="form-label">ニックネーム</label>
         <div id="nicknameView" class="form-control-plaintext fw-bold">
@@ -142,6 +169,7 @@
           {{ (autofill.instagram_id if autofill else '') | e }}
         </div>
       </div>
+      {% endif %}
 
       <div class="col-12">
         <label class="form-label d-block">カード情報 / ウォレット</label>
@@ -183,7 +211,9 @@
 
         <div id="section-card" class="pay-section show" aria-label="クレジットカード入力欄">
           <div id="card-container"></div>
+          {% if not is_invoice_mode %}
           <div class="help-note">※ ニックネームと <strong>X または Instagram のいずれか</strong>は事前に登録されています。</div>
+          {% endif %}
           <div class="pay-wrap">
             <button id="pay" type="button" class="btn btn-primary">支払う</button>
           </div>
@@ -211,7 +241,9 @@
           <li>Apple Pay と Google Pay に対応しています。ご利用の方はボタンにて切り替えお願いいたします。</li>
           <li>各ブランド付の <strong>デビット/プリペイド</strong> も使用できます。</li>
           <li>決済名は <strong>SQ*小松　伊織</strong> と表示されます。</li>
+          {% if not is_invoice_mode %}
           <li>ユーザー情報（ニックネーム / X / Instagram）は本ページでは編集できません。</li>
+          {% endif %}
         </ol>
       </div>
       <div class="modal-footer">
@@ -248,8 +280,14 @@
 <script>
   const appId = "{{ app_id }}";
   const locationId = "{{ location_id }}";
-  const chargeUrl = "{{ url_for('payment.api_charge', event_uuid=event.uuid) }}";
-  const precheckUrl = "{{ url_for('payment.api_precheck', event_uuid=event.uuid) }}";
+  const checkoutMode = {{ checkout_mode|tojson }};
+  const isInvoiceMode = checkoutMode === 'invoice';
+  const chargeUrl = isInvoiceMode
+    ? "{{ url_for('invoice.invoice_card_charge', token=token) }}"
+    : "{{ url_for('payment.api_charge', event_uuid=event.uuid) }}";
+  const precheckUrl = isInvoiceMode
+    ? "{{ url_for('invoice.invoice_card_precheck', token=token) }}"
+    : "{{ url_for('payment.api_precheck', event_uuid=event.uuid) }}";
   const squareJsUrl = "{{ square_js_url }}";
   const paymentToken = {{ (payment_token or '') | tojson }};
   const returnUrl = {{ (return_url or '') | tojson }};
@@ -262,6 +300,9 @@
   };
 
   function getFixedUserInputs(){
+    if (isInvoiceMode) {
+      return { nickname: 'invoice', x_id: '', instagram_id: '' };
+    }
     const nickname = (AUTOFILL.nickname || '').trim();
     const x_id = sanitizeHandle(AUTOFILL.x_id || '');
     const instagram_id = sanitizeHandle(AUTOFILL.instagram_id || '');
@@ -306,6 +347,12 @@
     $loading.style.display = b ? 'flex' : 'none';
   }
   function redirectAfterPayment(data){
+    if (isInvoiceMode) {
+      if (data?.thanks_url) {
+        location.href = data.thanks_url;
+        return;
+      }
+    }
     if (!returnUrl) {
       const receipt = data?.receipt_url ? `<a href="${escapeHtml(data.receipt_url)}" target="_blank" rel="noopener">レシートを表示</a>` : 'レシート情報が取得できませんでした。';
       showModal('お支払いが完了しました', receipt);
@@ -419,8 +466,8 @@
     // 初回 precheck（AUTOFILLを送る）
     try{
       const { nickname, x_id, instagram_id } = getFixedUserInputs();
-      const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ nickname: nickname || '（未設定）', x_id, instagram_id, payment_token: paymentToken }) });
+      const prePayload = isInvoiceMode ? {} : { nickname: nickname || '（未設定）', x_id, instagram_id, payment_token: paymentToken };
+      const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(prePayload) });
       const pj = await pre.json().catch(()=>({}));
       if (pre.ok && pj && pj.amount_yen) setAmount(pj.amount_yen); else setAmount(0);
     }catch(e){ setAmount(0); }
@@ -473,7 +520,7 @@
       const paymentRequest = payments.paymentRequest({
         countryCode: "JP",
         currencyCode: "JPY",
-        total: { amount: String(window.__amountYen || {{ event_amount|int }}), label: "{{ event.title|e }}" }
+        total: { amount: String(window.__amountYen || {{ event_amount|int }}), label: "{{ (invoice.invoice_no if is_invoice_mode else event.title)|e }}" }
       });
       gpay = await payments.googlePay(paymentRequest);
     } catch (e) {
@@ -508,8 +555,8 @@
 
   async function handleGooglePayTokenize(gpay){
     const { nickname, x_id, instagram_id } = getFixedUserInputs();
-    if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
-    if (!x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
+    if (!isInvoiceMode && !nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
+    if (!isInvoiceMode && !x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
 
     setBusy(true); // クリック直後からロック
     try {
@@ -521,8 +568,8 @@
         return;
       }
 
-      const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
+      const prePayload = isInvoiceMode ? {} : { nickname, x_id, instagram_id, payment_token: paymentToken };
+      const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(prePayload) });
       const preData = await pre.json().catch(() => ({}));
       if (!pre.ok || preData.ok === false) {
         setBusy(false);
@@ -532,8 +579,9 @@
       setAmount(preData.amount_yen);
 
       // walletType: GOOGLE_PAY
-      const payload = { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'GOOGLE_PAY' };
-      payload.payment_token = paymentToken;
+      const payload = isInvoiceMode
+        ? { sourceId: tokenResult.token, walletType: 'GOOGLE_PAY' }
+        : { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'GOOGLE_PAY', payment_token: paymentToken };
       const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       const data = await res.json().catch(()=> ({}));
 
@@ -553,7 +601,7 @@
       const paymentRequest = payments.paymentRequest({
         countryCode: "JP",
         currencyCode: "JPY",
-        total: { amount: String(window.__amountYen || {{ event_amount|int }}), label: "{{ event.title|e }}" }
+        total: { amount: String(window.__amountYen || {{ event_amount|int }}), label: "{{ (invoice.invoice_no if is_invoice_mode else event.title)|e }}" }
       });
       applePay = await payments.applePay(paymentRequest);
       $radioA.disabled = false; $labelA.classList.remove('disabled');
@@ -569,8 +617,8 @@
 
     btn.addEventListener('click', async () => {
       const { nickname, x_id, instagram_id } = getFixedUserInputs();
-      if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
-      if (!x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
+      if (!isInvoiceMode && !nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
+      if (!isInvoiceMode && !x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
 
       try {
         const tokenResult = await applePay.tokenize();
@@ -582,8 +630,8 @@
 
         setBusy(true); // tokenize成功後にロック開始
         try{
-          const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
+          const prePayload = isInvoiceMode ? {} : { nickname, x_id, instagram_id, payment_token: paymentToken };
+          const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(prePayload) });
           const preData = await pre.json().catch(() => ({}));
           if (!pre.ok || preData.ok === false) {
             showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
@@ -592,8 +640,9 @@
           setAmount(preData.amount_yen);
 
           // walletType: APPLE_PAY
-          const payload = { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'APPLE_PAY' };
-          payload.payment_token = paymentToken;
+          const payload = isInvoiceMode
+            ? { sourceId: tokenResult.token, walletType: 'APPLE_PAY' }
+            : { nickname, x_id, instagram_id, sourceId: tokenResult.token, walletType: 'APPLE_PAY', payment_token: paymentToken };
           const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
           const data = await res.json().catch(()=> ({}));
 
@@ -613,13 +662,13 @@
       if (cardRadio && !cardRadio.checked) return; // 保険
 
       const { nickname, x_id, instagram_id } = getFixedUserInputs();
-      if (!nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
-      if (!x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
+      if (!isInvoiceMode && !nickname) { showModal('入力エラー', 'ニックネームの設定が未登録です。スタッフに連絡してください。'); return; }
+      if (!isInvoiceMode && !x_id && !instagram_id) { showModal('入力エラー', 'X ID または Instagram ID の設定がありません。スタッフに連絡してください。'); return; }
 
       setBusy(true);
       try {
-        const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ nickname, x_id, instagram_id, payment_token: paymentToken }) });
+        const prePayload = isInvoiceMode ? {} : { nickname, x_id, instagram_id, payment_token: paymentToken };
+        const pre = await fetch(precheckUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(prePayload) });
         const preData = await pre.json().catch(() => ({}));
         if (!pre.ok || preData.ok === false) {
           showModal('お支払い前チェック', escapeHtml(preData.message || '事前チェックに失敗しました。'));
@@ -640,8 +689,9 @@
         }
 
         // カードは walletType を送らない（サーバ側でNULL保存）
-        const payload = { nickname, x_id, instagram_id, sourceId: tk.token };
-        payload.payment_token = paymentToken;
+        const payload = isInvoiceMode
+          ? { sourceId: tk.token }
+          : { nickname, x_id, instagram_id, sourceId: tk.token, payment_token: paymentToken };
         const res = await fetch(chargeUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
         const data = await res.json().catch(()=> ({}));
 

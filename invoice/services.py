@@ -605,6 +605,25 @@ def build_default_invoice_mail_body(invoice_data: dict[str, Any], *, payout_acce
     return body
 
 
+def build_invoice_mail_body_with_payment_guidance(
+    *,
+    invoice: dict[str, Any],
+    body: Any,
+    payout_access_url: str | None = None,
+    card_payment_url: str | None = None,
+) -> str:
+    final_body = str(body or "")
+    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
+        if payout_access_url in final_body:
+            final_body = final_body.replace(payout_access_url, "").rstrip()
+        final_body = append_payout_guidance_to_mail_body(final_body, payout_access_url)
+    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and card_payment_url:
+        if card_payment_url in final_body:
+            final_body = final_body.replace(card_payment_url, "").rstrip()
+        final_body = append_card_payment_guidance_to_mail_body(final_body, card_payment_url)
+    return final_body
+
+
 def ensure_invoice_schema() -> None:
     db = get_db()
     cur = db.cursor()
@@ -755,6 +774,7 @@ def ensure_invoice_schema() -> None:
                 card_last4 CHAR(4) NULL,
                 card_exp_mm TINYINT NULL,
                 card_exp_yyyy SMALLINT NULL,
+                wallet_type VARCHAR(32) NULL,
                 discord_notified TINYINT(1) NOT NULL DEFAULT 0,
                 error_code VARCHAR(64) NULL,
                 error_detail TEXT NULL,
@@ -768,6 +788,10 @@ def ensure_invoice_schema() -> None:
         if not _column_exists(cur, "invoice_card_payments", "discord_notified"):
             cur.execute(
                 "ALTER TABLE invoice_card_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0 AFTER card_exp_yyyy"
+            )
+        if not _column_exists(cur, "invoice_card_payments", "wallet_type"):
+            cur.execute(
+                "ALTER TABLE invoice_card_payments ADD COLUMN wallet_type VARCHAR(32) NULL AFTER card_exp_yyyy"
             )
         cur.execute(
             """
@@ -1700,7 +1724,12 @@ def get_latest_invoice_card_payment(invoice_id: int) -> dict[str, Any] | None:
         db.close()
 
 
-def create_invoice_card_payment_pending(invoice: dict[str, Any], *, buyer_name: str | None = None) -> dict[str, Any]:
+def create_invoice_card_payment_pending(
+    invoice: dict[str, Any],
+    *,
+    buyer_name: str | None = None,
+    wallet_type: str | None = None,
+) -> dict[str, Any]:
     now = now_jst()
     payment_token = str(uuid.uuid4())
     idempotency_key = str(uuid.uuid4())
@@ -1711,9 +1740,9 @@ def create_invoice_card_payment_pending(invoice: dict[str, Any], *, buyer_name: 
             """
             INSERT INTO invoice_card_payments (
                 invoice_id, created_at, updated_at, payment_token,
-                amount_yen_snapshot, currency_code, buyer_email, buyer_name,
+                amount_yen_snapshot, currency_code, buyer_email, buyer_name, wallet_type,
                 idempotency_key, square_status
-            ) VALUES (%s, %s, %s, %s, %s, 'JPY', %s, %s, %s, 'PENDING')
+            ) VALUES (%s, %s, %s, %s, %s, 'JPY', %s, %s, %s, %s, 'PENDING')
             """,
             (
                 int(invoice.get("id")),
@@ -1723,6 +1752,7 @@ def create_invoice_card_payment_pending(invoice: dict[str, Any], *, buyer_name: 
                 int(invoice.get("total_yen") or 0),
                 (invoice.get("contact_email_snapshot") or "").strip() or None,
                 _normalize_stripped_text(buyer_name) or None,
+                wallet_type if wallet_type in {"APPLE_PAY", "GOOGLE_PAY"} else None,
                 idempotency_key,
             ),
         )
@@ -1846,7 +1876,7 @@ def notify_invoice_card_payment_if_needed(payment_row_id: int) -> None:
     if int(payment.get("discord_notified") or 0) == 1:
         return
     status = (payment.get("square_status") or "").upper()
-    if status not in CARD_PAYMENT_SUCCESS_STATUSES:
+    if status not in {"APPROVED", "COMPLETED"}:
         return
 
     invoice_id = int(payment.get("invoice_id") or 0)
@@ -1904,8 +1934,23 @@ def ensure_invoice_square_customer(*, access_token: str, invoice: dict[str, Any]
         if sresp.status_code < 400:
             customers = (sresp.json() or {}).get("customers") or []
             if customers:
-                customer_id = (customers[0] or {}).get("id")
+                customer = customers[0] or {}
+                customer_id = customer.get("id")
                 if customer_id:
+                    update_payload: dict[str, str] = {}
+                    if buyer_email and not (customer.get("email_address") or "").strip():
+                        update_payload["email_address"] = buyer_email
+                    if buyer_name and not (customer.get("given_name") or "").strip():
+                        update_payload["given_name"] = buyer_name
+                    if update_payload:
+                        uresp = requests.put(
+                            f"{square['api_base']}/v2/customers/{customer_id}",
+                            headers=headers,
+                            json=update_payload,
+                            timeout=15,
+                        )
+                        if uresp.status_code >= 400:
+                            logging.warning("invoice customer update failed: %s", uresp.text)
                     return customer_id
     except Exception:
         logging.exception("invoice search_customers failed")
