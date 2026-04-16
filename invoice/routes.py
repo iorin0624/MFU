@@ -19,9 +19,8 @@ from .services import (
     BANK_INFO_MODE_PAYOUT_LINK,
     InvoiceValidationError,
     apply_issuer_template_to_form_data,
-    append_card_payment_guidance_to_mail_body,
-    append_payout_guidance_to_mail_body,
     build_default_invoice_mail_body,
+    build_invoice_mail_body_with_payment_guidance,
     build_invoice_card_payment_url,
     build_issuer_template_form_data,
     build_fuel_cost_helper,
@@ -451,21 +450,39 @@ def invoice_mail(invoice_id: int):
             form_data = dict(request.form)
             form_data["body"] = final_body
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
+        payout_access_url = None
         if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
             try:
                 payout_access = issue_payout_access_token_for_invoice(invoice)
-                final_body = append_payout_guidance_to_mail_body(final_body, payout_access.get("access_url") or "")
+                payout_access_url = payout_access.get("access_url") or ""
+                final_body = build_invoice_mail_body_with_payment_guidance(
+                    invoice=invoice,
+                    body=final_body,
+                    payout_access_url=payout_access_url,
+                )
                 save_invoice_payout_token(invoice_id, payout_access.get("id"))
             except Exception as exc:
                 flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
                 form_data = dict(request.form)
                 form_data["body"] = final_body
                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
+        card_url = None
         if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
             try:
                 card_token = ensure_invoice_card_payment_token(invoice_id)
                 card_url = build_invoice_card_payment_url(card_token)
-                final_body = append_card_payment_guidance_to_mail_body(final_body, card_url)
+                final_body = build_invoice_mail_body_with_payment_guidance(
+                    invoice=invoice,
+                    body=final_body,
+                    payout_access_url=payout_access_url,
+                    card_payment_url=card_url,
+                )
+                if card_url not in final_body:
+                    final_body = build_invoice_mail_body_with_payment_guidance(
+                        invoice=invoice,
+                        body=final_body,
+                        card_payment_url=card_url,
+                    )
             except Exception as exc:
                 flash(f"カード決済URLの発行に失敗したためメール送信を中止しました。{exc}", "danger")
                 form_data = dict(request.form)
@@ -542,11 +559,19 @@ def invoice_card_payment_page(token: str):
     if not square.get("application_id") or not square.get("location_id"):
         return render_template("invoice_card_pay_invalid.html", message="カード決済の設定が未完了です。"), 400
     return render_template(
-        "invoice_card_pay.html",
+        "pay.html",
+        checkout_mode="invoice",
         invoice=invoice,
         token=token,
+        event={"uuid": token, "title": "請求書決済"},
+        event_amount=int(invoice.get("total_yen") or 0),
+        autofill={},
+        payment_token="",
+        return_url="",
+        force_square_card=False,
+        is_tip_payment=False,
         square_js_url=square.get("js_url"),
-        application_id=square.get("application_id"),
+        app_id=square.get("application_id"),
         location_id=square.get("location_id"),
     )
 
@@ -579,13 +604,15 @@ def invoice_card_charge(token: str):
     else:
         _wt_in = ""
     wallet_type = _wt_in if _wt_in in ("APPLE_PAY", "GOOGLE_PAY") else None
-    _ = wallet_type
     if not source_id:
         return jsonify({"ok": False, "error": "sourceId は必須です。"}), 400
     invoice = get_invoice_by_card_payment_token(token)
     invoice, err = _card_payment_invoice_error(invoice)
     if err:
         return jsonify({"ok": False, "error": err}), 400
+    buyer_email = (invoice.get("contact_email_snapshot") or "").strip()
+    if not buyer_email:
+        return jsonify({"ok": False, "error": "請求先メールアドレスが未設定のため決済を開始できません。"}), 400
 
     square = get_invoice_square_config()
     access_token = square.get("access_token")
@@ -599,7 +626,7 @@ def invoice_card_charge(token: str):
         or (posted_buyer_name or "").strip()
         or "(不明)"
     )
-    pending = create_invoice_card_payment_pending(invoice, buyer_name=buyer_name)
+    pending = create_invoice_card_payment_pending(invoice, buyer_name=buyer_name, wallet_type=wallet_type)
     idempotency_key = pending["idempotency_key"]
     payment_row_id = int(pending["id"])
     customer_id = ensure_invoice_square_customer(access_token=access_token, invoice=invoice, buyer_name=buyer_name)
@@ -609,7 +636,7 @@ def invoice_card_charge(token: str):
         "amount_money": {"amount": int(invoice.get("total_yen") or 0), "currency": "JPY"},
         "location_id": location_id,
         "reference_id": f"invoice:{invoice.get('id')}:pay:{payment_row_id}",
-        "buyer_email_address": (invoice.get("contact_email_snapshot") or "").strip() or None,
+        "buyer_email_address": buyer_email,
     }
     if customer_id:
         body["customer_id"] = customer_id
