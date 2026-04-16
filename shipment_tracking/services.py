@@ -135,11 +135,12 @@ def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
 
 
 def _fetch_yamato(tracking_number: str) -> tuple[str, str]:
-    url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
+    search_url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
     headers = {"User-Agent": USER_AGENT}
+    search_params = {"number00": "1", "number01": tracking_number, "type": "1"}
     response = requests.get(
-        url,
-        params={"number00": 1, "number01": tracking_number, "type": 1},
+        search_url,
+        params=search_params,
         headers=headers,
         timeout=REQUEST_TIMEOUT,
     )
