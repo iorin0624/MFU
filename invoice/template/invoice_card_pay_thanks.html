@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}カード決済完了{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+  <div class="card shadow-sm"><div class="card-body">
+    <h1 class="h4 mb-3">お支払いが完了しました</h1>
+    <div>請求書番号: {{ invoice.invoice_no }}</div>
+    <div>金額: ¥{{ invoice.total_yen|yen }}</div>
+    <div>決済状態: {{ (latest_card_payment or {}).get('square_status') or '---' }}</div>
+    <div>レシート:
+      {% if latest_card_payment and latest_card_payment.square_receipt_url %}
+      <a href="{{ latest_card_payment.square_receipt_url }}" target="_blank" rel="noopener">{{ latest_card_payment.square_receipt_url }}</a>
+      {% else %}
+      ---
+      {% endif %}
+    </div>
+  </div></div>
+</div>
+{% endblock %}

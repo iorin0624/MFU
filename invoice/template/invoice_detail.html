@@ -86,6 +86,27 @@
         <div class="col-md-6"><h3 class="h6">備考</h3><div class="border rounded p-3 bg-light multiline-text">{{ invoice.note or '（未入力）' }}</div></div>
         <div class="col-md-6"><h3 class="h6">振込先</h3><div class="border rounded p-3 bg-light multiline-text">{{ effective_bank_info or '（未入力）' }}</div></div>
       </div>
+      {% if card_payment_enabled %}
+      <hr>
+      <div>
+        <h3 class="h6">カード決済</h3>
+        <div class="small">クレジットカード支払: 許可</div>
+        {% if invoice.status in ['paid', 'cancelled'] %}
+        <div class="text-muted small">現在この請求書はカード決済を受け付けていません。</div>
+        {% elif card_payment_url %}
+        <div class="small">公開URL: <a href="{{ card_payment_url }}" target="_blank" rel="noopener">{{ card_payment_url }}</a></div>
+        {% endif %}
+        {% if latest_card_payment %}
+        <ul class="small mt-2 mb-0">
+          <li>最新決済状態: {{ card_payment_status or 'PENDING' }}</li>
+          <li>最新決済金額: ¥{{ latest_card_payment.amount_yen_snapshot|yen }}</li>
+          <li>Square payment id: {{ latest_card_payment.square_payment_id or '---' }}</li>
+          <li>レシートURL: {% if latest_card_payment.square_receipt_url %}<a href="{{ latest_card_payment.square_receipt_url }}" target="_blank" rel="noopener">{{ latest_card_payment.square_receipt_url }}</a>{% else %}---{% endif %}</li>
+          <li>決済日時: {{ latest_card_payment.paid_at.strftime('%Y-%m-%d %H:%M') if latest_card_payment.paid_at else '---' }}</li>
+        </ul>
+        {% endif %}
+      </div>
+      {% endif %}
     </div></div>
   </div>
   <div class="col-lg-4">
