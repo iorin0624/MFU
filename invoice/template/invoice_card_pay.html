@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}請求書カード決済{% endblock %}
+{% block content %}
+<div class="container py-4" style="max-width: 720px;">
+  <h1 class="h4 mb-3">請求書のお支払い</h1>
+  <div class="card shadow-sm mb-3"><div class="card-body">
+    <div>請求書番号: {{ invoice.invoice_no }}</div>
+    <div>件名: {{ invoice.subject }}</div>
+    <div>請求金額: ¥{{ invoice.total_yen|yen }}</div>
+    <div>発行者名: {{ invoice.issuer_name }}</div>
+  </div></div>
+  <div class="card shadow-sm"><div class="card-body">
+    <div class="mb-2">カード支払フォーム</div>
+    <div id="card-container" class="mb-3"></div>
+    <input id="buyer-name" class="form-control mb-3" placeholder="お名前（任意）">
+    <button id="card-pay-button" class="btn btn-primary" type="button">カードで支払う</button>
+    <div id="card-pay-message" class="small mt-2 text-danger"></div>
+  </div></div>
+</div>
+<script src="{{ square_js_url }}"></script>
+<script>
+  const token = {{ token|tojson }};
+  const appId = {{ square_application_id|tojson }};
+  const locationId = {{ square_location_id|tojson }};
+  const payButton = document.getElementById('card-pay-button');
+  const messageEl = document.getElementById('card-pay-message');
+
+  async function initCard() {
+    const payments = window.Square.payments(appId, locationId);
+    const card = await payments.card();
+    await card.attach('#card-container');
+    payButton.addEventListener('click', async () => {
+      payButton.disabled = true;
+      messageEl.textContent = '';
+      try {
+        const result = await card.tokenize();
+        if (result.status !== 'OK') {
+          throw new Error('カード情報のトークン化に失敗しました。');
+        }
+        const resp = await fetch(`/invoice/api/pay/${token}/charge`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            sourceId: result.token,
+            buyer_name: document.getElementById('buyer-name').value || ''
+          })
+        });
+        const payload = await resp.json();
+        if (!resp.ok || !payload.ok) {
+          throw new Error(payload.error || '決済に失敗しました。');
+        }
+        window.location.href = payload.thanks_url;
+      } catch (err) {
+        messageEl.textContent = err.message || '決済エラーが発生しました。';
+      } finally {
+        payButton.disabled = false;
+      }
+    });
+  }
+  initCard().catch(() => {
+    messageEl.textContent = 'カードフォームの初期化に失敗しました。';
+  });
+</script>
+{% endblock %}

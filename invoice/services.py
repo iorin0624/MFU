@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_CEILING
@@ -36,6 +38,9 @@ BANK_INFO_MODE_LABELS = {
 }
 PAYOUT_LINK_BANK_INFO_MESSAGE = "メール本文にて振込先一覧のリンクがあります。ご確認お願い致します。"
 PAYOUT_LINK_MAIL_GUIDANCE = "振込先は下からご確認ください。"
+CARD_PAYMENT_PDF_GUIDANCE = "クレジットカードでのお支払いURLはメール本文をご確認ください。"
+CARD_PAYMENT_MAIL_GUIDANCE = "クレジットカードでのお支払いは下記URLよりお願いいたします。"
+CARD_PAYMENT_SUCCESS_STATUSES = ("AUTHORIZED", "APPROVED", "COMPLETED")
 
 
 @dataclass
@@ -106,8 +111,16 @@ def normalize_bank_info_mode(value: Any) -> str:
 
 def get_invoice_effective_bank_info(invoice: dict[str, Any]) -> str:
     if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK:
-        return PAYOUT_LINK_BANK_INFO_MESSAGE
-    return normalize_multiline_text(invoice.get("bank_info")) or ""
+        base_message = PAYOUT_LINK_BANK_INFO_MESSAGE
+    else:
+        base_message = normalize_multiline_text(invoice.get("bank_info")) or ""
+    if int(invoice.get("card_payment_enabled") or 0) != 1:
+        return base_message
+    if CARD_PAYMENT_PDF_GUIDANCE in base_message:
+        return base_message
+    if not base_message:
+        return CARD_PAYMENT_PDF_GUIDANCE
+    return f"{base_message}\n{CARD_PAYMENT_PDF_GUIDANCE}"
 
 
 def append_payout_guidance_to_mail_body(body: Any, access_url: str) -> str:
@@ -118,6 +131,19 @@ def append_payout_guidance_to_mail_body(body: Any, access_url: str) -> str:
     if normalized_url in normalized_body:
         return normalized_body
     suffix = f"{PAYOUT_LINK_MAIL_GUIDANCE}\n{normalized_url}"
+    if not normalized_body:
+        return suffix
+    return f"{normalized_body}\n{suffix}"
+
+
+def append_card_payment_guidance_to_mail_body(body: Any, access_url: str) -> str:
+    normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    normalized_url = _normalize_stripped_text(access_url)
+    if not normalized_url:
+        return normalized_body
+    if normalized_url in normalized_body:
+        return normalized_body
+    suffix = f"{CARD_PAYMENT_MAIL_GUIDANCE}\n{normalized_url}"
     if not normalized_body:
         return suffix
     return f"{normalized_body}\n{suffix}"
@@ -633,6 +659,10 @@ def ensure_invoice_schema() -> None:
                 issuer_template_id INT NULL,
                 bank_info_mode VARCHAR(32) NOT NULL DEFAULT 'inline',
                 payout_access_token_id BIGINT NULL,
+                card_payment_enabled TINYINT(1) NOT NULL DEFAULT 0,
+                card_payment_public_token CHAR(36) NULL,
+                card_payment_public_expires_at DATETIME NULL,
+                card_paid_at DATETIME NULL,
                 subtotal_yen INT NOT NULL DEFAULT 0,
                 tax_yen INT NOT NULL DEFAULT 0,
                 total_yen INT NOT NULL DEFAULT 0,
@@ -687,7 +717,52 @@ def ensure_invoice_schema() -> None:
             cur.execute(
                 "ALTER TABLE invoice_headers ADD COLUMN payout_access_token_id BIGINT NULL AFTER bank_info_mode"
             )
+        if not _column_exists(cur, "invoice_headers", "card_payment_enabled"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN card_payment_enabled TINYINT(1) NOT NULL DEFAULT 0 AFTER payout_access_token_id"
+            )
+        if not _column_exists(cur, "invoice_headers", "card_payment_public_token"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN card_payment_public_token CHAR(36) NULL AFTER card_payment_enabled"
+            )
+        if not _column_exists(cur, "invoice_headers", "card_payment_public_expires_at"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN card_payment_public_expires_at DATETIME NULL AFTER card_payment_public_token"
+            )
+        if not _column_exists(cur, "invoice_headers", "card_paid_at"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN card_paid_at DATETIME NULL AFTER card_payment_public_expires_at"
+            )
         ensure_invoice_issuer_templates_table(cur)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoice_card_payments (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                invoice_id INT NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                payment_token CHAR(36) NOT NULL,
+                amount_yen_snapshot INT UNSIGNED NOT NULL,
+                currency_code VARCHAR(8) NOT NULL DEFAULT 'JPY',
+                buyer_email VARCHAR(255) NULL,
+                buyer_name VARCHAR(191) NULL,
+                idempotency_key CHAR(36) NOT NULL,
+                square_payment_id VARCHAR(64) NULL UNIQUE,
+                square_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                square_receipt_url VARCHAR(512) NULL,
+                card_brand VARCHAR(32) NULL,
+                card_last4 CHAR(4) NULL,
+                card_exp_mm TINYINT NULL,
+                card_exp_yyyy SMALLINT NULL,
+                error_code VARCHAR(64) NULL,
+                error_detail TEXT NULL,
+                paid_at DATETIME NULL,
+                INDEX ix_invoice_card_payments_invoice_id (invoice_id, created_at),
+                INDEX ix_invoice_card_payments_status (invoice_id, square_status),
+                INDEX ix_invoice_card_payments_payment_token (payment_token)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
@@ -973,6 +1048,7 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
     if not issuer_name:
         raise InvoiceValidationError("発行者名を入力してください。")
     issuer_template_id = _normalize_optional_int(form.get("issuer_template_id"))
+    card_payment_enabled = 1 if str(form.get("card_payment_enabled") or "").strip() in {"1", "true", "on", "yes"} else 0
     snapshot = _snapshot_contact(contact)
     payload = {
         "issue_date": issue,
@@ -991,6 +1067,10 @@ def _build_invoice_payload(form, contact: dict[str, Any], items: list[InvoiceIte
         "issuer_template_id": issuer_template_id,
         "issuer_email": (form.get("issuer_email") or "").strip() or None,
         "payout_access_token_id": None,
+        "card_payment_enabled": card_payment_enabled,
+        "card_payment_public_token": form.get("card_payment_public_token"),
+        "card_payment_public_expires_at": form.get("card_payment_public_expires_at"),
+        "card_paid_at": form.get("card_paid_at"),
         **totals,
         "tax_mode": tax_mode,
         "status": normalize_status(form.get("status") or "draft"),
@@ -1137,6 +1217,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     issuer_template_id=%s,
                     bank_info_mode=%s,
                     payout_access_token_id=%s,
+                    card_payment_enabled=%s,
                     subtotal_yen=%s,
                     tax_yen=%s,
                     total_yen=%s,
@@ -1154,7 +1235,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     payload["contact_phone_snapshot"], payload["subject"], payload["note"],
                     payload["bank_info"], payload["issuer_name"], payload["issuer_postal_code"],
                     payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"], payload["issuer_template_id"],
-                    payload["bank_info_mode"], payload["payout_access_token_id"],
+                    payload["bank_info_mode"], payload["payout_access_token_id"], payload["card_payment_enabled"],
                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"],
                     payload["tax_mode"], payload["status"], now, invoice_id,
                 ),
@@ -1172,6 +1253,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     subject, note, bank_info,
                     issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email, issuer_template_id,
                     bank_info_mode, payout_access_token_id,
+                    card_payment_enabled, card_payment_public_token, card_payment_public_expires_at, card_paid_at,
                     subtotal_yen, tax_yen, total_yen, tax_mode, status,
                     pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
                     created_at, updated_at
@@ -1182,7 +1264,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     %s, %s, %s,
                     %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s,
+                    %s, %s, %s, NULL, NULL, NULL,
                     %s, %s, %s, %s, %s,
                     NULL, NULL, NULL, NULL,
                     %s, %s
@@ -1195,7 +1277,7 @@ def save_invoice(invoice_id: int | None, form) -> int:
                     payload["contact_address1_snapshot"], payload["contact_address2_snapshot"], payload["contact_phone_snapshot"],
                     payload["subject"], payload["note"], payload["bank_info"],
                     payload["issuer_name"], payload["issuer_postal_code"], payload["issuer_address1"], payload["issuer_address2"], payload["issuer_phone"], payload["issuer_email"], payload["issuer_template_id"],
-                    payload["bank_info_mode"], payload["payout_access_token_id"],
+                    payload["bank_info_mode"], payload["payout_access_token_id"], payload["card_payment_enabled"],
                     payload["subtotal_yen"], payload["tax_yen"], payload["total_yen"], payload["tax_mode"], "draft",
                     now, now,
                 ),
@@ -1340,6 +1422,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 subject, note, bank_info,
                 issuer_name, issuer_postal_code, issuer_address1, issuer_address2, issuer_phone, issuer_email, issuer_template_id,
                 bank_info_mode, payout_access_token_id,
+                card_payment_enabled, card_payment_public_token, card_payment_public_expires_at, card_paid_at,
                 subtotal_yen, tax_yen, total_yen, tax_mode, status,
                 pdf_generated_at, pdf_storage_path, mailed_at, freee_exported_at,
                 created_at, updated_at
@@ -1350,7 +1433,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s,
-                %s, %s,
+                %s, %s, %s, NULL, NULL, NULL,
                 %s, %s, %s, %s, %s,
                 NULL, NULL, NULL, NULL,
                 %s, %s
@@ -1363,7 +1446,7 @@ def duplicate_invoice(invoice_id: int) -> int:
                 original.get("contact_address1_snapshot"), original.get("contact_address2_snapshot"), original.get("contact_phone_snapshot"),
                 original.get("subject"), original.get("note"), original.get("bank_info"),
                 original.get("issuer_name"), original.get("issuer_postal_code"), original.get("issuer_address1"), original.get("issuer_address2"), original.get("issuer_phone"), original.get("issuer_email"), original.get("issuer_template_id"),
-                normalize_bank_info_mode(original.get("bank_info_mode")), None,
+                normalize_bank_info_mode(original.get("bank_info_mode")), None, int(original.get("card_payment_enabled") or 0),
                 original.get("subtotal_yen"), original.get("tax_yen"), original.get("total_yen"), original.get("tax_mode"), "draft",
                 now, now,
             ),
@@ -1502,6 +1585,221 @@ def save_invoice_payout_token(invoice_id: int, token_id: int | None) -> None:
         db.close()
 
 
+def _square_env() -> str:
+    db = None
+    try:
+        db = get_db()
+        cur = db.cursor()
+        cur.execute("SELECT value FROM settings WHERE `key` = 'square_env_payment'")
+        row = cur.fetchone()
+        if row:
+            value = row[0] if isinstance(row, tuple) else row.get("value")
+            if value:
+                return str(value).upper()
+    except Exception:
+        pass
+    finally:
+        if db:
+            db.close()
+    return os.environ.get("SQUARE_ENV", "SANDBOX").upper()
+
+
+def _square_env_value(name: str) -> str | None:
+    suffix = "SANDBOX" if _square_env() == "SANDBOX" else "PRODUCTION"
+    return os.environ.get(f"SQUARE_{suffix}_{name}") or os.environ.get(f"SQUARE_{name}")
+
+
+def get_invoice_square_config() -> dict[str, Any]:
+    env = _square_env()
+    return {
+        "env": env,
+        "application_id": _square_env_value("APPLICATION_ID"),
+        "location_id": _square_env_value("LOCATION_ID"),
+        "access_token": _square_env_value("ACCESS_TOKEN"),
+        "webhook_signature_key": _square_env_value("WEBHOOK_SIGNATURE_KEY"),
+        "api_base": "https://connect.squareupsandbox.com" if env == "SANDBOX" else "https://connect.squareup.com",
+        "js_url": "https://sandbox.web.squarecdn.com/v1/square.js" if env == "SANDBOX" else "https://web.squarecdn.com/v1/square.js",
+    }
+
+
+def _invoice_public_base_url() -> str:
+    return os.environ.get("MFU_PUBLIC_BASE_URL", "https://mfu.iori0624.jp").rstrip("/")
+
+
+def ensure_invoice_card_payment_token(invoice_id: int) -> str:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    now = now_jst()
+    try:
+        cur.execute("SELECT card_payment_public_token, status FROM invoice_headers WHERE id=%s LIMIT 1", (invoice_id,))
+        row = cur.fetchone()
+        if not row:
+            raise InvoiceValidationError("請求書が見つかりません。")
+        if (row.get("status") or "").lower() in {"paid", "cancelled"}:
+            raise InvoiceValidationError("現在のステータスではカード決済URLを発行できません。")
+        token = (row.get("card_payment_public_token") or "").strip()
+        if token:
+            return token
+        token = str(uuid.uuid4())
+        cur.execute(
+            """
+            UPDATE invoice_headers
+            SET card_payment_public_token=%s, updated_at=%s
+            WHERE id=%s
+            """,
+            (token, now, invoice_id),
+        )
+        db.commit()
+        return token
+    finally:
+        cur.close()
+        db.close()
+
+
+def build_invoice_card_payment_url(token: str) -> str:
+    return f"{_invoice_public_base_url()}/invoice/pay/{token}"
+
+
+def get_invoice_by_card_payment_token(token: str) -> dict[str, Any] | None:
+    token = _normalize_stripped_text(token)
+    if not token:
+        return None
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM invoice_headers WHERE card_payment_public_token=%s LIMIT 1", (token,))
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def get_latest_invoice_card_payment(invoice_id: int) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM invoice_card_payments
+            WHERE invoice_id=%s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (invoice_id,),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def create_invoice_card_payment_pending(invoice: dict[str, Any], *, buyer_name: str | None = None) -> dict[str, Any]:
+    now = now_jst()
+    payment_token = str(uuid.uuid4())
+    idempotency_key = str(uuid.uuid4())
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO invoice_card_payments (
+                invoice_id, created_at, updated_at, payment_token,
+                amount_yen_snapshot, currency_code, buyer_email, buyer_name,
+                idempotency_key, square_status
+            ) VALUES (%s, %s, %s, %s, %s, 'JPY', %s, %s, %s, 'PENDING')
+            """,
+            (
+                int(invoice.get("id")),
+                now,
+                now,
+                payment_token,
+                int(invoice.get("total_yen") or 0),
+                (invoice.get("contact_email_snapshot") or "").strip() or None,
+                _normalize_stripped_text(buyer_name) or None,
+                idempotency_key,
+            ),
+        )
+        payment_id = int(cur.lastrowid)
+        db.commit()
+        return {"id": payment_id, "payment_token": payment_token, "idempotency_key": idempotency_key}
+    finally:
+        cur.close()
+        db.close()
+
+
+def update_invoice_card_payment_result(payment_row_id: int, *, status: str, square_payment_id: str | None = None, receipt_url: str | None = None, card_brand: str | None = None, card_last4: str | None = None, card_exp_mm: int | None = None, card_exp_yyyy: int | None = None, error_code: str | None = None, error_detail: str | None = None, paid_at=None) -> None:
+    now = now_jst()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE invoice_card_payments
+            SET updated_at=%s,
+                square_payment_id=COALESCE(%s, square_payment_id),
+                square_status=%s,
+                square_receipt_url=COALESCE(%s, square_receipt_url),
+                card_brand=COALESCE(%s, card_brand),
+                card_last4=COALESCE(%s, card_last4),
+                card_exp_mm=COALESCE(%s, card_exp_mm),
+                card_exp_yyyy=COALESCE(%s, card_exp_yyyy),
+                error_code=%s,
+                error_detail=%s,
+                paid_at=COALESCE(%s, paid_at)
+            WHERE id=%s
+            """,
+            (
+                now,
+                square_payment_id,
+                status,
+                receipt_url,
+                card_brand,
+                card_last4,
+                card_exp_mm,
+                card_exp_yyyy,
+                error_code,
+                error_detail,
+                paid_at,
+                payment_row_id,
+            ),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def get_invoice_card_payment_by_square_payment_id(square_payment_id: str) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM invoice_card_payments WHERE square_payment_id=%s LIMIT 1", (square_payment_id,))
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def mark_invoice_paid_by_card(invoice_id: int, paid_at=None) -> None:
+    paid_time = paid_at or now_jst()
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE invoice_headers
+            SET status='paid', card_paid_at=COALESCE(card_paid_at, %s), updated_at=%s
+            WHERE id=%s
+            """,
+            (paid_time, paid_time, invoice_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
 def log_csv_export(invoice_id: int, filename: str, *, status: str, error_message: str | None = None) -> None:
     now = now_jst()
     db = get_db()
@@ -1535,6 +1833,7 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
             "tax_mode": "external",
             "status": "draft",
             "bank_info_mode": BANK_INFO_MODE_INLINE,
+            "card_payment_enabled": "0",
             "issuer_template_id": "",
             "issuer_email": "",
             "items": [
@@ -1564,4 +1863,5 @@ def build_invoice_form_data(invoice: dict[str, Any] | None = None) -> dict[str, 
         item["tax_category"] = normalize_tax_category(item.get("tax_category"))
     data["issuer_template_id"] = str(data.get("issuer_template_id") or "")
     data["bank_info_mode"] = normalize_bank_info_mode(data.get("bank_info_mode"))
+    data["card_payment_enabled"] = "1" if int(data.get("card_payment_enabled") or 0) == 1 else "0"
     return data
