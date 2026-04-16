@@ -1,64 +1,155 @@
 {% extends "base.html" %}
-{% block title %}請求書カード決済{% endblock %}
-{% block content %}
-<div class="container py-4" style="max-width: 720px;">
-  <h1 class="h4 mb-3">請求書のお支払い</h1>
-  <div class="card shadow-sm mb-3"><div class="card-body">
-    <div>請求書番号: {{ invoice.invoice_no }}</div>
-    <div>件名: {{ invoice.subject }}</div>
-    <div>請求金額: ¥{{ invoice.total_yen|yen }}</div>
-    <div>発行者名: {{ invoice.issuer_name }}</div>
-  </div></div>
-  <div class="card shadow-sm"><div class="card-body">
-    <div class="mb-2">カード支払フォーム</div>
-    <div id="card-container" class="mb-3"></div>
-    <input id="buyer-name" class="form-control mb-3" placeholder="お名前（任意）">
-    <button id="card-pay-button" class="btn btn-primary" type="button">カードで支払う</button>
-    <div id="card-pay-message" class="small mt-2 text-danger"></div>
-  </div></div>
-</div>
+{% block title %}請求書のお支払い{% endblock %}
+{% block head_extra %}
 <script src="{{ square_js_url }}"></script>
-<script>
-  const token = {{ token|tojson }};
-  const appId = {{ square_application_id|tojson }};
-  const locationId = {{ square_location_id|tojson }};
-  const payButton = document.getElementById('card-pay-button');
-  const messageEl = document.getElementById('card-pay-message');
+<style>
+  .pay-wrap{max-width:820px;margin:0 auto}
+  .frame{ background:#fff; border-radius:16px; box-shadow:0 8px 20px rgba(0,0,0,.05); border:1px solid #e5e7eb; padding:clamp(14px,3.5vw,20px)}
+  .amount-hero{ text-align:center; margin:1rem 0 1.5rem; padding:1.2rem; background:#f8f9fa; border-radius:16px; border:1px solid #dee2e6; }
+  .amount-hero .yen{ font-size:clamp(2.1rem,6vw,3rem); font-weight:900; color:#2563eb; line-height:1; }
+  .method-card{border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; cursor:pointer; user-select:none; display:block;}
+  .method-card input{margin-right:8px}
+  .method-card.disabled{opacity:.45; cursor:not-allowed}
+  .pay-section{display:none}.pay-section.show{display:block}
+  #section-card{background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:12px}
+  #apple-pay-button{display:block;border-radius:12px;-webkit-appearance:-apple-pay-button;appearance:-apple-pay-button;-apple-pay-button-type:plain;-apple-pay-button-style:black}
+</style>
+{% endblock %}
+{% block content %}
+<div class="container py-4 pay-wrap">
+  <div class="amount-hero">
+    <div class="yen">¥{{ invoice.total_yen|yen }}</div>
+    <div class="mt-2">{{ invoice.contact_name_snapshot or 'お客様' }} 様への請求</div>
+    <div class="text-muted">{{ invoice.subject }}</div>
+  </div>
 
-  async function initCard() {
-    const payments = window.Square.payments(appId, locationId);
-    const card = await payments.card();
-    await card.attach('#card-container');
-    payButton.addEventListener('click', async () => {
-      payButton.disabled = true;
-      messageEl.textContent = '';
+  <h1 class="h4 mb-3">請求書のお支払い</h1>
+  <div class="frame">
+    <div class="mb-3 small text-muted">
+      <div>請求書番号: {{ invoice.invoice_no }}</div>
+      <div>件名: {{ invoice.subject }}</div>
+      <div>発行者名: {{ invoice.issuer_name }}</div>
+    </div>
+
+    <div class="row g-2 mb-2" id="methodRadios">
+      <div class="col-12 col-md-4">
+        <label class="method-card" id="radio-gpay-label"><input type="radio" name="pay-method" id="radio-gpay" value="gpay"><strong>Google Pay</strong></label>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="method-card" id="radio-apple-label"><input type="radio" name="pay-method" id="radio-apple" value="apple"><strong>Apple Pay</strong></label>
+      </div>
+      <div class="col-12 col-md-4">
+        <label class="method-card" id="radio-card-label"><input type="radio" name="pay-method" id="radio-card" value="card" checked><strong>カード番号入力</strong></label>
+      </div>
+    </div>
+
+    <div id="section-gpay" class="pay-section"><div id="google-pay-button"></div></div>
+    <div id="section-apple" class="pay-section"><button type="button" id="apple-pay-button"></button></div>
+    <div id="section-card" class="pay-section show">
+      <div id="card-container" class="mb-3"></div>
+      <button id="card-pay-button" class="btn btn-primary" type="button">支払う</button>
+    </div>
+    <div id="card-pay-message" class="small mt-2 text-danger"></div>
+  </div>
+</div>
+
+<script>
+const token = {{ token|tojson }};
+const appId = {{ application_id|tojson }};
+const locationId = {{ location_id|tojson }};
+const chargeUrl = `/invoice/api/pay/${token}/charge`;
+const precheckUrl = `/invoice/api/pay/${token}/precheck`;
+
+const msgEl = document.getElementById('card-pay-message');
+const payBtn = document.getElementById('card-pay-button');
+let cardObj = null;
+let gpayObj = null;
+let appleObj = null;
+
+function setMessage(msg){ msgEl.textContent = msg || ''; }
+function setMethod(method){
+  document.getElementById('section-card').classList.toggle('show', method === 'card');
+  document.getElementById('section-gpay').classList.toggle('show', method === 'gpay');
+  document.getElementById('section-apple').classList.toggle('show', method === 'apple');
+}
+
+async function charge(sourceId, walletType){
+  const resp = await fetch(chargeUrl, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ sourceId, walletType })
+  });
+  const payload = await resp.json();
+  if (!resp.ok || !payload.ok) throw new Error(payload.error || '決済に失敗しました。');
+  window.location.href = payload.thanks_url;
+}
+
+async function runPrecheck(){
+  const resp = await fetch(precheckUrl, {method:'POST'});
+  const payload = await resp.json();
+  if (!resp.ok || !payload.ok) throw new Error(payload.error || '決済を開始できません。');
+}
+
+async function init(){
+  await runPrecheck();
+  const payments = window.Square.payments(appId, locationId);
+  cardObj = await payments.card();
+  await cardObj.attach('#card-container');
+
+  try {
+    gpayObj = await payments.googlePay({
+      countryCode: 'JP', currencyCode: 'JPY',
+      total: { amount: String({{ invoice.total_yen|int }}), label: '{{ invoice.invoice_no }}' }
+    });
+    await gpayObj.attach('#google-pay-button');
+  } catch (_) {
+    document.getElementById('radio-gpay-label').classList.add('disabled');
+  }
+
+  try {
+    appleObj = await payments.applePay({
+      countryCode: 'JP', currencyCode: 'JPY',
+      total: { amount: String({{ invoice.total_yen|int }}), label: '{{ invoice.invoice_no }}' }
+    });
+    await appleObj.attach('#apple-pay-button');
+  } catch (_) {
+    document.getElementById('radio-apple-label').classList.add('disabled');
+  }
+
+  payBtn.addEventListener('click', async () => {
+    setMessage(''); payBtn.disabled = true;
+    try {
+      const result = await cardObj.tokenize();
+      if (result.status !== 'OK') throw new Error('カード情報のトークン化に失敗しました。');
+      await charge(result.token, null);
+    } catch (e) {
+      setMessage(e.message || '決済エラーが発生しました。');
+    } finally { payBtn.disabled = false; }
+  });
+
+  document.getElementById('radio-card').addEventListener('change', ()=>setMethod('card'));
+  document.getElementById('radio-gpay').addEventListener('change', ()=>setMethod('gpay'));
+  document.getElementById('radio-apple').addEventListener('change', ()=>setMethod('apple'));
+
+  if (gpayObj) {
+    document.getElementById('google-pay-button').addEventListener('click', async ()=>{
       try {
-        const result = await card.tokenize();
-        if (result.status !== 'OK') {
-          throw new Error('カード情報のトークン化に失敗しました。');
-        }
-        const resp = await fetch(`/invoice/api/pay/${token}/charge`, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            sourceId: result.token,
-            buyer_name: document.getElementById('buyer-name').value || ''
-          })
-        });
-        const payload = await resp.json();
-        if (!resp.ok || !payload.ok) {
-          throw new Error(payload.error || '決済に失敗しました。');
-        }
-        window.location.href = payload.thanks_url;
-      } catch (err) {
-        messageEl.textContent = err.message || '決済エラーが発生しました。';
-      } finally {
-        payButton.disabled = false;
-      }
+        const r = await gpayObj.tokenize();
+        if (r.status !== 'OK') throw new Error('Google Payのトークン化に失敗しました。');
+        await charge(r.token, 'GOOGLE_PAY');
+      } catch (e) { setMessage(e.message || '決済エラーが発生しました。'); }
     });
   }
-  initCard().catch(() => {
-    messageEl.textContent = 'カードフォームの初期化に失敗しました。';
-  });
+  if (appleObj) {
+    document.getElementById('apple-pay-button').addEventListener('click', async ()=>{
+      try {
+        const r = await appleObj.tokenize();
+        if (r.status !== 'OK') throw new Error('Apple Payのトークン化に失敗しました。');
+        await charge(r.token, 'APPLE_PAY');
+      } catch (e) { setMessage(e.message || '決済エラーが発生しました。'); }
+    });
+  }
+}
+
+init().catch((e)=>setMessage(e.message || 'カードフォームの初期化に失敗しました。'));
 </script>
 {% endblock %}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
+import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_CEILING
@@ -754,6 +755,7 @@ def ensure_invoice_schema() -> None:
                 card_last4 CHAR(4) NULL,
                 card_exp_mm TINYINT NULL,
                 card_exp_yyyy SMALLINT NULL,
+                discord_notified TINYINT(1) NOT NULL DEFAULT 0,
                 error_code VARCHAR(64) NULL,
                 error_detail TEXT NULL,
                 paid_at DATETIME NULL,
@@ -763,6 +765,10 @@ def ensure_invoice_schema() -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
+        if not _column_exists(cur, "invoice_card_payments", "discord_notified"):
+            cur.execute(
+                "ALTER TABLE invoice_card_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0 AFTER card_exp_yyyy"
+            )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
@@ -1779,6 +1785,144 @@ def get_invoice_card_payment_by_square_payment_id(square_payment_id: str) -> dic
     finally:
         cur.close()
         db.close()
+
+
+def get_invoice_card_payment_by_id(payment_row_id: int) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM invoice_card_payments WHERE id=%s LIMIT 1", (payment_row_id,))
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def get_invoice_discord_webhook_url() -> str | None:
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT webhook_url
+            FROM users
+            WHERE username='admin'
+              AND webhook_url IS NOT NULL
+              AND webhook_url <> ''
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return row[0] if isinstance(row, tuple) else row.get("webhook_url")
+    except Exception:
+        logging.exception("failed to load invoice discord webhook url")
+        return None
+    finally:
+        cur.close()
+        db.close()
+
+
+def send_invoice_payment_discord_embed(*, webhook_url: str, fields: list[tuple[str, str, bool]]) -> None:
+    import requests
+
+    try:
+        embeds = [{
+            "title": "💳 請求書の決済が承認されました",
+            "description": "請求書のお支払いが承認/確定しました。",
+            "color": 0x2ECC71,
+            "fields": [{"name": n, "value": v, "inline": i} for (n, v, i) in fields],
+        }]
+        requests.post(webhook_url, json={"embeds": embeds}, timeout=10)
+    except Exception:
+        logging.exception("invoice discord notify failed")
+
+
+def notify_invoice_card_payment_if_needed(payment_row_id: int) -> None:
+    payment = get_invoice_card_payment_by_id(payment_row_id)
+    if not payment:
+        return
+    if int(payment.get("discord_notified") or 0) == 1:
+        return
+    status = (payment.get("square_status") or "").upper()
+    if status not in CARD_PAYMENT_SUCCESS_STATUSES:
+        return
+
+    invoice_id = int(payment.get("invoice_id") or 0)
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return
+    webhook_url = get_invoice_discord_webhook_url()
+    if not webhook_url:
+        return
+
+    partner_name = (
+        _normalize_stripped_text(invoice.get("contact_name_snapshot"))
+        or _normalize_stripped_text(invoice.get("contact_person_snapshot"))
+        or "(不明)"
+    )
+    fields = [
+        ("請求書番号", _normalize_stripped_text(invoice.get("invoice_no")) or "-", False),
+        ("件名", _normalize_stripped_text(invoice.get("subject")) or "-", False),
+        ("相手名", partner_name, True),
+        ("決済金額", f"¥{int(payment.get('amount_yen_snapshot') or 0):,}", True),
+        ("レシートURL", _normalize_stripped_text(payment.get("square_receipt_url")) or "-", False),
+        ("管理画面URL", f"{_invoice_public_base_url()}/invoice/{invoice_id}", False),
+    ]
+    send_invoice_payment_discord_embed(webhook_url=webhook_url, fields=fields)
+
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            "UPDATE invoice_card_payments SET discord_notified=1, updated_at=%s WHERE id=%s",
+            (now_jst(), payment_row_id),
+        )
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
+def ensure_invoice_square_customer(*, access_token: str, invoice: dict[str, Any], buyer_name: str) -> str | None:
+    import requests
+
+    buyer_email = (invoice.get("contact_email_snapshot") or "").strip()
+    if not buyer_email:
+        return None
+    reference_id = f"invoice_contact:{int(invoice.get('id') or 0)}"
+    square = get_invoice_square_config()
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
+    try:
+        sresp = requests.post(
+            f"{square['api_base']}/v2/customers/search",
+            headers=headers,
+            json={"query": {"filter": {"reference_id": {"exact": reference_id}}}},
+            timeout=15,
+        )
+        if sresp.status_code < 400:
+            customers = (sresp.json() or {}).get("customers") or []
+            if customers:
+                customer_id = (customers[0] or {}).get("id")
+                if customer_id:
+                    return customer_id
+    except Exception:
+        logging.exception("invoice search_customers failed")
+
+    try:
+        cresp = requests.post(
+            f"{square['api_base']}/v2/customers",
+            headers=headers,
+            json={"given_name": buyer_name, "reference_id": reference_id, "email_address": buyer_email},
+            timeout=15,
+        )
+        if cresp.status_code >= 400:
+            return None
+        return ((cresp.json() or {}).get("customer") or {}).get("id")
+    except Exception:
+        logging.exception("invoice create_customer failed")
+        return None
 
 
 def mark_invoice_paid_by_card(invoice_id: int, paid_at=None) -> None:

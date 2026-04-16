@@ -98,6 +98,7 @@
         {% endif %}
         {% if latest_card_payment %}
         <ul class="small mt-2 mb-0">
+          <li>相手名: {{ invoice.contact_name_snapshot or '---' }}</li>
           <li>最新決済状態: {{ card_payment_status or 'PENDING' }}</li>
           <li>最新決済金額: ¥{{ latest_card_payment.amount_yen_snapshot|yen }}</li>
           <li>Square payment id: {{ latest_card_payment.square_payment_id or '---' }}</li>
