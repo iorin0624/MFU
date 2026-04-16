@@ -451,6 +451,12 @@ def invoice_mail(invoice_id: int):
             form_data["body"] = body
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
+        invoice_status = str(invoice.get("status") or "").strip().lower()
+        try:
+            card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
+        except (TypeError, ValueError):
+            card_payment_enabled = False
+
         payout_access_url = None
         if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
             try:
@@ -463,7 +469,7 @@ def invoice_mail(invoice_id: int):
                 form_data["body"] = body
                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         card_url = None
-        if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
+        if card_payment_enabled and invoice_status not in {"paid", "cancelled"}:
             try:
                 card_token = ensure_invoice_card_payment_token(invoice_id)
                 card_url = build_invoice_card_payment_url(card_token)

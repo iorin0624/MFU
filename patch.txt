@@ -1,61 +1,8 @@
 diff --git a/invoice/routes.py b/invoice/routes.py
-index 5349228e21bfab70f024acb94eb705e962d47e98..4cbe3395e566cb99b3c30a13cfbd8cf6e59729e0 100644
+index 4cbe3395e566cb99b3c30a13cfbd8cf6e59729e0..35ae04a4fc4748b449ce33e7a1fbe453d56dfd2f 100644
 --- a/invoice/routes.py
 +++ b/invoice/routes.py
-@@ -25,50 +25,51 @@ from .services import (
-     build_issuer_template_form_data,
-     build_fuel_cost_helper,
-     build_invoice_form_data,
-     create_issuer_template,
-     delete_contact,
-     delete_issuer_template,
-     duplicate_invoice,
-     ensure_invoice_schema,
-     ensure_invoice_card_payment_token,
-     fetch_contacts,
-     get_default_issuer_template,
-     get_contact,
-     get_invoice_effective_bank_info,
-     get_invoice,
-     get_invoice_by_card_payment_token,
-     get_invoice_card_payment_by_square_payment_id,
-     get_issuer_template_by_id,
-     get_latest_invoice_card_payment,
-     get_invoice_square_config,
-     list_invoices,
-     list_issuer_templates,
-     log_csv_export,
-     mark_invoice_issued,
-     merge_invoice_cc_emails,
-     notify_invoice_card_payment_if_needed,
-+    normalize_bank_info_mode,
-     parse_invoice_items,
-     resolve_invoice_issuer_email,
-     save_contact,
-     save_invoice,
-     create_invoice_card_payment_pending,
-     save_invoice_payout_token,
-     update_invoice_card_payment_result,
-     mark_invoice_paid_by_card,
-     set_default_issuer_template,
-     ensure_invoice_square_customer,
-     update_issuer_template,
-     update_invoice_status,
- )
- from .utils import (
-     DEFAULT_TAX_CATEGORY,
-     ROW_TYPE_NORMAL,
-     STATUS_BADGES,
-     STATUS_LABELS,
-     TAX_CATEGORY_LABELS,
-     TAX_MODE_LABELS,
-     build_mail_subject,
-     default_due_date,
-     format_ymd,
-     now_jst,
-     parse_date,
-@@ -427,52 +428,53 @@ def invoice_mail(invoice_id: int):
-     effective_issuer_email = resolve_invoice_issuer_email(invoice)
+@@ -429,63 +429,69 @@ def invoice_mail(invoice_id: int):
      initial = {
          "to_email": invoice.get("contact_email_snapshot") or "",
          "cc_email": effective_issuer_email,
@@ -80,10 +27,15 @@ index 5349228e21bfab70f024acb94eb705e962d47e98..4cbe3395e566cb99b3c30a13cfbd8cf6
              form_data = dict(request.form)
              form_data["body"] = body
              return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-+        normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
+         normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
++        invoice_status = str(invoice.get("status") or "").strip().lower()
++        try:
++            card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
++        except (TypeError, ValueError):
++            card_payment_enabled = False
++
          payout_access_url = None
--        if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
-+        if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
+         if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
              try:
                  payout_access = issue_payout_access_token_for_invoice(invoice)
                  payout_access_url = payout_access.get("access_url") or ""
@@ -94,7 +46,8 @@ index 5349228e21bfab70f024acb94eb705e962d47e98..4cbe3395e566cb99b3c30a13cfbd8cf6
                  form_data["body"] = body
                  return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
          card_url = None
-         if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
+-        if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
++        if card_payment_enabled and invoice_status not in {"paid", "cancelled"}:
              try:
                  card_token = ensure_invoice_card_payment_token(invoice_id)
                  card_url = build_invoice_card_payment_url(card_token)
@@ -109,11 +62,54 @@ index 5349228e21bfab70f024acb94eb705e962d47e98..4cbe3395e566cb99b3c30a13cfbd8cf6
              payout_access_url=payout_access_url,
              card_payment_url=card_url,
          )
+         try:
+             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
+             send_invoice_mail(
+                 invoice,
+                 to_email=to_email,
+                 cc_email=final_cc_email or None,
+                 bcc_email=bcc_email or None,
+                 reply_to_email=effective_issuer_email or None,
+                 subject=subject,
+                 body=final_body,
+                 attachment_filename=attachment_name,
 diff --git a/invoice/services.py b/invoice/services.py
-index 13d17e8a7bb8c466d770422a130a13e594b49dda..26904a8d9df1e3ac1e66648f62efe1493e31f220 100644
+index 26904a8d9df1e3ac1e66648f62efe1493e31f220..93731ca297b841636b25cec3b50e15e7e8c92073 100644
 --- a/invoice/services.py
 +++ b/invoice/services.py
-@@ -618,54 +618,67 @@ def build_invoice_mail_body_with_payment_guidance(
+@@ -592,86 +592,92 @@ def build_default_invoice_mail_body(invoice_data: dict[str, Any], *, payout_acce
+     recipient_label = build_invoice_mail_recipient_label(
+         invoice_data.get("contact_name_snapshot") or invoice_data.get("contact_name"),
+         invoice_data.get("contact_person_snapshot") or invoice_data.get("contact_person"),
+         invoice_data.get("contact_honorific_snapshot") or invoice_data.get("honorific"),
+     )
+     issuer_name = (invoice_data.get("issuer_name") or "").strip() or "請求元"
+     body = (
+         f"いつもお世話になっております、{recipient_label}\n"
+         f"{issuer_name}です。\n\n"
+         "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。"
+     )
+     if normalize_bank_info_mode(invoice_data.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
+         return append_payout_guidance_to_mail_body(body, payout_access_url)
+     return body
+ 
+ 
+ def build_invoice_mail_body_with_payment_guidance(
+     *,
+     invoice: dict[str, Any],
+     body: Any,
+     payout_access_url: str | None = None,
+     card_payment_url: str | None = None,
+ ) -> str:
+     normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
+     normalized_lines = [line.rstrip() for line in normalized_body.split("\n")]
++    normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
++    invoice_status = str(invoice.get("status") or "").strip().lower()
++    try:
++        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
++    except (TypeError, ValueError):
++        card_payment_enabled = False
+ 
      normalized_payout_url = _normalize_stripped_text(payout_access_url)
      normalized_card_url = _normalize_stripped_text(card_payment_url)
  
@@ -139,25 +135,26 @@ index 13d17e8a7bb8c466d770422a130a13e594b49dda..26904a8d9df1e3ac1e66648f62efe149
  
      cleaned_body = "\n".join(filtered_lines)
  
-+    # payout案内の可否は bank_info_mode + payout URL のみで判定する
-+    should_append_payout_guidance = (
-+        normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK
-+        and bool(normalized_payout_url)
-+    )
-+    # カード案内の可否は card_payment_enabled + status + card URL のみで判定する
-+    # （bank_info_mode とは独立）
-+    should_append_card_guidance = (
-+        int(invoice.get("card_payment_enabled") or 0) == 1
-+        and invoice.get("status") not in {"paid", "cancelled"}
-+        and bool(normalized_card_url)
-+    )
-+
+     # payout案内の可否は bank_info_mode + payout URL のみで判定する
+     should_append_payout_guidance = (
+-        normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK
++        normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
+         and bool(normalized_payout_url)
+     )
+     # カード案内の可否は card_payment_enabled + status + card URL のみで判定する
+     # （bank_info_mode とは独立）
+     should_append_card_guidance = (
+-        int(invoice.get("card_payment_enabled") or 0) == 1
+-        and invoice.get("status") not in {"paid", "cancelled"}
++        card_payment_enabled
++        and invoice_status not in {"paid", "cancelled"}
+         and bool(normalized_card_url)
+     )
+ 
      payment_lines: list[str] = []
--    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and normalized_payout_url:
-+    if should_append_payout_guidance:
+     if should_append_payout_guidance:
          payment_lines.extend([PAYOUT_LINK_MAIL_GUIDANCE, normalized_payout_url])
--    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and normalized_card_url:
-+    if should_append_card_guidance:
+     if should_append_card_guidance:
          payment_lines.extend([CARD_PAYMENT_MAIL_GUIDANCE, normalized_card_url])
  
      if payment_lines:
@@ -176,133 +173,3 @@ index 13d17e8a7bb8c466d770422a130a13e594b49dda..26904a8d9df1e3ac1e66648f62efe149
      assert final_body.count(CARD_PAYMENT_MAIL_GUIDANCE) <= 1
      return final_body
  
- 
- def ensure_invoice_schema() -> None:
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-diff --git a/tests/test_invoice_issuer_templates.py b/tests/test_invoice_issuer_templates.py
-index 346177bfed5e47d26d1f64b7ad7245818bd759c6..449e268a0bf9e835f7e1ae57ee0e483bb46495d7 100644
---- a/tests/test_invoice_issuer_templates.py
-+++ b/tests/test_invoice_issuer_templates.py
-@@ -205,28 +205,118 @@ class InvoiceIssuerTemplateTest(unittest.TestCase):
-         ):
-             payload = invoice_services._build_invoice_payload(
-                 {
-                     "issue_date": invoice_services.date(2026, 3, 18),
-                     "due_date": invoice_services.date(2026, 4, 17),
-                     "subject": "3月分ご請求",
-                     "issuer_name": "いおりん写真室",
-                     "issuer_email": " ",
-                     "issuer_template_id": "9",
-                     "tax_mode": "external",
-                     "status": "draft",
-                 },
-                 {"id": 3},
-                 [
-                     invoice_services.InvoiceItemInput(
-                         item_name="撮影料",
-                         quantity=invoice_services.Decimal("1"),
-                         unit_price_yen=10000,
-                     )
-                 ],
-             )
- 
-         self.assertEqual(payload["issuer_template_id"], 9)
-         self.assertEqual(payload["issuer_email"], "template@example.com")
- 
-+    def test_build_invoice_mail_body_with_payment_guidance_case_a_payout_and_card(self):
-+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
-+            invoice={
-+                "bank_info_mode": invoice_services.BANK_INFO_MODE_PAYOUT_LINK,
-+                "card_payment_enabled": 1,
-+                "status": "issued",
-+            },
-+            body="本文です",
-+            payout_access_url="https://example.com/payout?iv=abc",
-+            card_payment_url="https://example.com/invoice/pay/xyz",
-+        )
-+
-+        self.assertEqual(body.count(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE), 1)
-+        self.assertEqual(body.count("https://example.com/payout?iv=abc"), 1)
-+        self.assertEqual(body.count(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE), 1)
-+        self.assertEqual(body.count("https://example.com/invoice/pay/xyz"), 1)
-+
-+    def test_build_invoice_mail_body_with_payment_guidance_case_b_inline_with_card_only(self):
-+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
-+            invoice={
-+                "bank_info_mode": invoice_services.BANK_INFO_MODE_INLINE,
-+                "card_payment_enabled": 1,
-+                "status": "issued",
-+            },
-+            body="本文です",
-+            payout_access_url=None,
-+            card_payment_url="https://example.com/invoice/pay/xyz",
-+        )
-+
-+        self.assertNotIn(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE, body)
-+        self.assertEqual(body.count(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE), 1)
-+        self.assertEqual(body.count("https://example.com/invoice/pay/xyz"), 1)
-+
-+    def test_build_invoice_mail_body_with_payment_guidance_case_c_payout_only(self):
-+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
-+            invoice={
-+                "bank_info_mode": invoice_services.BANK_INFO_MODE_PAYOUT_LINK,
-+                "card_payment_enabled": 0,
-+                "status": "issued",
-+            },
-+            body="本文です",
-+            payout_access_url="https://example.com/payout?iv=abc",
-+            card_payment_url=None,
-+        )
-+
-+        self.assertEqual(body.count(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE), 1)
-+        self.assertEqual(body.count("https://example.com/payout?iv=abc"), 1)
-+        self.assertNotIn(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE, body)
-+
-+    def test_build_invoice_mail_body_with_payment_guidance_case_d_inline_without_payment_links(self):
-+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
-+            invoice={
-+                "bank_info_mode": invoice_services.BANK_INFO_MODE_INLINE,
-+                "card_payment_enabled": 0,
-+                "status": "issued",
-+            },
-+            body="本文です",
-+            payout_access_url=None,
-+            card_payment_url=None,
-+        )
-+
-+        self.assertEqual(body, "本文です")
-+        self.assertNotIn(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE, body)
-+        self.assertNotIn(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE, body)
-+
-+    def test_build_invoice_mail_body_with_payment_guidance_case_e_rebuilds_latest_links_without_duplicates(self):
-+        body = invoice_services.build_invoice_mail_body_with_payment_guidance(
-+            invoice={
-+                "bank_info_mode": invoice_services.BANK_INFO_MODE_PAYOUT_LINK,
-+                "card_payment_enabled": 1,
-+                "status": "issued",
-+            },
-+            body=(
-+                "既存本文\n"
-+                f"{invoice_services.PAYOUT_LINK_MAIL_GUIDANCE}\n"
-+                "https://example.com/payout?iv=old\n"
-+                f"{invoice_services.CARD_PAYMENT_MAIL_GUIDANCE}\n"
-+                "https://example.com/invoice/pay/old"
-+            ),
-+            payout_access_url="https://example.com/payout?iv=abc",
-+            card_payment_url="https://example.com/invoice/pay/xyz",
-+        )
-+
-+        self.assertEqual(body.count(invoice_services.PAYOUT_LINK_MAIL_GUIDANCE), 1)
-+        self.assertEqual(body.count("https://example.com/payout?iv=abc"), 1)
-+        self.assertNotIn("https://example.com/payout?iv=old", body)
-+        self.assertEqual(body.count(invoice_services.CARD_PAYMENT_MAIL_GUIDANCE), 1)
-+        self.assertEqual(body.count("https://example.com/invoice/pay/xyz"), 1)
-+        self.assertNotIn("https://example.com/invoice/pay/old", body)
-+
- 
- if __name__ == "__main__":
-     unittest.main()

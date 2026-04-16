@@ -614,6 +614,12 @@ def build_invoice_mail_body_with_payment_guidance(
 ) -> str:
     normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
     normalized_lines = [line.rstrip() for line in normalized_body.split("\n")]
+    normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
+    invoice_status = str(invoice.get("status") or "").strip().lower()
+    try:
+        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
+    except (TypeError, ValueError):
+        card_payment_enabled = False
 
     normalized_payout_url = _normalize_stripped_text(payout_access_url)
     normalized_card_url = _normalize_stripped_text(card_payment_url)
@@ -642,14 +648,14 @@ def build_invoice_mail_body_with_payment_guidance(
 
     # payout案内の可否は bank_info_mode + payout URL のみで判定する
     should_append_payout_guidance = (
-        normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK
+        normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
         and bool(normalized_payout_url)
     )
     # カード案内の可否は card_payment_enabled + status + card URL のみで判定する
     # （bank_info_mode とは独立）
     should_append_card_guidance = (
-        int(invoice.get("card_payment_enabled") or 0) == 1
-        and invoice.get("status") not in {"paid", "cancelled"}
+        card_payment_enabled
+        and invoice_status not in {"paid", "cancelled"}
         and bool(normalized_card_url)
     )
 
