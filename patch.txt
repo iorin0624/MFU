@@ -1,8 +1,71 @@
 diff --git a/invoice/routes.py b/invoice/routes.py
-index f9d96d1a239dfe4c6438f2038667f13b7253a188..22ef74e40684bd0a489f9cbb2a598ba424356ab6 100644
+index 22ef74e40684bd0a489f9cbb2a598ba424356ab6..5349228e21bfab70f024acb94eb705e962d47e98 100644
 --- a/invoice/routes.py
 +++ b/invoice/routes.py
-@@ -417,99 +417,87 @@ def invoice_mail(invoice_id: int):
+@@ -345,51 +345,51 @@ def invoice_duplicate(invoice_id: int):
+ 
+ 
+ @invoice_bp.get("/<int:invoice_id>")
+ @login_required
+ def invoice_detail(invoice_id: int):
+     invoice = get_invoice(invoice_id)
+     if not invoice:
+         flash("請求書が見つかりません。", "warning")
+         return redirect(url_for("invoice.invoice_list"))
+     card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
+     latest_card_payment = get_latest_invoice_card_payment(invoice_id)
+     card_payment_status = (latest_card_payment or {}).get("square_status") or ""
+     card_payment_url = None
+     if card_payment_enabled and invoice.get("status") not in {"paid", "cancelled"}:
+         try:
+             token = ensure_invoice_card_payment_token(invoice_id)
+             card_payment_url = build_invoice_card_payment_url(token)
+         except Exception:
+             card_payment_url = None
+     return render_template(
+         "invoice_detail.html",
+         invoice=invoice,
+         effective_bank_info=get_invoice_effective_bank_info(invoice),
+         status_labels=STATUS_LABELS,
+         tax_mode_labels=TAX_MODE_LABELS,
+-        default_mail_subject=build_mail_subject(invoice.get("issue_date")),
++        default_mail_subject=build_mail_subject(invoice.get("subject")),
+         default_mail_body=build_default_invoice_mail_body(invoice),
+         mail_to_default=invoice.get("contact_email_snapshot") or "",
+         bank_info_mode_labels=BANK_INFO_MODE_LABELS,
+         card_payment_enabled=card_payment_enabled,
+         card_payment_url=card_payment_url,
+         card_payment_status=card_payment_status,
+         latest_card_payment=latest_card_payment,
+     )
+ 
+ 
+ @invoice_bp.post("/<int:invoice_id>/issue")
+ @login_required
+ def invoice_issue(invoice_id: int):
+     mark_invoice_issued(invoice_id)
+     flash("請求書を発行済みに更新しました。", "success")
+     return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ 
+ 
+ @invoice_bp.post("/<int:invoice_id>/status")
+ @login_required
+ def invoice_update_status(invoice_id: int):
+     status = request.form.get("status") or "draft"
+     update_invoice_status(invoice_id, status)
+     flash("ステータスを更新しました。", "success")
+     return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+@@ -407,51 +407,51 @@ def invoice_pdf(invoice_id: int):
+ 
+ 
+ @invoice_bp.route("/<int:invoice_id>/mail", methods=["GET", "POST"])
+ @login_required
+ def invoice_mail(invoice_id: int):
+     invoice = get_invoice(invoice_id)
+     if not invoice:
+         flash("請求書が見つかりません。", "warning")
+         return redirect(url_for("invoice.invoice_list"))
+     mail_context = dict(invoice)
      if invoice.get("contact_id"):
          contact = get_contact(int(invoice["contact_id"]))
          if contact:
@@ -18,7 +81,8 @@ index f9d96d1a239dfe4c6438f2038667f13b7253a188..22ef74e40684bd0a489f9cbb2a598ba4
          "to_email": invoice.get("contact_email_snapshot") or "",
          "cc_email": effective_issuer_email,
          "bcc_email": "",
-         "subject": build_mail_subject(invoice.get("issue_date")),
+-        "subject": build_mail_subject(invoice.get("issue_date")),
++        "subject": build_mail_subject(invoice.get("subject")),
          "body": build_default_invoice_mail_body(mail_context),
      }
      if request.method == "POST":
@@ -28,199 +92,62 @@ index f9d96d1a239dfe4c6438f2038667f13b7253a188..22ef74e40684bd0a489f9cbb2a598ba4
          bcc_email = (request.form.get("bcc_email") or "").strip()
          subject = (request.form.get("subject") or "").strip()
          body = request.form.get("body") or ""
--        final_body = body
          if not to_email:
              flash("宛先メールアドレスを入力してください。", "warning")
              form_data = dict(request.form)
--            form_data["body"] = final_body
-+            form_data["body"] = body
+             form_data["body"] = body
              return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
          if request.form.get("confirm_send") != "yes":
              flash("送信前確認にチェックを入れてください。", "warning")
              form_data = dict(request.form)
--            form_data["body"] = final_body
-+            form_data["body"] = body
+             form_data["body"] = body
              return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
          payout_access_url = None
          if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
              try:
                  payout_access = issue_payout_access_token_for_invoice(invoice)
                  payout_access_url = payout_access.get("access_url") or ""
--                final_body = build_invoice_mail_body_with_payment_guidance(
--                    invoice=invoice,
--                    body=final_body,
--                    payout_access_url=payout_access_url,
--                )
                  save_invoice_payout_token(invoice_id, payout_access.get("id"))
-             except Exception as exc:
-                 flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-                 form_data = dict(request.form)
--                form_data["body"] = final_body
-+                form_data["body"] = body
-                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-         card_url = None
-         if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
-             try:
-                 card_token = ensure_invoice_card_payment_token(invoice_id)
-                 card_url = build_invoice_card_payment_url(card_token)
--                final_body = build_invoice_mail_body_with_payment_guidance(
--                    invoice=invoice,
--                    body=final_body,
--                    payout_access_url=payout_access_url,
--                    card_payment_url=card_url,
--                )
--                if card_url not in final_body:
--                    final_body = build_invoice_mail_body_with_payment_guidance(
--                        invoice=invoice,
--                        body=final_body,
--                        card_payment_url=card_url,
--                    )
-             except Exception as exc:
-                 flash(f"カード決済URLの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-                 form_data = dict(request.form)
--                form_data["body"] = final_body
-+                form_data["body"] = body
-                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-+        final_body = build_invoice_mail_body_with_payment_guidance(
-+            invoice=invoice,
-+            body=body,
-+            payout_access_url=payout_access_url,
-+            card_payment_url=card_url,
-+        )
-         try:
-             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
-             send_invoice_mail(
-                 invoice,
-                 to_email=to_email,
-                 cc_email=final_cc_email or None,
-                 bcc_email=bcc_email or None,
-                 reply_to_email=effective_issuer_email or None,
-                 subject=subject,
-                 body=final_body,
-                 attachment_filename=attachment_name,
-                 pdf_bytes=pdf_bytes,
-             )
-             flash("請求書メールを送信しました。", "success")
-             return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
-         except Exception as exc:
-             flash(f"メール送信に失敗しました: {exc}", "danger")
-             form_data = dict(request.form)
-             form_data["body"] = final_body
-             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-     return render_template("invoice_mail_form.html", invoice=invoice, form_data=initial)
+diff --git a/invoice/utils.py b/invoice/utils.py
+index 2d4379d2dc0d4b50c214b03087813295739c8090..6dfc81f1bf3cc13308071842c044bde446a3bda5 100644
+--- a/invoice/utils.py
++++ b/invoice/utils.py
+@@ -197,33 +197,35 @@ def calculate_tax(subtotal: int, tax_mode: str) -> int:
+         return quantize_yen(subtotal_dec * TAX_RATE)
+     if tax_mode == "internal":
+         included = subtotal_dec - (subtotal_dec / (Decimal("1.0") + TAX_RATE))
+         return quantize_yen(included)
+     return 0
  
  
- @invoice_bp.get("/<int:invoice_id>/freee-csv")
- @login_required
-diff --git a/invoice/services.py b/invoice/services.py
-index cee98486f66948fb7a6d736ed2a3b52651c214bd..13d17e8a7bb8c466d770422a130a13e594b49dda 100644
---- a/invoice/services.py
-+++ b/invoice/services.py
-@@ -590,59 +590,98 @@ def build_invoice_mail_recipient_label(
- 
- def build_default_invoice_mail_body(invoice_data: dict[str, Any], *, payout_access_url: str | None = None) -> str:
-     recipient_label = build_invoice_mail_recipient_label(
-         invoice_data.get("contact_name_snapshot") or invoice_data.get("contact_name"),
-         invoice_data.get("contact_person_snapshot") or invoice_data.get("contact_person"),
-         invoice_data.get("contact_honorific_snapshot") or invoice_data.get("honorific"),
-     )
-     issuer_name = (invoice_data.get("issuer_name") or "").strip() or "請求元"
-     body = (
-         f"いつもお世話になっております、{recipient_label}\n"
-         f"{issuer_name}です。\n\n"
-         "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。"
-     )
-     if normalize_bank_info_mode(invoice_data.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
-         return append_payout_guidance_to_mail_body(body, payout_access_url)
-     return body
+ def normalize_status(status: str | None) -> str:
+     return status if status in STATUS_LABELS else "draft"
  
  
- def build_invoice_mail_body_with_payment_guidance(
-     *,
-     invoice: dict[str, Any],
-     body: Any,
-     payout_access_url: str | None = None,
-     card_payment_url: str | None = None,
- ) -> str:
--    final_body = str(body or "")
--    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
--        if payout_access_url in final_body:
--            final_body = final_body.replace(payout_access_url, "").rstrip()
--        final_body = append_payout_guidance_to_mail_body(final_body, payout_access_url)
--    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and card_payment_url:
--        if card_payment_url in final_body:
--            final_body = final_body.replace(card_payment_url, "").rstrip()
--        final_body = append_card_payment_guidance_to_mail_body(final_body, card_payment_url)
-+    normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
-+    normalized_lines = [line.rstrip() for line in normalized_body.split("\n")]
-+
-+    normalized_payout_url = _normalize_stripped_text(payout_access_url)
-+    normalized_card_url = _normalize_stripped_text(card_payment_url)
-+
-+    filtered_lines: list[str] = []
-+    for line in normalized_lines:
-+        stripped_line = line.strip()
-+        if stripped_line == PAYOUT_LINK_MAIL_GUIDANCE:
-+            continue
-+        if stripped_line == CARD_PAYMENT_MAIL_GUIDANCE:
-+            continue
-+        if normalized_payout_url and stripped_line == normalized_payout_url:
-+            continue
-+        if normalized_card_url and stripped_line == normalized_card_url:
-+            continue
-+        if "/payout?iv=" in stripped_line:
-+            continue
-+        if "/invoice/pay/" in stripped_line:
-+            continue
-+        filtered_lines.append(line)
-+
-+    while filtered_lines and filtered_lines[-1] == "":
-+        filtered_lines.pop()
-+
-+    cleaned_body = "\n".join(filtered_lines)
-+
-+    payment_lines: list[str] = []
-+    if normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and normalized_payout_url:
-+        payment_lines.extend([PAYOUT_LINK_MAIL_GUIDANCE, normalized_payout_url])
-+    if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"} and normalized_card_url:
-+        payment_lines.extend([CARD_PAYMENT_MAIL_GUIDANCE, normalized_card_url])
-+
-+    if payment_lines:
-+        if cleaned_body:
-+            final_body = f"{cleaned_body}\n" + "\n".join(payment_lines)
-+        else:
-+            final_body = "\n".join(payment_lines)
-+    else:
-+        final_body = cleaned_body
-+
-+    if normalized_payout_url:
-+        assert final_body.count(normalized_payout_url) == 1
-+    if normalized_card_url:
-+        assert final_body.count(normalized_card_url) == 1
-+    assert final_body.count(PAYOUT_LINK_MAIL_GUIDANCE) <= 1
-+    assert final_body.count(CARD_PAYMENT_MAIL_GUIDANCE) <= 1
-     return final_body
+ def normalize_tax_mode(tax_mode: str | None) -> str:
+     return tax_mode if tax_mode in TAX_MODE_LABELS else "external"
  
  
- def ensure_invoice_schema() -> None:
-     db = get_db()
-     cur = db.cursor()
-     try:
-         cur.execute(
-             """
-             CREATE TABLE IF NOT EXISTS invoice_contacts (
-                 id INT AUTO_INCREMENT PRIMARY KEY,
-                 name VARCHAR(191) NOT NULL,
-                 department_name VARCHAR(191) NULL,
-                 contact_name VARCHAR(191) NULL,
-                 honorific VARCHAR(32) NULL,
-                 email VARCHAR(255) NULL,
-                 postal_code VARCHAR(32) NULL,
-                 address1 VARCHAR(255) NULL,
-                 address2 VARCHAR(255) NULL,
-                 phone VARCHAR(64) NULL,
-                 freee_partner_name VARCHAR(191) NULL,
-                 default_due_days INT NULL,
-                 note TEXT NULL,
-                 created_at DATETIME NOT NULL,
-                 updated_at DATETIME NOT NULL,
+ def default_due_date(issue_date: date, due_days: int | None) -> date:
+     return issue_date + timedelta(days=int(due_days or 30))
+ 
+ 
+ def split_emails(value: str | None) -> list[str]:
+     if not value:
+         return []
+     return [item.strip() for item in re.split(r"[,;\n]", value) if item.strip()]
+ 
+ 
+-def build_mail_subject(issue_date: date | None) -> str:
+-    base = issue_date or now_jst().date()
+-    return f"【請求書送付】{base.year}年{base.month}月分のご請求"
++def build_mail_subject(subject: str | None) -> str:
++    normalized = str(subject or "").strip()
++    if not normalized:
++        normalized = "ご請求"
++    return f"【請求書送付】{normalized}"
+ 
+ 
+ def ensure_dir(path: str) -> str:
+     os.makedirs(path, exist_ok=True)
+     return path
