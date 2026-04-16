@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}配送追跡一覧{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">配送追跡一覧</h1>
+  <a href="{{ url_for('shipment_tracking.shipment_tracking_new') }}" class="btn btn-primary btn-sm">新規登録</a>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+    {% for category, message in messages %}
+      <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<div class="table-responsive">
+  <table class="table table-bordered align-middle table-sm">
+    <thead class="table-light">
+      <tr>
+        <th>ID</th>
+        <th>ラベル</th>
+        <th>業者</th>
+        <th>配達番号</th>
+        <th>最新状態</th>
+        <th>最新イベント日時</th>
+        <th>最終確認日時</th>
+        <th>有効/無効</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for target in targets %}
+        <tr>
+          <td>{{ target.id }}</td>
+          <td>{{ target.label or '-' }}</td>
+          <td>{{ carrier_master.get(target.carrier_code, target.carrier_code) }}</td>
+          <td>{{ target.tracking_number }}</td>
+          <td>{{ target.last_current_status or '-' }}</td>
+          <td>{{ target.last_latest_event_at or '-' }}</td>
+          <td>{{ target.last_checked_at or '-' }}</td>
+          <td>{{ '有効' if target.is_active else '無効' }}</td>
+          <td class="text-nowrap">
+            <a href="{{ url_for('shipment_tracking.shipment_tracking_detail', id=target.id) }}" class="btn btn-outline-secondary btn-sm">詳細</a>
+            <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_check_now', id=target.id) }}" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+              <button type="submit" class="btn btn-outline-primary btn-sm">最新情報の確認</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="9" class="text-center text-muted">登録がありません</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -3844,6 +3844,9 @@ app.register_blueprint(profile_bp)
 from app.fare import fare_bp
 app.register_blueprint(fare_bp)
 
+from app.shipment_tracking import shipment_tracking_bp
+app.register_blueprint(shipment_tracking_bp)
+
 from app.bank_account import register_bank_account
 register_bank_account(app)
 
@@ -3851,3 +3854,11 @@ try:
     _ensure_upload_security_schema_once()
 except Exception as exc:
     app.logger.warning(f"upload security schema init skipped: {exc}")
+
+try:
+    from app.shipment_tracking.services import ensure_nav_item, ensure_shipment_tracking_schema
+
+    ensure_shipment_tracking_schema()
+    ensure_nav_item()
+except Exception as exc:
+    app.logger.warning(f"shipment tracking schema/nav init skipped: {exc}")
