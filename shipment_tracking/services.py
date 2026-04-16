@@ -135,17 +135,17 @@ def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
 
 
 def _fetch_yamato(tracking_number: str) -> tuple[str, str]:
-    search_url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
+    url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
     headers = {"User-Agent": USER_AGENT}
-    search_params = {"number00": "1", "number01": tracking_number, "type": "1"}
-    response = requests.get(
-        search_url,
-        params=search_params,
+    data = {"number00": "1", "number01": tracking_number, "backrequest": "get"}
+    response = requests.post(
+        url,
+        data=data,
         headers=headers,
         timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
-    return response.url, response.text
+    return url, response.text
 
 
 def _fetch_japanpost(tracking_number: str) -> tuple[str, str]:
