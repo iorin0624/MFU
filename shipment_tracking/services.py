@@ -137,7 +137,10 @@ def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
 def _fetch_yamato(tracking_number: str) -> tuple[str, str]:
     url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
     headers = {"User-Agent": USER_AGENT}
-    data = {"number00": "1", "number01": tracking_number, "backrequest": "get"}
+    data = {
+        "number00": "1",
+        "number01": tracking_number,
+    }
     response = requests.post(
         url,
         data=data,
