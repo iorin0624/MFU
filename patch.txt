@@ -1,8 +1,8 @@
 diff --git a/shipment_tracking/services.py b/shipment_tracking/services.py
-index 3fbf90010c0cf8f69d6954ec43c17081d5284f1d..fd8b0e8102a70815222b452301df7ac54b083db5 100644
+index fd8b0e8102a70815222b452301df7ac54b083db5..e8d820f37ddf045875c5b26aadf2e4520c8d7517 100644
 --- a/shipment_tracking/services.py
 +++ b/shipment_tracking/services.py
-@@ -113,55 +113,56 @@ def _parse_payload_datetime(value: Any) -> datetime | None:
+@@ -113,61 +113,61 @@ def _parse_payload_datetime(value: Any) -> datetime | None:
      if not value or not isinstance(value, str):
          return None
      text = value.strip()
@@ -28,20 +28,23 @@ index 3fbf90010c0cf8f69d6954ec43c17081d5284f1d..fd8b0e8102a70815222b452301df7ac5
  
  
  def _fetch_yamato(tracking_number: str) -> tuple[str, str]:
--    url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
-+    search_url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
+-    search_url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
++    url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
      headers = {"User-Agent": USER_AGENT}
-+    search_params = {"number00": "1", "number01": tracking_number, "type": "1"}
-     response = requests.get(
--        url,
--        params={"number00": 1, "number01": tracking_number, "type": 1},
-+        search_url,
-+        params=search_params,
+-    search_params = {"number00": "1", "number01": tracking_number, "type": "1"}
+-    response = requests.get(
+-        search_url,
+-        params=search_params,
++    data = {"number00": "1", "number01": tracking_number, "backrequest": "get"}
++    response = requests.post(
++        url,
++        data=data,
          headers=headers,
          timeout=REQUEST_TIMEOUT,
      )
      response.raise_for_status()
-     return response.url, response.text
+-    return response.url, response.text
++    return url, response.text
  
  
  def _fetch_japanpost(tracking_number: str) -> tuple[str, str]:
@@ -62,89 +65,8 @@ index 3fbf90010c0cf8f69d6954ec43c17081d5284f1d..fd8b0e8102a70815222b452301df7ac5
      if carrier_code == "japanpost":
          tracking_url, html = _fetch_japanpost(tracking_number)
          return parse_japanpost(html, tracking_number, tracking_url)
-diff --git a/shipment_tracking/template/admin/shipment_tracking/list.html b/shipment_tracking/template/admin/shipment_tracking/list.html
-index c14a7eefaa6ab0e1a45d03ada75472530acc417d..f3b141ed2468e2f18901df7cf4e8fd65e0bd71b8 100644
---- a/shipment_tracking/template/admin/shipment_tracking/list.html
-+++ b/shipment_tracking/template/admin/shipment_tracking/list.html
-@@ -1,61 +1,80 @@
- {% extends "base.html" %}
+     raise ShipmentTrackingError("未対応の配送業者です。")
  
- {% block title %}配送追跡一覧{% endblock %}
  
- {% block content %}
-+<style>
-+  .shipment-status-main {
-+    white-space: normal;
-+    word-break: break-word;
-+  }
-+
-+  .shipment-status-detail {
-+    font-size: 0.875em;
-+    color: #6c757d;
-+    margin-top: 0.2rem;
-+    white-space: normal;
-+    word-break: break-word;
-+  }
-+</style>
- <div class="d-flex justify-content-between align-items-center mb-3">
-   <h1 class="h4 mb-0">配送追跡一覧</h1>
-   <a href="{{ url_for('shipment_tracking.shipment_tracking_new') }}" class="btn btn-primary btn-sm">新規登録</a>
- </div>
- 
- {% with messages = get_flashed_messages(with_categories=true) %}
-   {% if messages %}
-     {% for category, message in messages %}
-       <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
-     {% endfor %}
-   {% endif %}
- {% endwith %}
- 
- <div class="table-responsive">
-   <table class="table table-bordered align-middle table-sm">
-     <thead class="table-light">
-       <tr>
-         <th>ID</th>
-         <th>ラベル</th>
-         <th>業者</th>
-         <th>配達番号</th>
-         <th>最新状態</th>
-         <th>最新イベント日時</th>
-         <th>最終確認日時</th>
-         <th>有効/無効</th>
-         <th>操作</th>
-       </tr>
-     </thead>
-     <tbody>
-       {% for target in targets %}
-         <tr>
-           <td>{{ target.id }}</td>
-           <td>{{ target.label or '-' }}</td>
-           <td>{{ carrier_master.get(target.carrier_code, target.carrier_code) }}</td>
-           <td>{{ target.tracking_number }}</td>
--          <td>{{ target.last_current_status or '-' }}</td>
-+          <td>
-+            <div class="shipment-status-main">{{ target.last_current_status or '-' }}</div>
-+            {% if target.last_current_status_detail %}
-+              <div class="shipment-status-detail">{{ target.last_current_status_detail }}</div>
-+            {% endif %}
-+          </td>
-           <td>{{ target.last_latest_event_at or '-' }}</td>
-           <td>{{ target.last_checked_at or '-' }}</td>
-           <td>{{ '有効' if target.is_active else '無効' }}</td>
-           <td class="text-nowrap">
-             <a href="{{ url_for('shipment_tracking.shipment_tracking_detail', id=target.id) }}" class="btn btn-outline-secondary btn-sm">詳細</a>
-             <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_check_now', id=target.id) }}" class="d-inline">
-               <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
-               <button type="submit" class="btn btn-outline-primary btn-sm">最新情報の確認</button>
-             </form>
-           </td>
-         </tr>
-       {% else %}
-         <tr>
-           <td colspan="9" class="text-center text-muted">登録がありません</td>
-         </tr>
-       {% endfor %}
-     </tbody>
-   </table>
- </div>
- {% endblock %}
+ def list_targets() -> list[dict[str, Any]]:
+     db = get_db()
