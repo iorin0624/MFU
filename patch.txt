@@ -1,198 +1,150 @@
-diff --git a/shipment_tracking/parsers.py b/shipment_tracking/parsers.py
-index 632f04ea618bcc7f03fa4171d3b288d951717687..ad6a177e6c89978739e54f72a684d3aadeacbbd8 100644
---- a/shipment_tracking/parsers.py
-+++ b/shipment_tracking/parsers.py
-@@ -1,32 +1,35 @@
- from __future__ import annotations
- 
- import re
- from datetime import datetime
- from typing import Any
- 
--from bs4 import BeautifulSoup
-+try:
-+    from bs4 import BeautifulSoup
-+except Exception:  # pragma: no cover - 起動時に依存未導入でもアプリ全体を落とさない
-+    BeautifulSoup = None  # type: ignore
- 
- from .models import CARRIER_MASTER
- 
- 
- def _text(el) -> str:
-     if not el:
-         return ""
-     return re.sub(r"\s+", " ", el.get_text(" ", strip=True)).strip()
- 
- 
- def _first_by_keywords(soup: BeautifulSoup, keywords: list[str]):
-     for text_node in soup.find_all(string=True):
-         src = str(text_node)
-         if all(k in src for k in keywords):
-             return text_node.parent
+diff --git a/shipment_tracking/services.py b/shipment_tracking/services.py
+index 3fbf90010c0cf8f69d6954ec43c17081d5284f1d..fd8b0e8102a70815222b452301df7ac54b083db5 100644
+--- a/shipment_tracking/services.py
++++ b/shipment_tracking/services.py
+@@ -113,55 +113,56 @@ def _parse_payload_datetime(value: Any) -> datetime | None:
+     if not value or not isinstance(value, str):
+         return None
+     text = value.strip()
+     patterns = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]
+     for pattern in patterns:
+         try:
+             return datetime.strptime(text, pattern)
+         except ValueError:
+             continue
      return None
  
  
- def _find_value_near_label(soup: BeautifulSoup, labels: list[str]) -> str | None:
-     for label in labels:
-         node = soup.find(string=re.compile(re.escape(label)))
-         if not node:
-             continue
-         parent = node.parent
-         if parent:
-@@ -84,99 +87,103 @@ def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) ->
-         "additional_service": None,
-         "ship_date": None,
-         "completed": False,
-         "origin_office": {
-             "name": None,
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
-             "prefecture": None,
-         },
-         "delivery_office": {
-             "name": None,
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
-             "prefecture": None,
-         },
-         "contact_offices": [],
-         "history": [],
-     }
+ def _http_get(url: str) -> str:
+     headers = {"User-Agent": USER_AGENT}
+     response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+     response.raise_for_status()
+     return response.text
  
  
- def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-+    if BeautifulSoup is None:
-+        raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
-     soup = BeautifulSoup(html, "html.parser")
-     payload = _base_payload("sagawa", tracking_number, tracking_url)
- 
-     payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "お問い合わせ送り状No.", "配達状況"])  # type: ignore
-     payload["current_status_detail"] = _find_value_near_label(soup, ["詳細", "担当営業所"])
-     payload["scheduled_delivery_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["お届け予定日", "配達指定日"]))
-     payload["ship_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["出荷日", "発送日"]))
-     payload["package_count"] = _find_value_near_label(soup, ["個数"])
- 
-     payload["origin_office"]["name"] = _find_value_near_label(soup, ["出荷営業所", "荷送人"])
-     payload["origin_office"]["phone"] = _find_value_near_label(soup, ["出荷営業所電話番号", "荷送人電話番号"])
-     payload["origin_office"]["fax"] = _find_value_near_label(soup, ["出荷営業所FAX", "荷送人FAX"])
-     payload["delivery_office"]["name"] = _find_value_near_label(soup, ["配達営業所", "お届け先"])
-     payload["delivery_office"]["phone"] = _find_value_near_label(soup, ["配達営業所電話番号", "お届け先電話番号"])
-     payload["delivery_office"]["fax"] = _find_value_near_label(soup, ["配達営業所FAX", "お届け先FAX"])
- 
-     for tr in soup.select("table tr"):
-         tds = tr.find_all("td")
-         if len(tds) < 2:
-             continue
-         values = [_text(td) for td in tds]
-         status = values[1] if len(values) > 1 else None
-         occurred = _parse_jp_datetime(values[0])
-         office = values[2] if len(values) > 2 else None
-         if not status:
-             continue
-         payload["history"].append(
-             {
-                 "status": status,
-                 "occurred_at": occurred,
-                 "office_name": office,
-                 "office_code": None,
-                 "postal_code": None,
-                 "prefecture": None,
-                 "detail": values[3] if len(values) > 3 else None,
-             }
-         )
- 
-     payload["history"] = [h for h in payload["history"] if h.get("status")]
-     if payload["history"]:
-         payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
-         payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
- 
-     current_status = payload.get("current_status") or ""
-     payload["completed"] = "配達完了" in current_status
-     return payload
+ def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
+     url = f"https://k2k.sagawa-exp.co.jp/p/web/okurijosearch.do?okurijoNo={tracking_number}"
+     return url, _http_get(url)
  
  
- def parse_yamato(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-+    if BeautifulSoup is None:
-+        raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
-     soup = BeautifulSoup(html, "html.parser")
-     payload = _base_payload("yamato", tracking_number, tracking_url)
- 
-     payload["service_name"] = _find_value_near_label(soup, ["商品名", "商品"])
-     payload["current_status"] = _find_value_near_label(soup, ["最新の輸送状況", "配達状況"])
-     payload["current_status_detail"] = _find_value_near_label(soup, ["お問い合わせ内容", "詳細"])
- 
-     scheduled_raw = _find_value_near_label(soup, ["お届け予定日時", "お届け予定"])
-     if scheduled_raw:
-         match = re.search(r"(\d{1,2}/\d{1,2})\s*[　 ]*([0-9:]{1,5}-[0-9:]{1,5}|午前中|14時-16時|16時-18時|18時-20時|19時-21時)", scheduled_raw)
-         if match:
-             payload["scheduled_delivery_date"] = _parse_jp_datetime(match.group(1))
-             payload["scheduled_delivery_time_slot"] = match.group(2)
-         else:
-             payload["scheduled_delivery_date"] = _parse_jp_datetime(scheduled_raw)
- 
-     for tr in soup.select("table tr"):
-         tds = tr.find_all("td")
-         if len(tds) < 2:
-             continue
-         values = [_text(td) for td in tds]
-         occurred = _parse_jp_datetime(values[0])
-         status = values[1] if len(values) > 1 else None
-         office_name = values[2] if len(values) > 2 else None
-         office_code = None
-@@ -187,50 +194,52 @@ def parse_yamato(html: str, tracking_number: str, tracking_url: str) -> dict[str
-                 office_name = re.sub(r"\(\d+\)", "", office_name).strip()
-         if not status:
-             continue
-         payload["history"].append(
-             {
-                 "status": status,
-                 "occurred_at": occurred,
-                 "office_name": office_name,
-                 "office_code": office_code,
-                 "postal_code": None,
-                 "prefecture": None,
-                 "detail": values[3] if len(values) > 3 else None,
-             }
-         )
- 
-     payload["history"] = [h for h in payload["history"] if h.get("status")]
-     if payload["history"]:
-         payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
-         payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
- 
-     payload["completed"] = (payload.get("current_status") or "") == "配達完了"
-     return payload
+ def _fetch_yamato(tracking_number: str) -> tuple[str, str]:
+-    url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
++    search_url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
+     headers = {"User-Agent": USER_AGENT}
++    search_params = {"number00": "1", "number01": tracking_number, "type": "1"}
+     response = requests.get(
+-        url,
+-        params={"number00": 1, "number01": tracking_number, "type": 1},
++        search_url,
++        params=search_params,
+         headers=headers,
+         timeout=REQUEST_TIMEOUT,
+     )
+     response.raise_for_status()
+     return response.url, response.text
  
  
- def parse_japanpost(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-+    if BeautifulSoup is None:
-+        raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
-     soup = BeautifulSoup(html, "html.parser")
-     payload = _base_payload("japanpost", tracking_number, tracking_url)
+ def _fetch_japanpost(tracking_number: str) -> tuple[str, str]:
+     url = (
+         "https://trackings.post.japanpost.jp/services/srv/search/direct"
+         f"?searchKind=S002&reqCodeNo1={tracking_number}&locale=jp"
+     )
+     return url, _http_get(url)
  
-     payload["service_name"] = _find_value_near_label(soup, ["商品種別", "取扱商品"]) or "ゆうパック"
-     payload["scheduled_delivery_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["お届け予定日", "配達予定日"]))
-     payload["scheduled_delivery_time_slot"] = _find_value_near_label(soup, ["お届け予定時間帯", "配達予定時間帯"])
-     payload["size"] = _find_value_near_label(soup, ["サイズ"])
-     payload["delivery_office"]["name"] = _find_value_near_label(soup, ["配達予定局", "配達郵便局"])
  
-     for tr in soup.select("table tr"):
-         tds = tr.find_all("td")
-         if len(tds) < 2:
-             continue
-         values = [_text(td) for td in tds]
-         occurred = _parse_jp_datetime(values[0])
-         status = values[1] if len(values) > 1 else None
-         office_name = values[2] if len(values) > 2 else None
-         postal = None
-         prefecture = None
-         if office_name:
-             postal_match = re.search(r"〒?\s*(\d{3}-?\d{4})", office_name)
-             if postal_match:
-                 postal = postal_match.group(1).replace("-", "")
-             pref_match = re.search(r"(北海道|東京都|(?:京都|大阪)府|.{2,3}県)", office_name)
-             if pref_match:
+ def fetch_and_parse(carrier_code: str, tracking_number: str) -> dict[str, Any]:
+     if carrier_code == "sagawa":
+         tracking_url, html = _fetch_sagawa(tracking_number)
+         return parse_sagawa(html, tracking_number, tracking_url)
+     if carrier_code == "yamato":
+         tracking_url, html = _fetch_yamato(tracking_number)
+         return parse_yamato(html, tracking_number, tracking_url)
+     if carrier_code == "japanpost":
+         tracking_url, html = _fetch_japanpost(tracking_number)
+         return parse_japanpost(html, tracking_number, tracking_url)
+diff --git a/shipment_tracking/template/admin/shipment_tracking/list.html b/shipment_tracking/template/admin/shipment_tracking/list.html
+index c14a7eefaa6ab0e1a45d03ada75472530acc417d..f3b141ed2468e2f18901df7cf4e8fd65e0bd71b8 100644
+--- a/shipment_tracking/template/admin/shipment_tracking/list.html
++++ b/shipment_tracking/template/admin/shipment_tracking/list.html
+@@ -1,61 +1,80 @@
+ {% extends "base.html" %}
+ 
+ {% block title %}配送追跡一覧{% endblock %}
+ 
+ {% block content %}
++<style>
++  .shipment-status-main {
++    white-space: normal;
++    word-break: break-word;
++  }
++
++  .shipment-status-detail {
++    font-size: 0.875em;
++    color: #6c757d;
++    margin-top: 0.2rem;
++    white-space: normal;
++    word-break: break-word;
++  }
++</style>
+ <div class="d-flex justify-content-between align-items-center mb-3">
+   <h1 class="h4 mb-0">配送追跡一覧</h1>
+   <a href="{{ url_for('shipment_tracking.shipment_tracking_new') }}" class="btn btn-primary btn-sm">新規登録</a>
+ </div>
+ 
+ {% with messages = get_flashed_messages(with_categories=true) %}
+   {% if messages %}
+     {% for category, message in messages %}
+       <div class="alert alert-{{ 'danger' if category == 'error' else category }}">{{ message }}</div>
+     {% endfor %}
+   {% endif %}
+ {% endwith %}
+ 
+ <div class="table-responsive">
+   <table class="table table-bordered align-middle table-sm">
+     <thead class="table-light">
+       <tr>
+         <th>ID</th>
+         <th>ラベル</th>
+         <th>業者</th>
+         <th>配達番号</th>
+         <th>最新状態</th>
+         <th>最新イベント日時</th>
+         <th>最終確認日時</th>
+         <th>有効/無効</th>
+         <th>操作</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for target in targets %}
+         <tr>
+           <td>{{ target.id }}</td>
+           <td>{{ target.label or '-' }}</td>
+           <td>{{ carrier_master.get(target.carrier_code, target.carrier_code) }}</td>
+           <td>{{ target.tracking_number }}</td>
+-          <td>{{ target.last_current_status or '-' }}</td>
++          <td>
++            <div class="shipment-status-main">{{ target.last_current_status or '-' }}</div>
++            {% if target.last_current_status_detail %}
++              <div class="shipment-status-detail">{{ target.last_current_status_detail }}</div>
++            {% endif %}
++          </td>
+           <td>{{ target.last_latest_event_at or '-' }}</td>
+           <td>{{ target.last_checked_at or '-' }}</td>
+           <td>{{ '有効' if target.is_active else '無効' }}</td>
+           <td class="text-nowrap">
+             <a href="{{ url_for('shipment_tracking.shipment_tracking_detail', id=target.id) }}" class="btn btn-outline-secondary btn-sm">詳細</a>
+             <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_check_now', id=target.id) }}" class="d-inline">
+               <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+               <button type="submit" class="btn btn-outline-primary btn-sm">最新情報の確認</button>
+             </form>
+           </td>
+         </tr>
+       {% else %}
+         <tr>
+           <td colspan="9" class="text-center text-muted">登録がありません</td>
+         </tr>
+       {% endfor %}
+     </tbody>
+   </table>
+ </div>
+ {% endblock %}
