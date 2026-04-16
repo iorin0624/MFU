@@ -439,55 +439,43 @@ def invoice_mail(invoice_id: int):
         bcc_email = (request.form.get("bcc_email") or "").strip()
         subject = (request.form.get("subject") or "").strip()
         body = request.form.get("body") or ""
-        final_body = body
         if not to_email:
             flash("宛先メールアドレスを入力してください。", "warning")
             form_data = dict(request.form)
-            form_data["body"] = final_body
+            form_data["body"] = body
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         if request.form.get("confirm_send") != "yes":
             flash("送信前確認にチェックを入れてください。", "warning")
             form_data = dict(request.form)
-            form_data["body"] = final_body
+            form_data["body"] = body
             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         payout_access_url = None
         if invoice.get("bank_info_mode") == BANK_INFO_MODE_PAYOUT_LINK:
             try:
                 payout_access = issue_payout_access_token_for_invoice(invoice)
                 payout_access_url = payout_access.get("access_url") or ""
-                final_body = build_invoice_mail_body_with_payment_guidance(
-                    invoice=invoice,
-                    body=final_body,
-                    payout_access_url=payout_access_url,
-                )
                 save_invoice_payout_token(invoice_id, payout_access.get("id"))
             except Exception as exc:
                 flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
                 form_data = dict(request.form)
-                form_data["body"] = final_body
+                form_data["body"] = body
                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
         card_url = None
         if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
             try:
                 card_token = ensure_invoice_card_payment_token(invoice_id)
                 card_url = build_invoice_card_payment_url(card_token)
-                final_body = build_invoice_mail_body_with_payment_guidance(
-                    invoice=invoice,
-                    body=final_body,
-                    payout_access_url=payout_access_url,
-                    card_payment_url=card_url,
-                )
-                if card_url not in final_body:
-                    final_body = build_invoice_mail_body_with_payment_guidance(
-                        invoice=invoice,
-                        body=final_body,
-                        card_payment_url=card_url,
-                    )
             except Exception as exc:
                 flash(f"カード決済URLの発行に失敗したためメール送信を中止しました。{exc}", "danger")
                 form_data = dict(request.form)
-                form_data["body"] = final_body
+                form_data["body"] = body
                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
+        final_body = build_invoice_mail_body_with_payment_guidance(
+            invoice=invoice,
+            body=body,
+            payout_access_url=payout_access_url,
+            card_payment_url=card_url,
+        )
         try:
             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
             send_invoice_mail(
