@@ -284,6 +284,15 @@ def _sanitize_return_url(url: str | None) -> str | None:
         return None
     return value if _is_allowed_return_url(value) else None
 
+
+def _mask_payment_token(token: str | None, *, show: int = 4) -> str:
+    if not token:
+        return "(none)"
+    token = str(token)
+    if len(token) <= show:
+        return "*" * len(token)
+    return f"***{token[-show:]}"
+
 # ───────────────────────────────────────────────────────────
 # Square 顧客ヘルパ
 # ───────────────────────────────────────────────────────────
@@ -1253,6 +1262,18 @@ def pay_form(event_uuid: str):
         if qs_return_url_sanitized:
             return_url = qs_return_url_sanitized
 
+    try:
+        pay_ctx = session.get("pay_ctx") or {}
+        if not isinstance(pay_ctx, dict):
+            pay_ctx = {}
+        merged_pay_ctx = dict(pay_ctx)
+        if return_url:
+            merged_pay_ctx["return_url"] = return_url
+        merged_pay_ctx["payment_uuid"] = event_uuid
+        session["pay_ctx"] = merged_pay_ctx
+    except Exception:
+        logging.exception("write pay_ctx failed on pay_form")
+
     # クエリがあれば上書き
     qs_n = (request.args.get("nickname") or "").strip()
     qs_x = _sanitize_handle(request.args.get("x_id"))
@@ -1358,25 +1379,40 @@ def pay_thanks(event_uuid: str):
     # 外部ログインへの自動戻り（セッションにreturn_urlがある場合）
     try:
         ctx = session.get("pay_ctx") or {}
-        ret = _sanitize_return_url(ctx.get("return_url"))
-        if (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")) and ret:
-            payment_token = _resolve_payment_token(event_uuid)
-            ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED","APPROVED","COMPLETED"))
-            payment_row_id = None
-            if payment:
-                try:
-                    if isinstance(payment, dict):
-                        raw_payment_row_id = payment.get("id") or payment.get("payment_row_id")
-                    elif isinstance(payment, (tuple, list)):
-                        raw_payment_row_id = payment[0] if payment else None
-                    else:
-                        raw_payment_row_id = getattr(payment, "id", None)
-                    if raw_payment_row_id is not None and str(raw_payment_row_id).strip() != "":
-                        parsed_payment_row_id = int(raw_payment_row_id)
-                        if parsed_payment_row_id > 0:
-                            payment_row_id = parsed_payment_row_id
-                except Exception:
-                    payment_row_id = None
+        has_ctx = bool(ctx)
+        ret = _sanitize_return_url(ctx.get("return_url")) if has_ctx else None
+        ctx_payment_uuid = ctx.get("payment_uuid") if has_ctx else None
+        ctx_mfu_event_uuid = ctx.get("mfu_event_uuid") if has_ctx else None
+        payment_token = _resolve_payment_token(event_uuid)
+        ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED", "APPROVED", "COMPLETED"))
+        payment_row_id = None
+        if payment:
+            try:
+                if isinstance(payment, dict):
+                    raw_payment_row_id = payment.get("id") or payment.get("payment_row_id")
+                elif isinstance(payment, (tuple, list)):
+                    raw_payment_row_id = payment[0] if payment else None
+                else:
+                    raw_payment_row_id = getattr(payment, "id", None)
+                if raw_payment_row_id is not None and str(raw_payment_row_id).strip() != "":
+                    parsed_payment_row_id = int(raw_payment_row_id)
+                    if parsed_payment_row_id > 0:
+                        payment_row_id = parsed_payment_row_id
+            except Exception:
+                payment_row_id = None
+        will_redirect = bool((ctx_payment_uuid == event_uuid or ctx_mfu_event_uuid) and ret)
+        logging.info(
+            "payment thanks redirect decision event_uuid=%s has_ctx=%s ctx_return_url=%s ctx_payment_uuid=%s ctx_mfu_event_uuid=%s payment_token=%s payment_row_id=%s will_redirect=%s",
+            event_uuid,
+            has_ctx,
+            ret,
+            ctx_payment_uuid,
+            ctx_mfu_event_uuid,
+            _mask_payment_token(payment_token),
+            payment_row_id,
+            will_redirect,
+        )
+        if will_redirect:
             q = {
                 "status": "ok" if ok else "ng",
                 "payment_id": pid or "",
@@ -1393,7 +1429,7 @@ def pay_thanks(event_uuid: str):
                 "payment thanks redirect event_uuid=%s payment_id=%s payment_token=%s payment_row_id=%s return_url=%s",
                 event_uuid,
                 pid,
-                payment_token,
+                _mask_payment_token(payment_token),
                 payment_row_id,
                 u.path or new_url,
             )
