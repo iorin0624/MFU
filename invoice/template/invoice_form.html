@@ -4,10 +4,21 @@
 <style>
   .invoice-sticky-summary { position: sticky; top: 1rem; }
   .invoice-item-table input, .invoice-item-table select { min-width: 90px; }
+  .invoice-item-row-main td { padding-top: .75rem; padding-bottom: .45rem; border-bottom: 0; }
+  .invoice-item-subrow td { padding-top: .35rem; padding-bottom: .75rem; }
+  .invoice-item-name-wrap { display: flex; flex-direction: column; gap: .35rem; }
+  .invoice-subfields { display: grid; grid-template-columns: repeat(5, minmax(110px, 1fr)); gap: .5rem; }
+  .invoice-subfield { display: flex; flex-direction: column; gap: .25rem; }
+  .invoice-subfield-label { font-size: .75rem; color: #6c757d; line-height: 1.2; }
   .invoice-row-actions { display: flex; flex-direction: column; gap: .35rem; }
   .invoice-row-actions .btn { white-space: nowrap; }
+  .invoice-item-table .item-name-input { width: 100%; }
+  .invoice-item-subrow .item-line-total { text-align: right; font-weight: 600; min-width: 90px; display: inline-block; }
   .invoice-item-row.memo-row td { background: #fcfcfc; }
   .invoice-memo-label { font-size: .875rem; color: #6c757d; }
+  @media (max-width: 767.98px) {
+    .invoice-subfields { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  }
 </style>
 {% endblock %}
 {% block content %}
@@ -112,14 +123,14 @@
         </div>
         <div class="table-responsive">
           <table class="table align-middle invoice-item-table" id="itemTable">
-            <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th>単価</th><th>税区分</th><th>金額</th><th></th></tr></thead>
+            <thead><tr><th>明細</th><th class="text-center" style="width: 1%;">操作</th></tr></thead>
             <tbody>
               {% for item in form_data["items"] %}
               {% set row_type = item.row_type or 'normal' %}
-              <tr class="invoice-item-row{% if row_type == 'memo' %} memo-row{% endif %}" data-row-type="{{ row_type }}">
+              {% if row_type == 'memo' %}
+              <tr class="invoice-item-row memo-row" data-row-type="memo">
                 <td>
-                  <input type="hidden" name="row_type[]" value="{{ row_type }}" class="row-type-input">
-                  {% if row_type == 'memo' %}
+                  <input type="hidden" name="row_type[]" value="memo" class="row-type-input">
                   <input type="hidden" name="item_name[]" value="{{ item.item_name or '' }}" class="item-name-input">
                   <input type="hidden" name="quantity[]" value="{{ item.quantity or '' }}" class="item-quantity-input">
                   <input type="hidden" name="unit_name[]" value="{{ item.unit_name or '' }}" class="item-unit-input">
@@ -127,44 +138,7 @@
                   <input type="hidden" name="tax_category[]" value="{{ item.tax_category or default_tax_category }}" class="item-tax-category-input">
                   <div class="invoice-memo-label mb-1">メモ</div>
                   <input class="form-control memo-text-input" name="memo_text[]" value="{{ item.memo_text or item.item_name or '' }}" placeholder="メモを入力してください">
-                  {% else %}
-                  <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
-                  <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
-                  {% endif %}
                 </td>
-                <td>
-                  {% if row_type == 'memo' %}
-                  <span class="text-muted">—</span>
-                  {% else %}
-                  <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
-                  {% endif %}
-                </td>
-                <td>
-                  {% if row_type == 'memo' %}
-                  <span class="text-muted">—</span>
-                  {% else %}
-                  <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
-                  {% endif %}
-                </td>
-                <td>
-                  {% if row_type == 'memo' %}
-                  <span class="text-muted">—</span>
-                  {% else %}
-                  <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
-                  {% endif %}
-                </td>
-                <td>
-                  {% if row_type == 'memo' %}
-                  <span class="text-muted">—</span>
-                  {% else %}
-                  <select class="form-select item-tax-category-input" name="tax_category[]">
-                    {% for value, label in tax_category_labels.items() %}
-                    <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
-                    {% endfor %}
-                  </select>
-                  {% endif %}
-                </td>
-                <td class="item-line-total text-end">¥0</td>
                 <td>
                   <div class="invoice-row-actions">
                     <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
@@ -173,6 +147,55 @@
                   </div>
                 </td>
               </tr>
+              {% else %}
+              <tr class="invoice-item-row invoice-item-row-main" data-row-type="normal">
+                <td>
+                  <div class="invoice-item-name-wrap">
+                    <div class="invoice-memo-label">品目 / メモ</div>
+                    <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
+                    <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
+                    <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
+                  </div>
+                </td>
+                <td rowspan="2" class="align-top">
+                  <div class="invoice-row-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+                    <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+                  </div>
+                </td>
+              </tr>
+              <tr class="invoice-item-subrow">
+                <td>
+                  <div class="invoice-subfields">
+                    <div class="invoice-subfield">
+                      <label class="invoice-subfield-label">数量</label>
+                      <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
+                    </div>
+                    <div class="invoice-subfield">
+                      <label class="invoice-subfield-label">単位</label>
+                      <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
+                    </div>
+                    <div class="invoice-subfield">
+                      <label class="invoice-subfield-label">単価</label>
+                      <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
+                    </div>
+                    <div class="invoice-subfield">
+                      <label class="invoice-subfield-label">税区分</label>
+                      <select class="form-select item-tax-category-input" name="tax_category[]">
+                        {% for value, label in tax_category_labels.items() %}
+                        <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                      </select>
+                    </div>
+                    <div class="invoice-subfield">
+                      <label class="invoice-subfield-label">金額</label>
+                      <div class="item-line-total text-end">¥0</div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+              {% endif %}
               {% endfor %}
             </tbody>
           </table>
@@ -198,28 +221,50 @@
   </div>
 </form>
 <template id="normalRowTemplate">
-  <tr class="invoice-item-row" data-row-type="normal">
+  <tr class="invoice-item-row invoice-item-row-main" data-row-type="normal">
     <td>
-      <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
-      <input class="form-control item-name-input" name="item_name[]" required>
-      <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
+      <div class="invoice-item-name-wrap">
+        <div class="invoice-memo-label">品目 / メモ</div>
+        <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
+        <input class="form-control item-name-input" name="item_name[]" required>
+        <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
+      </div>
     </td>
-    <td><input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required></td>
-    <td><input class="form-control item-unit-input" name="unit_name[]" value="式"></td>
-    <td><input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></td>
-    <td>
-      <select class="form-select item-tax-category-input" name="tax_category[]">
-        {% for value, label in tax_category_labels.items() %}
-        <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-      </select>
-    </td>
-    <td class="item-line-total text-end">¥0</td>
-    <td>
+    <td rowspan="2" class="align-top">
       <div class="invoice-row-actions">
         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+      </div>
+    </td>
+  </tr>
+  <tr class="invoice-item-subrow">
+    <td>
+      <div class="invoice-subfields">
+        <div class="invoice-subfield">
+          <label class="invoice-subfield-label">数量</label>
+          <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required>
+        </div>
+        <div class="invoice-subfield">
+          <label class="invoice-subfield-label">単位</label>
+          <input class="form-control item-unit-input" name="unit_name[]" value="式">
+        </div>
+        <div class="invoice-subfield">
+          <label class="invoice-subfield-label">単価</label>
+          <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required>
+        </div>
+        <div class="invoice-subfield">
+          <label class="invoice-subfield-label">税区分</label>
+          <select class="form-select item-tax-category-input" name="tax_category[]">
+            {% for value, label in tax_category_labels.items() %}
+            <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="invoice-subfield">
+          <label class="invoice-subfield-label">金額</label>
+          <div class="item-line-total text-end">¥0</div>
+        </div>
       </div>
     </td>
   </tr>
@@ -236,11 +281,6 @@
       <div class="invoice-memo-label mb-1">メモ</div>
       <input class="form-control memo-text-input" name="memo_text[]" placeholder="メモを入力してください">
     </td>
-    <td><span class="text-muted">—</span></td>
-    <td><span class="text-muted">—</span></td>
-    <td><span class="text-muted">—</span></td>
-    <td><span class="text-muted">—</span></td>
-    <td class="item-line-total text-end">—</td>
     <td>
       <div class="invoice-row-actions">
         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
@@ -287,24 +327,37 @@
     return { subtotal: amount, tax: 0, total: amount };
   };
 
+  const isMainRow = (row) => row?.classList.contains('invoice-item-row-main');
+  const isMemoRow = (row) => (row?.dataset.rowType || '') === 'memo';
+  const getNextSubrow = (mainRow) => {
+    const next = mainRow?.nextElementSibling;
+    return next?.classList.contains('invoice-item-subrow') ? next : null;
+  };
+  const getMainRow = (row) => (isMainRow(row) ? row : row?.previousElementSibling && isMainRow(row.previousElementSibling) ? row.previousElementSibling : row);
+  const getRowBundle = (row) => {
+    if (!row) return [];
+    if (isMemoRow(row)) return [row];
+    const mainRow = getMainRow(row);
+    if (!isMainRow(mainRow)) return [row];
+    const subrow = getNextSubrow(mainRow);
+    return subrow ? [mainRow, subrow] : [mainRow];
+  };
+
   const recalc = () => {
     let subtotal = 0;
     let tax10 = 0;
     let tax8 = 0;
     let total = 0;
 
-    tableBody.querySelectorAll('tr.invoice-item-row').forEach((row) => {
-      const rowType = row.dataset.rowType || 'normal';
-      const lineCell = row.querySelector('.item-line-total');
-      if (rowType === 'memo') {
-        if (lineCell) lineCell.textContent = '—';
-        return;
-      }
-
-      const qty = parseFloat(row.querySelector('.item-quantity-input')?.value || '0');
-      const price = parseFloat(row.querySelector('.item-price-input')?.value || '0');
+    tableBody.querySelectorAll('tr.invoice-item-row-main').forEach((mainRow) => {
+      if ((mainRow.dataset.rowType || 'normal') !== 'normal') return;
+      const subrow = getNextSubrow(mainRow);
+      if (!subrow) return;
+      const lineCell = subrow.querySelector('.item-line-total');
+      const qty = parseFloat(subrow.querySelector('.item-quantity-input')?.value || '0');
+      const price = parseFloat(subrow.querySelector('.item-price-input')?.value || '0');
       const baseAmount = Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
-      const taxCategory = row.querySelector('.item-tax-category-input')?.value || 'tax10';
+      const taxCategory = subrow.querySelector('.item-tax-category-input')?.value || 'tax10';
       const lineAmounts = calculateLineAmounts(baseAmount, taxMode.value, taxCategory);
       subtotal += lineAmounts.subtotal;
       total += lineAmounts.total;
@@ -325,25 +378,30 @@
   };
 
   const appendRow = (template, initialValues = {}) => {
-    const row = template.content.firstElementChild.cloneNode(true);
-    if ((row.dataset.rowType || 'normal') === 'normal') {
+    if (template.id === 'normalRowTemplate') {
+      const fragment = template.content.cloneNode(true);
+      const mainRow = fragment.querySelector('tr.invoice-item-row-main');
+      const subrow = fragment.querySelector('tr.invoice-item-subrow');
       if (initialValues.item_name !== undefined) {
-        row.querySelector('.item-name-input').value = initialValues.item_name;
+        mainRow.querySelector('.item-name-input').value = initialValues.item_name;
       }
       if (initialValues.quantity !== undefined) {
-        row.querySelector('.item-quantity-input').value = initialValues.quantity;
+        subrow.querySelector('.item-quantity-input').value = initialValues.quantity;
       }
       if (initialValues.unit_name !== undefined) {
-        row.querySelector('.item-unit-input').value = initialValues.unit_name;
+        subrow.querySelector('.item-unit-input').value = initialValues.unit_name;
       }
       if (initialValues.unit_price_yen !== undefined) {
-        row.querySelector('.item-price-input').value = initialValues.unit_price_yen;
+        subrow.querySelector('.item-price-input').value = initialValues.unit_price_yen;
       }
       if (initialValues.tax_category !== undefined) {
-        row.querySelector('.item-tax-category-input').value = initialValues.tax_category;
+        subrow.querySelector('.item-tax-category-input').value = initialValues.tax_category;
       }
+      tableBody.appendChild(fragment);
+    } else {
+      const row = template.content.firstElementChild.cloneNode(true);
+      tableBody.appendChild(row);
     }
-    tableBody.appendChild(row);
     recalc();
   };
 
@@ -380,25 +438,34 @@
   tableBody.addEventListener('click', (event) => {
     const button = event.target.closest('button');
     if (!button) return;
-    const row = button.closest('tr.invoice-item-row');
+    const row = button.closest('tr');
     if (!row) return;
+    const bundle = getRowBundle(row);
+    const mainRow = bundle[0];
+    if (!mainRow) return;
 
     if (button.classList.contains('item-remove')) {
-      row.remove();
+      bundle.forEach((targetRow) => targetRow.remove());
       recalc();
       return;
     }
 
     if (button.classList.contains('move-up')) {
-      const prev = row.previousElementSibling;
-      if (prev) tableBody.insertBefore(row, prev);
+      const prev = mainRow.previousElementSibling;
+      if (!prev) return;
+      const anchor = isMainRow(prev) ? prev : (prev.classList.contains('invoice-item-subrow') && isMainRow(prev.previousElementSibling) ? prev.previousElementSibling : prev);
+      bundle.forEach((targetRow) => tableBody.insertBefore(targetRow, anchor));
       recalc();
       return;
     }
 
     if (button.classList.contains('move-down')) {
-      const next = row.nextElementSibling;
-      if (next) tableBody.insertBefore(next, row);
+      const lastRow = bundle[bundle.length - 1];
+      const after = lastRow.nextElementSibling;
+      if (!after) return;
+      const nextBundle = getRowBundle(after);
+      const anchor = nextBundle[nextBundle.length - 1].nextElementSibling;
+      bundle.forEach((targetRow) => tableBody.insertBefore(targetRow, anchor));
       recalc();
     }
   });

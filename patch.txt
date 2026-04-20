@@ -1,175 +1,512 @@
-diff --git a/invoice/routes.py b/invoice/routes.py
-index 4cbe3395e566cb99b3c30a13cfbd8cf6e59729e0..35ae04a4fc4748b449ce33e7a1fbe453d56dfd2f 100644
---- a/invoice/routes.py
-+++ b/invoice/routes.py
-@@ -429,63 +429,69 @@ def invoice_mail(invoice_id: int):
-     initial = {
-         "to_email": invoice.get("contact_email_snapshot") or "",
-         "cc_email": effective_issuer_email,
-         "bcc_email": "",
-         "subject": build_mail_subject(invoice.get("subject")),
-         "body": build_default_invoice_mail_body(mail_context),
+diff --git a/invoice/template/invoice_form.html b/invoice/template/invoice_form.html
+index ff2adf8b58d6a2e94327a95d18a2666707571230..d2f44fbbd435e7e13bb498fdafcc756b527e0456 100644
+--- a/invoice/template/invoice_form.html
++++ b/invoice/template/invoice_form.html
+@@ -1,35 +1,46 @@
+ {% extends "base.html" %}
+ {% block title %}請求書{{ '編集' if mode == 'edit' else '新規作成' }}{% endblock %}
+ {% block head_extra %}
+ <style>
+   .invoice-sticky-summary { position: sticky; top: 1rem; }
+   .invoice-item-table input, .invoice-item-table select { min-width: 90px; }
++  .invoice-item-row-main td { padding-top: .75rem; padding-bottom: .45rem; border-bottom: 0; }
++  .invoice-item-subrow td { padding-top: .35rem; padding-bottom: .75rem; }
++  .invoice-item-name-wrap { display: flex; flex-direction: column; gap: .35rem; }
++  .invoice-subfields { display: grid; grid-template-columns: repeat(5, minmax(110px, 1fr)); gap: .5rem; }
++  .invoice-subfield { display: flex; flex-direction: column; gap: .25rem; }
++  .invoice-subfield-label { font-size: .75rem; color: #6c757d; line-height: 1.2; }
+   .invoice-row-actions { display: flex; flex-direction: column; gap: .35rem; }
+   .invoice-row-actions .btn { white-space: nowrap; }
++  .invoice-item-table .item-name-input { width: 100%; }
++  .invoice-item-subrow .item-line-total { text-align: right; font-weight: 600; min-width: 90px; display: inline-block; }
+   .invoice-item-row.memo-row td { background: #fcfcfc; }
+   .invoice-memo-label { font-size: .875rem; color: #6c757d; }
++  @media (max-width: 767.98px) {
++    .invoice-subfields { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
++  }
+ </style>
+ {% endblock %}
+ {% block content %}
+ <h1 class="mb-3">請求書{{ '編集' if mode == 'edit' else '新規作成' }}</h1>
+ <form method="post" id="invoiceForm">
+   <div class="row g-3">
+     <div class="col-lg-8">
+       <div class="card shadow-sm mb-3"><div class="card-body">
+         <h2 class="h5">基本情報</h2>
+         <div class="row g-3">
+           <div class="col-md-6">
+             <label class="form-label">請求先 *</label>
+             <select class="form-select" name="contact_id" required>
+               <option value="">選択してください</option>
+               {% for contact in contacts %}
+               <option value="{{ contact.id }}" {% if (form_data.contact_id|string) == (contact.id|string) %}selected{% endif %} data-due-days="{{ contact.default_due_days or 30 }}">{{ contact.name }}{% if contact.contact_name %} / {{ contact.contact_name }}{% endif %}</option>
+               {% endfor %}
+             </select>
+           </div>
+           <div class="col-md-3"><label class="form-label">請求日 *</label><input class="form-control" type="date" name="issue_date" value="{{ form_data.issue_date }}" required></div>
+           <div class="col-md-3"><label class="form-label">支払期限 *</label><input class="form-control" type="date" name="due_date" value="{{ form_data.due_date }}" required></div>
+           <div class="col-md-8"><label class="form-label">件名 *</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}" required></div>
+           <div class="col-md-4"><label class="form-label">税モード</label><select class="form-select" name="tax_mode" id="taxMode">{% for value, label in tax_mode_labels.items() %}<option value="{{ value }}" {% if form_data.tax_mode == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+           <div class="col-12">
+             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+@@ -90,320 +101,376 @@
+             <dd class="col-sm-8 mb-0 fw-semibold">{{ fuel_cost_helper.yen_per_km }} 円/km</dd>
+           </dl>
+           <button
+             type="button"
+             class="btn btn-sm btn-outline-primary"
+             id="addFuelCostRow"
+             data-item-name="{{ fuel_cost_helper.item_name }}"
+             data-quantity="{{ fuel_cost_helper.quantity }}"
+             data-unit-name="{{ fuel_cost_helper.unit_name }}"
+             data-unit-price-yen="{{ fuel_cost_helper.yen_per_km }}"
+             data-tax-category="{{ fuel_cost_helper.tax_category }}"
+           >この値で明細追加</button>
+           {% else %}
+           <p class="text-muted mb-0">{{ (fuel_cost_helper and fuel_cost_helper.message) or '最新の燃費記録から単価を計算できません' }}</p>
+           {% endif %}
+         </div>
+         <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
+           <h2 class="h5 mb-0">明細</h2>
+           <div class="d-flex gap-2 flex-wrap">
+             <button type="button" class="btn btn-sm btn-outline-secondary" id="addItemRow">明細行を追加</button>
+             <button type="button" class="btn btn-sm btn-outline-secondary" id="addMemoRow">メモ行を追加</button>
+           </div>
+         </div>
+         <div class="table-responsive">
+           <table class="table align-middle invoice-item-table" id="itemTable">
+-            <thead><tr><th>品目 / メモ</th><th>数量</th><th>単位</th><th>単価</th><th>税区分</th><th>金額</th><th></th></tr></thead>
++            <thead><tr><th>明細</th><th class="text-center" style="width: 1%;">操作</th></tr></thead>
+             <tbody>
+               {% for item in form_data["items"] %}
+               {% set row_type = item.row_type or 'normal' %}
+-              <tr class="invoice-item-row{% if row_type == 'memo' %} memo-row{% endif %}" data-row-type="{{ row_type }}">
++              {% if row_type == 'memo' %}
++              <tr class="invoice-item-row memo-row" data-row-type="memo">
+                 <td>
+-                  <input type="hidden" name="row_type[]" value="{{ row_type }}" class="row-type-input">
+-                  {% if row_type == 'memo' %}
++                  <input type="hidden" name="row_type[]" value="memo" class="row-type-input">
+                   <input type="hidden" name="item_name[]" value="{{ item.item_name or '' }}" class="item-name-input">
+                   <input type="hidden" name="quantity[]" value="{{ item.quantity or '' }}" class="item-quantity-input">
+                   <input type="hidden" name="unit_name[]" value="{{ item.unit_name or '' }}" class="item-unit-input">
+                   <input type="hidden" name="unit_price_yen[]" value="{{ item.unit_price_yen or '' }}" class="item-price-input">
+                   <input type="hidden" name="tax_category[]" value="{{ item.tax_category or default_tax_category }}" class="item-tax-category-input">
+                   <div class="invoice-memo-label mb-1">メモ</div>
+                   <input class="form-control memo-text-input" name="memo_text[]" value="{{ item.memo_text or item.item_name or '' }}" placeholder="メモを入力してください">
+-                  {% else %}
+-                  <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
+-                  <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
+-                  {% endif %}
+                 </td>
+                 <td>
+-                  {% if row_type == 'memo' %}
+-                  <span class="text-muted">—</span>
+-                  {% else %}
+-                  <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
+-                  {% endif %}
+-                </td>
+-                <td>
+-                  {% if row_type == 'memo' %}
+-                  <span class="text-muted">—</span>
+-                  {% else %}
+-                  <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
+-                  {% endif %}
+-                </td>
+-                <td>
+-                  {% if row_type == 'memo' %}
+-                  <span class="text-muted">—</span>
+-                  {% else %}
+-                  <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
+-                  {% endif %}
++                  <div class="invoice-row-actions">
++                    <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
++                    <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
++                    <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
++                  </div>
+                 </td>
++              </tr>
++              {% else %}
++              <tr class="invoice-item-row invoice-item-row-main" data-row-type="normal">
+                 <td>
+-                  {% if row_type == 'memo' %}
+-                  <span class="text-muted">—</span>
+-                  {% else %}
+-                  <select class="form-select item-tax-category-input" name="tax_category[]">
+-                    {% for value, label in tax_category_labels.items() %}
+-                    <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
+-                    {% endfor %}
+-                  </select>
+-                  {% endif %}
++                  <div class="invoice-item-name-wrap">
++                    <div class="invoice-memo-label">品目 / メモ</div>
++                    <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
++                    <input class="form-control item-name-input" name="item_name[]" value="{{ item.item_name or '' }}" required>
++                    <input type="hidden" name="memo_text[]" value="{{ item.memo_text or '' }}" class="memo-text-input">
++                  </div>
+                 </td>
+-                <td class="item-line-total text-end">¥0</td>
+-                <td>
++                <td rowspan="2" class="align-top">
+                   <div class="invoice-row-actions">
+                     <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+                     <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+                     <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+                   </div>
+                 </td>
+               </tr>
++              <tr class="invoice-item-subrow">
++                <td>
++                  <div class="invoice-subfields">
++                    <div class="invoice-subfield">
++                      <label class="invoice-subfield-label">数量</label>
++                      <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="{{ item.quantity or '1.00' }}" required>
++                    </div>
++                    <div class="invoice-subfield">
++                      <label class="invoice-subfield-label">単位</label>
++                      <input class="form-control item-unit-input" name="unit_name[]" value="{{ item.unit_name or '式' }}">
++                    </div>
++                    <div class="invoice-subfield">
++                      <label class="invoice-subfield-label">単価</label>
++                      <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="{{ item.unit_price_yen or 0 }}" required>
++                    </div>
++                    <div class="invoice-subfield">
++                      <label class="invoice-subfield-label">税区分</label>
++                      <select class="form-select item-tax-category-input" name="tax_category[]">
++                        {% for value, label in tax_category_labels.items() %}
++                        <option value="{{ value }}" {% if (item.tax_category or default_tax_category) == value %}selected{% endif %}>{{ label }}</option>
++                        {% endfor %}
++                      </select>
++                    </div>
++                    <div class="invoice-subfield">
++                      <label class="invoice-subfield-label">金額</label>
++                      <div class="item-line-total text-end">¥0</div>
++                    </div>
++                  </div>
++                </td>
++              </tr>
++              {% endif %}
+               {% endfor %}
+             </tbody>
+           </table>
+         </div>
+       </div></div>
+     </div>
+     <div class="col-lg-4">
+       <div class="card shadow-sm invoice-sticky-summary"><div class="card-body">
+         <h2 class="h5">集計</h2>
+         <dl class="row mb-0">
+           <dt class="col-6">小計</dt><dd class="col-6 text-end" id="subtotalText">¥0</dd>
+           <dt class="col-6">消費税10%</dt><dd class="col-6 text-end" id="tax10Text">¥0</dd>
+           <dt class="col-6">消費税8%</dt><dd class="col-6 text-end" id="tax8Text">¥0</dd>
+           <dt class="col-6">消費税合計</dt><dd class="col-6 text-end" id="taxText">¥0</dd>
+           <dt class="col-6">合計</dt><dd class="col-6 text-end fw-bold" id="totalText">¥0</dd>
+         </dl>
+         <div class="mt-3 d-grid gap-2">
+           <button class="btn btn-primary" type="submit">保存</button>
+           <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">一覧へ戻る</a>
+         </div>
+       </div></div>
+     </div>
+   </div>
+ </form>
+ <template id="normalRowTemplate">
+-  <tr class="invoice-item-row" data-row-type="normal">
+-    <td>
+-      <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
+-      <input class="form-control item-name-input" name="item_name[]" required>
+-      <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
+-    </td>
+-    <td><input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required></td>
+-    <td><input class="form-control item-unit-input" name="unit_name[]" value="式"></td>
+-    <td><input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required></td>
++  <tr class="invoice-item-row invoice-item-row-main" data-row-type="normal">
+     <td>
+-      <select class="form-select item-tax-category-input" name="tax_category[]">
+-        {% for value, label in tax_category_labels.items() %}
+-        <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
+-        {% endfor %}
+-      </select>
++      <div class="invoice-item-name-wrap">
++        <div class="invoice-memo-label">品目 / メモ</div>
++        <input type="hidden" name="row_type[]" value="normal" class="row-type-input">
++        <input class="form-control item-name-input" name="item_name[]" required>
++        <input type="hidden" name="memo_text[]" value="" class="memo-text-input">
++      </div>
+     </td>
+-    <td class="item-line-total text-end">¥0</td>
+-    <td>
++    <td rowspan="2" class="align-top">
+       <div class="invoice-row-actions">
+         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+       </div>
+     </td>
+   </tr>
++  <tr class="invoice-item-subrow">
++    <td>
++      <div class="invoice-subfields">
++        <div class="invoice-subfield">
++          <label class="invoice-subfield-label">数量</label>
++          <input class="form-control item-quantity item-quantity-input" type="number" step="0.01" min="0" name="quantity[]" value="1.00" required>
++        </div>
++        <div class="invoice-subfield">
++          <label class="invoice-subfield-label">単位</label>
++          <input class="form-control item-unit-input" name="unit_name[]" value="式">
++        </div>
++        <div class="invoice-subfield">
++          <label class="invoice-subfield-label">単価</label>
++          <input class="form-control item-price item-price-input" type="number" step="1" min="0" name="unit_price_yen[]" value="0" required>
++        </div>
++        <div class="invoice-subfield">
++          <label class="invoice-subfield-label">税区分</label>
++          <select class="form-select item-tax-category-input" name="tax_category[]">
++            {% for value, label in tax_category_labels.items() %}
++            <option value="{{ value }}" {% if value == default_tax_category %}selected{% endif %}>{{ label }}</option>
++            {% endfor %}
++          </select>
++        </div>
++        <div class="invoice-subfield">
++          <label class="invoice-subfield-label">金額</label>
++          <div class="item-line-total text-end">¥0</div>
++        </div>
++      </div>
++    </td>
++  </tr>
+ </template>
+ <template id="memoRowTemplate">
+   <tr class="invoice-item-row memo-row" data-row-type="memo">
+     <td>
+       <input type="hidden" name="row_type[]" value="memo" class="row-type-input">
+       <input type="hidden" name="item_name[]" value="" class="item-name-input">
+       <input type="hidden" name="quantity[]" value="" class="item-quantity-input">
+       <input type="hidden" name="unit_name[]" value="" class="item-unit-input">
+       <input type="hidden" name="unit_price_yen[]" value="" class="item-price-input">
+       <input type="hidden" name="tax_category[]" value="{{ default_tax_category }}" class="item-tax-category-input">
+       <div class="invoice-memo-label mb-1">メモ</div>
+       <input class="form-control memo-text-input" name="memo_text[]" placeholder="メモを入力してください">
+     </td>
+-    <td><span class="text-muted">—</span></td>
+-    <td><span class="text-muted">—</span></td>
+-    <td><span class="text-muted">—</span></td>
+-    <td><span class="text-muted">—</span></td>
+-    <td class="item-line-total text-end">—</td>
+     <td>
+       <div class="invoice-row-actions">
+         <button type="button" class="btn btn-sm btn-outline-secondary move-up">上へ</button>
+         <button type="button" class="btn btn-sm btn-outline-secondary move-down">下へ</button>
+         <button type="button" class="btn btn-sm btn-outline-danger item-remove">削除</button>
+       </div>
+     </td>
+   </tr>
+ </template>
+ {% endblock %}
+ {% block body_extra %}
+ <script>
+ (() => {
+   const tableBody = document.querySelector('#itemTable tbody');
+   const normalTemplate = document.getElementById('normalRowTemplate');
+   const memoTemplate = document.getElementById('memoRowTemplate');
+   const taxMode = document.getElementById('taxMode');
+   const issuerTemplateSelect = document.getElementById('issuerTemplateSelect');
+   const issuerTemplates = {{ issuer_templates|tojson }};
+   const issuerFieldMap = {
+     issuer_name: document.getElementById('issuerNameInput'),
+     issuer_postal_code: document.getElementById('issuerPostalCodeInput'),
+     issuer_address1: document.getElementById('issuerAddress1Input'),
+     issuer_address2: document.getElementById('issuerAddress2Input'),
+     issuer_phone: document.getElementById('issuerPhoneInput'),
+     issuer_email: document.getElementById('issuerEmailInput'),
+     bank_info: document.getElementById('bankInfoInput'),
+     note: document.getElementById('noteInput'),
+   };
+   const TAX_RATES = { tax10: 0.10, tax8: 0.08, nontax: 0 };
+   const fmt = (num) => `¥${Math.round(num || 0).toLocaleString('ja-JP')}`;
+ 
+   const calculateLineAmounts = (baseAmount, mode, taxCategory) => {
+     const amount = Math.round(Number.isFinite(baseAmount) ? baseAmount : 0);
+     const rate = TAX_RATES[taxCategory] ?? TAX_RATES.tax10;
+     if (mode === 'external') {
+       const tax = Math.round(amount * rate);
+       return { subtotal: amount, tax, total: amount + tax };
      }
-     if request.method == "POST":
-         to_email = (request.form.get("to_email") or "").strip()
-         cc_email = (request.form.get("cc_email") or "").strip()
-         final_cc_email = merge_invoice_cc_emails(effective_issuer_email, cc_email)
-         bcc_email = (request.form.get("bcc_email") or "").strip()
-         subject = (request.form.get("subject") or "").strip()
-         body = request.form.get("body") or ""
-         if not to_email:
-             flash("宛先メールアドレスを入力してください。", "warning")
-             form_data = dict(request.form)
-             form_data["body"] = body
-             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-         if request.form.get("confirm_send") != "yes":
-             flash("送信前確認にチェックを入れてください。", "warning")
-             form_data = dict(request.form)
-             form_data["body"] = body
-             return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-         normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
-+        invoice_status = str(invoice.get("status") or "").strip().lower()
-+        try:
-+            card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
-+        except (TypeError, ValueError):
-+            card_payment_enabled = False
+     if (mode === 'internal') {
+       const tax = rate === 0 ? 0 : Math.round(amount - (amount / (1 + rate)));
+       return { subtotal: amount - tax, tax, total: amount };
+     }
+     return { subtotal: amount, tax: 0, total: amount };
+   };
+ 
++  const isMainRow = (row) => row?.classList.contains('invoice-item-row-main');
++  const isMemoRow = (row) => (row?.dataset.rowType || '') === 'memo';
++  const getNextSubrow = (mainRow) => {
++    const next = mainRow?.nextElementSibling;
++    return next?.classList.contains('invoice-item-subrow') ? next : null;
++  };
++  const getMainRow = (row) => (isMainRow(row) ? row : row?.previousElementSibling && isMainRow(row.previousElementSibling) ? row.previousElementSibling : row);
++  const getRowBundle = (row) => {
++    if (!row) return [];
++    if (isMemoRow(row)) return [row];
++    const mainRow = getMainRow(row);
++    if (!isMainRow(mainRow)) return [row];
++    const subrow = getNextSubrow(mainRow);
++    return subrow ? [mainRow, subrow] : [mainRow];
++  };
 +
-         payout_access_url = None
-         if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
-             try:
-                 payout_access = issue_payout_access_token_for_invoice(invoice)
-                 payout_access_url = payout_access.get("access_url") or ""
-                 save_invoice_payout_token(invoice_id, payout_access.get("id"))
-             except Exception as exc:
-                 flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-                 form_data = dict(request.form)
-                 form_data["body"] = body
-                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-         card_url = None
--        if int(invoice.get("card_payment_enabled") or 0) == 1 and invoice.get("status") not in {"paid", "cancelled"}:
-+        if card_payment_enabled and invoice_status not in {"paid", "cancelled"}:
-             try:
-                 card_token = ensure_invoice_card_payment_token(invoice_id)
-                 card_url = build_invoice_card_payment_url(card_token)
-             except Exception as exc:
-                 flash(f"カード決済URLの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-                 form_data = dict(request.form)
-                 form_data["body"] = body
-                 return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-         final_body = build_invoice_mail_body_with_payment_guidance(
-             invoice=invoice,
-             body=body,
-             payout_access_url=payout_access_url,
-             card_payment_url=card_url,
-         )
-         try:
-             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
-             send_invoice_mail(
-                 invoice,
-                 to_email=to_email,
-                 cc_email=final_cc_email or None,
-                 bcc_email=bcc_email or None,
-                 reply_to_email=effective_issuer_email or None,
-                 subject=subject,
-                 body=final_body,
-                 attachment_filename=attachment_name,
-diff --git a/invoice/services.py b/invoice/services.py
-index 26904a8d9df1e3ac1e66648f62efe1493e31f220..93731ca297b841636b25cec3b50e15e7e8c92073 100644
---- a/invoice/services.py
-+++ b/invoice/services.py
-@@ -592,86 +592,92 @@ def build_default_invoice_mail_body(invoice_data: dict[str, Any], *, payout_acce
-     recipient_label = build_invoice_mail_recipient_label(
-         invoice_data.get("contact_name_snapshot") or invoice_data.get("contact_name"),
-         invoice_data.get("contact_person_snapshot") or invoice_data.get("contact_person"),
-         invoice_data.get("contact_honorific_snapshot") or invoice_data.get("honorific"),
-     )
-     issuer_name = (invoice_data.get("issuer_name") or "").strip() or "請求元"
-     body = (
-         f"いつもお世話になっております、{recipient_label}\n"
-         f"{issuer_name}です。\n\n"
-         "請求書をお送りいたします。ご確認のほどよろしくお願いいたします。"
-     )
-     if normalize_bank_info_mode(invoice_data.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK and payout_access_url:
-         return append_payout_guidance_to_mail_body(body, payout_access_url)
-     return body
+   const recalc = () => {
+     let subtotal = 0;
+     let tax10 = 0;
+     let tax8 = 0;
+     let total = 0;
  
+-    tableBody.querySelectorAll('tr.invoice-item-row').forEach((row) => {
+-      const rowType = row.dataset.rowType || 'normal';
+-      const lineCell = row.querySelector('.item-line-total');
+-      if (rowType === 'memo') {
+-        if (lineCell) lineCell.textContent = '—';
+-        return;
+-      }
+-
+-      const qty = parseFloat(row.querySelector('.item-quantity-input')?.value || '0');
+-      const price = parseFloat(row.querySelector('.item-price-input')?.value || '0');
++    tableBody.querySelectorAll('tr.invoice-item-row-main').forEach((mainRow) => {
++      if ((mainRow.dataset.rowType || 'normal') !== 'normal') return;
++      const subrow = getNextSubrow(mainRow);
++      if (!subrow) return;
++      const lineCell = subrow.querySelector('.item-line-total');
++      const qty = parseFloat(subrow.querySelector('.item-quantity-input')?.value || '0');
++      const price = parseFloat(subrow.querySelector('.item-price-input')?.value || '0');
+       const baseAmount = Math.round((Number.isFinite(qty) ? qty : 0) * (Number.isFinite(price) ? price : 0));
+-      const taxCategory = row.querySelector('.item-tax-category-input')?.value || 'tax10';
++      const taxCategory = subrow.querySelector('.item-tax-category-input')?.value || 'tax10';
+       const lineAmounts = calculateLineAmounts(baseAmount, taxMode.value, taxCategory);
+       subtotal += lineAmounts.subtotal;
+       total += lineAmounts.total;
+       if (taxCategory === 'tax8') {
+         tax8 += lineAmounts.tax;
+       } else if (taxCategory === 'tax10') {
+         tax10 += lineAmounts.tax;
+       }
+       if (lineCell) lineCell.textContent = fmt(lineAmounts.total);
+     });
  
- def build_invoice_mail_body_with_payment_guidance(
-     *,
-     invoice: dict[str, Any],
-     body: Any,
-     payout_access_url: str | None = None,
-     card_payment_url: str | None = None,
- ) -> str:
-     normalized_body = str(body or "").replace("\r\n", "\n").replace("\r", "\n")
-     normalized_lines = [line.rstrip() for line in normalized_body.split("\n")]
-+    normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
-+    invoice_status = str(invoice.get("status") or "").strip().lower()
-+    try:
-+        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
-+    except (TypeError, ValueError):
-+        card_payment_enabled = False
+     const tax = tax10 + tax8;
+     document.getElementById('subtotalText').textContent = fmt(subtotal);
+     document.getElementById('tax10Text').textContent = fmt(tax10);
+     document.getElementById('tax8Text').textContent = fmt(tax8);
+     document.getElementById('taxText').textContent = fmt(tax);
+     document.getElementById('totalText').textContent = fmt(total);
+   };
  
-     normalized_payout_url = _normalize_stripped_text(payout_access_url)
-     normalized_card_url = _normalize_stripped_text(card_payment_url)
+   const appendRow = (template, initialValues = {}) => {
+-    const row = template.content.firstElementChild.cloneNode(true);
+-    if ((row.dataset.rowType || 'normal') === 'normal') {
++    if (template.id === 'normalRowTemplate') {
++      const fragment = template.content.cloneNode(true);
++      const mainRow = fragment.querySelector('tr.invoice-item-row-main');
++      const subrow = fragment.querySelector('tr.invoice-item-subrow');
+       if (initialValues.item_name !== undefined) {
+-        row.querySelector('.item-name-input').value = initialValues.item_name;
++        mainRow.querySelector('.item-name-input').value = initialValues.item_name;
+       }
+       if (initialValues.quantity !== undefined) {
+-        row.querySelector('.item-quantity-input').value = initialValues.quantity;
++        subrow.querySelector('.item-quantity-input').value = initialValues.quantity;
+       }
+       if (initialValues.unit_name !== undefined) {
+-        row.querySelector('.item-unit-input').value = initialValues.unit_name;
++        subrow.querySelector('.item-unit-input').value = initialValues.unit_name;
+       }
+       if (initialValues.unit_price_yen !== undefined) {
+-        row.querySelector('.item-price-input').value = initialValues.unit_price_yen;
++        subrow.querySelector('.item-price-input').value = initialValues.unit_price_yen;
+       }
+       if (initialValues.tax_category !== undefined) {
+-        row.querySelector('.item-tax-category-input').value = initialValues.tax_category;
++        subrow.querySelector('.item-tax-category-input').value = initialValues.tax_category;
+       }
++      tableBody.appendChild(fragment);
++    } else {
++      const row = template.content.firstElementChild.cloneNode(true);
++      tableBody.appendChild(row);
+     }
+-    tableBody.appendChild(row);
+     recalc();
+   };
  
-     filtered_lines: list[str] = []
-     for line in normalized_lines:
-         stripped_line = line.strip()
-         if stripped_line == PAYOUT_LINK_MAIL_GUIDANCE:
-             continue
-         if stripped_line == CARD_PAYMENT_MAIL_GUIDANCE:
-             continue
-         if normalized_payout_url and stripped_line == normalized_payout_url:
-             continue
-         if normalized_card_url and stripped_line == normalized_card_url:
-             continue
-         if "/payout?iv=" in stripped_line:
-             continue
-         if "/invoice/pay/" in stripped_line:
-             continue
-         filtered_lines.append(line)
+   const applyIssuerTemplate = (templateId) => {
+     const selectedId = String(templateId || '');
+     const template = issuerTemplates.find((item) => String(item.id) === selectedId);
+     if (!template) {
+       return;
+     }
+     Object.entries(issuerFieldMap).forEach(([fieldName, input]) => {
+       if (!input) return;
+       input.value = template[fieldName] || '';
+     });
+   };
  
-     while filtered_lines and filtered_lines[-1] == "":
-         filtered_lines.pop()
+   issuerTemplateSelect?.addEventListener('change', (event) => {
+     applyIssuerTemplate(event.currentTarget.value);
+   });
  
-     cleaned_body = "\n".join(filtered_lines)
+   document.getElementById('addItemRow')?.addEventListener('click', () => appendRow(normalTemplate));
+   document.getElementById('addMemoRow')?.addEventListener('click', () => appendRow(memoTemplate));
+   document.getElementById('addFuelCostRow')?.addEventListener('click', (event) => {
+     const button = event.currentTarget;
+     appendRow(normalTemplate, {
+       item_name: button.dataset.itemName || '',
+       quantity: button.dataset.quantity || '1',
+       unit_name: button.dataset.unitName || 'km',
+       unit_price_yen: button.dataset.unitPriceYen || '0',
+       tax_category: button.dataset.taxCategory || '{{ default_tax_category }}',
+     });
+   });
+   tableBody.addEventListener('input', recalc);
+   tableBody.addEventListener('change', recalc);
+   tableBody.addEventListener('click', (event) => {
+     const button = event.target.closest('button');
+     if (!button) return;
+-    const row = button.closest('tr.invoice-item-row');
++    const row = button.closest('tr');
+     if (!row) return;
++    const bundle = getRowBundle(row);
++    const mainRow = bundle[0];
++    if (!mainRow) return;
  
-     # payout案内の可否は bank_info_mode + payout URL のみで判定する
-     should_append_payout_guidance = (
--        normalize_bank_info_mode(invoice.get("bank_info_mode")) == BANK_INFO_MODE_PAYOUT_LINK
-+        normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
-         and bool(normalized_payout_url)
-     )
-     # カード案内の可否は card_payment_enabled + status + card URL のみで判定する
-     # （bank_info_mode とは独立）
-     should_append_card_guidance = (
--        int(invoice.get("card_payment_enabled") or 0) == 1
--        and invoice.get("status") not in {"paid", "cancelled"}
-+        card_payment_enabled
-+        and invoice_status not in {"paid", "cancelled"}
-         and bool(normalized_card_url)
-     )
+     if (button.classList.contains('item-remove')) {
+-      row.remove();
++      bundle.forEach((targetRow) => targetRow.remove());
+       recalc();
+       return;
+     }
  
-     payment_lines: list[str] = []
-     if should_append_payout_guidance:
-         payment_lines.extend([PAYOUT_LINK_MAIL_GUIDANCE, normalized_payout_url])
-     if should_append_card_guidance:
-         payment_lines.extend([CARD_PAYMENT_MAIL_GUIDANCE, normalized_card_url])
+     if (button.classList.contains('move-up')) {
+-      const prev = row.previousElementSibling;
+-      if (prev) tableBody.insertBefore(row, prev);
++      const prev = mainRow.previousElementSibling;
++      if (!prev) return;
++      const anchor = isMainRow(prev) ? prev : (prev.classList.contains('invoice-item-subrow') && isMainRow(prev.previousElementSibling) ? prev.previousElementSibling : prev);
++      bundle.forEach((targetRow) => tableBody.insertBefore(targetRow, anchor));
+       recalc();
+       return;
+     }
  
-     if payment_lines:
-         if cleaned_body:
-             final_body = f"{cleaned_body}\n" + "\n".join(payment_lines)
-         else:
-             final_body = "\n".join(payment_lines)
-     else:
-         final_body = cleaned_body
- 
-     if normalized_payout_url:
-         assert final_body.count(normalized_payout_url) == 1
-     if normalized_card_url:
-         assert final_body.count(normalized_card_url) == 1
-     assert final_body.count(PAYOUT_LINK_MAIL_GUIDANCE) <= 1
-     assert final_body.count(CARD_PAYMENT_MAIL_GUIDANCE) <= 1
-     return final_body
- 
+     if (button.classList.contains('move-down')) {
+-      const next = row.nextElementSibling;
+-      if (next) tableBody.insertBefore(next, row);
++      const lastRow = bundle[bundle.length - 1];
++      const after = lastRow.nextElementSibling;
++      if (!after) return;
++      const nextBundle = getRowBundle(after);
++      const anchor = nextBundle[nextBundle.length - 1].nextElementSibling;
++      bundle.forEach((targetRow) => tableBody.insertBefore(targetRow, anchor));
+       recalc();
+     }
+   });
+   taxMode?.addEventListener('change', recalc);
+   recalc();
+ })();
+ </script>
+ {% endblock %}
