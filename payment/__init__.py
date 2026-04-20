@@ -86,16 +86,17 @@ _ADMIN_REQUIRED = None
 try:
     from app.auth import admin_required as _ADMIN_REQUIRED  # type: ignore
 except Exception:
-    pass
+    try:
+        from app import admin_required as _ADMIN_REQUIRED  # type: ignore
+    except Exception:
+        _ADMIN_REQUIRED = None
 
 def admin_required(f):
     if _ADMIN_REQUIRED:
         return _ADMIN_REQUIRED(f)
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if session.get("user") != "admin":
-            abort(403)
-        return f(*args, **kwargs)
+        abort(503)
     return wrapper
 
 # ───────────────────────────────────────────────────────────
@@ -256,6 +257,32 @@ def _normalize_handle(v: str | None) -> str:
         v = v[1:]
     # Python なので lower()
     return v.strip().lower()
+
+
+def _is_allowed_return_url(url: str | None) -> bool:
+    if not url or not isinstance(url, str):
+        return False
+    parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    base = urlparse(_app_base_url().strip())
+    if parsed.scheme != base.scheme or parsed.netloc != base.netloc:
+        return False
+    allowed_prefixes = (
+        "/external-login/events/",
+        "/external-login/pay/return/",
+        "/external-login/lecture/return/",
+    )
+    return any((parsed.path or "").startswith(prefix) for prefix in allowed_prefixes)
+
+
+def _sanitize_return_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    value = str(url).strip()
+    if not value:
+        return None
+    return value if _is_allowed_return_url(value) else None
 
 # ───────────────────────────────────────────────────────────
 # Square 顧客ヘルパ
@@ -1049,12 +1076,14 @@ def _mark_payment_token_used_and_apply_member_status(
         return
     cur = conn.cursor()
     try:
+        token_marked_used = False
         cur.execute("""
             UPDATE mfu_payment_request
                SET status='used', used_at=NOW()
              WHERE token=%s AND status='pending'
              LIMIT 1
         """, (payment_token,))
+        token_marked_used = bool(cur.rowcount)
         cur.execute("""
             SELECT event_id, user_id, COALESCE(kind,'event_fee') AS kind, tip_event_id
               FROM mfu_payment_request
@@ -1074,7 +1103,7 @@ def _mark_payment_token_used_and_apply_member_status(
             tip_event_id = pr.get("tip_event_id")
         req_kind = (req_kind or "event_fee").lower()
         if req_kind == "tip":
-            if event_id and user_id:
+            if token_marked_used and event_id and user_id:
                 _notify_tip_payment_completion(
                     conn,
                     event_id=int(tip_event_id or event_id),
@@ -1086,16 +1115,31 @@ def _mark_payment_token_used_and_apply_member_status(
             return
         cur.execute("""
             UPDATE mfu_event_member
-               SET payment_status='paid',
-                   paid_at=NOW(),
-                   paid_amount_yen=%s,
-                   receipt_url=COALESCE(%s, receipt_url),
-                   payment_row_id=%s
+               SET payment_status=CASE
+                                    WHEN COALESCE(payment_status,'') IN ('', 'unpaid') THEN 'paid'
+                                    ELSE payment_status
+                                  END,
+                   paid_at=COALESCE(paid_at, NOW()),
+                   paid_amount_yen=CASE
+                                     WHEN (paid_amount_yen IS NULL OR paid_amount_yen=0)
+                                     THEN COALESCE(NULLIF(%s, 0), paid_amount_yen)
+                                     ELSE paid_amount_yen
+                                   END,
+                   receipt_url=CASE
+                                 WHEN (receipt_url IS NULL OR receipt_url='')
+                                 THEN COALESCE(NULLIF(%s, ''), receipt_url)
+                                 ELSE receipt_url
+                               END,
+                   payment_row_id=CASE
+                                    WHEN (payment_row_id IS NULL OR payment_row_id=0)
+                                    THEN COALESCE(NULLIF(%s, 0), payment_row_id)
+                                    ELSE payment_row_id
+                                  END
              WHERE event_id=%s AND user_id=%s
-               AND COALESCE(payment_status,'unpaid') <> 'paid'
         """, (amount_yen, receipt_url, payment_row_id, event_id, user_id))
+        member_updated = bool(cur.rowcount)
         conn.commit()
-        if event_id and user_id:
+        if (token_marked_used or member_updated) and event_id and user_id:
             try:
                 _notify_mfu_payment_completion(
                     conn,
@@ -1199,13 +1243,15 @@ def pay_form(event_uuid: str):
                 "x_id": ctx.get("x_id") or "",
                 "instagram_id": ctx.get("instagram_id") or "",
             }
-            return_url = ctx.get("return_url")
+            return_url = _sanitize_return_url(ctx.get("return_url"))
     except Exception:
         logging.exception("read pay_ctx failed")
 
     qs_return_url = (request.args.get("return_url") or "").strip()
     if qs_return_url:
-        return_url = qs_return_url
+        qs_return_url_sanitized = _sanitize_return_url(qs_return_url)
+        if qs_return_url_sanitized:
+            return_url = qs_return_url_sanitized
 
     # クエリがあれば上書き
     qs_n = (request.args.get("nickname") or "").strip()
@@ -1312,8 +1358,8 @@ def pay_thanks(event_uuid: str):
     # 外部ログインへの自動戻り（セッションにreturn_urlがある場合）
     try:
         ctx = session.get("pay_ctx") or {}
-        if (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")) and ctx.get("return_url"):
-            ret = ctx.get("return_url")
+        ret = _sanitize_return_url(ctx.get("return_url"))
+        if (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")) and ret:
             payment_token = _resolve_payment_token(event_uuid)
             ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED","APPROVED","COMPLETED"))
             q = {
@@ -1381,8 +1427,30 @@ def api_charge(event_uuid: str):
         if token_amount is not None and token_amount > 0:
             amount = token_amount
 
-        # 二重決済ブロック（event_payments に対して）—削除
         cur = conn.cursor()
+        lock_name = f"payment_charge:{ev['id']}:{payment_token}"
+        lock_acquired = False
+        cur.execute("SELECT GET_LOCK(%s, 0)", (lock_name,))
+        lock_row = cur.fetchone()
+        lock_val = lock_row[0] if isinstance(lock_row, tuple) else (next(iter(lock_row.values())) if isinstance(lock_row, dict) and lock_row else None)
+        if int(lock_val or 0) != 1:
+            return jsonify({"message": "同じ支払いが処理中です。しばらく待ってから再度お試しください。"}), 409
+        lock_acquired = True
+        cur.execute("""
+            SELECT square_status
+              FROM event_payments
+             WHERE event_id=%s
+               AND payment_token=%s
+               AND square_status IN ('PENDING','AUTHORIZED','APPROVED','COMPLETED')
+             ORDER BY id DESC
+             LIMIT 1
+        """, (ev["id"], payment_token))
+        exists = cur.fetchone()
+        if exists:
+            existing_status = (exists[0] if isinstance(exists, tuple) else exists.get("square_status") or "").upper()
+            if existing_status == "PENDING":
+                return jsonify({"message": "この支払いは現在処理中です。時間をおいてご確認ください。"}), 409
+            return jsonify({"message": "この支払いはすでに完了しています。"}), 409
 
         access_token = _square_access_token()
         location_id  = _square_location_id()
@@ -1487,6 +1555,11 @@ def api_charge(event_uuid: str):
             return jsonify({"message": "Square API error", "errors": errs}), 400
 
     finally:
+        try:
+            if 'cur' in locals() and 'lock_acquired' in locals() and lock_acquired:
+                cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+        except Exception:
+            logging.exception("api_charge: release lock failed")
         try: conn.close()
         except Exception: pass
 
@@ -1506,6 +1579,10 @@ def webhooks():
                 return "invalid signature", 403
         except Exception:
             logging.exception("webhook signature check failed")
+            return "invalid signature", 403
+    else:
+        # 互換維持: 署名キー未設定時のみ継続（本番では設定必須推奨）
+        pass
 
     ev = request.get_json(silent=True) or {}
     etype = ev.get("type")

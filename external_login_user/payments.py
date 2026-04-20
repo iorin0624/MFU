@@ -379,16 +379,42 @@ def _payment_request_id_from_token(event_id: int, user_id: int, token: str | Non
     return None
 
 
+def _payment_row_id_from_token(event_id: int, token: str | None) -> int | None:
+    if not token:
+        return None
+    db = get_db(); cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT id
+              FROM event_payments
+             WHERE event_id=%s AND payment_token=%s
+             ORDER BY id DESC
+             LIMIT 1
+        """, (event_id, token))
+        row = cur.fetchone()
+        if row:
+            return row["id"] if isinstance(row, dict) else row[0]
+    except Exception:
+        current_app.logger.exception(
+            "payment row lookup failed token=%s event_id=%s",
+            _mask_payment_token(token),
+            event_id,
+        )
+    finally:
+        try: cur.close(); db.close()
+        except Exception: pass
+    return None
+
+
 def _resolve_payment_request_id(
     event_id: int,
     user_id: int,
     token: str | None,
-    payment_row_id: int | None,
 ) -> int | None:
     payment_request_id = _payment_request_id_from_token(event_id, user_id, token)
     if payment_request_id is not None:
         return payment_request_id
-    return payment_row_id
+    return None
 
 
 def _mark_payment_request_used(payment_request_id: int, token: str | None) -> None:
@@ -957,7 +983,7 @@ def pay_return(event_uuid: str):
 
     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
 
-    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token, payment_row_id)  # type: ignore
+    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token)  # type: ignore
     if token and payment_request_id is None:
         current_app.logger.warning(
             "payment request not found token=%s event_id=%s user_id=%s",
@@ -966,7 +992,9 @@ def pay_return(event_uuid: str):
             me["id"],
         )
 
-    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
+    resolved_payment_row_id = payment_row_id
+    if resolved_payment_row_id is None:
+        resolved_payment_row_id = _payment_row_id_from_token(ev["id"], token)  # type: ignore
 
     # 既存の paid 冪等チェック
     db = get_db(); cur = db.cursor(dictionary=True)
@@ -1764,7 +1792,7 @@ def lecture_return(event_uuid: str):
     # 成功判定（空=OK を含む）
     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
 
-    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token, payment_row_id)  # type: ignore
+    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token)  # type: ignore
     if token and payment_request_id is None:
         current_app.logger.warning(
             "payment request not found token=%s event_id=%s user_id=%s",
@@ -1772,7 +1800,9 @@ def lecture_return(event_uuid: str):
             ev["id"],
             me["id"],
         )
-    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
+    resolved_payment_row_id = payment_row_id
+    if resolved_payment_row_id is None:
+        resolved_payment_row_id = _payment_row_id_from_token(ev["id"], token)  # type: ignore
 
     # すでに paid なら冪等（再反映しない）
     db = get_db(); cur = db.cursor()
