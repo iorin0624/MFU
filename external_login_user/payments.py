@@ -948,7 +948,8 @@ def pay_return(event_uuid: str):
     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
     try:
-        payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
+        parsed_payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
+        payment_row_id = parsed_payment_row_id if parsed_payment_row_id is not None and parsed_payment_row_id > 0 else None
     except Exception:
         payment_row_id = None
     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
@@ -995,6 +996,15 @@ def pay_return(event_uuid: str):
     resolved_payment_row_id = payment_row_id
     if resolved_payment_row_id is None:
         resolved_payment_row_id = _payment_row_id_from_token(ev["id"], token)  # type: ignore
+    current_app.logger.info(
+        "pay_return resolved payment_row_id event_uuid=%s event_id=%s user_id=%s query_row_id=%s token=%s resolved=%s",
+        event_uuid,
+        ev["id"],
+        me["id"],
+        payment_row_id,
+        _mask_payment_token(token),
+        resolved_payment_row_id,
+    )
 
     # 既存の paid 冪等チェック
     db = get_db(); cur = db.cursor(dictionary=True)

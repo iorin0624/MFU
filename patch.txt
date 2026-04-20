@@ -1,97 +1,45 @@
 diff --git a/external_login_user/payments.py b/external_login_user/payments.py
-index 79b8ca62c5cec4f07bde06189beba21038678eb6..7dc4dc8e76fca596e6c65d2e1d9ed83f727604a1 100644
+index 7dc4dc8e76fca596e6c65d2e1d9ed83f727604a1..29a33d4213b0ba78b870c4c5c3deacb0e98faa6f 100644
 --- a/external_login_user/payments.py
 +++ b/external_login_user/payments.py
-@@ -357,60 +357,86 @@ def _payment_request_id_from_token(event_id: int, user_id: int, token: str | Non
-     db = get_db(); cur = db.cursor(dictionary=True)
+@@ -926,97 +926,107 @@ def pay_start(event_uuid: str):
+ @bp.route("/pay/return/<event_uuid>")
+ def pay_return(event_uuid: str):
+     guard = _require_ext_login()
+     if guard:
+         return guard
+ 
+     me = _get_ext_user_by_social(session.get("ext_user_social_id"))  # type: ignore
+     ev = _event_by_uuid_str(event_uuid)
+     if not ev:
+         abort(404, "イベントが見つかりません")
+ 
+     lecture = _is_lecture_event(ev)
+ 
+     # 承認済みのみ完了処理（← 非講座のみ厳格。講座は支払い先行OK）
+     if not lecture:
+         if _membership_status(ev["id"], me["id"]) != "approved":  # type: ignore
+             flash("承認済み参加者のみ完了処理が可能です。", "warning")
+             return redirect(url_for("external_login_user.view_event", event_uuid=event_uuid))
+ 
+     # --- Square 戻り値の受け口（既存のまま） ---
+     q = request.args
+     status = (q.get("status") or q.get("square_status") or "").strip().lower()
+     receipt_url = (q.get("receipt") or q.get("receipt_url") or q.get("receiptUrl") or None)
+     pr_id_raw = (q.get("payment_row_id") or q.get("paymentRowId") or q.get("row_id") or None)
      try:
-         cur.execute("""
-             SELECT id
-               FROM mfu_payment_request
-              WHERE token=%s AND event_id=%s AND user_id=%s
-              ORDER BY id DESC
-              LIMIT 1
-         """, (token, event_id, user_id))
-         row = cur.fetchone()
-         if row:
-             return row["id"] if isinstance(row, dict) else row[0]
+-        payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
++        parsed_payment_row_id = int(pr_id_raw) if pr_id_raw is not None and str(pr_id_raw).strip() != "" else None
++        payment_row_id = parsed_payment_row_id if parsed_payment_row_id is not None and parsed_payment_row_id > 0 else None
      except Exception:
-         current_app.logger.exception(
-             "payment request lookup failed token=%s event_id=%s user_id=%s",
-             _mask_payment_token(token),
-             event_id,
-             user_id,
-         )
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
-     return None
+         payment_row_id = None
+     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
+     token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
  
- 
-+def _payment_row_id_from_token(event_id: int, token: str | None) -> int | None:
-+    if not token:
-+        return None
-+    db = get_db(); cur = db.cursor(dictionary=True)
-+    try:
-+        cur.execute("""
-+            SELECT id
-+              FROM event_payments
-+             WHERE event_id=%s AND payment_token=%s
-+             ORDER BY id DESC
-+             LIMIT 1
-+        """, (event_id, token))
-+        row = cur.fetchone()
-+        if row:
-+            return row["id"] if isinstance(row, dict) else row[0]
-+    except Exception:
-+        current_app.logger.exception(
-+            "payment row lookup failed token=%s event_id=%s",
-+            _mask_payment_token(token),
-+            event_id,
-+        )
-+    finally:
-+        try: cur.close(); db.close()
-+        except Exception: pass
-+    return None
-+
-+
- def _resolve_payment_request_id(
-     event_id: int,
-     user_id: int,
-     token: str | None,
--    payment_row_id: int | None,
- ) -> int | None:
-     payment_request_id = _payment_request_id_from_token(event_id, user_id, token)
-     if payment_request_id is not None:
-         return payment_request_id
--    return payment_row_id
-+    return None
- 
- 
- def _mark_payment_request_used(payment_request_id: int, token: str | None) -> None:
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             UPDATE mfu_payment_request
-                SET status='used',
-                    used_at=COALESCE(used_at, NOW())
-              WHERE id=%s
-         """, (payment_request_id,))
-         db.commit()
-     except Exception:
-         current_app.logger.exception(
-             "payment request update failed id=%s token=%s",
-             payment_request_id,
-             _mask_payment_token(token),
-         )
-     finally:
-         try: cur.close(); db.close()
-         except Exception: pass
- 
- 
- def _build_member_receipt_pdf_url(event_uuid: str, event_id: int, user_id: int) -> str | None:
-     try:
-@@ -935,60 +961,62 @@ def pay_return(event_uuid: str):
+     # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
+     paid_amount_yen = None
+     if amt_raw is not None and str(amt_raw).strip() != "":
+         try:
              paid_amount_yen = int(str(amt_raw).strip())
          except Exception:
              paid_amount_yen = None
@@ -117,8 +65,7 @@ index 79b8ca62c5cec4f07bde06189beba21038678eb6..7dc4dc8e76fca596e6c65d2e1d9ed83f
  
      is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
  
--    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token, payment_row_id)  # type: ignore
-+    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token)  # type: ignore
+     payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token)  # type: ignore
      if token and payment_request_id is None:
          current_app.logger.warning(
              "payment request not found token=%s event_id=%s user_id=%s",
@@ -127,10 +74,18 @@ index 79b8ca62c5cec4f07bde06189beba21038678eb6..7dc4dc8e76fca596e6c65d2e1d9ed83f
              me["id"],
          )
  
--    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
-+    resolved_payment_row_id = payment_row_id
-+    if resolved_payment_row_id is None:
-+        resolved_payment_row_id = _payment_row_id_from_token(ev["id"], token)  # type: ignore
+     resolved_payment_row_id = payment_row_id
+     if resolved_payment_row_id is None:
+         resolved_payment_row_id = _payment_row_id_from_token(ev["id"], token)  # type: ignore
++    current_app.logger.info(
++        "pay_return resolved payment_row_id event_uuid=%s event_id=%s user_id=%s query_row_id=%s token=%s resolved=%s",
++        event_uuid,
++        ev["id"],
++        me["id"],
++        payment_row_id,
++        _mask_payment_token(token),
++        resolved_payment_row_id,
++    )
  
      # 既存の paid 冪等チェック
      db = get_db(); cur = db.cursor(dictionary=True)
@@ -156,67 +111,93 @@ index 79b8ca62c5cec4f07bde06189beba21038678eb6..7dc4dc8e76fca596e6c65d2e1d9ed83f
          # 講座：メンバー行が無いケースに備えて upsert
          db2 = get_db(); cur2 = db2.cursor()
          try:
-@@ -1742,59 +1770,61 @@ def lecture_return(event_uuid: str):
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             paid_amount_yen = _amount_from_payment_token(ev["id"], me["id"], token)  # type: ignore
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             sess_amt = (session.get("pay_ctx") or {}).get("expected_amount_yen")
-             if sess_amt is not None and int(sess_amt) > 0:
-                 paid_amount_yen = int(sess_amt)
-         except Exception:
-             paid_amount_yen = None
-     if paid_amount_yen is None:
-         try:
-             base_fee = ev.get("fee_yen")
-             if base_fee is not None and int(base_fee) > 0:
-                 paid_amount_yen = int(base_fee)
-         except Exception:
-             paid_amount_yen = None
+diff --git a/payment/__init__.py b/payment/__init__.py
+index 26100fb3b11c893bbd75e3c95a5482f8e31b2b5e..3af2092661e6ecdf142ae9e9e8dae2433c2759de 100644
+--- a/payment/__init__.py
++++ b/payment/__init__.py
+@@ -1340,60 +1340,85 @@ def pay_thanks(event_uuid: str):
+                                     pid
+                                 ))
+                                 conn.commit()
+                                 cur.execute("SELECT * FROM event_payments WHERE square_payment_id=%s LIMIT 1", (pid,))
+                                 payment = _fetchone_dict(cur)
+                         except Exception:
+                             logging.exception("thanks: refresh payment status failed")
  
-     # 成功判定（空=OK を含む）
-     is_success = status in ("", "ok", "success", "paid", "completed", "authorized", "approved")
+                 # Discord通知（必要時）
+                 try:
+                     _notify_discord_payment_if_needed(conn, pid)
+                 except Exception:
+                     logging.exception("thanks: notify failed")
  
--    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token, payment_row_id)  # type: ignore
-+    payment_request_id = _resolve_payment_request_id(ev["id"], me["id"], token)  # type: ignore
-     if token and payment_request_id is None:
-         current_app.logger.warning(
-             "payment request not found token=%s event_id=%s user_id=%s",
-             _mask_payment_token(token),
-             ev["id"],
-             me["id"],
-         )
--    resolved_payment_row_id = payment_request_id if payment_request_id is not None else payment_row_id
-+    resolved_payment_row_id = payment_row_id
-+    if resolved_payment_row_id is None:
-+        resolved_payment_row_id = _payment_row_id_from_token(ev["id"], token)  # type: ignore
- 
-     # すでに paid なら冪等（再反映しない）
-     db = get_db(); cur = db.cursor()
-     try:
-         cur.execute("""
-             SELECT COALESCE(payment_status,'unpaid') AS ps
-               FROM mfu_event_member
-              WHERE event_id=%s AND user_id=%s
-              LIMIT 1
-         """, (ev["id"], me["id"]))  # type: ignore
-         row = cur.fetchone()
-         already_paid = bool(row and ((row[0] if isinstance(row, tuple) else row.get("ps") or "unpaid") == "paid"))
      finally:
-         try: cur.close(); db.close()
+         try: conn.close()
          except Exception: pass
  
-     if is_success and payment_request_id is not None:
-         _mark_payment_request_used(payment_request_id, token)
+     # 外部ログインへの自動戻り（セッションにreturn_urlがある場合）
+     try:
+         ctx = session.get("pay_ctx") or {}
+         ret = _sanitize_return_url(ctx.get("return_url"))
+         if (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")) and ret:
+             payment_token = _resolve_payment_token(event_uuid)
+             ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED","APPROVED","COMPLETED"))
++            payment_row_id = None
++            if payment:
++                try:
++                    if isinstance(payment, dict):
++                        raw_payment_row_id = payment.get("id") or payment.get("payment_row_id")
++                    elif isinstance(payment, (tuple, list)):
++                        raw_payment_row_id = payment[0] if payment else None
++                    else:
++                        raw_payment_row_id = getattr(payment, "id", None)
++                    if raw_payment_row_id is not None and str(raw_payment_row_id).strip() != "":
++                        parsed_payment_row_id = int(raw_payment_row_id)
++                        if parsed_payment_row_id > 0:
++                            payment_row_id = parsed_payment_row_id
++                except Exception:
++                    payment_row_id = None
+             q = {
+                 "status": "ok" if ok else "ng",
+                 "payment_id": pid or "",
+                 "receipt": (payment or {}).get("square_receipt_url") or "",
+                 "payment_token": payment_token or "",
+             }
++            if payment_row_id is not None:
++                q["payment_row_id"] = str(payment_row_id)
+             u = urlparse(ret)
+             merged = dict(parse_qsl(u.query)); merged.update({k:v for k,v in q.items() if v})
+             new_q = urlencode(merged)
+             new_url = urlunparse((u.scheme, u.netloc, u.path, u.params, new_q, u.fragment))
++            logging.info(
++                "payment thanks redirect event_uuid=%s payment_id=%s payment_token=%s payment_row_id=%s return_url=%s",
++                event_uuid,
++                pid,
++                payment_token,
++                payment_row_id,
++                u.path or new_url,
++            )
+             return redirect(new_url)
+     except Exception:
+         logging.exception("thanks: external redirect failed")
  
-     if is_success and not already_paid:
-         # 無ければ安全に作ってから反映（承認前でもOK）
-         db2 = get_db(); cur2 = db2.cursor()
-         try:
-             cur2.execute("""
-                 INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, require_payment, joined_at)
+     if not event:
+         return "この決済リンクは無効です。", 404
+ 
+     return render_template("thanks.html", event=event, payment=payment)
+ 
+ # ───────────────────────────────────────────────────────────
+ # 課金API
+ # ───────────────────────────────────────────────────────────
+ @bp.post("/api/charge/<event_uuid>")
+ def api_charge(event_uuid: str):
+     _ensure_schema()
+     data = request.get_json(force=True)
+ 
+     nickname      = (data.get("nickname") or "").strip()
+     x_id          = _sanitize_handle(data.get("x_id"))
+     instagram_id  = _sanitize_handle(data.get("instagram_id"))
+     source_id     = data.get("sourceId")
+     payment_token = (data.get("payment_token") or request.args.get("payment_token") or "").strip() or None
+ 
+     # ★ 追加：フロント（walletType）/ 後方互換（wallet_type）を受け取り、正規化
+     _wt_in = data.get("walletType", data.get("wallet_type"))
