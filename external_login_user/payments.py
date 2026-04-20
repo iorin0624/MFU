@@ -1026,36 +1026,63 @@ def pay_return(event_uuid: str):
     if is_success and payment_request_id is not None:
         _mark_payment_request_used(payment_request_id, token)
 
-    if is_success and not already:
-        # 講座：メンバー行が無いケースに備えて upsert
+    if is_success:
+        # メンバー行が無いケースに備えて最低限の行を確保したうえで、不足分を補完する
         db2 = get_db(); cur2 = db2.cursor()
+        backfill_rowcount = 0
         try:
-            if lecture:
-                cur2.execute("""
-                    INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
-                    VALUES (%s,%s,'pending','paid',1,NOW())
-                    ON DUPLICATE KEY UPDATE
-                      payment_status='paid',
-                      paid_at=COALESCE(paid_at, NOW()),
-                      paid_amount_yen=%s,
-                      receipt_url=COALESCE(%s, receipt_url),
-                      payment_row_id=COALESCE(%s, payment_row_id)
-                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
-            else:
-                cur2.execute("""
-                    INSERT INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
-                    VALUES (%s,%s,'pending','paid',1,NOW())
-                    ON DUPLICATE KEY UPDATE
-                      payment_status='paid',
-                      paid_at=COALESCE(paid_at, NOW()),
-                      paid_amount_yen=%s,
-                      receipt_url=COALESCE(%s, receipt_url),
-                      payment_row_id=COALESCE(%s, payment_row_id)
-                """, (ev["id"], me["id"], paid_amount_yen, receipt_url, resolved_payment_row_id))  # type: ignore
+            cur2.execute("""
+                INSERT IGNORE INTO mfu_event_member (event_id, user_id, status, payment_status, require_payment, joined_at)
+                VALUES (%s,%s,'pending','paid',1,NOW())
+            """, (ev["id"], me["id"]))  # type: ignore
+            cur2.execute("""
+                UPDATE mfu_event_member
+                   SET payment_status='paid',
+                       paid_at=COALESCE(paid_at, NOW()),
+                       paid_amount_yen=CASE
+                         WHEN (paid_amount_yen IS NULL OR paid_amount_yen=0)
+                              AND %s IS NOT NULL AND %s > 0
+                         THEN %s
+                         ELSE paid_amount_yen
+                       END,
+                       receipt_url=CASE
+                         WHEN (receipt_url IS NULL OR receipt_url='')
+                              AND %s IS NOT NULL AND %s <> ''
+                         THEN %s
+                         ELSE receipt_url
+                       END,
+                       payment_row_id=CASE
+                         WHEN (payment_row_id IS NULL OR payment_row_id=0)
+                              AND %s IS NOT NULL AND %s > 0
+                         THEN %s
+                         ELSE payment_row_id
+                       END
+                 WHERE event_id=%s AND user_id=%s
+            """, (
+                paid_amount_yen, paid_amount_yen, paid_amount_yen,
+                receipt_url, receipt_url, receipt_url,
+                resolved_payment_row_id, resolved_payment_row_id, resolved_payment_row_id,
+                ev["id"], me["id"],
+            ))  # type: ignore
+            backfill_rowcount = int(cur2.rowcount or 0)
             db2.commit()
         finally:
             try: cur2.close(); db2.close()
             except Exception: pass
+
+        current_app.logger.info(
+            "pay_return member backfill event_uuid=%s event_id=%s user_id=%s already=%s payment_row_id=%s paid_amount_yen=%s receipt_url=%s rowcount=%s",
+            event_uuid,
+            ev["id"],
+            me["id"],
+            already,
+            resolved_payment_row_id,
+            paid_amount_yen,
+            bool(receipt_url),
+            backfill_rowcount,
+        )
+
+    if is_success and not already:
 
         receipt_pdf_url = _build_member_receipt_pdf_url(event_uuid, ev["id"], me["id"])  # type: ignore
         receipt_label = receipt_pdf_url or "(領収書発行準備中)"
