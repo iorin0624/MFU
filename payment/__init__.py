@@ -1362,16 +1362,41 @@ def pay_thanks(event_uuid: str):
         if (ctx.get("payment_uuid") == event_uuid or ctx.get("mfu_event_uuid")) and ret:
             payment_token = _resolve_payment_token(event_uuid)
             ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED","APPROVED","COMPLETED"))
+            payment_row_id = None
+            if payment:
+                try:
+                    if isinstance(payment, dict):
+                        raw_payment_row_id = payment.get("id") or payment.get("payment_row_id")
+                    elif isinstance(payment, (tuple, list)):
+                        raw_payment_row_id = payment[0] if payment else None
+                    else:
+                        raw_payment_row_id = getattr(payment, "id", None)
+                    if raw_payment_row_id is not None and str(raw_payment_row_id).strip() != "":
+                        parsed_payment_row_id = int(raw_payment_row_id)
+                        if parsed_payment_row_id > 0:
+                            payment_row_id = parsed_payment_row_id
+                except Exception:
+                    payment_row_id = None
             q = {
                 "status": "ok" if ok else "ng",
                 "payment_id": pid or "",
                 "receipt": (payment or {}).get("square_receipt_url") or "",
                 "payment_token": payment_token or "",
             }
+            if payment_row_id is not None:
+                q["payment_row_id"] = str(payment_row_id)
             u = urlparse(ret)
             merged = dict(parse_qsl(u.query)); merged.update({k:v for k,v in q.items() if v})
             new_q = urlencode(merged)
             new_url = urlunparse((u.scheme, u.netloc, u.path, u.params, new_q, u.fragment))
+            logging.info(
+                "payment thanks redirect event_uuid=%s payment_id=%s payment_token=%s payment_row_id=%s return_url=%s",
+                event_uuid,
+                pid,
+                payment_token,
+                payment_row_id,
+                u.path or new_url,
+            )
             return redirect(new_url)
     except Exception:
         logging.exception("thanks: external redirect failed")
