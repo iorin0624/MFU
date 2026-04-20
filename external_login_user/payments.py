@@ -811,6 +811,22 @@ def pay_start(event_uuid: str):
     if lecture and (auto_approve_hit or _lecture_auto_approve_from_iv_session(event_uuid)):
         lecture_auto_approve = True
 
+    def _ensure_redirect_pay_ctx(*, return_url: str, payment_uuid: str, payment_token: str) -> None:
+        ctx = session.get("pay_ctx") or {}
+        if not isinstance(ctx, dict):
+            ctx = {}
+        merged = dict(ctx)
+        merged.update({
+            "return_url": return_url,
+            "payment_uuid": payment_uuid,
+            "event_uuid": event_uuid,
+            "payment_token": payment_token,
+            "expected_amount_yen": int(fee) if fee else None,
+            "event_id": ev["id"],
+            "ext_user_id": me["id"],
+        })
+        session["pay_ctx"] = merged
+
     if request.method == "POST":
         picked = (request.form.get("method") or "").strip()
         if picked == "card":
@@ -849,6 +865,11 @@ def pay_start(event_uuid: str):
                 payment_token=payment_token,
                 iv=iv or None,
                 _external=True,
+            )
+            _ensure_redirect_pay_ctx(
+                return_url=return_url,
+                payment_uuid=pay_ev_uuid,
+                payment_token=payment_token,
             )
             dest = (
                 f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
@@ -912,6 +933,11 @@ def pay_start(event_uuid: str):
         iv=iv or None,
         _external=True,
     )
+    _ensure_redirect_pay_ctx(
+        return_url=return_url,
+        payment_uuid=pay_ev_uuid,
+        payment_token=payment_token,
+    )
     dest = (
         f"{PAYMENT_ENTRY_BASE()}{pay_ev_uuid}"
         f"?autofill=1&payment_token={payment_token}&return_url={quote(return_url, safe='')}"
@@ -954,6 +980,15 @@ def pay_return(event_uuid: str):
         payment_row_id = None
     amt_raw = (q.get("amount_yen") or q.get("amount") or q.get("total_yen") or q.get("total") or None)
     token = (q.get("payment_token") or (session.get("pay_ctx") or {}).get("payment_token") or None)
+    current_app.logger.info(
+        "pay_return entry event_uuid=%s path=%s query_string=%s status=%s payment_token=%s query_payment_row_id=%s",
+        event_uuid,
+        request.path,
+        request.query_string.decode("utf-8", errors="ignore"),
+        status,
+        _mask_payment_token(token),
+        payment_row_id,
+    )
 
     # ①URL → ②トークン → ③セッション → ④イベントfee_yen（既存のまま）
     paid_amount_yen = None
