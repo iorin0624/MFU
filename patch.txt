@@ -1,240 +1,78 @@
-diff --git a/__init__.py b/__init__.py
-index 2c15944d2e98c260078632a4a382d8013b883b93..41995eeb0b742a6ccab619fa0d28a7845f47f3b7 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -1065,51 +1065,51 @@ def submit_upload():
-     os.chmod(thumb_dir, 0o750)
- 
-     with ThreadPoolExecutor(max_workers=8) as executor:
-         futures = []
-         for fs, original_name in validated_files:
-             save_path = os.path.join(original_dir, original_name)
-             futures.append((original_name, executor.submit(save_file_chunked, fs, save_path)))
-         for original_name, fut in futures:
-             if fut.result():
-                 filenames.append(original_name)
-                 saved_count += 1
-             else:
-                 failed.append(original_name)
- 
-     # =====================================
-     # ④ DB登録（uploads / files）
-     #   ※ files には created_at 列が無い前提で INSERT を修正
-     # =====================================
-     db = get_db()
-     cur = db.cursor()
-     cur.execute(
-         """
-         INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
-         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-         """,
--        (uid, title, date, expire_at, mode, username, "", "", password_hash),
-+        (uid, title, date, expire_at, mode, username, "", password, password_hash),
-     )
-     upload_id = cur.lastrowid
-     if filenames:
-         cur.executemany(
-             "INSERT INTO files (upload_id, filename) VALUES (%s, %s)",
-             [(upload_id, name) for name in filenames],
-         )
-     db.commit()
-     db.close()
- 
-     # =====================================
-     # ⑤ テンプレートメッセージ生成＆保存（messages）
-     # =====================================
-     public_base = current_app.config.get("PUBLIC_BASE_URL")
-     if not public_base:
-         try:
-             public_base = PUBLIC_BASE_URL  # グローバル定義があれば使用
-         except NameError:
-             public_base = request.url_root.rstrip("/")
- 
-     context = {
-         "uid": uid,
-         "title": title,
-         "date": (date.strftime("%Y-%m-%d") if isinstance(date, (datetime, date_cls)) else str(date or "")),
-         "expire": expire_str,
-diff --git a/utils/ext_api_uploads.py b/utils/ext_api_uploads.py
-index 35a92d01c1e7e4f6d74982ca2cccd344a5702f91..cfb6b7ba7e5ccc8348b07ef4536e4054db39ca67 100644
---- a/utils/ext_api_uploads.py
-+++ b/utils/ext_api_uploads.py
-@@ -95,77 +95,107 @@ def _unique_path(dst_dir: str, filename: str) -> Tuple[str, str]:
-     """同名が存在したら (n) を付けて衝突回避。"""
-     root, ext = os.path.splitext(filename)
-     candidate = filename
-     full = os.path.join(dst_dir, candidate)
-     n = 1
-     while os.path.exists(full):
-         candidate = f"{root}({n}){ext}"
-         full = os.path.join(dst_dir, candidate)
-         n += 1
-     return full, candidate
- 
- 
- def _ensure_upload_row(uuid32: str) -> Optional[int]:
-     """uploads.uuid = uuid32 の行を取得して upload_id（int）を返す。"""
-     db = get_db()
-     cur = db.cursor()
-     cur.execute("SELECT id FROM uploads WHERE uuid=%s", (uuid32,))
-     row = cur.fetchone()
-     cur.close()
-     if not row:
-         return None
-     if isinstance(row, dict):
-         return int(row.get("id"))
-     return int(row[0])
- 
-+
-+def _resolve_mode_config(username: str, mode: str) -> Optional[dict]:
-+    db = get_db()
-+    cur = db.cursor(dictionary=True)
-+    cur.execute(
-+        """SELECT username, mode, label, enable_download_url, require_password,
-+                  enable_layer_upload_url, generate_thumbnails, template_key
-+           FROM upload_modes
-+           WHERE mode = %s
-+             AND (username = %s OR username IS NULL OR username = '' OR username = '*')
-+           ORDER BY
-+             CASE
-+               WHEN username = %s THEN 0
-+               WHEN username = '*' THEN 1
-+               WHEN username = '' THEN 2
-+               WHEN username IS NULL THEN 3
-+               ELSE 9
-+             END
-+           LIMIT 1
-+        """,
-+        (mode, username, username),
-+    )
-+    row = cur.fetchone()
-+    cur.close()
-+    return row
-+
- # ---- ルーティング ----
- @ext_up.route("/create", methods=["POST"])
- def create_upload():
-     """アップロード枠の作成"""
-     _auth_required()
-     data = request.get_json(silent=True) or {}
-     title = (data.get("title") or "").strip()
-     date_str = _parse_date(data.get("date"))
-     mode = (data.get("mode") or "").strip()
-     username = (data.get("username") or "").strip()
--    require_password = bool(data.get("require_password"))
--
-     if not mode or not username:
-         return jsonify({"ok": False, "error": "missing mode/username"}), 400
- 
-+    mode_config = _resolve_mode_config(username, mode)
-+    if not mode_config:
-+        return jsonify({"ok": False, "error": "unknown mode"}), 400
-+
-+    require_password = bool(mode_config.get("require_password"))
-+
-     uuid32 = _uuid.uuid4().hex
-     password = secrets.token_hex(4) if require_password else ""
-     password_hash = hash_upload_password(password) if password else None
-     _mk_dirs(uuid32)
-     expire_at = (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
- 
-     db = get_db()
-     cur = db.cursor()
-     cur.execute(
-         """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
--        (uuid32, title, date_str, expire_at, mode, username, "", "", password_hash),
-+        (uuid32, title, date_str, expire_at, mode, username, "", password, password_hash),
-     )
-     db.commit()
-     cur.close()
-     return jsonify({"ok": True, "uuid": uuid32, "password": password})
- 
- 
- @ext_up.route("/original", methods=["POST"])
- def push_original():
-     """原本ファイルの保存"""
-     _auth_required()
-     uuid32 = (request.form.get("uuid") or "").strip()
-     file = request.files.get("file")
-     if not uuid32 or not file:
-         return jsonify({"ok": False, "error": "missing uuid/file"}), 400
- 
-     upload_id = _ensure_upload_row(uuid32)
-     if upload_id is None:
-         return jsonify({"ok": False, "error": "unknown uuid"}), 404
- 
-     o_dir = os.path.join(UPLOAD_BASE_DIR, uuid32, "original")
-     os.makedirs(o_dir, exist_ok=True)
-     safe_name = sanitize_filename(file.filename or "file", set())
-     full, real_name = _unique_path(o_dir, safe_name)
-     file.save(full)
- 
-@@ -286,62 +316,57 @@ def mark_upload_done():
-     data = request.get_json(silent=True) or {}
-     uuid32 = (data.get("uuid") or "").strip()
-     if not uuid32:
-         return jsonify({"ok": False, "error": "missing uuid"}), 400
- 
-     db = get_db()
-     cur = db.cursor(dictionary=True)
-     cur.execute(
-         "SELECT id, mode, username, title, date, expire_at, password FROM uploads WHERE uuid=%s",
-         (uuid32,),
-     )
-     up = cur.fetchone()
-     if not up:
-         cur.close(); db.close()
-         return jsonify({"ok": False, "error": "unknown uuid"}), 404
- 
-     upload_id = up["id"]
-     cur.execute("SELECT filename FROM files WHERE upload_id=%s ORDER BY id", (upload_id,))
-     rows = cur.fetchall() or []
-     filenames = [r["filename"] for r in rows]
- 
-     cur.execute("SELECT nickname FROM users WHERE username = %s", (up["username"],))
-     urow = cur.fetchone() or {}
-     nickname = (urow.get("nickname") or "").strip() or up["username"]
- 
--    # ★ generate_thumbnails を取得
--    cur.execute(
--        "SELECT enable_download_url, enable_layer_upload_url, generate_thumbnails "
--        "FROM upload_modes WHERE username=%s AND mode=%s",
--        (up["username"], up["mode"]),
--    )
--    mrow = cur.fetchone() or {}
--    enable_download_url = bool(mrow.get("enable_download_url"))
--    enable_layer_upload_url = bool(mrow.get("enable_layer_upload_url"))
--    gen_thumbs = bool(mrow.get("generate_thumbnails"))
-     cur.close(); db.close()
- 
-+    mode_cfg = _resolve_mode_config(up["username"], up["mode"]) or {}
-+    enable_download_url = bool(mode_cfg.get("enable_download_url"))
-+    enable_layer_upload_url = bool(mode_cfg.get("enable_layer_upload_url"))
-+    gen_thumbs = bool(mode_cfg.get("generate_thumbnails"))
-+
-     d = up.get("date")
-     d_str = d.strftime("%Y-%m-%d") if isinstance(d, (datetime, date_cls)) else str(d or "")
-     ex = up.get("expire_at")
-     expire_str = ex.strftime("%Y-%m-%d") if isinstance(ex, (datetime, date_cls)) else str(ex or "")
- 
-     base = "https://mfu.iori0624.jp".rstrip("/")
-     link_url = f"{base}/view/{uuid32}" if enable_download_url else ""
-     layer_url = f"{base}/layer_upload/{uuid32}" if enable_layer_upload_url else ""
- 
-     context = {
-         "title": up.get("title") or "",
-         "date": d_str,
-         "link": link_url,
-         "password": up.get("password") or "",
-         "layer_upload_url": layer_url,
-         "expire": expire_str,
-         "username": up.get("username"),
-         "nickname": nickname,
+diff --git a/shipment_tracking/parsers.py b/shipment_tracking/parsers.py
+index ded0a63bc82b7eb6ede38e3522e7b6f0fe2076ce..5bc3506d3b38128198abf31095ba534399a7f0f7 100644
+--- a/shipment_tracking/parsers.py
++++ b/shipment_tracking/parsers.py
+@@ -93,70 +93,70 @@ def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) ->
+             "phone": None,
+             "fax": None,
+             "office_code": None,
+             "postal_code": None,
+             "prefecture": None,
+         },
+         "delivery_office": {
+             "name": None,
+             "phone": None,
+             "fax": None,
+             "office_code": None,
+             "postal_code": None,
+             "prefecture": None,
+         },
+         "contact_offices": [],
+         "history": [],
      }
  
-     base_dir = os.path.join(UPLOAD_BASE_DIR, uuid32)
-     original_dir = os.path.join(base_dir, "original")
-     thumb_dir = os.path.join(base_dir, "thumb")
  
-     from flask import current_app
+ def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
+     if BeautifulSoup is None:
+         raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
+     soup = BeautifulSoup(html, "html.parser")
+     payload = _base_payload("sagawa", tracking_number, tracking_url)
+ 
+-    payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "お問い合わせ送り状No.", "配達状況"])  # type: ignore
++    payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "配達状況"])  # type: ignore
+     payload["current_status_detail"] = _find_value_near_label(soup, ["詳細", "担当営業所"])
+     payload["scheduled_delivery_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["お届け予定日", "配達指定日"]))
+     payload["ship_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["出荷日", "発送日"]))
+     payload["package_count"] = _find_value_near_label(soup, ["個数"])
+ 
+     payload["origin_office"]["name"] = _find_value_near_label(soup, ["出荷営業所", "荷送人"])
+     payload["origin_office"]["phone"] = _find_value_near_label(soup, ["出荷営業所電話番号", "荷送人電話番号"])
+     payload["origin_office"]["fax"] = _find_value_near_label(soup, ["出荷営業所FAX", "荷送人FAX"])
+     payload["delivery_office"]["name"] = _find_value_near_label(soup, ["配達営業所", "お届け先"])
+     payload["delivery_office"]["phone"] = _find_value_near_label(soup, ["配達営業所電話番号", "お届け先電話番号"])
+     payload["delivery_office"]["fax"] = _find_value_near_label(soup, ["配達営業所FAX", "お届け先FAX"])
+ 
+     for tr in soup.select("table tr"):
+         tds = tr.find_all("td")
+         if len(tds) < 2:
+             continue
+         values = [_text(td) for td in tds]
+-        status = values[1] if len(values) > 1 else None
+-        occurred = _parse_jp_datetime(values[0])
++        status = values[0] if len(values) > 0 else None
++        occurred = _parse_jp_datetime(values[1]) if len(values) > 1 else None
+         office = values[2] if len(values) > 2 else None
+         if not status:
+             continue
+         payload["history"].append(
+             {
+                 "status": status,
+                 "occurred_at": occurred,
+                 "office_name": office,
+                 "office_code": None,
+                 "postal_code": None,
+                 "prefecture": None,
+                 "detail": values[3] if len(values) > 3 else None,
+             }
+         )
+ 
+     payload["history"] = [h for h in payload["history"] if h.get("status")]
+     if payload["history"]:
+         payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
+         payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
+ 
+     current_status = payload.get("current_status") or ""
+     payload["completed"] = "配達完了" in current_status
+     return payload
+ 
+ 
