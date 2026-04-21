@@ -1,78 +1,134 @@
-diff --git a/shipment_tracking/parsers.py b/shipment_tracking/parsers.py
-index ded0a63bc82b7eb6ede38e3522e7b6f0fe2076ce..5bc3506d3b38128198abf31095ba534399a7f0f7 100644
---- a/shipment_tracking/parsers.py
-+++ b/shipment_tracking/parsers.py
-@@ -93,70 +93,70 @@ def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) ->
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
-             "prefecture": None,
-         },
-         "delivery_office": {
-             "name": None,
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
-             "prefecture": None,
-         },
-         "contact_offices": [],
-         "history": [],
-     }
+diff --git a/shipment_tracking/services.py b/shipment_tracking/services.py
+index 788bd5047a38b7025f19b19431d48cbf423eee39..bfbad72af20dea82451c3a68b58f11219b5fa09f 100644
+--- a/shipment_tracking/services.py
++++ b/shipment_tracking/services.py
+@@ -1,43 +1,44 @@
+ from __future__ import annotations
+ 
+ import json
+ import re
+ from datetime import datetime
+ from typing import Any
+ 
+ import requests
+ from flask import current_app
+ from mysql.connector import IntegrityError
+ 
+ from app.utils.db import get_db
+ 
+ from .models import CARRIER_MASTER, TRIGGERED_BY_VALUES
+ from .parsers import parse_japanpost, parse_sagawa, parse_yamato
+ 
+ REQUEST_TIMEOUT = (5, 20)
+ USER_AGENT = "MFU-ShipmentTracking/1.0 (+https://mfu.local)"
++AUTO_DEACTIVATE_STATUSES = {"お届け先にお届け済み", "配達完了", "⇒配達完了"}
  
  
- def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-     if BeautifulSoup is None:
-         raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
-     soup = BeautifulSoup(html, "html.parser")
-     payload = _base_payload("sagawa", tracking_number, tracking_url)
+ class ShipmentTrackingError(Exception):
+     pass
  
--    payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "お問い合わせ送り状No.", "配達状況"])  # type: ignore
-+    payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "配達状況"])  # type: ignore
-     payload["current_status_detail"] = _find_value_near_label(soup, ["詳細", "担当営業所"])
-     payload["scheduled_delivery_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["お届け予定日", "配達指定日"]))
-     payload["ship_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["出荷日", "発送日"]))
-     payload["package_count"] = _find_value_near_label(soup, ["個数"])
  
-     payload["origin_office"]["name"] = _find_value_near_label(soup, ["出荷営業所", "荷送人"])
-     payload["origin_office"]["phone"] = _find_value_near_label(soup, ["出荷営業所電話番号", "荷送人電話番号"])
-     payload["origin_office"]["fax"] = _find_value_near_label(soup, ["出荷営業所FAX", "荷送人FAX"])
-     payload["delivery_office"]["name"] = _find_value_near_label(soup, ["配達営業所", "お届け先"])
-     payload["delivery_office"]["phone"] = _find_value_near_label(soup, ["配達営業所電話番号", "お届け先電話番号"])
-     payload["delivery_office"]["fax"] = _find_value_near_label(soup, ["配達営業所FAX", "お届け先FAX"])
+ def normalize_tracking_number(value: str) -> str:
+     return re.sub(r"\D", "", value or "")
  
-     for tr in soup.select("table tr"):
-         tds = tr.find_all("td")
-         if len(tds) < 2:
-             continue
-         values = [_text(td) for td in tds]
--        status = values[1] if len(values) > 1 else None
--        occurred = _parse_jp_datetime(values[0])
-+        status = values[0] if len(values) > 0 else None
-+        occurred = _parse_jp_datetime(values[1]) if len(values) > 1 else None
-         office = values[2] if len(values) > 2 else None
-         if not status:
-             continue
-         payload["history"].append(
-             {
-                 "status": status,
-                 "occurred_at": occurred,
-                 "office_name": office,
-                 "office_code": None,
-                 "postal_code": None,
-                 "prefecture": None,
-                 "detail": values[3] if len(values) > 3 else None,
-             }
+ 
+ def ensure_shipment_tracking_schema() -> None:
+     db = get_db()
+     cur = db.cursor()
+     cur.execute(
+         """
+         CREATE TABLE IF NOT EXISTS shipment_tracking_target (
+             id INT AUTO_INCREMENT PRIMARY KEY,
+             carrier_code VARCHAR(32) NOT NULL,
+             tracking_number VARCHAR(64) NOT NULL,
+             label VARCHAR(255) NULL,
+             is_active TINYINT(1) NOT NULL DEFAULT 1,
+             last_checked_at DATETIME NULL,
+             last_check_success_at DATETIME NULL,
+             last_error_text TEXT NULL,
+             last_payload_json LONGTEXT NULL,
+@@ -285,78 +286,84 @@ def toggle_target_active(target_id: int) -> bool:
+     db.close()
+     return bool(new_value)
+ 
+ 
+ def run_check(target_id: int, triggered_by: str) -> bool:
+     if triggered_by not in TRIGGERED_BY_VALUES:
+         raise ShipmentTrackingError("triggered_by が不正です。")
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     cur.execute("SELECT * FROM shipment_tracking_target WHERE id=%s", (target_id,))
+     target = cur.fetchone()
+     if not target:
+         db.close()
+         raise ShipmentTrackingError("対象が見つかりません。")
+ 
+     checked_at = _now()
+     prev_payload_json = target.get("last_payload_json")
+ 
+     try:
+         payload = fetch_and_parse(target["carrier_code"], target["tracking_number"])
+         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+         changed = True if not prev_payload_json else prev_payload_json != payload_json
+         latest_event_at = _parse_payload_datetime(payload.get("latest_event_at"))
+         current_status = payload.get("current_status")
++        should_deactivate = current_status in AUTO_DEACTIVATE_STATUSES
+         current_status_detail = payload.get("current_status_detail")
+         completed = 1 if payload.get("completed") else 0
+ 
+         cur_plain = db.cursor()
+         cur_plain.execute(
+             """
+             UPDATE shipment_tracking_target
+                SET last_checked_at=%s,
+                    last_check_success_at=%s,
+                    last_error_text=NULL,
+                    last_payload_json=%s,
+                    last_current_status=%s,
+                    last_current_status_detail=%s,
+                    last_latest_event_at=%s,
+                    last_completed=%s
+              WHERE id=%s
+             """,
+             (
+                 checked_at,
+                 checked_at,
+                 payload_json,
+                 current_status,
+                 current_status_detail,
+                 latest_event_at,
+                 completed,
+                 target_id,
+             ),
          )
- 
-     payload["history"] = [h for h in payload["history"] if h.get("status")]
-     if payload["history"]:
-         payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
-         payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
- 
-     current_status = payload.get("current_status") or ""
-     payload["completed"] = "配達完了" in current_status
-     return payload
- 
- 
++        if should_deactivate:
++            cur_plain.execute(
++                "UPDATE shipment_tracking_target SET is_active=0 WHERE id=%s",
++                (target_id,),
++            )
+         cur_plain.execute(
+             """
+             INSERT INTO shipment_tracking_log
+                 (target_id, triggered_by, checked_at, success, changed, error_text,
+                  payload_json, current_status, current_status_detail, latest_event_at)
+             VALUES
+                 (%s, %s, %s, 1, %s, NULL, %s, %s, %s, %s)
+             """,
+             (
+                 target_id,
+                 triggered_by,
+                 checked_at,
+                 1 if changed else 0,
+                 payload_json,
+                 current_status,
+                 current_status_detail,
+                 latest_event_at,
+             ),
+         )
+         db.commit()
+         return True
+     except Exception as exc:
+         error_text = str(exc)
+         current_app.logger.exception(
+             "[shipment_tracking] check failed target_id=%s carrier=%s tracking_number=%s",
