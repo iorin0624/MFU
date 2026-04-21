@@ -115,7 +115,7 @@ def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str
     soup = BeautifulSoup(html, "html.parser")
     payload = _base_payload("sagawa", tracking_number, tracking_url)
 
-    payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "お問い合わせ送り状No.", "配達状況"])  # type: ignore
+    payload["current_status"] = _find_value_near_label(soup, ["現在の状況", "配達状況"])  # type: ignore
     payload["current_status_detail"] = _find_value_near_label(soup, ["詳細", "担当営業所"])
     payload["scheduled_delivery_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["お届け予定日", "配達指定日"]))
     payload["ship_date"] = _parse_jp_datetime(_find_value_near_label(soup, ["出荷日", "発送日"]))
@@ -133,8 +133,8 @@ def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str
         if len(tds) < 2:
             continue
         values = [_text(td) for td in tds]
-        status = values[1] if len(values) > 1 else None
-        occurred = _parse_jp_datetime(values[0])
+        status = values[0] if len(values) > 0 else None
+        occurred = _parse_jp_datetime(values[1]) if len(values) > 1 else None
         office = values[2] if len(values) > 2 else None
         if not status:
             continue
