@@ -16,6 +16,7 @@ from .parsers import parse_japanpost, parse_sagawa, parse_yamato
 
 REQUEST_TIMEOUT = (5, 20)
 USER_AGENT = "MFU-ShipmentTracking/1.0 (+https://mfu.local)"
+AUTO_DEACTIVATE_STATUSES = {"お届け先にお届け済み", "配達完了", "⇒配達完了"}
 
 
 class ShipmentTrackingError(Exception):
@@ -307,6 +308,7 @@ def run_check(target_id: int, triggered_by: str) -> bool:
         changed = True if not prev_payload_json else prev_payload_json != payload_json
         latest_event_at = _parse_payload_datetime(payload.get("latest_event_at"))
         current_status = payload.get("current_status")
+        should_deactivate = current_status in AUTO_DEACTIVATE_STATUSES
         current_status_detail = payload.get("current_status_detail")
         completed = 1 if payload.get("completed") else 0
 
@@ -335,6 +337,11 @@ def run_check(target_id: int, triggered_by: str) -> bool:
                 target_id,
             ),
         )
+        if should_deactivate:
+            cur_plain.execute(
+                "UPDATE shipment_tracking_target SET is_active=0 WHERE id=%s",
+                (target_id,),
+            )
         cur_plain.execute(
             """
             INSERT INTO shipment_tracking_log
