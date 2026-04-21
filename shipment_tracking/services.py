@@ -130,6 +130,62 @@ def _http_get(url: str) -> str:
     return response.text
 
 
+def _get_admin_discord_webhook_url() -> str | None:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute(
+            "SELECT webhook_url FROM users WHERE username=%s LIMIT 1",
+            ("admin",),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        webhook_url = (row.get("webhook_url") or "").strip()
+        return webhook_url or None
+    finally:
+        db.close()
+
+
+def _build_shipment_tracking_discord_embed(
+    target: dict[str, Any],
+    payload: dict[str, Any],
+    current_status: Any,
+    current_status_detail: Any,
+    latest_event_at: datetime | None,
+    triggered_by: str,
+) -> dict[str, Any]:
+    color = 0x2ECC71 if current_status in AUTO_DEACTIVATE_STATUSES else 0x3498DB
+    latest_event_at_text = "-"
+    if latest_event_at:
+        latest_event_at_text = latest_event_at.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        latest_event_at_text = payload.get("latest_event_at") or "-"
+    return {
+        "title": "📦 配送追跡が更新されました",
+        "description": "配達状況に進捗がありました。",
+        "color": color,
+        "fields": [
+            {"name": "ラベル", "value": target.get("label") or "-", "inline": False},
+            {
+                "name": "業者",
+                "value": CARRIER_MASTER.get(target["carrier_code"], target["carrier_code"]),
+                "inline": False,
+            },
+            {"name": "配達番号", "value": target["tracking_number"], "inline": False},
+            {"name": "最新状態", "value": current_status or "-", "inline": False},
+            {"name": "最新詳細", "value": current_status_detail or "-", "inline": False},
+            {"name": "最新イベント時刻", "value": latest_event_at_text, "inline": False},
+            {"name": "追跡リンク", "value": payload.get("tracking_url") or "-", "inline": False},
+            {"name": "実行種別", "value": triggered_by, "inline": False},
+        ],
+    }
+
+
+def _send_shipment_tracking_discord_notification(webhook_url: str, embed: dict[str, Any]) -> None:
+    requests.post(webhook_url, json={"embeds": [embed]}, timeout=10).raise_for_status()
+
+
 def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
     url = f"https://k2k.sagawa-exp.co.jp/p/web/okurijosearch.do?okurijoNo={tracking_number}"
     return url, _http_get(url)
@@ -311,6 +367,22 @@ def run_check(target_id: int, triggered_by: str) -> bool:
         should_deactivate = current_status in AUTO_DEACTIVATE_STATUSES
         current_status_detail = payload.get("current_status_detail")
         completed = 1 if payload.get("completed") else 0
+        previous_status = target.get("last_current_status")
+        previous_detail = target.get("last_current_status_detail")
+        previous_latest_event_at = target.get("last_latest_event_at")
+        has_previous_success = bool(
+            previous_status is not None
+            or previous_detail is not None
+            or previous_latest_event_at is not None
+        )
+        progress_changed = (
+            previous_status != current_status
+            or previous_detail != current_status_detail
+            or previous_latest_event_at != latest_event_at
+        )
+        should_notify_discord = (
+            triggered_by in ("manual", "scheduled") and has_previous_success and progress_changed
+        )
 
         cur_plain = db.cursor()
         cur_plain.execute(
@@ -362,6 +434,24 @@ def run_check(target_id: int, triggered_by: str) -> bool:
             ),
         )
         db.commit()
+        if should_notify_discord:
+            webhook_url = _get_admin_discord_webhook_url()
+            if webhook_url:
+                embed = _build_shipment_tracking_discord_embed(
+                    target=target,
+                    payload=payload,
+                    current_status=current_status,
+                    current_status_detail=current_status_detail,
+                    latest_event_at=latest_event_at,
+                    triggered_by=triggered_by,
+                )
+                try:
+                    _send_shipment_tracking_discord_notification(webhook_url, embed)
+                except Exception:
+                    current_app.logger.exception(
+                        "[shipment_tracking] discord webhook notify failed target_id=%s",
+                        target_id,
+                    )
         return True
     except Exception as exc:
         error_text = str(exc)
