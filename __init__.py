@@ -1087,7 +1087,7 @@ def submit_upload():
         INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (uid, title, date, expire_at, mode, username, "", "", password_hash),
+        (uid, title, date, expire_at, mode, username, "", password, password_hash),
     )
     upload_id = cur.lastrowid
     if filenames:
