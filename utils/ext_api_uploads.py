@@ -117,6 +117,32 @@ def _ensure_upload_row(uuid32: str) -> Optional[int]:
         return int(row.get("id"))
     return int(row[0])
 
+
+def _resolve_mode_config(username: str, mode: str) -> Optional[dict]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        """SELECT username, mode, label, enable_download_url, require_password,
+                  enable_layer_upload_url, generate_thumbnails, template_key
+           FROM upload_modes
+           WHERE mode = %s
+             AND (username = %s OR username IS NULL OR username = '' OR username = '*')
+           ORDER BY
+             CASE
+               WHEN username = %s THEN 0
+               WHEN username = '*' THEN 1
+               WHEN username = '' THEN 2
+               WHEN username IS NULL THEN 3
+               ELSE 9
+             END
+           LIMIT 1
+        """,
+        (mode, username, username),
+    )
+    row = cur.fetchone()
+    cur.close()
+    return row
+
 # ---- ルーティング ----
 @ext_up.route("/create", methods=["POST"])
 def create_upload():
@@ -127,10 +153,14 @@ def create_upload():
     date_str = _parse_date(data.get("date"))
     mode = (data.get("mode") or "").strip()
     username = (data.get("username") or "").strip()
-    require_password = bool(data.get("require_password"))
-
     if not mode or not username:
         return jsonify({"ok": False, "error": "missing mode/username"}), 400
+
+    mode_config = _resolve_mode_config(username, mode)
+    if not mode_config:
+        return jsonify({"ok": False, "error": "unknown mode"}), 400
+
+    require_password = bool(mode_config.get("require_password"))
 
     uuid32 = _uuid.uuid4().hex
     password = secrets.token_hex(4) if require_password else ""
@@ -143,7 +173,7 @@ def create_upload():
     cur.execute(
         """INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (uuid32, title, date_str, expire_at, mode, username, "", "", password_hash),
+        (uuid32, title, date_str, expire_at, mode, username, "", password, password_hash),
     )
     db.commit()
     cur.close()
@@ -308,17 +338,12 @@ def mark_upload_done():
     urow = cur.fetchone() or {}
     nickname = (urow.get("nickname") or "").strip() or up["username"]
 
-    # ★ generate_thumbnails を取得
-    cur.execute(
-        "SELECT enable_download_url, enable_layer_upload_url, generate_thumbnails "
-        "FROM upload_modes WHERE username=%s AND mode=%s",
-        (up["username"], up["mode"]),
-    )
-    mrow = cur.fetchone() or {}
-    enable_download_url = bool(mrow.get("enable_download_url"))
-    enable_layer_upload_url = bool(mrow.get("enable_layer_upload_url"))
-    gen_thumbs = bool(mrow.get("generate_thumbnails"))
     cur.close(); db.close()
+
+    mode_cfg = _resolve_mode_config(up["username"], up["mode"]) or {}
+    enable_download_url = bool(mode_cfg.get("enable_download_url"))
+    enable_layer_upload_url = bool(mode_cfg.get("enable_layer_upload_url"))
+    gen_thumbs = bool(mode_cfg.get("generate_thumbnails"))
 
     d = up.get("date")
     d_str = d.strftime("%Y-%m-%d") if isinstance(d, (datetime, date_cls)) else str(d or "")
