@@ -10,18 +10,26 @@
         <div class="col-md-6"><label class="form-label">Cc</label><input class="form-control" type="text" name="cc_email" value="{{ form_data.cc_email or '' }}"></div>
         <div class="col-md-6"><label class="form-label">Bcc</label><input class="form-control" name="bcc_email" value="{{ form_data.bcc_email or '' }}"></div>
         <div class="col-12"><div class="form-text mt-0">送信元は <code>noreply@mail.iori0624.jp</code> 固定です。発行者メールアドレスがある場合、Reply-To と Cc に自動設定されます。</div></div>
-        {% if invoice.bank_info_mode == 'payout_link' %}
-        <div class="col-12"><div class="alert alert-info py-2 mb-0">この請求書は送信時に振込先リンクが自動挿入されます。本文にリンクがなくても、送信直前にサーバー側で追記されます。</div></div>
-        {% endif %}
         <div class="col-12"><label class="form-label">件名</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}"></div>
         <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
+        <div class="col-12">
+          <label class="form-label">最終送信本文プレビュー</label>
+          <pre class="form-control" style="height: 14rem; white-space: pre-wrap;">{{ preview_body or '' }}</pre>
+        </div>
+        <div class="col-12">
+          <div class="small">
+            <div><strong>PayOutリンク:</strong> {{ payout_access_url or '（なし）' }}</div>
+            <div><strong>カード決済リンク:</strong> {{ card_payment_url or '（なし）' }}</div>
+          </div>
+        </div>
         <div class="col-12 form-check">
-          <input class="form-check-input" type="checkbox" value="yes" id="confirmSend" name="confirm_send">
+          <input class="form-check-input" type="checkbox" value="yes" id="confirmSend" name="confirm_send" {% if form_data.confirm_send == 'yes' %}checked{% endif %}>
           <label class="form-check-label" for="confirmSend">送信前に内容を確認しました</label>
         </div>
       </div>
       <div class="mt-3 d-flex gap-2">
-        <button class="btn btn-primary" type="submit" onclick="return confirm('請求書PDFを添付して送信します。よろしいですか？');">送信する</button>
+        <button class="btn btn-outline-primary" type="submit" name="action" value="preview">プレビュー更新</button>
+        <button class="btn btn-primary" type="submit" name="action" value="send" onclick="return confirm('請求書PDFを添付して送信します。よろしいですか？');">送信する</button>
         <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_detail', invoice_id=invoice.id) }}">戻る</a>
       </div>
     </div></form>

@@ -407,6 +407,42 @@ def invoice_pdf(invoice_id: int):
     return send_file(pdf_path, as_attachment=True, download_name=visible_name, mimetype="application/pdf")
 
 
+def _resolve_invoice_mail_payment_links(invoice: dict, invoice_id: int) -> tuple[str | None, str | None]:
+    normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
+    invoice_status = str(invoice.get("status") or "").strip().lower()
+    try:
+        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
+    except (TypeError, ValueError):
+        card_payment_enabled = False
+
+    payout_access_url = None
+    if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
+        payout_access = issue_payout_access_token_for_invoice(invoice)
+        payout_access_url = payout_access.get("access_url") or ""
+        save_invoice_payout_token(invoice_id, payout_access.get("id"))
+
+    card_payment_url = None
+    if card_payment_enabled and invoice_status not in {"paid", "cancelled"}:
+        card_token = ensure_invoice_card_payment_token(invoice_id)
+        card_payment_url = build_invoice_card_payment_url(card_token)
+    return payout_access_url, card_payment_url
+
+
+def _build_invoice_mail_preview_context(invoice: dict, invoice_id: int, base_body: str) -> dict[str, str | None]:
+    payout_access_url, card_payment_url = _resolve_invoice_mail_payment_links(invoice, invoice_id)
+    preview_body = build_invoice_mail_body_with_payment_guidance(
+        invoice=invoice,
+        body=base_body,
+        payout_access_url=payout_access_url,
+        card_payment_url=card_payment_url,
+    )
+    return {
+        "payout_access_url": payout_access_url,
+        "card_payment_url": card_payment_url,
+        "preview_body": preview_body,
+    }
+
+
 @invoice_bp.route("/<int:invoice_id>/mail", methods=["GET", "POST"])
 @login_required
 def invoice_mail(invoice_id: int):
@@ -433,57 +469,51 @@ def invoice_mail(invoice_id: int):
         "subject": build_mail_subject(invoice.get("subject")),
         "body": build_default_invoice_mail_body(mail_context),
     }
+    def _render_mail_form(form_data: dict, *, preview_context: dict | None = None):
+        resolved_preview = preview_context or {}
+        preview_body = resolved_preview.get("preview_body")
+        if preview_body is None:
+            preview_body = build_invoice_mail_body_with_payment_guidance(invoice=invoice, body=form_data.get("body") or "")
+        return render_template(
+            "invoice_mail_form.html",
+            invoice=invoice,
+            form_data=form_data,
+            preview_body=preview_body,
+            payout_access_url=resolved_preview.get("payout_access_url"),
+            card_payment_url=resolved_preview.get("card_payment_url"),
+        )
+
     if request.method == "POST":
+        action = (request.form.get("action") or "send").strip().lower()
         to_email = (request.form.get("to_email") or "").strip()
         cc_email = (request.form.get("cc_email") or "").strip()
         final_cc_email = merge_invoice_cc_emails(effective_issuer_email, cc_email)
         bcc_email = (request.form.get("bcc_email") or "").strip()
         subject = (request.form.get("subject") or "").strip()
         body = request.form.get("body") or ""
+        form_data = dict(request.form)
+        form_data["body"] = body
+        try:
+            preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, body)
+        except Exception as exc:
+            flash(f"決済用リンクの生成に失敗しました。{exc}", "danger")
+            preview_context = {
+                "payout_access_url": None,
+                "card_payment_url": None,
+                "preview_body": build_invoice_mail_body_with_payment_guidance(invoice=invoice, body=body),
+            }
+            return _render_mail_form(form_data, preview_context=preview_context)
+
+        if action == "preview":
+            return _render_mail_form(form_data, preview_context=preview_context)
+
         if not to_email:
             flash("宛先メールアドレスを入力してください。", "warning")
-            form_data = dict(request.form)
-            form_data["body"] = body
-            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
+            return _render_mail_form(form_data, preview_context=preview_context)
         if request.form.get("confirm_send") != "yes":
             flash("送信前確認にチェックを入れてください。", "warning")
-            form_data = dict(request.form)
-            form_data["body"] = body
-            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-        normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
-        invoice_status = str(invoice.get("status") or "").strip().lower()
-        try:
-            card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
-        except (TypeError, ValueError):
-            card_payment_enabled = False
-
-        payout_access_url = None
-        if normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK:
-            try:
-                payout_access = issue_payout_access_token_for_invoice(invoice)
-                payout_access_url = payout_access.get("access_url") or ""
-                save_invoice_payout_token(invoice_id, payout_access.get("id"))
-            except Exception as exc:
-                flash(f"振込先リンクの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-                form_data = dict(request.form)
-                form_data["body"] = body
-                return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-        card_url = None
-        if card_payment_enabled and invoice_status not in {"paid", "cancelled"}:
-            try:
-                card_token = ensure_invoice_card_payment_token(invoice_id)
-                card_url = build_invoice_card_payment_url(card_token)
-            except Exception as exc:
-                flash(f"カード決済URLの発行に失敗したためメール送信を中止しました。{exc}", "danger")
-                form_data = dict(request.form)
-                form_data["body"] = body
-                return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-        final_body = build_invoice_mail_body_with_payment_guidance(
-            invoice=invoice,
-            body=body,
-            payout_access_url=payout_access_url,
-            card_payment_url=card_url,
-        )
+            return _render_mail_form(form_data, preview_context=preview_context)
+        final_body = preview_context["preview_body"]
         try:
             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
             send_invoice_mail(
@@ -501,10 +531,18 @@ def invoice_mail(invoice_id: int):
             return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
         except Exception as exc:
             flash(f"メール送信に失敗しました: {exc}", "danger")
-            form_data = dict(request.form)
-            form_data["body"] = final_body
-            return render_template("invoice_mail_form.html", invoice=invoice, form_data=form_data)
-    return render_template("invoice_mail_form.html", invoice=invoice, form_data=initial)
+            form_data["body"] = body
+            return _render_mail_form(form_data, preview_context=preview_context)
+    try:
+        preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, initial["body"])
+    except Exception as exc:
+        flash(f"決済用リンクの生成に失敗しました。{exc}", "danger")
+        preview_context = {
+            "payout_access_url": None,
+            "card_payment_url": None,
+            "preview_body": build_invoice_mail_body_with_payment_guidance(invoice=invoice, body=initial["body"]),
+        }
+    return _render_mail_form(initial, preview_context=preview_context)
 
 
 @invoice_bp.get("/<int:invoice_id>/freee-csv")
