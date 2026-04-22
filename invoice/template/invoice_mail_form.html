@@ -11,12 +11,9 @@
         <div class="col-md-6"><label class="form-label">Bcc</label><input class="form-control" name="bcc_email" value="{{ form_data.bcc_email or '' }}"></div>
         <div class="col-12"><div class="form-text mt-0">送信元は <code>noreply@mail.iori0624.jp</code> 固定です。発行者メールアドレスがある場合、Reply-To と Cc に自動設定されます。</div></div>
         <div class="col-12"><label class="form-label">件名</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}"></div>
-        <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
+        <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data["body"] or '' }}</textarea></div>
         <div class="col-12">
           <label class="form-label">最終送信本文プレビュー</label>
-          {% if preview_error %}
-          <div class="alert alert-danger py-2 mb-2">リンク生成に失敗しているため、この状態では送信できません。設定を確認して再試行してください。</div>
-          {% endif %}
           <pre class="form-control" style="height: 14rem; white-space: pre-wrap;">{{ preview_body or '' }}</pre>
         </div>
         <div class="col-12">
