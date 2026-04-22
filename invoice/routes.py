@@ -417,25 +417,25 @@ def _resolve_invoice_mail_payment_links(invoice: dict, invoice_id: int) -> tuple
 
     payout_access_url = None
     card_payment_url = None
-    phase_label = ""
     needs_payout_url = normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
     needs_card_url = card_payment_enabled and invoice_status not in {"paid", "cancelled"}
-    try:
-        if needs_payout_url:
-            phase_label = "振込先リンク"
+    if needs_payout_url:
+        try:
             payout_access = issue_payout_access_token_for_invoice(invoice)
             payout_access_url = payout_access.get("access_url") or ""
             save_invoice_payout_token(invoice_id, payout_access.get("id"))
             if not payout_access_url:
                 raise RuntimeError("access_url が空です。")
-        if needs_card_url:
-            phase_label = "カード決済URL"
+        except Exception as exc:
+            raise RuntimeError(f"振込先リンクの発行に失敗しました: {exc}") from exc
+    if needs_card_url:
+        try:
             card_token = ensure_invoice_card_payment_token(invoice_id)
             card_payment_url = build_invoice_card_payment_url(card_token)
             if not card_payment_url:
                 raise RuntimeError("カード決済URLが空です。")
-    except Exception as exc:
-        raise RuntimeError(f"{phase_label}の発行に失敗しました: {exc}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"カード決済URLの発行に失敗しました: {exc}") from exc
     return payout_access_url, card_payment_url
 
 
@@ -509,13 +509,7 @@ def invoice_mail(invoice_id: int):
             preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, body)
         except Exception as exc:
             flash(str(exc), "danger")
-            preview_context = {
-                "payout_access_url": None,
-                "card_payment_url": None,
-                "preview_body": "リンク生成に失敗しているため、最終送信本文を表示できません。設定を確認して再試行してください。",
-                "preview_error": True,
-            }
-            return _render_mail_form(form_data, preview_context=preview_context)
+            return _render_mail_form(form_data)
 
         if action == "preview":
             return _render_mail_form(form_data, preview_context=preview_context)
@@ -550,12 +544,7 @@ def invoice_mail(invoice_id: int):
         preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, initial["body"])
     except Exception as exc:
         flash(str(exc), "danger")
-        preview_context = {
-            "payout_access_url": None,
-            "card_payment_url": None,
-            "preview_body": "リンク生成に失敗しているため、最終送信本文を表示できません。設定を確認して再試行してください。",
-            "preview_error": True,
-        }
+        preview_context = None
     return _render_mail_form(initial, preview_context=preview_context)
 
 
