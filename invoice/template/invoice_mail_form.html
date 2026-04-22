@@ -14,6 +14,9 @@
         <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
         <div class="col-12">
           <label class="form-label">最終送信本文プレビュー</label>
+          {% if preview_error %}
+          <div class="alert alert-danger py-2 mb-2">リンク生成に失敗しているため、この状態では送信できません。設定を確認して再試行してください。</div>
+          {% endif %}
           <pre class="form-control" style="height: 14rem; white-space: pre-wrap;">{{ preview_body or '' }}</pre>
         </div>
         <div class="col-12">
