@@ -1,8 +1,15 @@
 diff --git a/invoice/routes.py b/invoice/routes.py
-index c0e76954308aaef28a8cb6b84270532ab84936f3..f4bf696ad866d3cd317302ebed6051952ae0e7e2 100644
+index f4bf696ad866d3cd317302ebed6051952ae0e7e2..fd18c2c95d71aa7d9b3ce06a0bf84c16d65742e0 100644
 --- a/invoice/routes.py
 +++ b/invoice/routes.py
-@@ -395,69 +395,69 @@ def invoice_update_status(invoice_id: int):
+@@ -388,54 +388,51 @@ def invoice_issue(invoice_id: int):
+ 
+ 
+ @invoice_bp.post("/<int:invoice_id>/status")
+ @login_required
+ def invoice_update_status(invoice_id: int):
+     status = request.form.get("status") or "draft"
+     update_invoice_status(invoice_id, status)
      flash("ステータスを更新しました。", "success")
      return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
  
@@ -21,66 +28,54 @@ index c0e76954308aaef28a8cb6b84270532ab84936f3..f4bf696ad866d3cd317302ebed605195
  def _resolve_invoice_mail_payment_links(invoice: dict, invoice_id: int) -> tuple[str | None, str | None]:
      normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
      invoice_status = str(invoice.get("status") or "").strip().lower()
-     try:
-         card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
-     except (TypeError, ValueError):
-         card_payment_enabled = False
+-    try:
+-        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
+-    except (TypeError, ValueError):
+-        card_payment_enabled = False
++    card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
  
      payout_access_url = None
      card_payment_url = None
--    phase_label = ""
      needs_payout_url = normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
      needs_card_url = card_payment_enabled and invoice_status not in {"paid", "cancelled"}
--    try:
--        if needs_payout_url:
--            phase_label = "振込先リンク"
-+    if needs_payout_url:
-+        try:
+     if needs_payout_url:
+         try:
              payout_access = issue_payout_access_token_for_invoice(invoice)
              payout_access_url = payout_access.get("access_url") or ""
              save_invoice_payout_token(invoice_id, payout_access.get("id"))
              if not payout_access_url:
                  raise RuntimeError("access_url が空です。")
--        if needs_card_url:
--            phase_label = "カード決済URL"
-+        except Exception as exc:
-+            raise RuntimeError(f"振込先リンクの発行に失敗しました: {exc}") from exc
-+    if needs_card_url:
-+        try:
+         except Exception as exc:
+             raise RuntimeError(f"振込先リンクの発行に失敗しました: {exc}") from exc
+     if needs_card_url:
+         try:
              card_token = ensure_invoice_card_payment_token(invoice_id)
              card_payment_url = build_invoice_card_payment_url(card_token)
              if not card_payment_url:
                  raise RuntimeError("カード決済URLが空です。")
--    except Exception as exc:
--        raise RuntimeError(f"{phase_label}の発行に失敗しました: {exc}") from exc
-+        except Exception as exc:
-+            raise RuntimeError(f"カード決済URLの発行に失敗しました: {exc}") from exc
+         except Exception as exc:
+             raise RuntimeError(f"カード決済URLの発行に失敗しました: {exc}") from exc
      return payout_access_url, card_payment_url
  
  
- def _build_invoice_mail_preview_context(invoice: dict, invoice_id: int, base_body: str) -> dict[str, str | None]:
-     payout_access_url, card_payment_url = _resolve_invoice_mail_payment_links(invoice, invoice_id)
-     preview_body = build_invoice_mail_body_with_payment_guidance(
-         invoice=invoice,
-         body=base_body,
-         payout_access_url=payout_access_url,
-         card_payment_url=card_payment_url,
-     )
-     return {
-         "payout_access_url": payout_access_url,
-         "card_payment_url": card_payment_url,
-         "preview_body": preview_body,
+@@ -470,51 +467,50 @@ def invoice_mail(invoice_id: int):
+                     "contact_name": contact.get("name"),
+                     "contact_person": contact.get("contact_name"),
+                     "honorific": contact.get("honorific"),
+                 }
+             )
+     effective_issuer_email = resolve_invoice_issuer_email(invoice)
+     initial = {
+         "to_email": invoice.get("contact_email_snapshot") or "",
+         "cc_email": effective_issuer_email,
+         "bcc_email": "",
+         "subject": build_mail_subject(invoice.get("subject")),
+         "body": build_default_invoice_mail_body(mail_context),
      }
- 
- 
- @invoice_bp.route("/<int:invoice_id>/mail", methods=["GET", "POST"])
- @login_required
- def invoice_mail(invoice_id: int):
-     invoice = get_invoice(invoice_id)
-     if not invoice:
-         flash("請求書が見つかりません。", "warning")
-         return redirect(url_for("invoice.invoice_list"))
-@@ -487,97 +487,86 @@ def invoice_mail(invoice_id: int):
+     def _render_mail_form(form_data: dict, *, preview_context: dict | None = None):
+         resolved_preview = preview_context or {}
+         preview_body = resolved_preview.get("preview_body")
+         if preview_body is None:
              preview_body = "プレビュー未生成です。プレビュー更新を実行してください。"
          return render_template(
              "invoice_mail_form.html",
@@ -89,7 +84,7 @@ index c0e76954308aaef28a8cb6b84270532ab84936f3..f4bf696ad866d3cd317302ebed605195
              preview_body=preview_body,
              payout_access_url=resolved_preview.get("payout_access_url"),
              card_payment_url=resolved_preview.get("card_payment_url"),
-             preview_error=resolved_preview.get("preview_error"),
+-            preview_error=resolved_preview.get("preview_error"),
          )
  
      if request.method == "POST":
@@ -106,14 +101,7 @@ index c0e76954308aaef28a8cb6b84270532ab84936f3..f4bf696ad866d3cd317302ebed605195
              preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, body)
          except Exception as exc:
              flash(str(exc), "danger")
--            preview_context = {
--                "payout_access_url": None,
--                "card_payment_url": None,
--                "preview_body": "リンク生成に失敗しているため、最終送信本文を表示できません。設定を確認して再試行してください。",
--                "preview_error": True,
--            }
--            return _render_mail_form(form_data, preview_context=preview_context)
-+            return _render_mail_form(form_data)
+             return _render_mail_form(form_data)
  
          if action == "preview":
              return _render_mail_form(form_data, preview_context=preview_context)
@@ -122,111 +110,3 @@ index c0e76954308aaef28a8cb6b84270532ab84936f3..f4bf696ad866d3cd317302ebed605195
              flash("宛先メールアドレスを入力してください。", "warning")
              return _render_mail_form(form_data, preview_context=preview_context)
          if request.form.get("confirm_send") != "yes":
-             flash("送信前確認にチェックを入れてください。", "warning")
-             return _render_mail_form(form_data, preview_context=preview_context)
-         final_body = preview_context["preview_body"]
-         try:
-             _, attachment_name, pdf_bytes = generate_invoice_pdf(invoice)
-             send_invoice_mail(
-                 invoice,
-                 to_email=to_email,
-                 cc_email=final_cc_email or None,
-                 bcc_email=bcc_email or None,
-                 reply_to_email=effective_issuer_email or None,
-                 subject=subject,
-                 body=final_body,
-                 attachment_filename=attachment_name,
-                 pdf_bytes=pdf_bytes,
-             )
-             flash("請求書メールを送信しました。", "success")
-             return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
-         except Exception as exc:
-             flash(f"メール送信に失敗しました: {exc}", "danger")
-             form_data["body"] = body
-             return _render_mail_form(form_data, preview_context=preview_context)
-     try:
-         preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, initial["body"])
-     except Exception as exc:
-         flash(str(exc), "danger")
--        preview_context = {
--            "payout_access_url": None,
--            "card_payment_url": None,
--            "preview_body": "リンク生成に失敗しているため、最終送信本文を表示できません。設定を確認して再試行してください。",
--            "preview_error": True,
--        }
-+        preview_context = None
-     return _render_mail_form(initial, preview_context=preview_context)
- 
- 
- @invoice_bp.get("/<int:invoice_id>/freee-csv")
- @login_required
- def invoice_freee_csv(invoice_id: int):
-     invoice = get_invoice(invoice_id)
-     if not invoice:
-         flash("請求書が見つかりません。", "warning")
-         return redirect(url_for("invoice.invoice_list"))
-     contact = get_contact(invoice.get("contact_id")) if invoice.get("contact_id") else None
-     invoice["freee_partner_name"] = (contact or {}).get("freee_partner_name")
-     try:
-         csv_bytes, filename = build_invoice_freee_csv(invoice)
-         log_csv_export(invoice_id, filename, status="success")
-         response = build_invoice_freee_csv_response(invoice)
-         return response
-     except Exception as exc:
-         log_csv_export(invoice_id, f"freee_invoice_{invoice.get('invoice_no')}.csv", status="failed", error_message=str(exc))
-         flash(f"freee CSV の出力に失敗しました: {exc}", "danger")
-         return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
- 
- 
- @invoice_bp.get("/<int:invoice_id>/mail/new")
- @login_required
-diff --git a/invoice/template/invoice_mail_form.html b/invoice/template/invoice_mail_form.html
-index 137bde15f879daf925ac31f903464c7aa48f6173..153efb550f9b6f51dff723404f46a0915a85ddfe 100644
---- a/invoice/template/invoice_mail_form.html
-+++ b/invoice/template/invoice_mail_form.html
-@@ -1,44 +1,41 @@
- {% extends "base.html" %}
- {% block title %}請求書メール送信{% endblock %}
- {% block content %}
- <h1 class="mb-3">請求書メール送信</h1>
- <div class="row g-3">
-   <div class="col-lg-8">
-     <form method="post" class="card shadow-sm"><div class="card-body">
-       <div class="row g-3">
-         <div class="col-12"><label class="form-label">宛先 *</label><input class="form-control" type="email" name="to_email" value="{{ form_data.to_email or '' }}" required></div>
-         <div class="col-md-6"><label class="form-label">Cc</label><input class="form-control" type="text" name="cc_email" value="{{ form_data.cc_email or '' }}"></div>
-         <div class="col-md-6"><label class="form-label">Bcc</label><input class="form-control" name="bcc_email" value="{{ form_data.bcc_email or '' }}"></div>
-         <div class="col-12"><div class="form-text mt-0">送信元は <code>noreply@mail.iori0624.jp</code> 固定です。発行者メールアドレスがある場合、Reply-To と Cc に自動設定されます。</div></div>
-         <div class="col-12"><label class="form-label">件名</label><input class="form-control" name="subject" value="{{ form_data.subject or '' }}"></div>
--        <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data.body or '' }}</textarea></div>
-+        <div class="col-12"><label class="form-label">本文</label><textarea class="form-control" name="body" rows="10">{{ form_data["body"] or '' }}</textarea></div>
-         <div class="col-12">
-           <label class="form-label">最終送信本文プレビュー</label>
--          {% if preview_error %}
--          <div class="alert alert-danger py-2 mb-2">リンク生成に失敗しているため、この状態では送信できません。設定を確認して再試行してください。</div>
--          {% endif %}
-           <pre class="form-control" style="height: 14rem; white-space: pre-wrap;">{{ preview_body or '' }}</pre>
-         </div>
-         <div class="col-12">
-           <div class="small">
-             <div><strong>PayOutリンク:</strong> {{ payout_access_url or '（なし）' }}</div>
-             <div><strong>カード決済リンク:</strong> {{ card_payment_url or '（なし）' }}</div>
-           </div>
-         </div>
-         <div class="col-12 form-check">
-           <input class="form-check-input" type="checkbox" value="yes" id="confirmSend" name="confirm_send" {% if form_data.confirm_send == 'yes' %}checked{% endif %}>
-           <label class="form-check-label" for="confirmSend">送信前に内容を確認しました</label>
-         </div>
-       </div>
-       <div class="mt-3 d-flex gap-2">
-         <button class="btn btn-outline-primary" type="submit" name="action" value="preview">プレビュー更新</button>
-         <button class="btn btn-primary" type="submit" name="action" value="send" onclick="return confirm('請求書PDFを添付して送信します。よろしいですか？');">送信する</button>
-         <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_detail', invoice_id=invoice.id) }}">戻る</a>
-       </div>
-     </div></form>
-   </div>
-   <div class="col-lg-4">
-     <div class="card shadow-sm"><div class="card-body">
-       <h2 class="h5">送信対象</h2>
-       <ul class="small mb-0">
-         <li>請求書番号: {{ invoice.invoice_no }}</li>

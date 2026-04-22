@@ -410,10 +410,7 @@ def invoice_pdf(invoice_id: int):
 def _resolve_invoice_mail_payment_links(invoice: dict, invoice_id: int) -> tuple[str | None, str | None]:
     normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
     invoice_status = str(invoice.get("status") or "").strip().lower()
-    try:
-        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
-    except (TypeError, ValueError):
-        card_payment_enabled = False
+    card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
 
     payout_access_url = None
     card_payment_url = None
@@ -492,7 +489,6 @@ def invoice_mail(invoice_id: int):
             preview_body=preview_body,
             payout_access_url=resolved_preview.get("payout_access_url"),
             card_payment_url=resolved_preview.get("card_payment_url"),
-            preview_error=resolved_preview.get("preview_error"),
         )
 
     if request.method == "POST":
