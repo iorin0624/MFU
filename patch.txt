@@ -1,112 +1,92 @@
-diff --git a/invoice/routes.py b/invoice/routes.py
-index f4bf696ad866d3cd317302ebed6051952ae0e7e2..fd18c2c95d71aa7d9b3ce06a0bf84c16d65742e0 100644
---- a/invoice/routes.py
-+++ b/invoice/routes.py
-@@ -388,54 +388,51 @@ def invoice_issue(invoice_id: int):
+diff --git a/shipment_tracking/parsers.py b/shipment_tracking/parsers.py
+index 5bc3506d3b38128198abf31095ba534399a7f0f7..a709d80e218e191cfb379f10055874308e5e00a2 100644
+--- a/shipment_tracking/parsers.py
++++ b/shipment_tracking/parsers.py
+@@ -28,69 +28,86 @@ def _first_by_keywords(soup: BeautifulSoup, keywords: list[str]):
  
  
- @invoice_bp.post("/<int:invoice_id>/status")
- @login_required
- def invoice_update_status(invoice_id: int):
-     status = request.form.get("status") or "draft"
-     update_invoice_status(invoice_id, status)
-     flash("ステータスを更新しました。", "success")
-     return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
+ def _find_value_near_label(soup: BeautifulSoup, labels: list[str]) -> str | None:
+     for label in labels:
+         node = soup.find(string=re.compile(re.escape(label)))
+         if not node:
+             continue
+         parent = node.parent
+         if parent:
+             next_td = parent.find_next("td")
+             if next_td:
+                 v = _text(next_td)
+                 if v:
+                     return v
+             for sib in parent.next_siblings:
+                 if getattr(sib, "get_text", None):
+                     v = _text(sib)
+                     if v and v != label:
+                         return v
+     return None
  
  
- @invoice_bp.get("/<int:invoice_id>/pdf")
- @login_required
- def invoice_pdf(invoice_id: int):
-     invoice = get_invoice(invoice_id)
-     if not invoice:
-         flash("請求書が見つかりません。", "warning")
-         return redirect(url_for("invoice.invoice_list"))
-     pdf_path, visible_name, _ = generate_invoice_pdf(invoice)
-     return send_file(pdf_path, as_attachment=True, download_name=visible_name, mimetype="application/pdf")
- 
- 
- def _resolve_invoice_mail_payment_links(invoice: dict, invoice_id: int) -> tuple[str | None, str | None]:
-     normalized_bank_info_mode = normalize_bank_info_mode(invoice.get("bank_info_mode"))
-     invoice_status = str(invoice.get("status") or "").strip().lower()
--    try:
--        card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
--    except (TypeError, ValueError):
--        card_payment_enabled = False
-+    card_payment_enabled = int(invoice.get("card_payment_enabled") or 0) == 1
- 
-     payout_access_url = None
-     card_payment_url = None
-     needs_payout_url = normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
-     needs_card_url = card_payment_enabled and invoice_status not in {"paid", "cancelled"}
-     if needs_payout_url:
+ def _parse_jp_datetime(raw: str | None) -> str | None:
+     if not raw:
+         return None
++    original = raw
+     raw = raw.strip()
++    raw = raw.replace("　", " ")
++    raw = re.sub(r"\s+", " ", raw)
++
++    jp_md_match = re.match(
++        r"^(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?:\s+(?P<time>\d{1,2}:\d{2}))?$",
++        raw,
++    )
++    if jp_md_match:
++        month = jp_md_match.group("month")
++        day = jp_md_match.group("day")
++        time_part = jp_md_match.group("time")
++        raw = f"{month}/{day}"
++        if time_part:
++            raw = f"{raw} {time_part}"
++
+     patterns = [
+         "%Y/%m/%d %H:%M",
+         "%Y-%m-%d %H:%M",
+         "%Y/%m/%d",
++        "%Y-%m-%d",
+         "%m/%d %H:%M",
+         "%m/%d",
+     ]
+     for pattern in patterns:
          try:
-             payout_access = issue_payout_access_token_for_invoice(invoice)
-             payout_access_url = payout_access.get("access_url") or ""
-             save_invoice_payout_token(invoice_id, payout_access.get("id"))
-             if not payout_access_url:
-                 raise RuntimeError("access_url が空です。")
-         except Exception as exc:
-             raise RuntimeError(f"振込先リンクの発行に失敗しました: {exc}") from exc
-     if needs_card_url:
-         try:
-             card_token = ensure_invoice_card_payment_token(invoice_id)
-             card_payment_url = build_invoice_card_payment_url(card_token)
-             if not card_payment_url:
-                 raise RuntimeError("カード決済URLが空です。")
-         except Exception as exc:
-             raise RuntimeError(f"カード決済URLの発行に失敗しました: {exc}") from exc
-     return payout_access_url, card_payment_url
+             dt = datetime.strptime(raw, pattern)
+             if pattern.startswith("%m"):
+                 dt = dt.replace(year=datetime.now().year)
+             if "%H" in pattern:
+                 return dt.strftime("%Y-%m-%d %H:%M:%S")
+             return dt.strftime("%Y-%m-%d")
+         except ValueError:
+             continue
+-    return raw
++    return original.strip()
  
  
-@@ -470,51 +467,50 @@ def invoice_mail(invoice_id: int):
-                     "contact_name": contact.get("name"),
-                     "contact_person": contact.get("contact_name"),
-                     "honorific": contact.get("honorific"),
-                 }
-             )
-     effective_issuer_email = resolve_invoice_issuer_email(invoice)
-     initial = {
-         "to_email": invoice.get("contact_email_snapshot") or "",
-         "cc_email": effective_issuer_email,
-         "bcc_email": "",
-         "subject": build_mail_subject(invoice.get("subject")),
-         "body": build_default_invoice_mail_body(mail_context),
-     }
-     def _render_mail_form(form_data: dict, *, preview_context: dict | None = None):
-         resolved_preview = preview_context or {}
-         preview_body = resolved_preview.get("preview_body")
-         if preview_body is None:
-             preview_body = "プレビュー未生成です。プレビュー更新を実行してください。"
-         return render_template(
-             "invoice_mail_form.html",
-             invoice=invoice,
-             form_data=form_data,
-             preview_body=preview_body,
-             payout_access_url=resolved_preview.get("payout_access_url"),
-             card_payment_url=resolved_preview.get("card_payment_url"),
--            preview_error=resolved_preview.get("preview_error"),
-         )
- 
-     if request.method == "POST":
-         action = (request.form.get("action") or "send").strip().lower()
-         to_email = (request.form.get("to_email") or "").strip()
-         cc_email = (request.form.get("cc_email") or "").strip()
-         final_cc_email = merge_invoice_cc_emails(effective_issuer_email, cc_email)
-         bcc_email = (request.form.get("bcc_email") or "").strip()
-         subject = (request.form.get("subject") or "").strip()
-         body = request.form.get("body") or ""
-         form_data = dict(request.form)
-         form_data["body"] = body
-         try:
-             preview_context = _build_invoice_mail_preview_context(invoice, invoice_id, body)
-         except Exception as exc:
-             flash(str(exc), "danger")
-             return _render_mail_form(form_data)
- 
-         if action == "preview":
-             return _render_mail_form(form_data, preview_context=preview_context)
- 
-         if not to_email:
-             flash("宛先メールアドレスを入力してください。", "warning")
-             return _render_mail_form(form_data, preview_context=preview_context)
-         if request.form.get("confirm_send") != "yes":
+ def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
+     return {
+         "carrier_code": carrier_code,
+         "carrier_name": CARRIER_MASTER[carrier_code],
+         "tracking_number": tracking_number,
+         "tracking_url": tracking_url,
+         "service_name": None,
+         "current_status": None,
+         "current_status_detail": None,
+         "latest_event_at": None,
+         "scheduled_delivery_date": None,
+         "scheduled_delivery_time_slot": None,
+         "package_count": None,
+         "size": None,
+         "additional_service": None,
+         "ship_date": None,
+         "completed": False,
+         "origin_office": {
+             "name": None,
+             "phone": None,
+             "fax": None,
+             "office_code": None,
+             "postal_code": None,
