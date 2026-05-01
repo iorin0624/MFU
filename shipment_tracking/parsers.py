@@ -50,11 +50,28 @@ def _find_value_near_label(soup: BeautifulSoup, labels: list[str]) -> str | None
 def _parse_jp_datetime(raw: str | None) -> str | None:
     if not raw:
         return None
+    original = raw
     raw = raw.strip()
+    raw = raw.replace("　", " ")
+    raw = re.sub(r"\s+", " ", raw)
+
+    jp_md_match = re.match(
+        r"^(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?:\s+(?P<time>\d{1,2}:\d{2}))?$",
+        raw,
+    )
+    if jp_md_match:
+        month = jp_md_match.group("month")
+        day = jp_md_match.group("day")
+        time_part = jp_md_match.group("time")
+        raw = f"{month}/{day}"
+        if time_part:
+            raw = f"{raw} {time_part}"
+
     patterns = [
         "%Y/%m/%d %H:%M",
         "%Y-%m-%d %H:%M",
         "%Y/%m/%d",
+        "%Y-%m-%d",
         "%m/%d %H:%M",
         "%m/%d",
     ]
@@ -68,7 +85,7 @@ def _parse_jp_datetime(raw: str | None) -> str | None:
             return dt.strftime("%Y-%m-%d")
         except ValueError:
             continue
-    return raw
+    return original.strip()
 
 
 def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
