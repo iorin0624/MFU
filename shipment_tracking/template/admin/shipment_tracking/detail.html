@@ -43,6 +43,10 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
     <button type="submit" class="btn btn-outline-warning btn-sm">有効/無効切替</button>
   </form>
+  <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_test_discord', id=target.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+    <button type="submit" class="btn btn-outline-info btn-sm" onclick="return confirm('現在の配送追跡情報でDiscord通知テストを送信します。よろしいですか？');">Discord通知テスト</button>
+  </form>
 </div>
 
 <div class="card mb-3">

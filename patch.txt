@@ -1,92 +1,365 @@
-diff --git a/shipment_tracking/parsers.py b/shipment_tracking/parsers.py
-index 5bc3506d3b38128198abf31095ba534399a7f0f7..a709d80e218e191cfb379f10055874308e5e00a2 100644
---- a/shipment_tracking/parsers.py
-+++ b/shipment_tracking/parsers.py
-@@ -28,69 +28,86 @@ def _first_by_keywords(soup: BeautifulSoup, keywords: list[str]):
+diff --git a/shipment_tracking/routes.py b/shipment_tracking/routes.py
+index 148719ac778b44cb4dd2f43b2c80a53d93ab324e..cc3dbd0ad91d9f36915d24bfb2ba09633f60b12a 100644
+--- a/shipment_tracking/routes.py
++++ b/shipment_tracking/routes.py
+@@ -1,40 +1,41 @@
+ from __future__ import annotations
+ 
+ import json
+ 
+-from flask import flash, redirect, render_template, request, url_for
++from flask import current_app, flash, redirect, render_template, request, url_for
+ 
+ from . import shipment_tracking_bp
+ from .models import CARRIER_MASTER
+ from .services import (
+     ShipmentTrackingError,
+     create_target,
+     get_logs,
+     get_target,
+     list_targets,
+     run_check,
++    send_test_discord_notification,
+     toggle_target_active,
+     update_target,
+ )
+ 
+ try:
+     from app import admin_required  # type: ignore
+ except Exception:
+     from functools import wraps
+     from flask import session
+ 
+     def admin_required(func):
+         @wraps(func)
+         def wrapper(*args, **kwargs):
+             if session.get("user") != "admin":
+                 return "管理者のみアクセス可能", 403
+             return func(*args, **kwargs)
+ 
+         return wrapper
  
  
- def _find_value_near_label(soup: BeautifulSoup, labels: list[str]) -> str | None:
-     for label in labels:
-         node = soup.find(string=re.compile(re.escape(label)))
-         if not node:
-             continue
-         parent = node.parent
-         if parent:
-             next_td = parent.find_next("td")
-             if next_td:
-                 v = _text(next_td)
-                 if v:
-                     return v
-             for sib in parent.next_siblings:
-                 if getattr(sib, "get_text", None):
-                     v = _text(sib)
-                     if v and v != label:
-                         return v
-     return None
+ @shipment_tracking_bp.route("/admin/shipment-tracking", methods=["GET"])
+ @admin_required
+ def shipment_tracking_list():
+     targets = list_targets()
+     return render_template(
+@@ -141,25 +142,48 @@ def shipment_tracking_edit(id: int):
+ @shipment_tracking_bp.route("/admin/shipment-tracking/<int:id>/check-now", methods=["POST"])
+ @admin_required
+ def shipment_tracking_check_now(id: int):
+     target = get_target(id)
+     if not target:
+         flash("対象が見つかりません。", "danger")
+         return redirect(url_for("shipment_tracking.shipment_tracking_list"))
+ 
+     ok = run_check(id, "manual")
+     if ok:
+         flash("最新情報を確認しました", "success")
+     else:
+         flash("最新情報の確認に失敗しました", "danger")
+     return redirect(url_for("shipment_tracking.shipment_tracking_detail", id=id))
  
  
- def _parse_jp_datetime(raw: str | None) -> str | None:
-     if not raw:
-         return None
-+    original = raw
-     raw = raw.strip()
-+    raw = raw.replace("　", " ")
-+    raw = re.sub(r"\s+", " ", raw)
+ @shipment_tracking_bp.route("/admin/shipment-tracking/<int:id>/toggle-active", methods=["POST"])
+ @admin_required
+ def shipment_tracking_toggle_active(id: int):
+     try:
+         is_active = toggle_target_active(id)
+         flash("有効にしました" if is_active else "無効にしました", "success")
+     except ShipmentTrackingError as exc:
+         flash(str(exc), "danger")
+     return redirect(url_for("shipment_tracking.shipment_tracking_detail", id=id))
 +
-+    jp_md_match = re.match(
-+        r"^(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?:\s+(?P<time>\d{1,2}:\d{2}))?$",
-+        raw,
-+    )
-+    if jp_md_match:
-+        month = jp_md_match.group("month")
-+        day = jp_md_match.group("day")
-+        time_part = jp_md_match.group("time")
-+        raw = f"{month}/{day}"
-+        if time_part:
-+            raw = f"{raw} {time_part}"
 +
-     patterns = [
-         "%Y/%m/%d %H:%M",
-         "%Y-%m-%d %H:%M",
-         "%Y/%m/%d",
-+        "%Y-%m-%d",
-         "%m/%d %H:%M",
-         "%m/%d",
-     ]
-     for pattern in patterns:
-         try:
-             dt = datetime.strptime(raw, pattern)
-             if pattern.startswith("%m"):
-                 dt = dt.replace(year=datetime.now().year)
-             if "%H" in pattern:
-                 return dt.strftime("%Y-%m-%d %H:%M:%S")
-             return dt.strftime("%Y-%m-%d")
-         except ValueError:
-             continue
--    return raw
-+    return original.strip()
++@shipment_tracking_bp.route("/admin/shipment-tracking/<int:id>/test-discord", methods=["POST"])
++@admin_required
++def shipment_tracking_test_discord(id: int):
++    target = get_target(id)
++    if not target:
++        flash("対象が見つかりません。", "danger")
++        return redirect(url_for("shipment_tracking.shipment_tracking_list"))
++
++    try:
++        send_test_discord_notification(id)
++        flash("Discord通知テストを送信しました", "success")
++    except ShipmentTrackingError as exc:
++        flash(str(exc), "danger")
++    except Exception:
++        current_app.logger.exception(
++            "[shipment_tracking] discord test notify failed target_id=%s",
++            id,
++        )
++        flash("Discord通知テストに失敗しました", "danger")
++
++    return redirect(url_for("shipment_tracking.shipment_tracking_detail", id=id))
+diff --git a/shipment_tracking/services.py b/shipment_tracking/services.py
+index cdfba41987199aa0063d7ff2aa2a2a61dc8c6f41..7d954ac3771e7a67da1be6c87c27f10ddc02b5d6 100644
+--- a/shipment_tracking/services.py
++++ b/shipment_tracking/services.py
+@@ -133,73 +133,99 @@ def _http_get(url: str) -> str:
+ def _get_admin_discord_webhook_url() -> str | None:
+     db = get_db()
+     try:
+         cur = db.cursor(dictionary=True)
+         cur.execute(
+             "SELECT webhook_url FROM users WHERE username=%s LIMIT 1",
+             ("admin",),
+         )
+         row = cur.fetchone()
+         if not row:
+             return None
+         webhook_url = (row.get("webhook_url") or "").strip()
+         return webhook_url or None
+     finally:
+         db.close()
  
  
- def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
+ def _build_shipment_tracking_discord_embed(
+     target: dict[str, Any],
+     payload: dict[str, Any],
+     current_status: Any,
+     current_status_detail: Any,
+     latest_event_at: datetime | None,
+     triggered_by: str,
+ ) -> dict[str, Any]:
+-    color = 0x2ECC71 if current_status in AUTO_DEACTIVATE_STATUSES else 0x3498DB
+-    latest_event_at_text = "-"
++    is_completed_status = current_status in AUTO_DEACTIVATE_STATUSES
++    color = 0x2ECC71 if is_completed_status else 0x3498DB
++
++    carrier_name = CARRIER_MASTER.get(target["carrier_code"], target["carrier_code"])
++    label = target.get("label") or "-"
++    tracking_number = target.get("tracking_number") or "-"
++    status_text = current_status or "-"
++    detail_text = current_status_detail or "-"
++    if len(detail_text) > 1000:
++        detail_text = detail_text[:1000] + "..."
++
+     if latest_event_at:
+         latest_event_at_text = latest_event_at.strftime("%Y-%m-%d %H:%M:%S")
+     else:
+         latest_event_at_text = payload.get("latest_event_at") or "-"
++
++    tracking_url = payload.get("tracking_url") or ""
++    tracking_link_text = f"[配送業者で確認する]({tracking_url})" if tracking_url else "-"
++
      return {
-         "carrier_code": carrier_code,
-         "carrier_name": CARRIER_MASTER[carrier_code],
-         "tracking_number": tracking_number,
-         "tracking_url": tracking_url,
-         "service_name": None,
-         "current_status": None,
-         "current_status_detail": None,
-         "latest_event_at": None,
-         "scheduled_delivery_date": None,
-         "scheduled_delivery_time_slot": None,
-         "package_count": None,
-         "size": None,
-         "additional_service": None,
-         "ship_date": None,
-         "completed": False,
-         "origin_office": {
-             "name": None,
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
+-        "title": "📦 配送追跡が更新されました",
+-        "description": "配達状況に進捗がありました。",
++        "title": "✅ 配送が完了しました" if is_completed_status else "📦 配送追跡が更新されました",
++        "description": f"{label}\n{carrier_name} / {status_text}",
+         "color": color,
+         "fields": [
+-            {"name": "ラベル", "value": target.get("label") or "-", "inline": False},
+             {
+-                "name": "業者",
+-                "value": CARRIER_MASTER.get(target["carrier_code"], target["carrier_code"]),
++                "name": "配送情報",
++                "value": f"{carrier_name}\n{tracking_number}",
++                "inline": False,
++            },
++            {
++                "name": "最新状態",
++                "value": f"{status_text}\n{latest_event_at_text}",
++                "inline": False,
++            },
++            {
++                "name": "最新詳細",
++                "value": detail_text,
++                "inline": False,
++            },
++            {
++                "name": "追跡リンク",
++                "value": tracking_link_text,
++                "inline": False,
++            },
++            {
++                "name": "実行種別",
++                "value": triggered_by or "-",
+                 "inline": False,
+             },
+-            {"name": "配達番号", "value": target["tracking_number"], "inline": False},
+-            {"name": "最新状態", "value": current_status or "-", "inline": False},
+-            {"name": "最新詳細", "value": current_status_detail or "-", "inline": False},
+-            {"name": "最新イベント時刻", "value": latest_event_at_text, "inline": False},
+-            {"name": "追跡リンク", "value": payload.get("tracking_url") or "-", "inline": False},
+-            {"name": "実行種別", "value": triggered_by, "inline": False},
+         ],
+     }
+ 
+ 
+ def _send_shipment_tracking_discord_notification(webhook_url: str, embed: dict[str, Any]) -> None:
+     requests.post(webhook_url, json={"embeds": [embed]}, timeout=10).raise_for_status()
+ 
+ 
+ def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
+     url = f"https://k2k.sagawa-exp.co.jp/p/web/okurijosearch.do?okurijoNo={tracking_number}"
+     return url, _http_get(url)
+ 
+ 
+ def _fetch_yamato(tracking_number: str) -> tuple[str, str]:
+     url = "https://toi.kuronekoyamato.co.jp/cgi-bin/tneko"
+     headers = {"User-Agent": USER_AGENT}
+     data = {
+         "number00": "1",
+         "number01": tracking_number,
+     }
+     response = requests.post(
+         url,
+         data=data,
+         headers=headers,
+         timeout=REQUEST_TIMEOUT,
+@@ -321,50 +347,92 @@ def update_target(target_id: int, carrier_code: str, tracking_number: str, label
+         )
+         db.commit()
+     except IntegrityError as exc:
+         db.rollback()
+         raise ShipmentTrackingError("同じ業者・配達番号はすでに登録されています。") from exc
+     finally:
+         db.close()
+ 
+ 
+ def toggle_target_active(target_id: int) -> bool:
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     cur.execute("SELECT is_active FROM shipment_tracking_target WHERE id=%s", (target_id,))
+     row = cur.fetchone()
+     if not row:
+         db.close()
+         raise ShipmentTrackingError("対象が見つかりません。")
+     new_value = 0 if int(row["is_active"]) else 1
+     cur = db.cursor()
+     cur.execute("UPDATE shipment_tracking_target SET is_active=%s WHERE id=%s", (new_value, target_id))
+     db.commit()
+     db.close()
+     return bool(new_value)
+ 
+ 
++
++
++def send_test_discord_notification(target_id: int) -> None:
++    db = get_db()
++    try:
++        cur = db.cursor(dictionary=True)
++        cur.execute("SELECT * FROM shipment_tracking_target WHERE id=%s", (target_id,))
++        target = cur.fetchone()
++    finally:
++        db.close()
++
++    if not target:
++        raise ShipmentTrackingError("対象が見つかりません。")
++
++    webhook_url = _get_admin_discord_webhook_url()
++    if not webhook_url:
++        raise ShipmentTrackingError("admin のDiscord Webhook URLが設定されていません。")
++
++    payload: dict[str, Any]
++    last_payload_json = target.get("last_payload_json")
++    if last_payload_json:
++        try:
++            payload = json.loads(last_payload_json)
++        except Exception as exc:
++            raise ShipmentTrackingError("保存済みの配送追跡JSONを読み込めませんでした。") from exc
++    else:
++        payload = fetch_and_parse(target["carrier_code"], target["tracking_number"])
++
++    current_status = payload.get("current_status")
++    current_status_detail = payload.get("current_status_detail")
++    latest_event_at = _parse_payload_datetime(payload.get("latest_event_at"))
++
++    embed = _build_shipment_tracking_discord_embed(
++        target=target,
++        payload=payload,
++        current_status=current_status,
++        current_status_detail=current_status_detail,
++        latest_event_at=latest_event_at,
++        triggered_by="test",
++    )
++
++    _send_shipment_tracking_discord_notification(webhook_url, embed)
+ def run_check(target_id: int, triggered_by: str) -> bool:
+     if triggered_by not in TRIGGERED_BY_VALUES:
+         raise ShipmentTrackingError("triggered_by が不正です。")
+ 
+     db = get_db()
+     cur = db.cursor(dictionary=True)
+     cur.execute("SELECT * FROM shipment_tracking_target WHERE id=%s", (target_id,))
+     target = cur.fetchone()
+     if not target:
+         db.close()
+         raise ShipmentTrackingError("対象が見つかりません。")
+ 
+     checked_at = _now()
+     prev_payload_json = target.get("last_payload_json")
+ 
+     try:
+         payload = fetch_and_parse(target["carrier_code"], target["tracking_number"])
+         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+         changed = True if not prev_payload_json else prev_payload_json != payload_json
+         latest_event_at = _parse_payload_datetime(payload.get("latest_event_at"))
+         current_status = payload.get("current_status")
+         should_deactivate = current_status in AUTO_DEACTIVATE_STATUSES
+         current_status_detail = payload.get("current_status_detail")
+         completed = 1 if payload.get("completed") else 0
+         previous_status = target.get("last_current_status")
+diff --git a/shipment_tracking/template/admin/shipment_tracking/detail.html b/shipment_tracking/template/admin/shipment_tracking/detail.html
+index f79f1e53afafede1f4886648710b07efca6891f3..4a7bc13c07fd424745aecb8c6a440fe2bdac2771 100644
+--- a/shipment_tracking/template/admin/shipment_tracking/detail.html
++++ b/shipment_tracking/template/admin/shipment_tracking/detail.html
+@@ -21,50 +21,54 @@
+   <div class="card-body">
+     <dl class="row mb-0">
+       <dt class="col-sm-3">ラベル</dt><dd class="col-sm-9">{{ target.label or '-' }}</dd>
+       <dt class="col-sm-3">業者</dt><dd class="col-sm-9">{{ carrier_master.get(target.carrier_code, target.carrier_code) }}</dd>
+       <dt class="col-sm-3">配達番号</dt><dd class="col-sm-9">{{ target.tracking_number }}</dd>
+       <dt class="col-sm-3">最新状態</dt><dd class="col-sm-9">{{ target.last_current_status or '-' }}</dd>
+       <dt class="col-sm-3">最新詳細</dt><dd class="col-sm-9">{{ target.last_current_status_detail or '-' }}</dd>
+       <dt class="col-sm-3">最新イベント日時</dt><dd class="col-sm-9">{{ target.last_latest_event_at or '-' }}</dd>
+       <dt class="col-sm-3">最終確認日時</dt><dd class="col-sm-9">{{ target.last_checked_at or '-' }}</dd>
+       <dt class="col-sm-3">有効状態</dt><dd class="col-sm-9">{{ '有効' if target.is_active else '無効' }}</dd>
+       <dt class="col-sm-3">最終エラー</dt><dd class="col-sm-9 text-danger">{{ target.last_error_text or '-' }}</dd>
+     </dl>
+   </div>
+ </div>
+ 
+ <div class="mb-3 d-flex gap-2">
+   <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_check_now', id=target.id) }}">
+     <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+     <button type="submit" class="btn btn-primary btn-sm">最新情報の確認</button>
+   </form>
+   <a href="{{ url_for('shipment_tracking.shipment_tracking_edit', id=target.id) }}" class="btn btn-outline-secondary btn-sm">編集</a>
+   <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_toggle_active', id=target.id) }}">
+     <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+     <button type="submit" class="btn btn-outline-warning btn-sm">有効/無効切替</button>
+   </form>
++  <form method="post" action="{{ url_for('shipment_tracking.shipment_tracking_test_discord', id=target.id) }}">
++    <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
++    <button type="submit" class="btn btn-outline-info btn-sm" onclick="return confirm('現在の配送追跡情報でDiscord通知テストを送信します。よろしいですか？');">Discord通知テスト</button>
++  </form>
+ </div>
+ 
+ <div class="card mb-3">
+   <div class="card-header">最新の正規化JSON</div>
+   <div class="card-body">
+     <pre class="mb-0" style="white-space: pre-wrap;">{{ pretty_payload or '(データなし)' }}</pre>
+   </div>
+ </div>
+ 
+ <div class="card">
+   <div class="card-header">直近の実行履歴（20件）</div>
+   <div class="card-body p-0">
+     <div class="table-responsive">
+       <table class="table table-sm table-bordered align-middle mb-0">
+         <thead class="table-light">
+           <tr>
+             <th>ID</th>
+             <th>実行種別</th>
+             <th>確認日時</th>
+             <th>成功</th>
+             <th>変更あり</th>
+             <th>状態</th>
+             <th>詳細</th>
+             <th>エラー</th>
+           </tr>

@@ -155,29 +155,55 @@ def _build_shipment_tracking_discord_embed(
     latest_event_at: datetime | None,
     triggered_by: str,
 ) -> dict[str, Any]:
-    color = 0x2ECC71 if current_status in AUTO_DEACTIVATE_STATUSES else 0x3498DB
-    latest_event_at_text = "-"
+    is_completed_status = current_status in AUTO_DEACTIVATE_STATUSES
+    color = 0x2ECC71 if is_completed_status else 0x3498DB
+
+    carrier_name = CARRIER_MASTER.get(target["carrier_code"], target["carrier_code"])
+    label = target.get("label") or "-"
+    tracking_number = target.get("tracking_number") or "-"
+    status_text = current_status or "-"
+    detail_text = current_status_detail or "-"
+    if len(detail_text) > 1000:
+        detail_text = detail_text[:1000] + "..."
+
     if latest_event_at:
         latest_event_at_text = latest_event_at.strftime("%Y-%m-%d %H:%M:%S")
     else:
         latest_event_at_text = payload.get("latest_event_at") or "-"
+
+    tracking_url = payload.get("tracking_url") or ""
+    tracking_link_text = f"[配送業者で確認する]({tracking_url})" if tracking_url else "-"
+
     return {
-        "title": "📦 配送追跡が更新されました",
-        "description": "配達状況に進捗がありました。",
+        "title": "✅ 配送が完了しました" if is_completed_status else "📦 配送追跡が更新されました",
+        "description": f"{label}\n{carrier_name} / {status_text}",
         "color": color,
         "fields": [
-            {"name": "ラベル", "value": target.get("label") or "-", "inline": False},
             {
-                "name": "業者",
-                "value": CARRIER_MASTER.get(target["carrier_code"], target["carrier_code"]),
+                "name": "配送情報",
+                "value": f"{carrier_name}\n{tracking_number}",
                 "inline": False,
             },
-            {"name": "配達番号", "value": target["tracking_number"], "inline": False},
-            {"name": "最新状態", "value": current_status or "-", "inline": False},
-            {"name": "最新詳細", "value": current_status_detail or "-", "inline": False},
-            {"name": "最新イベント時刻", "value": latest_event_at_text, "inline": False},
-            {"name": "追跡リンク", "value": payload.get("tracking_url") or "-", "inline": False},
-            {"name": "実行種別", "value": triggered_by, "inline": False},
+            {
+                "name": "最新状態",
+                "value": f"{status_text}\n{latest_event_at_text}",
+                "inline": False,
+            },
+            {
+                "name": "最新詳細",
+                "value": detail_text,
+                "inline": False,
+            },
+            {
+                "name": "追跡リンク",
+                "value": tracking_link_text,
+                "inline": False,
+            },
+            {
+                "name": "実行種別",
+                "value": triggered_by or "-",
+                "inline": False,
+            },
         ],
     }
 
@@ -343,6 +369,48 @@ def toggle_target_active(target_id: int) -> bool:
     return bool(new_value)
 
 
+
+
+def send_test_discord_notification(target_id: int) -> None:
+    db = get_db()
+    try:
+        cur = db.cursor(dictionary=True)
+        cur.execute("SELECT * FROM shipment_tracking_target WHERE id=%s", (target_id,))
+        target = cur.fetchone()
+    finally:
+        db.close()
+
+    if not target:
+        raise ShipmentTrackingError("対象が見つかりません。")
+
+    webhook_url = _get_admin_discord_webhook_url()
+    if not webhook_url:
+        raise ShipmentTrackingError("admin のDiscord Webhook URLが設定されていません。")
+
+    payload: dict[str, Any]
+    last_payload_json = target.get("last_payload_json")
+    if last_payload_json:
+        try:
+            payload = json.loads(last_payload_json)
+        except Exception as exc:
+            raise ShipmentTrackingError("保存済みの配送追跡JSONを読み込めませんでした。") from exc
+    else:
+        payload = fetch_and_parse(target["carrier_code"], target["tracking_number"])
+
+    current_status = payload.get("current_status")
+    current_status_detail = payload.get("current_status_detail")
+    latest_event_at = _parse_payload_datetime(payload.get("latest_event_at"))
+
+    embed = _build_shipment_tracking_discord_embed(
+        target=target,
+        payload=payload,
+        current_status=current_status,
+        current_status_detail=current_status_detail,
+        latest_event_at=latest_event_at,
+        triggered_by="test",
+    )
+
+    _send_shipment_tracking_discord_notification(webhook_url, embed)
 def run_check(target_id: int, triggered_by: str) -> bool:
     if triggered_by not in TRIGGERED_BY_VALUES:
         raise ShipmentTrackingError("triggered_by が不正です。")
