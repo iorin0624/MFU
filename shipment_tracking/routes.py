@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from flask import flash, redirect, render_template, request, url_for
+from flask import current_app, flash, redirect, render_template, request, url_for
 
 from . import shipment_tracking_bp
 from .models import CARRIER_MASTER
@@ -13,6 +13,7 @@ from .services import (
     get_target,
     list_targets,
     run_check,
+    send_test_discord_notification,
     toggle_target_active,
     update_target,
 )
@@ -162,4 +163,27 @@ def shipment_tracking_toggle_active(id: int):
         flash("有効にしました" if is_active else "無効にしました", "success")
     except ShipmentTrackingError as exc:
         flash(str(exc), "danger")
+    return redirect(url_for("shipment_tracking.shipment_tracking_detail", id=id))
+
+
+@shipment_tracking_bp.route("/admin/shipment-tracking/<int:id>/test-discord", methods=["POST"])
+@admin_required
+def shipment_tracking_test_discord(id: int):
+    target = get_target(id)
+    if not target:
+        flash("対象が見つかりません。", "danger")
+        return redirect(url_for("shipment_tracking.shipment_tracking_list"))
+
+    try:
+        send_test_discord_notification(id)
+        flash("Discord通知テストを送信しました", "success")
+    except ShipmentTrackingError as exc:
+        flash(str(exc), "danger")
+    except Exception:
+        current_app.logger.exception(
+            "[shipment_tracking] discord test notify failed target_id=%s",
+            id,
+        )
+        flash("Discord通知テストに失敗しました", "danger")
+
     return redirect(url_for("shipment_tracking.shipment_tracking_detail", id=id))
