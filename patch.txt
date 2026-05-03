@@ -1,1568 +1,222 @@
-diff --git a/__init__.py b/__init__.py
-index 41995eeb0b742a6ccab619fa0d28a7845f47f3b7..93a4f0911c50ded3243ab3c201cb199550a69123 100644
---- a/__init__.py
-+++ b/__init__.py
-@@ -248,50 +248,53 @@ def _has_view_auth(uuid):
- CSRF_SESSION_KEY = "csrf_token"
- _UPLOAD_SECURITY_SCHEMA_LOCK = threading.Lock()
- _upload_security_schema_ready = False
- _CSRF_PROTECTED_PREFIXES = (
-     "/admin/users",
-     "/admin/user-features",
-     "/admin/features",
-     "/admin/nav",
-     "/admin/logs/404-ban",
-     "/admin/mail-delivery/refresh",
-     "/admin/maintenance",
-     "/admin/settings/inapp-browser",
-     "/admin/restart",
-     "/admin/logs/export",
-     "/templates",
-     "/modes",
-     "/upload_delete/",
- )
- _CSRF_PROTECTED_PATHS = {
-     "/submit_upload",
-     "/api/zip-stream",
-     "/admin/fw/ban",
- }
- _CSRF_EXEMPT_PATHS = {
-     "/login",
-+    "/api/albums/upload",
-+    "/api/albums/create",
-+    "/api/albums/create_child",
- }
- 
- 
- def _ensure_upload_security_schema_once():
-     global _upload_security_schema_ready
-     if _upload_security_schema_ready:
-         return
-     with _UPLOAD_SECURITY_SCHEMA_LOCK:
-         if _upload_security_schema_ready:
-             return
-         ensure_upload_password_schema()
-         _upload_security_schema_ready = True
- 
- 
- def _get_upload_access_record(uuid):
-     return fetch_upload_access_record(uuid)
- 
- 
- def _can_access_upload_record(upload):
-     return can_access_upload_record(upload, has_view_auth_func=_has_view_auth)
- 
- 
- def _can_access_upload_uuid(uuid):
-     upload = _get_upload_access_record(uuid)
-     return bool(upload and _can_access_upload_record(upload))
-@@ -358,93 +361,93 @@ def _log_csrf_debug(reason, **extra):
-     origin_raw = request.headers.get("Origin")
-     referer_raw = request.headers.get("Referer")
-     origin_parsed = urlparse(origin_raw) if origin_raw else None
-     referer_parsed = urlparse(referer_raw) if referer_raw else None
-     payload = {
-         "reason": reason,
-         "path": request.path,
-         "method": request.method,
-         "host": request.host,
-         "host_url": request.host_url,
-         "url": request.url,
-         "scheme": request.scheme,
-         "is_secure": request.is_secure,
-         "header_host": request.headers.get("Host"),
-         "header_origin": origin_raw,
-         "header_referer": referer_raw,
-         "x_forwarded_proto": request.headers.get("X-Forwarded-Proto"),
-         "x_forwarded_host": request.headers.get("X-Forwarded-Host"),
-         "x_forwarded_port": request.headers.get("X-Forwarded-Port"),
-         "x_forwarded_for": request.headers.get("X-Forwarded-For"),
-         "remote_addr": request.remote_addr,
-         "endpoint": request.endpoint,
-         "blueprint": request.blueprint,
-         "session_csrf_exists": bool(session.get(CSRF_SESSION_KEY)),
-         "form_csrf_exists": bool(request.form.get("csrf_token")),
--        "header_csrf_exists": bool(request.headers.get("X-CSRF-Token")),
-+        "header_csrf_exists": bool(request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")),
-         "expected_scheme": expected.scheme,
-         "expected_netloc": expected.netloc,
-         "origin_scheme": origin_parsed.scheme if origin_parsed else "",
-         "origin_netloc": origin_parsed.netloc if origin_parsed else "",
-         "referer_scheme": referer_parsed.scheme if referer_parsed else "",
-         "referer_netloc": referer_parsed.netloc if referer_parsed else "",
-     }
-     payload.update(extra or {})
-     app.logger.warning("CSRF_DEBUG %s", json.dumps(payload, ensure_ascii=False, sort_keys=True))
- 
- 
- def _is_json_error_response():
-     if request.path.startswith("/api/"):
-         return True
-     if request.is_json:
-         return True
-     best = request.accept_mimetypes.best
-     return best == "application/json"
- 
- 
- def _csrf_error(message, status=403):
-     if _is_json_error_response():
-         return jsonify({"ok": False, "error": "csrf_failed", "message": message}), status
-     return message, status
- 
- 
- def _requires_csrf_protection():
-     if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
-         return False
-     if request.path in _CSRF_EXEMPT_PATHS:
-         return False
-     if request.endpoint == "view_upload":
-         # 公開導線のパスワードフォームは今回のCSRF必須対象外。
-         return False
-     if request.path in _CSRF_PROTECTED_PATHS:
-         return True
-     return request.path.startswith(_CSRF_PROTECTED_PREFIXES)
- 
- 
- def _validate_csrf_request():
-     session_token = session.get(CSRF_SESSION_KEY) or ""
--    header_token = request.headers.get("X-CSRF-Token") or ""
-+    header_token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken") or ""
-     form_token = request.form.get("csrf_token") or ""
-     json_token = ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "") or ""
-     request_token = header_token or form_token or json_token or ""
- 
-     is_same_origin, origin_check = _check_same_origin_from_headers()
-     if not is_same_origin:
-         _log_csrf_debug(
-             "origin_mismatch",
-             origin_check=origin_check,
-             session_token_meta=_mask_csrf_token(session_token),
-             request_token_meta=_mask_csrf_token(request_token),
-             header_token_meta=_mask_csrf_token(header_token),
-             form_token_meta=_mask_csrf_token(form_token),
-             json_token_meta=_mask_csrf_token(json_token),
-         )
-         return _csrf_error("CSRF origin check failed", 403)
- 
-     if not session_token or not request_token:
-         _log_csrf_debug(
-             "missing_token",
-             origin_check=origin_check,
-             session_token_meta=_mask_csrf_token(session_token),
-             request_token_meta=_mask_csrf_token(request_token),
-             header_token_meta=_mask_csrf_token(header_token),
-             form_token_meta=_mask_csrf_token(form_token),
 diff --git a/albums/routes.py b/albums/routes.py
-index 7f7e81deb1ae1a24ab8c76804e2c47d6bf77fa91..448fc2c3751df929da640d9af947d4fb346b9d6d 100644
+index 448fc2c3751df929da640d9af947d4fb346b9d6d..1dfa1f2c4c426d3a9daae6c10bf0e659a9da28b7 100644
 --- a/albums/routes.py
 +++ b/albums/routes.py
-@@ -2874,50 +2874,51 @@ def force_unlock(album_id, child_id):
-             flash(f'解除に失敗しました: {e}', 'danger')
-     else:
-         flash('ロックは存在しません', 'info')
-     return redirect(url_for('album.view_child', album_id=album_id, child_id=child_id))
- 
- # =============================================================================
- # 親/子アルバム名の変更
- # =============================================================================
- @album_bp.route('/<album_id>/edit_name', methods=['GET'])
- def edit_album_name_form(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     user = session.get('user')
-     if not (user == 'admin' or user == meta.get('owner')):
-         return '編集権限がありません', 403
- 
-     return render_template_string("""
- <!doctype html>
- <title>アルバム名の変更</title>
- <meta name="viewport" content="width=device-width, initial-scale=1">
- <div style="max-width:560px;margin:40px auto;font-family:sans-serif">
-   <h1 style="font-size:20px;margin-bottom:12px;">アルバム名の変更</h1>
-   <form method="post" action="{{ url_for('album.rename_album', album_id=album_id) }}">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-     <input type="text" name="album_name" value="{{ current_name }}" required
-            style="width:100%;padding:10px;margin:8px 0;border:1px solid #ccc;border-radius:6px;">
-     <button type="submit" style="padding:10px 14px;border:0;border-radius:6px;background:#111;color:#fff;">保存</button>
-     <a href="{{ url_for('album.album_home', album_id=album_id) }}" style="margin-left:8px">戻る</a>
-   </form>
- </div>
-     """, album_id=album_id, current_name=meta.get("album_name", ""))
- 
- @album_bp.route('/<album_id>/rename', methods=['POST'])
- def rename_album(album_id):
-     meta = load_meta(album_id)
-     if not meta:
-         return 'アルバムが存在しません', 404
- 
-     user = session.get('user')
-     if not (user == 'admin' or user == meta.get('owner')):
-         return '編集権限がありません', 403
- 
-     new_name = (request.form.get('album_name') or '').strip()
-     if not new_name:
-         flash('アルバム名を入力してください', 'warning')
-         return redirect(url_for('album.admin_create_album'))
- 
+@@ -242,97 +242,116 @@ def _notify_requester_process_completion(
+     meta: dict,
+     event_meta: dict | None,
+ ) -> None:
+     if not request_by_id:
+         return
+     if not event_meta or not event_meta.get("event_id"):
+         return
+     pending_sql = (
+         """
+         SELECT COUNT(*) AS cnt
+           FROM album_process
+          WHERE album_id=%s AND child_id=%s
+            AND request_by=%s
+            AND request_flag=1
+            AND complete_flag=0
+         """
+     )
+     pending_row = db_get_one(
+         pending_sql,
+         (album_id, child_id, request_by_id),
+     )
+     pending_cnt = int(pending_row.get("cnt", 0)) if pending_row else 0
+     if pending_cnt != 0:
+         return
+     requester_row = db_get_one(
+-        "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
+-        (request_by_id,),
++        """
++        SELECT u.email
++          FROM mfu_event_member m
++          JOIN external_login_user u ON u.id = m.user_id
++         WHERE m.event_id=%s
++           AND m.user_id=%s
++           AND m.status='approved'
++           AND COALESCE(m.is_canceled, 0)=0
++         LIMIT 1
++        """,
++        (int(event_meta["event_id"]), int(request_by_id)),
+     )
+     requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
+     if not requester_email:
+         return
+     current_app.logger.info(
+         "notify: pre_send kind=process_all_done album_id=%s child_id=%s request_by=%s recipients=%s recipients_count=%s pending_sql=%s",
+         album_id,
+         child_id,
+         requester_email,
+         [requester_email],
+         1,
+         "request_flag=1 AND complete_flag=0",
+     )
+     album_name = meta.get("album_name", "アルバム")
+     child_name = next((c.get("name") for c in meta.get("children", []) if c.get("folder") == child_id), child_id)
+     link = _build_event_album_link(int(event_meta["event_id"]), album_id, child_id)
+     subject = f"【加工完了】{album_name}"
+     body = (
+         f"{album_name} の「{child_name}」について、依頼した加工回しが完了しました。\n\n"
+         f"アクセスはこちら:\n{link}\n\n"
+         "このメールはイベント参加者（承認済み）のみへ自動通知しています。"
+     )
      try:
-         db_exec("UPDATE albums SET album_name=%s WHERE id=%s", (new_name, album_id))
-@@ -3121,119 +3122,124 @@ def _move_album_physical_photos_safe(album_id: str, dest_storage: str):
- 
-         # 原子的切替（宛先側）
-         os.rename(dst_tmp, final_dst)
- 
-         # 旧データは backup_* へ退避（元側）
-         backup_name = f"{album_id}.backup_{ts}"
-         backup_path = os.path.join(cur_root, backup_name)
-         os.rename(src_dir, backup_path)
- 
-         # DB更新（ここで初めて切替）
-         _set_album_storage(album_id, dest_storage)
- 
-         msg = f"切替完了。旧データは {backup_path} にバックアップとして残しました。確認後に手動削除してください。"
-         return True, msg
- 
-     except Exception as e:
+         from app.utils.mail import send_mail
+     except Exception:
          try:
-             if os.path.isdir(dst_tmp):
-                 shutil.rmtree(dst_tmp, ignore_errors=True)
+             from app.mail import send_mail
          except Exception:
-             pass
-         return False, f"移動失敗: {e}"
+             send_mail = None
+     if send_mail:
+         send_mail(requester_email, subject, body)
  
- @album_bp.route("/admin/storage", methods=["GET"])
- def admin_storage_page():
-+    csrf_token = session.get('csrf_token') or secrets.token_urlsafe(32)
-+    session['csrf_token'] = csrf_token
-     resp = _require_admin()
-     if resp:
-         return resp
+ def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> list[dict]:
+     if not user_ids:
+         return []
+     placeholders = ",".join(["%s"] * len(user_ids))
+     sql = (
+         "SELECT m.user_id, u.nickname, u.email, "
+         "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
+         "  FROM mfu_event_member m "
+         "  JOIN external_login_user u ON u.id = m.user_id "
+         f" WHERE m.event_id=%s AND m.user_id IN ({placeholders}) "
++        "   AND m.status='approved' "
++        "   AND COALESCE(m.is_canceled, 0)=0 "
+         " ORDER BY u.nickname ASC, m.user_id ASC"
+     )
+-    return db_get_all(sql, (event_id, *user_ids)) or []
++    rows = db_get_all(sql, (event_id, *user_ids)) or []
++    current_app.logger.info(
++        "album process notify contacts loaded event_id=%s requested_user_ids=%s contacts_after_cancel_filter=%s condition=%s",
++        event_id,
++        len(user_ids),
++        len(rows),
++        "status='approved' AND COALESCE(is_canceled,0)=0",
++    )
++    return rows
  
-     rows = []
-     for r in list_albums_for_admin():
-         aid = r["id"]
-         meta = load_meta(aid)
-         if not meta:
+ 
+ def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
+     if not user_ids:
+         return set()
+     normalized_ids: list[int] = []
+     seen: set[int] = set()
+     for user_id in user_ids:
+         try:
+             value = int(user_id)
+         except (TypeError, ValueError):
              continue
-         storage, _root = _get_album_storage(aid)
-         rows.append((aid, meta.get("album_name", "（無名）"), storage))
-     rows.sort(key=lambda x: x[1])
- 
-     html = [
--        "<!doctype html><meta charset='utf-8'><title>アルバム保存先 管理</title>",
-+        f"<!doctype html><meta charset='utf-8'><title>アルバム保存先 管理</title><meta name='csrf-token' content='{csrf_token}'>",
-         "<style>body{font-family:sans-serif} table{border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px} code{background:#f6f6f6;padding:2px 4px;border-radius:4px} .row{margin:6px 0} .bar{width:260px}</style>",
-         "<h1>アルバム保存先 管理（SSD ⇄ HDD）</h1>",
-         "<p>「安全に移動（進行表示）」は <b>コピー→検証→原子的切替</b> を非同期で実行し、下のプログレスバーに進捗を表示します。完了後、元側に <code>*.backup_YYYYmmdd_HHMMSS</code> を残します。</p>",
-         "<table><tr><th>アルバム名</th><th>album_id</th><th>現在</th><th>操作</th><th>進捗</th></tr>",
-     ]
-     for aid, name, storage in rows:
-         # 従来の同期ボタン（残しておく）
-         btn_to_hdd_sync = f"""
-           <form method="post" action="{url_for('album.admin_move_storage')}" style="display:inline">
-+            <input type="hidden" name="csrf_token" value="{csrf_token}">
-             <input type="hidden" name="album_id" value="{aid}">
-             <input type="hidden" name="dest" value="hdd">
-             <button type="submit">HDDへ移動（同期）</button>
-           </form>"""
-         btn_to_ssd_sync = f"""
-           <form method="post" action="{url_for('album.admin_move_storage')}" style="display:inline">
-+            <input type="hidden" name="csrf_token" value="{csrf_token}">
-             <input type="hidden" name="album_id" value="{aid}">
-             <input type="hidden" name="dest" value="ssd">
-             <button type="submit">SSDへ戻す（同期）</button>
-           </form>"""
- 
-         # 非同期ボタン（進捗表示）
-         btn_async = f"""
-           <div class="row">
-             <button onclick="startMove('{aid}','hdd')">HDDへ移動（安全に移動・進行表示）</button>
-             <button onclick="startMove('{aid}','ssd')">SSDへ戻す（安全に移動・進行表示）</button>
-           </div>
-         """
- 
-         # 進捗UI（progress + メッセージ）
-         prog_ui = f"""
-           <div id="prog-{aid}">
-             <progress class="bar" id="bar-{aid}" value="0" max="100"></progress>
-             <span id="txt-{aid}">待機中</span>
-           </div>
-         """
- 
-         html.append(
-             f"<tr><td>{name}</td><td><code>{aid}</code></td><td>{storage.upper()}</td>"
-             f"<td>{btn_to_hdd_sync} {btn_to_ssd_sync}<br>{btn_async}</td>"
-             f"<td>{prog_ui}</td></tr>"
-         )
-     html.append("</table>")
- 
-     # フロントJS：開始→ポーリング→完了
-     html.append(f"""
- <script>
- async function startMove(album_id, dest){{
-   const btns = document.querySelectorAll('button');
-+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-   btns.forEach(b=>b.disabled=true);
-   try {{
-     const res = await fetch('{url_for('album.api_storage_move_async')}', {{
-       method:'POST',
--      headers:{{'Content-Type':'application/json'}},
-+      headers:{{'Content-Type':'application/json','X-CSRFToken':csrfToken}},
-       body: JSON.stringify({{album_id, dest}})
-     }});
-     const j = await res.json();
-     if(!j.ok){{ alert('開始失敗: '+(j.error||res.status)); btns.forEach(b=>b.disabled=false); return; }}
-     pollProgress(album_id);
-   }} catch(e){{
-     alert('開始エラー: '+e);
-     btns.forEach(b=>b.disabled=false);
-   }}
- }}
- 
- async function pollProgress(album_id){{
-   const bar = document.getElementById('bar-'+album_id);
-   const txt = document.getElementById('txt-'+album_id);
-   let timer = null;
- 
-   async function once(){{
-     try {{
-       const res = await fetch('{url_for('album.api_storage_progress')}?album_id='+encodeURIComponent(album_id), {{cache:'no-store'}});
-       const j = await res.json();
-       if(!j.ok){{ throw new Error(j.error||res.status); }}
-       const p = j.progress||{{}};
-       const pct = Math.max(0, Math.min(100, p.percent||0));
-       bar.value = pct;
-       txt.textContent = (p.status||'') + ' ' + pct + '% ' + (p.message?(' - '+p.message):'');
-diff --git a/albums/templates/access.html b/albums/templates/access.html
-index 9569f50d4157ca3a87cd2194ae6db4b9a1ab67a8..d5f260ea1574a26080e1a3ee6bafcd62d5b72619 100644
---- a/albums/templates/access.html
-+++ b/albums/templates/access.html
-@@ -1,19 +1,21 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>アルバム認証</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
- </head>
- <body class="container py-5">
-   <h2 class="mb-4">🔒 アルバムにアクセス</h2>
-   <form method="post">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-     <div class="mb-3">
-       <label class="form-label">パスワード</label>
-       <input type="password" name="password" class="form-control" required autofocus>
-     </div>
-     <button type="submit" class="btn btn-primary">アクセス</button>
-   </form>
- </body>
- </html>
-diff --git a/albums/templates/admin_create_album.html b/albums/templates/admin_create_album.html
-index c8cc9ee7dfcb19207617b0b608aecdcabd1d6701..1ff3848d4d04f7ec104eab4d4bbd44a6988b616f 100644
---- a/albums/templates/admin_create_album.html
-+++ b/albums/templates/admin_create_album.html
-@@ -1,37 +1,38 @@
- {% extends "base.html" %}
- {% block title %}
-   {% if session.get('user') == 'admin' %}
-     親アルバム作成（管理者）
-   {% else %}
-     親アルバム作成
-   {% endif %}
- {% endblock %}
- 
- {% block content %}
- <div class="container d-flex justify-content-center">
-   <form method="post" class="card p-4 shadow-sm w-100" style="max-width: 500px;">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-     <h2 class="text-center mb-4">
-       {% if session.get('user') == 'admin' %}
-         🛠️ 親アルバム作成（管理者）
-       {% else %}
-         🛠️ 親アルバム作成
-       {% endif %}
-     </h2>
-     <div class="mb-3">
-       <label class="form-label">アルバム名</label>
-       <input type="text" name="album_name" class="form-control" required>
-     </div>
-     <button class="btn btn-primary w-100" type="submit">作成</button>
-   </form>
- </div>
- 
- <hr class="my-5">
- 
- <div class="container">
-   <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-     <h5 class="mb-3 mb-0">📚 現在の親アルバム一覧</h5>
-     {% if session.get('user') == 'admin' %}
-     <div class="text-muted small">
-       💡 写真は <code>/mnt/mfu/mfu_albums</code>（SSD）⇄<code>/mnt/maildata/mfu_albums</code>（HDD）に
-       <b>物理移動</b>します。<u>外部リンク（URL）は変わりません</u>。動画は <code>/mnt/maildata/mfu_album_movie</code> 固定です。
-     </div>
-@@ -66,78 +67,81 @@
-               id="btn-to-hdd-{{ album.id }}"
-               onclick="moveStorageWithProgress('{{ album.id }}','hdd')"
-             >📦 HDDへ移動（安全・進捗表示）</button>
-             <button
-               type="button"
-               class="btn btn-sm btn-outline-secondary"
-               id="btn-to-ssd-{{ album.id }}"
-               onclick="moveStorageWithProgress('{{ album.id }}','ssd')"
-             >⚡ SSDへ戻す（安全・進捗表示）</button>
-           </div>
- 
-           <!-- 🧰 全体ZIP（静止画＋動画） -->
-           <div class="d-flex gap-2 w-100 justify-content-end">
-             <button
-               type="button"
-               class="btn btn-sm btn-outline-primary"
-               id="btn-zip-{{ album.id }}"
-               onclick="startZipWithProgress('{{ album.id }}')"
-             >🧰 全体ZIP（静止画+動画）</button>
-           </div>
-           {% endif %}
- 
-           {% if session.get('user') == 'admin' or session.get('user') == album.owner %}
-           <!-- ✏️ 名前変更（ブラウザ標準ダイアログ + 隠しフォーム） -->
-           <form id="rename-form-{{ album.id }}" method="post" action="{{ url_for('album.rename_album', album_id=album.id) }}" class="d-none">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-             <input type="hidden" name="album_name" value="{{ album.name }}">
-             <input type="hidden" name="from_admin_list" value="1">
-           </form>
-           <div class="d-flex gap-2 w-100 justify-content-end">
-             <button
-               type="button"
-               class="btn btn-sm btn-outline-primary"
-               onclick="
-                 (function(){
-                   var current='{{ album.name|e }}';
-                   var next = prompt('新しいアルバム名を入力してください', current);
-                   if (next === null) return;
-                   next = next.trim();
-                   if (!next) { alert('アルバム名は必須です'); return; }
-                   var f = document.getElementById('rename-form-{{ album.id }}');
-                   f.querySelector('input[name=album_name]').value = next;
-                   f.submit();
-                 })();
-               "
-             >✏️ 名前変更</button>
- 
-             <form method="post" action="{{ url_for('album.regenerate_token', album_id=album.id) }}"
-                   onsubmit="return confirm('このアルバムのアクセストークンを再発行します。既存のURLは無効になります。よろしいですか？');">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-               <button type="submit" class="btn btn-sm btn-warning">♻️ トークン再発行</button>
-             </form>
- 
-             <form method="post" action="{{ url_for('album.delete_album', album_id=album.id) }}"
-                   onsubmit="return confirm('この親アルバムとすべての子アルバムを削除します。よろしいですか？');">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-               <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
-             </form>
-           </div>
-           {% endif %}
-         </div>
-       </li>
-     {% else %}
-       <li class="list-group-item text-muted">親アルバムがまだ存在しません</li>
-     {% endfor %}
-   </ul>
- </div>
- 
- {% if session.get('user') == 'admin' %}
- <!-- ===== 進捗ポップアップ（画面ロック・写真移動） ===== -->
- <style>
-   #move-overlay, #zip-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 2000; display: none; }
-   #move-dialog,  #zip-dialog  { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw); }
-   .progress { height: 20px; }
- </style>
- <div id="move-overlay" aria-modal="true" role="dialog" aria-labelledby="move-title" aria-hidden="true">
-   <div id="move-dialog" class="card shadow-lg">
-     <div class="card-body">
-       <div class="d-flex align-items-center justify-content-between">
-         <h5 id="move-title" class="card-title mb-0">📦 写真を移動中…</h5>
-         <span id="move-dest-badge" class="badge text-bg-secondary">準備中</span>
-@@ -248,59 +252,60 @@
-     const totalB = p.total_bytes ?? 0, doneB = p.processed_bytes ?? 0;
-     const fmtB = (n)=> n>=1024*1024 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
-     countEl.textContent = `${doneF}/${totalF} ファイル ・ ${fmtB(doneB)}/${fmtB(totalB)}`;
-     etaEl.textContent = (p.eta_seconds != null && p.status === 'running') ? `残り ~${p.eta_seconds}s` : '';
-     if (status === 'done'){ statusEl.textContent = '完了'; closeBtn.disabled = false; fetchStatus(albumId).finally(()=> setTimeout(()=> location.reload(), 800)); }
-     if (status === 'error'){ statusEl.textContent = 'エラー: ' + (p.message || '失敗しました'); closeBtn.disabled = false; }
-   }
- 
-   async function pollProgress(albumId){
-     const url = "{{ url_for('album.api_storage_progress') }}" + '?album_id=' + encodeURIComponent(albumId);
-     let timer = null;
-     async function once(){
-       try{
-         const res = await fetch(url, { cache:'no-store', credentials: 'same-origin' });
-         const j = await res.json();
-         if(!j.ok){ throw new Error(j.error||res.status); }
-         const p = j.progress || {};
-         renderProgress(albumId, p);
-         if(p.status === 'done' || p.status === 'error' || (p.percent||0) >= 100){ clearInterval(timer); timer = null; return; }
-       }catch(_){}
-     }
-     await once(); timer = setInterval(once, 1000);
-   }
- 
-   window.moveStorageWithProgress = async function(albumId, dest){
-+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-     const msg = dest === 'hdd'
-       ? '写真をHDDへ物理移動します。処理中はこのアルバムの書き込みを行わないでください。よろしいですか？'
-       : '写真をSSDへ戻します。よろしいですか？';
-     if(!confirm(msg)) return;
-     openOverlay(dest);
-     try{
-       const res = await fetch("{{ url_for('album.api_storage_move_async') }}",{
-         method:'POST',
--        headers:{'Content-Type':'application/json'},
-+        headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},
-         credentials:'same-origin',
-         body: JSON.stringify({ album_id: albumId, dest: dest })
-       });
-       const j = await res.json();
-       if(!j.ok){
-         renderProgress(albumId, { status:'error', message:(j.error||'開始に失敗しました') , percent:0 });
-         return;
-       }
-       if(j.already_running && j.progress){ renderProgress(albumId, j.progress); }
-       pollProgress(albumId);
-     }catch(_){
-       renderProgress(albumId, { status:'error', message:'通信エラーが発生しました', percent:0 });
-     }
-   }
- 
-   // ===== 全体ZIP：オーバーレイ & 進捗 =====
-   const zipOverlay = document.getElementById('zip-overlay');
-   const zipBar     = document.getElementById('zip-bar');
-   const zipStatus  = document.getElementById('zip-status');
-   const zipCount   = document.getElementById('zip-count');
-   const zipEta     = document.getElementById('zip-eta');
-   const zipClose   = document.getElementById('zip-close');
- 
-   function openZipOverlay(){
-     zipOverlay.style.display = 'block';
-@@ -341,47 +346,48 @@
-         if(!j.ok) throw new Error(j.error||'progress error');
-         renderZipProgress(j.progress||{});
- 
-         if (j.download_ready) {
-           // 自動ダウンロード開始
-           const dl = "{{ url_for('album.admin_zip_all_download', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId))
-                    + '?key=' + encodeURIComponent(currentZipKey);
-           // 同タブ遷移でダウンロード（ポップアップ抑止）
-           window.location.href = dl;
-         }
- 
-         const st = (j.progress||{}).status;
-         if (st === 'done' || st === 'error' || (j.progress||{}).percent >= 100) {
-           clearInterval(timer); timer = null; return;
-         }
-       }catch(_){}
-     }
-     await once(); timer = setInterval(once, 1000);
-   }
- 
-   window.startZipWithProgress = async function(albumId){
-     if(!confirm('この親アルバム全体（静止画＋動画）をZIP化します。処理中は書き込みを行わないでください。実行しますか？')) return;
-     openZipOverlay();
-     try{
-       const url = "{{ url_for('album.admin_zip_all_async', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId));
--      const res = await fetch(url, { method:'POST', credentials:'same-origin' });
-+      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-+      const res = await fetch(url, { method:'POST', credentials:'same-origin', headers:{'X-CSRFToken':csrfToken} });
-       const j = await res.json();
-       if(!j.ok){ renderZipProgress({ status:'error', message:(j.error||'開始に失敗しました'), percent:0 }); return; }
-       currentZipKey = j.key;
-       if (j.already_running && j.progress) renderZipProgress(j.progress);
-       pollZipProgress(albumId);
-     }catch(_){
-       renderZipProgress({ status:'error', message:'通信エラーが発生しました', percent:0 });
-     }
-   }
- 
-   // ---- 初期化：一覧の全アルバムについてステータス取得 ----
-   const albumIds = [
-     {% for album in album_list %}
-       "{{ album.id }}"{% if not loop.last %},{% endif %}
-     {% endfor %}
-   ];
-   albumIds.forEach(id => fetchStatus(id));
- })();
- </script>
- {% endif %}
- {% endblock %}
-diff --git a/albums/templates/album_home.html b/albums/templates/album_home.html
-index c3f089a6662ffadb4c0cc9cf1b0b3d0a15b24b6e..c5304999aed8bdfc8038dc43f17c5c6037732e65 100644
---- a/albums/templates/album_home.html
-+++ b/albums/templates/album_home.html
-@@ -1,28 +1,29 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>子アルバム一覧</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .child-actions{ gap:.5rem; }
-     .badge-mode{ font-weight:700; }
-     .badge-normal{ background:#e9f7ef; color:#0f5132; }
-     .badge-movie{ background:#e7f1ff; color:#084298; }
-     .badge-process{ background:#fff3cd; color:#664d03; }
-   </style>
- </head>
- <body class="container py-4">
-   {% if show_extlogin_nav %}
-     {% include "_extlogin_nav.html" %}
-   {% endif %}
- 
-   <div class="d-flex align-items-center justify-content-between mb-3">
-     <h2 class="mb-0">📂 {{ meta.album_name }}</h2>
-   </div>
- 
-   {% if is_admin %}
-     <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
-   {% elif is_owner %}
-     <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
-@@ -45,50 +46,51 @@
-           ： {{ p.username }} さん が加工中（〜{{ p.expires_at }}）
-         </li>
-       {% endfor %}
-     </ul>
-   </div>
-   {% endif %}
- 
-   {# ★HDD保管時は作成UIを非表示 #}
-   {% if not is_readonly %}
-   <!-- 作成フォーム表示トグルボタン -->
-   <div class="mb-3">
-     <button id="toggleCreateFormBtn"
-             class="btn btn-success w-100"
-             type="button"
-             data-bs-toggle="collapse"
-             data-bs-target="#createChildCollapse"
-             aria-expanded="false"
-             aria-controls="createChildCollapse">
-       ＋ 子アルバムを作成
-     </button>
-   </div>
- 
-   <!-- 子アルバム作成フォーム（初期は非表示） -->
-   <div id="createChildCollapse" class="collapse mb-4">
-     <form id="createChildForm" method="post" action="{{ url_for('album.create_child', album_id=album_id) }}">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-       <!-- 名前テンプレート -->
-       <div class="mb-3">
-         <label class="form-label">名前テンプレート</label>
-         <div class="btn-group w-100" role="group" aria-label="child name template">
-           <input type="radio" class="btn-check" name="child_name_template" id="tplNone" value="" checked>
-           <label class="btn btn-outline-secondary" for="tplNone">指定なし</label>
- 
-           <input type="radio" class="btn-check" name="child_name_template" id="tplKouzu" value="kouzu">
-           <label class="btn btn-outline-secondary" for="tplKouzu">【構図】</label>
- 
-           <input type="radio" class="btn-check" name="child_name_template" id="tplOffshot" value="offshot">
-           <label class="btn btn-outline-secondary" for="tplOffshot">【オフショ】</label>
- 
-           <input type="radio" class="btn-check" name="child_name_template" id="tplDouga" value="douga">
-           <label class="btn btn-outline-secondary" for="tplDouga">【動画】</label>
- 
-           <input type="radio" class="btn-check" name="child_name_template" id="tplKakou" value="kakou">
-           <label class="btn btn-outline-secondary" for="tplKakou">【加工回し】</label>
-         </div>
-         <div class="form-text mt-1">
-           上のテンプレートと下の名前を組み合わせて保存します（例：<code>【構図】七五三_原版</code>）。
-         </div>
-       </div>
- 
-       <!-- タイトル -->
-@@ -135,72 +137,74 @@
-     {% set is_locked = child.folder in locked_ns.ids %}
- 
-     <div class="list-group-item">
-       <div class="d-flex justify-content-between align-items-center flex-wrap">
-         <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child.folder) }}"
-            class="btn btn-outline-primary flex-grow-1 me-3 text-start">
-           {% if is_locked %}
-             🔏
-           {% else %}
-             {% if child.mode == 'process' %}🛠️{% elif child.mode == 'movie' %}🎬{% else %}📸{% endif %}
-           {% endif %}
-           &nbsp;{{ display_name }}（{{ child.media_count or 0 }}{{ child.media_unit or '枚' }}）
-         </a>
- 
-         <span class="badge badge-mode {{ badge_class }} me-3">
-           {% if child.mode == 'process' %}加工回し{% elif child.mode == 'movie' %}動画{% else %}写真{% endif %}
-         </span>
- 
-         {% if is_admin or is_owner %}
-         <div class="d-flex align-items-center child-actions">
-           <!-- ✏️ 名前変更 -->
-           <form id="rename-child-form-{{ child.folder }}"
-                 method="post"
-                 action="{{ url_for('album.rename_child', album_id=album_id, child_id=child.folder) }}"
-                 class="d-none">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-             <input type="hidden" name="child_name" value="{{ child.name }}">
-           </form>
-           <button type="button" class="btn btn-sm btn-outline-primary"
-             onclick="
-               (function(){
-                 var current='{{ child.name|e }}';
-                 var next = prompt('新しい子アルバム名を入力してください', current);
-                 if (next === null) return;
-                 next = next.trim();
-                 if (!next) { alert('子アルバム名は必須です'); return; }
-                 var f = document.getElementById('rename-child-form-{{ child.folder }}');
-                 f.querySelector('input[name=child_name]').value = next;
-                 f.submit();
-               })();
-             ">
-             ✏️ 名前変更
-           </button>
- 
-           <!-- 🗑️ 削除 -->
-           <form method="post"
-                 action="{{ url_for('album.delete_child', album_id=album_id, child_id=child.folder) }}"
-                 onsubmit="return confirm('本当にこの子アルバムを削除しますか？');">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-             <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
-           </form>
-         </div>
-         {% endif %}
-       </div>
-     </div>
-   {% endmacro %}
- 
-   <!-- 子アルバム一覧（カテゴリ別展開方式） -->
-   {% if not meta.children %}
-     <div class="text-muted">まだ子アルバムが作成されていません。</div>
-   {% else %}
- 
-     {# 先頭の【○○】を自動抽出してラベル一覧を作成 #}
-     {% set ns = namespace(labels=[], others_count=0) %}
-     {% for child in meta.children %}
-       {% set name = child.name or '' %}
-       {% if child.mode == 'process' and child.folder in completed_process_children and name.startswith('【加工回し】') %}
-         {% set name = '【加工終了】' + name[6:] %}
-       {% endif %}
-       {% if name and name.startswith('【') %}
-         {% set end = name.find('】') %}
-         {% if end != -1 %}
-           {% set label = name[:end+1] %}
-           {% if label not in ns.labels %}
-diff --git a/albums/templates/upload_child.html b/albums/templates/upload_child.html
-index 21e9405cb17cf2564f981a67f54f3909c0cc096b..b56a26729fe8fe8c60147fbbe89bc37c8a280485 100644
---- a/albums/templates/upload_child.html
-+++ b/albums/templates/upload_child.html
-@@ -1,28 +1,29 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     /* プレビュー（写真） */
-     #preview img {
-       width: 100px; height: 100px; object-fit: contain;
-       background-color: #f8f9fa; border-radius: 6px; margin: 4px; border: 1px solid #ccc;
-     }
-     /* 選択ファイル一覧（動画） */
-     #fileList { list-style: none; padding: 0; margin: .5rem 0 0; }
-     #fileList li { display: flex; justify-content: space-between; gap: .75rem;
-       border: 1px solid #e5e5e5; border-radius: 8px; padding: .5rem .75rem; margin-bottom: .5rem; }
- 
-     /* ドロップゾーン */
-     #dropzone {
-       border: 2px dashed #aaa; border-radius: 8px; padding: 2em; text-align: center;
-       color: #777; margin-bottom: 1em; transition: background-color .2s, border-color .2s;
-     }
-     #dropzone.dragover { background-color: #e9f5ff; border-color: #3399ff; }
- 
-     /* 100%後のメッセージを読みやすく */
-     .progress .progress-bar { font-weight: 700; }
-   </style>
-@@ -59,50 +60,51 @@
-     <label class="form-label me-3">サムネイルプレビュー</label>
-     <div class="form-check form-check-inline">
-       <input class="form-check-input" type="radio" name="previewToggle" id="previewOn" value="on" checked>
-       <label class="form-check-label" for="previewOn">オン</label>
-     </div>
-     <div class="form-check form-check-inline">
-       <input class="form-check-input" type="radio" name="previewToggle" id="previewOff" value="off">
-       <label class="form-check-label" for="previewOff">オフ</label>
-     </div>
-   </div>
-   {% endif %}
- 
-   <!-- プレビュー領域（写真） / ファイル一覧（動画） -->
-   <div id="preview" class="mb-3 d-flex flex-wrap gap-2" {% if mode=='movie' %}style="display:none"{% endif %}></div>
-   <ul id="fileList" class="mb-3" {% if mode!='movie' %}style="display:none"{% endif %}></ul>
- 
-   <div id="dropzone">
-     {% if mode == 'movie' %}
-       ここに<strong>動画</strong>をドロップ、または下から選択
-     {% else %}
-       ここに<strong>画像</strong>をドロップ、または下から選択
-     {% endif %}
-   </div>
- 
-   <form id="uploadForm" method="post" enctype="multipart/form-data">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-     <div class="mb-3">
-       <input
-         id="fileInput"
-         class="form-control"
-         type="file"
-         name="file"
-         {% if mode == 'movie' %}accept="video/*"{% else %}accept="image/*"{% endif %}
-         {% if mode != 'process' %}multiple{% endif %}
-         required>
-     </div>
- 
-     <div class="progress mb-3" style="height: 24px;">
-       <div id="progressBar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuemin="0" aria-valuemax="100">0%</div>
-     </div>
- 
-     <div class="d-flex gap-2">
-       <button id="submitBtn" type="submit" class="btn btn-primary">アップロード</button>
-       <a href="{{ url_for('album.view_child', album_id=album_id, child_id=child_id) }}" class="btn btn-secondary">戻る</a>
-     </div>
-   </form>
- 
-   <script>
-     const MODE = "{{ mode }}"; // 'normal' | 'process' | 'movie'
-     const albumId = "{{ album_id }}";
-     const childId = "{{ child_id }}";
-diff --git a/albums/templates/view_child.html b/albums/templates/view_child.html
-index 2532dcc140e38c969b9d5552ee6aba67c550d72e..cd13686d66fb613c1dd91ccf14b9895809530286 100644
---- a/albums/templates/view_child.html
-+++ b/albums/templates/view_child.html
-@@ -1,28 +1,29 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
-   <style>
-     .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
-     .gallery .item { position: relative; display: inline-block; text-align: center; }
-     img.thumb { width: 100px; height: auto; border-radius: 6px; }
- 
-     /* ✅ チェックUI帯 */
-     .gallery.selectable .item { padding-top: 56px; }
-     .file-check { position: absolute; opacity: 0; pointer-events: none; }
-     .tapbox{
-       position: absolute; top: 6px; left: 6px;
-       width: 48px; height: 48px; border-radius: 10px;
-       background: rgba(255,255,255,.9); border: 1px solid #ddd;
-       display: flex; align-items: center; justify-content: center;
-       font-size: 22px; font-weight: 700; user-select: none; cursor: pointer;
-       box-shadow: 0 1px 4px rgba(0,0,0,.08);
-       -webkit-tap-highlight-color: transparent;
-       z-index: 2;
-     }
-     .item.selected .tapbox{ background:#0d6efd; color:#fff; border-color:#0d6efd; }
-     .item.selected .thumb{ outline:3px solid #0d6efd; outline-offset:2px; }
-@@ -79,50 +80,51 @@
-       font-size:18px; line-height:1; cursor:pointer;
-     }
-     #bb-share:hover{ background:rgba(0,0,0,.72); }
-   </style>
- </head>
- <body class="container py-4">
- {% if show_extlogin_nav %}
-   {% include "_extlogin_nav.html" %}
- {% endif %}
- 
- 
- <h2 class="mb-3">
-   📂 {{ meta.album_name }} /
-   {% for child in meta.children %}
-     {% if child.folder == child_id %}
-       {{ child.name }}
-       <small class="text-muted ms-2">（{{ image_count }}枚）</small>
-     {% endif %}
-   {% endfor %}
- </h2>
- 
- {% if lock and not lock_expired %}
-   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
-     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
-     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-       <button class="btn btn-outline-danger btn-sm" type="submit"
-               onclick="return confirm('本当にロックを解除しますか？');">
-         🔓 ロックを解除
-       </button>
-     </form>
-   </div>
- {% endif %}
- 
- {% if is_admin %}
-   <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
- {% elif is_owner and session.user %}
-   <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
- {% endif %}
- 
- {% if process_message %}
-   <div class="alert alert-info text-center">🔁 {{ process_message }}</div>
- {% endif %}
- 
- <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
- 
- {% if not is_readonly %}
- <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}"
-    class="btn btn-primary mb-3 ms-2">
-   <span aria-hidden="true">⬆</span> 写真を追加
- </a>
-@@ -418,68 +420,69 @@
-     }catch(_){
-       setProgress(100, "100%（完了）");
-     }
-   }
- 
-   /* トグル文言 */
-   const defaultZipText = btnZip?.textContent || '選択した写真をZIPダウンロード';
-   let resetTimer=null;
-   const setBtnText = (t)=>{ if(btnZip){ btnZip.textContent=t; if(statusEl) statusEl.textContent=t; requestAnimationFrame(setupBottomSpacer);} };
-   const scheduleReset=(ms=5000)=>{ if(resetTimer) clearTimeout(resetTimer); resetTimer=setTimeout(()=>setBtnText(defaultZipText),ms); };
- 
-   $$('.gallery a.preview').forEach((a)=>{
-     a.addEventListener('click', ()=>{
-       lastOpenedImageUrl = toAbsoluteUrl(a.getAttribute('href') || a.href || '');
-     }, true);
-   });
- 
-   btnShare?.addEventListener('click', async ()=>{
-     const paths=currentSelectionPaths();
-     if(!paths.length){ alert('ファイルを選択してください'); return; }
-     if(paths.length===1){ await shareSingleByPath(paths[0]); return; }
-     await shareMultipleByPaths(paths);
-   });
- 
-   btnZip?.addEventListener('click', async ()=>{
-+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-     if(btnZip.classList.contains('btn-busy')) return;
-     const paths=currentSelectionPaths();
-     if(!paths.length){ alert('ファイルを選択してください'); return; }
- 
-     btnZip.classList.add('btn-busy');
-     [btnAll, btnNone, btnShare].forEach(b=>{ if(b) b.disabled=true; });
-     btnZip.disabled = true;
-     setBtnText('ZIP生成中…');
- 
-     const idKey=(crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
-     startProgressPolling(idKey);
- 
-     const hideAfterMs = 1200;
- 
-     try{
-       const res=await fetch('/api/zip-stream',{
-         method:'POST',
--        headers:{ 'Content-Type':'application/json', 'X-Idempotency-Key': idKey },
-+        headers:{ 'Content-Type':'application/json', 'X-CSRFToken': csrfToken, 'X-Idempotency-Key': idKey },
-         body: JSON.stringify({ paths })
-       });
- 
-       if(res.status===409){ setBtnText('既にZIP生成中です…'); scheduleReset(5000); return; }
-       if(!res.ok){
-         const text=await res.text().catch(()=>res.statusText);
-         console.error('ZIP error:', text);
-         setBtnText('エラーが発生しました'); scheduleReset(4000); return;
-       }
- 
-       await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
-       setBtnText('生成完了—ダウンロードが始まります');
- 
-       const cd=res.headers.get('Content-Disposition')||'';
-       const m=cd.match(/filename=([^;]+)/i);
-       const fn=(m? m[1].trim().replace(/^[\"']|[\"']$/g,'') : (idKey+'.zip'));
-       const blob=await res.blob();
-       const url=URL.createObjectURL(blob);
-       const a=document.createElement('a'); a.href=url; a.download=fn;
-       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-       scheduleReset(5000);
- 
-     }catch(e){
-       console.error(e);
-       setBtnText('通信エラーが発生しました'); scheduleReset(4000);
-diff --git a/albums/templates/view_child_movie.html b/albums/templates/view_child_movie.html
-index 831b072e74e1cf2a210b15e5e89cfbc4525ec248..7c1dae64a619a14567c625961fea647c6dac1ae0 100644
---- a/albums/templates/view_child_movie.html
-+++ b/albums/templates/view_child_movie.html
-@@ -1,28 +1,29 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <style>
-     .gallery { display:flex; flex-wrap:wrap; gap:12px; justify-content:center; }
-     .gallery .item { position:relative; display:inline-block; text-align:center; }
-     .caption { max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
- 
-     .poster { width: 220px; aspect-ratio: 16/9; border-radius: 8px; background:#000; object-fit: cover; cursor: pointer; display:block; }
-     video.thumb { width: 220px; max-height: 160px; border-radius: 8px; background:#000; display:none; }
- 
-     .play-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
-       background:rgba(0,0,0,.55); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
-       border:1px solid rgba(255,255,255,.3); cursor:pointer; user-select:none; }
- 
-     .share-badge { position:absolute; top:8px; right:8px;
-       background:rgba(0,0,0,.6); color:#fff; border:1px solid rgba(255,255,255,.35);
-       border-radius:999px; width:38px; height:38px; display:flex; align-items:center; justify-content:center;
-       font-size:17px; line-height:1; cursor:pointer; }
-     .share-badge:hover { background:rgba(0,0,0,.75); }
- 
-     /* 変換中バッジ */
-     .conv-badge { position:absolute; left:50%; bottom:42px; transform:translateX(-50%);
-       background:rgba(13,110,253,.9); color:#fff; padding:.35rem .8rem; border-radius:999px; font-size:.9rem;
-diff --git a/albums/templates/view_child_process.html b/albums/templates/view_child_process.html
-index 9ef5348f4e184c5c965bab18d3cd941ac9883cb3..93693aa04e0cb47057db658ccc063d894c76b8ce 100644
---- a/albums/templates/view_child_process.html
-+++ b/albums/templates/view_child_process.html
-@@ -1,61 +1,63 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
-   <style>
-     .gallery { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
-     .gallery .item { position: relative; display: inline-block; text-align: center; }
-     img.thumb { width: 100px; height: auto; border-radius: 6px; }
- 
-     @media (pointer:coarse){ img.thumb{ width:120px; } }
-   </style>
- </head>
- <body class="container py-4">
- {% if show_extlogin_nav %}
-   {% include "_extlogin_nav.html" %}
- {% endif %}
- 
- 
- <h2 class="mb-3">
-   📂 {{ meta.album_name }} /
-   {% for child in meta.children %}
-     {% if child.folder == child_id %}
-       {{ child.name }}
-       <small class="text-muted ms-2">（{{ image_count }}枚）</small>
-     {% endif %}
-   {% endfor %}
- </h2>
- 
- {% if lock and not lock_expired %}
-   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
-     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
-     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-       <button class="btn btn-outline-danger btn-sm" type="submit"
-               onclick="return confirm('本当にロックを解除しますか？');">
-         🔓 ロックを解除
-       </button>
-     </form>
-   </div>
- {% endif %}
- 
- {% if is_admin %}
-   <div class="alert alert-info text-center">👑 管理ユーザー（admin）としてログイン中</div>
- {% elif is_owner and session.user %}
-   <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
- {% endif %}
- 
- <div class="alert alert-danger text-center">
-   加工専用モードではアップロード枚数は常に1枚のみになります。アップロードすると、最新の画像に切り替わります。
- </div>
- 
- {% if process_message %}
-   <div class="alert alert-info text-center">🔁 {{ process_message }}</div>
- {% endif %}
- 
- <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
- 
- {% if not is_readonly %}
-@@ -136,81 +138,84 @@
-     <div class="table-responsive">
-       <table class="table table-sm table-striped table-bordered text-center align-middle">
-         <thead class="table-light">
-           <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
-         </thead>
-         <tbody>
-           {% for record in history_list|reverse %}
-             <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
-           {% endfor %}
-         </tbody>
-       </table>
-     </div>
-     {% endif %}
- 
-     {% if lock and lock_expired %}
-       <div class="alert alert-warning mt-2">
-         ⏳ <strong>{{ lock.user }}</strong> さんのロックは30分を過ぎました。再取得が可能です。
-       </div>
-     {% endif %}
-   {% else %}
-     <div class="alert alert-danger">
-       ⚠️ 現在 <strong>{{ lock.user }}</strong> さんが加工中です。終了までお待ちください。<br>
-       30分経過しても加工済み写真がアップロードされない場合は、ロックが解除されます。
-     </div>
-     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-       <button class="btn btn-outline-danger btn-sm" type="submit"
-               onclick="return confirm('本当にロックを解除しますか？');">
-         🔓 ロックを解除
-       </button>
-     </form>
-   {% endif %}
- </div>
- 
- <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
- <script>
-+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-   /* ====== processモード：リンククリックで開始（空タブ先開きでポップアップ回避） ====== */
-   const pinForm = document.getElementById("pinDownloadForm");
-   const btnProcess = document.getElementById("btn-process-download");
-   if (pinForm && btnProcess) {
-     btnProcess.addEventListener("click", async function(event) {
-       event.preventDefault();
- 
-       const nameInput   = document.getElementById("displayName");
-       const displayName = (nameInput.value || "").trim();
-       if (!displayName) { alert("加工者名を入力してください。"); nameInput.focus(); return; }
- 
-       // ユーザー操作直後に空タブを開く（同期ジェスチャ内）
-       const preWin = window.open('about:blank', '_blank');
- 
-       // サーバ互換のため、送信時だけ username キーに詰め替える
-       const formData = new FormData();
-       formData.append("username", displayName);
- 
-       try {
-         const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", {
-           method: "POST",
-+          headers: { 'X-CSRFToken': csrfToken },
-           body: formData
-         });
- 
-         if (response.status === 409) {
-           if (preWin && !preWin.closed) preWin.close();
-           alert("他の方が加工中です。\n" + await response.text());
-           return;
-         }
-         if (!response.ok) {
-           if (preWin && !preWin.closed) preWin.close();
-           const text = await response.text().catch(()=>response.statusText);
-           alert("❌ 開始に失敗しました:\n" + text);
-           return;
-         }
- 
-         const data = await response.json();
- 
-         // トースト
-         const toast = document.createElement("div");
-         toast.textContent = data.message || `🔒 ${displayName} さんとして加工ロックを開始しました（30分）`;
-         toast.style.position="fixed"; toast.style.top="20px"; toast.style.left="50%"; toast.style.transform="translateX(-50%)";
-         toast.style.background="#0d6efd"; toast.style.color="#fff"; toast.style.padding="10px 20px"; toast.style.borderRadius="8px";
-         toast.style.zIndex="1000"; toast.style.boxShadow="0 2px 8px rgba(0,0,0,.2)";
-         document.body.appendChild(toast);
-         setTimeout(()=>toast.remove(), 2500);
-diff --git a/albums/templates/view_child_process_event.html b/albums/templates/view_child_process_event.html
-index d3441f5f3fd37970ac7ca9479a4859591ea6f038..46810e6f79fd44f86c9c289c23df7b000457d3ef 100644
---- a/albums/templates/view_child_process_event.html
-+++ b/albums/templates/view_child_process_event.html
-@@ -1,28 +1,29 @@
- <!DOCTYPE html>
- <html lang="ja">
- <head>
-+  <meta name="csrf-token" content="{{ csrf_token() }}">
-   <meta charset="UTF-8">
-   <meta name="viewport" content="width=device-width, initial-scale=1">
-   <title>{{ meta.album_name }}</title>
-   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.css" />
-   <style>
-     :root {
-       --wizard-accent: #0d6efd;
-       --wizard-success: #198754;
-       --wizard-danger: #dc3545;
-       --wizard-bg: #f8f9fa;
-       --wizard-border: #e9ecef;
-     }
- 
-     body { background: var(--wizard-bg); font-size: 1rem; }
-     .page-title { font-size: clamp(1.4rem, 2vw, 1.8rem); }
-     .wizard-card { background: #fff; border: 1px solid var(--wizard-border); border-radius: 16px; box-shadow: 0 12px 30px rgba(0,0,0,0.05); }
-     .soft-shadow { box-shadow: 0 10px 24px rgba(0,0,0,0.08); }
-     .role-card { border-radius: 16px; border: 1px solid var(--wizard-border); }
-     .role-card .role-title { font-size: 1.1rem; }
-     .role-requester { border-left: 6px solid var(--wizard-accent); background: #f1f7ff; }
-     .role-worker { border-left: 6px solid var(--wizard-success); background: #effaf3; }
- 
-     .stepper {
-       display: flex;
-@@ -216,50 +217,51 @@
-           <div class="next-action p-3 my-3">
-             <h4 class="fw-bold">次にやること</h4>
-             {% if not has_image %}
-               <p class="mb-2 text-muted">まずは加工回し用の写真を1枚アップしましょう。</p>
-               {% if not is_readonly %}
-                 <span class="badge bg-primary">この下のアップロード欄から追加できます</span>
-               {% else %}
-                 <div class="alert alert-warning mb-0">
-                   このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
-                 </div>
-               {% endif %}
-             {% elif not ns.has_requested %}
-               <p class="mb-2 text-muted">依頼する人にチェックを入れてから依頼ボタンを押してください。</p>
-               <a href="#request-card" class="btn btn-primary btn-lg w-100">📣 依頼先を選んで送信する</a>
-             {% else %}
-               <p class="mb-2 text-muted">依頼送信が完了しました。加工担当者のステップへ進みます。</p>
-               <div class="alert alert-success mb-0">✅ 依頼済みです。次は加工担当者の操作です。</div>
-             {% endif %}
-           </div>
- 
-           <div class="mb-4 upload-panel">
-             <h5 class="fw-bold mb-2">ステップ1：加工回し用の写真アップロード</h5>
-             <p class="text-muted mb-3">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
-             {% if not is_readonly and not has_image %}
-               <form id="requesterUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                 <div id="requesterDropzone" class="upload-dropzone mb-3">
-                   ここに画像をドロップ、または下のボタンで選択
-                 </div>
-                 <input id="requesterFileInput" class="form-control mb-2" type="file" name="file" accept="image/*" required>
-                 <div class="upload-preview d-flex flex-wrap mb-2" id="requesterPreview"></div>
-                 <div class="progress mb-2" style="height:22px;">
-                   <div id="requesterProgress" class="progress-bar" role="progressbar" style="width:0%">0%</div>
-                 </div>
-                 <div class="d-flex gap-2">
-                   <button id="requesterSubmit" type="submit" class="btn btn-primary w-100">アップロード</button>
-                   <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-secondary">専用画面へ</a>
-                 </div>
-               </form>
-               <div id="requesterStatus" class="small text-muted mt-2"></div>
-             {% elif not is_readonly and has_image %}
-               <div class="alert alert-warning mb-0">
-                 加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
-               </div>
-             {% else %}
-               <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
-             {% endif %}
-           </div>
- 
-           <div id="request-card" class="mb-3">
-             <h5 class="fw-bold mb-2">ステップ2〜3：依頼する人を選んで送信</h5>
-@@ -326,97 +328,99 @@
- 
-     <div class="accordion-item">
-       <h2 class="accordion-header" id="workerHeading">
-         <button class="accordion-button {% if current_step <= 3 %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#workerCollapse" aria-expanded="{% if current_step > 3 %}true{% else %}false{% endif %}">
-           🛠️ 引き受ける側（加工担当） - ステップ4〜5
-         </button>
-       </h2>
-       <div id="workerCollapse" class="accordion-collapse collapse {% if current_step > 3 %}show{% endif %}" aria-labelledby="workerHeading">
-         <div class="accordion-body role-card role-worker p-4">
-           <div class="next-action p-3 mb-3">
-             <h4 class="fw-bold">次にやること</h4>
-             {% if lock and not lock_expired %}
-               <p class="mb-2 text-muted">現在はロック中です。解除後にダウンロードできます。</p>
-               <div class="alert alert-warning mb-0">🔒 加工中のため待機中です。</div>
-             {% else %}
-               <p class="mb-2 text-muted">今すぐ画像をダウンロードして加工を開始しましょう。</p>
-               <a href="#worker-download" class="btn btn-primary btn-lg w-100">⏬ 今すぐダウンロード</a>
-             {% endif %}
-           </div>
- 
-           <div class="status-card {% if lock and not lock_expired %}status-danger{% else %}status-success{% endif %} p-3 mb-3">
-             {% if lock and not lock_expired %}
-               <div class="fw-bold">🔒 ロック中</div>
-               <div class="mt-1">担当者: <strong>{{ lock.user }}</strong> / ロック残り時間は30分以内です。</div>
-               <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="mt-3">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                 <button class="btn btn-outline-danger btn-lg w-100" type="submit" onclick="return confirm('本当にロックを解除しますか？');">
-                   🔓 ロックを解除
-                 </button>
-               </form>
-             {% else %}
-               <div class="fw-bold">✅ 加工準備OK</div>
-               <div class="mt-1">誰でも加工開始できます。</div>
-             {% endif %}
-           </div>
- 
-           <div class="mb-3" id="worker-download">
-             <h5 class="fw-bold mb-2">ステップ4：加工用画像をダウンロード</h5>
-             <p class="text-muted">ボタンを押すとロック（30分）が開始され、最新画像が別タブで開きます。写真を長押しして保存してください。</p>
-             <div class="text-center">
-               {% if not lock or lock_expired %}
-                 <form id="pinDownloadForm" class="text-center" autocomplete="off">
-                   <a href="#" id="btn-process-download" class="btn btn-primary btn-lg w-100">
-                     ⏬ 加工用画像をダウンロード
-                   </a>
-                 </form>
-                 <div id="process-hint" class="text-center small text-muted mt-2"></div>
-               {% else %}
-                 <div class="alert alert-danger mb-0">⚠️ 現在加工中です。終了までお待ちください。</div>
-               {% endif %}
-             </div>
-           </div>
- 
-           {% if is_event_login %}
-             <div class="mb-4">
-               <h5 class="fw-bold mb-2">ステップ4-1：加工不要の場合</h5>
-               <p class="text-muted mb-2">加工が不要と判断した場合は、こちらで完了として記録できます。</p>
-               {% set can_mark_complete = lock and not lock_expired and lock.user == ext_user_nickname %}
-               <button id="btn-mark-complete" class="btn btn-outline-success w-100" data-ext-user-id="{{ current_ext_user_id or '' }}" data-lock-ok="{{ 1 if can_mark_complete else 0 }}" {% if not can_mark_complete %}disabled{% endif %}>
-                 ✅ 加工不要のため、終了する
-               </button>
-               <div id="mark-complete-status" class="small text-muted mt-2"></div>
-               {% if not can_mark_complete %}
-                 <div class="small text-muted mt-2">加工ロック取得中のみ押せます。</div>
-               {% endif %}
-             </div>
-           {% endif %}
- 
-           <div class="mb-4 upload-panel">
-             <h5 class="fw-bold mb-2">ステップ4-2：加工が終わったらアップロード</h5>
-             <p class="text-muted mb-3">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
-             {% if can_upload %}
-               <form id="workerUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
-+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                 <div id="workerDropzone" class="upload-dropzone mb-3">
-                   ここに加工済み画像をドロップ、または下のボタンで選択
-                 </div>
-                 <input id="workerFileInput" class="form-control mb-2" type="file" name="file" accept="image/*" required>
-                 <div class="upload-preview d-flex flex-wrap mb-2" id="workerPreview"></div>
-                 <div class="progress mb-2" style="height:22px;">
-                   <div id="workerProgress" class="progress-bar" role="progressbar" style="width:0%">0%</div>
-                 </div>
-                 <div class="d-flex gap-2">
-                   <button id="workerSubmit" type="submit" class="btn btn-success w-100">加工済みをアップロード</button>
-                   <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}" class="btn btn-outline-secondary">専用画面へ</a>
-                 </div>
-               </form>
-               <div id="workerStatus" class="small text-muted mt-2"></div>
-             {% elif not is_readonly %}
-               <div class="alert alert-warning mb-0">
-                 加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
-               </div>
-             {% else %}
-               <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
-             {% endif %}
-           </div>
- 
-           <div class="status-card status-success p-3">
-             <div class="fw-bold">ステップ5：自動通知</div>
-@@ -478,50 +482,51 @@
-     </table>
-   </div>
- {% endif %}
- 
- {% if history_list %}
-   <hr>
-   <h5 class="mt-4">📜 加工履歴（１番上が最新）</h5>
-   <div class="table-responsive">
-     <table class="table table-sm table-striped table-bordered text-center align-middle">
-       <thead class="table-light">
-         <tr><th scope="col">日時</th><th scope="col">加工者</th></tr>
-       </thead>
-       <tbody>
-         {% for record in history_list|reverse %}
-           <tr><td>{{ record.datetime }}</td><td>{{ record.user }}</td></tr>
-         {% endfor %}
-       </tbody>
-     </table>
-   </div>
- {% endif %}
- 
- <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
- <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
- 
- <script>
-+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-   function toAbsoluteUrl(urlLike){
-     if (!urlLike) return '';
-     try { return new URL(urlLike, location.href).href; }
-     catch(_) { return ''; }
-   }
- 
-   function extractFilename(value, fallback='image.jpg'){
-     const raw = (value || '').split('/').pop() || '';
-     const clean = decodeURIComponent(raw).trim();
-     return clean || fallback;
-   }
- 
-   function safeFilename(nameHint, mimeType='image/jpeg'){
-     const fallbackExt = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi,'') || 'jpg';
-     const base = (nameHint || 'image').replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
-     const file = base || `image.${fallbackExt}`;
-     return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
-   }
- 
-   function mimeTypeFromName(name=''){
-     const lower = `${name}`.toLowerCase();
-     if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-     if (lower.endsWith('.png')) return 'image/png';
-     if (lower.endsWith('.webp')) return 'image/webp';
-     return 'image/jpeg';
-@@ -609,51 +614,51 @@
-         const visible=overlay.classList.contains('visible') && overlay.style.display!=='none';
-         if(visible) ensureOverlayShareButton(overlay);
-       };
-       toggle();
-       const mo=new MutationObserver(toggle);
-       mo.observe(overlay,{ attributes:true, attributeFilter:['class','style'] });
-     };
-     const tryAttach=()=>{
-       const overlay=document.getElementById('baguetteBox-overlay');
-       if(overlay){ applyOverlayObserver(overlay); return true; }
-       return false;
-     };
-     if(!tryAttach()){
-       const bodyMO=new MutationObserver(()=>{ if(tryAttach()) bodyMO.disconnect(); });
-       bodyMO.observe(document.body,{ childList:true, subtree:true });
-     }
-   }
- 
-   const dlButton = document.getElementById("btn-process-download");
-   if (dlButton) {
-     dlButton.addEventListener("click", async (e) => {
-       e.preventDefault();
-       let preWin = window.open("about:blank", "_blank");
-       const formData = new FormData();
-       try {
--        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", { method: "POST", body: formData });
-+        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", { method: "POST", headers: { 'X-CSRFToken': csrfToken }, body: formData });
-         if (response.status === 409) {
-           if (preWin && !preWin.closed) preWin.close();
-           alert("他の方が加工中です。\n" + await response.text());
-           return;
-         }
-         if (!response.ok) {
-           if (preWin && !preWin.closed) preWin.close();
-           const text = await response.text().catch(()=>response.statusText);
-           alert("❌ 開始に失敗しました:\n" + text);
-           return;
-         }
-         const data = await response.json();
-         const openUrl = data.image_url;
-         if (!openUrl) {
-           if (preWin && !preWin.closed) preWin.close();
-           alert("❌ 画像URLの取得に失敗しました。");
-           return;
-         }
-         if (preWin && !preWin.closed) {
-           preWin.location.href = openUrl;
-         } else {
-           const a = document.createElement('a'); a.href = openUrl; a.target = '_blank'; a.rel = 'noopener';
-           document.body.appendChild(a); a.click(); a.remove();
-           const hint = document.getElementById("process-hint");
-           if (hint) { hint.innerHTML = `<p class="mt-3">ポップアップがブロックされた可能性があります。<a href="${openUrl}" target="_blank" rel="noopener">こちらをタップ</a>してください。</p>`; }
-@@ -732,83 +737,83 @@
-   setupUpload("requesterUploadForm", "requesterDropzone", "requesterFileInput", "requesterPreview", "requesterProgress", "requesterStatus", "requesterSubmit");
-   setupUpload("workerUploadForm", "workerDropzone", "workerFileInput", "workerPreview", "workerProgress", "workerStatus", "workerSubmit");
- 
-   const markCompleteButton = document.getElementById("btn-mark-complete");
-   if (markCompleteButton) {
-     markCompleteButton.addEventListener("click", async (event) => {
-       event.preventDefault();
-       if (markCompleteButton.disabled) return;
-       if (markCompleteButton.dataset.lockOk !== "1") {
-         alert("加工ロック取得中のみ押せます。");
-         return;
-       }
-       if (!window.confirm("加工不要のため終了します。よろしいですか？")) return;
-       const statusEl = document.getElementById("mark-complete-status");
-       if (statusEl) statusEl.textContent = "送信中です...";
-       const extUserId = markCompleteButton.dataset.extUserId;
-       if (!extUserId) {
-         if (statusEl) statusEl.textContent = "ユーザー情報が取得できません。";
-         alert("ユーザー情報が取得できません。再ログインしてください。");
-         return;
-       }
-       const requestFlag = {{ 1 if current_user_process_status and current_user_process_status.get('request_flag') else 0 }};
-       try {
-         const response = await fetch("{{ url_for('album.update_process_status', album_id=album_id, child_id=child_id) }}", {
-           method: "POST",
--          headers: { "Content-Type": "application/json" },
-+          headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
-           body: JSON.stringify({ ext_user_id: extUserId, request_flag: requestFlag, complete_flag: 1 }),
-         });
-         if (!response.ok) throw new Error(await response.text());
-         if (statusEl) statusEl.textContent = "完了として登録しました。画面を更新します...";
-         setTimeout(() => location.reload(), 800);
-       } catch (error) {
-         if (statusEl) statusEl.textContent = "登録に失敗しました。";
-         alert("登録に失敗しました: " + error.message);
-       }
-     });
-   }
- 
-   const requestButton = document.getElementById("btn-request-process");
-   if (requestButton) {
-     requestButton.addEventListener("click", async (event) => {
-       event.preventDefault();
-       if (requestButton.disabled) return;
-       if (!window.confirm("依頼するボタンを押すと、依頼チェックの変更はできなくなります。送信してよろしいですか？")) return;
-       const statusEl = document.getElementById("request-status");
-       if (statusEl) statusEl.textContent = "保存中です...";
-       const rows = document.querySelectorAll("tbody tr");
-       const members = [];
-       rows.forEach((row) => {
-         const requestBox = row.querySelector('[data-field="request"]');
-         if (!requestBox) return;
-         const userId = requestBox.dataset.userId;
-         if (!userId) return;
-         members.push({ ext_user_id: userId, request_flag: requestBox.checked ? 1 : 0 });
-       });
-       try {
-         const response = await fetch("{{ url_for('album.request_process', album_id=album_id, child_id=child_id) }}", {
--          method: "POST", headers: { "Content-Type": "application/json" },
-+          method: "POST", headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
-           body: JSON.stringify({ members: members, mode: 'request_only' }),
-         });
-         if (!response.ok) throw new Error(await response.text());
-         if (statusEl) statusEl.textContent = "保存しました！画面を更新します...";
-         setTimeout(() => location.reload(), 800);
-       } catch (error) {
-         if (statusEl) statusEl.textContent = "保存に失敗しました。";
-         alert("保存に失敗しました: " + error.message);
-       }
-     });
-   }
- 
-   /* ====== Lightbox & Lock Timer ====== */
-   window.addEventListener('DOMContentLoaded', ()=>{
-     baguetteBox.run('.gallery',{ animation:'fadeIn', noScrollbars:true });
-     setupLightboxShareButton();
-     {% if lock and not lock_expired %}
-       document.querySelectorAll('.gallery a.preview').forEach(el => {
-         el.addEventListener('click', e => e.preventDefault(), true);
-         el.style.pointerEvents = 'none'; el.style.opacity = '0.6'; el.style.cursor = 'not-allowed';
-       });
-     {% endif %}
-     const lockStatus = document.getElementById('lock-status');
-     const remainingEl = document.getElementById('lock-remaining');
-     if (lockStatus && remainingEl) {
+         if value <= 0 or value in seen:
+             continue
+         seen.add(value)
+         normalized_ids.append(value)
+     if not normalized_ids:
+         return set()
+     placeholders = ",".join(["%s"] * len(normalized_ids))
+     sql = (
+         "SELECT DISTINCT actor_id "
+         "  FROM chat_push_subscriptions "
+         " WHERE actor_type='external_user_id' "
+         f"   AND actor_id IN ({placeholders})"
+     )
+@@ -1449,87 +1468,96 @@ def upload_child(album_id, child_id):
+             if len(items) <= (head + tail):
+                 return items
+             return items[:head] + [f"...({len(items) - (head + tail)} omitted)..."] + items[-tail:]
+ 
+         try:
+             # イベント連携の判定
+             meta_ev = _fetch_album_meta(album_id)
+             if not meta_ev or meta_ev.get('access_mode') != 'event' or not meta_ev.get('event_id'):
+                 current_app.logger.info("notify: skip (album not event) album_id=%s", album_id)
+                 return
+ 
+             album_name = meta.get("album_name", "アルバム")
+             child_name = (child_meta or {}).get("name") or child_id
+             event_id = int(meta_ev["event_id"])
+             current_app.logger.info("notify: event album detected album_id=%s event_id=%s", album_id, event_id)
+ 
+             # 承認済み参加者 + 通知設定カラムも取得
+             sql = (
+                 "SELECT m.user_id AS ext_user_id,"
+                 "       u.email,"
+                 "       COALESCE(u.nickname, '') AS nickname,"
+                 "       COALESCE(u.notify_album_upload, 1)  AS notify_album_upload,"
+                 "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
+                 "  FROM mfu_event_member m "
+                 "  JOIN external_login_user u ON u.id = m.user_id "
+-                " WHERE m.event_id=%s AND m.status='approved' "
++                " WHERE m.event_id=%s    AND m.status='approved'    AND COALESCE(m.is_canceled, 0)=0 "
+             )
+ 
+             rows = []
+             try:
+                 from app.utils.db import get_db  # 低レベル
+                 conn = get_db()
+                 try:
+                     cur = conn.cursor(dictionary=True)
+                 except Exception:
+                     cur = conn.cursor()
+                 cur.execute(sql, (event_id,))
+                 fetched = cur.fetchall() or []
+                 if fetched and not isinstance(fetched[0], dict):
+                     cols = [d[0] for d in cur.description]
+                     for r in fetched:
+                         rows.append({cols[i]: r[i] for i in range(len(cols))})
+                 else:
+                     rows = fetched
+                 try:
+                     cur.close()
+                 except Exception:
+                     pass
+                 try:
+                     conn.close()
+                 except Exception:
+                     pass
+             except Exception:
+                 # フォールバック：高レベル
+                 try:
+                     from app.utils.db import db_get_all as _db_get_all
+                     rows = _db_get_all(sql, (event_id,))
+                 except Exception as e2:
+                     current_app.logger.warning("notify(db) failed: %s", e2)
+                     return
+ 
+             recipients_total = len(rows)
++            current_app.logger.info(
++                "album notify recipients loaded kind=%s album_id=%s child_id=%s event_id=%s recipients_after_cancel_filter=%s condition=%s",
++                kind,
++                album_id,
++                child_id,
++                event_id,
++                recipients_total,
++                "status='approved' AND COALESCE(is_canceled,0)=0",
++            )
+ 
+             # ★ process モードの通知は「未完了のみ」へ絞り込み
+             if mode == "process" and kind in ("upload", "process_done"):
+                 status_map = _fetch_album_process_status_map(album_id, child_id)
+                 filtered = []
+                 for r in rows:
+                     try:
+                         ext_user_id = int(r.get("ext_user_id"))
+                     except (TypeError, ValueError):
+                         continue
+                     status = status_map.get(ext_user_id)
+                     if not status:
+                         continue
+                     if int(status.get("request_flag", 0)) != 1:
+                         continue
+                     if int(status.get("complete_flag", 0)) == 1:
+                         continue
+                     filtered.append(r)
+                 rows = filtered
+                 current_app.logger.info(
+                     "notify: filter kind=%s album_id=%s child_id=%s sql_condition=%s candidates=%s",
+                     kind,
+                     album_id,
+                     child_id,
+                     "request_flag=1 AND complete_flag=0",
