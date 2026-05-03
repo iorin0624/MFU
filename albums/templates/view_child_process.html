@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ meta.album_name }}</title>
@@ -34,6 +35,7 @@
   <div class="alert alert-warning my-2 d-flex align-items-center justify-content-between">
     <div>🔒 現在 <strong>{{ lock.user }}</strong> さんが加工中です。</div>
     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-outline-danger btn-sm" type="submit"
               onclick="return confirm('本当にロックを解除しますか？');">
         🔓 ロックを解除
@@ -158,6 +160,7 @@
       30分経過しても加工済み写真がアップロードされない場合は、ロックが解除されます。
     </div>
     <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="ms-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button class="btn btn-outline-danger btn-sm" type="submit"
               onclick="return confirm('本当にロックを解除しますか？');">
         🔓 ロックを解除
@@ -168,6 +171,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
 <script>
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
   /* ====== processモード：リンククリックで開始（空タブ先開きでポップアップ回避） ====== */
   const pinForm = document.getElementById("pinDownloadForm");
   const btnProcess = document.getElementById("btn-process-download");
@@ -189,6 +193,7 @@
       try {
         const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", {
           method: "POST",
+          headers: { 'X-CSRFToken': csrfToken },
           body: formData
         });
 

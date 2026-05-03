@@ -270,6 +270,9 @@ _CSRF_PROTECTED_PATHS = {
 }
 _CSRF_EXEMPT_PATHS = {
     "/login",
+    "/api/albums/upload",
+    "/api/albums/create",
+    "/api/albums/create_child",
 }
 
 
@@ -380,7 +383,7 @@ def _log_csrf_debug(reason, **extra):
         "blueprint": request.blueprint,
         "session_csrf_exists": bool(session.get(CSRF_SESSION_KEY)),
         "form_csrf_exists": bool(request.form.get("csrf_token")),
-        "header_csrf_exists": bool(request.headers.get("X-CSRF-Token")),
+        "header_csrf_exists": bool(request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")),
         "expected_scheme": expected.scheme,
         "expected_netloc": expected.netloc,
         "origin_scheme": origin_parsed.scheme if origin_parsed else "",
@@ -422,7 +425,7 @@ def _requires_csrf_protection():
 
 def _validate_csrf_request():
     session_token = session.get(CSRF_SESSION_KEY) or ""
-    header_token = request.headers.get("X-CSRF-Token") or ""
+    header_token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken") or ""
     form_token = request.form.get("csrf_token") or ""
     json_token = ((request.get_json(silent=True) or {}).get("csrf_token") if request.is_json else "") or ""
     request_token = header_token or form_token or json_token or ""

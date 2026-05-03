@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>アルバム認証</title>
@@ -9,6 +10,7 @@
 <body class="container py-5">
   <h2 class="mb-4">🔒 アルバムにアクセス</h2>
   <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="mb-3">
       <label class="form-label">パスワード</label>
       <input type="password" name="password" class="form-control" required autofocus>

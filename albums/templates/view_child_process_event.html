@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{ meta.album_name }}</title>
@@ -238,6 +239,7 @@
             <p class="text-muted mb-3">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
             {% if not is_readonly and not has_image %}
               <form id="requesterUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div id="requesterDropzone" class="upload-dropzone mb-3">
                   ここに画像をドロップ、または下のボタンで選択
                 </div>
@@ -348,6 +350,7 @@
               <div class="fw-bold">🔒 ロック中</div>
               <div class="mt-1">担当者: <strong>{{ lock.user }}</strong> / ロック残り時間は30分以内です。</div>
               <form method="post" action="{{ url_for('album.unlock_any', album_id=album_id, child_id=child_id) }}" class="mt-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="btn btn-outline-danger btn-lg w-100" type="submit" onclick="return confirm('本当にロックを解除しますか？');">
                   🔓 ロックを解除
                 </button>
@@ -395,6 +398,7 @@
             <p class="text-muted mb-3">アップロードするとロック解除と「加工済み」登録が自動で進みます。</p>
             {% if can_upload %}
               <form id="workerUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div id="workerDropzone" class="upload-dropzone mb-3">
                   ここに加工済み画像をドロップ、または下のボタンで選択
                 </div>
@@ -500,6 +504,7 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
   function toAbsoluteUrl(urlLike){
     if (!urlLike) return '';
     try { return new URL(urlLike, location.href).href; }
@@ -631,7 +636,7 @@
       let preWin = window.open("about:blank", "_blank");
       const formData = new FormData();
       try {
-        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", { method: "POST", body: formData });
+        const response = await fetch("{{ url_for('album.begin_process', album_id=album_id, child_id=child_id) }}", { method: "POST", headers: { 'X-CSRFToken': csrfToken }, body: formData });
         if (response.status === 409) {
           if (preWin && !preWin.closed) preWin.close();
           alert("他の方が加工中です。\n" + await response.text());
@@ -754,7 +759,7 @@
       try {
         const response = await fetch("{{ url_for('album.update_process_status', album_id=album_id, child_id=child_id) }}", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
           body: JSON.stringify({ ext_user_id: extUserId, request_flag: requestFlag, complete_flag: 1 }),
         });
         if (!response.ok) throw new Error(await response.text());
@@ -786,7 +791,7 @@
       });
       try {
         const response = await fetch("{{ url_for('album.request_process', album_id=album_id, child_id=child_id) }}", {
-          method: "POST", headers: { "Content-Type": "application/json" },
+          method: "POST", headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
           body: JSON.stringify({ members: members, mode: 'request_only' }),
         });
         if (!response.ok) throw new Error(await response.text());

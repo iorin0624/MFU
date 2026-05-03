@@ -2896,6 +2896,7 @@ def edit_album_name_form(album_id):
 <div style="max-width:560px;margin:40px auto;font-family:sans-serif">
   <h1 style="font-size:20px;margin-bottom:12px;">アルバム名の変更</h1>
   <form method="post" action="{{ url_for('album.rename_album', album_id=album_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="text" name="album_name" value="{{ current_name }}" required
            style="width:100%;padding:10px;margin:8px 0;border:1px solid #ccc;border-radius:6px;">
     <button type="submit" style="padding:10px 14px;border:0;border-radius:6px;background:#111;color:#fff;">保存</button>
@@ -3143,6 +3144,8 @@ def _move_album_physical_photos_safe(album_id: str, dest_storage: str):
 
 @album_bp.route("/admin/storage", methods=["GET"])
 def admin_storage_page():
+    csrf_token = session.get('csrf_token') or secrets.token_urlsafe(32)
+    session['csrf_token'] = csrf_token
     resp = _require_admin()
     if resp:
         return resp
@@ -3158,7 +3161,7 @@ def admin_storage_page():
     rows.sort(key=lambda x: x[1])
 
     html = [
-        "<!doctype html><meta charset='utf-8'><title>アルバム保存先 管理</title>",
+        f"<!doctype html><meta charset='utf-8'><title>アルバム保存先 管理</title><meta name='csrf-token' content='{csrf_token}'>",
         "<style>body{font-family:sans-serif} table{border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px} code{background:#f6f6f6;padding:2px 4px;border-radius:4px} .row{margin:6px 0} .bar{width:260px}</style>",
         "<h1>アルバム保存先 管理（SSD ⇄ HDD）</h1>",
         "<p>「安全に移動（進行表示）」は <b>コピー→検証→原子的切替</b> を非同期で実行し、下のプログレスバーに進捗を表示します。完了後、元側に <code>*.backup_YYYYmmdd_HHMMSS</code> を残します。</p>",
@@ -3168,12 +3171,14 @@ def admin_storage_page():
         # 従来の同期ボタン（残しておく）
         btn_to_hdd_sync = f"""
           <form method="post" action="{url_for('album.admin_move_storage')}" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{csrf_token}">
             <input type="hidden" name="album_id" value="{aid}">
             <input type="hidden" name="dest" value="hdd">
             <button type="submit">HDDへ移動（同期）</button>
           </form>"""
         btn_to_ssd_sync = f"""
           <form method="post" action="{url_for('album.admin_move_storage')}" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{csrf_token}">
             <input type="hidden" name="album_id" value="{aid}">
             <input type="hidden" name="dest" value="ssd">
             <button type="submit">SSDへ戻す（同期）</button>
@@ -3207,11 +3212,12 @@ def admin_storage_page():
 <script>
 async function startMove(album_id, dest){{
   const btns = document.querySelectorAll('button');
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
   btns.forEach(b=>b.disabled=true);
   try {{
     const res = await fetch('{url_for('album.api_storage_move_async')}', {{
       method:'POST',
-      headers:{{'Content-Type':'application/json'}},
+      headers:{{'Content-Type':'application/json','X-CSRFToken':csrfToken}},
       body: JSON.stringify({{album_id, dest}})
     }});
     const j = await res.json();
