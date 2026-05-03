@@ -264,8 +264,17 @@ def _notify_requester_process_completion(
     if pending_cnt != 0:
         return
     requester_row = db_get_one(
-        "SELECT email FROM external_login_user WHERE id=%s LIMIT 1",
-        (request_by_id,),
+        """
+        SELECT u.email
+          FROM mfu_event_member m
+          JOIN external_login_user u ON u.id = m.user_id
+         WHERE m.event_id=%s
+           AND m.user_id=%s
+           AND m.status='approved'
+           AND COALESCE(m.is_canceled, 0)=0
+         LIMIT 1
+        """,
+        (int(event_meta["event_id"]), int(request_by_id)),
     )
     requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
     if not requester_email:
@@ -308,9 +317,19 @@ def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> li
         "  FROM mfu_event_member m "
         "  JOIN external_login_user u ON u.id = m.user_id "
         f" WHERE m.event_id=%s AND m.user_id IN ({placeholders}) "
+        "   AND m.status='approved' "
+        "   AND COALESCE(m.is_canceled, 0)=0 "
         " ORDER BY u.nickname ASC, m.user_id ASC"
     )
-    return db_get_all(sql, (event_id, *user_ids)) or []
+    rows = db_get_all(sql, (event_id, *user_ids)) or []
+    current_app.logger.info(
+        "album process notify contacts loaded event_id=%s requested_user_ids=%s contacts_after_cancel_filter=%s condition=%s",
+        event_id,
+        len(user_ids),
+        len(rows),
+        "status='approved' AND COALESCE(is_canceled,0)=0",
+    )
+    return rows
 
 
 def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
@@ -1471,7 +1490,7 @@ def upload_child(album_id, child_id):
                 "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
                 "  FROM mfu_event_member m "
                 "  JOIN external_login_user u ON u.id = m.user_id "
-                " WHERE m.event_id=%s AND m.status='approved' "
+                " WHERE m.event_id=%s    AND m.status='approved'    AND COALESCE(m.is_canceled, 0)=0 "
             )
 
             rows = []
@@ -1508,6 +1527,15 @@ def upload_child(album_id, child_id):
                     return
 
             recipients_total = len(rows)
+            current_app.logger.info(
+                "album notify recipients loaded kind=%s album_id=%s child_id=%s event_id=%s recipients_after_cancel_filter=%s condition=%s",
+                kind,
+                album_id,
+                child_id,
+                event_id,
+                recipients_total,
+                "status='approved' AND COALESCE(is_canceled,0)=0",
+            )
 
             # ★ process モードの通知は「未完了のみ」へ絞り込み
             if mode == "process" and kind in ("upload", "process_done"):
