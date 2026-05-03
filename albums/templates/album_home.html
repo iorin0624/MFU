@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>子アルバム一覧</title>
@@ -67,6 +68,7 @@
   <!-- 子アルバム作成フォーム（初期は非表示） -->
   <div id="createChildCollapse" class="collapse mb-4">
     <form id="createChildForm" method="post" action="{{ url_for('album.create_child', album_id=album_id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <!-- 名前テンプレート -->
       <div class="mb-3">
         <label class="form-label">名前テンプレート</label>
@@ -157,6 +159,7 @@
                 method="post"
                 action="{{ url_for('album.rename_child', album_id=album_id, child_id=child.folder) }}"
                 class="d-none">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="child_name" value="{{ child.name }}">
           </form>
           <button type="button" class="btn btn-sm btn-outline-primary"
@@ -179,6 +182,7 @@
           <form method="post"
                 action="{{ url_for('album.delete_child', album_id=album_id, child_id=child.folder) }}"
                 onsubmit="return confirm('本当にこの子アルバムを削除しますか？');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
           </form>
         </div>

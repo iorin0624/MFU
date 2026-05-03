@@ -10,6 +10,7 @@
 {% block content %}
 <div class="container d-flex justify-content-center">
   <form method="post" class="card p-4 shadow-sm w-100" style="max-width: 500px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <h2 class="text-center mb-4">
       {% if session.get('user') == 'admin' %}
         🛠️ 親アルバム作成（管理者）
@@ -88,6 +89,7 @@
           {% if session.get('user') == 'admin' or session.get('user') == album.owner %}
           <!-- ✏️ 名前変更（ブラウザ標準ダイアログ + 隠しフォーム） -->
           <form id="rename-form-{{ album.id }}" method="post" action="{{ url_for('album.rename_album', album_id=album.id) }}" class="d-none">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="album_name" value="{{ album.name }}">
             <input type="hidden" name="from_admin_list" value="1">
           </form>
@@ -111,11 +113,13 @@
 
             <form method="post" action="{{ url_for('album.regenerate_token', album_id=album.id) }}"
                   onsubmit="return confirm('このアルバムのアクセストークンを再発行します。既存のURLは無効になります。よろしいですか？');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-warning">♻️ トークン再発行</button>
             </form>
 
             <form method="post" action="{{ url_for('album.delete_album', album_id=album.id) }}"
                   onsubmit="return confirm('この親アルバムとすべての子アルバムを削除します。よろしいですか？');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
             </form>
           </div>
@@ -270,6 +274,7 @@
   }
 
   window.moveStorageWithProgress = async function(albumId, dest){
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const msg = dest === 'hdd'
       ? '写真をHDDへ物理移動します。処理中はこのアルバムの書き込みを行わないでください。よろしいですか？'
       : '写真をSSDへ戻します。よろしいですか？';
@@ -278,7 +283,7 @@
     try{
       const res = await fetch("{{ url_for('album.api_storage_move_async') }}",{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
+        headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},
         credentials:'same-origin',
         body: JSON.stringify({ album_id: albumId, dest: dest })
       });
@@ -363,7 +368,8 @@
     openZipOverlay();
     try{
       const url = "{{ url_for('album.admin_zip_all_async', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId));
-      const res = await fetch(url, { method:'POST', credentials:'same-origin' });
+      const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+      const res = await fetch(url, { method:'POST', credentials:'same-origin', headers:{'X-CSRFToken':csrfToken} });
       const j = await res.json();
       if(!j.ok){ renderZipProgress({ status:'error', message:(j.error||'開始に失敗しました'), percent:0 }); return; }
       currentZipKey = j.key;
