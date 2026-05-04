@@ -1,329 +1,773 @@
 diff --git a/external_login_user/admin.py b/external_login_user/admin.py
-index a70710bff23859284671d81655dd46aeff7095ba..9383d8573b18666f9abe9c3d90140142890d6176 100644
+index 9383d8573b18666f9abe9c3d90140142890d6176..6e6d320364b90bff23e32f33807bb0e0c632b010 100644
 --- a/external_login_user/admin.py
 +++ b/external_login_user/admin.py
-@@ -2508,77 +2508,81 @@ def admin_member_edit(event_id: int, user_id: int):
-     if not _event_admin_can_manage(event_id):
-         abort(403, "このイベントを管理する権限がありません。")
+@@ -43,92 +43,133 @@ from app.utils.db import get_db
  
-     # === イベント ===
-     db = get_db(); cur = db.cursor()
-     cur.execute("SELECT id, title, event_uuid, fee_yen FROM mfu_event WHERE id=%s LIMIT 1", (event_id,))
-     ev_row = cur.fetchone()
-     if not ev_row:
-         abort(404, "イベントが見つかりません")
-     ev = {"id": ev_row[0], "title": ev_row[1], "event_uuid": ev_row[2], "fee_yen": ev_row[3]} if isinstance(ev_row, tuple) else dict(ev_row)
-     ev["event_uuid_str"] = _uuid_bytes_to_str(ev.get("event_uuid"))
  
-     # === 参加者 ===
-     cur.close()
-     cur = db.cursor(dictionary=True)
-     cur.execute("""
-       SELECT
-         m.id AS id,
-         m.user_id,
-         u.nickname, u.x_id, u.instagram_id, u.email,
-         u.avatar_file, u.avatar_url, u.updated_at,
-         COALESCE(m.status, 'pending')         AS status,
-         COALESCE(m.payment_status, 'unpaid')  AS payment_status,
-         m.paid_at, m.receipt_url, m.joined_at,
-         COALESCE(m.require_payment, 1)        AS require_payment,
-+        COALESCE(m.process, 0)                AS process,
-         COALESCE(m.is_host, 0)                AS is_host,
-         COALESCE(m.is_subhost, 0)             AS is_subhost,
-+        COALESCE(m.is_canceled, 0)            AS is_canceled,
-         COALESCE(m.participant_role, 'none')  AS participant_role,
-         m.costume_label,
-         m.paid_amount_yen,
-         m.custom_fee_yen,
-         m.contact_memo,
-         m.admin_note,
-         m.receipt_note,
-         m.bank_transfer, m.bank_dest_name, m.bank_remitter_name, m.bank_deposit_date,
-         m.paypay_transfer, m.paypay_sender_name, m.paypay_sent_date
-       FROM mfu_event_member m
-       JOIN external_login_user u ON u.id = m.user_id
-      WHERE m.event_id=%s AND m.user_id=%s
-      LIMIT 1
-     """, (event_id, user_id))
-     r = cur.fetchone()
-     cur.close(); db.close()
-     if not r:
-         abort(404, "参加者が見つかりません")
+ def _normalize_document_admin_url(raw_url: str | None) -> str | None:
+     value = (raw_url or "").strip()
+     if not value:
+         return None
+     if value.startswith(("http://", "https://")):
+         return value
+     return None
  
-     m = dict(r)
-     # ★ 修正点：0 を 1 に潰さない（None のときだけ 1）
-     _rp = m.get("require_payment")
-     m["require_payment"] = 1 if (_rp is None) else int(_rp)
-     m["is_host"]         = int(bool(m.get("is_host")))
-     m["is_subhost"]      = int(bool(m.get("is_subhost")))
-+    m["process"]         = int(bool(m.get("process")))
-+    m["is_canceled"]     = int(bool(m.get("is_canceled")))
-     m["participant_role"]= m.get("participant_role") or "none"
-     m["bank_transfer"]   = int(m.get("bank_transfer") or 0)
-     m["paypay_transfer"] = int(m.get("paypay_transfer") or 0)
  
-     # 支払申告ログ（最新20件）
-     db2 = get_db(); cur2 = db2.cursor(dictionary=True)
+ def _parse_document_revised_date(raw_value: str | None):
+     value = (raw_value or "").strip()
+     if not value:
+         return None
      try:
-         cur2.execute("""
-             SELECT method, bank_id, note, created_at
-               FROM mfu_payment_notice
-              WHERE event_id=%s AND user_id=%s
-                AND method IN ('paypay','bank')
-              ORDER BY id DESC
-              LIMIT 20
-         """, (event_id, m["user_id"]))
-         notices = cur2.fetchall()
-     finally:
-         try: cur2.close(); db2.close()
-         except Exception: pass
+         from datetime import datetime
+         return datetime.strptime(value, "%Y-%m-%d").date()
+     except Exception:
+         return None
  
-     admin_csrf = _admin_csrf_token()
-     card = None
  
-     return render_template(
-         "admin_member_edit.html",
-@@ -2940,88 +2944,102 @@ def admin_member_bulk_update(event_id: int, user_id: int):
-     else:
-         custom_fee_yen = int(custom_fee_raw)
-         if custom_fee_yen == 0:
-             flash("個別参加費は1円以上。空欄で標準参加費です", "warning")
-             ref = request.headers.get("Referer")
-             if ref:
-                 return redirect(ref)
-             return redirect(url_for("external_login_user.admin_event_view", event_id=event_id))
+ def _calculate_event_fee(studio_fee_yen: int | float | None,
+                          fee_rate_percent: int | float | None,
+                          admin_fee_yen: int | float | None,
+-                         payers: int | None) -> int | None:
++                         payers: int | None,
++                         fee_calc_method: str | None = "legacy") -> int | None:
+     if studio_fee_yen in (None, "") or fee_rate_percent in (None, "") or payers in (None, 0):
+         return None
+     admin_fee_value = float(admin_fee_yen or 0)
+     studio_fee_value = float(studio_fee_yen)
+     fee_rate_value = float(fee_rate_percent)
++    method = "new" if fee_calc_method == "new" else "legacy"
++
+     per_person = studio_fee_value / payers
+-    with_fee = per_person * (1 + (fee_rate_value / 100))
+-    total = math.ceil((with_fee + admin_fee_value) / 10) * 10
++    if method == "new":
++        base = per_person + admin_fee_value
++        with_fee = base * (1 + (fee_rate_value / 100))
++        total = math.ceil(with_fee / 10) * 10
++    else:
++        with_fee = per_person * (1 + (fee_rate_value / 100))
++        total = math.ceil((with_fee + admin_fee_value) / 10) * 10
+     return int(total)
  
-     status = (request.form.get("status") or "").strip()
-     if status not in ("approved", "pending", "rejected"):
-         status = None
  
-     admin_kind = (request.form.get("admin_kind") or "none").strip().lower()
-     is_host    = 1 if admin_kind == "host"    else 0
-     is_subhost = 1 if admin_kind == "subhost" else 0
- 
-     ui_role = (request.form.get("participant_role") or "none").strip().lower()
-     if ui_role not in ("none", "camera", "assistant", "cosplayer", "other"):
-         ui_role = "none"
- 
-     costume = (request.form.get("costume_label") or "").strip() or None
-     keep_costume = ui_role in ("cosplayer", "other")
- 
-     require_payment = 1 if request.form.get("require_payment") == "1" else 0
-+    process_flag = 1 if (request.form.get("process") or "").strip().lower() in {"1", "on", "true", "yes"} else 0
- 
-     contact_memo = (request.form.get("contact_memo") or "").strip() or None
-     admin_note   = (request.form.get("admin_note")   or "").strip() or None
- 
-     # 先に承認ステータス（通知付き）
-     if status is not None:
-         try:
-             ok, msg, applied = _update_member_status_and_notify(event_id, user_id, status)
-             if ok:
-                 flash(f"承認ステータスを「{ {'approved':'承認','pending':'保留','rejected':'拒否'}.get(applied,'—') }」に更新し、参加者へ通知しました。", "success")
-             else:
-                 flash(f"承認ステータス更新でエラー: {msg}", "warning")
-             status = None
-         except Exception:
-             current_app.logger.exception("bulk_update: status notify failed (event_id=%s user_id=%s)", event_id, user_id)
-             flash("承認ステータスの通知でエラーが発生しました。", "warning")
- 
-     db = get_db(); cur = db.cursor()
- 
-     # DBのENUMに合わせてフォールバック
-     save_role, degraded = _normalize_role_for_db(db, ui_role)
- 
-     # メモの扱い（UIでONだったときのみ保持）
-     if not keep_costume:
-         costume = None
- 
++def _calculate_square_net_amounts(final_fee_yen: int | None,
++                                  square_fee_rate_percent: int | float | None,
++                                  payers: int | None) -> dict:
++    try:
++        rate = float(square_fee_rate_percent) if square_fee_rate_percent not in (None, "") else 3.6
++    except Exception:
++        rate = 3.6
++
++    result = {
++        "square_fee_rate_percent": rate,
++        "net_per_person": None,
++        "square_fee_per_person": None,
++        "net_total": None,
++    }
++    if final_fee_yen is None or int(final_fee_yen) <= 0:
++        return result
++
++    fee_value = int(final_fee_yen)
++    net_per_person = math.floor(fee_value / (1 + rate / 100))
++    square_fee_per_person = fee_value - net_per_person
++    net_total = net_per_person * int(payers) if payers is not None and int(payers) > 0 else None
++
++    result.update({
++        "net_per_person": net_per_person,
++        "square_fee_per_person": square_fee_per_person,
++        "net_total": net_total,
++    })
++    return result
++
++
+ def _recalc_event_fee_if_auto(event_id: int) -> bool:
+     db = get_db(); cur = db.cursor(dictionary=True)
      try:
-+        cur.execute("""
-+            SELECT COALESCE(is_canceled,0) AS is_canceled
-+              FROM mfu_event_member
-+             WHERE event_id=%s AND user_id=%s
-+             LIMIT 1
-+        """, (event_id, user_id))
-+        row = cur.fetchone()
-+        is_canceled = int((row[0] if isinstance(row, tuple) else (row or {}).get("is_canceled") or 0))
-         sets = [
-             "is_host=%s",
-             "is_subhost=%s",
-             "participant_role=%s",
-             "costume_label=%s",
-             "require_payment=%s",
-+            "process=%s",
-             "custom_fee_yen=%s",
-             "contact_memo=%s",
-             "admin_note=%s",
-         ]
--        params = [is_host, is_subhost, save_role, costume, require_payment, custom_fee_yen, contact_memo, admin_note]
-+        save_process = process_flag
-+        if is_canceled == 1:
-+            save_process = int(bool(request.form.get("current_process") or 0))
-+            flash("キャンセル済みのため、加工回し必要設定は変更できません。", "warning")
-+        params = [is_host, is_subhost, save_role, costume, require_payment, save_process, custom_fee_yen, contact_memo, admin_note]
- 
-         sql = f"""
-             UPDATE mfu_event_member
-                SET {", ".join(sets)}
-              WHERE event_id=%s AND user_id=%s
+         cur.execute("""
+             SELECT studio_fee_yen, fee_rate_percent, admin_fee_yen,
+-                   COALESCE(fee_auto_calc, 1) AS fee_auto_calc
++                   COALESCE(fee_auto_calc, 1) AS fee_auto_calc,
++                   COALESCE(fee_calc_method, 'legacy') AS fee_calc_method,
++                   square_fee_rate_percent
+               FROM mfu_event
+              WHERE id=%s
               LIMIT 1
-         """
-         params.extend([event_id, user_id])
-         cur.execute(sql, tuple(params))
+         """, (event_id,))
+         ev = cur.fetchone()
+         if not ev:
+             return False
+         if not int(ev.get("fee_auto_calc") or 0):
+             return False
+ 
+         cur.execute("""
+             SELECT COUNT(*) AS cnt
+               FROM mfu_event_member
+              WHERE event_id=%s
+                AND COALESCE(require_payment, 1)=1
+         """, (event_id,))
+         row = cur.fetchone()
+         payers = row.get("cnt") if row else 0
+ 
+         total = _calculate_event_fee(
+             ev.get("studio_fee_yen"),
+             ev.get("fee_rate_percent"),
+             ev.get("admin_fee_yen"),
+             payers,
++            ev.get("fee_calc_method") or "legacy",
+         )
+         if total is None:
+             return False
+ 
+         cur.execute("""
+             UPDATE mfu_event
+                SET fee_yen=%s
+              WHERE id=%s
+              LIMIT 1
+         """, (total, event_id))
          db.commit()
-         if degraded:
-             flash("注意：DBスキーマが 'other' を未対応のため、近い役割にフォールバックして保存しました。後日ENUMに 'other' を追加してください。", "warning")
-         else:
-             flash("参加者情報を保存しました。", "success")
+         return True
      except Exception:
          try: db.rollback()
          except Exception: pass
-         current_app.logger.exception("bulk_update failed (event_id=%s user_id=%s)", event_id, user_id)
-         flash("保存時にエラーが発生しました。", "danger")
+         current_app.logger.exception("auto fee calc failed (event_id=%s)", event_id)
+         return False
+     finally:
+         try: cur.close(); db.close()
+         except Exception: pass
+ from urllib.parse import quote_plus
+ from flask import request, jsonify
+ from app.utils.db import get_db
+ import requests
+ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+@@ -693,53 +734,55 @@ def admin_event_new():
+     maps_url  = (request.form.get("maps_url") or "").strip()
+     # ▼ 新規：支払期間（未入力は None → NULL）
+     pay_from  = (request.form.get("pay_from") or "").strip() or None
+     pay_until = (request.form.get("pay_until") or "").strip() or None
+     google_form_url = (request.form.get("google_form_url") or "").strip() or None
+ 
+     errors = {}
+     if not title:
+         errors["title"] = "タイトルは必須です。"
+     if fee_yen and not fee_yen.isdigit():
+         errors["fee_yen"] = "参加費は半角数字（円）で入力してください。"
+ 
+     if errors:
+         return render_template("admin_event_new.html",
+                                form={"title": title, "starts_at": starts_at, "fee_yen": fee_yen,
+                                      "place_name": place, "address": address, "maps_url": maps_url,
+                                      "pay_from": pay_from, "pay_until": pay_until},
+                                errors=errors), 400
+ 
+     db = get_db(); cur = db.cursor()
+     cur.execute("""
+       INSERT INTO mfu_event (
+         event_uuid, title, owner_user_id, starts_at, fee_yen,
+         pay_from, pay_until,
+         place_name, address, maps_url,
+-        checkin_qr_enabled
++        checkin_qr_enabled,
++        fee_calc_method,
++        square_fee_rate_percent
+       )
+-      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1)
++      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1, 'new', 3.6)
+     """, (title, (starts_at or None), (int(fee_yen) if fee_yen else None),
+           pay_from, pay_until,
+           (place or None), (address or None), (maps_url or None)))
+     db.commit()
+     new_id = cur.lastrowid
+     cur.close(); db.close()
+ 
+     # アルバム自動作成
+     album_id = create_event_album(title=title, event_id=new_id)
+     db = get_db(); cur = db.cursor()
+     cur.execute("UPDATE mfu_event SET album_id=%s WHERE id=%s", (album_id, new_id))
+     db.commit(); cur.close(); db.close()
+ 
+     # 決済イベントUUIDも事前作成
+     _ensure_payment_uuid_for_event(new_id)
+ 
+     flash("イベントを作成しました（連携アルバム・決済UUIDを自動作成）", "success")
+     return redirect(url_for("external_login_user.admin_event_view", event_id=new_id))
+ 
+ 
+ @bp.route("/admin/events/<int:event_id>")
+ def admin_event_view(event_id: int):
+     guard = _require_mfu_login_redirect()
+     if guard: return guard
+     if not _event_admin_can_view(event_id):
+@@ -972,50 +1015,52 @@ def admin_event_edit(event_id: int):
+             if isinstance(v, str):
+                 v = v.replace(" ", "T")
+                 return v[:16] if len(v) >= 16 else v
+             return v.strftime("%Y-%m-%dT%H:%M")
+         except Exception:
+             return ""
+ 
+     # --- イベント取得（編集前の memo_all を保持して差分判定に使う） ---
+     db = get_db(); cur = db.cursor(dictionary=True)
+     try:
+         cur.execute("""
+             SELECT
+               id, title, event_uuid,
+               starts_at, fee_yen,
+               pay_from, pay_until,
+               place_name, address, maps_url,
+               sns_hashtag,
+               line_openchat_url, line_openchat_pass,
+               google_form_url,
+               album_id, payment_uuid,
+               memo_all,
+               studio_fee_yen,
+               fee_rate_percent,
+               admin_fee_yen,
+               COALESCE(fee_auto_calc, 1) AS fee_auto_calc,
++              COALESCE(fee_calc_method, 'legacy') AS fee_calc_method,
++              COALESCE(square_fee_rate_percent, 3.6) AS square_fee_rate_percent,
+               COALESCE(allow_square, 1) AS allow_square,
+               COALESCE(allow_paypay, 0) AS allow_paypay,
+               COALESCE(allow_bank,   0) AS allow_bank,
+               COALESCE(tip_enabled, 0) AS tip_enabled,
+               paypay_display,
+               COALESCE(auto_approve_by_invite, 0) AS auto_approve_by_invite,
+               invite_token,
+               COALESCE(checkin_qr_enabled, 0) AS checkin_qr_enabled,
+               checkin_qr_token,
+               checkin_qr_expires_at
+             FROM mfu_event
+             WHERE id=%s
+             LIMIT 1
+         """, (event_id,))
+         ev = cur.fetchone()
      finally:
          try: cur.close(); db.close()
          except Exception: pass
  
-     _recalc_event_fee_if_auto(event_id)
+     if not ev:
+         abort(404, "イベントが見つかりません")
  
-diff --git a/external_login_user/template/admin_member_edit.html b/external_login_user/template/admin_member_edit.html
-index 54c69a6013111a1dd3776d24f6f1db0d1928f801..438998831bc53916dd8cade2f68ca0c5a25efa31 100644
---- a/external_login_user/template/admin_member_edit.html
-+++ b/external_login_user/template/admin_member_edit.html
-@@ -30,50 +30,51 @@
-       <div>
-         <div class="fw-bold h5 mb-1">
-           {% if m.is_host %}👑👑{% elif m.is_subhost %}👑{% endif %}
-           {{ m.nickname }}
-         </div>
-         <div class="small text-muted">
-           {% if m.x_id %}X: {{ m.x_id }}{% endif %}
-           {% if m.x_id and m.instagram_id %} / {% endif %}
-           {% if m.instagram_id %}Instagram: {{ m.instagram_id }}{% endif %}
-           {% if m.joined_at %}<br>参加: {{ m.joined_at }}{% endif %}
+     db = get_db(); cur = db.cursor()
+     try:
+         cur.execute("""
+@@ -1036,74 +1081,78 @@ def admin_event_edit(event_id: int):
+     except Exception:
+         ev["event_uuid_str"] = ev.get("event_uuid")
+ 
+     form_iso = {
+         "starts_at": _fmt_dt_local(ev.get("starts_at")),
+         "pay_from":  _fmt_dt_local(ev.get("pay_from")),
+         "pay_until": _fmt_dt_local(ev.get("pay_until")),
+     }
+     form = {
+         "title": ev.get("title"),
+         "fee_yen": ev.get("fee_yen"),
+         "place_name": ev.get("place_name"),
+         "address": ev.get("address"),
+         "maps_url": ev.get("maps_url"),
+         "sns_hashtag": ev.get("sns_hashtag"),
+         "line_openchat_url": ev.get("line_openchat_url"),
+         "line_openchat_pass": ev.get("line_openchat_pass"),
+         "google_form_url": ev.get("google_form_url"),
+         "album_id": ev.get("album_id"),
+         "payment_uuid": ev.get("payment_uuid"),
+         "memo_all": ev.get("memo_all"),
+         "studio_fee_yen": ev.get("studio_fee_yen"),
+         "fee_rate_percent": ev.get("fee_rate_percent"),
+         "admin_fee_yen": ev.get("admin_fee_yen"),
+         "fee_auto_calc": int(ev.get("fee_auto_calc") or 0),
++        "fee_calc_method": ev.get("fee_calc_method") or "legacy",
++        "square_fee_rate_percent": ev.get("square_fee_rate_percent") if ev.get("square_fee_rate_percent") is not None else 3.6,
+         "require_payment_count": require_payment_count,
+         "allow_square": int(ev.get("allow_square") or 0),
+         "allow_paypay": int(ev.get("allow_paypay") or 0),
+         "allow_bank":   int(ev.get("allow_bank") or 0),
+         "tip_enabled": int(ev.get("tip_enabled") or 0),
+         "paypay_display": ev.get("paypay_display") or "",
+     }
+     errors: dict[str, str] = {}
+ 
+     if request.method == "POST":
+         token = request.form.get("csrf_token", "")
+         if not token or token != admin_csrf:
+             abort(400, "invalid csrf token")
+ 
+         title       = (request.form.get("title") or "").strip()
+         starts_at_in= request.form.get("starts_at") or ""
+         pay_from_in = request.form.get("pay_from")  or ""
+         pay_until_in= request.form.get("pay_until") or ""
+         fee_yen_in  = request.form.get("fee_yen")
+         studio_fee_yen_in = request.form.get("studio_fee_yen")
+         fee_rate_percent_in = request.form.get("fee_rate_percent")
+         admin_fee_yen_in = request.form.get("admin_fee_yen")
+         require_payment_count_in = request.form.get("require_payment_count")
+         fee_auto_calc = 1 if request.form.get("fee_auto_calc") else 0
++        fee_calc_method_in = (request.form.get("fee_calc_method") or "legacy").strip()
++        square_fee_rate_percent_in = request.form.get("square_fee_rate_percent")
+ 
+         place_name  = (request.form.get("place_name") or "").strip() or None
+         address     = (request.form.get("address") or "").strip() or None
+         maps_url    = (request.form.get("maps_url") or "").strip() or None
+         sns_hashtag = (request.form.get("sns_hashtag") or "").strip() or None
+ 
+         line_openchat_url  = (request.form.get("line_openchat_url")  or "").strip() or None
+         line_openchat_pass = (request.form.get("line_openchat_pass") or "").strip() or None
+         google_form_url    = (request.form.get("google_form_url")    or "").strip() or None
+ 
+         album_id    = (request.form.get("album_id") or "").strip() or None
+         memo_all    = (request.form.get("memo_all") or "").strip() or None
+ 
+         allow_square   = 1 if request.form.get("allow_square") else 0
+         allow_paypay   = 1 if request.form.get("allow_paypay") else 0
+         allow_bank     = 1 if request.form.get("allow_bank")   else 0
+         paypay_display = (request.form.get("paypay_display") or "").strip() or None
+         tip_enabled = 1 if request.form.get("tip_enabled") else 0
+ 
+         if not title:
+             errors["title"] = "タイトルは必須です。"
+ 
+         fee_yen = None
+         if fee_yen_in not in (None, ""):
+             try:
+@@ -1114,99 +1163,113 @@ def admin_event_edit(event_id: int):
+ 
+         studio_fee_yen = None
+         if studio_fee_yen_in not in (None, ""):
+             try:
+                 studio_fee_yen = int(studio_fee_yen_in)
+                 if studio_fee_yen < 0: raise ValueError()
+             except Exception:
+                 errors["studio_fee_yen"] = "スタジオ代金は0以上の整数で指定してください。"
+ 
+         fee_rate_percent = None
+         if fee_rate_percent_in not in (None, ""):
+             try:
+                 fee_rate_percent = float(fee_rate_percent_in)
+                 if fee_rate_percent < 0: raise ValueError()
+             except Exception:
+                 errors["fee_rate_percent"] = "手数料は0以上の数値で指定してください。"
+ 
+         admin_fee_yen = None
+         if admin_fee_yen_in not in (None, ""):
+             try:
+                 admin_fee_yen = int(admin_fee_yen_in)
+                 if admin_fee_yen < 0: raise ValueError()
+             except Exception:
+                 errors["admin_fee_yen"] = "事務手数料は0以上の整数で指定してください。"
+ 
++        fee_calc_method = fee_calc_method_in if fee_calc_method_in in ("legacy", "new") else "legacy"
++
++        square_fee_rate_percent = 3.6
++        try:
++            if square_fee_rate_percent_in not in (None, ""):
++                square_fee_rate_percent = float(square_fee_rate_percent_in)
++            if square_fee_rate_percent < 0:
++                raise ValueError()
++        except Exception:
++            errors["square_fee_rate_percent"] = "Square手数料は0以上の数値で指定してください。"
++
+         starts_at = _parse_dt_local(starts_at_in) if starts_at_in else None
+         pay_from  = _parse_dt_local(pay_from_in)  if pay_from_in  else None
+         pay_until = _parse_dt_local(pay_until_in) if pay_until_in else None
+         if starts_at == "INVALID": errors["starts_at"] = "開始日時の形式が不正です。"; starts_at = None
+         if pay_from  == "INVALID": errors["pay_from"]  = "支払開始の形式が不正です。"; pay_from = None
+         if pay_until == "INVALID": errors["pay_until"] = "支払終了の形式が不正です。"; pay_until = None
+ 
+         form.update({
+             "title": title, "fee_yen": fee_yen_in,
+             "place_name": place_name or "", "address": address or "", "maps_url": maps_url or "",
+             "sns_hashtag": sns_hashtag or "",
+             "line_openchat_url": line_openchat_url or "", "line_openchat_pass": line_openchat_pass or "",
+             "google_form_url": google_form_url or "", "album_id": album_id or "", "memo_all": memo_all or "",
+             "studio_fee_yen": studio_fee_yen_in or "",
+             "fee_rate_percent": fee_rate_percent_in or "",
+             "admin_fee_yen": admin_fee_yen_in or "",
+             "require_payment_count": require_payment_count_in or "",
+             "fee_auto_calc": fee_auto_calc,
++            "fee_calc_method": fee_calc_method,
++            "square_fee_rate_percent": square_fee_rate_percent_in or "3.6",
+             "allow_square": allow_square, "allow_paypay": allow_paypay, "allow_bank": allow_bank,
+             "tip_enabled": tip_enabled,
+             "paypay_display": paypay_display or "",
+         })
+         form_iso.update({"starts_at": starts_at_in, "pay_from": pay_from_in, "pay_until": pay_until_in})
+ 
+         if errors:
+             flash("入力に誤りがあります。確認してください。", "warning")
+             return render_template("admin_event_edit.html",
+                 ev=ev, form=form, form_iso=form_iso, errors=errors,
+                 require_payment_count=require_payment_count, admin_csrf=admin_csrf,
+         qr_trademark_notice=QR_TRADEMARK_NOTICE)
+ 
+         # === 保存処理 ===
+         dbu = get_db(); curu = dbu.cursor()
+         try:
+             curu.execute("""
+                 UPDATE mfu_event
+                    SET title=%s, starts_at=%s, fee_yen=%s,
+                        studio_fee_yen=%s, fee_rate_percent=%s, admin_fee_yen=%s,
+                        fee_auto_calc=%s,
++                       fee_calc_method=%s, square_fee_rate_percent=%s,
+                        pay_from=%s, pay_until=%s,
+                        place_name=%s, address=%s, maps_url=%s, sns_hashtag=%s,
+                        line_openchat_url=%s, line_openchat_pass=%s, google_form_url=%s,
+                        album_id=%s, memo_all=%s,
+                        allow_square=%s, allow_paypay=%s, allow_bank=%s, tip_enabled=%s, paypay_display=%s
+                  WHERE id=%s
+                  LIMIT 1
+             """, (title, starts_at, fee_yen,
+                   studio_fee_yen, fee_rate_percent, admin_fee_yen,
+-                  fee_auto_calc,
++                  fee_auto_calc, fee_calc_method, square_fee_rate_percent,
+                   pay_from, pay_until,
+                   place_name, address, maps_url, sns_hashtag,
+                   line_openchat_url, line_openchat_pass, google_form_url,
+                   album_id, memo_all,
+                   allow_square, allow_paypay, allow_bank, tip_enabled, paypay_display,
+                   event_id))
+ 
+             dbu.commit()
+         finally:
+             try: curu.close(); dbu.close()
+             except Exception: pass
+ 
+         # === ここから追加：全体メモ変更時のメール通知 ===
+         try:
+             before = (ev.get("memo_all") or "").strip()
+             after  = (memo_all or "").strip()
+             if before != after:
+                 # 宛先：承認済み + 主催/副主催（status IS NULL）に送る
+                 dbn = get_db(); curn = dbn.cursor()
+                 try:
+                     curn.execute("""
+                         SELECT DISTINCT u.email
+                          FROM mfu_event_member m
+                           JOIN external_login_user u ON u.id = m.user_id
+                          WHERE m.event_id=%s
+diff --git a/external_login_user/schema.py b/external_login_user/schema.py
+index 24cf5e597b0cddc9f260401d011d8dab634667fc..1b0062096f98a2e26ee793a2eaf6492377fbe05d 100644
+--- a/external_login_user/schema.py
++++ b/external_login_user/schema.py
+@@ -282,50 +282,60 @@ def _on_bp_registered(state) -> None:
+             _ensure_col(
+                 "external_login_user",
+                 "deletion_reason",
+                 "deletion_reason VARCHAR(255) NULL AFTER deleted_by",
+             )
+             _ensure_col(
+                 "external_login_user",
+                 "anonymized_at",
+                 "anonymized_at DATETIME NULL AFTER deletion_reason",
+             )
+             _ensure_col(
+                 "mfu_external_privacy_policy_config",
+                 "commerce_law_url",
+                 "commerce_law_url VARCHAR(2048) NULL AFTER privacy_policy_revised_date",
+             )
+             _ensure_col(
+                 "mfu_external_privacy_policy_config",
+                 "participant_terms_url",
+                 "participant_terms_url VARCHAR(2048) NULL AFTER commerce_law_url",
+             )
+             _ensure_col(
+                 "mfu_external_privacy_policy_config",
+                 "participant_terms_revised_date",
+                 "participant_terms_revised_date DATE NULL AFTER participant_terms_url",
+             )
++            _ensure_col(
++                "mfu_event",
++                "fee_calc_method",
++                "fee_calc_method ENUM('legacy','new') NOT NULL DEFAULT 'legacy' AFTER fee_auto_calc",
++            )
++            _ensure_col(
++                "mfu_event",
++                "square_fee_rate_percent",
++                "square_fee_rate_percent DECIMAL(5,2) NULL DEFAULT NULL AFTER fee_rate_percent",
++            )
+             _ensure_col(
+                 "mfu_event_member",
+                 "participant_terms_agreed_at",
+                 "participant_terms_agreed_at DATETIME NULL AFTER joined_at",
+             )
+             _ensure_col(
+                 "mfu_event_member",
+                 "participant_terms_agreed_revised_date",
+                 "participant_terms_agreed_revised_date DATE NULL AFTER participant_terms_agreed_at",
+             )
+             _ensure_col(
+                 "mfu_event_member",
+                 "privacy_policy_join_agreed_at",
+                 "privacy_policy_join_agreed_at DATETIME NULL AFTER participant_terms_agreed_revised_date",
+             )
+             _ensure_col(
+                 "mfu_event_member",
+                 "privacy_policy_join_agreed_revised_date",
+                 "privacy_policy_join_agreed_revised_date DATE NULL AFTER privacy_policy_join_agreed_at",
+             )
+ 
+             # ★ 追加：支払期間 列（後方互換で追加）
+             _ensure_col("mfu_event", "pay_from",  "pay_from DATETIME NULL AFTER fee_yen")
+             _ensure_col("mfu_event", "pay_until", "pay_until DATETIME NULL AFTER pay_from")
+             _ensure_col("mfu_event", "checkin_qr_enabled",
+diff --git a/external_login_user/template/admin_event_edit.html b/external_login_user/template/admin_event_edit.html
+index 9e7d1c33c5f0797155b419c26bb0ee4397067edb..27220760c5df295463137f6cca9e89151ed3b757 100644
+--- a/external_login_user/template/admin_event_edit.html
++++ b/external_login_user/template/admin_event_edit.html
+@@ -72,81 +72,105 @@
+           <div class="d-flex flex-wrap gap-2 align-items-center justify-content-between mb-3">
+             <div class="fw-semibold">参加費の計算</div>
+             <div class="form-check form-switch m-0">
+               <input class="form-check-input" type="checkbox" id="fee-auto-mode" name="fee_auto_calc"
+                      {% if form.fee_auto_calc or ev.fee_auto_calc %}checked{% endif %}>
+               <label class="form-check-label small" for="fee-auto-mode">自動計算モード</label>
+             </div>
+           </div>
+ 
+           <div class="row g-3">
+             <div class="col-12 col-md-3">
+               <label class="form-label">スタジオ代金（円）</label>
+               <input type="number" min="0" step="1" name="studio_fee_yen" id="studio-fee"
+                      class="form-control" inputmode="numeric"
+                      value="{% if form.studio_fee_yen is not none %}{{ form.studio_fee_yen }}{% elif ev.studio_fee_yen is not none %}{{ ev.studio_fee_yen }}{% endif %}">
+               {% if errors.studio_fee_yen %}<div class="text-danger small mt-1">{{ errors.studio_fee_yen }}</div>{% endif %}
+             </div>
+             <div class="col-12 col-md-3">
+               <label class="form-label">支払人数</label>
+               <input type="number" min="1" step="1" name="require_payment_count" id="fee-payers"
+                      class="form-control" inputmode="numeric"
+                      value="{% if form.require_payment_count is not none and form.require_payment_count != '' %}{{ form.require_payment_count }}{% else %}{{ require_payment_count }}{% endif %}">
+               <div class="form-text">支払いありの人数を入力してください。</div>
+             </div>
+             <div class="col-12 col-md-3">
+-              <label class="form-label">手数料（%）</label>
++              <label class="form-label">通常手数料（参加費上乗せ用・%）</label>
+               <input type="number" min="0" step="0.01" name="fee_rate_percent" id="fee-rate"
+                      class="form-control" inputmode="decimal"
+                      value="{% if form.fee_rate_percent is not none %}{{ form.fee_rate_percent }}{% elif ev.fee_rate_percent is not none %}{{ ev.fee_rate_percent }}{% endif %}"
+                      placeholder="例：5">
+               {% if errors.fee_rate_percent %}<div class="text-danger small mt-1">{{ errors.fee_rate_percent }}</div>{% endif %}
+             </div>
++            <div class="col-12 col-md-3">
++              <label class="form-label">Square手数料（振込見込み計算用・%）</label>
++              <input type="number" min="0" step="0.01" name="square_fee_rate_percent" id="square-fee-rate"
++                     class="form-control" inputmode="decimal"
++                     value="{% if form.square_fee_rate_percent is not none %}{{ form.square_fee_rate_percent }}{% else %}3.6{% endif %}">
++              {% if errors.square_fee_rate_percent %}<div class="text-danger small mt-1">{{ errors.square_fee_rate_percent }}</div>{% endif %}
++            </div>
+             <div class="col-12 col-md-3">
+               <label class="form-label">事務手数料（円）</label>
+               <input type="number" min="0" step="1" name="admin_fee_yen" id="admin-fee"
+                      class="form-control" inputmode="numeric"
+                      value="{% if form.admin_fee_yen is not none %}{{ form.admin_fee_yen }}{% elif ev.admin_fee_yen is not none %}{{ ev.admin_fee_yen }}{% endif %}">
+               {% if errors.admin_fee_yen %}<div class="text-danger small mt-1">{{ errors.admin_fee_yen }}</div>{% endif %}
+             </div>
++            <div class="col-12">
++              <label class="form-label d-block">計算方式</label>
++              <div class="form-check">
++                <input class="form-check-input" type="radio" name="fee_calc_method" id="fee-calc-method-new" value="new" {% if (form.fee_calc_method or 'legacy') == 'new' %}checked{% endif %}>
++                <label class="form-check-label" for="fee-calc-method-new">新計算式：スタジオ代金 ÷ 人数 + 事務手数料 → 通常手数料上乗せ → 10円単位切り上げ</label>
++              </div>
++              <div class="form-check mt-1">
++                <input class="form-check-input" type="radio" name="fee_calc_method" id="fee-calc-method-legacy" value="legacy" {% if (form.fee_calc_method or 'legacy') != 'new' %}checked{% endif %}>
++                <label class="form-check-label" for="fee-calc-method-legacy">旧計算式：スタジオ代金 ÷ 人数 → 通常手数料上乗せ → 事務手数料加算 → 10円単位切り上げ</label>
++              </div>
++              {% if (form.fee_calc_method or 'legacy') == 'legacy' %}
++              <div class="alert alert-warning py-2 mt-2 mb-0 small">このイベントは旧計算式で計算されています。既存イベント保護のため、明示的に変更しない限り旧計算式のままです。</div>
++              {% endif %}
++            </div>
+           </div>
+ 
+           <div class="border rounded p-3 bg-light mt-3">
+             <div class="d-flex flex-wrap gap-3 align-items-center">
+               <div class="fw-semibold">計算結果</div>
+               <div class="small text-muted" id="fee-calc-status">入力すると自動計算されます。</div>
+             </div>
+             <div class="mt-2">
+               <div class="h5 mb-1">参加費（丸め後）：<span id="fee-calc-total">-</span> 円</div>
++              <div>1人あたりの振込金額：<span id="fee-square-net-per-person">-</span> 円</div>
++              <div>Square手数料：<span id="fee-square-fee-per-person">-</span> 円 / 人</div>
++              <div>振込見込み合計：<span id="fee-square-net-total">-</span> 円</div>
+               <div class="small text-muted" id="fee-calc-breakdown"></div>
+             </div>
+             <div class="mt-3 d-flex flex-wrap gap-2">
+               <button type="button" class="btn btn-outline-primary btn-sm" id="fee-calc-btn">計算する</button>
+               <button type="button" class="btn btn-primary btn-sm" id="fee-apply-btn">参加費に適用</button>
+             </div>
+             <div class="form-text mt-2">
+-              計算式：スタジオ代金 ÷ 支払人数 = x ／ x × (1 + 手数料%) = y ／ y + 事務手数料 → 10円単位で切り上げ
++              旧計算式：スタジオ代金 ÷ 支払人数 = x ／ x × (1 + 通常手数料%) = y ／ y + 事務手数料 → 10円単位で切り上げ<br>新計算式：スタジオ代金 ÷ 支払人数 + 事務手数料 = x ／ x × (1 + 通常手数料%) = y ／ y → 10円単位で切り上げ
+             </div>
+           </div>
          </div>
        </div>
      </div>
  
-     {% set _custom_fee = (m.get('custom_fee_yen') if m is mapping else (m.custom_fee_yen | default(None))) %}
-     {% set _fee_yen = (ev.get('fee_yen') if ev is mapping else (ev.fee_yen | default(None))) %}
-     {% set _fee_display = (_fee_yen if _fee_yen is not none else 0) %}
-     {% set _applied_fee = (_custom_fee if _custom_fee is not none else _fee_yen) %}
-     {% set _applied_display = (_applied_fee if _applied_fee is not none else 0) %}
+     <!-- 支払関係 -->
+     <div class="accordion-item">
+       <h2 class="accordion-header" id="heading-payment">
+         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-payment" aria-expanded="false" aria-controls="collapse-payment">
+           支払関係
+         </button>
+       </h2>
+       <div id="collapse-payment" class="accordion-collapse collapse">
+         <div class="accordion-body">
+           <div class="row g-3">
+             <div class="col-12 col-md-6">
+               <label class="form-label">参加費（円・任意）</label>
+               <input type="number" name="fee_yen" class="form-control" inputmode="numeric" min="0" step="1"
+                      value="{% if form.fee_yen is not none %}{{ form.fee_yen }}{% elif ev.fee_yen is not none %}{{ ev.fee_yen }}{% endif %}">
+               {% if errors.fee_yen %}<div class="text-danger small mt-1">{{ errors.fee_yen }}</div>{% endif %}
+             </div>
+             <div class="col-12 col-md-6">
+               <label class="form-label">支払開始（任意）</label>
+               <input type="datetime-local" name="pay_from" class="form-control"
+@@ -450,118 +474,69 @@
+       autosizeMemo();
+     }
+   });
  
-     <!-- 一括保存フォーム（承認ステータスもここで送信） -->
-     <form method="post"
-           action="{{ url_for('external_login_user.admin_member_bulk_update', event_id=ev.id, user_id=m.user_id) }}"
-           class="js-bulk-form">
-       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
-+      <input type="hidden" name="current_process" value="{{ 1 if m.process else 0 }}">
+   // --- アコーディオン全展開 ---
+   const expandAllBtn = document.getElementById('expand-all-accordion');
+   const accordionEl = document.getElementById('event-edit-accordion');
+   if(expandAllBtn && accordionEl){
+     expandAllBtn.addEventListener('click', ()=>{
+       const collapses = accordionEl.querySelectorAll('.accordion-collapse');
+       collapses.forEach((el)=>{
+         if(!el.classList.contains('show')){
+           const instance = window.bootstrap?.Collapse.getOrCreateInstance(el, { toggle: false });
+           instance?.show();
+         }
+       });
+       autosizeMemo();
+     });
+   }
  
-       <!-- 承認ステータス -->
-       <div class="mb-3">
-         <label class="form-label small text-muted">承認ステータス</label><br>
-         <div class="btn-group" role="group" aria-label="status">
-           <input type="radio" class="btn-check" name="status" id="st-approved-{{m.user_id}}" value="approved" {% if m.status=='approved' %}checked{% endif %}>
-           <label class="btn btn-outline-dark" for="st-approved-{{m.user_id}}">承認</label>
- 
-           <input type="radio" class="btn-check" name="status" id="st-rejected-{{m.user_id}}" value="rejected" {% if m.status=='rejected' %}checked{% endif %}>
-           <label class="btn btn-outline-dark" for="st-rejected-{{m.user_id}}">拒否</label>
- 
-           <input type="radio" class="btn-check" name="status" id="st-pending-{{m.user_id}}" value="pending" {% if m.status!='approved' and m.status!='rejected' %}checked{% endif %}>
-           <label class="btn btn-outline-dark" for="st-pending-{{m.user_id}}">保留</label>
-         </div>
-         <div class="form-text">※ 保存時に変更があれば参加者へメール通知されます。</div>
-       </div>
- 
-       <!-- 主催権限 -->
-       <div class="mb-3">
-         <label class="form-label small text-muted">主催権限</label><br>
-         <div class="btn-group role-pill" role="group">
-           <input type="radio" class="btn-check" name="admin_kind" id="bk-host-{{m.user_id}}" value="host" {% if m.is_host %}checked{% endif %}>
-           <label class="btn btn-outline-dark" for="bk-host-{{m.user_id}}">主催</label>
- 
-           <input type="radio" class="btn-check" name="admin_kind" id="bk-subhost-{{m.user_id}}" value="subhost" {% if m.is_subhost %}checked{% endif %}>
-@@ -112,50 +113,82 @@
- 
-       <!-- 支払（必要／不要） -->
-       <div class="mb-3">
-         <label class="form-label small text-muted">支払</label><br>
-         <div class="btn-group" role="group" aria-label="require-payment">
-           <input type="radio" class="btn-check" name="require_payment" id="rp-need-{{m.user_id}}" value="1" {% if m.require_payment == 1 %}checked{% endif %}>
-           <label class="btn btn-outline-dark" for="rp-need-{{m.user_id}}">必要</label>
- 
-           <input type="radio" class="btn-check" name="require_payment" id="rp-noneed-{{m.user_id}}" value="0" {% if m.require_payment != 1 %}checked{% endif %}>
-           <label class="btn btn-outline-dark" for="rp-noneed-{{m.user_id}}">不要</label>
-         </div>
- 
-         <!-- ★ 個別参加費（ここに移動） -->
-         <div class="mt-3">
-           <label class="form-label small text-muted mb-1">個別参加費（円）</label>
-           <input type="text" class="form-control form-control-sm" name="custom_fee_yen" inputmode="numeric"
-                  value="{{ _custom_fee if _custom_fee is not none else '' }}" placeholder="空欄で標準参加費">
-           <div class="form-text">
-             標準参加費：¥{{ "{:,}".format(_fee_display|int) }}
-             ／ 現在の適用参加費：¥{{ "{:,}".format(_applied_display|int) }}
-           </div>
-           <div class="form-text">※ 1円以上。0円は不可（空欄で標準参加費）</div>
-         </div>
-       </div>
- 
-+      {% if m.is_canceled %}
-+      <div class="mb-3">
-+        <label class="form-label d-block">加工回し必要</label>
-+        {% if m.process %}
-+          <span class="badge bg-warning text-dark">必要</span>
-+        {% else %}
-+          <span class="badge bg-secondary">不要</span>
-+        {% endif %}
-+        <div class="form-text text-muted">キャンセル済みのため変更できません。</div>
-+      </div>
-+      {% else %}
-+      <div class="mb-3">
-+        <label class="form-label d-block">加工回し必要</label>
-+        <div class="form-check form-switch">
-+          <input
-+            class="form-check-input"
-+            type="checkbox"
-+            id="process"
-+            name="process"
-+            value="1"
-+            {% if m.process %}checked{% endif %}
-+          >
-+          <label class="form-check-label" for="process">
-+            加工回しが必要な参加者として扱う
-+          </label>
-+        </div>
-+        <div class="form-text">
-+          ONにすると、この参加者は加工回し対象として扱われます。
-+        </div>
-+      </div>
-+      {% endif %}
+   // --- 参加費計算 ---
+   const $autoMode = document.getElementById('fee-auto-mode');
+   const $studioFee = document.getElementById('studio-fee');
+   const $payers = document.getElementById('fee-payers');
+   const $feeRate = document.getElementById('fee-rate');
++  const $squareFeeRate = document.getElementById('square-fee-rate');
+   const $adminFee = document.getElementById('admin-fee');
+   const $calcBtn = document.getElementById('fee-calc-btn');
+   const $applyBtn = document.getElementById('fee-apply-btn');
+   const $feeInput = document.querySelector('input[name="fee_yen"]');
+   const $calcStatus = document.getElementById('fee-calc-status');
+   const $calcTotal = document.getElementById('fee-calc-total');
+   const $calcBreakdown = document.getElementById('fee-calc-breakdown');
+-
+-  function parseNumber(el){
+-    if(!el) return null;
+-    const raw = (el.value || '').trim();
+-    if(!raw) return null;
+-    const n = Number(raw);
+-    return Number.isFinite(n) ? n : null;
+-  }
+-
+-  function roundUp10(value){
+-    return Math.ceil(value / 10) * 10;
+-  }
+-
++  const $netPerPerson = document.getElementById('fee-square-net-per-person');
++  const $squareFeePerPerson = document.getElementById('fee-square-fee-per-person');
++  const $netTotal = document.getElementById('fee-square-net-total');
 +
-       <!-- 支払い状況（表示のみ） -->
-       <div class="mb-3">
-         <label class="form-label small text-muted">支払い状況</label>
-         {% if m.payment_status == 'paid' %}
-           <div class="p-2 border rounded bg-light">
-             <div>支払済み</div>
-             <div>¥{{ "{:,}".format((m.paid_amount_yen if m.paid_amount_yen is not none else 0)|int) }}</div>
-             {% if m.receipt_url %}<div><a target="_blank" rel="noopener" href="{{ m.receipt_url }}">レシートを見る</a></div>{% endif %}
-           </div>
-         {% else %}
-           <div class="p-2 border rounded">未払い</div>
-         {% endif %}
-       </div>
- 
-       <!-- 個別連絡メモ（参加者にも表示） -->
-       <div class="mb-3">
-         <label class="form-label small text-muted">個別連絡メモ（参加者にも表示）</label>
-         <textarea class="form-control" name="contact_memo" rows="3" placeholder="参加者と共有したい連絡事項など">{{ m.contact_memo or '' }}</textarea>
-       </div>
- 
-       <!-- 管理者備考（非公開） -->
-       <div class="mb-4">
-         <label class="form-label small text-muted">管理者備考（非公開）</label>
-         <textarea class="form-control" name="admin_note" rows="3" placeholder="内部用メモ（参加者には見えません）">{{ m.admin_note or '' }}</textarea>
-       </div>
++  function parseNumber(el){ const v=(el?.value||'').trim(); if(!v) return null; const n=Number(v); return Number.isFinite(n)?n:null; }
++  function ceil10(v){ return Math.ceil(v/10)*10; }
++  function getMethod(){ return document.querySelector('[name="fee_calc_method"]:checked')?.value || 'legacy'; }
++  function resetSquare(){ $netPerPerson.textContent='-'; $squareFeePerPerson.textContent='-'; $netTotal.textContent='-'; }
+   function calcFee(){
+-    const studioFee = parseNumber($studioFee);
+-    const payers = parseNumber($payers);
+-    const feeRate = parseNumber($feeRate);
+-    const adminFee = parseNumber($adminFee) || 0;
+-
+-    if(studioFee === null || payers === null || feeRate === null || payers <= 0){
+-      $calcStatus.textContent = '入力値を確認してください。';
+-      $calcTotal.textContent = '-';
+-      $calcBreakdown.textContent = '';
+-      return null;
++    const studioFee=parseNumber($studioFee), payers=parseNumber($payers), feeRate=parseNumber($feeRate), adminFee=parseNumber($adminFee) || 0;
++    let squareFeeRate=parseNumber($squareFeeRate); if(squareFeeRate===null) squareFeeRate=3.6;
++    if(studioFee===null||payers===null||feeRate===null||payers<=0){ $calcStatus.textContent='入力値を確認してください。'; $calcTotal.textContent='-'; $calcBreakdown.textContent=''; resetSquare(); return null; }
++    const method=getMethod(); const perPerson=studioFee/payers;
++    let total=0; const lines=[];
++    if(method==='new'){
++      const base=perPerson+adminFee, withFee=base*(1+feeRate/100); total=ceil10(withFee);
++      lines.push(`計算方式：新計算式`,`スタジオ代金 ${studioFee.toFixed(0)}円 ÷ 支払人数 ${payers.toFixed(0)}人 = ${perPerson.toFixed(2)}円`,`${perPerson.toFixed(2)}円 + 事務手数料 ${adminFee.toFixed(2)}円 = ${base.toFixed(2)}円`,`${base.toFixed(2)}円 × (1 + 通常手数料 ${feeRate.toFixed(2)}%) = ${withFee.toFixed(2)}円`);
++    }else{
++      const withFee=perPerson*(1+feeRate/100), beforeRound=withFee+adminFee; total=ceil10(beforeRound);
++      lines.push(`計算方式：旧計算式`,`スタジオ代金 ${studioFee.toFixed(0)}円 ÷ 支払人数 ${payers.toFixed(0)}人 = ${perPerson.toFixed(2)}円`,`${perPerson.toFixed(2)}円 × (1 + 通常手数料 ${feeRate.toFixed(2)}%) = ${withFee.toFixed(2)}円`,`${withFee.toFixed(2)}円 + 事務手数料 ${adminFee.toFixed(2)}円 = ${beforeRound.toFixed(2)}円`);
+     }
+-
+-    const perPerson = studioFee / payers;
+-    const withFee = perPerson * (1 + (feeRate / 100));
+-    const total = roundUp10(withFee + adminFee);
+-
+-    $calcStatus.textContent = '計算済み（10円単位で切り上げ）';
+-    $calcTotal.textContent = total.toFixed(0);
+-    $calcBreakdown.textContent = `1人あたり ${perPerson.toFixed(2)} 円 → 手数料込み ${withFee.toFixed(2)} 円 → 事務手数料加算`;
++    const netPer=Math.floor(total/(1+squareFeeRate/100)), sqFee=total-netPer, netSum=netPer*payers;
++    lines.push(`10円単位切り上げ = ${total.toFixed(0)}円`,`Square振込見込み：${total.toFixed(0)}円 ÷ (1 + Square手数料 ${squareFeeRate.toFixed(2)}%) = ${netPer.toFixed(0)}円 / 人`);
++    $calcStatus.textContent='計算済み（10円単位で切り上げ）'; $calcTotal.textContent=total.toLocaleString();
++    $netPerPerson.textContent=netPer.toLocaleString(); $squareFeePerPerson.textContent=sqFee.toLocaleString(); $netTotal.textContent=netSum.toLocaleString();
++    $calcBreakdown.textContent=lines.join('\n');
+     return total;
+   }
+-
+-  function maybeAutoApply(){
+-    if(!$autoMode || !$autoMode.checked) return;
+-    const total = calcFee();
+-    if(total !== null && $feeInput){
+-      $feeInput.value = total.toFixed(0);
+-    }
+-  }
+-
+-  [$studioFee, $payers, $feeRate, $adminFee].forEach((el)=>{
+-    if(!el) return;
+-    el.addEventListener('input', ()=>{
+-      if($autoMode && $autoMode.checked){
+-        maybeAutoApply();
+-      }else{
+-        calcFee();
+-      }
+-    });
+-  });
+-
+-  if($autoMode){
+-    $autoMode.addEventListener('change', ()=>{
+-      if($autoMode.checked){
+-        maybeAutoApply();
+-        if($calcBtn) $calcBtn.disabled = true;
+-        if($applyBtn) $applyBtn.disabled = true;
+-      }else{
+-        if($calcBtn) $calcBtn.disabled = false;
+-        if($applyBtn) $applyBtn.disabled = false;
+-      }
+-    });
+-    $autoMode.dispatchEvent(new Event('change'));
+-  }
+-
+-  if($calcBtn){
+-    $calcBtn.addEventListener('click', ()=>{
+-      calcFee();
+-    });
+-  }
+-
+-  if($applyBtn){
+-    $applyBtn.addEventListener('click', ()=>{
+-      const total = calcFee();
+-      if(total !== null && $feeInput){
+-        $feeInput.value = total.toFixed(0);
+-      }
+-    });
+-  }
++  function maybeAutoApply(){ if(!$autoMode||!$autoMode.checked) return; const total=calcFee(); if(total!==null&&$feeInput){$feeInput.value=total.toFixed(0);} }
++  [$studioFee,$payers,$feeRate,$squareFeeRate,$adminFee,...document.querySelectorAll('[name="fee_calc_method"]')].forEach((el)=>{ el?.addEventListener('input',()=>{($autoMode&&$autoMode.checked)?maybeAutoApply():calcFee();}); el?.addEventListener('change',()=>{($autoMode&&$autoMode.checked)?maybeAutoApply():calcFee();}); });
++  if($autoMode){ $autoMode.addEventListener('change',()=>{ if($autoMode.checked){ maybeAutoApply(); if($calcBtn) $calcBtn.disabled=true; if($applyBtn) $applyBtn.disabled=true;} else { if($calcBtn) $calcBtn.disabled=false; if($applyBtn) $applyBtn.disabled=false;}}); $autoMode.dispatchEvent(new Event('change')); }
++  $calcBtn?.addEventListener('click',()=>calcFee());
++  $applyBtn?.addEventListener('click',()=>{ const total=calcFee(); if(total!==null&&$feeInput){$feeInput.value=total.toFixed(0);} });
+ })();
+ </script>
+ {% endblock %}
