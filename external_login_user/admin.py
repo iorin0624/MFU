@@ -2530,8 +2530,10 @@ def admin_member_edit(event_id: int, user_id: int):
         COALESCE(m.payment_status, 'unpaid')  AS payment_status,
         m.paid_at, m.receipt_url, m.joined_at,
         COALESCE(m.require_payment, 1)        AS require_payment,
+        COALESCE(m.process, 0)                AS process,
         COALESCE(m.is_host, 0)                AS is_host,
         COALESCE(m.is_subhost, 0)             AS is_subhost,
+        COALESCE(m.is_canceled, 0)            AS is_canceled,
         COALESCE(m.participant_role, 'none')  AS participant_role,
         m.costume_label,
         m.paid_amount_yen,
@@ -2557,6 +2559,8 @@ def admin_member_edit(event_id: int, user_id: int):
     m["require_payment"] = 1 if (_rp is None) else int(_rp)
     m["is_host"]         = int(bool(m.get("is_host")))
     m["is_subhost"]      = int(bool(m.get("is_subhost")))
+    m["process"]         = int(bool(m.get("process")))
+    m["is_canceled"]     = int(bool(m.get("is_canceled")))
     m["participant_role"]= m.get("participant_role") or "none"
     m["bank_transfer"]   = int(m.get("bank_transfer") or 0)
     m["paypay_transfer"] = int(m.get("paypay_transfer") or 0)
@@ -2962,6 +2966,7 @@ def admin_member_bulk_update(event_id: int, user_id: int):
     keep_costume = ui_role in ("cosplayer", "other")
 
     require_payment = 1 if request.form.get("require_payment") == "1" else 0
+    process_flag = 1 if (request.form.get("process") or "").strip().lower() in {"1", "on", "true", "yes"} else 0
 
     contact_memo = (request.form.get("contact_memo") or "").strip() or None
     admin_note   = (request.form.get("admin_note")   or "").strip() or None
@@ -2989,17 +2994,30 @@ def admin_member_bulk_update(event_id: int, user_id: int):
         costume = None
 
     try:
+        cur.execute("""
+            SELECT COALESCE(is_canceled,0) AS is_canceled
+              FROM mfu_event_member
+             WHERE event_id=%s AND user_id=%s
+             LIMIT 1
+        """, (event_id, user_id))
+        row = cur.fetchone()
+        is_canceled = int((row[0] if isinstance(row, tuple) else (row or {}).get("is_canceled") or 0))
         sets = [
             "is_host=%s",
             "is_subhost=%s",
             "participant_role=%s",
             "costume_label=%s",
             "require_payment=%s",
+            "process=%s",
             "custom_fee_yen=%s",
             "contact_memo=%s",
             "admin_note=%s",
         ]
-        params = [is_host, is_subhost, save_role, costume, require_payment, custom_fee_yen, contact_memo, admin_note]
+        save_process = process_flag
+        if is_canceled == 1:
+            save_process = int(bool(request.form.get("current_process") or 0))
+            flash("キャンセル済みのため、加工回し必要設定は変更できません。", "warning")
+        params = [is_host, is_subhost, save_role, costume, require_payment, save_process, custom_fee_yen, contact_memo, admin_note]
 
         sql = f"""
             UPDATE mfu_event_member

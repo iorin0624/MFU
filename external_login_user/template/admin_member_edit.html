@@ -52,6 +52,7 @@
           action="{{ url_for('external_login_user.admin_member_bulk_update', event_id=ev.id, user_id=m.user_id) }}"
           class="js-bulk-form">
       <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+      <input type="hidden" name="current_process" value="{{ 1 if m.process else 0 }}">
 
       <!-- 承認ステータス -->
       <div class="mb-3">
@@ -133,6 +134,38 @@
           <div class="form-text">※ 1円以上。0円は不可（空欄で標準参加費）</div>
         </div>
       </div>
+
+      {% if m.is_canceled %}
+      <div class="mb-3">
+        <label class="form-label d-block">加工回し必要</label>
+        {% if m.process %}
+          <span class="badge bg-warning text-dark">必要</span>
+        {% else %}
+          <span class="badge bg-secondary">不要</span>
+        {% endif %}
+        <div class="form-text text-muted">キャンセル済みのため変更できません。</div>
+      </div>
+      {% else %}
+      <div class="mb-3">
+        <label class="form-label d-block">加工回し必要</label>
+        <div class="form-check form-switch">
+          <input
+            class="form-check-input"
+            type="checkbox"
+            id="process"
+            name="process"
+            value="1"
+            {% if m.process %}checked{% endif %}
+          >
+          <label class="form-check-label" for="process">
+            加工回しが必要な参加者として扱う
+          </label>
+        </div>
+        <div class="form-text">
+          ONにすると、この参加者は加工回し対象として扱われます。
+        </div>
+      </div>
+      {% endif %}
 
       <!-- 支払い状況（表示のみ） -->
       <div class="mb-3">
