@@ -65,16 +65,54 @@ def _parse_document_revised_date(raw_value: str | None):
 def _calculate_event_fee(studio_fee_yen: int | float | None,
                          fee_rate_percent: int | float | None,
                          admin_fee_yen: int | float | None,
-                         payers: int | None) -> int | None:
+                         payers: int | None,
+                         fee_calc_method: str | None = "legacy") -> int | None:
     if studio_fee_yen in (None, "") or fee_rate_percent in (None, "") or payers in (None, 0):
         return None
     admin_fee_value = float(admin_fee_yen or 0)
     studio_fee_value = float(studio_fee_yen)
     fee_rate_value = float(fee_rate_percent)
+    method = "new" if fee_calc_method == "new" else "legacy"
+
     per_person = studio_fee_value / payers
-    with_fee = per_person * (1 + (fee_rate_value / 100))
-    total = math.ceil((with_fee + admin_fee_value) / 10) * 10
+    if method == "new":
+        base = per_person + admin_fee_value
+        with_fee = base * (1 + (fee_rate_value / 100))
+        total = math.ceil(with_fee / 10) * 10
+    else:
+        with_fee = per_person * (1 + (fee_rate_value / 100))
+        total = math.ceil((with_fee + admin_fee_value) / 10) * 10
     return int(total)
+
+
+def _calculate_square_net_amounts(final_fee_yen: int | None,
+                                  square_fee_rate_percent: int | float | None,
+                                  payers: int | None) -> dict:
+    try:
+        rate = float(square_fee_rate_percent) if square_fee_rate_percent not in (None, "") else 3.6
+    except Exception:
+        rate = 3.6
+
+    result = {
+        "square_fee_rate_percent": rate,
+        "net_per_person": None,
+        "square_fee_per_person": None,
+        "net_total": None,
+    }
+    if final_fee_yen is None or int(final_fee_yen) <= 0:
+        return result
+
+    fee_value = int(final_fee_yen)
+    net_per_person = math.floor(fee_value / (1 + rate / 100))
+    square_fee_per_person = fee_value - net_per_person
+    net_total = net_per_person * int(payers) if payers is not None and int(payers) > 0 else None
+
+    result.update({
+        "net_per_person": net_per_person,
+        "square_fee_per_person": square_fee_per_person,
+        "net_total": net_total,
+    })
+    return result
 
 
 def _recalc_event_fee_if_auto(event_id: int) -> bool:
@@ -82,7 +120,9 @@ def _recalc_event_fee_if_auto(event_id: int) -> bool:
     try:
         cur.execute("""
             SELECT studio_fee_yen, fee_rate_percent, admin_fee_yen,
-                   COALESCE(fee_auto_calc, 1) AS fee_auto_calc
+                   COALESCE(fee_auto_calc, 1) AS fee_auto_calc,
+                   COALESCE(fee_calc_method, 'legacy') AS fee_calc_method,
+                   square_fee_rate_percent
               FROM mfu_event
              WHERE id=%s
              LIMIT 1
@@ -107,6 +147,7 @@ def _recalc_event_fee_if_auto(event_id: int) -> bool:
             ev.get("fee_rate_percent"),
             ev.get("admin_fee_yen"),
             payers,
+            ev.get("fee_calc_method") or "legacy",
         )
         if total is None:
             return False
@@ -715,9 +756,11 @@ def admin_event_new():
         event_uuid, title, owner_user_id, starts_at, fee_yen,
         pay_from, pay_until,
         place_name, address, maps_url,
-        checkin_qr_enabled
+        checkin_qr_enabled,
+        fee_calc_method,
+        square_fee_rate_percent
       )
-      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1)
+      VALUES (UNHEX(REPLACE(UUID(),'-','')), %s, NULL, %s, %s, %s, %s, %s, %s, %s, 1, 'new', 3.6)
     """, (title, (starts_at or None), (int(fee_yen) if fee_yen else None),
           pay_from, pay_until,
           (place or None), (address or None), (maps_url or None)))
@@ -994,6 +1037,8 @@ def admin_event_edit(event_id: int):
               fee_rate_percent,
               admin_fee_yen,
               COALESCE(fee_auto_calc, 1) AS fee_auto_calc,
+              COALESCE(fee_calc_method, 'legacy') AS fee_calc_method,
+              COALESCE(square_fee_rate_percent, 3.6) AS square_fee_rate_percent,
               COALESCE(allow_square, 1) AS allow_square,
               COALESCE(allow_paypay, 0) AS allow_paypay,
               COALESCE(allow_bank,   0) AS allow_bank,
@@ -1058,6 +1103,8 @@ def admin_event_edit(event_id: int):
         "fee_rate_percent": ev.get("fee_rate_percent"),
         "admin_fee_yen": ev.get("admin_fee_yen"),
         "fee_auto_calc": int(ev.get("fee_auto_calc") or 0),
+        "fee_calc_method": ev.get("fee_calc_method") or "legacy",
+        "square_fee_rate_percent": ev.get("square_fee_rate_percent") if ev.get("square_fee_rate_percent") is not None else 3.6,
         "require_payment_count": require_payment_count,
         "allow_square": int(ev.get("allow_square") or 0),
         "allow_paypay": int(ev.get("allow_paypay") or 0),
@@ -1082,6 +1129,8 @@ def admin_event_edit(event_id: int):
         admin_fee_yen_in = request.form.get("admin_fee_yen")
         require_payment_count_in = request.form.get("require_payment_count")
         fee_auto_calc = 1 if request.form.get("fee_auto_calc") else 0
+        fee_calc_method_in = (request.form.get("fee_calc_method") or "legacy").strip()
+        square_fee_rate_percent_in = request.form.get("square_fee_rate_percent")
 
         place_name  = (request.form.get("place_name") or "").strip() or None
         address     = (request.form.get("address") or "").strip() or None
@@ -1136,6 +1185,17 @@ def admin_event_edit(event_id: int):
             except Exception:
                 errors["admin_fee_yen"] = "事務手数料は0以上の整数で指定してください。"
 
+        fee_calc_method = fee_calc_method_in if fee_calc_method_in in ("legacy", "new") else "legacy"
+
+        square_fee_rate_percent = 3.6
+        try:
+            if square_fee_rate_percent_in not in (None, ""):
+                square_fee_rate_percent = float(square_fee_rate_percent_in)
+            if square_fee_rate_percent < 0:
+                raise ValueError()
+        except Exception:
+            errors["square_fee_rate_percent"] = "Square手数料は0以上の数値で指定してください。"
+
         starts_at = _parse_dt_local(starts_at_in) if starts_at_in else None
         pay_from  = _parse_dt_local(pay_from_in)  if pay_from_in  else None
         pay_until = _parse_dt_local(pay_until_in) if pay_until_in else None
@@ -1154,6 +1214,8 @@ def admin_event_edit(event_id: int):
             "admin_fee_yen": admin_fee_yen_in or "",
             "require_payment_count": require_payment_count_in or "",
             "fee_auto_calc": fee_auto_calc,
+            "fee_calc_method": fee_calc_method,
+            "square_fee_rate_percent": square_fee_rate_percent_in or "3.6",
             "allow_square": allow_square, "allow_paypay": allow_paypay, "allow_bank": allow_bank,
             "tip_enabled": tip_enabled,
             "paypay_display": paypay_display or "",
@@ -1175,6 +1237,7 @@ def admin_event_edit(event_id: int):
                    SET title=%s, starts_at=%s, fee_yen=%s,
                        studio_fee_yen=%s, fee_rate_percent=%s, admin_fee_yen=%s,
                        fee_auto_calc=%s,
+                       fee_calc_method=%s, square_fee_rate_percent=%s,
                        pay_from=%s, pay_until=%s,
                        place_name=%s, address=%s, maps_url=%s, sns_hashtag=%s,
                        line_openchat_url=%s, line_openchat_pass=%s, google_form_url=%s,
@@ -1184,7 +1247,7 @@ def admin_event_edit(event_id: int):
                  LIMIT 1
             """, (title, starts_at, fee_yen,
                   studio_fee_yen, fee_rate_percent, admin_fee_yen,
-                  fee_auto_calc,
+                  fee_auto_calc, fee_calc_method, square_fee_rate_percent,
                   pay_from, pay_until,
                   place_name, address, maps_url, sns_hashtag,
                   line_openchat_url, line_openchat_pass, google_form_url,

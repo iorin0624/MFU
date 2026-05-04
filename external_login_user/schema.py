@@ -305,6 +305,16 @@ def _on_bp_registered(state) -> None:
                 "participant_terms_revised_date DATE NULL AFTER participant_terms_url",
             )
             _ensure_col(
+                "mfu_event",
+                "fee_calc_method",
+                "fee_calc_method ENUM('legacy','new') NOT NULL DEFAULT 'legacy' AFTER fee_auto_calc",
+            )
+            _ensure_col(
+                "mfu_event",
+                "square_fee_rate_percent",
+                "square_fee_rate_percent DECIMAL(5,2) NULL DEFAULT NULL AFTER fee_rate_percent",
+            )
+            _ensure_col(
                 "mfu_event_member",
                 "participant_terms_agreed_at",
                 "participant_terms_agreed_at DATETIME NULL AFTER joined_at",

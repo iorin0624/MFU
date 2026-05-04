@@ -94,7 +94,7 @@
               <div class="form-text">支払いありの人数を入力してください。</div>
             </div>
             <div class="col-12 col-md-3">
-              <label class="form-label">手数料（%）</label>
+              <label class="form-label">通常手数料（参加費上乗せ用・%）</label>
               <input type="number" min="0" step="0.01" name="fee_rate_percent" id="fee-rate"
                      class="form-control" inputmode="decimal"
                      value="{% if form.fee_rate_percent is not none %}{{ form.fee_rate_percent }}{% elif ev.fee_rate_percent is not none %}{{ ev.fee_rate_percent }}{% endif %}"
@@ -102,11 +102,32 @@
               {% if errors.fee_rate_percent %}<div class="text-danger small mt-1">{{ errors.fee_rate_percent }}</div>{% endif %}
             </div>
             <div class="col-12 col-md-3">
+              <label class="form-label">Square手数料（振込見込み計算用・%）</label>
+              <input type="number" min="0" step="0.01" name="square_fee_rate_percent" id="square-fee-rate"
+                     class="form-control" inputmode="decimal"
+                     value="{% if form.square_fee_rate_percent is not none %}{{ form.square_fee_rate_percent }}{% else %}3.6{% endif %}">
+              {% if errors.square_fee_rate_percent %}<div class="text-danger small mt-1">{{ errors.square_fee_rate_percent }}</div>{% endif %}
+            </div>
+            <div class="col-12 col-md-3">
               <label class="form-label">事務手数料（円）</label>
               <input type="number" min="0" step="1" name="admin_fee_yen" id="admin-fee"
                      class="form-control" inputmode="numeric"
                      value="{% if form.admin_fee_yen is not none %}{{ form.admin_fee_yen }}{% elif ev.admin_fee_yen is not none %}{{ ev.admin_fee_yen }}{% endif %}">
               {% if errors.admin_fee_yen %}<div class="text-danger small mt-1">{{ errors.admin_fee_yen }}</div>{% endif %}
+            </div>
+            <div class="col-12">
+              <label class="form-label d-block">計算方式</label>
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="fee_calc_method" id="fee-calc-method-new" value="new" {% if (form.fee_calc_method or 'legacy') == 'new' %}checked{% endif %}>
+                <label class="form-check-label" for="fee-calc-method-new">新計算式：スタジオ代金 ÷ 人数 + 事務手数料 → 通常手数料上乗せ → 10円単位切り上げ</label>
+              </div>
+              <div class="form-check mt-1">
+                <input class="form-check-input" type="radio" name="fee_calc_method" id="fee-calc-method-legacy" value="legacy" {% if (form.fee_calc_method or 'legacy') != 'new' %}checked{% endif %}>
+                <label class="form-check-label" for="fee-calc-method-legacy">旧計算式：スタジオ代金 ÷ 人数 → 通常手数料上乗せ → 事務手数料加算 → 10円単位切り上げ</label>
+              </div>
+              {% if (form.fee_calc_method or 'legacy') == 'legacy' %}
+              <div class="alert alert-warning py-2 mt-2 mb-0 small">このイベントは旧計算式で計算されています。既存イベント保護のため、明示的に変更しない限り旧計算式のままです。</div>
+              {% endif %}
             </div>
           </div>
 
@@ -117,6 +138,9 @@
             </div>
             <div class="mt-2">
               <div class="h5 mb-1">参加費（丸め後）：<span id="fee-calc-total">-</span> 円</div>
+              <div>1人あたりの振込金額：<span id="fee-square-net-per-person">-</span> 円</div>
+              <div>Square手数料：<span id="fee-square-fee-per-person">-</span> 円 / 人</div>
+              <div>振込見込み合計：<span id="fee-square-net-total">-</span> 円</div>
               <div class="small text-muted" id="fee-calc-breakdown"></div>
             </div>
             <div class="mt-3 d-flex flex-wrap gap-2">
@@ -124,7 +148,7 @@
               <button type="button" class="btn btn-primary btn-sm" id="fee-apply-btn">参加費に適用</button>
             </div>
             <div class="form-text mt-2">
-              計算式：スタジオ代金 ÷ 支払人数 = x ／ x × (1 + 手数料%) = y ／ y + 事務手数料 → 10円単位で切り上げ
+              旧計算式：スタジオ代金 ÷ 支払人数 = x ／ x × (1 + 通常手数料%) = y ／ y + 事務手数料 → 10円単位で切り上げ<br>新計算式：スタジオ代金 ÷ 支払人数 + 事務手数料 = x ／ x × (1 + 通常手数料%) = y ／ y → 10円単位で切り上げ
             </div>
           </div>
         </div>
@@ -472,6 +496,7 @@
   const $studioFee = document.getElementById('studio-fee');
   const $payers = document.getElementById('fee-payers');
   const $feeRate = document.getElementById('fee-rate');
+  const $squareFeeRate = document.getElementById('square-fee-rate');
   const $adminFee = document.getElementById('admin-fee');
   const $calcBtn = document.getElementById('fee-calc-btn');
   const $applyBtn = document.getElementById('fee-apply-btn');
@@ -479,89 +504,39 @@
   const $calcStatus = document.getElementById('fee-calc-status');
   const $calcTotal = document.getElementById('fee-calc-total');
   const $calcBreakdown = document.getElementById('fee-calc-breakdown');
+  const $netPerPerson = document.getElementById('fee-square-net-per-person');
+  const $squareFeePerPerson = document.getElementById('fee-square-fee-per-person');
+  const $netTotal = document.getElementById('fee-square-net-total');
 
-  function parseNumber(el){
-    if(!el) return null;
-    const raw = (el.value || '').trim();
-    if(!raw) return null;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  function roundUp10(value){
-    return Math.ceil(value / 10) * 10;
-  }
-
+  function parseNumber(el){ const v=(el?.value||'').trim(); if(!v) return null; const n=Number(v); return Number.isFinite(n)?n:null; }
+  function ceil10(v){ return Math.ceil(v/10)*10; }
+  function getMethod(){ return document.querySelector('[name="fee_calc_method"]:checked')?.value || 'legacy'; }
+  function resetSquare(){ $netPerPerson.textContent='-'; $squareFeePerPerson.textContent='-'; $netTotal.textContent='-'; }
   function calcFee(){
-    const studioFee = parseNumber($studioFee);
-    const payers = parseNumber($payers);
-    const feeRate = parseNumber($feeRate);
-    const adminFee = parseNumber($adminFee) || 0;
-
-    if(studioFee === null || payers === null || feeRate === null || payers <= 0){
-      $calcStatus.textContent = '入力値を確認してください。';
-      $calcTotal.textContent = '-';
-      $calcBreakdown.textContent = '';
-      return null;
+    const studioFee=parseNumber($studioFee), payers=parseNumber($payers), feeRate=parseNumber($feeRate), adminFee=parseNumber($adminFee) || 0;
+    let squareFeeRate=parseNumber($squareFeeRate); if(squareFeeRate===null) squareFeeRate=3.6;
+    if(studioFee===null||payers===null||feeRate===null||payers<=0){ $calcStatus.textContent='入力値を確認してください。'; $calcTotal.textContent='-'; $calcBreakdown.textContent=''; resetSquare(); return null; }
+    const method=getMethod(); const perPerson=studioFee/payers;
+    let total=0; const lines=[];
+    if(method==='new'){
+      const base=perPerson+adminFee, withFee=base*(1+feeRate/100); total=ceil10(withFee);
+      lines.push(`計算方式：新計算式`,`スタジオ代金 ${studioFee.toFixed(0)}円 ÷ 支払人数 ${payers.toFixed(0)}人 = ${perPerson.toFixed(2)}円`,`${perPerson.toFixed(2)}円 + 事務手数料 ${adminFee.toFixed(2)}円 = ${base.toFixed(2)}円`,`${base.toFixed(2)}円 × (1 + 通常手数料 ${feeRate.toFixed(2)}%) = ${withFee.toFixed(2)}円`);
+    }else{
+      const withFee=perPerson*(1+feeRate/100), beforeRound=withFee+adminFee; total=ceil10(beforeRound);
+      lines.push(`計算方式：旧計算式`,`スタジオ代金 ${studioFee.toFixed(0)}円 ÷ 支払人数 ${payers.toFixed(0)}人 = ${perPerson.toFixed(2)}円`,`${perPerson.toFixed(2)}円 × (1 + 通常手数料 ${feeRate.toFixed(2)}%) = ${withFee.toFixed(2)}円`,`${withFee.toFixed(2)}円 + 事務手数料 ${adminFee.toFixed(2)}円 = ${beforeRound.toFixed(2)}円`);
     }
-
-    const perPerson = studioFee / payers;
-    const withFee = perPerson * (1 + (feeRate / 100));
-    const total = roundUp10(withFee + adminFee);
-
-    $calcStatus.textContent = '計算済み（10円単位で切り上げ）';
-    $calcTotal.textContent = total.toFixed(0);
-    $calcBreakdown.textContent = `1人あたり ${perPerson.toFixed(2)} 円 → 手数料込み ${withFee.toFixed(2)} 円 → 事務手数料加算`;
+    const netPer=Math.floor(total/(1+squareFeeRate/100)), sqFee=total-netPer, netSum=netPer*payers;
+    lines.push(`10円単位切り上げ = ${total.toFixed(0)}円`,`Square振込見込み：${total.toFixed(0)}円 ÷ (1 + Square手数料 ${squareFeeRate.toFixed(2)}%) = ${netPer.toFixed(0)}円 / 人`);
+    $calcStatus.textContent='計算済み（10円単位で切り上げ）'; $calcTotal.textContent=total.toLocaleString();
+    $netPerPerson.textContent=netPer.toLocaleString(); $squareFeePerPerson.textContent=sqFee.toLocaleString(); $netTotal.textContent=netSum.toLocaleString();
+    $calcBreakdown.textContent=lines.join('\n');
     return total;
   }
-
-  function maybeAutoApply(){
-    if(!$autoMode || !$autoMode.checked) return;
-    const total = calcFee();
-    if(total !== null && $feeInput){
-      $feeInput.value = total.toFixed(0);
-    }
-  }
-
-  [$studioFee, $payers, $feeRate, $adminFee].forEach((el)=>{
-    if(!el) return;
-    el.addEventListener('input', ()=>{
-      if($autoMode && $autoMode.checked){
-        maybeAutoApply();
-      }else{
-        calcFee();
-      }
-    });
-  });
-
-  if($autoMode){
-    $autoMode.addEventListener('change', ()=>{
-      if($autoMode.checked){
-        maybeAutoApply();
-        if($calcBtn) $calcBtn.disabled = true;
-        if($applyBtn) $applyBtn.disabled = true;
-      }else{
-        if($calcBtn) $calcBtn.disabled = false;
-        if($applyBtn) $applyBtn.disabled = false;
-      }
-    });
-    $autoMode.dispatchEvent(new Event('change'));
-  }
-
-  if($calcBtn){
-    $calcBtn.addEventListener('click', ()=>{
-      calcFee();
-    });
-  }
-
-  if($applyBtn){
-    $applyBtn.addEventListener('click', ()=>{
-      const total = calcFee();
-      if(total !== null && $feeInput){
-        $feeInput.value = total.toFixed(0);
-      }
-    });
-  }
+  function maybeAutoApply(){ if(!$autoMode||!$autoMode.checked) return; const total=calcFee(); if(total!==null&&$feeInput){$feeInput.value=total.toFixed(0);} }
+  [$studioFee,$payers,$feeRate,$squareFeeRate,$adminFee,...document.querySelectorAll('[name="fee_calc_method"]')].forEach((el)=>{ el?.addEventListener('input',()=>{($autoMode&&$autoMode.checked)?maybeAutoApply():calcFee();}); el?.addEventListener('change',()=>{($autoMode&&$autoMode.checked)?maybeAutoApply():calcFee();}); });
+  if($autoMode){ $autoMode.addEventListener('change',()=>{ if($autoMode.checked){ maybeAutoApply(); if($calcBtn) $calcBtn.disabled=true; if($applyBtn) $applyBtn.disabled=true;} else { if($calcBtn) $calcBtn.disabled=false; if($applyBtn) $applyBtn.disabled=false;}}); $autoMode.dispatchEvent(new Event('change')); }
+  $calcBtn?.addEventListener('click',()=>calcFee());
+  $applyBtn?.addEventListener('click',()=>{ const total=calcFee(); if(total!==null&&$feeInput){$feeInput.value=total.toFixed(0);} });
 })();
 </script>
 {% endblock %}
