@@ -13,6 +13,8 @@
   <div class="alert alert-success" role="alert">キャンセル済みの参加を復帰しました。</div>
 {% elif request.args.get('canceled') %}
   <div class="alert alert-success" role="alert">参加をキャンセル済みに変更しました（履歴は保持されています）。</div>
+{% elif request.args.get('process_saved') == '1' %}
+  <div class="alert alert-success" role="alert">加工回し必要設定を保存しました。</div>
 {% elif request.args.get('duplicated') %}
   <div class="alert alert-info" role="alert">このユーザーは既にそのイベントに参加しています。</div>
 {% elif request.args.get('error') == 'csrf' %}
@@ -29,6 +31,10 @@
   <div class="alert alert-warning" role="alert">削除済みユーザーのため、この操作は実行できません。</div>
 {% elif request.args.get('error') == 'anonymize' %}
   <div class="alert alert-danger" role="alert">匿名化削除に失敗しました。ログを確認してください。</div>
+{% elif request.args.get('error') == 'process_update_failed' %}
+  <div class="alert alert-danger" role="alert">加工回し必要設定の保存に失敗しました。</div>
+{% elif request.args.get('error') == 'canceled' %}
+  <div class="alert alert-warning" role="alert">キャンセル済み参加者のため、加工回し必要設定は変更できません。</div>
 {% elif request.args.get('anonymized') %}
   <div class="alert alert-success" role="alert">
     匿名化削除を実行しました。
@@ -256,6 +262,7 @@
             <th style="width:180px;">開催日時</th>
             <th style="width:120px;">参加状態</th>
             <th style="width:120px;">支払状態</th>
+            <th style="width:240px;">加工回し必要</th>
             <th style="width:120px;">操作</th>
           </tr>
         </thead>
@@ -283,6 +290,35 @@
                   <span class="badge bg-outline-secondary text-dark">
                     {{ pay_map.get(m.payment_status|string, m.payment_status) }}
                   </span>
+                </td>
+                <td>
+                  {% if m.is_canceled %}
+                    {% if m.process %}
+                      <span class="badge bg-warning text-dark">必要</span>
+                    {% else %}
+                      <span class="badge bg-secondary">不要</span>
+                    {% endif %}
+                    <div class="small text-muted mt-1">キャンセル済みのため変更不可</div>
+                  {% else %}
+                    <form method="post"
+                          action="{{ url_for('external_login_user.admin_ext_users_member_process_update', user_id=u.id, member_id=m.member_id) }}"
+                          class="d-inline-flex align-items-center gap-2">
+                      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+                      <div class="form-check form-switch m-0">
+                        <input class="form-check-input"
+                               type="checkbox"
+                               role="switch"
+                               id="process_{{ m.member_id }}"
+                               name="process"
+                               value="1"
+                               {% if m.process %}checked{% endif %}>
+                        <label class="form-check-label small" for="process_{{ m.member_id }}">
+                          {% if m.process %}必要{% else %}不要{% endif %}
+                        </label>
+                      </div>
+                      <button type="submit" class="btn btn-sm btn-outline-primary">保存</button>
+                    </form>
+                  {% endif %}
                 </td>
                 <td>
                   <a class="btn btn-sm btn-outline-danger"
@@ -314,6 +350,35 @@
                   </span>
                 </td>
                 <td>
+                  {% if m.is_canceled %}
+                    {% if m.process %}
+                      <span class="badge bg-warning text-dark">必要</span>
+                    {% else %}
+                      <span class="badge bg-secondary">不要</span>
+                    {% endif %}
+                    <div class="small text-muted mt-1">キャンセル済みのため変更不可</div>
+                  {% else %}
+                    <form method="post"
+                          action="{{ url_for('external_login_user.admin_ext_users_member_process_update', user_id=u.id, member_id=m.member_id) }}"
+                          class="d-inline-flex align-items-center gap-2">
+                      <input type="hidden" name="csrf_token" value="{{ admin_csrf }}">
+                      <div class="form-check form-switch m-0">
+                        <input class="form-check-input"
+                               type="checkbox"
+                               role="switch"
+                               id="process_{{ m.member_id }}"
+                               name="process"
+                               value="1"
+                               {% if m.process %}checked{% endif %}>
+                        <label class="form-check-label small" for="process_{{ m.member_id }}">
+                          {% if m.process %}必要{% else %}不要{% endif %}
+                        </label>
+                      </div>
+                      <button type="submit" class="btn btn-sm btn-outline-primary">保存</button>
+                    </form>
+                  {% endif %}
+                </td>
+                <td>
                   <a class="btn btn-sm btn-outline-danger"
                      href="{{ url_for('external_login_user.admin_ext_users_member_delete_confirm',
                                       user_id=u.id, member_id=m.member_id) }}">
@@ -323,7 +388,7 @@
               </tr>
             {% endfor %}
           {% else %}
-            <tr><td colspan="6" class="text-center text-muted py-3">参加中のイベントはありません。</td></tr>
+            <tr><td colspan="7" class="text-center text-muted py-3">参加中のイベントはありません。</td></tr>
           {% endif %}
         </tbody>
       </table>

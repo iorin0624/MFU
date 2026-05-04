@@ -667,6 +667,7 @@ def admin_ext_users_edit_page(user_id: int):
               e.starts_at,
               m.status,
               m.payment_status,
+              COALESCE(m.process,0) AS process,
               COALESCE(m.is_canceled,0) AS is_canceled,
               m.canceled_at,
               m.canceled_by
@@ -801,6 +802,97 @@ def admin_ext_users_assign(user_id: int):
             pass
 
     return redirect(url_for("external_login_user.admin_ext_users_edit_page", user_id=user_id, assigned=1))
+
+
+@bp.post("/admin/ext-users/<int:user_id>/membership/<int:member_id>/process",
+         endpoint="admin_ext_users_member_process_update")
+def admin_ext_users_member_process_update(user_id: int, member_id: int):
+    """
+    管理画面：外部ユーザー詳細ページから、イベント参加レコードごとの加工回し必要フラグを更新する。
+    process=1: 加工回し必要
+    process=0: 加工回し不要
+    """
+    guard = _require_mfu_login_redirect()
+    if guard:
+        return guard
+
+    token_req = (request.form.get("csrf_token") or "").strip()
+    if not token_req or token_req != _admin_csrf_token():
+        return redirect(url_for(
+            "external_login_user.admin_ext_users_edit_page",
+            user_id=user_id,
+            error="csrf",
+        ))
+
+    process_flag = 1 if (request.form.get("process") or "").strip().lower() in {"1", "on", "true", "yes"} else 0
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT
+              m.id,
+              m.user_id,
+              m.event_id,
+              COALESCE(m.is_canceled,0) AS is_canceled
+            FROM mfu_event_member AS m
+            JOIN external_login_user AS u ON u.id = m.user_id
+            WHERE m.id=%s
+              AND m.user_id=%s
+            LIMIT 1
+        """, (member_id, user_id))
+        row = cur.fetchone()
+
+        if not row:
+            return redirect(url_for(
+                "external_login_user.admin_ext_users_edit_page",
+                user_id=user_id,
+                error="not_found",
+            ))
+
+        if int(row.get("is_canceled") or 0) == 1:
+            return redirect(url_for(
+                "external_login_user.admin_ext_users_edit_page",
+                user_id=user_id,
+                error="canceled",
+            ))
+
+        cur.execute("""
+            UPDATE mfu_event_member
+               SET process=%s
+             WHERE id=%s
+               AND user_id=%s
+             LIMIT 1
+        """, (process_flag, member_id, user_id))
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        current_app.logger.exception(
+            "admin ext user membership process update failed: user_id=%s member_id=%s process=%s",
+            user_id,
+            member_id,
+            process_flag,
+        )
+        return redirect(url_for(
+            "external_login_user.admin_ext_users_edit_page",
+            user_id=user_id,
+            error="process_update_failed",
+        ))
+    finally:
+        try:
+            cur.close()
+            db.close()
+        except Exception:
+            pass
+
+    return redirect(url_for(
+        "external_login_user.admin_ext_users_edit_page",
+        user_id=user_id,
+        process_saved="1",
+    ))
 
 # ============= 参加削除 確認ページ（GET） =============
 @bp.get("/admin/ext-users/<int:user_id>/membership/<int:member_id>/delete-confirm",
