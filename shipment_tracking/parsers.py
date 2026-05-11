@@ -88,6 +88,54 @@ def _parse_jp_datetime(raw: str | None) -> str | None:
     return original.strip()
 
 
+def _normalize_detail_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).replace("　", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    text = text.strip()
+    return text or None
+
+
+def _build_latest_location_text(history_item: dict[str, Any] | None) -> str | None:
+    if not history_item:
+        return None
+
+    office_name = history_item.get("office_name")
+    prefecture = history_item.get("prefecture")
+    postal_code = history_item.get("postal_code")
+
+    parts = []
+    if prefecture:
+        parts.append(str(prefecture).strip())
+    if office_name:
+        parts.append(str(office_name).strip())
+
+    if not parts:
+        return None
+
+    text = " ".join(part for part in parts if part)
+    if postal_code:
+        text += f"（〒{str(postal_code).strip()}）"
+
+    return text or None
+
+
+def _merge_location_and_detail(location_text: str | None, detail_text: Any) -> str | None:
+    parts = []
+
+    if location_text:
+        parts.append(f"現在地：{location_text}")
+
+    normalized_detail = _normalize_detail_text(detail_text)
+    if normalized_detail:
+        if not location_text or normalized_detail != f"現在地：{location_text}":
+            parts.append(normalized_detail)
+
+    return "\n".join(parts) if parts else None
+
+
 def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
     return {
         "carrier_code": carrier_code,
@@ -97,6 +145,7 @@ def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) ->
         "service_name": None,
         "current_status": None,
         "current_status_detail": None,
+        "current_location": None,
         "latest_event_at": None,
         "scheduled_delivery_date": None,
         "scheduled_delivery_time_slot": None,
@@ -169,8 +218,14 @@ def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str
 
     payload["history"] = [h for h in payload["history"] if h.get("status")]
     if payload["history"]:
-        payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
-        payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
+        latest_history = payload["history"][-1]
+        payload["latest_event_at"] = latest_history.get("occurred_at")
+        payload["current_status"] = payload["current_status"] or latest_history.get("status")
+        payload["current_location"] = _build_latest_location_text(latest_history)
+        payload["current_status_detail"] = _merge_location_and_detail(
+            payload["current_location"],
+            payload.get("current_status_detail"),
+        )
 
     current_status = payload.get("current_status") or ""
     payload["completed"] = "配達完了" in current_status
@@ -250,8 +305,14 @@ def parse_yamato(html: str, tracking_number: str, tracking_url: str) -> dict[str
 
     payload["history"] = [h for h in payload["history"] if h.get("status")]
     if payload["history"]:
-        payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
-        payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
+        latest_history = payload["history"][-1]
+        payload["latest_event_at"] = latest_history.get("occurred_at")
+        payload["current_status"] = payload["current_status"] or latest_history.get("status")
+        payload["current_location"] = _build_latest_location_text(latest_history)
+        payload["current_status_detail"] = _merge_location_and_detail(
+            payload["current_location"],
+            payload.get("current_status_detail"),
+        )
 
     payload["completed"] = (payload.get("current_status") or "") == "配達完了"
     return payload
@@ -342,8 +403,14 @@ def parse_japanpost(html: str, tracking_number: str, tracking_url: str) -> dict[
 
     # 3) 現在状態は履歴末尾から決定
     if payload["history"]:
-        payload["current_status"] = payload["history"][-1].get("status")
-        payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
+        latest_history = payload["history"][-1]
+        payload["current_status"] = latest_history.get("status")
+        payload["latest_event_at"] = latest_history.get("occurred_at")
+        payload["current_location"] = _build_latest_location_text(latest_history)
+        payload["current_status_detail"] = _merge_location_and_detail(
+            payload["current_location"],
+            payload.get("current_status_detail"),
+        )
         payload["completed"] = payload["current_status"] == "お届け先にお届け済み"
     else:
         payload["current_status"] = None

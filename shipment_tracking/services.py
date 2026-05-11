@@ -123,6 +123,28 @@ def _parse_payload_datetime(value: Any) -> datetime | None:
     return None
 
 
+
+
+def _strip_location_line_from_detail(detail_text: Any, current_location: Any) -> str:
+    if detail_text is None:
+        return "-"
+
+    text = str(detail_text).replace("　", " ").strip()
+    if not text:
+        return "-"
+
+    location = str(current_location).strip() if current_location else ""
+    lines = []
+    for line in text.splitlines():
+        normalized_line = line.strip()
+        if not normalized_line:
+            continue
+        if location and normalized_line == f"現在地：{location}":
+            continue
+        lines.append(normalized_line)
+
+    return "\n".join(lines).strip() or "-"
+
 def _http_get(url: str) -> str:
     headers = {"User-Agent": USER_AGENT}
     response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
@@ -162,7 +184,12 @@ def _build_shipment_tracking_discord_embed(
     label = target.get("label") or "-"
     tracking_number = target.get("tracking_number") or "-"
     status_text = current_status or "-"
-    detail_text = current_status_detail or "-"
+    current_location = payload.get("current_location") or "-"
+    location_text = str(current_location)
+    if len(location_text) > 1000:
+        location_text = location_text[:1000] + "..."
+
+    detail_text = _strip_location_line_from_detail(current_status_detail, payload.get("current_location"))
     if len(detail_text) > 1000:
         detail_text = detail_text[:1000] + "..."
 
@@ -187,6 +214,11 @@ def _build_shipment_tracking_discord_embed(
             {
                 "name": "最新状態",
                 "value": f"{status_text}\n{latest_event_at_text}",
+                "inline": False,
+            },
+            {
+                "name": "現在地",
+                "value": location_text,
                 "inline": False,
             },
             {
