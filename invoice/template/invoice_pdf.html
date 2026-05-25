@@ -151,6 +151,35 @@
       font-size: 10pt;
     }
 
+    .subject-total-bar {
+      display: table;
+      width: 100%;
+      margin-top: 1.2mm;
+      padding: 2mm 2.4mm;
+      background: #000;
+      color: #fff;
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-weight: 700;
+      font-size: 11pt;
+      line-height: 1.2;
+      border: 0.3mm solid #000;
+    }
+
+    .subject-total-label,
+    .subject-total-value {
+      display: table-cell;
+      vertical-align: middle;
+    }
+
+    .subject-total-label {
+      text-align: left;
+    }
+
+    .subject-total-value {
+      text-align: right;
+      white-space: nowrap;
+    }
+
     .items-table {
       width: 100%;
       border-collapse: collapse;
@@ -192,14 +221,17 @@
     }
 
     .memo-row td {
-      color: var(--text-color);
-      background: #fcfcfc;
+      color: #fff;
+      background: #000;
+      font-family: var(--invoice-font-bold), sans-serif;
+      font-weight: 700;
     }
 
     .memo-cell {
       text-align: left;
-      white-space: normal;
+      white-space: pre-wrap;
       padding: 2.1mm 2.2mm;
+      line-height: 1.3;
     }
 
     .summary-wrap {
@@ -296,6 +328,10 @@
     <section class="subject-block">
       <div class="section-title">件名</div>
       <div class="subject-line multiline-text">{{ pdf.subject }}</div>
+      <div class="subject-total-bar">
+        <span class="subject-total-label">合計金額</span>
+        <span class="subject-total-value">{{ pdf.total_yen_label }}</span>
+      </div>
     </section>
 
     <table class="items-table">

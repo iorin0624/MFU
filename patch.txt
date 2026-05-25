@@ -1,450 +1,223 @@
-diff --git a/shipment_tracking/parsers.py b/shipment_tracking/parsers.py
-index a709d80e218e191cfb379f10055874308e5e00a2..ff8f4d620909749a51b10c756f29e4ab78f3b04e 100644
---- a/shipment_tracking/parsers.py
-+++ b/shipment_tracking/parsers.py
-@@ -66,59 +66,108 @@ def _parse_jp_datetime(raw: str | None) -> str | None:
-         raw = f"{month}/{day}"
-         if time_part:
-             raw = f"{raw} {time_part}"
- 
-     patterns = [
-         "%Y/%m/%d %H:%M",
-         "%Y-%m-%d %H:%M",
-         "%Y/%m/%d",
-         "%Y-%m-%d",
-         "%m/%d %H:%M",
-         "%m/%d",
-     ]
-     for pattern in patterns:
-         try:
-             dt = datetime.strptime(raw, pattern)
-             if pattern.startswith("%m"):
-                 dt = dt.replace(year=datetime.now().year)
-             if "%H" in pattern:
-                 return dt.strftime("%Y-%m-%d %H:%M:%S")
-             return dt.strftime("%Y-%m-%d")
-         except ValueError:
-             continue
-     return original.strip()
- 
- 
-+def _normalize_detail_text(value: Any) -> str | None:
-+    if value is None:
-+        return None
-+    text = str(value).replace("　", " ")
-+    text = re.sub(r"[ \t]+", " ", text)
-+    text = re.sub(r"\n\s+", "\n", text)
-+    text = text.strip()
-+    return text or None
-+
-+
-+def _build_latest_location_text(history_item: dict[str, Any] | None) -> str | None:
-+    if not history_item:
-+        return None
-+
-+    office_name = history_item.get("office_name")
-+    prefecture = history_item.get("prefecture")
-+    postal_code = history_item.get("postal_code")
-+
-+    parts = []
-+    if prefecture:
-+        parts.append(str(prefecture).strip())
-+    if office_name:
-+        parts.append(str(office_name).strip())
-+
-+    if not parts:
-+        return None
-+
-+    text = " ".join(part for part in parts if part)
-+    if postal_code:
-+        text += f"（〒{str(postal_code).strip()}）"
-+
-+    return text or None
-+
-+
-+def _merge_location_and_detail(location_text: str | None, detail_text: Any) -> str | None:
-+    parts = []
-+
-+    if location_text:
-+        parts.append(f"現在地：{location_text}")
-+
-+    normalized_detail = _normalize_detail_text(detail_text)
-+    if normalized_detail:
-+        if not location_text or normalized_detail != f"現在地：{location_text}":
-+            parts.append(normalized_detail)
-+
-+    return "\n".join(parts) if parts else None
-+
-+
- def _base_payload(carrier_code: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-     return {
-         "carrier_code": carrier_code,
-         "carrier_name": CARRIER_MASTER[carrier_code],
-         "tracking_number": tracking_number,
-         "tracking_url": tracking_url,
-         "service_name": None,
-         "current_status": None,
-         "current_status_detail": None,
-+        "current_location": None,
-         "latest_event_at": None,
-         "scheduled_delivery_date": None,
-         "scheduled_delivery_time_slot": None,
-         "package_count": None,
-         "size": None,
-         "additional_service": None,
-         "ship_date": None,
-         "completed": False,
-         "origin_office": {
-             "name": None,
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
-             "prefecture": None,
-         },
-         "delivery_office": {
-             "name": None,
-             "phone": None,
-             "fax": None,
-             "office_code": None,
-             "postal_code": None,
-             "prefecture": None,
-         },
-         "contact_offices": [],
-@@ -147,52 +196,58 @@ def parse_sagawa(html: str, tracking_number: str, tracking_url: str) -> dict[str
- 
-     for tr in soup.select("table tr"):
-         tds = tr.find_all("td")
-         if len(tds) < 2:
-             continue
-         values = [_text(td) for td in tds]
-         status = values[0] if len(values) > 0 else None
-         occurred = _parse_jp_datetime(values[1]) if len(values) > 1 else None
-         office = values[2] if len(values) > 2 else None
-         if not status:
-             continue
-         payload["history"].append(
-             {
-                 "status": status,
-                 "occurred_at": occurred,
-                 "office_name": office,
-                 "office_code": None,
-                 "postal_code": None,
-                 "prefecture": None,
-                 "detail": values[3] if len(values) > 3 else None,
-             }
-         )
- 
-     payload["history"] = [h for h in payload["history"] if h.get("status")]
-     if payload["history"]:
--        payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
--        payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
-+        latest_history = payload["history"][-1]
-+        payload["latest_event_at"] = latest_history.get("occurred_at")
-+        payload["current_status"] = payload["current_status"] or latest_history.get("status")
-+        payload["current_location"] = _build_latest_location_text(latest_history)
-+        payload["current_status_detail"] = _merge_location_and_detail(
-+            payload["current_location"],
-+            payload.get("current_status_detail"),
-+        )
- 
-     current_status = payload.get("current_status") or ""
-     payload["completed"] = "配達完了" in current_status
-     return payload
- 
- 
- def parse_yamato(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-     if BeautifulSoup is None:
-         raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
-     soup = BeautifulSoup(html, "html.parser")
-     payload = _base_payload("yamato", tracking_number, tracking_url)
- 
-     summary_values: dict[str, str] = {}
-     for li in soup.select(".tracking-invoice-block-summary li"):
-         text = _text(li)
-         if not text:
-             continue
-         label = None
-         value = None
-         match = re.match(r"^\s*([^:：]+)\s*[：:]\s*(.+)$", text)
-         if match:
-             label = match.group(1).strip()
-             value = match.group(2).strip()
-         else:
-             parts = [p.strip() for p in li.stripped_strings if p.strip()]
-@@ -228,52 +283,58 @@ def parse_yamato(html: str, tracking_number: str, tracking_url: str) -> dict[str
-         office_name = _text(item.select_one(".name")) or None
-         office_code = None
-         link = item.select_one(".name a[href]")
-         if link:
-             href = link.get("href", "")
-             qs = parse_qs(urlparse(href).query)
-             jc = qs.get("JC")
-             if jc and jc[0]:
-                 office_code = jc[0]
-         if not status:
-             continue
-         payload["history"].append(
-             {
-                 "status": status,
-                 "occurred_at": occurred,
-                 "office_name": office_name,
-                 "office_code": office_code,
-                 "postal_code": None,
-                 "prefecture": None,
-                 "detail": None,
-             }
-         )
- 
-     payload["history"] = [h for h in payload["history"] if h.get("status")]
-     if payload["history"]:
--        payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
--        payload["current_status"] = payload["current_status"] or payload["history"][-1].get("status")
-+        latest_history = payload["history"][-1]
-+        payload["latest_event_at"] = latest_history.get("occurred_at")
-+        payload["current_status"] = payload["current_status"] or latest_history.get("status")
-+        payload["current_location"] = _build_latest_location_text(latest_history)
-+        payload["current_status_detail"] = _merge_location_and_detail(
-+            payload["current_location"],
-+            payload.get("current_status_detail"),
-+        )
- 
-     payload["completed"] = (payload.get("current_status") or "") == "配達完了"
-     return payload
- 
- 
- def parse_japanpost(html: str, tracking_number: str, tracking_url: str) -> dict[str, Any]:
-     if BeautifulSoup is None:
-         raise RuntimeError("bs4 が未インストールです。python3-bs4 または beautifulsoup4 を導入してください。")
-     soup = BeautifulSoup(html, "html.parser")
-     payload = _base_payload("japanpost", tracking_number, tracking_url)
- 
-     def _table_row_map(table) -> dict[str, str]:
-         mapped: dict[str, str] = {}
-         if not table:
-             return mapped
-         for tr in table.select("tr"):
-             cells = tr.find_all(["th", "td"])
-             if len(cells) < 2:
-                 continue
-             label = _text(cells[0]).rstrip("：:")
-             value = _text(cells[1])
-             if label:
-                 mapped[label] = value
-         return mapped
- 
-@@ -320,52 +381,58 @@ def parse_japanpost(html: str, tracking_number: str, tracking_url: str) -> dict[
-                 row2 = []
- 
-             occurred_raw = row1[0] if len(row1) > 0 else ""
-             status = row1[1] if len(row1) > 1 else None
-             detail = row1[2] if len(row1) > 2 else None
-             office_name = row1[3] if len(row1) > 3 else None
-             prefecture = row1[4] if len(row1) > 4 else None
- 
-             if status:
-                 payload["history"].append(
-                     {
-                         "status": status,
-                         "occurred_at": _parse_jp_datetime(occurred_raw),
-                         "office_name": office_name or None,
-                         "office_code": None,
-                         "postal_code": postal_code or None,
-                         "prefecture": prefecture or None,
-                         "detail": detail or None,
-                     }
-                 )
- 
-             i += 2 if row2 else 1
- 
-     # 3) 現在状態は履歴末尾から決定
-     if payload["history"]:
--        payload["current_status"] = payload["history"][-1].get("status")
--        payload["latest_event_at"] = payload["history"][-1].get("occurred_at")
-+        latest_history = payload["history"][-1]
-+        payload["current_status"] = latest_history.get("status")
-+        payload["latest_event_at"] = latest_history.get("occurred_at")
-+        payload["current_location"] = _build_latest_location_text(latest_history)
-+        payload["current_status_detail"] = _merge_location_and_detail(
-+            payload["current_location"],
-+            payload.get("current_status_detail"),
-+        )
-         payload["completed"] = payload["current_status"] == "お届け先にお届け済み"
-     else:
-         payload["current_status"] = None
-         payload["latest_event_at"] = None
-         payload["completed"] = False
- 
-     # 4) 窓口店テーブルのみを contact_offices に格納
-     contact_table = soup.select_one('table[summary="窓口店"]')
-     if contact_table:
-         for tr in contact_table.select("tr"):
-             if tr.find("th"):
-                 continue
-             tds = tr.find_all("td")
-             if len(tds) < 3:
-                 continue
-             office_type = _text(tds[0]) or None
-             office_name = _text(tds[1]) or None
-             phone = _text(tds[2]) or None
-             if office_type or office_name or phone:
-                 payload["contact_offices"].append(
-                     {
-                         "type": office_type,
-                         "office_name": office_name,
-                         "phone": phone,
-                     }
-diff --git a/shipment_tracking/services.py b/shipment_tracking/services.py
-index 7d954ac3771e7a67da1be6c87c27f10ddc02b5d6..113dbedc735e94e06a190f63a2260768365cc1fd 100644
---- a/shipment_tracking/services.py
-+++ b/shipment_tracking/services.py
-@@ -101,116 +101,148 @@ def ensure_nav_item() -> None:
-                 (%s, %s, NULL, 0, 1, NULL, 0, 0)
-             """,
-             ("配送追跡", "/admin/shipment-tracking"),
-         )
-     db.commit()
-     db.close()
- 
- 
- def _now() -> datetime:
-     return datetime.now()
- 
- 
- def _parse_payload_datetime(value: Any) -> datetime | None:
-     if not value or not isinstance(value, str):
-         return None
-     text = value.strip()
-     patterns = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"]
-     for pattern in patterns:
-         try:
-             return datetime.strptime(text, pattern)
-         except ValueError:
-             continue
-     return None
- 
- 
-+
-+
-+def _strip_location_line_from_detail(detail_text: Any, current_location: Any) -> str:
-+    if detail_text is None:
-+        return "-"
-+
-+    text = str(detail_text).replace("　", " ").strip()
-+    if not text:
-+        return "-"
-+
-+    location = str(current_location).strip() if current_location else ""
-+    lines = []
-+    for line in text.splitlines():
-+        normalized_line = line.strip()
-+        if not normalized_line:
-+            continue
-+        if location and normalized_line == f"現在地：{location}":
-+            continue
-+        lines.append(normalized_line)
-+
-+    return "\n".join(lines).strip() or "-"
-+
- def _http_get(url: str) -> str:
-     headers = {"User-Agent": USER_AGENT}
-     response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-     response.raise_for_status()
-     return response.text
- 
- 
- def _get_admin_discord_webhook_url() -> str | None:
-     db = get_db()
-     try:
-         cur = db.cursor(dictionary=True)
-         cur.execute(
-             "SELECT webhook_url FROM users WHERE username=%s LIMIT 1",
-             ("admin",),
-         )
-         row = cur.fetchone()
-         if not row:
-             return None
-         webhook_url = (row.get("webhook_url") or "").strip()
-         return webhook_url or None
-     finally:
-         db.close()
- 
- 
- def _build_shipment_tracking_discord_embed(
-     target: dict[str, Any],
-     payload: dict[str, Any],
-     current_status: Any,
-     current_status_detail: Any,
-     latest_event_at: datetime | None,
-     triggered_by: str,
- ) -> dict[str, Any]:
-     is_completed_status = current_status in AUTO_DEACTIVATE_STATUSES
-     color = 0x2ECC71 if is_completed_status else 0x3498DB
- 
-     carrier_name = CARRIER_MASTER.get(target["carrier_code"], target["carrier_code"])
-     label = target.get("label") or "-"
-     tracking_number = target.get("tracking_number") or "-"
-     status_text = current_status or "-"
--    detail_text = current_status_detail or "-"
-+    current_location = payload.get("current_location") or "-"
-+    location_text = str(current_location)
-+    if len(location_text) > 1000:
-+        location_text = location_text[:1000] + "..."
-+
-+    detail_text = _strip_location_line_from_detail(current_status_detail, payload.get("current_location"))
-     if len(detail_text) > 1000:
-         detail_text = detail_text[:1000] + "..."
- 
-     if latest_event_at:
-         latest_event_at_text = latest_event_at.strftime("%Y-%m-%d %H:%M:%S")
-     else:
-         latest_event_at_text = payload.get("latest_event_at") or "-"
- 
-     tracking_url = payload.get("tracking_url") or ""
-     tracking_link_text = f"[配送業者で確認する]({tracking_url})" if tracking_url else "-"
- 
-     return {
-         "title": "✅ 配送が完了しました" if is_completed_status else "📦 配送追跡が更新されました",
-         "description": f"{label}\n{carrier_name} / {status_text}",
-         "color": color,
-         "fields": [
-             {
-                 "name": "配送情報",
-                 "value": f"{carrier_name}\n{tracking_number}",
-                 "inline": False,
-             },
-             {
-                 "name": "最新状態",
-                 "value": f"{status_text}\n{latest_event_at_text}",
-                 "inline": False,
-             },
-+            {
-+                "name": "現在地",
-+                "value": location_text,
-+                "inline": False,
-+            },
-             {
-                 "name": "最新詳細",
-                 "value": detail_text,
-                 "inline": False,
-             },
-             {
-                 "name": "追跡リンク",
-                 "value": tracking_link_text,
-                 "inline": False,
-             },
-             {
-                 "name": "実行種別",
-                 "value": triggered_by or "-",
-                 "inline": False,
-             },
-         ],
+diff --git a/invoice/template/invoice_pdf.html b/invoice/template/invoice_pdf.html
+index 8eb8c3d6a42d375a6eb0a5387b0ba739d17a5f49..245836732cf9c4e71e6f7cca80601c643c7a50d4 100644
+--- a/invoice/template/invoice_pdf.html
++++ b/invoice/template/invoice_pdf.html
+@@ -129,99 +129,131 @@
+       word-break: break-word;
+       overflow-wrap: break-word;
      }
  
+     .party-body .line {
+       display: block;
+       margin: 0;
+       padding: 0;
+       line-height: 1.16;
+     }
  
- def _send_shipment_tracking_discord_notification(webhook_url: str, embed: dict[str, Any]) -> None:
-     requests.post(webhook_url, json={"embeds": [embed]}, timeout=10).raise_for_status()
+     .party-body .line + .line {
+       margin-top: 0.5mm;
+     }
  
+     .subject-block {
+       margin-bottom: 3.2mm;
+     }
  
- def _fetch_sagawa(tracking_number: str) -> tuple[str, str]:
-     url = f"https://k2k.sagawa-exp.co.jp/p/web/okurijosearch.do?okurijoNo={tracking_number}"
+     .subject-line {
+       padding: 2mm 2.4mm;
+       border: 0.3mm solid var(--border-color);
+       font-size: 10pt;
+     }
+ 
++    .subject-total-bar {
++      display: table;
++      width: 100%;
++      margin-top: 1.2mm;
++      padding: 2mm 2.4mm;
++      background: #000;
++      color: #fff;
++      font-family: var(--invoice-font-bold), sans-serif;
++      font-weight: 700;
++      font-size: 11pt;
++      line-height: 1.2;
++      border: 0.3mm solid #000;
++    }
++
++    .subject-total-label,
++    .subject-total-value {
++      display: table-cell;
++      vertical-align: middle;
++    }
++
++    .subject-total-label {
++      text-align: left;
++    }
++
++    .subject-total-value {
++      text-align: right;
++      white-space: nowrap;
++    }
++
+     .items-table {
+       width: 100%;
+       border-collapse: collapse;
+       table-layout: fixed;
+       margin-bottom: 4mm;
+     }
+ 
+     .items-table th,
+     .items-table td {
+       padding: 2mm 2mm;
+       border: 0.3mm solid var(--border-color);
+       vertical-align: top;
+       overflow-wrap: break-word;
+       word-break: break-word;
+     }
+ 
+     .items-table thead th {
+       text-align: left;
+     }
+ 
+     .items-table col.col-item   { width: 46%; }
+     .items-table col.col-qty    { width: 10%; }
+     .items-table col.col-unit   { width: 10%; }
+     .items-table col.col-price  { width: 16%; }
+     .items-table col.col-total  { width: 18%; }
+ 
+     .text-right {
+       text-align: right;
+       white-space: nowrap;
+     }
+ 
+     .text-center {
+       text-align: center;
+       white-space: nowrap;
+     }
+ 
+     .item-name {
+       white-space: normal;
+     }
+ 
+     .memo-row td {
+-      color: var(--text-color);
+-      background: #fcfcfc;
++      color: #fff;
++      background: #000;
++      font-family: var(--invoice-font-bold), sans-serif;
++      font-weight: 700;
+     }
+ 
+     .memo-cell {
+       text-align: left;
+-      white-space: normal;
++      white-space: pre-wrap;
+       padding: 2.1mm 2.2mm;
++      line-height: 1.3;
+     }
+ 
+     .summary-wrap {
+       width: 43%;
+       margin-left: auto;
+       margin-bottom: 4.2mm;
+       page-break-inside: avoid;
+       break-inside: avoid;
+     }
+ 
+     .summary-table td {
+       text-align: right;
+       white-space: nowrap;
+     }
+ 
+     .summary-table tr.total th,
+     .summary-table tr.total td {
+       font-family: var(--invoice-font-bold), sans-serif;
+       font-weight: 700;
+     }
+ 
+     .note-bank-row {
+       display: table;
+       width: 100%;
+       table-layout: fixed;
+@@ -274,50 +306,54 @@
+       </div>
+     </div>
+ 
+     <div class="party-row">
+       <section class="party-block">
+         <div class="party-title">宛先</div>
+         <div class="party-body">
+           {% for line in pdf.contact_lines %}
+           <div class="line">{{ line }}</div>
+           {% endfor %}
+         </div>
+       </section>
+       <section class="party-block right">
+         <div class="party-title">発行者</div>
+         <div class="party-body">
+           {% for line in pdf.issuer_lines %}
+           <div class="line">{{ line }}</div>
+           {% endfor %}
+         </div>
+       </section>
+     </div>
+ 
+     <section class="subject-block">
+       <div class="section-title">件名</div>
+       <div class="subject-line multiline-text">{{ pdf.subject }}</div>
++      <div class="subject-total-bar">
++        <span class="subject-total-label">合計金額</span>
++        <span class="subject-total-value">{{ pdf.total_yen_label }}</span>
++      </div>
+     </section>
+ 
+     <table class="items-table">
+       <colgroup>
+         <col class="col-item">
+         <col class="col-qty">
+         <col class="col-unit">
+         <col class="col-price">
+         <col class="col-total">
+       </colgroup>
+       <thead>
+         <tr>
+           <th>品名</th>
+           <th class="text-center">数量</th>
+           <th class="text-center">単位</th>
+           <th class="text-right">単価</th>
+           <th class="text-right">金額</th>
+         </tr>
+       </thead>
+       <tbody>
+         {% for item in pdf.line_items %}
+           {% if item.row_type == 'memo' %}
+           <tr class="memo-row">
+             <td colspan="5" class="memo-cell">
+               {{ item.memo_text or item.item_name }}
+@@ -353,26 +389,26 @@
+           </tr>
+           <tr>
+             <th>消費税合計</th>
+             <td>{{ pdf.tax_yen_label }}</td>
+           </tr>
+           <tr class="total">
+             <th>合計</th>
+             <td>{{ pdf.total_yen_label }}</td>
+           </tr>
+         </tbody>
+       </table>
+     </div>
+ 
+     <div class="note-bank-row">
+       <section class="note-bank-block">
+         <div class="section-title">備考</div>
+         <div class="block-body multiline-text">{{ pdf.note }}</div>
+       </section>
+       <section class="note-bank-block">
+         <div class="section-title">振込先</div>
+         <div class="block-body multiline-text">{{ pdf.bank_info }}</div>
+       </section>
+     </div>
+   </div>
+ </body>
+-</html>
+\ No newline at end of file
++</html>
