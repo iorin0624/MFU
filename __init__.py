@@ -257,6 +257,7 @@ _CSRF_PROTECTED_PREFIXES = (
     "/admin/mail-delivery/refresh",
     "/admin/maintenance",
     "/admin/settings/inapp-browser",
+    "/admin/ticket-price",
     "/admin/restart",
     "/admin/logs/export",
     "/templates",
@@ -3852,6 +3853,9 @@ app.register_blueprint(shipment_tracking_bp)
 
 from app.bank_account import register_bank_account
 register_bank_account(app)
+
+from app.ticket_price_research import ticket_price_research_bp
+app.register_blueprint(ticket_price_research_bp)
 
 try:
     _ensure_upload_security_schema_once()
