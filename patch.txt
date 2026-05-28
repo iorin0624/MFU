@@ -1,80 +1,8 @@
 diff --git a/invoice/template/invoice_pdf.html b/invoice/template/invoice_pdf.html
-index 8eb8c3d6a42d375a6eb0a5387b0ba739d17a5f49..245836732cf9c4e71e6f7cca80601c643c7a50d4 100644
+index 245836732cf9c4e71e6f7cca80601c643c7a50d4..e3f0c56c20a49efb0692ceb623b510a7a303081a 100644
 --- a/invoice/template/invoice_pdf.html
 +++ b/invoice/template/invoice_pdf.html
-@@ -129,99 +129,131 @@
-       word-break: break-word;
-       overflow-wrap: break-word;
-     }
- 
-     .party-body .line {
-       display: block;
-       margin: 0;
-       padding: 0;
-       line-height: 1.16;
-     }
- 
-     .party-body .line + .line {
-       margin-top: 0.5mm;
-     }
- 
-     .subject-block {
-       margin-bottom: 3.2mm;
-     }
- 
-     .subject-line {
-       padding: 2mm 2.4mm;
-       border: 0.3mm solid var(--border-color);
-       font-size: 10pt;
-     }
- 
-+    .subject-total-bar {
-+      display: table;
-+      width: 100%;
-+      margin-top: 1.2mm;
-+      padding: 2mm 2.4mm;
-+      background: #000;
-+      color: #fff;
-+      font-family: var(--invoice-font-bold), sans-serif;
-+      font-weight: 700;
-+      font-size: 11pt;
-+      line-height: 1.2;
-+      border: 0.3mm solid #000;
-+    }
-+
-+    .subject-total-label,
-+    .subject-total-value {
-+      display: table-cell;
-+      vertical-align: middle;
-+    }
-+
-+    .subject-total-label {
-+      text-align: left;
-+    }
-+
-+    .subject-total-value {
-+      text-align: right;
-+      white-space: nowrap;
-+    }
-+
-     .items-table {
-       width: 100%;
-       border-collapse: collapse;
-       table-layout: fixed;
-       margin-bottom: 4mm;
-     }
- 
-     .items-table th,
-     .items-table td {
-       padding: 2mm 2mm;
-       border: 0.3mm solid var(--border-color);
-       vertical-align: top;
-       overflow-wrap: break-word;
-       word-break: break-word;
-     }
- 
-     .items-table thead th {
-       text-align: left;
+@@ -201,59 +201,56 @@
      }
  
      .items-table col.col-item   { width: 46%; }
@@ -98,20 +26,18 @@ index 8eb8c3d6a42d375a6eb0a5387b0ba739d17a5f49..245836732cf9c4e71e6f7cca80601c64
      }
  
      .memo-row td {
--      color: var(--text-color);
--      background: #fcfcfc;
-+      color: #fff;
-+      background: #000;
-+      font-family: var(--invoice-font-bold), sans-serif;
-+      font-weight: 700;
+       color: #fff;
+       background: #000;
+-      font-family: var(--invoice-font-bold), sans-serif;
+       font-weight: 700;
      }
  
      .memo-cell {
        text-align: left;
--      white-space: normal;
-+      white-space: pre-wrap;
-       padding: 2.1mm 2.2mm;
-+      line-height: 1.3;
+-      white-space: pre-wrap;
+-      padding: 2.1mm 2.2mm;
+-      line-height: 1.3;
++      white-space: normal;
      }
  
      .summary-wrap {
@@ -137,36 +63,9 @@ index 8eb8c3d6a42d375a6eb0a5387b0ba739d17a5f49..245836732cf9c4e71e6f7cca80601c64
        display: table;
        width: 100%;
        table-layout: fixed;
-@@ -274,50 +306,54 @@
+@@ -333,53 +330,51 @@
+         <span class="subject-total-value">{{ pdf.total_yen_label }}</span>
        </div>
-     </div>
- 
-     <div class="party-row">
-       <section class="party-block">
-         <div class="party-title">宛先</div>
-         <div class="party-body">
-           {% for line in pdf.contact_lines %}
-           <div class="line">{{ line }}</div>
-           {% endfor %}
-         </div>
-       </section>
-       <section class="party-block right">
-         <div class="party-title">発行者</div>
-         <div class="party-body">
-           {% for line in pdf.issuer_lines %}
-           <div class="line">{{ line }}</div>
-           {% endfor %}
-         </div>
-       </section>
-     </div>
- 
-     <section class="subject-block">
-       <div class="section-title">件名</div>
-       <div class="subject-line multiline-text">{{ pdf.subject }}</div>
-+      <div class="subject-total-bar">
-+        <span class="subject-total-label">合計金額</span>
-+        <span class="subject-total-value">{{ pdf.total_yen_label }}</span>
-+      </div>
      </section>
  
      <table class="items-table">
@@ -190,34 +89,32 @@ index 8eb8c3d6a42d375a6eb0a5387b0ba739d17a5f49..245836732cf9c4e71e6f7cca80601c64
          {% for item in pdf.line_items %}
            {% if item.row_type == 'memo' %}
            <tr class="memo-row">
-             <td colspan="5" class="memo-cell">
-               {{ item.memo_text or item.item_name }}
-@@ -353,26 +389,26 @@
+-            <td colspan="5" class="memo-cell">
+-              {{ item.memo_text or item.item_name }}
+-            </td>
++            <td colspan="5" class="memo-cell">{{- item.memo_text or item.item_name -}}</td>
+           </tr>
+           {% else %}
+           <tr>
+             <td class="item-name">{{ item.item_name }}</td>
+             <td class="text-center">{{ item.quantity }}</td>
+             <td class="text-center">{{ item.unit_name }}</td>
+             <td class="text-right">{{ item.unit_price_yen }}</td>
+             <td class="text-right">{{ item.line_total_yen }}</td>
+           </tr>
+           {% endif %}
+         {% endfor %}
+       </tbody>
+     </table>
+ 
+     <div class="summary-wrap">
+       <table class="summary-table">
+         <tbody>
+           <tr>
+             <th>小計</th>
+             <td>{{ pdf.subtotal_yen_label }}</td>
            </tr>
            <tr>
-             <th>消費税合計</th>
-             <td>{{ pdf.tax_yen_label }}</td>
+             <th>消費税10%</th>
+             <td>{{ pdf.tax_10_yen_label }}</td>
            </tr>
-           <tr class="total">
-             <th>合計</th>
-             <td>{{ pdf.total_yen_label }}</td>
-           </tr>
-         </tbody>
-       </table>
-     </div>
- 
-     <div class="note-bank-row">
-       <section class="note-bank-block">
-         <div class="section-title">備考</div>
-         <div class="block-body multiline-text">{{ pdf.note }}</div>
-       </section>
-       <section class="note-bank-block">
-         <div class="section-title">振込先</div>
-         <div class="block-body multiline-text">{{ pdf.bank_info }}</div>
-       </section>
-     </div>
-   </div>
- </body>
--</html>
-\ No newline at end of file
-+</html>

@@ -223,15 +223,12 @@
     .memo-row td {
       color: #fff;
       background: #000;
-      font-family: var(--invoice-font-bold), sans-serif;
       font-weight: 700;
     }
 
     .memo-cell {
       text-align: left;
-      white-space: pre-wrap;
-      padding: 2.1mm 2.2mm;
-      line-height: 1.3;
+      white-space: normal;
     }
 
     .summary-wrap {
@@ -355,9 +352,7 @@
         {% for item in pdf.line_items %}
           {% if item.row_type == 'memo' %}
           <tr class="memo-row">
-            <td colspan="5" class="memo-cell">
-              {{ item.memo_text or item.item_name }}
-            </td>
+            <td colspan="5" class="memo-cell">{{- item.memo_text or item.item_name -}}</td>
           </tr>
           {% else %}
           <tr>
