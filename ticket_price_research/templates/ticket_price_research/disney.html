@@ -1,0 +1,318 @@
+﻿{% extends "base.html" %}
+
+{% block title %}東京ディズニーリゾート チケット価格調査{% endblock %}
+
+{% block head_extra %}
+<style>
+  .ticket-tool-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+    margin-bottom: 1.25rem;
+  }
+  .ticket-tool-header h1 {
+    font-size: 1.65rem;
+    margin: 0 0 .5rem;
+  }
+  .ticket-tool-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    margin: 1rem 0;
+  }
+  .ticket-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    color: #555;
+    font-size: .92rem;
+    margin: .75rem 0;
+  }
+  .ticket-warning-list {
+    margin: .75rem 0 0;
+    padding-left: 1.2rem;
+  }
+  .ticket-table-wrap {
+    overflow-x: auto;
+    border: 1px solid #dee2e6;
+    border-radius: .5rem;
+    background: #fff;
+  }
+  .ticket-table {
+    min-width: 760px;
+    margin-bottom: 0;
+  }
+  .ticket-table td,
+  .ticket-table th {
+    vertical-align: middle;
+  }
+  .ticket-title-link,
+  .ticket-shop-link {
+    display: inline-block;
+    min-height: 32px;
+    line-height: 1.35;
+  }
+  .ticket-price {
+    font-weight: 700;
+    white-space: nowrap;
+    text-align: right;
+  }
+  .ticket-notes {
+    color: #666;
+    font-size: .88rem;
+    line-height: 1.7;
+    margin-top: 1rem;
+  }
+  @media (max-width: 767.98px) {
+    .ticket-tool-header {
+      display: block;
+    }
+    .ticket-tool-header h1 {
+      font-size: 1.35rem;
+    }
+    .ticket-tool-actions .btn {
+      width: 100%;
+    }
+    .ticket-table-wrap {
+      border: 0;
+      overflow: visible;
+      background: transparent;
+    }
+    .ticket-table {
+      min-width: 0;
+      border-collapse: separate;
+      border-spacing: 0 .75rem;
+    }
+    .ticket-table thead {
+      display: none;
+    }
+    .ticket-table,
+    .ticket-table tbody,
+    .ticket-table tr,
+    .ticket-table td {
+      display: block;
+      width: 100%;
+    }
+    .ticket-table tr {
+      border: 1px solid #dee2e6;
+      border-radius: .5rem;
+      background: #fff;
+      padding: .65rem .75rem;
+    }
+    .ticket-table td {
+      border: 0;
+      padding: .35rem 0;
+    }
+    .ticket-table td::before {
+      content: attr(data-label);
+      display: block;
+      color: #666;
+      font-size: .78rem;
+      font-weight: 700;
+      margin-bottom: .1rem;
+    }
+    .ticket-price {
+      text-align: left;
+      font-size: 1.2rem;
+    }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="ticket-tool-header">
+  <div>
+    <h1>東京ディズニーリゾート チケット価格調査</h1>
+    <p class="text-muted mb-0">
+      大黒屋・格安チケットコムの公開情報を取得して一覧表示します。価格・在庫は変動するため、購入前に必ず各店舗ページで最新情報をご確認ください。
+    </p>
+  </div>
+</div>
+
+<div class="ticket-tool-actions" aria-label="チケット価格調査操作">
+  <button type="button" id="fetchButton" class="btn btn-primary">最新情報を取得</button>
+  <button type="button" id="sortPriceButton" class="btn btn-outline-secondary">価格が安い順</button>
+  <button type="button" id="sortExpiryButton" class="btn btn-outline-secondary">有効期限が近い順</button>
+  <button type="button" id="resetSortButton" class="btn btn-outline-secondary">初期表示に戻す</button>
+</div>
+
+<div id="statusMessage" class="alert alert-secondary" role="status">
+  まだ取得していません。「最新情報を取得」を押してください。
+</div>
+
+<div class="ticket-meta">
+  <span>最終取得日時: <strong id="fetchedAt">-</strong></span>
+  <span>件数: <strong id="ticketCount">0</strong></span>
+</div>
+
+<div id="warningBox" class="alert alert-warning d-none" role="alert">
+  <ul id="warningList" class="ticket-warning-list"></ul>
+</div>
+
+<div class="ticket-table-wrap">
+  <table class="table table-striped ticket-table">
+    <thead>
+      <tr>
+        <th scope="col">商品名</th>
+        <th scope="col" class="text-end">価格</th>
+        <th scope="col">有効期限</th>
+        <th scope="col">店舗名</th>
+      </tr>
+    </thead>
+    <tbody id="ticketRows"></tbody>
+  </table>
+</div>
+
+<p class="ticket-notes">
+  ※価格・在庫は変動します。購入前に各店舗で最新情報をご確認ください。<br>
+  ※本機能は公開ページの情報を一覧化する補助機能です。購入可否や価格を保証するものではありません。
+</p>
+
+<script>
+(function() {
+  const fetchUrl = {{ url_for("ticket_price_research.disney_fetch")|tojson }};
+  const fetchButton = document.getElementById("fetchButton");
+  const sortPriceButton = document.getElementById("sortPriceButton");
+  const sortExpiryButton = document.getElementById("sortExpiryButton");
+  const resetSortButton = document.getElementById("resetSortButton");
+  const statusMessage = document.getElementById("statusMessage");
+  const fetchedAt = document.getElementById("fetchedAt");
+  const ticketCount = document.getElementById("ticketCount");
+  const warningBox = document.getElementById("warningBox");
+  const warningList = document.getElementById("warningList");
+  const ticketRows = document.getElementById("ticketRows");
+  let initialItems = [];
+  let currentItems = [];
+
+  function isSafeHttpUrl(value) {
+    if (!value) return false;
+    try {
+      const url = new URL(value, window.location.href);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function formatPrice(price) {
+    const number = Number(price);
+    if (!Number.isFinite(number)) return "-";
+    return "¥" + number.toLocaleString("ja-JP");
+  }
+
+  function makeLinkOrText(text, href, className) {
+    if (isSafeHttpUrl(href)) {
+      const link = document.createElement("a");
+      link.href = href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.className = className;
+      link.textContent = text || "-";
+      return link;
+    }
+    const span = document.createElement("span");
+    span.textContent = text || "-";
+    return span;
+  }
+
+  function renderWarnings(warnings) {
+    warningList.replaceChildren();
+    if (!warnings || warnings.length === 0) {
+      warningBox.classList.add("d-none");
+      return;
+    }
+    warnings.forEach((message) => {
+      const li = document.createElement("li");
+      li.textContent = message;
+      warningList.appendChild(li);
+    });
+    warningBox.classList.remove("d-none");
+  }
+
+  function renderRows(items) {
+    ticketRows.replaceChildren();
+    items.forEach((item) => {
+      const tr = document.createElement("tr");
+
+      const titleTd = document.createElement("td");
+      titleTd.setAttribute("data-label", "商品名");
+      titleTd.appendChild(makeLinkOrText(item.title, item.detail_url, "ticket-title-link"));
+
+      const priceTd = document.createElement("td");
+      priceTd.setAttribute("data-label", "価格");
+      priceTd.className = "ticket-price";
+      priceTd.textContent = formatPrice(item.price);
+
+      const expiryTd = document.createElement("td");
+      expiryTd.setAttribute("data-label", "有効期限");
+      expiryTd.textContent = item.expiry_display || "不明";
+
+      const shopTd = document.createElement("td");
+      shopTd.setAttribute("data-label", "店舗名");
+      shopTd.appendChild(makeLinkOrText(item.shop_name, item.shop_url, "ticket-shop-link"));
+
+      tr.appendChild(titleTd);
+      tr.appendChild(priceTd);
+      tr.appendChild(expiryTd);
+      tr.appendChild(shopTd);
+      ticketRows.appendChild(tr);
+    });
+  }
+
+  function setStatus(message, level) {
+    statusMessage.className = "alert alert-" + level;
+    statusMessage.textContent = message;
+  }
+
+  function applyItems(items) {
+    currentItems = items.slice();
+    renderRows(currentItems);
+  }
+
+  fetchButton.addEventListener("click", async () => {
+    fetchButton.disabled = true;
+    fetchButton.textContent = "取得中...";
+    setStatus("チケット情報を取得中です...", "info");
+    renderWarnings([]);
+
+    try {
+      const response = await fetch(fetchUrl, {
+        method: "POST",
+        headers: { "Accept": "application/json" }
+      });
+      const data = await response.json();
+
+      initialItems = Array.isArray(data.items) ? data.items.slice() : [];
+      fetchedAt.textContent = data.fetched_at || "-";
+      ticketCount.textContent = String(data.count || 0);
+      renderWarnings(data.warnings || []);
+      applyItems(initialItems);
+
+      if (data.ok) {
+        setStatus(data.cached ? "直近の取得結果を表示しています。" : "取得しました。", data.cached ? "info" : "success");
+      } else {
+        setStatus("チケット情報を取得できませんでした。時間をおいて再度お試しください。", "danger");
+      }
+    } catch (_) {
+      setStatus("チケット情報を取得できませんでした。時間をおいて再度お試しください。", "danger");
+    } finally {
+      fetchButton.disabled = false;
+      fetchButton.textContent = "最新情報を取得";
+    }
+  });
+
+  sortPriceButton.addEventListener("click", () => {
+    applyItems(currentItems.slice().sort((a, b) => Number(a.price || 999999999) - Number(b.price || 999999999)));
+  });
+
+  sortExpiryButton.addEventListener("click", () => {
+    applyItems(currentItems.slice().sort((a, b) => String(a.expiry_sort || "9999-99-99").localeCompare(String(b.expiry_sort || "9999-99-99"))));
+  });
+
+  resetSortButton.addEventListener("click", () => {
+    applyItems(initialItems);
+  });
+})();
+</script>
+{% endblock %}
