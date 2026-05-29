@@ -8,25 +8,46 @@
   <a href="/admin/nav/new" class="btn btn-primary btn-sm">新規追加</a>
 </div>
 
+<div class="alert alert-info py-2 small">
+  同じ階層内でのみ並び替えできます。親子関係を変更する場合は、各項目の編集画面から変更してください。
+</div>
+
+<div id="nav-reorder-message" class="alert d-none" role="alert"></div>
+
+<div class="d-flex gap-2 mb-3">
+  <button type="button" id="save-nav-order" class="btn btn-success btn-sm">
+    並び順を保存
+  </button>
+  <a href="/admin/user-features" class="btn btn-outline-secondary btn-sm">機能付与へ</a>
+</div>
+
 <div class="table-responsive">
-  <table class="table table-bordered align-middle">
+  <table class="table table-bordered align-middle" id="nav-order-table">
     <thead class="table-light">
       <tr>
+        <th style="width: 14%">並替</th>
         <th style="width: 20%">ラベル</th>
         <th>URL</th>
         <th style="width: 12%">機能キー</th>
-        <th style="width: 8%">順序</th>
         <th style="width: 8%">有効</th>
         <th style="width: 16%">操作</th>
       </tr>
     </thead>
-    <tbody>
-      {% for item in nav_items %}
-        <tr>
+
+    {% for item in nav_items %}
+      {% if loop.first %}
+        <tbody class="nav-sort-group" data-parent-id="">
+      {% endif %}
+
+        <tr class="nav-sort-row nav-parent-row" draggable="true" data-item-id="{{ item.id }}" data-parent-id="">
+          <td>
+            <span class="nav-drag-handle" title="ドラッグして並び替え">☰</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary nav-move-up">↑</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary nav-move-down">↓</button>
+          </td>
           <td><strong>{{ item.label }}</strong></td>
           <td>{{ item.url }}</td>
           <td>{{ item.feature_key or "-" }}</td>
-          <td>{{ item.order_no }}</td>
           <td>{{ "✓" if item.is_enabled else "-" }}</td>
           <td>
             <a href="/admin/nav/{{ item.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
@@ -36,26 +57,280 @@
             </form>
           </td>
         </tr>
-        {% for child in item.children %}
-          <tr>
-            <td class="ps-4">↳ {{ child.label }}</td>
-            <td>{{ child.url }}</td>
-            <td>{{ child.feature_key or "-" }}</td>
-            <td>{{ child.order_no }}</td>
-            <td>{{ "✓" if child.is_enabled else "-" }}</td>
-            <td>
-              <a href="/admin/nav/{{ child.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
-              <form method="post" action="/admin/nav/{{ child.id }}/delete" class="d-inline">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
-                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
-              </form>
-            </td>
-          </tr>
-        {% endfor %}
-      {% endfor %}
-    </tbody>
+
+      {% if loop.last %}
+        </tbody>
+      {% endif %}
+
+      {% if item.children %}
+        <tbody class="nav-sort-group nav-child-group" data-parent-id="{{ item.id }}">
+          {% for child in item.children %}
+            <tr class="nav-sort-row nav-child-row" draggable="true" data-item-id="{{ child.id }}" data-parent-id="{{ item.id }}">
+              <td>
+                <span class="nav-drag-handle" title="ドラッグして並び替え">☰</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary nav-move-up">↑</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary nav-move-down">↓</button>
+              </td>
+              <td class="ps-4">↳ {{ child.label }}</td>
+              <td>{{ child.url }}</td>
+              <td>{{ child.feature_key or "-" }}</td>
+              <td>{{ "✓" if child.is_enabled else "-" }}</td>
+              <td>
+                <a href="/admin/nav/{{ child.id }}/edit" class="btn btn-sm btn-outline-primary">編集</a>
+                <form method="post" action="/admin/nav/{{ child.id }}/delete" class="d-inline">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+                  <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('削除しますか？')">削除</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      {% endif %}
+    {% endfor %}
   </table>
 </div>
 
-<a href="/admin/user-features" class="btn btn-outline-secondary">機能付与へ</a>
+<style>
+  .nav-drag-handle {
+    display: inline-block;
+    cursor: grab;
+    font-weight: bold;
+    margin-right: 0.35rem;
+    user-select: none;
+  }
+
+  .nav-sort-row.dragging {
+    opacity: 0.5;
+  }
+
+  .nav-sort-row.drag-over {
+    outline: 2px dashed #0d6efd;
+  }
+
+  .nav-child-row td {
+    background-color: #fcfcfc;
+  }
+
+  @media (max-width: 768px) {
+    #nav-order-table {
+      font-size: 0.875rem;
+    }
+
+    .nav-drag-handle {
+      display: none;
+    }
+
+    .nav-move-up,
+    .nav-move-down {
+      padding: 0.15rem 0.35rem;
+    }
+  }
+</style>
+
+<script>
+(function () {
+  const csrfToken = {{ csrf_token_value|tojson }};
+  const table = document.getElementById("nav-order-table");
+  const saveButton = document.getElementById("save-nav-order");
+  const messageBox = document.getElementById("nav-reorder-message");
+
+  if (!table || !saveButton) {
+    return;
+  }
+
+  let draggedRow = null;
+
+  function showMessage(type, text) {
+    messageBox.className = "alert alert-" + type;
+    messageBox.textContent = text;
+    messageBox.classList.remove("d-none");
+  }
+
+  function getGroupRows(group) {
+    return Array.from(group.querySelectorAll(":scope > tr.nav-sort-row"));
+  }
+
+  function moveRow(row, direction) {
+    const group = row.closest(".nav-sort-group");
+    if (!group) {
+      return;
+    }
+
+    if (direction === "up") {
+      const prev = row.previousElementSibling;
+      if (prev && prev.classList.contains("nav-sort-row")) {
+        group.insertBefore(row, prev);
+      }
+    }
+
+    if (direction === "down") {
+      const next = row.nextElementSibling;
+      if (next && next.classList.contains("nav-sort-row")) {
+        group.insertBefore(next, row);
+      }
+    }
+  }
+
+  table.addEventListener("click", function (event) {
+    const upButton = event.target.closest(".nav-move-up");
+    const downButton = event.target.closest(".nav-move-down");
+
+    if (upButton) {
+      const row = upButton.closest(".nav-sort-row");
+      if (row) {
+        moveRow(row, "up");
+      }
+    }
+
+    if (downButton) {
+      const row = downButton.closest(".nav-sort-row");
+      if (row) {
+        moveRow(row, "down");
+      }
+    }
+  });
+
+  table.addEventListener("dragstart", function (event) {
+    const row = event.target.closest(".nav-sort-row");
+    if (!row) {
+      return;
+    }
+
+    draggedRow = row;
+    row.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", row.dataset.itemId || "");
+  });
+
+  table.addEventListener("dragend", function () {
+    if (draggedRow) {
+      draggedRow.classList.remove("dragging");
+    }
+    draggedRow = null;
+
+    table.querySelectorAll(".drag-over").forEach(function (row) {
+      row.classList.remove("drag-over");
+    });
+  });
+
+  table.addEventListener("dragover", function (event) {
+    if (!draggedRow) {
+      return;
+    }
+
+    const targetRow = event.target.closest(".nav-sort-row");
+    if (!targetRow || targetRow === draggedRow) {
+      return;
+    }
+
+    const draggedParentId = draggedRow.dataset.parentId || "";
+    const targetParentId = targetRow.dataset.parentId || "";
+
+    if (draggedParentId !== targetParentId) {
+      return;
+    }
+
+    event.preventDefault();
+    targetRow.classList.add("drag-over");
+  });
+
+  table.addEventListener("dragleave", function (event) {
+    const targetRow = event.target.closest(".nav-sort-row");
+    if (targetRow) {
+      targetRow.classList.remove("drag-over");
+    }
+  });
+
+  table.addEventListener("drop", function (event) {
+    if (!draggedRow) {
+      return;
+    }
+
+    const targetRow = event.target.closest(".nav-sort-row");
+    if (!targetRow || targetRow === draggedRow) {
+      return;
+    }
+
+    const draggedParentId = draggedRow.dataset.parentId || "";
+    const targetParentId = targetRow.dataset.parentId || "";
+
+    if (draggedParentId !== targetParentId) {
+      return;
+    }
+
+    event.preventDefault();
+    targetRow.classList.remove("drag-over");
+
+    const group = targetRow.closest(".nav-sort-group");
+    if (!group) {
+      return;
+    }
+
+    const rect = targetRow.getBoundingClientRect();
+    const insertAfter = event.clientY > rect.top + rect.height / 2;
+
+    if (insertAfter) {
+      group.insertBefore(draggedRow, targetRow.nextSibling);
+    } else {
+      group.insertBefore(draggedRow, targetRow);
+    }
+  });
+
+  function collectGroups() {
+    return Array.from(document.querySelectorAll(".nav-sort-group")).map(function (group) {
+      return {
+        parent_id: group.dataset.parentId || null,
+        item_ids: getGroupRows(group).map(function (row) {
+          return Number(row.dataset.itemId);
+        }).filter(Boolean)
+      };
+    }).filter(function (group) {
+      return group.item_ids.length > 0;
+    });
+  }
+
+  saveButton.addEventListener("click", function () {
+    saveButton.disabled = true;
+    saveButton.textContent = "保存中...";
+
+    fetch("/admin/nav/reorder", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken
+      },
+      body: JSON.stringify({
+        csrf_token: csrfToken,
+        groups: collectGroups()
+      })
+    })
+      .then(function (response) {
+        return response.json().then(function (data) {
+          return {
+            ok: response.ok && data.ok,
+            status: response.status,
+            data: data
+          };
+        });
+      })
+      .then(function (result) {
+        if (result.ok) {
+          showMessage("success", result.data.message || "並び順を保存しました。");
+          window.setTimeout(function () {
+            window.location.reload();
+          }, 600);
+        } else {
+          showMessage("danger", result.data.message || "並び順の保存に失敗しました。");
+        }
+      })
+      .catch(function () {
+        showMessage("danger", "通信エラーにより並び順を保存できませんでした。");
+      })
+      .finally(function () {
+        saveButton.disabled = false;
+        saveButton.textContent = "並び順を保存";
+      });
+  });
+})();
+</script>
 {% endblock %}

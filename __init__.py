@@ -1954,9 +1954,14 @@ def admin_nav_form(item_id=None):
         parent_id_raw = (request.form.get("parent_id") or "").strip()
         feature_key = (request.form.get("feature_key") or "").strip() or None
         try:
-            order_no = int(request.form.get("order_no") or 0)
+            if "order_no" in request.form:
+                order_no = int(request.form.get("order_no") or 0)
+            elif item and item.get("order_no") is not None:
+                order_no = int(item.get("order_no") or 0)
+            else:
+                order_no = 0
         except ValueError:
-            order_no = 0
+            order_no = int(item.get("order_no") or 0) if item else 0
         is_enabled = 1 if request.form.get("is_enabled") else 0
         open_in_new_tab = 1 if request.form.get("open_in_new_tab") else 0
         is_external = 1 if request.form.get("is_external") else 0
@@ -2029,6 +2034,119 @@ def admin_nav_form(item_id=None):
         parents=parents,
         features=features,
     )
+
+
+@app.post("/admin/nav/reorder")
+@admin_required
+def admin_nav_reorder():
+    ensure_feature_access_schema()
+
+    payload = request.get_json(silent=True) or {}
+    groups = payload.get("groups") or []
+
+    if not isinstance(groups, list):
+        return jsonify({
+            "ok": False,
+            "message": "並び順データの形式が不正です。",
+        }), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+
+    try:
+        for group in groups:
+            if not isinstance(group, dict):
+                raise ValueError("group must be object")
+
+            parent_id = group.get("parent_id")
+            item_ids = group.get("item_ids") or []
+
+            if parent_id in ("", "null"):
+                parent_id = None
+
+            if parent_id is not None:
+                try:
+                    parent_id = int(parent_id)
+                except (TypeError, ValueError):
+                    raise ValueError("parent_id is invalid")
+
+            if not isinstance(item_ids, list):
+                raise ValueError("item_ids must be list")
+
+            normalized_ids = []
+            for raw_id in item_ids:
+                try:
+                    normalized_ids.append(int(raw_id))
+                except (TypeError, ValueError):
+                    raise ValueError("item_id is invalid")
+
+            # 空グループは無視
+            if not normalized_ids:
+                continue
+
+            # 送信されたIDが、本当に同じparent_id配下にあるか検証する
+            placeholders = ", ".join(["%s"] * len(normalized_ids))
+            if parent_id is None:
+                cur.execute(
+                    f"""
+                    SELECT id
+                      FROM mfu_nav_items
+                     WHERE parent_id IS NULL
+                       AND id IN ({placeholders})
+                    """,
+                    normalized_ids,
+                )
+            else:
+                cur.execute(
+                    f"""
+                    SELECT id
+                      FROM mfu_nav_items
+                     WHERE parent_id = %s
+                       AND id IN ({placeholders})
+                    """,
+                    [parent_id] + normalized_ids,
+                )
+
+            existing_ids = {int(row["id"]) for row in cur.fetchall()}
+            sent_ids = set(normalized_ids)
+
+            if existing_ids != sent_ids:
+                raise ValueError("階層が一致しないナビ項目が含まれています。")
+
+            # 10刻みでorder_noを振り直す
+            for index, item_id in enumerate(normalized_ids, start=1):
+                cur.execute(
+                    """
+                    UPDATE mfu_nav_items
+                       SET order_no = %s
+                     WHERE id = %s
+                    """,
+                    (index * 10, item_id),
+                )
+
+        db.commit()
+        return jsonify({
+            "ok": True,
+            "message": "ナビ項目の並び順を保存しました。",
+        })
+
+    except ValueError as exc:
+        db.rollback()
+        return jsonify({
+            "ok": False,
+            "message": str(exc) or "並び順の保存に失敗しました。",
+        }), 400
+
+    except Exception:
+        db.rollback()
+        current_app.logger.exception("admin_nav_reorder failed")
+        return jsonify({
+            "ok": False,
+            "message": "並び順の保存中にエラーが発生しました。",
+        }), 500
+
+    finally:
+        db.close()
 
 
 @app.post("/admin/nav/<int:item_id>/delete")
