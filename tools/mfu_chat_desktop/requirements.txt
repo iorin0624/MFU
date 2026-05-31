@@ -1,0 +1,9 @@
+PySide6>=6.6
+requests>=2.31
+python-socketio[client]>=5.11
+keyring>=25.0
+platformdirs>=4.0
+winotify>=1.1
+Pillow>=10.0
+python-dotenv>=1.0
+pyinstaller>=6.0

@@ -1,0 +1,5 @@
+QMainWindow { background: #ffffff; }
+QListWidget { border: 0; border-right: 1px solid #d7dce2; }
+QTextEdit { border: 1px solid #cfd6df; border-radius: 6px; padding: 6px; }
+QPushButton { padding: 6px 10px; border-radius: 6px; border: 1px solid #c7d0da; background: #f8fafc; }
+QPushButton:hover { background: #eef6ff; }
