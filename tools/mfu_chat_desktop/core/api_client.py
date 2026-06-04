@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 import requests
@@ -21,6 +22,10 @@ class ApiClient:
         self.session.cookies = store.cookie_jar()
         self.csrf_token = ""
         self.actor: dict[str, Any] | None = None
+        settings = store.load_settings()
+        self.client_id = settings.get("client_id") or f"desktop-{uuid.uuid4()}"
+        settings["client_id"] = self.client_id
+        store.save_settings(settings)
 
     def url(self, path: str) -> str:
         return f"{self.base_url}{path if path.startswith('/') else '/' + path}"
@@ -88,6 +93,11 @@ class ApiClient:
     def thread_messages(self, event_id: int, room_id: str, root_message_id: int) -> dict[str, Any]:
         return self.get(f"/chat/api/events/{event_id}/threads/{root_message_id}", room_id=room_id)
 
+    def reaction_details(self, target: Any, message_id: int) -> dict[str, Any]:
+        if target.kind == "dm":
+            return self.get(f"/chat/api/gui/dm/{target.dm_uuid}/messages/{message_id}/reactions")
+        return self.get(f"/chat/api/events/{target.event_id}/messages/{message_id}/reactions", room_id=target.room_id)
+
     def upload_images(
         self,
         files: list[str],
@@ -133,3 +143,17 @@ class ApiClient:
         if target.kind == "dm":
             return self.post_json(f"/chat/dm/api/messages/{message_id}/delete", {"csrf_token": self.csrf_token, "dm_uuid": target.dm_uuid})
         return self.post_json(f"/chat/api/events/{target.event_id}/messages/{message_id}/delete", {"csrf_token": self.csrf_token, "room_id": target.room_id})
+
+    def presence(self, action: str, *, event_id: int = 0, room_id: str = "", is_visible: bool = True) -> dict[str, Any]:
+        if action not in {"enter", "ping", "leave"}:
+            raise ApiError("invalid_presence_action")
+        return self.post_json(
+            f"/chat/api/room-presence/{action}",
+            {
+                "csrf_token": self.csrf_token,
+                "event_id": event_id,
+                "room_id": room_id,
+                "client_id": self.client_id,
+                "is_visible": bool(is_visible),
+            },
+        )

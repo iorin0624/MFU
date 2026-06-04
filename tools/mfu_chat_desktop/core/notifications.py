@@ -18,6 +18,6 @@ class Notifier:
         if not self.enabled or Notification is None:
             return
         title = str(message.get("sender_display_name") or CONFIG.app_name)
-        body = "Image sent" if message.get("has_image") else str(message.get("body_plain") or message.get("body") or "")
+        body = "画像が送信されました" if message.get("has_image") else str(message.get("body_plain") or message.get("body") or "")
         toast = Notification(app_id=CONFIG.app_name, title=title, msg=body[:160])
         toast.show()

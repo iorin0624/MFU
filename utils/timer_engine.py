@@ -8,6 +8,7 @@ import os
 import hashlib
 import shutil
 import logging
+import struct
 from typing import List, Dict, Any, Optional
 
 import io
@@ -181,6 +182,7 @@ def _reload_settings_if_changed():
 
 
 def get_timer_settings() -> Dict[str, Any]:
+    _reload_settings_if_changed()
     with _settings_lock:
         # 互換性のため旧キーも含めて返す
         s = dict(_current_settings)
@@ -204,7 +206,7 @@ def set_timer_settings(new_settings: Dict[str, Any]) -> Dict[str, Any]:
       - alarm_path -> chime_path
       - repeat -> tts_repeat/chime_repeat（個別指定が優先）
     """
-    global _current_settings, SPEAKER_ID
+    global _current_settings, SPEAKER_ID, _settings_mtime
     with _settings_lock:
         s = dict(_current_settings)
 
@@ -213,9 +215,11 @@ def set_timer_settings(new_settings: Dict[str, Any]) -> Dict[str, Any]:
         if "sound_mode" in new_settings:
             sm = str(new_settings["sound_mode"]).lower().strip()
             alias["sound_mode"] = sm
-            if sm == "voicevox":
+            # 旧キー sound_mode は、新キー mode が明示されていない場合だけ mode に変換する。
+            # mode=chime_vv と sound_mode=voicevox が同時に来たとき、旧キーで上書きしないため。
+            if "mode" not in new_settings and sm == "voicevox":
                 alias["mode"] = "vv_only"
-            elif sm == "wav":
+            elif "mode" not in new_settings and sm == "wav":
                 alias["mode"] = "chime_only"
         if "alarm_path" in new_settings and "chime_path" not in new_settings:
             alias["chime_path"] = new_settings["alarm_path"]
@@ -267,6 +271,10 @@ def set_timer_settings(new_settings: Dict[str, Any]) -> Dict[str, Any]:
         # 保存
         if _save_timer_settings_file(s):
             _current_settings = s
+            try:
+                _settings_mtime = os.path.getmtime(TIMER_SETTINGS_FILE)
+            except Exception:
+                _settings_mtime = time.time()
             # ランタイムへ話者のみ即反映
             try:
                 SPEAKER_ID = int(s.get("speaker_id", SPEAKER_ID))
@@ -644,43 +652,179 @@ def _tts_ensure_cached_wav(text: str, speaker_id: Optional[int] = None) -> Optio
 # ─────────────────────────────────────────
 # アラーム音（組み合わせ／※vv_onlyはフォールバック無し）
 # ─────────────────────────────────────────
-def _play_alarm(label_for_tts: str = "アラーム"):
-    # 毎回、現在設定を読み込んで適用
+def _get_alarm_playback_settings():
+    _reload_settings_if_changed()
     with _settings_lock:
-        mode         = _resolve_mode(_current_settings)
-        speaker      = int(_current_settings.get("speaker_id", SPEAKER_ID))
-        tts_repeat   = int(_current_settings.get("tts_repeat", 3))
-        chime_path   = _current_settings.get("chime_path", ALARM_PATH)
-        chime_repeat = int(_current_settings.get("chime_repeat", 3))
+        return (
+            _resolve_mode(_current_settings),
+            int(_current_settings.get("speaker_id", SPEAKER_ID)),
+            int(_current_settings.get("tts_repeat", 3)),
+            _current_settings.get("chime_path", ALARM_PATH),
+            int(_current_settings.get("chime_repeat", 3)),
+        )
 
-    # TTS 事前用意
+
+def _play_chime(chime_path: str, chime_repeat: int) -> bool:
+    logger.info(
+        "[ALARM] chime start: chime_path=%s chime_repeat=%s",
+        chime_path,
+        chime_repeat,
+    )
+    ok_all = True
+    for _ in range(max(1, int(chime_repeat))):
+        ok_all = _aplay(chime_path) and ok_all
+        time.sleep(0.2)
+    return ok_all
+
+
+def _play_tts(
+    label_for_tts: str,
+    speaker: int,
+    tts_repeat: int,
+    allow_fallback: bool = False,
+    fallback_chime_path: Optional[str] = None,
+) -> bool:
+    logger.info(
+        "[ALARM] TTS start: label=%s speaker_id=%s tts_repeat=%s allow_fallback=%s",
+        label_for_tts,
+        speaker,
+        tts_repeat,
+        allow_fallback,
+    )
     message = f"{label_for_tts} の時間です。"
-    cached = None
-    if mode in ("vv_only", "chime_vv") and USE_VOICEVOX:
-        cached = _tts_ensure_cached_wav(message, speaker)
+    cached = _tts_ensure_cached_wav(message, int(speaker)) if USE_VOICEVOX else None
+    ok_all = True
+    for _ in range(max(1, int(tts_repeat))):
+        played = False
+        if cached:
+            played = _aplay(cached)
+        if not played:
+            ok_all = False
+            if allow_fallback and fallback_chime_path:
+                ok_all = _aplay(fallback_chime_path) and ok_all
+        time.sleep(0.2)
+    return ok_all
 
-    def _beep(n: int):
-        for _ in range(max(1, n)):
-            _aplay(chime_path)
-            time.sleep(0.2)
 
-    def _speak(n: int, allow_fallback: bool):
-        for _ in range(max(1, n)):
-            played = False
-            if cached:
-                played = _aplay(cached)
-            if not played and allow_fallback:
-                _aplay(chime_path)
-            time.sleep(0.2)
+def _play_alarm(label_for_tts: str = "アラーム"):
+    mode, speaker, tts_repeat, chime_path, chime_repeat = _get_alarm_playback_settings()
+
+    logger.info(
+        "[ALARM] play start: mode=%s chime_path=%s chime_repeat=%s speaker_id=%s tts_repeat=%s",
+        mode,
+        chime_path,
+        chime_repeat,
+        speaker,
+        tts_repeat,
+    )
 
     if mode == "vv_only":
         # フォールバックなし（失敗時は沈黙）
-        _speak(tts_repeat, allow_fallback=False)
+        return _play_tts(label_for_tts, speaker, tts_repeat, allow_fallback=False)
     elif mode == "chime_only":
-        _beep(chime_repeat)
+        return _play_chime(chime_path, chime_repeat)
     else:  # "chime_vv" = チャイム → 読み上げ（TTS失敗時も再フォールバックなし：先に鳴っているため）
-        _beep(chime_repeat)
-        _speak(tts_repeat, allow_fallback=False)
+        ok_chime = _play_chime(chime_path, chime_repeat)
+        ok_tts = _play_tts(label_for_tts, speaker, tts_repeat, allow_fallback=False)
+        return ok_chime and ok_tts
+
+
+def _wait_until(target_ts: float, cancel_evt: Optional[threading.Event] = None) -> bool:
+    while True:
+        if cancel_evt is not None and cancel_evt.is_set():
+            return False
+        remain = target_ts - time.time()
+        if remain <= 0:
+            return True
+        time.sleep(min(1.0, remain))
+
+
+def _wav_data_chunk_sizes(path: str):
+    try:
+        file_size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            header = f.read(12)
+            if len(header) < 12 or header[:4] not in (b"RIFF", b"RIFX") or header[8:12] != b"WAVE":
+                return None
+            endian = ">" if header[:4] == b"RIFX" else "<"
+            pos = 12
+            while pos + 8 <= file_size:
+                f.seek(pos)
+                chunk_header = f.read(8)
+                if len(chunk_header) < 8:
+                    break
+                chunk_id = chunk_header[:4]
+                declared_size = struct.unpack(endian + "I", chunk_header[4:8])[0]
+                data_start = pos + 8
+                available = max(0, file_size - data_start)
+                if chunk_id == b"data":
+                    actual_size = min(declared_size, available)
+                    return declared_size, actual_size, available, file_size
+                pos = data_start + declared_size + (declared_size % 2)
+                if declared_size == 0xFFFFFFFF or pos <= data_start:
+                    break
+    except Exception as e:
+        logger.debug("[ALARM] WAV dataチャンク確認失敗: %s", e)
+    return None
+
+
+def _safe_wav_duration_seconds(path: str) -> float:
+    try:
+        if not path or not os.path.exists(path):
+            return 0.0
+
+        chunk_info = _wav_data_chunk_sizes(path)
+        declared_data_size = actual_data_size = available_data_size = file_size = None
+        if chunk_info:
+            declared_data_size, actual_data_size, available_data_size, file_size = chunk_info
+        else:
+            file_size = os.path.getsize(path)
+
+        with wave.open(path, "rb") as wf:
+            frames = wf.getnframes()
+            framerate = wf.getframerate() or 0
+            channels = wf.getnchannels() or 0
+            sampwidth = wf.getsampwidth() or 0
+
+        if framerate <= 0:
+            return 0.0
+
+        wave_duration = frames / float(framerate) if frames > 0 else 0.0
+        bytes_per_frame = channels * sampwidth
+
+        file_duration = 0.0
+        if bytes_per_frame > 0:
+            if actual_data_size is None:
+                actual_data_size = max(0, int(file_size or 0) - 44)
+            file_duration = actual_data_size / float(bytes_per_frame * framerate)
+
+        header_suspicious = False
+        if file_duration > 0 and wave_duration >= file_duration * 2:
+            header_suspicious = True
+        if wave_duration > 600:
+            header_suspicious = True
+        if (
+            declared_data_size is not None
+            and available_data_size is not None
+            and declared_data_size > available_data_size
+        ):
+            header_suspicious = True
+
+        if header_suspicious and file_duration > 0:
+            logger.warning(
+                "[ALARM] WAVヘッダ長をファイルサイズ推定に補正: path=%s wave_duration=%.3f file_duration=%.3f",
+                path,
+                wave_duration,
+                file_duration,
+            )
+            return max(0.0, file_duration)
+
+        if wave_duration > 0:
+            return max(0.0, wave_duration)
+        return max(0.0, file_duration)
+    except Exception as e:
+        logger.debug("[ALARM] WAV長取得失敗: %s", e)
+        return 0.0
 
 
 def _calc_chime_lead_seconds() -> float:
@@ -688,12 +832,12 @@ def _calc_chime_lead_seconds() -> float:
     チャイム+TTS(chime_vv) のときだけ、
     「チャイムが全部鳴き終わるまでの秒数」を返す。
     それ以外のモードでは 0.0 を返す。
+
+    壊れたWAVヘッダで異常に長い値を返さないよう、waveヘッダ値と
+    ファイルサイズベースの推定値を比較し、安全な値だけを前倒し秒数に使う。
     """
     try:
-        with _settings_lock:
-            mode = _resolve_mode(_current_settings)
-            chime_path = _current_settings.get("chime_path", ALARM_PATH)
-            chime_repeat = int(_current_settings.get("chime_repeat", 3))
+        mode, _speaker, _tts_repeat, chime_path, chime_repeat = _get_alarm_playback_settings()
 
         # チャイム+TTS 以外は前倒し不要
         if mode != "chime_vv":
@@ -702,23 +846,87 @@ def _calc_chime_lead_seconds() -> float:
         if not chime_path or not os.path.exists(chime_path):
             return 0.0
 
-        # WAV から長さを取得
-        with wave.open(chime_path, "rb") as wf:
-            frames = wf.getnframes()
-            fr = wf.getframerate() or 1
-
-        single = frames / float(fr)
+        single = _safe_wav_duration_seconds(chime_path)
         if single <= 0:
             return 0.0
 
-        # _beep() 内の time.sleep(0.2) を考慮して、1回分 = 音長 + 0.2s
+        # _play_chime() 内の time.sleep(0.2) を考慮して、1回分 = 音長 + 0.2s
         gap = 0.2
         total = (single + gap) * max(1, chime_repeat)
 
-        return max(0.0, total)
+        return max(0.0, min(600.0, total))
     except Exception as e:
         logger.debug("[ALARM] チャイム長計算失敗: %s", e)
         return 0.0
+
+
+def _play_timer_finish_sequence(
+    label_for_tts: str,
+    target_ts: float,
+    cancel_evt: Optional[threading.Event] = None,
+):
+    mode, speaker, tts_repeat, chime_path, chime_repeat = _get_alarm_playback_settings()
+    lead_sec = _calc_chime_lead_seconds()
+    seconds_until_target = max(0.0, target_ts - time.time())
+    safe_lead_sec = min(lead_sec, max(0.0, seconds_until_target - 1.0))
+
+    if mode == "chime_vv":
+        chime_start_ts = target_ts - safe_lead_sec
+        if safe_lead_sec <= 0:
+            if not _wait_until(target_ts, cancel_evt):
+                logger.info("[TIMER] 🔕 キャンセル済み（TTS前）: %s", label_for_tts)
+                return False
+            logger.info(
+                "[TIMER] chime_vv TTS phase without pre-chime: label=%s target_ts=%s",
+                label_for_tts,
+                target_ts,
+            )
+            return _play_tts(label_for_tts, speaker, tts_repeat, allow_fallback=False)
+
+        if not _wait_until(chime_start_ts, cancel_evt):
+            logger.info("[TIMER] 🔕 キャンセル済み（チャイム前）: %s", label_for_tts)
+            return False
+        if cancel_evt is not None and cancel_evt.is_set():
+            logger.info("[TIMER] 🔕 キャンセル済み（チャイム前）: %s", label_for_tts)
+            return False
+        logger.info(
+            "[TIMER] chime_vv chime phase: label=%s target_ts=%s lead_sec=%.3f safe_lead_sec=%.3f",
+            label_for_tts,
+            target_ts,
+            lead_sec,
+            safe_lead_sec,
+        )
+
+        # チャイム長が0秒到達までに収まらない場合は、TTSを遅らせないため同期待ちしない。
+        # 壊れたWAVヘッダや長すぎる音源で、開始直後に長時間ブロックする事故を避ける。
+        if lead_sec > safe_lead_sec + 0.001:
+            threading.Thread(
+                target=_play_chime,
+                args=(chime_path, chime_repeat),
+                daemon=True,
+            ).start()
+        else:
+            _play_chime(chime_path, chime_repeat)
+
+        if cancel_evt is not None and cancel_evt.is_set():
+            logger.info("[TIMER] 🔕 キャンセル済み（TTS前）: %s", label_for_tts)
+            return False
+        if not _wait_until(target_ts, cancel_evt):
+            logger.info("[TIMER] 🔕 キャンセル済み（TTS前）: %s", label_for_tts)
+            return False
+        logger.info("[TIMER] chime_vv TTS phase: label=%s target_ts=%s", label_for_tts, target_ts)
+        return _play_tts(label_for_tts, speaker, tts_repeat, allow_fallback=False)
+
+    if not _wait_until(target_ts, cancel_evt):
+        logger.info("[TIMER] 🔕 キャンセル済み（再生前）: %s", label_for_tts)
+        return False
+
+    if mode == "vv_only":
+        logger.info("[TIMER] vv_only start: label=%s target_ts=%s", label_for_tts, target_ts)
+        return _play_tts(label_for_tts, speaker, tts_repeat, allow_fallback=False)
+
+    logger.info("[TIMER] chime_only start: label=%s target_ts=%s", label_for_tts, target_ts)
+    return _play_chime(chime_path, chime_repeat)
 
 
 # ─────────────────────────────────────────
@@ -726,16 +934,31 @@ def _calc_chime_lead_seconds() -> float:
 # ─────────────────────────────────────────
 def start_timer(seconds: int, label: str):
     """
-    seconds は「TTS が鳴り始めるまでの時間」として扱う。
+    seconds は「0秒到達までの時間」として扱う。
 
-    - mode == "chime_vv":
-        指定秒数 (=TTS開始) からチャイム長を引いた時刻に _play_alarm を開始
-    - mode == "vv_only" / "chime_only":
-        今まで通り、指定秒数後に _play_alarm を開始
+    chime_vv では終了前にチャイムを鳴らし、0秒到達時刻でVOICEVOXを鳴らす。
+    壊れたWAVヘッダによる即鳴り事故を避けるため、前倒しは seconds - 1 秒を超えない。
     """
-    # ユーザーに見せる「終了予定時刻」は TTS 開始時刻ベース
-    tts_target_dt = datetime.now() + timedelta(seconds=seconds)
-    ends_at = tts_target_dt.strftime("%Y-%m-%d %H:%M:%S")
+    _reload_settings_if_changed()
+    mode, _speaker, _tts_repeat, chime_path, _chime_repeat = _get_alarm_playback_settings()
+    target_ts = time.time() + max(0.0, float(seconds))
+    lead_sec = _calc_chime_lead_seconds()
+    safe_lead_sec = min(lead_sec, max(0.0, float(seconds) - 1.0))
+
+    logger.info(
+        "[TIMER] start: label=%s seconds=%s target_ts=%s mode=%s chime_path=%s lead_sec=%.3f safe_lead_sec=%.3f",
+        label,
+        seconds,
+        target_ts,
+        mode,
+        chime_path,
+        lead_sec,
+        safe_lead_sec,
+    )
+
+    # ユーザーに見せる「終了予定時刻」は0秒到達時刻。
+    target_dt = datetime.fromtimestamp(target_ts)
+    ends_at = target_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     def _prefetch():
         # モード確認して、必要ならTTSプリウォーム（失敗しても落とさない）
@@ -751,31 +974,16 @@ def start_timer(seconds: int, label: str):
 
     threading.Thread(target=_prefetch, daemon=True).start()
 
-    # チャイム+TTS のときだけ、チャイム分だけ前倒しする
-    lead_sec = _calc_chime_lead_seconds()
-    sleep_for = max(0.0, seconds - lead_sec)
-
     # 追加：キャンセルフラグ
     cancel_evt = threading.Event()
 
     def timer_thread():
-        # 細かく刻んでキャンセルに応答できるようにする
-        remaining = sleep_for
-        while remaining > 0:
-            if cancel_evt.is_set():
-                logger.info("[TIMER] 🔕 キャンセル済み（スレッド終了）: %s", label)
-                return
-            step = min(1.0, remaining)  # 1秒刻みでチェック
-            time.sleep(step)
-            remaining -= step
-
-        # 最後にもう一度チェック
         if cancel_evt.is_set():
             logger.info("[TIMER] 🔕 キャンセル済み（スレッド終了）: %s", label)
             return
 
-        logger.info("[TIMER] 🔔 終了: %s", label)
-        _play_alarm(label_for_tts=label)
+        logger.info("[TIMER] finish sequence start: %s", label)
+        _play_timer_finish_sequence(label, target_ts, cancel_evt=cancel_evt)
         _remove_timer(label)
 
     t = threading.Thread(target=timer_thread, daemon=True)
@@ -785,7 +993,7 @@ def start_timer(seconds: int, label: str):
     _timer_cancel_flags[label] = cancel_evt  # 追加：キャンセルフラグも保存
 
     timers = _load_active_timers()
-    timers[label] = ends_at  # 表示用は「TTS が鳴る時刻」
+    timers[label] = ends_at  # 表示用は「0秒到達時刻」
     _save_active_timers(timers)
 
 
@@ -857,16 +1065,8 @@ def _prune_and_save(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _alarm_thread(target_ts, label, alarm_id):
-    # 待機（細かく刻んでシグナル対応）
-    while True:
-        now = time.time()
-        remain = target_ts - now
-        if remain <= 0:
-            break
-        time.sleep(min(1, remain))
-
-    logger.info("[ALARM] 🔔 アラーム発動: %s", label)
-    _play_alarm(label_for_tts=label)
+    logger.info("[ALARM] finish sequence start: label=%s target_ts=%s", label, target_ts)
+    _play_timer_finish_sequence(label, target_ts)
 
     # 発火後は一覧から削除
     with _scheduled_lock:
@@ -877,26 +1077,20 @@ def _alarm_thread(target_ts, label, alarm_id):
 
 def set_alarm(hour, minute, label="アラーム"):
     """
-    hour / minute は「TTS が鳴り始める時刻」として扱う。
+    hour / minute は「VOICEVOXアナウンス時刻」として扱う。
 
-    - chime_vv: 指定時刻からチャイム長だけ前倒しして _alarm_thread を開始
-    - vv_only / chime_only: 指定時刻ちょうどに _alarm_thread 開始（従来通り）
+    chime_vv の前倒しチャイムは _alarm_thread 内で制御し、一覧表示用timestampは指定時刻のままにする。
     """
+    _reload_settings_if_changed()
     now = datetime.now()
 
-    # 指定された「TTS 開始時刻」を求める
-    tts_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if tts_time < now:
-        tts_time += timedelta(days=1)
+    # 指定された「0秒アナウンス時刻」を求める。チャイム開始時刻は保存しない。
+    alarm_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if alarm_time < now:
+        alarm_time += timedelta(days=1)
 
-    # チャイム+TTS のときだけ、チャイム分だけ前倒し
+    target_ts = alarm_time.timestamp()
     lead_sec = _calc_chime_lead_seconds()
-    target_ts = tts_time.timestamp() - lead_sec
-
-    # すでに過去になってしまう場合は、今すぐ開始にクリップ
-    now_ts = time.time()
-    if target_ts < now_ts:
-        target_ts = now_ts
 
     alarm_id = str(uuid.uuid4())
 
@@ -904,6 +1098,7 @@ def set_alarm(hour, minute, label="アラーム"):
     with _settings_lock:
         mode = _resolve_mode(_current_settings)
         spk  = int(_current_settings.get("speaker_id", SPEAKER_ID))
+        chime_path = _current_settings.get("chime_path", ALARM_PATH)
     if mode in ("vv_only", "chime_vv"):
         threading.Thread(
             target=_tts_ensure_cached_wav,
@@ -914,9 +1109,9 @@ def set_alarm(hour, minute, label="アラーム"):
     entry = {
         "id": alarm_id,
         "label": label,
-        "hour": hour,          # 表示用：ユーザーが指定した「TTS開始時刻」
+        "hour": hour,          # 表示用：ユーザーが指定した「0秒アナウンス時刻」
         "minute": minute,
-        "timestamp": target_ts # 実際に _alarm_thread が動き出す時刻（チャイム開始）
+        "timestamp": target_ts # 表示・並び順用：ユーザー指定のアラーム時刻
     }
 
     with _scheduled_lock:
@@ -929,6 +1124,15 @@ def set_alarm(hour, minute, label="アラーム"):
     t = threading.Thread(target=_alarm_thread, args=(target_ts, label, alarm_id), daemon=True)
     t.start()
 
+    logger.info(
+        "[ALARM] register: label=%s alarm_time=%s target_ts=%s mode=%s chime_path=%s lead_sec=%.3f",
+        label,
+        alarm_time.strftime("%Y-%m-%d %H:%M:%S"),
+        target_ts,
+        mode,
+        chime_path,
+        lead_sec,
+    )
     logger.debug("[ALARM] 登録: %s", entry)
     return alarm_id
 
@@ -1057,6 +1261,7 @@ def test_preview(
     mode: "vv_only" | "chime_only" | "chime_vv"
     ※ テストは安全のため各回数は最大5に丸める
     """
+    _reload_settings_if_changed()
     mode = (mode or "chime_vv").lower().strip()
     chime_repeat = max(1, min(5, int(chime_repeat)))
     tts_repeat = max(1, min(5, int(tts_repeat)))

@@ -9,16 +9,16 @@ class LoginWindow(QDialog):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MFU Chat Login")
+        self.setWindowTitle("MFUチャット ログイン")
         self.username = QLineEdit()
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
-        self.save_password = QCheckBox("Save password with Windows Credential Manager")
-        self.submit = QPushButton("Login")
+        self.save_password = QCheckBox("Windows資格情報マネージャーにパスワードを保存")
+        self.submit = QPushButton("ログイン")
         self.submit.clicked.connect(self._submit)
         form = QFormLayout()
-        form.addRow("Username", self.username)
-        form.addRow("Password", self.password)
+        form.addRow("ユーザー名", self.username)
+        form.addRow("パスワード", self.password)
         layout = QVBoxLayout(self)
         layout.addLayout(form)
         layout.addWidget(self.save_password)
@@ -28,4 +28,4 @@ class LoginWindow(QDialog):
         self.login_requested.emit(self.username.text().strip(), self.password.text(), self.save_password.isChecked())
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, "Login failed", text)
+        QMessageBox.warning(self, "ログイン失敗", text)

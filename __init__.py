@@ -18,7 +18,7 @@ import time
 import uuid
 import zipfile
 import csv
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date as date_cls, timedelta, timezone
 from email.mime.text import MIMEText
 from ipaddress import ip_address, ip_network
@@ -759,6 +759,12 @@ def _progress_read(key: str):
             return json.load(f)
     except Exception:
         return None
+
+def _progress_update(key: str, **updates):
+    data = _progress_read(key) or {}
+    data.update(updates)
+    data["updated_at"] = datetime.utcnow().isoformat()
+    _progress_write(key, data)
 
 def _progress_clear(key: str):
     for path in (_progress_path(key), _lock_path(key)):
@@ -2237,7 +2243,7 @@ def _gc_adminlogs_jobs(ttl_seconds: int = 1800):
             pass
 
 
-def _build_admin_logs_html(args_dict: dict) -> str:
+def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
     """
     クエリ:
       kind=LOGIN|LINE_LOGIN|SMTP
@@ -2254,6 +2260,10 @@ def _build_admin_logs_html(args_dict: dict) -> str:
       search_date_to=YYYY-MM-DD
     """
     from ipaddress import ip_address, ip_network, IPv4Network, IPv6Network
+
+    def _progress(**updates):
+        if progress_cb:
+            progress_cb(**updates)
 
     def _arg(name: str, default: str = "") -> str:
         return (args_dict.get(name, default) or "").strip()
@@ -2609,11 +2619,11 @@ def _build_admin_logs_html(args_dict: dict) -> str:
         if not misses:
             return resolved
 
-        from concurrent.futures import as_completed
-
         workers = min(16, max(4, len(misses)))
         with ThreadPoolExecutor(max_workers=workers) as ex:
             fut_map = {ex.submit(get_netinfo, ip): ip for ip in misses}
+            total_misses = len(fut_map)
+            done_misses = 0
             for fut in as_completed(fut_map):
                 ip = fut_map[fut]
                 try:
@@ -2624,6 +2634,9 @@ def _build_admin_logs_html(args_dict: dict) -> str:
                 _cache_put(ip, rec)
                 _req_seen[ip] = rec
                 resolved[ip] = rec
+                done_misses += 1
+                if done_misses == total_misses or done_misses % 25 == 0:
+                    _progress(netinfo_done=done_misses, netinfo_total=total_misses)
 
         return resolved
 
@@ -2724,23 +2737,61 @@ def _build_admin_logs_html(args_dict: dict) -> str:
         where.append("log_text LIKE %s")
         params.append(f"%{search_ua}%")
 
+    _progress(phase="SQL条件を準備中", percent=5, scanned=0, accepted=0)
+
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     base_sql = "SELECT id, log_date, ip, log_text FROM logs"
+    can_count_fast = bool(selected_date or search_date_from or search_date_to)
+    sql_total = None
+    if can_count_fast:
+        count_sql = "SELECT COUNT(*) AS cnt FROM logs" + where_sql
+        try:
+            cursor.execute(count_sql, params)
+            count_row = cursor.fetchone() or {}
+            sql_total = int(count_row.get("cnt") or 0)
+        except Exception:
+            sql_total = None
+    _progress(phase="ログを読み込み中", percent=8, sql_total=sql_total)
+
     if where:
-        base_sql += " WHERE " + " AND ".join(where)
+        base_sql += where_sql
     base_sql += " ORDER BY id DESC"
 
     target_needed = per_page + 1
     scan_chunk = max(per_page * 3, 1000) if nonjp_only else max(per_page, 500)
-    db_offset = 0
     accepted = 0
+    scanned = 0
     page_rows = []
     has_next = False
+    last_id = None
 
     while True:
-        cursor.execute(f"{base_sql} LIMIT %s OFFSET %s", params + [scan_chunk, db_offset])
+        chunk_where = list(where)
+        chunk_params = list(params)
+        if last_id is not None:
+            chunk_where.append("id < %s")
+            chunk_params.append(last_id)
+        chunk_sql = "SELECT id, log_date, ip, log_text FROM logs"
+        if chunk_where:
+            chunk_sql += " WHERE " + " AND ".join(chunk_where)
+        chunk_sql += " ORDER BY id DESC LIMIT %s"
+        cursor.execute(chunk_sql, chunk_params + [scan_chunk])
         rows = cursor.fetchall()
         if not rows:
             break
+        scanned += len(rows)
+        last_id = rows[-1].get("id")
+        scan_percent = 10
+        if sql_total:
+            scan_percent = 10 + min(55, int((scanned / max(sql_total, 1)) * 55))
+        target_percent = min(55, int((len(page_rows) / max(target_needed, 1)) * 55))
+        _progress(
+            phase="ログを絞り込み中",
+            percent=max(scan_percent, 10 + target_percent),
+            scanned=scanned,
+            accepted=accepted + len(page_rows),
+            sql_total=sql_total,
+        )
 
         bulk_netinfo = {}
         if nonjp_only:
@@ -2798,8 +2849,6 @@ def _build_admin_logs_html(args_dict: dict) -> str:
                 continue
 
             if len(page_rows) < target_needed:
-                if not nonjp_only:
-                    r = enrich_row(r)
                 page_rows.append(r)
 
             if len(page_rows) >= target_needed:
@@ -2807,9 +2856,22 @@ def _build_admin_logs_html(args_dict: dict) -> str:
 
         if len(page_rows) >= target_needed:
             break
-        db_offset += len(rows)
 
     db.close()
+
+    if not nonjp_only and page_rows:
+        page_ips = []
+        seen_page_ips = set()
+        for r in page_rows:
+            ip = (r.get("ip") or "").strip()
+            if not ip or ip in seen_page_ips or not is_valid_ip(ip):
+                continue
+            seen_page_ips.add(ip)
+            page_ips.append(ip)
+        _progress(phase="IP情報を取得中", percent=70, netinfo_done=0, netinfo_total=len(page_ips))
+        get_netinfo_bulk(page_ips)
+        page_rows = [enrich_row(r) for r in page_rows]
+    _progress(phase="表示を作成中", percent=90, scanned=scanned, accepted=accepted + len(page_rows))
 
     if len(page_rows) > per_page:
         has_next = True
@@ -2853,21 +2915,33 @@ def _build_admin_logs_html(args_dict: dict) -> str:
 def _run_admin_logs_job(job_id: str, args_dict: dict, user_id: str | None):
     _progress_write(job_id, {
         "status": "running",
+        "phase": "開始中",
+        "percent": 1,
+        "message": "ログ集計を開始しています",
         "started_at": datetime.utcnow().isoformat(),
         "args": args_dict,
         "requested_by": user_id,
     })
     try:
+        def report_progress(**updates):
+            if updates.get("phase") and "message" not in updates:
+                updates["message"] = updates["phase"]
+            _progress_update(job_id, status="running", args=args_dict, requested_by=user_id, **updates)
+
         with app.app_context():
             with app.test_request_context("/admin/logs/sync", query_string=args_dict):
                 if user_id:
                     session["user"] = user_id
-                html = _build_admin_logs_html(args_dict)
+                html = _build_admin_logs_html(args_dict, progress_cb=report_progress)
         result_path = _admin_logs_html_result_path(job_id)
+        _progress_update(job_id, status="running", phase="結果を保存中", percent=96)
         with open(result_path, "w", encoding="utf-8") as f:
             f.write(html)
         _progress_write(job_id, {
             "status": "done",
+            "phase": "完了",
+            "percent": 100,
+            "message": "ログ集計が完了しました",
             "finished_at": datetime.utcnow().isoformat(),
             "result_path": result_path,
             "args": args_dict,
@@ -2876,6 +2950,8 @@ def _run_admin_logs_job(job_id: str, args_dict: dict, user_id: str | None):
     except Exception as e:
         _progress_write(job_id, {
             "status": "error",
+            "phase": "エラー",
+            "percent": 100,
             "error_message": str(e),
             "finished_at": datetime.utcnow().isoformat(),
             "args": args_dict,
@@ -2920,6 +2996,9 @@ def admin_logs_async():
     if not status:
         _progress_write(job_id, {
             "status": "queued",
+            "phase": "待機中",
+            "percent": 0,
+            "message": "集計ジョブの開始を待っています",
             "created_at": datetime.utcnow().isoformat(),
             "args": args_dict_no_job,
             "requested_by": user_id,
@@ -2949,6 +3028,15 @@ def admin_logs_status():
 
     return jsonify({
         "status": status_data.get("status", "unknown"),
+        "phase": status_data.get("phase", ""),
+        "percent": status_data.get("percent"),
+        "scanned": status_data.get("scanned"),
+        "accepted": status_data.get("accepted"),
+        "sql_total": status_data.get("sql_total"),
+        "netinfo_done": status_data.get("netinfo_done"),
+        "netinfo_total": status_data.get("netinfo_total"),
+        "started_at": status_data.get("started_at"),
+        "updated_at": status_data.get("updated_at"),
         "message": status_data.get("message", ""),
         "finished_at": status_data.get("finished_at"),
         "error_message": status_data.get("error_message", ""),

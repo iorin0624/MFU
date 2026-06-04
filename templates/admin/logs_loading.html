@@ -2,38 +2,92 @@
 {% block title %}ログ集計中{% endblock %}
 {% block content %}
 <div class="container py-4">
-  <h2 class="mb-3">ログを集計しています…</h2>
-  <p class="text-muted">完了すると自動で結果画面に移動します。</p>
-
-  <div class="d-flex align-items-center gap-3 my-4">
-    <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
     <div>
-      <div id="job-status">処理を開始しました。</div>
-      <small class="text-muted">Job: {{ job_id }}</small>
+      <h2 class="mb-1">アクセスログを集計しています</h2>
+      <p class="text-muted mb-0">完了すると自動で結果画面へ移動します。</p>
     </div>
+    <a class="btn btn-sm btn-outline-secondary" href="{{ retry_url }}">再実行</a>
   </div>
 
-  <div id="job-error" class="alert alert-danger d-none"></div>
-  <p><a href="{{ retry_url }}">再実行する</a></p>
+  <div class="border rounded p-3 bg-light">
+    <div class="d-flex align-items-center gap-3 mb-3">
+      <div class="spinner-border text-primary" role="status" aria-hidden="true"></div>
+      <div class="flex-grow-1">
+        <div class="d-flex justify-content-between gap-2">
+          <strong id="job-phase">待機中</strong>
+          <span id="job-percent" class="text-muted">0%</span>
+        </div>
+        <div class="progress mt-2" role="progressbar" aria-label="ログ集計の進行度">
+          <div id="job-progress" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <dl class="row small mb-0">
+      <dt class="col-sm-3 text-muted">処理状況</dt>
+      <dd class="col-sm-9 mb-2" id="job-status">集計ジョブの開始を待っています</dd>
+      <dt class="col-sm-3 text-muted">読み込み済み</dt>
+      <dd class="col-sm-9 mb-2" id="job-scanned">-</dd>
+      <dt class="col-sm-3 text-muted">IP情報取得</dt>
+      <dd class="col-sm-9 mb-2" id="job-netinfo">-</dd>
+      <dt class="col-sm-3 text-muted">Job</dt>
+      <dd class="col-sm-9 mb-0"><code>{{ job_id }}</code></dd>
+    </dl>
+  </div>
+
+  <div id="job-error" class="alert alert-danger d-none mt-3"></div>
 </div>
 
 <script>
 (() => {
   const statusUrl = {{ status_url|tojson }};
   const resultUrl = {{ result_url|tojson }};
+  const phaseEl = document.getElementById('job-phase');
+  const percentEl = document.getElementById('job-percent');
+  const progressEl = document.getElementById('job-progress');
   const statusEl = document.getElementById('job-status');
+  const scannedEl = document.getElementById('job-scanned');
+  const netinfoEl = document.getElementById('job-netinfo');
   const errorEl = document.getElementById('job-error');
+
+  function fmtNum(value) {
+    if (value === null || value === undefined || value === '') return '-';
+    const num = Number(value);
+    return Number.isFinite(num) ? num.toLocaleString('ja-JP') : '-';
+  }
+
+  function setProgress(rawPercent) {
+    const percent = Math.max(0, Math.min(100, Number(rawPercent || 0)));
+    const label = `${Math.round(percent)}%`;
+    percentEl.textContent = label;
+    progressEl.style.width = label;
+    progressEl.setAttribute('aria-valuenow', String(Math.round(percent)));
+  }
 
   async function poll() {
     try {
       const resp = await fetch(statusUrl, {cache: 'no-store'});
       if (!resp.ok) {
-        statusEl.textContent = '状態確認中…';
+        statusEl.textContent = '状態を確認しています...';
         setTimeout(poll, 1500);
         return;
       }
+
       const data = await resp.json();
       const st = data.status || 'unknown';
+      setProgress(data.percent);
+      phaseEl.textContent = data.phase || (st === 'running' ? '集計中' : '待機中');
+      statusEl.textContent = data.message || (st === 'running' ? '処理中です...' : '待機中です...');
+
+      const scanned = fmtNum(data.scanned);
+      const total = fmtNum(data.sql_total);
+      scannedEl.textContent = data.sql_total ? `${scanned} / ${total} 件` : `${scanned} 件`;
+
+      if (data.netinfo_total !== null && data.netinfo_total !== undefined) {
+        netinfoEl.textContent = `${fmtNum(data.netinfo_done)} / ${fmtNum(data.netinfo_total)} 件`;
+      }
+
       if (st === 'done') {
         window.location.href = resultUrl;
         return;
@@ -41,12 +95,11 @@
       if (st === 'error') {
         errorEl.classList.remove('d-none');
         errorEl.textContent = data.error_message || '処理に失敗しました。';
-        statusEl.textContent = 'エラーが発生しました。';
+        phaseEl.textContent = 'エラー';
         return;
       }
-      statusEl.textContent = (st === 'running') ? '集計中です…' : '待機中です…';
     } catch (_err) {
-      statusEl.textContent = '通信を再試行しています…';
+      statusEl.textContent = '通信を再試行しています...';
     }
     setTimeout(poll, 1200);
   }

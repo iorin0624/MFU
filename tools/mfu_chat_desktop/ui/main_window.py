@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QEvent, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QInputDialog, QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget, QToolBar, QVBoxLayout, QWidget
 
@@ -17,11 +17,15 @@ class MainWindow(QMainWindow):
     refresh_requested = Signal()
     target_selected = Signal(object)
     settings_saved = Signal(dict)
+    close_to_tray_requested = Signal()
+    minimized_to_tray_requested = Signal()
 
     def __init__(self, image_cache: Any, settings: dict) -> None:
         super().__init__()
         self.settings = settings
-        self.setWindowTitle("MFU Chat Desktop")
+        self.close_to_tray_enabled = True
+        self.minimize_to_tray_enabled = True
+        self.setWindowTitle("MFUチャット デスクトップ")
         self.resize(settings.get("width", 1200), settings.get("height", 760))
         self.event_panel = RoomPanel()
         self.dm_panel = DmPanel()
@@ -30,11 +34,11 @@ class MainWindow(QMainWindow):
         self.dm_panel.target_selected.connect(self.target_selected.emit)
 
         tabs = QTabWidget()
-        tabs.addTab(self.event_panel, "Events")
+        tabs.addTab(self.event_panel, "イベント")
         tabs.addTab(self.dm_panel, "DM")
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        self.refresh = QPushButton("Refresh")
+        self.refresh = QPushButton("更新")
         self.refresh.clicked.connect(self.refresh_requested.emit)
         left_layout.addWidget(self.refresh)
         left_layout.addWidget(tabs, 1)
@@ -47,7 +51,7 @@ class MainWindow(QMainWindow):
 
         toolbar = QToolBar()
         self.addToolBar(toolbar)
-        settings_action = QAction("Settings", self)
+        settings_action = QAction("設定", self)
         settings_action.triggered.connect(self._settings)
         toolbar.addAction(settings_action)
 
@@ -57,7 +61,7 @@ class MainWindow(QMainWindow):
             events.append(
                 ChatTarget(
                     kind="event",
-                    title=str(event.get("title") or f"Event {event.get('id')}"),
+                    title=str(event.get("title") or f"イベント {event.get('id')}"),
                     event_id=int(event.get("id") or 0),
                     unread_count=int(event.get("unread_count") or 0),
                     raw=event,
@@ -75,7 +79,7 @@ class MainWindow(QMainWindow):
         self.event_panel.set_targets(events)
         self.dm_panel.set_targets(dms)
         total = sum(t.unread_count for t in events + dms)
-        self.setWindowTitle(f"MFU Chat Desktop ({total})" if total else "MFU Chat Desktop")
+        self.setWindowTitle(f"MFUチャット デスクトップ ({total})" if total else "MFUチャット デスクトップ")
 
     def show_snapshot(self, target: ChatTarget, snapshot: dict[str, Any], emojis: list[str]) -> None:
         if target.kind == "event":
@@ -91,7 +95,24 @@ class MainWindow(QMainWindow):
         return value if ok else None
 
     def show_error(self, text: str) -> None:
-        QMessageBox.warning(self, "MFU Chat Desktop", text)
+        QMessageBox.warning(self, "MFUチャット デスクトップ", text)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.close_to_tray_enabled:
+            event.ignore()
+            self.hide()
+            self.close_to_tray_requested.emit()
+            return
+        super().closeEvent(event)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.WindowStateChange and self.isMinimized() and self.minimize_to_tray_enabled:
+            QTimer.singleShot(0, self._hide_to_tray)
+        super().changeEvent(event)
+
+    def _hide_to_tray(self) -> None:
+        self.hide()
+        self.minimized_to_tray_requested.emit()
 
     def _settings(self) -> None:
         dialog = SettingsDialog(self.settings)
