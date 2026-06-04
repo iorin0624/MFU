@@ -7,14 +7,17 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import time
 import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import wraps
 from threading import Lock
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
+import requests
 from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.utils.db import get_db
@@ -47,6 +50,9 @@ _UBER_OCR_TMP_DIR = os.getenv("UBER_OCR_TMP_DIR", os.path.join("/tmp", "mfu", "u
 _UBER_OCR_PREVIEW_TTL_SEC = 60 * 60 * 24
 _UBER_OCR_QUEUE_DIR = os.getenv("UBER_OCR_QUEUE_DIR", os.path.join("/tmp", "mfu", "uber_ocr_queue"))
 _UBER_OCR_QUEUE_TTL_SEC = int(os.getenv("UBER_OCR_QUEUE_TTL_SEC", str(60 * 60 * 24)))
+FREEE_AUTHORIZE_URL = "https://accounts.secure.freee.co.jp/public_api/authorize"
+FREEE_TOKEN_URL = "https://accounts.secure.freee.co.jp/public_api/token"
+FREEE_API_BASE_URL = "https://api.freee.co.jp"
 
 
 @records_bp.app_template_filter("fmt_yen")
@@ -331,6 +337,572 @@ def _require_admin_for_records():
     return None
 
 
+def _require_admin_json():
+    if not _is_admin_user():
+        return jsonify({"ok": False, "message": "管理者のみ操作できます。"}), 403
+    return None
+
+
+def _freee_redirect_uri() -> str:
+    return os.getenv("FREEE_REDIRECT_URI") or url_for("records.uber_freee_callback", _external=True)
+
+
+def _freee_oauth_config() -> dict:
+    return {
+        "client_id": os.getenv("FREEE_CLIENT_ID", "").strip(),
+        "client_secret": os.getenv("FREEE_CLIENT_SECRET", "").strip(),
+        "redirect_uri": _freee_redirect_uri(),
+    }
+
+
+def _sanitize_freee_error(message: str) -> str:
+    cleaned = str(message or "")
+    for token_key in ("access_token", "refresh_token"):
+        cleaned = re.sub(rf'("{token_key}"\s*:\s*")[^"]+(")', rf'\1***\2', cleaned, flags=re.I)
+        cleaned = re.sub(rf"({token_key}=)[^&\s]+", rf"\1***", cleaned, flags=re.I)
+    return cleaned[:2000]
+
+
+def _freee_error_from_response(resp) -> str:
+    body = ""
+    try:
+        body = json.dumps(resp.json(), ensure_ascii=False)
+    except Exception:
+        body = resp.text or ""
+    hint = ""
+    if resp.status_code == 403:
+        hint = " 権限または事業所設定を確認してください。"
+    elif resp.status_code == 429:
+        hint = " freee API側のアクセス制限の可能性があります。時間をおいて再実行してください。"
+    return _sanitize_freee_error(f"freee API error: HTTP {resp.status_code} {body}{hint}")
+
+
+def _parse_optional_int_value(value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if raw == "":
+        return None
+    return int(raw)
+
+
+def _get_freee_settings(db=None) -> dict | None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT id, company_id, partner_id, partner_code, account_item_id,
+               tax_code, walletable_type, walletable_id, deal_payment_mode,
+               created_at, updated_at
+        FROM freee_accounting_settings
+        ORDER BY id ASC
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    if close_db:
+        db.close()
+    return row
+
+
+def _upsert_freee_settings(
+    *,
+    company_id,
+    partner_id,
+    partner_code,
+    account_item_id,
+    tax_code,
+    walletable_type,
+    walletable_id,
+    deal_payment_mode,
+) -> None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT id FROM freee_accounting_settings ORDER BY id ASC LIMIT 1")
+    existing = cur.fetchone()
+    now = now_ts()
+    if existing:
+        cur.execute(
+            """
+            UPDATE freee_accounting_settings
+            SET company_id = %s,
+                partner_id = %s,
+                partner_code = %s,
+                account_item_id = %s,
+                tax_code = %s,
+                walletable_type = %s,
+                walletable_id = %s,
+                deal_payment_mode = %s,
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (company_id, partner_id, partner_code, account_item_id, tax_code, walletable_type, walletable_id, deal_payment_mode, now, existing["id"]),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO freee_accounting_settings (
+                company_id, partner_id, partner_code, account_item_id, tax_code,
+                walletable_type, walletable_id, deal_payment_mode, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (company_id, partner_id, partner_code, account_item_id, tax_code, walletable_type, walletable_id, deal_payment_mode, now, now),
+        )
+    db.commit()
+    db.close()
+
+
+def _validate_freee_settings(settings: dict | None) -> str | None:
+    if not settings:
+        return "freee連携設定が未完了です。company_id / account_item_id / tax_code / 決済口座を確認してください。"
+    if not settings.get("company_id") or not settings.get("account_item_id") or settings.get("tax_code") is None:
+        return "freee連携設定が未完了です。company_id / account_item_id / tax_code / 決済口座を確認してください。"
+    mode = settings.get("deal_payment_mode") or "settled"
+    if mode not in ("settled", "unsettled"):
+        return "freee連携設定が未完了です。決済状態の設定を確認してください。"
+    if mode == "settled" and (not settings.get("walletable_type") or not settings.get("walletable_id")):
+        return "freee連携設定が未完了です。company_id / account_item_id / tax_code / 決済口座を確認してください。"
+    return None
+
+
+def _load_freee_token_row(db=None) -> dict | None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT id, access_token, refresh_token, expires_at, created_at, updated_at
+        FROM freee_oauth_tokens
+        WHERE provider = 'freee'
+        LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    if close_db:
+        db.close()
+    return row
+
+
+def _save_freee_tokens(token_response: dict) -> None:
+    access_token = token_response.get("access_token")
+    refresh_token = token_response.get("refresh_token")
+    if not access_token or not refresh_token:
+        raise RuntimeError("freeeのトークン応答が不完全です。")
+    expires_in = int(token_response.get("expires_in") or 0)
+    now = now_ts()
+    expires_at = now + timedelta(seconds=expires_in) if expires_in > 0 else None
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO freee_oauth_tokens (
+            provider, access_token, refresh_token, expires_at, created_at, updated_at
+        ) VALUES ('freee', %s, %s, %s, %s, %s)
+        ON DUPLICATE KEY UPDATE
+            access_token = VALUES(access_token),
+            refresh_token = VALUES(refresh_token),
+            expires_at = VALUES(expires_at),
+            updated_at = VALUES(updated_at)
+        """,
+        (access_token, refresh_token, expires_at, now, now),
+    )
+    db.commit()
+    db.close()
+
+
+def _refresh_freee_access_token(refresh_token: str) -> str:
+    config = _freee_oauth_config()
+    if not config["client_id"] or not config["client_secret"]:
+        raise RuntimeError("FREEE_CLIENT_ID / FREEE_CLIENT_SECRET が未設定です。")
+    resp = requests.post(
+        FREEE_TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "refresh_token": refresh_token,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=30,
+    )
+    if not (200 <= resp.status_code < 300):
+        raise RuntimeError(_freee_error_from_response(resp))
+    token_data = resp.json()
+    _save_freee_tokens(token_data)
+    return token_data["access_token"]
+
+
+def _get_valid_freee_access_token() -> str:
+    token_row = _load_freee_token_row()
+    if not token_row:
+        raise RuntimeError("freeeに接続されていません。先にfreee接続を行ってください。")
+    expires_at = token_row.get("expires_at")
+    if expires_at and expires_at > now_ts() + timedelta(minutes=5):
+        return token_row["access_token"]
+    return _refresh_freee_access_token(token_row["refresh_token"])
+
+
+def _freee_api_request(method: str, path: str, *, params=None, json_body=None) -> dict:
+    if not path.startswith("/api/1/"):
+        raise ValueError("freee API path must start with /api/1/")
+
+    def do_request(access_token: str):
+        return requests.request(
+            method.upper(),
+            FREEE_API_BASE_URL + path,
+            params=params,
+            json=json_body,
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=30,
+        )
+
+    access_token = _get_valid_freee_access_token()
+    resp = do_request(access_token)
+    if resp.status_code == 401:
+        token_row = _load_freee_token_row()
+        if token_row:
+            access_token = _refresh_freee_access_token(token_row["refresh_token"])
+            resp = do_request(access_token)
+    if not (200 <= resp.status_code < 300):
+        raise RuntimeError(_freee_error_from_response(resp))
+    return resp.json() if resp.text else {}
+
+
+def _freee_list_from_response(data: dict, key: str) -> list[dict]:
+    value = data.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _freee_first_list(data: dict, keys: tuple[str, ...]) -> list[dict]:
+    for key in keys:
+        rows = _freee_list_from_response(data, key)
+        if rows:
+            return rows
+    return []
+
+
+def _freee_int_or_none(value) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _freee_tax_code(tax: dict) -> int | None:
+    return _freee_int_or_none(tax.get("code") if tax.get("code") is not None else tax.get("tax_code"))
+
+
+def _freee_tax_name(tax: dict) -> str:
+    return str(tax.get("name_ja") or tax.get("name") or tax.get("display_name") or "").strip()
+
+
+def _freee_walletable_id(walletable: dict) -> int | None:
+    return _freee_int_or_none(walletable.get("id") if walletable.get("id") is not None else walletable.get("walletable_id"))
+
+
+def _freee_walletable_type(walletable: dict) -> str:
+    return str(walletable.get("walletable_type") or walletable.get("type") or "").strip()
+
+
+def _format_freee_company_label(company: dict) -> str:
+    name = company.get("display_name") or company.get("name") or "名称未設定"
+    company_id = company.get("id") or "-"
+    company_number = company.get("company_number") or "-"
+    return f"{name}（ID:{company_id} / 会社番号:{company_number}）"
+
+
+def _format_freee_account_item_label(item: dict) -> str:
+    name = item.get("name") or item.get("display_name") or "名称未設定"
+    item_id = item.get("id") or "-"
+    default_tax_code = item.get("default_tax_code") or "-"
+    return f"{name}（ID:{item_id} / default_tax_code:{default_tax_code}）"
+
+
+def _format_freee_tax_label(tax: dict) -> str:
+    name = _freee_tax_name(tax) or "名称未設定"
+    code = _freee_tax_code(tax)
+    return f"{name}（code:{code if code is not None else '-'}）"
+
+
+def _format_freee_walletable_label(walletable: dict) -> str:
+    name = walletable.get("name") or walletable.get("display_name") or "名称未設定"
+    walletable_type = _freee_walletable_type(walletable) or "-"
+    walletable_id = _freee_walletable_id(walletable) or "-"
+    return f"{name}（{walletable_type} / ID:{walletable_id}）"
+
+
+def _format_freee_partner_label(partner: dict) -> str:
+    name = partner.get("name") or partner.get("display_name") or "名称未設定"
+    partner_id = partner.get("id") or "-"
+    return f"{name}（ID:{partner_id}）"
+
+
+def _find_company_by_id(companies: list[dict], company_id: int) -> dict | None:
+    for company in companies:
+        if _freee_int_or_none(company.get("id")) == company_id:
+            return company
+    return None
+
+
+def _fetch_freee_taxes(company_id: int, warnings: list[str]) -> list[dict]:
+    try:
+        data = _freee_api_request("GET", f"/api/1/taxes/companies/{company_id}")
+        taxes = _freee_first_list(data, ("taxes", "tax_codes", "codes"))
+        if taxes:
+            return taxes
+    except Exception as exc:
+        warnings.append(
+            f"税区分取得で /api/1/taxes/companies/{company_id} に失敗したため /api/1/taxes/codes にフォールバックしました。{_sanitize_freee_error(str(exc))}"
+        )
+    data = _freee_api_request("GET", "/api/1/taxes/codes", params={"company_id": company_id})
+    return _freee_first_list(data, ("taxes", "tax_codes", "codes"))
+
+
+def _fetch_freee_master_bundle(company_id: int | None = None) -> dict:
+    warnings: list[str] = []
+    companies = _freee_list_from_response(_freee_api_request("GET", "/api/1/companies"), "companies")
+    settings = _get_freee_settings()
+    selected_company_id = company_id
+    if selected_company_id is None and settings and settings.get("company_id"):
+        configured_id = _freee_int_or_none(settings.get("company_id"))
+        if configured_id and _find_company_by_id(companies, configured_id):
+            selected_company_id = configured_id
+    if selected_company_id is None and len(companies) == 1:
+        selected_company_id = _freee_int_or_none(companies[0].get("id"))
+    if selected_company_id and not _find_company_by_id(companies, selected_company_id):
+        warnings.append("選択された事業所IDはfreeeの事業所一覧に見つかりませんでした。会社番号ではなくfreee内部IDを選んでください。")
+
+    master = {
+        "companies": companies,
+        "selected_company_id": selected_company_id,
+        "account_items": [],
+        "partners": [],
+        "walletables": [],
+        "taxes": [],
+        "warnings": warnings,
+    }
+    if not selected_company_id:
+        return master
+
+    params = {"company_id": selected_company_id}
+    for key, path in (
+        ("account_items", "/api/1/account_items"),
+        ("partners", "/api/1/partners"),
+        ("walletables", "/api/1/walletables"),
+    ):
+        try:
+            master[key] = _freee_list_from_response(_freee_api_request("GET", path, params=params), key)
+        except Exception as exc:
+            warnings.append(f"{key} の取得に失敗しました: {_sanitize_freee_error(str(exc))}")
+    try:
+        master["taxes"] = _fetch_freee_taxes(int(selected_company_id), warnings)
+    except Exception as exc:
+        warnings.append(f"税区分の取得に失敗しました: {_sanitize_freee_error(str(exc))}")
+    return master
+
+
+def _pick_account_item(account_items: list[dict]) -> dict | None:
+    for item in account_items:
+        if str(item.get("name") or "") == "売上高":
+            return item
+    for item in account_items:
+        if "売上" in str(item.get("name") or ""):
+            return item
+    return None
+
+
+def _pick_tax(taxes: list[dict], preferred_tax_code: int | None = None) -> dict | None:
+    if preferred_tax_code is not None:
+        for tax in taxes:
+            if _freee_tax_code(tax) == preferred_tax_code:
+                return tax
+    for tax in taxes:
+        if str(tax.get("name_ja") or "") == "課税売上10%":
+            return tax
+    for tax in taxes:
+        if str(tax.get("name") or "") == "課税売上10%":
+            return tax
+    for tax in taxes:
+        if _freee_tax_code(tax) == 129:
+            return tax
+    return None
+
+
+def _pick_walletable(walletables: list[dict]) -> dict | None:
+    for walletable in walletables:
+        if str(walletable.get("name") or "") == "現金":
+            return walletable
+    for walletable in walletables:
+        if "現金" in str(walletable.get("name") or ""):
+            return walletable
+    for walletable in walletables:
+        if _freee_walletable_type(walletable) == "wallet" and "現金" in str(walletable.get("name") or ""):
+            return walletable
+    return None
+
+
+def _pick_partner(partners: list[dict]) -> dict | None:
+    for partner in partners:
+        if str(partner.get("name") or "") == "Uber":
+            return partner
+    for partner in partners:
+        name = str(partner.get("name") or "")
+        if "Uber" in name or "ウーバー" in name:
+            return partner
+    return None
+
+
+def _with_freee_labels(rows: list[dict], formatter) -> list[dict]:
+    labeled = []
+    for row in rows:
+        item = dict(row)
+        item["label"] = formatter(row)
+        labeled.append(item)
+    return labeled
+
+
+def _pick_freee_auto_config(master: dict) -> dict:
+    warnings = list(master.get("warnings") or [])
+    selected_company_id = _freee_int_or_none(master.get("selected_company_id"))
+    company = _find_company_by_id(master.get("companies") or [], selected_company_id) if selected_company_id else None
+    if not company:
+        warnings.append("freee事業所を選択してください。")
+
+    account_item = _pick_account_item(master.get("account_items") or [])
+    preferred_tax_code = _freee_int_or_none((account_item or {}).get("default_tax_code"))
+    tax = _pick_tax(master.get("taxes") or [], preferred_tax_code)
+    walletable = _pick_walletable(master.get("walletables") or [])
+    partner = _pick_partner(master.get("partners") or [])
+    if not account_item:
+        warnings.append("勘定科目「売上高」を自動判定できませんでした。")
+    if not tax:
+        warnings.append("税区分「課税売上10%」を自動判定できませんでした。")
+    if not walletable:
+        warnings.append("決済口座「現金」を自動判定できませんでした。")
+
+    return {
+        "company_id": _freee_int_or_none((company or {}).get("id")),
+        "company_label": _format_freee_company_label(company) if company else "",
+        "account_item_id": _freee_int_or_none((account_item or {}).get("id")),
+        "account_item_name": (account_item or {}).get("name"),
+        "tax_code": _freee_tax_code(tax or {}),
+        "tax_name": _freee_tax_name(tax or {}),
+        "walletable_type": _freee_walletable_type(walletable or {}),
+        "walletable_id": _freee_walletable_id(walletable or {}),
+        "walletable_name": (walletable or {}).get("name"),
+        "partner_id": _freee_int_or_none((partner or {}).get("id")),
+        "partner_name": (partner or {}).get("name"),
+        "partner_code": None,
+        "deal_payment_mode": "settled",
+        "warnings": warnings,
+    }
+
+
+def _build_freee_deal_payload(row: dict, settings: dict) -> dict:
+    work_date = row["work_date"]
+    deliveries = int(row.get("deliveries") or 0)
+    net_yen = int(row.get("net_yen") or 0)
+    promo_yen = int(row.get("promo_yen") or 0)
+    other_yen = int(row.get("other_yen") or 0)
+    tip_yen = int(row.get("tip_yen") or 0)
+    total_yen = int(row.get("total_yen") or 0)
+    description = (
+        f"Uber日次売上（{deliveries}件 / "
+        f"net:{net_yen} promo:{promo_yen} other:{other_yen} tip:{tip_yen}）"
+    )
+    payload = {
+        "company_id": int(settings["company_id"]),
+        "issue_date": work_date.isoformat(),
+        "due_date": work_date.isoformat(),
+        "type": "income",
+        "ref_number": f"uber-{work_date.strftime('%Y%m%d')}",
+        "details": [
+            {
+                "account_item_id": int(settings["account_item_id"]),
+                "tax_code": int(settings["tax_code"]),
+                "amount": total_yen,
+                "description": description,
+            }
+        ],
+    }
+    if settings.get("partner_id"):
+        payload["partner_id"] = int(settings["partner_id"])
+    elif settings.get("partner_code"):
+        payload["partner_code"] = str(settings["partner_code"])
+    if (settings.get("deal_payment_mode") or "settled") == "settled":
+        payload["payments"] = [
+            {
+                "date": work_date.isoformat(),
+                "from_walletable_type": settings["walletable_type"],
+                "from_walletable_id": int(settings["walletable_id"]),
+                "amount": total_yen,
+            }
+        ]
+    return payload
+
+
+def _mark_uber_freee_error(row_id: int, message: str) -> None:
+    db = get_db()
+    cur = db.cursor()
+    now = now_ts()
+    cur.execute(
+        """
+        UPDATE uber_daily
+        SET freee_api_status = 'error',
+            freee_api_error = %s,
+            updated_at = %s
+        WHERE id = %s
+        """,
+        (_sanitize_freee_error(message), now, row_id),
+    )
+    db.commit()
+    db.close()
+
+
+def _sync_uber_row_to_freee(row: dict, settings: dict) -> dict:
+    work_date = row["work_date"]
+    date_label = work_date.isoformat()
+    if row.get("freee_deal_id"):
+        return {"date": date_label, "status": "skipped_already_synced", "freee_deal_id": row.get("freee_deal_id")}
+    if int(row.get("total_yen") or 0) <= 0:
+        return {"date": date_label, "status": "skipped_zero_amount"}
+    try:
+        data = _freee_api_request("POST", "/api/1/deals", json_body=_build_freee_deal_payload(row, settings))
+        deal = data.get("deal") if isinstance(data, dict) else None
+        freee_deal_id = (deal or {}).get("id") or data.get("id")
+        if not freee_deal_id:
+            raise RuntimeError(f"freee API response does not include deal id: {json.dumps(data, ensure_ascii=False)[:500]}")
+        db = get_db()
+        cur = db.cursor()
+        now = now_ts()
+        cur.execute(
+            """
+            UPDATE uber_daily
+            SET freee_deal_id = %s,
+                freee_api_synced_at = %s,
+                freee_api_status = 'synced',
+                freee_api_error = NULL,
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (freee_deal_id, now, now, row["id"]),
+        )
+        db.commit()
+        db.close()
+        return {"date": date_label, "status": "synced", "freee_deal_id": int(freee_deal_id)}
+    except Exception as exc:
+        message = _sanitize_freee_error(str(exc))
+        _mark_uber_freee_error(row["id"], message)
+        return {"date": date_label, "status": "error", "message": message}
+
+
 @records_bp.get("/")
 @login_required
 def index():
@@ -342,6 +914,9 @@ def index():
 @login_required
 def uber_list():
     rows = _fetch_uber_daily_rows(order_desc=True)
+    freee_token_row = _load_freee_token_row() if _is_admin_user() else None
+    freee_settings = _get_freee_settings() if _is_admin_user() else None
+    freee_settings_error = _validate_freee_settings(freee_settings) if _is_admin_user() else None
     db = get_db()
     cur = db.cursor(dictionary=True)
 
@@ -529,6 +1104,11 @@ def uber_list():
         estimate_month_options=estimate_month_options,
         default_estimate_month_key=default_estimate_month_key,
         ocr_queue_pending_count=ocr_queue_pending_count,
+        is_admin_user=_is_admin_user(),
+        freee_connected=bool(freee_token_row),
+        freee_settings=freee_settings,
+        freee_settings_complete=bool(freee_settings and not freee_settings_error),
+        freee_settings_error=freee_settings_error,
         default_work_date=today,
         summary={
             "deliveries_sum": deliveries_sum,
@@ -574,6 +1154,10 @@ def _fetch_uber_daily_rows(
             other_yen,
             tip_yen,
             freee_exported_at,
+            freee_deal_id,
+            freee_api_synced_at,
+            freee_api_status,
+            freee_api_error,
             (net_yen + promo_yen + other_yen + tip_yen) AS total_yen
         FROM uber_daily
         {where_sql}
@@ -707,6 +1291,297 @@ def uber_freee_csv():
     db.close()
 
     return response
+
+
+@records_bp.get("/uber/freee/connect")
+@login_required
+def uber_freee_connect():
+    admin_redirect = _require_admin_for_records()
+    if admin_redirect:
+        return admin_redirect
+    config = _freee_oauth_config()
+    if not config["client_id"]:
+        flash("FREEE_CLIENT_ID が未設定です。", "warning")
+        return redirect(url_for("records.uber_list"))
+    state = secrets.token_urlsafe(32)
+    session["freee_oauth_state"] = state
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": config["client_id"],
+            "redirect_uri": config["redirect_uri"],
+            "state": state,
+            "prompt": "select_company",
+        }
+    )
+    return redirect(f"{FREEE_AUTHORIZE_URL}?{query}")
+
+
+@records_bp.get("/uber/freee/callback")
+@login_required
+def uber_freee_callback():
+    admin_redirect = _require_admin_for_records()
+    if admin_redirect:
+        return admin_redirect
+    if request.args.get("error"):
+        flash(f"freee接続がキャンセルまたは失敗しました: {request.args.get('error')}", "warning")
+        return redirect(url_for("records.uber_list"))
+    expected_state = session.pop("freee_oauth_state", None)
+    actual_state = request.args.get("state")
+    if not expected_state or actual_state != expected_state:
+        flash("freee OAuth state が一致しません。もう一度接続してください。", "danger")
+        return redirect(url_for("records.uber_list"))
+    code = request.args.get("code")
+    if not code:
+        flash("freee OAuth code が取得できませんでした。", "danger")
+        return redirect(url_for("records.uber_list"))
+    config = _freee_oauth_config()
+    if not config["client_id"] or not config["client_secret"]:
+        flash("FREEE_CLIENT_ID / FREEE_CLIENT_SECRET が未設定です。", "warning")
+        return redirect(url_for("records.uber_list"))
+    try:
+        resp = requests.post(
+            FREEE_TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+                "code": code,
+                "redirect_uri": config["redirect_uri"],
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=30,
+        )
+        if not (200 <= resp.status_code < 300):
+            raise RuntimeError(_freee_error_from_response(resp))
+        _save_freee_tokens(resp.json())
+        flash("freeeに接続しました。", "success")
+    except Exception as exc:
+        flash(_sanitize_freee_error(str(exc)), "danger")
+    return redirect(url_for("records.uber_list"))
+
+
+@records_bp.post("/uber/freee/settings")
+@login_required
+def uber_freee_save_settings():
+    admin_redirect = _require_admin_for_records()
+    if admin_redirect:
+        return admin_redirect
+    source = request.get_json(silent=True) if request.is_json else request.form
+    try:
+        company_id = _parse_optional_int_value(source.get("company_id"))
+        partner_id = _parse_optional_int_value(source.get("partner_id"))
+        partner_code = (source.get("partner_code") or "").strip() or None
+        account_item_id = _parse_optional_int_value(source.get("account_item_id"))
+        tax_code = _parse_optional_int_value(source.get("tax_code"))
+        walletable_type = (source.get("walletable_type") or "").strip() or None
+        walletable_id = _parse_optional_int_value(source.get("walletable_id"))
+        walletable_value = (source.get("walletable") or "").strip()
+        if walletable_value:
+            raw_type, sep, raw_id = walletable_value.partition(":")
+            if sep:
+                walletable_type = raw_type.strip() or None
+                walletable_id = _parse_optional_int_value(raw_id)
+        deal_payment_mode = (source.get("deal_payment_mode") or "settled").strip()
+    except (TypeError, ValueError):
+        flash("freee連携設定の数値項目を確認してください。", "warning")
+        return redirect(url_for("records.uber_list"))
+
+    settings = {
+        "company_id": company_id,
+        "partner_id": partner_id,
+        "partner_code": partner_code,
+        "account_item_id": account_item_id,
+        "tax_code": tax_code,
+        "walletable_type": walletable_type,
+        "walletable_id": walletable_id,
+        "deal_payment_mode": deal_payment_mode,
+    }
+    if company_id and _load_freee_token_row():
+        try:
+            companies = _freee_list_from_response(_freee_api_request("GET", "/api/1/companies"), "companies")
+            if not _find_company_by_id(companies, int(company_id)):
+                matched_number = any(str(company.get("company_number") or "") == str(company_id) for company in companies)
+                if matched_number:
+                    flash("事業所IDには会社番号ではなく、freee内部IDを選択してください。", "warning")
+                    return redirect(url_for("records.uber_list"))
+        except Exception:
+            pass
+    error = _validate_freee_settings(settings)
+    if error:
+        flash(error, "warning")
+        return redirect(url_for("records.uber_list"))
+    _upsert_freee_settings(**settings)
+    flash("freee連携設定を保存しました。", "success")
+    return redirect(url_for("records.uber_list"))
+
+
+@records_bp.get("/uber/freee/master-data")
+@login_required
+def uber_freee_master_data():
+    admin_error = _require_admin_json()
+    if admin_error:
+        return admin_error
+    settings = _get_freee_settings()
+    raw_company_id = request.args.get("company_id") or (settings or {}).get("company_id")
+    try:
+        company_id = int(raw_company_id) if raw_company_id else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "company_id を確認してください。"}), 400
+    try:
+        data = {"companies": _freee_api_request("GET", "/api/1/companies").get("companies", [])}
+        if company_id:
+            params = {"company_id": company_id}
+            data["account_items"] = _freee_api_request("GET", "/api/1/account_items", params=params).get("account_items", [])
+            data["partners"] = _freee_api_request("GET", "/api/1/partners", params=params).get("partners", [])
+            data["walletables"] = _freee_api_request("GET", "/api/1/walletables", params=params).get("walletables", [])
+            warnings = []
+            data["taxes"] = _fetch_freee_taxes(int(company_id), warnings)
+            data["warnings"] = warnings
+        return jsonify({"ok": True, **data})
+    except Exception as exc:
+        return jsonify({"ok": False, "message": _sanitize_freee_error(str(exc))}), 500
+
+
+@records_bp.get("/uber/freee/auto-config-candidates")
+@login_required
+def uber_freee_auto_config_candidates():
+    admin_error = _require_admin_json()
+    if admin_error:
+        return admin_error
+    if not _load_freee_token_row():
+        return jsonify({"ok": False, "message": "freeeに接続されていません。先にfreee接続を行ってください。"}), 401
+    try:
+        raw_company_id = request.args.get("company_id")
+        company_id = int(raw_company_id) if raw_company_id else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "freee事業所を選択してください。"}), 400
+    try:
+        master = _fetch_freee_master_bundle(company_id)
+        suggested = _pick_freee_auto_config(master)
+        return jsonify(
+            {
+                "ok": True,
+                "companies": _with_freee_labels(master.get("companies") or [], _format_freee_company_label),
+                "account_items": _with_freee_labels(master.get("account_items") or [], _format_freee_account_item_label),
+                "taxes": _with_freee_labels(master.get("taxes") or [], _format_freee_tax_label),
+                "walletables": _with_freee_labels(master.get("walletables") or [], _format_freee_walletable_label),
+                "partners": _with_freee_labels(master.get("partners") or [], _format_freee_partner_label),
+                "selected_company_id": master.get("selected_company_id"),
+                "suggested": suggested,
+                "warnings": list(master.get("warnings") or []) + list(suggested.get("warnings") or []),
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "message": _sanitize_freee_error(str(exc))}), 500
+
+
+@records_bp.post("/uber/freee/auto-config-save")
+@login_required
+def uber_freee_auto_config_save():
+    admin_error = _require_admin_json()
+    if admin_error:
+        return admin_error
+    if not _load_freee_token_row():
+        return jsonify({"ok": False, "message": "freeeに接続されていません。先にfreee接続を行ってください。"}), 401
+    payload = request.get_json(silent=True) or {}
+    try:
+        company_id = int(payload.get("company_id") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "freee事業所を選択してください。"}), 400
+    if company_id <= 0:
+        return jsonify({"ok": False, "message": "freee事業所を選択してください。"}), 400
+    try:
+        master = _fetch_freee_master_bundle(company_id)
+        suggested = _pick_freee_auto_config(master)
+        settings = {
+            "company_id": suggested.get("company_id"),
+            "partner_id": suggested.get("partner_id"),
+            "partner_code": suggested.get("partner_code"),
+            "account_item_id": suggested.get("account_item_id"),
+            "tax_code": suggested.get("tax_code"),
+            "walletable_type": suggested.get("walletable_type"),
+            "walletable_id": suggested.get("walletable_id"),
+            "deal_payment_mode": suggested.get("deal_payment_mode") or "settled",
+        }
+        warnings = list(master.get("warnings") or []) + list(suggested.get("warnings") or [])
+        if _validate_freee_settings(settings):
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": "自動設定に必要な勘定科目または税区分または決済口座が見つかりませんでした。候補一覧から手動選択してください。",
+                    "warnings": warnings,
+                    "suggested": suggested,
+                }
+            ), 400
+        _upsert_freee_settings(**settings)
+        return jsonify(
+            {
+                "ok": True,
+                "message": "freee連携設定を自動保存しました。",
+                "settings": {
+                    **settings,
+                    "account_item_name": suggested.get("account_item_name"),
+                    "tax_name": suggested.get("tax_name"),
+                    "walletable_name": suggested.get("walletable_name"),
+                    "partner_name": suggested.get("partner_name"),
+                },
+                "warnings": warnings,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "message": _sanitize_freee_error(str(exc))}), 500
+
+
+@records_bp.post("/uber/freee/api-sync")
+@login_required
+def uber_freee_api_sync():
+    admin_error = _require_admin_json()
+    if admin_error:
+        return admin_error
+    payload = request.get_json(silent=True) or {}
+    raw_dates = payload.get("dates")
+    if not isinstance(raw_dates, list):
+        return jsonify({"ok": False, "message": "dates は配列で指定してください。"}), 400
+    parsed_dates: list[date] = []
+    seen_dates: set[date] = set()
+    for value in raw_dates:
+        if not isinstance(value, str):
+            return jsonify({"ok": False, "message": "dates は YYYY-MM-DD 形式の配列で指定してください。"}), 400
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"ok": False, "message": "dates は YYYY-MM-DD 形式で指定してください。"}), 400
+        if parsed not in seen_dates:
+            seen_dates.add(parsed)
+            parsed_dates.append(parsed)
+    if not parsed_dates:
+        return jsonify({"ok": False, "message": "少なくとも1日以上選択してください。"}), 400
+
+    settings = _get_freee_settings()
+    settings_error = _validate_freee_settings(settings)
+    if settings_error:
+        return jsonify({"ok": False, "message": settings_error}), 400
+    if not _load_freee_token_row():
+        return jsonify({"ok": False, "message": "freeeに接続されていません。先にfreee接続を行ってください。"}), 401
+
+    rows = _fetch_uber_daily_rows(dates=parsed_dates, order_desc=False)
+    rows_by_date = {row["work_date"]: row for row in rows}
+    results = []
+    for target_date in parsed_dates:
+        row = rows_by_date.get(target_date)
+        if not row:
+            results.append({"date": target_date.isoformat(), "status": "skipped_not_found"})
+            continue
+        results.append(_sync_uber_row_to_freee(row, settings))
+
+    synced = sum(1 for item in results if item.get("status") == "synced")
+    failed = sum(1 for item in results if item.get("status") == "error")
+    skipped = len(results) - synced - failed
+    response_body = {"ok": failed < len(results), "synced": synced, "skipped": skipped, "failed": failed, "results": results}
+    if results and failed == len(results):
+        return jsonify(response_body), 500
+    return jsonify(response_body)
 
 
 @records_bp.get("/uber/new")

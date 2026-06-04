@@ -39,6 +39,64 @@ def ensure_uber_schema(db=None) -> None:
         cur.execute(
             "ALTER TABLE uber_daily ADD COLUMN freee_exported_at DATETIME NULL AFTER updated_at"
         )
+    if "freee_deal_id" not in columns:
+        cur.execute(
+            "ALTER TABLE uber_daily ADD COLUMN freee_deal_id BIGINT NULL AFTER freee_exported_at"
+        )
+    if "freee_api_synced_at" not in columns:
+        cur.execute(
+            "ALTER TABLE uber_daily ADD COLUMN freee_api_synced_at DATETIME NULL AFTER freee_deal_id"
+        )
+    if "freee_api_status" not in columns:
+        cur.execute(
+            "ALTER TABLE uber_daily ADD COLUMN freee_api_status VARCHAR(32) NULL AFTER freee_api_synced_at"
+        )
+    if "freee_api_error" not in columns:
+        cur.execute(
+            "ALTER TABLE uber_daily ADD COLUMN freee_api_error TEXT NULL AFTER freee_api_status"
+        )
+    db.commit()
+    if close_db:
+        db.close()
+
+
+def ensure_freee_schema(db=None) -> None:
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+    cur = db.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS freee_oauth_tokens (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            provider VARCHAR(32) NOT NULL DEFAULT 'freee',
+            access_token TEXT NOT NULL,
+            refresh_token TEXT NOT NULL,
+            expires_at DATETIME NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE KEY uniq_provider (provider)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS freee_accounting_settings (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id BIGINT NULL,
+            partner_id BIGINT NULL,
+            partner_code VARCHAR(191) NULL,
+            account_item_id BIGINT NULL,
+            tax_code INT NULL,
+            walletable_type VARCHAR(64) NULL,
+            walletable_id BIGINT NULL,
+            deal_payment_mode VARCHAR(32) NOT NULL DEFAULT 'settled',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
     db.commit()
     if close_db:
         db.close()
@@ -336,6 +394,7 @@ def ensure_records_schema() -> None:
     db = get_db()
     try:
         ensure_uber_schema(db)
+        ensure_freee_schema(db)
         ensure_uber_ocr_queue_schema(db)
         ensure_maintenance_items_schema(db)
         ensure_maintenance_schema(db)
