@@ -13,7 +13,7 @@ class ImageViewer(QDialog):
         self.images = images
         self.index = index
         self.cache = cache
-        self.setWindowTitle("Image")
+        self.setWindowTitle("画像")
         self.resize(900, 700)
         self.label = QLabel(alignment=Qt.AlignCenter)
         QVBoxLayout(self).addWidget(self.label)
@@ -24,7 +24,8 @@ class ImageViewer(QDialog):
         path = self.cache.fetch(image.get("url") or image.get("thumb_url") or "")
         if path:
             pixmap = QPixmap(path)
-            self.label.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            if not pixmap.isNull():
+                self.label.setPixmap(pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key_Escape:

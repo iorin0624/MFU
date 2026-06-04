@@ -355,6 +355,8 @@ def gui_dm_snapshot(dm_uuid: str):
         return _json_error("forbidden", 403)
     if not can_access_dm(dm_uuid, actor_key):
         return _json_error("forbidden", 403)
+    if not _ensure_chat_dm_reaction_schema():
+        return _json_error("reaction_schema_unavailable", 500)
     conversation = _get_dm_conversation_by_uuid(dm_uuid)
     if not conversation:
         return _json_error("not_found", 404)
@@ -483,3 +485,59 @@ def gui_dm_search(dm_uuid: str):
             }
         )
     return jsonify(_json_safe({"ok": True, "results": results}))
+
+
+@chat_bp.get("/api/gui/dm/<dm_uuid>/messages/<int:message_id>/reactions")
+def gui_dm_reaction_details(dm_uuid: str, message_id: int):
+    actor = get_chat_actor()
+    actor_key = _get_dm_actor_key(actor)
+    if not actor or not actor_key:
+        return _json_error("forbidden", 403)
+    if not can_access_dm(dm_uuid, actor_key):
+        return _json_error("forbidden", 403)
+    conversation = _get_dm_conversation_by_uuid(dm_uuid)
+    if not conversation:
+        return _json_error("not_found", 404)
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id FROM chat_dm_messages WHERE id=%s AND conversation_id=%s LIMIT 1",
+            (message_id, conversation["id"]),
+        )
+        if not cur.fetchone():
+            return _json_error("not_found", 404)
+        cur.execute(
+            """
+            SELECT r.emoji, r.actor_key, r.created_at, p.display_name_cache
+              FROM chat_dm_message_reactions r
+              LEFT JOIN chat_dm_participants p
+                ON p.conversation_id=r.conversation_id AND p.actor_key=r.actor_key
+             WHERE r.conversation_id=%s AND r.message_id=%s
+             ORDER BY r.created_at ASC
+            """,
+            (conversation["id"], message_id),
+        )
+        rows = cur.fetchall() or []
+    finally:
+        cur.close()
+        db.close()
+
+    grouped: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for row in rows:
+        emoji = str(row.get("emoji") or "").strip()
+        if not emoji:
+            continue
+        if emoji not in grouped:
+            grouped[emoji] = {"emoji": emoji, "count": 0, "actors": []}
+            order.append(emoji)
+        actor_key_value = str(row.get("actor_key") or "")
+        grouped[emoji]["count"] += 1
+        grouped[emoji]["actors"].append(
+            {
+                "actor_key": actor_key_value,
+                "display_name": str(row.get("display_name_cache") or actor_key_value),
+            }
+        )
+    return jsonify(_json_safe({"ok": True, "groups": [grouped[k] for k in order]}))

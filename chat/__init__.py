@@ -5443,6 +5443,8 @@ def _build_admin_dm_inbox_items(actor_key: str) -> list[dict[str, Any]]:
 def _require_any_login():
     if request.endpoint in {"chat.manifest", "chat.sw", "chat.static"}:
         return None
+    if request.endpoint in {"chat.gui_session", "chat.gui_login"}:
+        return None
     actor = get_chat_actor()
     if not actor:
         return jsonify({"ok": False, "error": "ログインが必要です"}), 403
@@ -8213,3 +8215,9 @@ def notify_dm(data):
         )
     _log_notification(event_id, "dm", {"target_actor_type": target_actor_type, "target_actor_id": target_actor_id}, sent_count)
     emit("chat_dm_notified", {"ok": True, "sent_count": sent_count})
+
+
+# ============================================================
+# Desktop GUI JSON API
+# ============================================================
+from app.chat import gui_api as _gui_api  # noqa: E402,F401

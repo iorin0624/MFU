@@ -37,10 +37,12 @@ class SocketClient:
             callback(data)
 
     def connect(self) -> None:
+        if self.sio.connected:
+            return
         headers = {}
-        cookie = self.api.session.cookies.get_dict()
-        if cookie:
-            headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookie.items())
+        cookies = {cookie.name: cookie.value for cookie in self.api.session.cookies}
+        if cookies:
+            headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
         self.sio.connect(
             self.api.base_url,
             headers=headers,
@@ -49,15 +51,20 @@ class SocketClient:
             wait_timeout=10,
         )
 
+    def _emit(self, event_name: str, payload: dict[str, Any]) -> None:
+        if not self.sio.connected:
+            self.connect()
+        self.sio.emit(event_name, payload)
+
     def disconnect(self) -> None:
         if self.sio.connected:
             self.sio.disconnect()
 
     def join_event(self, event_id: int, room_id: str | None) -> None:
-        self.sio.emit("chat_join", {"event_id": event_id, "room_id": room_id or ""})
+        self._emit("chat_join", {"event_id": event_id, "room_id": room_id or ""})
 
     def join_dm(self, dm_uuid: str) -> None:
-        self.sio.emit("chat_join", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
+        self._emit("chat_join", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}"})
 
     def send_event(self, event_id: int, room_id: str, body: str, reply_to: int | None = None, thread_root_id: int | None = None) -> None:
         payload = {"event_id": event_id, "room_id": room_id, "body": body}
@@ -65,22 +72,22 @@ class SocketClient:
             payload["reply_to_message_id"] = reply_to
         if thread_root_id:
             payload["thread_root_id"] = thread_root_id
-        self.sio.emit("chat_send", payload)
+        self._emit("chat_send", payload)
 
     def send_dm(self, dm_uuid: str, body: str) -> None:
-        self.sio.emit("chat_send", {"dm_uuid": dm_uuid, "body": body})
+        self._emit("chat_send", {"dm_uuid": dm_uuid, "body": body})
 
     def seen_event(self, event_id: int, room_id: str, last_seen_message_id: int) -> None:
-        self.sio.emit("chat_seen", {"event_id": event_id, "room_id": room_id, "last_seen_message_id": last_seen_message_id})
+        self._emit("chat_seen", {"event_id": event_id, "room_id": room_id, "last_seen_message_id": last_seen_message_id})
 
     def seen_dm(self, dm_uuid: str, last_seen_message_id: int) -> None:
-        self.sio.emit("chat_seen", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}", "last_seen_message_id": last_seen_message_id})
+        self._emit("chat_seen", {"dm_uuid": dm_uuid, "room_id": f"dm:{dm_uuid}", "last_seen_message_id": last_seen_message_id})
 
     def react_event(self, event_id: int, room_id: str, message_id: int, emoji: str) -> None:
-        self.sio.emit("chat_react", {"event_id": event_id, "room_id": room_id, "message_id": message_id, "emoji": emoji})
+        self._emit("chat_react", {"event_id": event_id, "room_id": room_id, "message_id": message_id, "emoji": emoji})
 
     def react_dm(self, dm_uuid: str, message_id: int, emoji: str) -> None:
-        self.sio.emit("dm_react", {"dm_uuid": dm_uuid, "message_id": message_id, "emoji": emoji})
+        self._emit("dm_react", {"dm_uuid": dm_uuid, "message_id": message_id, "emoji": emoji})
 
     def typing_event(self, event_id: int, room_id: str, is_typing: bool) -> None:
-        self.sio.emit("chat_typing", {"event_id": event_id, "room_id": room_id, "is_typing": is_typing})
+        self._emit("chat_typing", {"event_id": event_id, "room_id": room_id, "is_typing": is_typing})

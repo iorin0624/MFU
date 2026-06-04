@@ -7,4 +7,4 @@ class ThreadPanel(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Thread"))
+        layout.addWidget(QLabel("スレッド"))

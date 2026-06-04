@@ -1,19 +1,33 @@
 # MFU Chat Desktop
 
-MFU Chat Desktop is a native Windows chat client for the existing MFU Flask-SocketIO chat. It does not embed `/chat` in a WebView. It talks to MFU through `/chat/api/gui/*`, the existing chat HTTP APIs, and the existing Socket.IO events.
+MFU Chat Desktop は、既存MFUチャットをWindows向けネイティブGUIで利用するためのクライアントです。既存 `/chat` 画面をWebViewで丸ごと表示せず、GUI用JSON API、既存HTTP API、既存Socket.IOイベントで通信します。
 
-## Install
+## 通常利用
+
+通常利用者は `.py` を直接実行せず、ビルド済みの `MFUChatDesktop.exe` をダブルクリックして起動します。
+
+初回起動後、MFUの既存アカウントでログインしてください。パスワード保存を選択した場合のみ、Windows資格情報マネージャー経由で保存します。
+
+## Windows exe化
+
+1. Python 3.11以上をインストール
+2. `tools\mfu_chat_desktop\build\build_windows.bat` を実行
+3. `dist\MFUChatDesktop\MFUChatDesktop.exe` を起動
+
+ビルド設定は `build\mfu_chat_desktop.spec` です。コンソールは非表示、`resources/` と `.env.example` は同梱、`.env` は同梱しません。
+
+## 開発起動
 
 ```powershell
 cd tools\mfu_chat_desktop
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+copy .env.example .env
+python main.py
 ```
 
-## Environment
-
-Copy `.env.example` to `.env` for local use and adjust:
+`.env` 例:
 
 ```env
 MFU_BASE_URL=https://mfu.iori0624.jp
@@ -21,27 +35,36 @@ MFU_SOCKET_PATH=/socket.io
 APP_NAME=MFU Chat Desktop
 ```
 
-Do not commit `.env`.
+## Web版表示に寄せた方針
 
-## Run
+チャット本文表示エリアは、既存Web版 `room.html` のチャットDOM/CSSを参考に、PySide6のWidgetとQSSで再現しています。
 
-```powershell
-python main.py
-```
+- タイムライン背景はWeb版と同じ淡い水色系
+- 自分のメッセージは右寄せ、青い吹き出し
+- 相手のメッセージは左寄せ、薄いグレーの吹き出し
+- 日付区切り、アバター、送信者名、時刻、編集済み、削除済みを表示
+- 返信引用、画像サムネイル、複数画像グリッド、リアクションチップ、スレッド返信数を表示
+- 「未読へ」「最新へ」ボタンと入力中表示を配置
 
-On startup the app calls `GET /chat/api/gui/session`. If the saved cookie is valid, it opens the main window. Otherwise it shows the login dialog and calls `POST /chat/api/gui/login`.
+## 既知の差異
 
-Passwords are only saved when the user opts in, and are stored through `keyring` in Windows Credential Manager. Cookies and app settings are stored under the per-user `platformdirs` config directory.
+- Windows GUI版では、Web版の一部CSSアニメーションは簡略化しています。
+- スマホ向けタッチ操作、スワイプ操作は対象外です。
+- 既読者の詳細ポップアップは簡略化しています。
+- 未読位置ジャンプは現時点では最新位置への簡易ジャンプです。
+- QWebEngineViewは使わず、ネイティブWidgetで再現しているため、HTML/CSS完全一致ではありません。
 
-## Build EXE
+## トレイ収納
 
-```powershell
-pyinstaller build/mfu_chat_desktop.spec
-```
+- 起動中はシステムトレイにもアイコンを表示します。
+- 最小化するとメインウィンドウを非表示にし、タスクバーから消します。
+- `×` ボタンでも終了せず、通知領域へ収納します。
+- 復帰はトレイアイコンのダブルクリック、またはトレイメニューの「開く」から行います。
+- 完全終了はトレイメニューの「終了」から行ってください。
+- トレイ収納中もSocket.IO接続を維持し、新着通知を受け取ります。
+- トレイ収納中はpresenceを表示中ではない状態で送信します。
 
-The generated executable is intended for Windows.
-
-## Server APIs Added
+## サーバーAPI
 
 - `GET /chat/api/gui/session`
 - `POST /chat/api/gui/login`
@@ -56,17 +79,11 @@ The generated executable is intended for Windows.
 - `GET /chat/api/gui/dm/<dm_uuid>/messages`
 - `GET /chat/api/gui/dm/<dm_uuid>/search`
 
-Existing APIs are reused for upload, edit, delete, room management, members, mentions, mute, presence, and thread loading.
+アップロード、編集、削除、ルーム管理、メンバー、メンション、ミュート、presence、スレッド取得は既存APIを再利用します。
 
-## Known Limits
+## トラブルシュート
 
-- MFA-enabled MFU accounts return `mfa_required` from the GUI login API. Use an existing browser login/session or extend the desktop app with the existing OTP flow before using those accounts remotely.
-- Thread display and room member editing have UI placeholders wired for future expansion; the existing server APIs are preserved and reusable.
-- Windows toast click-to-open is dependent on Windows notification registration and may need installer-level AppUserModelID work for production packaging.
-
-## Troubleshooting
-
-- Login fails: verify `MFU_BASE_URL`, credentials, and whether MFA is required.
-- Socket does not connect: verify `MFU_SOCKET_PATH` and Apache/gunicorn Socket.IO proxy settings.
-- Images fail: check server upload limits and file type. HEIC/HEIF is intentionally blocked in the desktop preview.
-- Notifications do not appear: confirm Windows notification settings and the app notification toggle.
+- ログインできない: `MFU_BASE_URL`、認証情報、MFA有無を確認してください。
+- Socket.IOが接続できない: `MFU_SOCKET_PATH=/socket.io` とApache/gunicorn側のSocket.IOプロキシ設定を確認してください。
+- 画像送信に失敗する: 形式、20MB制限、最大6枚制限を確認してください。HEIC/HEIFはGUI側でブロックします。
+- 通知が出ない: Windows通知設定とアプリ内の通知ON/OFFを確認してください。
