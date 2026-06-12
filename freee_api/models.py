@@ -46,6 +46,8 @@ def ensure_freee_api_schema(db=None) -> None:
             integration_key VARCHAR(64) NOT NULL,
             account_item_id BIGINT NULL,
             tax_code INT NULL,
+            tax_code_8 INT NULL,
+            tax_code_nontax INT NULL,
             deal_payment_mode VARCHAR(32) NOT NULL DEFAULT 'settled',
             walletable_type VARCHAR(64) NULL,
             walletable_id BIGINT NULL,
@@ -57,6 +59,14 @@ def ensure_freee_api_schema(db=None) -> None:
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """
     )
+    if not _column_exists(cur, "freee_integration_settings", "tax_code_8"):
+        cur.execute(
+            "ALTER TABLE freee_integration_settings ADD COLUMN tax_code_8 INT NULL AFTER tax_code"
+        )
+    if not _column_exists(cur, "freee_integration_settings", "tax_code_nontax"):
+        cur.execute(
+            "ALTER TABLE freee_integration_settings ADD COLUMN tax_code_nontax INT NULL AFTER tax_code_8"
+        )
     _migrate_legacy_freee_settings(cur)
     db.commit()
     if close_db:
@@ -72,6 +82,23 @@ def _table_exists(cur, table_name: str) -> bool:
           AND table_name = %s
         """,
         (table_name,),
+    )
+    row = cur.fetchone()
+    if isinstance(row, dict):
+        return int(row.get("count") or 0) > 0
+    return int(row[0] or 0) > 0
+
+
+def _column_exists(cur, table_name: str, column_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = %s
+          AND column_name = %s
+        """,
+        (table_name, column_name),
     )
     row = cur.fetchone()
     if isinstance(row, dict):
@@ -148,4 +175,3 @@ def _migrate_legacy_freee_settings(cur) -> None:
             now,
         ),
     )
-

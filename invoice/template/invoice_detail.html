@@ -17,6 +17,9 @@
     <a class="btn btn-outline-dark" href="{{ url_for('invoice.invoice_pdf', invoice_id=invoice.id) }}">PDFダウンロード</a>
     <a class="btn btn-outline-primary" href="{{ url_for('invoice.invoice_mail', invoice_id=invoice.id) }}">メール送信</a>
     <a class="btn btn-outline-success" href="{{ url_for('invoice.invoice_freee_csv', invoice_id=invoice.id) }}">freee CSV</a>
+    <form method="post" action="{{ url_for('invoice.invoice_freee_api_sync', invoice_id=invoice.id) }}" class="d-inline">
+      <button class="btn btn-success" type="submit">freee API登録</button>
+    </form>
   </div>
 </div>
 <div class="row g-3 mb-3">
@@ -130,6 +133,20 @@
         <li>PDF生成日: {{ invoice.pdf_generated_at.strftime('%Y-%m-%d %H:%M') if invoice.pdf_generated_at else '未生成' }}</li>
         <li>メール送付日: {{ invoice.mailed_at.strftime('%Y-%m-%d %H:%M') if invoice.mailed_at else '未送付' }}</li>
         <li>freee出力日: {{ invoice.freee_exported_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_exported_at else '未出力' }}</li>
+        <li>freee API状態:
+          {% if freee_needs_resync %}
+            <span class="badge bg-warning text-dark">編集後未反映</span>
+          {% elif invoice.freee_deal_id %}
+            <span class="badge bg-success">反映済み</span>
+          {% elif invoice.freee_api_status == 'error' %}
+            <span class="badge bg-danger">エラー</span>
+          {% else %}
+            <span class="badge bg-secondary">未登録</span>
+          {% endif %}
+        </li>
+        <li>freee deal ID: {{ invoice.freee_deal_id or '---' }}</li>
+        <li>freee API登録日時: {{ invoice.freee_api_synced_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_synced_at else '---' }}</li>
+        {% if invoice.freee_api_error %}<li class="text-danger">freee APIエラー: {{ invoice.freee_api_error }}</li>{% endif %}
       </ul>
     </div></div>
     <div class="card shadow-sm mb-3"><div class="card-body">

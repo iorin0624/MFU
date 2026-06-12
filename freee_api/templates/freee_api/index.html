@@ -92,6 +92,44 @@
         <label class="form-label" for="freeePartnerCode">取引先コード</label>
         <input id="freeePartnerCode" name="partner_code" class="form-control" value="{{ uber_settings.partner_code if uber_settings else '' }}">
       </div>
+      <div class="col-12 mt-4">
+        <h2 class="h5 mb-0">請求書</h2>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="freee-invoice-account-item-select">勘定科目ID（売上高）</label>
+        <select id="freee-invoice-account-item-select" name="invoice_account_item_id" class="form-select" data-current="{{ invoice_settings.account_item_id if invoice_settings else '' }}" required>
+          <option value="">勘定科目を選択してください</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="freee-invoice-tax-code-select">税区分コード 10%</label>
+        <select id="freee-invoice-tax-code-select" name="invoice_tax_code" class="form-select" data-current="{{ invoice_settings.tax_code if invoice_settings else '' }}" required>
+          <option value="">税区分を選択してください</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="freee-invoice-tax-code-8-select">税区分コード 8%</label>
+        <select id="freee-invoice-tax-code-8-select" name="invoice_tax_code_8" class="form-select" data-current="{{ invoice_settings.tax_code_8 if invoice_settings else '' }}" required>
+          <option value="">税区分を選択してください</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="freee-invoice-tax-code-nontax-select">税区分コード 対象外</label>
+        <select id="freee-invoice-tax-code-nontax-select" name="invoice_tax_code_nontax" class="form-select" data-current="{{ invoice_settings.tax_code_nontax if invoice_settings else '' }}" required>
+          <option value="">税区分を選択してください</option>
+        </select>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="freee-invoice-walletable-select">決済口座種別 / ID</label>
+        <select id="freee-invoice-walletable-select" name="invoice_walletable" class="form-select" data-current-type="{{ invoice_settings.walletable_type if invoice_settings else '' }}" data-current-id="{{ invoice_settings.walletable_id if invoice_settings else '' }}" required>
+          <option value="">決済口座を選択してください</option>
+        </select>
+        <input type="hidden" name="invoice_walletable_type" id="freee-invoice-walletable-type" value="{{ invoice_settings.walletable_type if invoice_settings else '' }}">
+        <input type="hidden" name="invoice_walletable_id" id="freee-invoice-walletable-id" value="{{ invoice_settings.walletable_id if invoice_settings else '' }}">
+      </div>
+      <div class="col-md-6">
+        <div class="alert alert-info py-2 mb-0">請求書は収入取引・決済済みで登録します。取引先は請求先ごとに自動検索/作成します。</div>
+      </div>
       <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
         <button class="btn btn-primary" type="submit">保存</button>
         <button class="btn btn-outline-primary" type="button" id="freeeAutoConfigBtn">Uber自動設定</button>
@@ -119,6 +157,13 @@
     const walletableTypeInput = document.getElementById('freee-walletable-type');
     const walletableIdInput = document.getElementById('freee-walletable-id');
     const partnerSelect = document.getElementById('freee-partner-select');
+    const invoiceAccountItemSelect = document.getElementById('freee-invoice-account-item-select');
+    const invoiceTaxCodeSelect = document.getElementById('freee-invoice-tax-code-select');
+    const invoiceTaxCode8Select = document.getElementById('freee-invoice-tax-code-8-select');
+    const invoiceTaxCodeNontaxSelect = document.getElementById('freee-invoice-tax-code-nontax-select');
+    const invoiceWalletableSelect = document.getElementById('freee-invoice-walletable-select');
+    const invoiceWalletableTypeInput = document.getElementById('freee-invoice-walletable-type');
+    const invoiceWalletableIdInput = document.getElementById('freee-invoice-walletable-id');
     const freeeWarnings = document.getElementById('freeeAutoConfigWarnings');
     const masterPreview = document.getElementById('freeeMasterDataPreview');
     const autoConfigBtn = document.getElementById('freeeAutoConfigBtn');
@@ -173,6 +218,12 @@
       walletableTypeInput.value = parts.length === 2 ? parts[0] : '';
       walletableIdInput.value = parts.length === 2 ? parts[1] : '';
     };
+    const syncInvoiceWalletableHidden = function () {
+      if (!invoiceWalletableSelect || !invoiceWalletableTypeInput || !invoiceWalletableIdInput) return;
+      const parts = (invoiceWalletableSelect.value || '').split(':');
+      invoiceWalletableTypeInput.value = parts.length === 2 ? parts[0] : '';
+      invoiceWalletableIdInput.value = parts.length === 2 ? parts[1] : '';
+    };
 
     const renderFreeeMaster = function (data) {
       const suggested = data.suggested || {};
@@ -182,6 +233,12 @@
       const currentWalletType = walletableSelect ? walletableSelect.dataset.currentType : '';
       const currentWalletId = walletableSelect ? walletableSelect.dataset.currentId : '';
       const currentPartner = partnerSelect ? partnerSelect.dataset.current : '';
+      const currentInvoiceAccount = invoiceAccountItemSelect ? invoiceAccountItemSelect.dataset.current : '';
+      const currentInvoiceTax = invoiceTaxCodeSelect ? invoiceTaxCodeSelect.dataset.current : '';
+      const currentInvoiceTax8 = invoiceTaxCode8Select ? invoiceTaxCode8Select.dataset.current : '';
+      const currentInvoiceTaxNontax = invoiceTaxCodeNontaxSelect ? invoiceTaxCodeNontaxSelect.dataset.current : '';
+      const currentInvoiceWalletType = invoiceWalletableSelect ? invoiceWalletableSelect.dataset.currentType : '';
+      const currentInvoiceWalletId = invoiceWalletableSelect ? invoiceWalletableSelect.dataset.currentId : '';
       const selectedCompanyId = suggested.company_id || data.selected_company_id || currentCompany;
 
       setSelectOptions(companySelect, data.companies || [], {
@@ -196,15 +253,42 @@
         value: function (item) { return item.id; },
         label: function (item) { return `${item.name || '名称未設定'}（ID:${item.id} / default_tax_code:${item.default_tax_code || '-'}）`; },
       });
+      setSelectOptions(invoiceAccountItemSelect, data.account_items || [], {
+        blankLabel: '勘定科目を選択してください',
+        selectedValue: currentInvoiceAccount || suggested.account_item_id || currentAccount,
+        value: function (item) { return item.id; },
+        label: function (item) { return `${item.name || '名称未設定'}（ID:${item.id} / default_tax_code:${item.default_tax_code || '-'}）`; },
+      });
       setSelectOptions(taxCodeSelect, data.taxes || [], {
         blankLabel: '税区分を選択してください',
         selectedValue: suggested.tax_code || currentTax,
         value: function (tax) { return taxCodeOf(tax); },
         label: function (tax) { return `${tax.name_ja || tax.name || tax.display_name || '名称未設定'}（code:${taxCodeOf(tax) || '-'}）`; },
       });
+      setSelectOptions(invoiceTaxCodeSelect, data.taxes || [], {
+        blankLabel: '税区分を選択してください',
+        selectedValue: currentInvoiceTax || suggested.tax_code || currentTax,
+        value: function (tax) { return taxCodeOf(tax); },
+        label: function (tax) { return `${tax.name_ja || tax.name || tax.display_name || '名称未設定'}（code:${taxCodeOf(tax) || '-'}）`; },
+      });
+      setSelectOptions(invoiceTaxCode8Select, data.taxes || [], {
+        blankLabel: '税区分を選択してください',
+        selectedValue: currentInvoiceTax8,
+        value: function (tax) { return taxCodeOf(tax); },
+        label: function (tax) { return `${tax.name_ja || tax.name || tax.display_name || '名称未設定'}（code:${taxCodeOf(tax) || '-'}）`; },
+      });
+      setSelectOptions(invoiceTaxCodeNontaxSelect, data.taxes || [], {
+        blankLabel: '税区分を選択してください',
+        selectedValue: currentInvoiceTaxNontax,
+        value: function (tax) { return taxCodeOf(tax); },
+        label: function (tax) { return `${tax.name_ja || tax.name || tax.display_name || '名称未設定'}（code:${taxCodeOf(tax) || '-'}）`; },
+      });
       const selectedWallet = suggested.walletable_type && suggested.walletable_id
         ? `${suggested.walletable_type}:${suggested.walletable_id}`
         : (currentWalletType && currentWalletId ? `${currentWalletType}:${currentWalletId}` : '');
+      const selectedInvoiceWallet = currentInvoiceWalletType && currentInvoiceWalletId
+        ? `${currentInvoiceWalletType}:${currentInvoiceWalletId}`
+        : selectedWallet;
       setSelectOptions(walletableSelect, data.walletables || [], {
         blankLabel: '決済口座を選択してください',
         selectedValue: selectedWallet,
@@ -216,6 +300,17 @@
         label: function (walletable) { return `${walletable.name || walletable.display_name || '名称未設定'}（${walletableTypeOf(walletable) || '-'} / ID:${walletableIdOf(walletable) || '-'}）`; },
       });
       syncWalletableHidden();
+      setSelectOptions(invoiceWalletableSelect, data.walletables || [], {
+        blankLabel: '決済口座を選択してください',
+        selectedValue: selectedInvoiceWallet,
+        value: function (walletable) {
+          const type = walletableTypeOf(walletable);
+          const id = walletableIdOf(walletable);
+          return type && id ? `${type}:${id}` : '';
+        },
+        label: function (walletable) { return `${walletable.name || walletable.display_name || '名称未設定'}（${walletableTypeOf(walletable) || '-'} / ID:${walletableIdOf(walletable) || '-'}）`; },
+      });
+      syncInvoiceWalletableHidden();
       setSelectOptions(partnerSelect, data.partners || [], {
         blankLabel: '取引先なし',
         selectedValue: suggested.partner_id || currentPartner,
@@ -247,8 +342,14 @@
     if (walletableSelect) {
       walletableSelect.addEventListener('change', syncWalletableHidden);
     }
+    if (invoiceWalletableSelect) {
+      invoiceWalletableSelect.addEventListener('change', syncInvoiceWalletableHidden);
+    }
     if (walletableSelect && walletableSelect.form) {
-      walletableSelect.form.addEventListener('submit', syncWalletableHidden);
+      walletableSelect.form.addEventListener('submit', function () {
+        syncWalletableHidden();
+        syncInvoiceWalletableHidden();
+      });
     }
     if (companySelect) {
       companySelect.addEventListener('change', function () {
@@ -304,4 +405,3 @@
   })();
 </script>
 {% endblock %}
-

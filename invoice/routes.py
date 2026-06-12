@@ -11,6 +11,7 @@ from app.bank_account.integration_service import issue_payout_access_token_for_i
 
 from . import invoice_bp
 from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
+from .freee_api import invoice_needs_freee_resync, sync_invoice_to_freee
 from .mail import send_invoice_mail
 from .pdf import generate_invoice_pdf
 from .services import (
@@ -365,6 +366,7 @@ def invoice_detail(invoice_id: int):
     return render_template(
         "invoice_detail.html",
         invoice=invoice,
+        freee_needs_resync=invoice_needs_freee_resync(invoice),
         effective_bank_info=get_invoice_effective_bank_info(invoice),
         status_labels=STATUS_LABELS,
         tax_mode_labels=TAX_MODE_LABELS,
@@ -377,6 +379,28 @@ def invoice_detail(invoice_id: int):
         card_payment_status=card_payment_status,
         latest_card_payment=latest_card_payment,
     )
+
+
+@invoice_bp.post("/<int:invoice_id>/freee-api")
+@login_required
+def invoice_freee_api_sync(invoice_id: int):
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        flash("請求書が見つかりません。", "warning")
+        return redirect(url_for("invoice.invoice_list"))
+    contact = get_contact(invoice.get("contact_id")) if invoice.get("contact_id") else None
+    try:
+        result = sync_invoice_to_freee(invoice, contact)
+        status = result.get("status")
+        if status == "updated":
+            flash("freee APIの取引を修正しました。", "success")
+        elif status == "skipped_already_synced":
+            flash("freee APIは反映済みです。", "info")
+        else:
+            flash("freee APIに取引を登録しました。", "success")
+    except Exception as exc:
+        flash(f"freee API登録に失敗しました: {exc}", "danger")
+    return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
 
 
 @invoice_bp.post("/<int:invoice_id>/issue")
