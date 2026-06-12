@@ -754,6 +754,8 @@ def ensure_invoice_schema() -> None:
                 freee_exported_at DATETIME NULL,
                 freee_deal_id BIGINT NULL,
                 freee_api_synced_at DATETIME NULL,
+                freee_api_registered_at DATETIME NULL,
+                freee_api_modified_at DATETIME NULL,
                 freee_api_status VARCHAR(32) NULL,
                 freee_api_error TEXT NULL,
                 created_at DATETIME NOT NULL,
@@ -833,9 +835,17 @@ def ensure_invoice_schema() -> None:
             cur.execute(
                 "ALTER TABLE invoice_headers ADD COLUMN freee_api_synced_at DATETIME NULL AFTER freee_deal_id"
             )
+        if not _column_exists(cur, "invoice_headers", "freee_api_registered_at"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN freee_api_registered_at DATETIME NULL AFTER freee_api_synced_at"
+            )
+        if not _column_exists(cur, "invoice_headers", "freee_api_modified_at"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN freee_api_modified_at DATETIME NULL AFTER freee_api_registered_at"
+            )
         if not _column_exists(cur, "invoice_headers", "freee_api_status"):
             cur.execute(
-                "ALTER TABLE invoice_headers ADD COLUMN freee_api_status VARCHAR(32) NULL AFTER freee_api_synced_at"
+                "ALTER TABLE invoice_headers ADD COLUMN freee_api_status VARCHAR(32) NULL AFTER freee_api_modified_at"
             )
         if not _column_exists(cur, "invoice_headers", "freee_api_error"):
             cur.execute(

@@ -144,8 +144,11 @@
             <span class="badge bg-secondary">未登録</span>
           {% endif %}
         </li>
+        <li>編集日時: {{ invoice.updated_at.strftime('%Y-%m-%d %H:%M') if invoice.updated_at else '---' }}</li>
         <li>freee deal ID: {{ invoice.freee_deal_id or '---' }}</li>
-        <li>freee API登録日時: {{ invoice.freee_api_synced_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_synced_at else '---' }}</li>
+        <li>freee API登録日時: {{ invoice.freee_api_registered_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_registered_at else (invoice.freee_api_synced_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_synced_at else '---') }}</li>
+        <li>freee API修正日時: {{ invoice.freee_api_modified_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_modified_at else '---' }}</li>
+        <li>freee API最終同期日時: {{ invoice.freee_api_synced_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_api_synced_at else '---' }}</li>
         {% if invoice.freee_api_error %}<li class="text-danger">freee APIエラー: {{ invoice.freee_api_error }}</li>{% endif %}
       </ul>
     </div></div>

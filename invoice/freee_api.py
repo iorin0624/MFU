@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
+
 from app.freee_api import services as freee_services
 from app.utils.db import get_db
 
@@ -22,6 +24,28 @@ def _partner_name_for_invoice(invoice: dict, contact: dict | None) -> str:
         or invoice.get("contact_name_snapshot")
         or ""
     ).strip()
+
+
+def _format_freee_quantity(value) -> str:
+    try:
+        quantity = Decimal(str(value or "0"))
+    except (InvalidOperation, ValueError):
+        return str(value or "").strip()
+    if quantity == quantity.to_integral_value():
+        return str(int(quantity))
+    return format(quantity.normalize(), "f")
+
+
+def _format_freee_description(item: dict, invoice: dict) -> str:
+    name = (item.get("item_name") or invoice.get("subject") or invoice.get("invoice_no") or "").strip()
+    quantity = _format_freee_quantity(item.get("quantity"))
+    unit_name = (item.get("unit_name") or "").strip()
+    unit_price = int(item.get("unit_price_yen") or 0)
+    parts = [name]
+    if quantity or unit_name:
+        parts.append(f"{quantity}{unit_name}".strip())
+    parts.append(f"単価{unit_price}円")
+    return "　".join(part for part in parts if part)
 
 
 def _save_contact_freee_partner(contact_id: int, partner: dict) -> None:
@@ -87,15 +111,22 @@ def build_invoice_freee_deal_payload(invoice: dict, contact: dict | None, settin
     details = []
     for item in invoice.get("items") or []:
         if item.get("row_type") == "memo":
-            continue
-        amount = int(item.get("line_total_yen") or 0)
-        if amount <= 0:
-            continue
-        description = item.get("item_name") or invoice.get("subject") or invoice.get("invoice_no") or ""
+            memo_text = (item.get("memo_text") or "").strip()
+            if not memo_text:
+                continue
+            amount = 0
+            tax_code = int(settings["tax_code_nontax"])
+            description = memo_text
+        else:
+            amount = int(item.get("line_total_yen") or 0)
+            if amount <= 0:
+                continue
+            tax_code = _tax_code_for_item(item, settings)
+            description = _format_freee_description(item, invoice)
         details.append(
             {
                 "account_item_id": int(settings["account_item_id"]),
-                "tax_code": _tax_code_for_item(item, settings),
+                "tax_code": tax_code,
                 "amount": amount,
                 "description": description,
             }
@@ -130,6 +161,38 @@ def invoice_needs_freee_resync(invoice: dict) -> bool:
     if not synced_at:
         return True
     return bool(updated_at and updated_at > synced_at)
+
+
+def _is_missing_freee_deal_error(exc: Exception) -> bool:
+    message = str(exc)
+    return (
+        "指定された取引は存在しません" in message
+        or "The specified deal does not exist" in message
+        or "HTTP 404" in message
+    )
+
+
+def _freee_deal_exists(deal_id: int, company_id: int) -> bool:
+    try:
+        freee_services.freee_api_request(
+            "GET",
+            f"/api/1/deals/{deal_id}",
+            params={"company_id": company_id},
+        )
+        return True
+    except Exception as exc:
+        if _is_missing_freee_deal_error(exc):
+            return False
+        raise
+
+
+def _create_invoice_freee_deal(payload: dict) -> int:
+    data = freee_services.freee_api_request("POST", "/api/1/deals", json_body=payload)
+    deal = data.get("deal") if isinstance(data, dict) else None
+    deal_id = (deal or {}).get("id") or data.get("id")
+    if not deal_id:
+        raise RuntimeError("freee deal id was not returned.")
+    return int(deal_id)
 
 
 def _sync_invoice_freee_payment(deal_id: int, payload: dict) -> None:
@@ -179,7 +242,9 @@ def sync_invoice_to_freee(invoice: dict, contact: dict | None) -> dict:
         raise RuntimeError("freeeに接続されていません。先にfreee接続を行ってください。")
 
     if invoice.get("freee_deal_id") and not invoice_needs_freee_resync(invoice):
-        return {"status": "skipped_already_synced", "freee_deal_id": int(invoice["freee_deal_id"])}
+        deal_id = int(invoice["freee_deal_id"])
+        if _freee_deal_exists(deal_id, int(settings["company_id"])):
+            return {"status": "skipped_already_synced", "freee_deal_id": deal_id}
 
     payload = build_invoice_freee_deal_payload(invoice, contact, settings)
     deal_payload = dict(payload)
@@ -188,29 +253,46 @@ def sync_invoice_to_freee(invoice: dict, contact: dict | None) -> dict:
     try:
         if invoice.get("freee_deal_id"):
             deal_id = int(invoice["freee_deal_id"])
-            freee_services.freee_api_request("PUT", f"/api/1/deals/{deal_id}", json_body=deal_payload)
-            _sync_invoice_freee_payment(deal_id, payload)
-            status = "updated"
+            try:
+                freee_services.freee_api_request("PUT", f"/api/1/deals/{deal_id}", json_body=deal_payload)
+                _sync_invoice_freee_payment(deal_id, payload)
+                status = "updated"
+            except Exception as exc:
+                if not _is_missing_freee_deal_error(exc):
+                    raise
+                deal_id = _create_invoice_freee_deal(payload)
+                status = "recreated"
         else:
-            data = freee_services.freee_api_request("POST", "/api/1/deals", json_body=payload)
-            deal = data.get("deal") if isinstance(data, dict) else None
-            deal_id = int((deal or {}).get("id") or data.get("id"))
+            deal_id = _create_invoice_freee_deal(payload)
             status = "synced"
 
         db = get_db()
         cur = db.cursor()
         now = now_jst()
-        cur.execute(
+        if status == "updated":
+            freee_timestamps_sql = """
+                freee_api_synced_at = %s,
+                freee_api_modified_at = %s,
             """
+            freee_timestamps_values = (now, now)
+        else:
+            freee_timestamps_sql = """
+                freee_api_synced_at = %s,
+                freee_api_registered_at = %s,
+                freee_api_modified_at = NULL,
+            """
+            freee_timestamps_values = (now, now)
+        cur.execute(
+            f"""
             UPDATE invoice_headers
             SET freee_deal_id = %s,
-                freee_api_synced_at = %s,
+                {freee_timestamps_sql}
                 freee_api_status = 'synced',
                 freee_api_error = NULL,
                 updated_at = updated_at
             WHERE id = %s
             """,
-            (deal_id, now, invoice["id"]),
+            (deal_id, *freee_timestamps_values, invoice["id"]),
         )
         db.commit()
         db.close()
@@ -220,4 +302,3 @@ def sync_invoice_to_freee(invoice: dict, contact: dict | None) -> dict:
             db.close()
         mark_invoice_freee_error(int(invoice["id"]), str(exc))
         raise
-
