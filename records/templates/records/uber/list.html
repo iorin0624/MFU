@@ -4,13 +4,14 @@
 
 {% block records_actions %}
   <div class="uber-actions-wrap">
+    <a class="btn btn-outline-success" href="{{ url_for('records.uber_csv') }}">CSV一括DL</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('records.index') }}">← 戻る</a>
     <button type="button" id="selectAllFreeeDays" class="btn btn-outline-primary">全選択</button>
     <button type="button" id="clearAllFreeeDays" class="btn btn-outline-secondary">全解除</button>
     <button type="button" id="downloadSelectedFreeeCsv" class="btn btn-success">選択分をfreee CSVでDL</button>
     {% if is_admin_user %}
     <button type="button" id="syncSelectedFreeeApi" class="btn btn-primary">選択分をfreee API登録</button>
-    <a class="btn btn-outline-primary" href="{{ url_for('records.uber_freee_connect') }}">freeeに接続</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('freee_api.index') }}">freee設定</a>
     {% endif %}
     <a
       class="btn {{ 'btn-danger' if ocr_queue_pending_count > 0 else 'btn-outline-secondary' }}"
@@ -22,7 +23,7 @@
 {% endblock %}
 
 {% block records_content %}
-{% if is_admin_user %}
+{% if false %}
 <div class="card shadow-sm mb-4">
   <div class="card-body">
     <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
@@ -305,6 +306,8 @@
         <thead class="table-light">
           <tr>
             <th>日付</th>
+            <th>登録日時</th>
+            <th>編集日時</th>
             <th>CSV出力</th>
             <th>API状態</th>
             <th>freee deal ID</th>
@@ -315,6 +318,8 @@
           {% for row in rows %}
           <tr>
             <td>{{ row.work_date }}</td>
+            <td class="small text-muted">{{ row.created_at or '-' }}</td>
+            <td class="small text-muted">{{ row.updated_at or '-' }}</td>
             <td>
               {% if row.freee_exported_at %}
                 <span class="badge bg-success">CSV出力済み</span>
@@ -324,7 +329,10 @@
               {% endif %}
             </td>
             <td>
-              {% if row.freee_deal_id %}
+              {% if row.freee_needs_resync %}
+                <span class="badge bg-warning text-dark">編集後未反映</span>
+                <div class="small text-muted">API: {{ row.freee_api_synced_at }}</div>
+              {% elif row.freee_deal_id %}
                 <span class="badge bg-success">登録済み</span>
                 <div class="small text-muted">{{ row.freee_api_synced_at }}</div>
               {% elif row.freee_api_status == 'error' %}
@@ -375,7 +383,7 @@
       const estimateUnavailableMessage = document.getElementById('estimateUnavailableMessage');
       const estimateMonthOptions = {{ estimate_month_options|tojson }};
       const defaultEstimateMonthKey = {{ default_estimate_month_key|tojson }};
-      const freeeSyncedDates = new Set({{ rows|selectattr('freee_deal_id')|map(attribute='work_date')|map('string')|list|tojson }});
+      const freeeSyncedDates = new Set({{ freee_synced_date_strings|tojson }});
 
       const setError = function (message) {
         if (!message) {
@@ -786,7 +794,7 @@
               alert(data.message || 'freee API登録に失敗しました。');
               return;
             }
-            const message = `登録 ${data.synced}件 / スキップ ${data.skipped}件 / 失敗 ${data.failed}件`;
+            const message = `登録 ${data.synced}件 / 修正 ${data.updated || 0}件 / スキップ ${data.skipped}件 / 失敗 ${data.failed}件`;
             if (syncMessage) {
               syncMessage.textContent = message;
             }

@@ -82,6 +82,7 @@ from app.utils.totp_util import get_totp_status
 from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
+from app.freee_api import freee_api_bp
 from app.utils.mail import send_mail
 from app.utils.upload_notifications import send_discord_upload_notification
 from app.utils.fw_ban import ban_ip_cidr_via_ssh, normalize_ip_target
@@ -4027,6 +4028,7 @@ app.register_blueprint(receipts_bp)
 from app.records import records_api_bp, records_bp
 app.register_blueprint(records_bp, url_prefix="/records")
 app.register_blueprint(records_api_bp)
+app.register_blueprint(freee_api_bp)
 
 from app.invoice import invoice_bp
 app.register_blueprint(invoice_bp)

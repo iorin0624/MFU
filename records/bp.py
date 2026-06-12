@@ -21,6 +21,7 @@ import requests
 from flask import Blueprint, Response, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.utils.db import get_db
+from app.freee_api import services as freee_services
 
 from .models import (
     ensure_records_schema,
@@ -848,6 +849,79 @@ def _build_freee_deal_payload(row: dict, settings: dict) -> dict:
     return payload
 
 
+def _uber_row_needs_freee_resync(row: dict) -> bool:
+    if not row.get("freee_deal_id"):
+        return False
+    synced_at = row.get("freee_api_synced_at")
+    updated_at = row.get("updated_at")
+    if not synced_at:
+        return True
+    return bool(updated_at and updated_at > synced_at)
+
+
+def _sync_uber_freee_payment(deal_id: int, payload: dict) -> None:
+    payments = payload.get("payments") or []
+    if not payments:
+        return
+    payment = dict(payments[0])
+    payment["company_id"] = payload["company_id"]
+    data = freee_services.freee_api_request(
+        "GET",
+        f"/api/1/deals/{deal_id}",
+        params={"company_id": payload["company_id"]},
+    )
+    deal = data.get("deal") if isinstance(data, dict) else {}
+    existing_payments = (deal or {}).get("payments") or []
+    if existing_payments:
+        payment_id = existing_payments[0].get("id")
+        if payment_id:
+            freee_services.freee_api_request(
+                "PUT",
+                f"/api/1/deals/{deal_id}/payments/{payment_id}",
+                json_body=payment,
+            )
+            return
+    freee_services.freee_api_request(
+        "POST",
+        f"/api/1/deals/{deal_id}/payments",
+        json_body=payment,
+    )
+
+
+def _update_uber_row_to_freee(row: dict, settings: dict) -> dict:
+    work_date = row["work_date"]
+    date_label = work_date.isoformat()
+    deal_id = int(row["freee_deal_id"])
+    payload = _build_freee_deal_payload(row, settings)
+    deal_payload = dict(payload)
+    deal_payload.pop("payments", None)
+    try:
+        freee_services.freee_api_request("PUT", f"/api/1/deals/{deal_id}", json_body=deal_payload)
+        if (settings.get("deal_payment_mode") or "settled") == "settled":
+            _sync_uber_freee_payment(deal_id, payload)
+        db = get_db()
+        cur = db.cursor()
+        now = now_ts()
+        cur.execute(
+            """
+            UPDATE uber_daily
+            SET freee_api_synced_at = %s,
+                freee_api_status = 'synced',
+                freee_api_error = NULL,
+                updated_at = updated_at
+            WHERE id = %s
+            """,
+            (now, row["id"]),
+        )
+        db.commit()
+        db.close()
+        return {"date": date_label, "status": "updated", "freee_deal_id": deal_id}
+    except Exception as exc:
+        message = freee_services.sanitize_freee_error(str(exc))
+        _mark_uber_freee_error(row["id"], message)
+        return {"date": date_label, "status": "error", "message": message}
+
+
 def _mark_uber_freee_error(row_id: int, message: str) -> None:
     db = get_db()
     cur = db.cursor()
@@ -860,7 +934,7 @@ def _mark_uber_freee_error(row_id: int, message: str) -> None:
             updated_at = %s
         WHERE id = %s
         """,
-        (_sanitize_freee_error(message), now, row_id),
+        (freee_services.sanitize_freee_error(message), now, row_id),
     )
     db.commit()
     db.close()
@@ -870,11 +944,13 @@ def _sync_uber_row_to_freee(row: dict, settings: dict) -> dict:
     work_date = row["work_date"]
     date_label = work_date.isoformat()
     if row.get("freee_deal_id"):
+        if _uber_row_needs_freee_resync(row):
+            return _update_uber_row_to_freee(row, settings)
         return {"date": date_label, "status": "skipped_already_synced", "freee_deal_id": row.get("freee_deal_id")}
     if int(row.get("total_yen") or 0) <= 0:
         return {"date": date_label, "status": "skipped_zero_amount"}
     try:
-        data = _freee_api_request("POST", "/api/1/deals", json_body=_build_freee_deal_payload(row, settings))
+        data = freee_services.freee_api_request("POST", "/api/1/deals", json_body=_build_freee_deal_payload(row, settings))
         deal = data.get("deal") if isinstance(data, dict) else None
         freee_deal_id = (deal or {}).get("id") or data.get("id")
         if not freee_deal_id:
@@ -898,7 +974,7 @@ def _sync_uber_row_to_freee(row: dict, settings: dict) -> dict:
         db.close()
         return {"date": date_label, "status": "synced", "freee_deal_id": int(freee_deal_id)}
     except Exception as exc:
-        message = _sanitize_freee_error(str(exc))
+        message = freee_services.sanitize_freee_error(str(exc))
         _mark_uber_freee_error(row["id"], message)
         return {"date": date_label, "status": "error", "message": message}
 
@@ -914,9 +990,9 @@ def index():
 @login_required
 def uber_list():
     rows = _fetch_uber_daily_rows(order_desc=True)
-    freee_token_row = _load_freee_token_row() if _is_admin_user() else None
-    freee_settings = _get_freee_settings() if _is_admin_user() else None
-    freee_settings_error = _validate_freee_settings(freee_settings) if _is_admin_user() else None
+    freee_token_row = freee_services.load_freee_token_row() if _is_admin_user() else None
+    freee_settings = freee_services.get_freee_deal_settings(freee_services.UBER_INTEGRATION_KEY) if _is_admin_user() else None
+    freee_settings_error = freee_services.validate_freee_deal_settings(freee_settings) if _is_admin_user() else None
     db = get_db()
     cur = db.cursor(dictionary=True)
 
@@ -1050,6 +1126,17 @@ def uber_list():
         total_yen = row.get("total_yen") or 0
         row["net_avg_yen"] = round(net_yen / deliveries) if deliveries else None
         row["total_avg_yen"] = round(total_yen / deliveries) if deliveries else None
+        row["freee_needs_resync"] = bool(
+            row.get("freee_deal_id")
+            and row.get("freee_api_synced_at")
+            and row.get("updated_at")
+            and row["updated_at"] > row["freee_api_synced_at"]
+        )
+    freee_synced_date_strings = [
+        str(row["work_date"])
+        for row in rows
+        if row.get("freee_deal_id") and not row.get("freee_needs_resync")
+    ]
 
     calc_basis = {
         "year": today.year,
@@ -1099,6 +1186,7 @@ def uber_list():
     return render_template(
         "records/uber/list.html",
         rows=rows,
+        freee_synced_date_strings=freee_synced_date_strings,
         monthly_rows=monthly_rows,
         calc_basis=calc_basis,
         estimate_month_options=estimate_month_options,
@@ -1153,6 +1241,8 @@ def _fetch_uber_daily_rows(
             promo_yen,
             other_yen,
             tip_yen,
+            created_at,
+            updated_at,
             freee_exported_at,
             freee_deal_id,
             freee_api_synced_at,
@@ -1247,6 +1337,71 @@ def _build_uber_freee_csv_response(rows: list[dict]) -> Response:
         mimetype="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _build_uber_daily_csv_response(rows: list[dict]) -> Response:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(["日付", "件数", "正味", "プロモ", "その他", "チップ", "合計", "正味平均", "合計平均"])
+
+    for row in rows:
+        work_date = row["work_date"]
+        if isinstance(work_date, str):
+            date_label = work_date
+        else:
+            date_label = work_date.strftime("%Y-%m-%d")
+        deliveries = int(row.get("deliveries") or 0)
+        net_yen = int(row.get("net_yen") or 0)
+        promo_yen = int(row.get("promo_yen") or 0)
+        other_yen = int(row.get("other_yen") or 0)
+        tip_yen = int(row.get("tip_yen") or 0)
+        total_yen = int(row.get("total_yen") or 0)
+        net_avg_yen = round(net_yen / deliveries) if deliveries else ""
+        total_avg_yen = round(total_yen / deliveries) if deliveries else ""
+        writer.writerow(
+            [
+                date_label,
+                deliveries,
+                net_yen,
+                promo_yen,
+                other_yen,
+                tip_yen,
+                total_yen,
+                net_avg_yen,
+                total_avg_yen,
+            ]
+        )
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    output.close()
+    if rows:
+        first_date = rows[0]["work_date"]
+        last_date = rows[-1]["work_date"]
+        if isinstance(first_date, str):
+            from_label = first_date.replace("-", "")
+        else:
+            from_label = first_date.strftime("%Y%m%d")
+        if isinstance(last_date, str):
+            to_label = last_date.replace("-", "")
+        else:
+            to_label = last_date.strftime("%Y%m%d")
+    else:
+        label_date = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y%m%d")
+        from_label = label_date
+        to_label = label_date
+    filename = f"uber_daily_{from_label}-{to_label}.csv"
+    return Response(
+        csv_bytes,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@records_bp.get("/uber.csv")
+@login_required
+def uber_csv():
+    rows = _fetch_uber_daily_rows(order_desc=False)
+    return _build_uber_daily_csv_response(rows)
 
 
 @records_bp.post("/uber/freee.csv")
@@ -1449,7 +1604,7 @@ def uber_freee_auto_config_candidates():
     admin_error = _require_admin_json()
     if admin_error:
         return admin_error
-    if not _load_freee_token_row():
+    if not freee_services.load_freee_token_row():
         return jsonify({"ok": False, "message": "freeeに接続されていません。先にfreee接続を行ってください。"}), 401
     try:
         raw_company_id = request.args.get("company_id")
@@ -1482,7 +1637,7 @@ def uber_freee_auto_config_save():
     admin_error = _require_admin_json()
     if admin_error:
         return admin_error
-    if not _load_freee_token_row():
+    if not freee_services.load_freee_token_row():
         return jsonify({"ok": False, "message": "freeeに接続されていません。先にfreee接続を行ってください。"}), 401
     payload = request.get_json(silent=True) or {}
     try:
@@ -1558,11 +1713,11 @@ def uber_freee_api_sync():
     if not parsed_dates:
         return jsonify({"ok": False, "message": "少なくとも1日以上選択してください。"}), 400
 
-    settings = _get_freee_settings()
-    settings_error = _validate_freee_settings(settings)
+    settings = freee_services.get_freee_deal_settings(freee_services.UBER_INTEGRATION_KEY)
+    settings_error = freee_services.validate_freee_deal_settings(settings)
     if settings_error:
         return jsonify({"ok": False, "message": settings_error}), 400
-    if not _load_freee_token_row():
+    if not freee_services.load_freee_token_row():
         return jsonify({"ok": False, "message": "freeeに接続されていません。先にfreee接続を行ってください。"}), 401
 
     rows = _fetch_uber_daily_rows(dates=parsed_dates, order_desc=False)
@@ -1576,9 +1731,17 @@ def uber_freee_api_sync():
         results.append(_sync_uber_row_to_freee(row, settings))
 
     synced = sum(1 for item in results if item.get("status") == "synced")
+    updated = sum(1 for item in results if item.get("status") == "updated")
     failed = sum(1 for item in results if item.get("status") == "error")
-    skipped = len(results) - synced - failed
-    response_body = {"ok": failed < len(results), "synced": synced, "skipped": skipped, "failed": failed, "results": results}
+    skipped = len(results) - synced - updated - failed
+    response_body = {
+        "ok": failed < len(results),
+        "synced": synced,
+        "updated": updated,
+        "skipped": skipped,
+        "failed": failed,
+        "results": results,
+    }
     if results and failed == len(results):
         return jsonify(response_body), 500
     return jsonify(response_body)

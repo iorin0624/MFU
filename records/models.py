@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.utils.db import get_db
+from app.freee_api.models import ensure_freee_api_schema
 
 
 def ensure_uber_schema(db=None) -> None:
@@ -395,6 +396,7 @@ def ensure_records_schema() -> None:
     try:
         ensure_uber_schema(db)
         ensure_freee_schema(db)
+        ensure_freee_api_schema(db)
         ensure_uber_ocr_queue_schema(db)
         ensure_maintenance_items_schema(db)
         ensure_maintenance_schema(db)
