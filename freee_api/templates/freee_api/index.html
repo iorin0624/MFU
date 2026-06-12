@@ -1,0 +1,307 @@
+{% extends "records/base_records.html" %}
+
+{% block records_title %}freee API設定{% endblock %}
+
+{% block records_actions %}
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('records.index') }}">戻る</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('freee_api.connect') }}">freeeに接続</a>
+  </div>
+{% endblock %}
+
+{% block records_content %}
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+      <h2 class="h5 mb-0">接続状態</h2>
+      <div class="d-flex flex-wrap gap-2">
+        <span class="badge {{ 'bg-success' if freee_connected else 'bg-secondary' }}">
+          {{ 'freee接続済み' if freee_connected else 'freee未接続' }}
+        </span>
+        <span class="badge {{ 'bg-success' if common_settings_complete else 'bg-warning text-dark' }}">
+          {{ '共通設定済み' if common_settings_complete else '共通設定未完了' }}
+        </span>
+        <span class="badge {{ 'bg-success' if uber_settings_complete else 'bg-warning text-dark' }}">
+          {{ 'Uber設定済み' if uber_settings_complete else 'Uber設定未完了' }}
+        </span>
+      </div>
+    </div>
+    {% if common_settings_error %}
+    <div class="alert alert-warning py-2">{{ common_settings_error }}</div>
+    {% endif %}
+    {% if uber_settings_error %}
+    <div class="alert alert-warning py-2">{{ uber_settings_error }}</div>
+    {% endif %}
+    <div class="alert alert-info py-2 mb-0">
+      事業所は共通設定です。勘定科目、税区分、決済口座、取引先は用途別に設定します。
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ url_for('freee_api.save_settings') }}" class="row g-3">
+      <div class="col-12">
+        <h2 class="h5 mb-0">共通設定</h2>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freee-company-select">事業所</label>
+        <select id="freee-company-select" name="company_id" class="form-select" data-current="{{ common_settings.company_id if common_settings else '' }}" required>
+          <option value="">freee事業所を選択してください</option>
+        </select>
+      </div>
+
+      <div class="col-12 mt-4">
+        <h2 class="h5 mb-0">Uber</h2>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freee-account-item-select">勘定科目ID</label>
+        <select id="freee-account-item-select" name="account_item_id" class="form-select" data-current="{{ uber_settings.account_item_id if uber_settings else '' }}" required>
+          <option value="">勘定科目を選択してください</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freee-tax-code-select">税区分コード</label>
+        <select id="freee-tax-code-select" name="tax_code" class="form-select" data-current="{{ uber_settings.tax_code if uber_settings else '' }}" required>
+          <option value="">税区分を選択してください</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freeePaymentMode">決済状態</label>
+        <select id="freeePaymentMode" name="deal_payment_mode" class="form-select">
+          {% set payment_mode = uber_settings.deal_payment_mode if uber_settings else 'settled' %}
+          <option value="settled" {% if payment_mode == 'settled' %}selected{% endif %}>決済済み</option>
+          <option value="unsettled" {% if payment_mode == 'unsettled' %}selected{% endif %}>未決済</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freee-walletable-select">決済口座種別 / ID</label>
+        <select id="freee-walletable-select" name="walletable" class="form-select" data-current-type="{{ uber_settings.walletable_type if uber_settings else '' }}" data-current-id="{{ uber_settings.walletable_id if uber_settings else '' }}">
+          <option value="">決済口座を選択してください</option>
+        </select>
+        <input type="hidden" name="walletable_type" id="freee-walletable-type" value="{{ uber_settings.walletable_type if uber_settings else '' }}">
+        <input type="hidden" name="walletable_id" id="freee-walletable-id" value="{{ uber_settings.walletable_id if uber_settings else '' }}">
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freee-partner-select">取引先ID</label>
+        <select id="freee-partner-select" name="partner_id" class="form-select" data-current="{{ uber_settings.partner_id if uber_settings else '' }}">
+          <option value="">取引先なし</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="freeePartnerCode">取引先コード</label>
+        <input id="freeePartnerCode" name="partner_code" class="form-control" value="{{ uber_settings.partner_code if uber_settings else '' }}">
+      </div>
+      <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
+        <button class="btn btn-primary" type="submit">保存</button>
+        <button class="btn btn-outline-primary" type="button" id="freeeAutoConfigBtn">Uber自動設定</button>
+        <button class="btn btn-outline-secondary" type="button" id="loadFreeeMasterData">freeeマスタ再取得</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('freee_api.connect') }}">freeeに再接続</a>
+      </div>
+      <div class="col-12">
+        <div id="freeeAutoConfigWarnings" class="alert alert-warning py-2 d-none"></div>
+        <details>
+          <summary>freeeマスタ詳細JSONを表示</summary>
+          <pre id="freeeMasterDataPreview" class="small bg-light border rounded p-2 mt-2 mb-0"></pre>
+        </details>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const freeeConnected = {{ freee_connected|tojson }};
+    const companySelect = document.getElementById('freee-company-select');
+    const accountItemSelect = document.getElementById('freee-account-item-select');
+    const taxCodeSelect = document.getElementById('freee-tax-code-select');
+    const walletableSelect = document.getElementById('freee-walletable-select');
+    const walletableTypeInput = document.getElementById('freee-walletable-type');
+    const walletableIdInput = document.getElementById('freee-walletable-id');
+    const partnerSelect = document.getElementById('freee-partner-select');
+    const freeeWarnings = document.getElementById('freeeAutoConfigWarnings');
+    const masterPreview = document.getElementById('freeeMasterDataPreview');
+    const autoConfigBtn = document.getElementById('freeeAutoConfigBtn');
+    const loadMasterBtn = document.getElementById('loadFreeeMasterData');
+
+    const showFreeeWarnings = function (warnings) {
+      if (!freeeWarnings) return;
+      if (!Array.isArray(warnings) || warnings.length === 0) {
+        freeeWarnings.classList.add('d-none');
+        freeeWarnings.textContent = '';
+        return;
+      }
+      freeeWarnings.textContent = warnings.join(' / ');
+      freeeWarnings.classList.remove('d-none');
+    };
+
+    const setSelectOptions = function (select, items, options) {
+      if (!select) return;
+      const selectedValue = options.selectedValue === undefined || options.selectedValue === null ? '' : String(options.selectedValue);
+      select.innerHTML = '';
+      if (options.blankLabel) {
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = options.blankLabel;
+        select.appendChild(blank);
+      }
+      items.forEach(function (item) {
+        const value = String(options.value(item) || '');
+        if (!value) return;
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = item.label || options.label(item);
+        select.appendChild(option);
+      });
+      if (selectedValue && Array.from(select.options).some(function (option) { return option.value === selectedValue; })) {
+        select.value = selectedValue;
+      }
+    };
+
+    const taxCodeOf = function (tax) {
+      return tax && (tax.code !== undefined && tax.code !== null ? tax.code : tax.tax_code);
+    };
+    const walletableIdOf = function (walletable) {
+      return walletable && (walletable.id !== undefined && walletable.id !== null ? walletable.id : walletable.walletable_id);
+    };
+    const walletableTypeOf = function (walletable) {
+      return walletable && (walletable.walletable_type || walletable.type || '');
+    };
+    const syncWalletableHidden = function () {
+      if (!walletableSelect || !walletableTypeInput || !walletableIdInput) return;
+      const parts = (walletableSelect.value || '').split(':');
+      walletableTypeInput.value = parts.length === 2 ? parts[0] : '';
+      walletableIdInput.value = parts.length === 2 ? parts[1] : '';
+    };
+
+    const renderFreeeMaster = function (data) {
+      const suggested = data.suggested || {};
+      const currentCompany = companySelect ? companySelect.dataset.current : '';
+      const currentAccount = accountItemSelect ? accountItemSelect.dataset.current : '';
+      const currentTax = taxCodeSelect ? taxCodeSelect.dataset.current : '';
+      const currentWalletType = walletableSelect ? walletableSelect.dataset.currentType : '';
+      const currentWalletId = walletableSelect ? walletableSelect.dataset.currentId : '';
+      const currentPartner = partnerSelect ? partnerSelect.dataset.current : '';
+      const selectedCompanyId = suggested.company_id || data.selected_company_id || currentCompany;
+
+      setSelectOptions(companySelect, data.companies || [], {
+        blankLabel: 'freee事業所を選択してください',
+        selectedValue: selectedCompanyId,
+        value: function (company) { return company.id; },
+        label: function (company) { return `${company.display_name || company.name || '名称未設定'}（ID:${company.id} / 会社番号:${company.company_number || '-'}）`; },
+      });
+      setSelectOptions(accountItemSelect, data.account_items || [], {
+        blankLabel: '勘定科目を選択してください',
+        selectedValue: suggested.account_item_id || currentAccount,
+        value: function (item) { return item.id; },
+        label: function (item) { return `${item.name || '名称未設定'}（ID:${item.id} / default_tax_code:${item.default_tax_code || '-'}）`; },
+      });
+      setSelectOptions(taxCodeSelect, data.taxes || [], {
+        blankLabel: '税区分を選択してください',
+        selectedValue: suggested.tax_code || currentTax,
+        value: function (tax) { return taxCodeOf(tax); },
+        label: function (tax) { return `${tax.name_ja || tax.name || tax.display_name || '名称未設定'}（code:${taxCodeOf(tax) || '-'}）`; },
+      });
+      const selectedWallet = suggested.walletable_type && suggested.walletable_id
+        ? `${suggested.walletable_type}:${suggested.walletable_id}`
+        : (currentWalletType && currentWalletId ? `${currentWalletType}:${currentWalletId}` : '');
+      setSelectOptions(walletableSelect, data.walletables || [], {
+        blankLabel: '決済口座を選択してください',
+        selectedValue: selectedWallet,
+        value: function (walletable) {
+          const type = walletableTypeOf(walletable);
+          const id = walletableIdOf(walletable);
+          return type && id ? `${type}:${id}` : '';
+        },
+        label: function (walletable) { return `${walletable.name || walletable.display_name || '名称未設定'}（${walletableTypeOf(walletable) || '-'} / ID:${walletableIdOf(walletable) || '-'}）`; },
+      });
+      syncWalletableHidden();
+      setSelectOptions(partnerSelect, data.partners || [], {
+        blankLabel: '取引先なし',
+        selectedValue: suggested.partner_id || currentPartner,
+        value: function (partner) { return partner.id; },
+        label: function (partner) { return `${partner.name || partner.display_name || '名称未設定'}（ID:${partner.id}）`; },
+      });
+      if (masterPreview) {
+        masterPreview.textContent = JSON.stringify(data, null, 2);
+      }
+      showFreeeWarnings(data.warnings || []);
+    };
+
+    const fetchFreeeCandidates = async function (companyId) {
+      if (!freeeConnected) {
+        showFreeeWarnings(['freeeに接続されていません。先にfreee接続を行ってください。']);
+        return null;
+      }
+      const url = new URL('{{ url_for("freee_api.auto_config_candidates") }}', window.location.origin);
+      if (companyId) url.searchParams.set('company_id', companyId);
+      const response = await fetch(url.toString(), {cache: 'no-store'});
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.message || 'freee候補の取得に失敗しました。');
+      }
+      renderFreeeMaster(data);
+      return data;
+    };
+
+    if (walletableSelect) {
+      walletableSelect.addEventListener('change', syncWalletableHidden);
+    }
+    if (walletableSelect && walletableSelect.form) {
+      walletableSelect.form.addEventListener('submit', syncWalletableHidden);
+    }
+    if (companySelect) {
+      companySelect.addEventListener('change', function () {
+        fetchFreeeCandidates(companySelect.value).catch(function (error) {
+          showFreeeWarnings([error.message]);
+        });
+      });
+    }
+    if (companySelect && freeeConnected) {
+      fetchFreeeCandidates(companySelect.dataset.current || '').catch(function (error) {
+        showFreeeWarnings([error.message]);
+      });
+    }
+    if (loadMasterBtn) {
+      loadMasterBtn.addEventListener('click', function () {
+        fetchFreeeCandidates(companySelect ? companySelect.value : '').catch(function (error) {
+          showFreeeWarnings([error.message]);
+        });
+      });
+    }
+    if (autoConfigBtn) {
+      autoConfigBtn.addEventListener('click', async function () {
+        const companyId = companySelect ? companySelect.value : '';
+        if (!companyId) {
+          showFreeeWarnings(['freee事業所を選択してください。']);
+          return;
+        }
+        autoConfigBtn.disabled = true;
+        const originalText = autoConfigBtn.textContent;
+        autoConfigBtn.textContent = '自動設定中...';
+        try {
+          const response = await fetch('{{ url_for("freee_api.auto_config_save") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({company_id: Number(companyId)}),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            showFreeeWarnings([data.message || '自動設定に失敗しました。'].concat(data.warnings || []));
+            return;
+          }
+          showFreeeWarnings(data.warnings || []);
+          alert(data.message || 'freee設定を自動保存しました。');
+          window.location.reload();
+        } catch (error) {
+          showFreeeWarnings([error.message || '自動設定に失敗しました。']);
+        } finally {
+          autoConfigBtn.disabled = false;
+          autoConfigBtn.textContent = originalText;
+        }
+      });
+    }
+  })();
+</script>
+{% endblock %}
+

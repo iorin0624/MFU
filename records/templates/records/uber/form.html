@@ -1,0 +1,56 @@
+{% extends "records/base_records.html" %}
+
+{% block records_title %}Uber売上編集{% endblock %}
+
+{% block records_actions %}
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('records.uber_list') }}">戻る</a>
+  </div>
+{% endblock %}
+
+{% block records_content %}
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <form method="post" action="{{ url_for('records.uber_update', record_id=item.id) }}">
+      {% include "records/uber/_form_fields.html" %}
+      <div class="mt-3 d-flex flex-wrap gap-2">
+        <button class="btn btn-primary" type="submit">保存</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('records.uber_list') }}">キャンセル</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h2 class="h5 mb-3">記録情報</h2>
+    <dl class="row mb-0">
+      <dt class="col-sm-3">登録日時</dt>
+      <dd class="col-sm-9">{{ item.created_at or '-' }}</dd>
+      <dt class="col-sm-3">編集日時</dt>
+      <dd class="col-sm-9">{{ item.updated_at or '-' }}</dd>
+      <dt class="col-sm-3">freee API登録日時</dt>
+      <dd class="col-sm-9">{{ item.freee_api_synced_at or '-' }}</dd>
+      <dt class="col-sm-3">freee deal ID</dt>
+      <dd class="col-sm-9">{{ item.freee_deal_id or '-' }}</dd>
+      <dt class="col-sm-3">freee状態</dt>
+      <dd class="col-sm-9">
+        {% if item.freee_deal_id and item.freee_api_synced_at and item.updated_at and item.updated_at > item.freee_api_synced_at %}
+          <span class="badge bg-warning text-dark">編集後未反映</span>
+        {% elif item.freee_deal_id %}
+          <span class="badge bg-success">反映済み</span>
+        {% elif item.freee_api_status == 'error' %}
+          <span class="badge bg-danger">エラー</span>
+        {% else %}
+          <span class="badge bg-secondary">未登録</span>
+        {% endif %}
+      </dd>
+      {% if item.freee_api_error %}
+      <dt class="col-sm-3">freeeエラー</dt>
+      <dd class="col-sm-9 text-danger">{{ item.freee_api_error }}</dd>
+      {% endif %}
+    </dl>
+  </div>
+</div>
+{% endblock %}
+

@@ -88,6 +88,22 @@ if errorlevel 1 (
 REM ===== TMP掃除 =====
 rmdir /S /Q "%TMP%" >nul 2>&1
 
+REM ===== サービス再起動 =====
+choice /C YN /N /M "[CONFIRM] mfu.service を再起動しますか？ [Y/N]: "
+if errorlevel 2 (
+  echo [SKIP] mfu.service の再起動をスキップしました
+  goto AFTER_RESTART
+)
+
+echo [STEP] Restarting mfu.service...
+ssh %SSHOPTS% %USER%@%HOST% "sudo systemctl restart mfu.service"
+if errorlevel 1 (
+  echo [ERROR] mfu.service の再起動に失敗しました
+  pause
+  exit /b 30
+)
+
+:AFTER_RESTART
 echo [OK] Upload complete
 pause
 
