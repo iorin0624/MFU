@@ -700,6 +700,8 @@ def ensure_invoice_schema() -> None:
                 address2 VARCHAR(255) NULL,
                 phone VARCHAR(64) NULL,
                 freee_partner_name VARCHAR(191) NULL,
+                freee_partner_id BIGINT NULL,
+                freee_partner_code VARCHAR(191) NULL,
                 default_due_days INT NULL,
                 note TEXT NULL,
                 created_at DATETIME NOT NULL,
@@ -750,6 +752,10 @@ def ensure_invoice_schema() -> None:
                 pdf_storage_path VARCHAR(512) NULL,
                 mailed_at DATETIME NULL,
                 freee_exported_at DATETIME NULL,
+                freee_deal_id BIGINT NULL,
+                freee_api_synced_at DATETIME NULL,
+                freee_api_status VARCHAR(32) NULL,
+                freee_api_error TEXT NULL,
                 created_at DATETIME NOT NULL,
                 updated_at DATETIME NOT NULL,
                 UNIQUE KEY uniq_invoice_headers_invoice_no (invoice_no),
@@ -810,6 +816,30 @@ def ensure_invoice_schema() -> None:
         if not _column_exists(cur, "invoice_headers", "card_paid_at"):
             cur.execute(
                 "ALTER TABLE invoice_headers ADD COLUMN card_paid_at DATETIME NULL AFTER card_payment_public_expires_at"
+            )
+        if not _column_exists(cur, "invoice_contacts", "freee_partner_id"):
+            cur.execute(
+                "ALTER TABLE invoice_contacts ADD COLUMN freee_partner_id BIGINT NULL AFTER freee_partner_name"
+            )
+        if not _column_exists(cur, "invoice_contacts", "freee_partner_code"):
+            cur.execute(
+                "ALTER TABLE invoice_contacts ADD COLUMN freee_partner_code VARCHAR(191) NULL AFTER freee_partner_id"
+            )
+        if not _column_exists(cur, "invoice_headers", "freee_deal_id"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN freee_deal_id BIGINT NULL AFTER freee_exported_at"
+            )
+        if not _column_exists(cur, "invoice_headers", "freee_api_synced_at"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN freee_api_synced_at DATETIME NULL AFTER freee_deal_id"
+            )
+        if not _column_exists(cur, "invoice_headers", "freee_api_status"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN freee_api_status VARCHAR(32) NULL AFTER freee_api_synced_at"
+            )
+        if not _column_exists(cur, "invoice_headers", "freee_api_error"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN freee_api_error TEXT NULL AFTER freee_api_status"
             )
         ensure_invoice_issuer_templates_table(cur)
         cur.execute(
@@ -941,6 +971,8 @@ def save_contact(contact_id: int | None, form: dict[str, Any]) -> int:
         (form.get("address2") or "").strip() or None,
         (form.get("phone") or "").strip() or None,
         (form.get("freee_partner_name") or "").strip() or None,
+        int(form.get("freee_partner_id") or 0) or None,
+        (form.get("freee_partner_code") or "").strip() or None,
         int(form.get("default_due_days") or 30),
         (form.get("note") or "").strip() or None,
     )
@@ -964,6 +996,8 @@ def save_contact(contact_id: int | None, form: dict[str, Any]) -> int:
                     address2=%s,
                     phone=%s,
                     freee_partner_name=%s,
+                    freee_partner_id=%s,
+                    freee_partner_code=%s,
                     default_due_days=%s,
                     note=%s,
                     updated_at=%s
@@ -978,8 +1012,9 @@ def save_contact(contact_id: int | None, form: dict[str, Any]) -> int:
             INSERT INTO invoice_contacts (
                 name, department_name, contact_name, honorific, email,
                 postal_code, address1, address2, phone,
-                freee_partner_name, default_due_days, note, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                freee_partner_name, freee_partner_id, freee_partner_code,
+                default_due_days, note, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (*payload, now, now),
         )

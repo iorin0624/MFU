@@ -16,6 +16,7 @@ FREEE_AUTHORIZE_URL = "https://accounts.secure.freee.co.jp/public_api/authorize"
 FREEE_TOKEN_URL = "https://accounts.secure.freee.co.jp/public_api/token"
 FREEE_API_BASE_URL = "https://api.freee.co.jp"
 UBER_INTEGRATION_KEY = "uber"
+INVOICE_INTEGRATION_KEY = "invoice"
 
 
 def freee_redirect_uri() -> str:
@@ -226,7 +227,7 @@ def get_freee_integration_settings(integration_key: str, db=None) -> dict | None
     cur = db.cursor(dictionary=True)
     cur.execute(
         """
-        SELECT id, integration_key, account_item_id, tax_code, deal_payment_mode,
+        SELECT id, integration_key, account_item_id, tax_code, tax_code_8, tax_code_nontax, deal_payment_mode,
                walletable_type, walletable_id, partner_id, partner_code,
                created_at, updated_at
         FROM freee_integration_settings
@@ -246,11 +247,13 @@ def upsert_freee_integration_settings(
     integration_key: str,
     account_item_id,
     tax_code,
-    deal_payment_mode,
-    walletable_type,
-    walletable_id,
-    partner_id,
-    partner_code,
+    tax_code_8=None,
+    tax_code_nontax=None,
+    deal_payment_mode="settled",
+    walletable_type=None,
+    walletable_id=None,
+    partner_id=None,
+    partner_code=None,
 ) -> None:
     db = get_db()
     ensure_freee_api_schema(db)
@@ -261,6 +264,8 @@ def upsert_freee_integration_settings(
     values = (
         account_item_id,
         tax_code,
+        tax_code_8,
+        tax_code_nontax,
         deal_payment_mode,
         walletable_type,
         walletable_id,
@@ -274,6 +279,8 @@ def upsert_freee_integration_settings(
             UPDATE freee_integration_settings
             SET account_item_id = %s,
                 tax_code = %s,
+                tax_code_8 = %s,
+                tax_code_nontax = %s,
                 deal_payment_mode = %s,
                 walletable_type = %s,
                 walletable_id = %s,
@@ -288,12 +295,25 @@ def upsert_freee_integration_settings(
         cur.execute(
             """
             INSERT INTO freee_integration_settings (
-                integration_key, account_item_id, tax_code, deal_payment_mode,
+                integration_key, account_item_id, tax_code, tax_code_8, tax_code_nontax, deal_payment_mode,
                 walletable_type, walletable_id, partner_id, partner_code,
                 created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (integration_key, account_item_id, tax_code, deal_payment_mode, walletable_type, walletable_id, partner_id, partner_code, now, now),
+            (
+                integration_key,
+                account_item_id,
+                tax_code,
+                tax_code_8,
+                tax_code_nontax,
+                deal_payment_mode,
+                walletable_type,
+                walletable_id,
+                partner_id,
+                partner_code,
+                now,
+                now,
+            ),
         )
     db.commit()
     db.close()
@@ -318,6 +338,15 @@ def validate_freee_integration_settings(settings: dict | None) -> str | None:
     return None
 
 
+def validate_freee_invoice_settings(settings: dict | None) -> str | None:
+    error = validate_freee_integration_settings(settings)
+    if error:
+        return error
+    if settings.get("tax_code_8") is None or settings.get("tax_code_nontax") is None:
+        return "freee請求書設定が未完了です。税区分コード 8% / 対象外を確認してください。"
+    return None
+
+
 def get_freee_deal_settings(integration_key: str) -> dict | None:
     common = get_freee_common_settings()
     integration = get_freee_integration_settings(integration_key)
@@ -329,6 +358,8 @@ def get_freee_deal_settings(integration_key: str) -> dict | None:
 def validate_freee_deal_settings(settings: dict | None) -> str | None:
     if not settings or not settings.get("company_id"):
         return "freee共通設定が未完了です。事業所を選択してください。"
+    if settings.get("integration_key") == INVOICE_INTEGRATION_KEY:
+        return validate_freee_invoice_settings(settings)
     return validate_freee_integration_settings(settings)
 
 
@@ -559,4 +590,3 @@ def _pick_uber_partner(partners: list[dict]) -> dict | None:
         if "Uber" in name or "ウーバー" in name:
             return partner
     return None
-

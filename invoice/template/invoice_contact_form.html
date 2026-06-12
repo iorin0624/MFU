@@ -14,6 +14,8 @@
     <div class="col-md-6"><label class="form-label">住所1</label><input class="form-control" name="address1" value="{{ form_data.address1 or '' }}"></div>
     <div class="col-md-6"><label class="form-label">住所2</label><input class="form-control" name="address2" value="{{ form_data.address2 or '' }}"></div>
     <div class="col-md-4"><label class="form-label">freee取引先名</label><input class="form-control" name="freee_partner_name" value="{{ form_data.freee_partner_name or '' }}"></div>
+    <div class="col-md-3"><label class="form-label">freee取引先ID</label><input class="form-control" type="number" name="freee_partner_id" value="{{ form_data.freee_partner_id or '' }}"></div>
+    <div class="col-md-3"><label class="form-label">freee取引先コード</label><input class="form-control" name="freee_partner_code" value="{{ form_data.freee_partner_code or '' }}"></div>
     <div class="col-md-3"><label class="form-label">標準支払期限(日数)</label><input class="form-control" type="number" name="default_due_days" value="{{ form_data.default_due_days or 30 }}"></div>
     <div class="col-12"><label class="form-label">メモ</label><textarea class="form-control" name="note" rows="4">{{ form_data.note or '' }}</textarea></div>
   </div>

@@ -13,6 +13,7 @@ from .services import (
     FREEE_AUTHORIZE_URL,
     FREEE_TOKEN_URL,
     UBER_INTEGRATION_KEY,
+    INVOICE_INTEGRATION_KEY,
     fetch_freee_master_bundle,
     find_company_by_id,
     format_freee_account_item_label,
@@ -34,6 +35,7 @@ from .services import (
     upsert_freee_common_settings,
     upsert_freee_integration_settings,
     validate_freee_common_settings,
+    validate_freee_invoice_settings,
     validate_freee_integration_settings,
     with_freee_labels,
 )
@@ -80,17 +82,22 @@ def index():
         return admin_redirect
     common_settings = get_freee_common_settings()
     uber_settings = get_freee_integration_settings(UBER_INTEGRATION_KEY)
+    invoice_settings = get_freee_integration_settings(INVOICE_INTEGRATION_KEY)
     common_error = validate_freee_common_settings(common_settings)
     uber_error = validate_freee_integration_settings(uber_settings)
+    invoice_error = validate_freee_invoice_settings(invoice_settings)
     return render_template(
         "freee_api/index.html",
         freee_connected=bool(load_freee_token_row()),
         common_settings=common_settings,
         uber_settings=uber_settings,
+        invoice_settings=invoice_settings,
         common_settings_complete=not common_error,
         uber_settings_complete=not uber_error,
+        invoice_settings_complete=not invoice_error,
         common_settings_error=common_error,
         uber_settings_error=uber_error,
+        invoice_settings_error=invoice_error,
     )
 
 
@@ -184,6 +191,18 @@ def save_settings():
                 walletable_id = parse_optional_int_value(raw_id)
         partner_id = parse_optional_int_value(source.get("partner_id"))
         partner_code = (source.get("partner_code") or "").strip() or None
+        invoice_account_item_id = parse_optional_int_value(source.get("invoice_account_item_id"))
+        invoice_tax_code = parse_optional_int_value(source.get("invoice_tax_code"))
+        invoice_tax_code_8 = parse_optional_int_value(source.get("invoice_tax_code_8"))
+        invoice_tax_code_nontax = parse_optional_int_value(source.get("invoice_tax_code_nontax"))
+        invoice_walletable_type = (source.get("invoice_walletable_type") or "").strip() or None
+        invoice_walletable_id = parse_optional_int_value(source.get("invoice_walletable_id"))
+        invoice_walletable_value = (source.get("invoice_walletable") or "").strip()
+        if invoice_walletable_value:
+            raw_type, sep, raw_id = invoice_walletable_value.partition(":")
+            if sep:
+                invoice_walletable_type = raw_type.strip() or None
+                invoice_walletable_id = parse_optional_int_value(raw_id)
     except (TypeError, ValueError):
         flash("freee設定の数値項目を確認してください。", "warning")
         return redirect(url_for("freee_api.index"))
@@ -198,10 +217,22 @@ def save_settings():
         "partner_id": partner_id,
         "partner_code": partner_code,
     }
+    invoice = {
+        "account_item_id": invoice_account_item_id,
+        "tax_code": invoice_tax_code,
+        "tax_code_8": invoice_tax_code_8,
+        "tax_code_nontax": invoice_tax_code_nontax,
+        "deal_payment_mode": "settled",
+        "walletable_type": invoice_walletable_type,
+        "walletable_id": invoice_walletable_id,
+        "partner_id": None,
+        "partner_code": None,
+    }
     common_error = validate_freee_common_settings(common)
     uber_error = validate_freee_integration_settings(uber)
-    if common_error or uber_error:
-        flash(common_error or uber_error, "warning")
+    invoice_error = validate_freee_invoice_settings(invoice)
+    if common_error or uber_error or invoice_error:
+        flash(common_error or uber_error or invoice_error, "warning")
         return redirect(url_for("freee_api.index"))
     if company_id and load_freee_token_row():
         try:
@@ -215,6 +246,7 @@ def save_settings():
             pass
     upsert_freee_common_settings(**common)
     upsert_freee_integration_settings(integration_key=UBER_INTEGRATION_KEY, **uber)
+    upsert_freee_integration_settings(integration_key=INVOICE_INTEGRATION_KEY, **invoice)
     flash("freee設定を保存しました。", "success")
     return redirect(url_for("freee_api.index"))
 
