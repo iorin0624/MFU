@@ -271,6 +271,7 @@ def tip_start():
             SELECT id, title, event_uuid, payment_uuid, COALESCE(tip_enabled,0) AS tip_enabled
               FROM mfu_event
              WHERE id=%s
+               AND deleted_at IS NULL
              LIMIT 1
         """, (event_id,))
         ev = cur.fetchone()

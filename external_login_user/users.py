@@ -2516,6 +2516,7 @@ def join_event(event_uuid: str):
         invite_token
       FROM mfu_event
       WHERE event_uuid = UNHEX(REPLACE(%s,'-',''))
+        AND deleted_at IS NULL
       LIMIT 1
     """, (event_uuid,))
     ev = cur.fetchone()
@@ -3907,6 +3908,7 @@ def event_qr_checkin(token: str):
                    checkin_qr_expires_at
               FROM mfu_event
              WHERE checkin_qr_token=%s
+               AND deleted_at IS NULL
              LIMIT 1
         """, (token,))
         ev = cur.fetchone()

@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}レシートOCR{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="mb-0">レシートOCR</h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('receipt_ocr.rules') }}">自動設定</a>
+    <a class="btn btn-primary" href="{{ url_for('receipt_ocr.new') }}">アップロード</a>
+  </div>
+</div>
+<form method="get" class="row g-2 mb-3">
+  <div class="col-md-5"><input class="form-control" name="q" value="{{ q }}" placeholder="店名・T番号・メモ"></div>
+  <div class="col-md-2"><button class="btn btn-outline-primary w-100">検索</button></div>
+</form>
+<div class="table-responsive">
+  <table class="table table-sm align-middle">
+    <thead><tr><th>日付</th><th>店名</th><th>T番号</th><th class="text-end">合計</th><th>タグ</th><th>freee</th><th></th></tr></thead>
+    <tbody>
+      {% for r in records %}
+      <tr>
+        <td>{{ r.receipt_date.strftime('%Y-%m-%d') if r.receipt_date else '-' }}</td>
+        <td>{{ r.store_name or '-' }}</td>
+        <td>{{ r.invoice_registration_number or '-' }}</td>
+        <td class="text-end">¥{{ "{:,}".format(r.total_amount_yen or 0) }}</td>
+        <td>{{ r.memo or '' }}</td>
+        <td>
+          {% if r.freee_needs_resync %}
+            <span class="badge bg-warning text-dark">編集後未反映</span>
+          {% elif r.freee_deal_id %}
+            <span class="badge bg-success">登録済み</span>
+          {% elif r.freee_api_status == 'error' %}
+            <span class="badge bg-danger">エラー</span>
+          {% else %}
+            <span class="badge bg-secondary">未登録</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('receipt_ocr.detail', record_id=r.id) }}">詳細</a>
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('receipt_ocr.edit', record_id=r.id) }}">編集</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="text-muted">データがありません。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

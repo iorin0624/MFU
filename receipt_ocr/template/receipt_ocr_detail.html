@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}レシートOCR詳細{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="mb-0">レシートOCR詳細</h1>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('receipt_ocr.index') }}">一覧へ</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('receipt_ocr.edit', record_id=record.id) }}">編集</a>
+    <form method="post" action="{{ url_for('receipt_ocr.reanalyze', record_id=record.id) }}">
+      <button class="btn btn-outline-info">再OCR</button>
+    </form>
+    <form method="post" action="{{ url_for('receipt_ocr.freee_api_sync', record_id=record.id) }}">
+      <button class="btn btn-success">freee API登録</button>
+    </form>
+  </div>
+</div>
+<div class="row g-3">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm">
+      <dl class="row mb-0">
+        <dt class="col-sm-4">日付</dt><dd class="col-sm-8">{{ record.receipt_date.strftime('%Y-%m-%d') if record.receipt_date else '-' }}</dd>
+        <dt class="col-sm-4">店名</dt><dd class="col-sm-8">{{ record.store_name or '-' }}</dd>
+        <dt class="col-sm-4">T番号</dt><dd class="col-sm-8">{{ record.invoice_registration_number or '-' }}</dd>
+        <dt class="col-sm-4">合計</dt><dd class="col-sm-8">¥{{ "{:,}".format(record.total_amount_yen or 0) }}</dd>
+        <dt class="col-sm-4">10%対象</dt><dd class="col-sm-8">¥{{ "{:,}".format(record.tax10_amount_yen or 0) }}</dd>
+        <dt class="col-sm-4">8%対象</dt><dd class="col-sm-8">¥{{ "{:,}".format(record.tax8_amount_yen or 0) }}</dd>
+        <dt class="col-sm-4">管理用タグ</dt><dd class="col-sm-8">{{ record.management_tags|join(' / ') if record.management_tags else '-' }}</dd>
+        <dt class="col-sm-4">freeeメモタグID</dt><dd class="col-sm-8">{{ record.freee_memo_tags or '-' }}</dd>
+        <dt class="col-sm-4">freee状態</dt>
+        <dd class="col-sm-8">
+          {% if record.freee_needs_resync %}<span class="badge bg-warning text-dark">編集後未反映</span>
+          {% elif record.freee_deal_id %}<span class="badge bg-success">登録済み</span>
+          {% elif record.freee_api_status == 'error' %}<span class="badge bg-danger">エラー</span>
+          {% else %}<span class="badge bg-secondary">未登録</span>{% endif %}
+        </dd>
+        <dt class="col-sm-4">freee deal ID</dt><dd class="col-sm-8">{{ record.freee_deal_id or '-' }}</dd>
+        <dt class="col-sm-4">freee file ID</dt><dd class="col-sm-8">{{ record.freee_receipt_id or '-' }}</dd>
+        <dt class="col-sm-4">freee登録日時</dt><dd class="col-sm-8">{{ record.freee_api_registered_at or '-' }}</dd>
+        <dt class="col-sm-4">freee修正日時</dt><dd class="col-sm-8">{{ record.freee_api_modified_at or '-' }}</dd>
+        <dt class="col-sm-4">freee最終同期</dt><dd class="col-sm-8">{{ record.freee_api_synced_at or '-' }}</dd>
+        {% if record.freee_api_error %}<dt class="col-sm-4">freeeエラー</dt><dd class="col-sm-8 text-danger">{{ record.freee_api_error }}</dd>{% endif %}
+      </dl>
+    </div>
+    <div class="card card-body shadow-sm mt-3">
+      <h2 class="h5">OCR全文</h2>
+      <pre class="small mb-0" style="white-space:pre-wrap">{{ record.ocr_text or '' }}</pre>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm">
+      <h2 class="h5">明細写真</h2>
+      <img class="img-fluid border rounded" src="{{ url_for('receipt_ocr.image', record_id=record.id, kind='processed') }}" alt="">
+    </div>
+  </div>
+</div>
+{% endblock %}

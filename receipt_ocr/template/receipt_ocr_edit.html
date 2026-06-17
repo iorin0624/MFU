@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}レシートOCR編集{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="mb-0">レシートOCR編集</h1>
+  <a class="btn btn-outline-secondary" href="{{ url_for('receipt_ocr.detail', record_id=record.id) }}">詳細へ</a>
+</div>
+{% if master.warnings %}
+<div class="alert alert-warning py-2">{{ master.warnings|join(' / ') }}</div>
+{% endif %}
+<form method="post" class="row g-3">
+  <div class="col-lg-7">
+    <div class="card card-body shadow-sm">
+      <h2 class="h5">抽出内容</h2>
+      <div class="row g-3">
+        <div class="col-md-4"><label class="form-label">日付</label><input class="form-control" type="date" name="receipt_date" value="{{ record.receipt_date.strftime('%Y-%m-%d') if record.receipt_date else '' }}"></div>
+        <div class="col-md-8"><label class="form-label">店名</label><input class="form-control" name="store_name" value="{{ record.store_name or '' }}"></div>
+        <div class="col-md-6"><label class="form-label">T番号</label><input class="form-control" name="invoice_registration_number" value="{{ record.invoice_registration_number or '' }}"></div>
+        <div class="col-md-6"><label class="form-label">管理用タグ</label><input class="form-control" name="management_tags" value="{{ management_tags }}" placeholder="ガソリン 水分補給"></div>
+        <div class="col-md-4"><label class="form-label">合計</label><input class="form-control" type="number" name="total_amount_yen" value="{{ record.total_amount_yen or '' }}"></div>
+        <div class="col-md-4"><label class="form-label">10%対象小計</label><input class="form-control" type="number" name="tax10_amount_yen" value="{{ record.tax10_amount_yen or '' }}"></div>
+        <div class="col-md-4"><label class="form-label">8%対象小計</label><input class="form-control" type="number" name="tax8_amount_yen" value="{{ record.tax8_amount_yen or '' }}"></div>
+        <div class="col-12"><label class="form-label">メモ</label><textarea class="form-control" name="memo" rows="2">{{ record.memo or '' }}</textarea></div>
+      </div>
+    </div>
+    <div class="card card-body shadow-sm mt-3">
+      <h2 class="h5">freee登録設定</h2>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label">勘定科目</label>
+          <select class="form-select" name="account_item_id">
+            <option value="">選択してください</option>
+            {% for item in master.account_items %}
+            <option value="{{ item.id }}" {% if record.account_item_id|string == item.id|string %}selected{% endif %}>{{ item.name or item.display_name }} (ID:{{ item.id }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">決済口座</label>
+          {% set current_wallet = (record.walletable_type ~ ':' ~ record.walletable_id) if record.walletable_type and record.walletable_id else '' %}
+          <select class="form-select" name="walletable">
+            <option value="">選択してください</option>
+            {% for wallet in master.walletables %}
+              {% set value = wallet_value(wallet) %}
+              <option value="{{ value }}" {% if current_wallet == value %}selected{% endif %}>{{ wallet.name or wallet.display_name }} ({{ value }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">税区分10%</label>
+          <select class="form-select" name="tax_code_10">
+            <option value="">選択してください</option>
+            {% for tax in master.taxes %}
+              {% set code = tax_code(tax) %}
+              <option value="{{ code }}" {% if record.tax_code_10|string == code|string %}selected{% endif %}>{{ tax.name_ja or tax.name or tax.display_name }} ({{ code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">税区分8%</label>
+          <select class="form-select" name="tax_code_8">
+            <option value="">選択してください</option>
+            {% for tax in master.taxes %}
+              {% set code = tax_code(tax) %}
+              <option value="{{ code }}" {% if record.tax_code_8|string == code|string %}selected{% endif %}>{{ tax.name_ja or tax.name or tax.display_name }} ({{ code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">税区分対象外</label>
+          <select class="form-select" name="tax_code_nontax">
+            <option value="">選択してください</option>
+            {% for tax in master.taxes %}
+              {% set code = tax_code(tax) %}
+              <option value="{{ code }}" {% if record.tax_code_nontax|string == code|string %}selected{% endif %}>{{ tax.name_ja or tax.name or tax.display_name }} ({{ code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-6"><label class="form-label">freee取引先ID</label><input class="form-control" type="number" name="freee_partner_id" value="{{ record.freee_partner_id or '' }}" placeholder="空なら店名で検索/作成"></div>
+        <div class="col-md-6"><label class="form-label">freeeメモタグID</label><input class="form-control" name="freee_memo_tags" value="{{ record.freee_memo_tags or '' }}" placeholder="例: 123 456"></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card card-body shadow-sm">
+      <h2 class="h5">補正後画像</h2>
+      <img class="img-fluid border rounded" src="{{ url_for('receipt_ocr.image', record_id=record.id, kind='processed') }}" alt="">
+    </div>
+    <div class="card card-body shadow-sm mt-3">
+      <h2 class="h5">OCR全文</h2>
+      <pre class="small mb-0" style="white-space:pre-wrap">{{ record.ocr_text or '' }}</pre>
+    </div>
+  </div>
+  <div class="col-12 d-flex gap-2">
+    <button class="btn btn-primary">保存</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('receipt_ocr.index') }}">一覧へ</a>
+  </div>
+</form>
+{% endblock %}
