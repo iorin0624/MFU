@@ -169,6 +169,32 @@ def freee_api_request(method: str, path: str, *, params=None, json_body=None) ->
     return resp.json() if resp.text else {}
 
 
+def freee_api_multipart_request(method: str, path: str, *, data=None, files=None) -> dict:
+    if not path.startswith("/api/1/"):
+        raise ValueError("freee API path must start with /api/1/")
+
+    def do_request(access_token: str):
+        return requests.request(
+            method.upper(),
+            FREEE_API_BASE_URL + path,
+            data=data,
+            files=files,
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=60,
+        )
+
+    access_token = get_valid_freee_access_token()
+    resp = do_request(access_token)
+    if resp.status_code == 401:
+        token_row = load_freee_token_row()
+        if token_row:
+            access_token = refresh_freee_access_token(token_row["refresh_token"])
+            resp = do_request(access_token)
+    if not (200 <= resp.status_code < 300):
+        raise RuntimeError(freee_error_from_response(resp))
+    return resp.json() if resp.text else {}
+
+
 def get_freee_common_settings(db=None) -> dict | None:
     close_db = False
     if db is None:

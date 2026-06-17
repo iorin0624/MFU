@@ -82,6 +82,7 @@ from app.utils.totp_util import get_totp_status
 from app.utils.whois_util import get_netinfo
 from app.albums import album_bp
 from app.receipts import receipts_bp
+from app.receipt_ocr import receipt_ocr_bp
 from app.freee_api import freee_api_bp
 from app.utils.mail import send_mail
 from app.utils.upload_notifications import send_discord_upload_notification
@@ -4024,6 +4025,7 @@ from .payment import bp as payment_bp
 app.register_blueprint(payment_bp)
 
 app.register_blueprint(receipts_bp)
+app.register_blueprint(receipt_ocr_bp)
 
 from app.records import records_api_bp, records_bp
 app.register_blueprint(records_bp, url_prefix="/records")

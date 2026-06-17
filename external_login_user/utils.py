@@ -737,7 +737,13 @@ def _event_by_uuid_str(u: str) -> Optional[dict]:
     さらに従来互換のため event_uuid_str を付加して返す。
     """
     db = get_db(); cur = db.cursor()
-    cur.execute("SELECT * FROM mfu_event WHERE event_uuid = UNHEX(REPLACE(%s,'-',''))", (u,))
+    cur.execute("""
+        SELECT *
+          FROM mfu_event
+         WHERE event_uuid = UNHEX(REPLACE(%s,'-',''))
+           AND deleted_at IS NULL
+         LIMIT 1
+    """, (u,))
     row = cur.fetchone()
     if not row:
         cur.close(); db.close()
