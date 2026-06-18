@@ -12,9 +12,11 @@ from .services import get_invoice_effective_bank_info, mark_invoice_pdf_generate
 from .utils import (
     ensure_dir,
     format_currency_yen,
+    format_ymd,
     format_jp_date,
     format_quantity,
     internal_pdf_filename,
+    sanitize_filename_component,
     visible_pdf_filename,
 )
 
@@ -266,4 +268,52 @@ def generate_invoice_pdf(invoice: dict) -> tuple[str, str, bytes]:
     with open(pdf_path, "wb") as fp:
         fp.write(pdf_bytes)
     mark_invoice_pdf_generated(int(invoice["id"]), pdf_path)
+    return pdf_path, visible_name, pdf_bytes
+
+
+def _render_invoice_receipt_pdf_bytes(invoice: dict[str, Any], *, paid_at=None, payment_method: str = "銀行振込") -> bytes:
+    HTML, CSS, FontConfiguration = _require_weasyprint()
+    paid_date = paid_at or datetime.now()
+    receipt = {
+        "issue_date_label": format_ymd(paid_date),
+        "pay_date_label": format_ymd(paid_date),
+        "recipient_name": f"{invoice.get('contact_name_snapshot') or invoice.get('contact_name') or ''} 様".strip(),
+        "amount": format_currency_yen(int(invoice.get("total_yen") or 0)),
+        "description": f"{invoice.get('invoice_no') or ''}　{invoice.get('subject') or ''}　として".strip(),
+        "payment_method": payment_method,
+        "receipt_note": "",
+        "payer_name": invoice.get("issuer_name") or "",
+        "payer_address": " ".join(
+            str(v or "").strip()
+            for v in (invoice.get("issuer_postal_code"), invoice.get("issuer_address1"), invoice.get("issuer_address2"))
+            if str(v or "").strip()
+        ),
+        "payer_phone": invoice.get("issuer_phone") or "",
+        "payer_email": invoice.get("issuer_email") or "",
+    }
+    html = render_template("invoice_receipt_pdf.html", receipt=receipt, invoice=invoice)
+    regular_path, bold_path = _resolve_font_paths()
+    font_config = FontConfiguration()
+    base_url = Path(current_app.root_path).resolve().as_uri() + "/"
+    stylesheet = CSS(
+        string=_build_font_css(regular_path, bold_path),
+        base_url=base_url,
+        font_config=font_config,
+    )
+    return HTML(string=html, base_url=base_url).write_pdf(
+        stylesheets=[stylesheet],
+        font_config=font_config,
+    )
+
+
+def generate_invoice_receipt_pdf(invoice: dict, *, paid_at=None, payment_method: str = "銀行振込") -> tuple[str, str, bytes]:
+    pdf_bytes = _render_invoice_receipt_pdf_bytes(invoice, paid_at=paid_at, payment_method=payment_method)
+    pdf_dir = ensure_dir(current_app.config.get("INVOICE_PDF_DIR") or "/tmp/mfu/invoice_pdf")
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
+    invoice_no = sanitize_filename_component(invoice.get("invoice_no") or f"invoice_{invoice['id']}")
+    visible_name = f"receipt_{invoice_no}.pdf"
+    internal_name = f"receipt_{int(invoice['id'])}_{ts}.pdf"
+    pdf_path = os.path.join(pdf_dir, internal_name)
+    with open(pdf_path, "wb") as fp:
+        fp.write(pdf_bytes)
     return pdf_path, visible_name, pdf_bytes

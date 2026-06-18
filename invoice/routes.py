@@ -5,15 +5,15 @@ import os
 from functools import wraps
 
 import requests
-from flask import flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.bank_account.integration_service import issue_payout_access_token_for_invoice
 
 from . import invoice_bp
 from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
 from .freee_api import invoice_needs_freee_resync, sync_invoice_to_freee
-from .mail import send_invoice_mail
-from .pdf import generate_invoice_pdf
+from .mail import send_invoice_mail, send_invoice_receipt_mail
+from .pdf import generate_invoice_pdf, generate_invoice_receipt_pdf
 from .services import (
     CARD_PAYMENT_SUCCESS_STATUSES,
     BANK_INFO_MODE_LABELS,
@@ -40,8 +40,10 @@ from .services import (
     get_invoice_by_card_payment_token,
     get_invoice_card_payment_by_square_payment_id,
     get_issuer_template_by_id,
+    get_latest_invoice_sent_mail_log,
     get_latest_invoice_card_payment,
     get_invoice_square_config,
+    has_invoice_receipt_mail_sent,
     list_invoices,
     list_issuer_templates,
     log_csv_export,
@@ -357,7 +359,8 @@ def invoice_detail(invoice_id: int):
     latest_card_payment = get_latest_invoice_card_payment(invoice_id)
     card_payment_status = (latest_card_payment or {}).get("square_status") or ""
     card_payment_url = None
-    if card_payment_enabled and invoice.get("status") not in {"paid", "cancelled"}:
+    invoice_status = str(invoice.get("status") or "").strip().lower()
+    if card_payment_enabled and invoice_status not in {"paid", "cancelled", "canceled"}:
         try:
             token = ensure_invoice_card_payment_token(invoice_id)
             card_payment_url = build_invoice_card_payment_url(token)
@@ -415,7 +418,36 @@ def invoice_issue(invoice_id: int):
 @login_required
 def invoice_update_status(invoice_id: int):
     status = request.form.get("status") or "draft"
+    before_invoice = get_invoice(invoice_id)
+    before_status = str((before_invoice or {}).get("status") or "").strip().lower()
     update_invoice_status(invoice_id, status)
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status == "paid" and (before_status != "paid" or not has_invoice_receipt_mail_sent(invoice_id)):
+        try:
+            invoice = get_invoice(invoice_id)
+            if invoice and not has_invoice_receipt_mail_sent(invoice_id):
+                to_email = (invoice.get("contact_email_snapshot") or "").strip()
+                if to_email and int(invoice.get("total_yen") or 0) > 0:
+                    latest_mail = get_latest_invoice_sent_mail_log(invoice_id) or {}
+                    _, receipt_name, receipt_pdf = generate_invoice_receipt_pdf(
+                        invoice,
+                        paid_at=now_jst(),
+                        payment_method="銀行振込",
+                    )
+                    send_invoice_receipt_mail(
+                        invoice,
+                        to_email=to_email,
+                        cc_email=(latest_mail.get("cc_email") or None),
+                        bcc_email=None,
+                        reply_to_email=resolve_invoice_issuer_email(invoice) or None,
+                        attachment_filename=receipt_name,
+                        pdf_bytes=receipt_pdf,
+                    )
+                    flash("領収書PDFを送付しました。", "success")
+                else:
+                    flash("領収書メールは、宛先メールまたは金額が不足しているため送付しませんでした。", "warning")
+        except Exception as exc:
+            flash(f"ステータスは更新しましたが、領収書メール送付に失敗しました: {exc}", "danger")
     flash("ステータスを更新しました。", "success")
     return redirect(url_for("invoice.invoice_detail", invoice_id=invoice_id))
 
@@ -439,7 +471,7 @@ def _resolve_invoice_mail_payment_links(invoice: dict, invoice_id: int) -> tuple
     payout_access_url = None
     card_payment_url = None
     needs_payout_url = normalized_bank_info_mode == BANK_INFO_MODE_PAYOUT_LINK
-    needs_card_url = card_payment_enabled and invoice_status not in {"paid", "cancelled"}
+    needs_card_url = card_payment_enabled and invoice_status not in {"paid", "cancelled", "canceled"}
     if needs_payout_url:
         try:
             payout_access = issue_payout_access_token_for_invoice(invoice)
@@ -599,11 +631,42 @@ def _card_payment_invoice_error(invoice: dict | None) -> tuple[dict | None, str 
         return None, "無効な決済URLです。"
     if int(invoice.get("card_payment_enabled") or 0) != 1:
         return None, "この請求書はカード決済に対応していません。"
-    if invoice.get("status") in {"paid", "cancelled"}:
+    invoice_status = str(invoice.get("status") or "").strip().lower()
+    if invoice_status in {"paid", "cancelled", "canceled"}:
         return None, "現在この請求書はカード決済を受け付けていません。"
     if int(invoice.get("total_yen") or 0) <= 0:
         return None, "決済金額が不正です。"
     return invoice, None
+
+
+def _send_invoice_receipt_mail_if_needed(
+    invoice_id: int,
+    *,
+    paid_at=None,
+    payment_method: str = "銀行振込",
+) -> bool:
+    invoice = get_invoice(invoice_id)
+    if not invoice or has_invoice_receipt_mail_sent(invoice_id):
+        return False
+    to_email = (invoice.get("contact_email_snapshot") or "").strip()
+    if not to_email or int(invoice.get("total_yen") or 0) <= 0:
+        return False
+    latest_mail = get_latest_invoice_sent_mail_log(invoice_id) or {}
+    _, receipt_name, receipt_pdf = generate_invoice_receipt_pdf(
+        invoice,
+        paid_at=paid_at or now_jst(),
+        payment_method=payment_method,
+    )
+    send_invoice_receipt_mail(
+        invoice,
+        to_email=to_email,
+        cc_email=(latest_mail.get("cc_email") or None),
+        bcc_email=None,
+        reply_to_email=resolve_invoice_issuer_email(invoice) or None,
+        attachment_filename=receipt_name,
+        pdf_bytes=receipt_pdf,
+    )
+    return True
 
 
 @invoice_bp.get("/pay/<token>")
@@ -736,6 +799,14 @@ def invoice_card_charge(token: str):
     if status in CARD_PAYMENT_SUCCESS_STATUSES:
         mark_invoice_paid_by_card(int(invoice.get("id")), paid_at=paid_at)
         notify_invoice_card_payment_if_needed(payment_row_id)
+        try:
+            _send_invoice_receipt_mail_if_needed(
+                int(invoice.get("id")),
+                paid_at=paid_at,
+                payment_method="クレジットカード決済",
+            )
+        except Exception:
+            current_app.logger.exception("invoice receipt mail failed after card charge invoice_id=%s", invoice.get("id"))
 
     return jsonify(
         {
@@ -799,6 +870,18 @@ def invoice_card_webhook():
     if status in CARD_PAYMENT_SUCCESS_STATUSES:
         mark_invoice_paid_by_card(int(record.get("invoice_id")), paid_at=paid_at)
         notify_invoice_card_payment_if_needed(int(record.get("id")))
+        try:
+            _send_invoice_receipt_mail_if_needed(
+                int(record.get("invoice_id")),
+                paid_at=paid_at,
+                payment_method="クレジットカード決済",
+            )
+        except Exception:
+            current_app.logger.exception(
+                "invoice receipt mail failed from card webhook invoice_id=%s payment_row_id=%s",
+                record.get("invoice_id"),
+                record.get("id"),
+            )
     return "", 200
 
 
