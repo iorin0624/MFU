@@ -1536,6 +1536,47 @@ def get_invoice(invoice_id: int) -> dict[str, Any] | None:
         db.close()
 
 
+def get_latest_invoice_sent_mail_log(invoice_id: int) -> dict[str, Any] | None:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT *
+              FROM invoice_mail_logs
+             WHERE invoice_id=%s
+               AND status='sent'
+             ORDER BY sent_at DESC, created_at DESC, id DESC
+             LIMIT 1
+            """,
+            (invoice_id,),
+        )
+        return cur.fetchone()
+    finally:
+        cur.close()
+        db.close()
+
+
+def has_invoice_receipt_mail_sent(invoice_id: int) -> bool:
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id
+              FROM invoice_mail_logs
+             WHERE invoice_id=%s
+               AND status='receipt_sent'
+             LIMIT 1
+            """,
+            (invoice_id,),
+        )
+        return bool(cur.fetchone())
+    finally:
+        cur.close()
+        db.close()
+
+
 def duplicate_invoice(invoice_id: int) -> int:
     original = get_invoice(invoice_id)
     if not original:
@@ -1631,10 +1672,23 @@ def update_invoice_status(invoice_id: int, status: str) -> None:
     db = get_db()
     cur = db.cursor()
     try:
-        cur.execute(
-            "UPDATE invoice_headers SET status=%s, updated_at=%s WHERE id=%s",
-            (status, now, invoice_id),
-        )
+        if status == "cancelled":
+            cur.execute(
+                """
+                UPDATE invoice_headers
+                SET status=%s,
+                    card_payment_public_token=NULL,
+                    card_payment_public_expires_at=NULL,
+                    updated_at=%s
+                WHERE id=%s
+                """,
+                (status, now, invoice_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE invoice_headers SET status=%s, updated_at=%s WHERE id=%s",
+                (status, now, invoice_id),
+            )
         db.commit()
     finally:
         cur.close()
@@ -1768,7 +1822,7 @@ def ensure_invoice_card_payment_token(invoice_id: int) -> str:
         row = cur.fetchone()
         if not row:
             raise InvoiceValidationError("請求書が見つかりません。")
-        if (row.get("status") or "").lower() in {"paid", "cancelled"}:
+        if (row.get("status") or "").strip().lower() in {"paid", "cancelled", "canceled"}:
             raise InvoiceValidationError("現在のステータスではカード決済URLを発行できません。")
         token = (row.get("card_payment_public_token") or "").strip()
         if token:
@@ -2083,6 +2137,7 @@ def mark_invoice_paid_by_card(invoice_id: int, paid_at=None) -> None:
             UPDATE invoice_headers
             SET status='paid', card_paid_at=COALESCE(card_paid_at, %s), updated_at=%s
             WHERE id=%s
+              AND status <> 'cancelled'
             """,
             (paid_time, paid_time, invoice_id),
         )
