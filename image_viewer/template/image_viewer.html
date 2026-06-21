@@ -1,0 +1,1743 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token_value }}">
+  <title>Image Viewer Desktop</title>
+  <style>
+    :root {
+      --taskbar-h: 48px;
+      --desktop-bg: #2464ad;
+      --panel: #ece9d8;
+      --panel-2: #ffffff;
+      --line: #aca899;
+      --text: #111;
+      --muted: #596673;
+      --accent: #0a5edb;
+      --active: #c1d7ff;
+      --shadow: 5px 8px 18px rgba(0, 0, 0, .32);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      font-family: "Segoe UI", "Yu Gothic", "Meiryo", sans-serif;
+      color: var(--text);
+      background: #0b1220;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+
+    .desktop {
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at 24% 18%, rgba(255,255,255,.54), transparent 12%),
+        radial-gradient(circle at 68% 26%, rgba(255,255,255,.22), transparent 18%),
+        linear-gradient(145deg, #4b8ad6 0%, var(--desktop-bg) 44%, #0d4b95 100%);
+      overflow: hidden;
+      user-select: none;
+    }
+
+    .desktop-grid {
+      position: absolute;
+      inset: 0 0 var(--taskbar-h) 0;
+    }
+    .desktop-icons {
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      z-index: 1;
+      display: grid;
+      gap: 16px;
+      width: 92px;
+    }
+    .desktop-icon {
+      width: 86px;
+      min-height: 78px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: #fff;
+      display: grid;
+      justify-items: center;
+      gap: 5px;
+      padding: 6px 4px;
+      text-shadow: 1px 1px 2px rgba(0,0,0,.9);
+    }
+    .desktop-icon:hover {
+      background: rgba(49, 106, 197, .42);
+      border-color: rgba(255,255,255,.55);
+    }
+    .desktop-icon .icon-box {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #feda75, #fa7e1e 35%, #d62976 62%, #962fbf 82%, #4f5bd5);
+      font-weight: 800;
+      font-size: 19px;
+      color: #fff;
+      box-shadow: 1px 2px 3px rgba(0,0,0,.38);
+    }
+    .desktop-icon .icon-box.fullscreen {
+      background: linear-gradient(135deg, #0ea5e9, #2563eb 52%, #1e3a8a);
+      font-size: 16px;
+    }
+    .desktop-icon span:last-child {
+      max-width: 82px;
+      font-size: 12px;
+      line-height: 1.15;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
+
+    .window {
+      position: absolute;
+      min-width: 280px;
+      min-height: 190px;
+      background: var(--panel);
+      border: 3px solid #0055e5;
+      border-top-color: #2c8dff;
+      border-radius: 7px 7px 0 0;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .window.active {
+      border-color: #0055e5;
+      border-top-color: #49a3ff;
+      box-shadow: 6px 10px 22px rgba(0, 0, 0, .38);
+    }
+
+    .window.minimized { display: none; }
+
+    .titlebar {
+      height: 34px;
+      flex: 0 0 34px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(#2fa3ff 0%, #0b63dd 48%, #0042a8 100%);
+      border-bottom: 1px solid #003c94;
+      padding: 0 6px 0 10px;
+      touch-action: none;
+    }
+
+    .window.active .titlebar { background: linear-gradient(#5bb7ff 0%, #0b63dd 48%, #0042a8 100%); }
+    .title-icon { width: 17px; height: 17px; display: grid; place-items: center; color: #ffdc48; text-shadow: 0 1px 0 rgba(0,0,0,.35); }
+    .title-text {
+      min-width: 0;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+      text-shadow: 1px 1px 0 rgba(0, 0, 0, .45);
+    }
+    .win-actions { display: flex; align-items: center; gap: 2px; }
+    .win-btn {
+      width: 30px;
+      height: 26px;
+      border: 0;
+      border-radius: 3px;
+      background: linear-gradient(#6bb8ff, #0955d6 55%, #003a9d);
+      border: 1px solid rgba(255,255,255,.65);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      text-shadow: 0 1px 0 rgba(0,0,0,.45);
+    }
+    .win-btn:hover { filter: brightness(1.12); }
+    .win-btn.close { background: linear-gradient(#ff9a72, #e9411f 55%, #af1a08); }
+    .win-btn.close:hover { filter: brightness(1.12); color: white; }
+
+    .explorer {
+      left: 124px;
+      top: 24px;
+      width: min(1040px, calc(100vw - 150px));
+      height: min(680px, calc(100vh - 96px));
+    }
+    .explorer-body {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      background: var(--panel-2);
+    }
+    .sidebar {
+      border-right: 1px solid #7aa7e6;
+      background: linear-gradient(#d8e9ff, #b7d3ff 42%, #8fb6f1);
+      padding: 10px;
+      overflow: auto;
+    }
+    .side-title { font-size: 12px; color: #1b4b9b; margin: 4px 0 8px; font-weight: 700; }
+    .folder {
+      width: 100%;
+      min-height: 30px;
+      border: 0;
+      background: transparent;
+      text-align: left;
+      padding: 6px 8px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: #0645ad;
+      border-radius: 3px;
+    }
+    .folder.active { background: rgba(255,255,255,.74); color: #003399; }
+    .folder:hover { background: rgba(255,255,255,.58); }
+    .folder.drag-over {
+      outline: 2px solid #316ac5;
+      background: #fff7b8;
+    }
+    .folder .label {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .filepane {
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .toolbar {
+      min-height: 42px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 7px 10px;
+      background: linear-gradient(#fffdf4, #ece9d8);
+      overflow: hidden;
+    }
+    .pathbox {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 6px 9px;
+      font-size: 13px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .toolbar button {
+      border: 1px solid #aca899;
+      background: linear-gradient(#ffffff, #ece9d8);
+      min-width: 34px;
+      max-width: 72px;
+      height: 30px;
+      padding: 0 7px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .toolbar button:hover { background: #dcebff; }
+    .toolbar button.active {
+      background: #c1d7ff;
+      border-color: #316ac5;
+      box-shadow: inset 1px 1px 2px rgba(0,0,0,.22);
+    }
+    .files {
+      --tile-w: 148px;
+      --tile-h: 176px;
+      --thumb-size: 136px;
+      --name-lines: 2;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, var(--tile-w));
+      align-content: start;
+      justify-content: start;
+      gap: 12px 10px;
+      padding: 14px 18px 24px;
+    }
+    .files.drag-over {
+      outline: 3px dashed #316ac5;
+      outline-offset: -8px;
+      background: #f2f7ff;
+    }
+    .files.view-xl { --tile-w: 186px; --tile-h: 220px; --thumb-size: 174px; --name-lines: 2; }
+    .files.view-lg { --tile-w: 148px; --tile-h: 176px; --thumb-size: 136px; --name-lines: 2; }
+    .files.view-md { --tile-w: 112px; --tile-h: 138px; --thumb-size: 100px; --name-lines: 2; gap: 8px 6px; }
+    .files.view-sm { --tile-w: 82px; --tile-h: 106px; --thumb-size: 70px; --name-lines: 1; gap: 6px 4px; }
+    .file {
+      border: 1px solid transparent;
+      background: transparent;
+      width: var(--tile-w);
+      min-height: var(--tile-h);
+      padding: 6px 6px 5px;
+      text-align: center;
+      color: var(--text);
+    }
+    .file:hover, .file.selected {
+      background: #dbeaff;
+      border-color: #7da2ce;
+    }
+    .thumb {
+      width: var(--thumb-size);
+      height: var(--thumb-size);
+      display: grid;
+      place-items: center;
+      background-color: transparent;
+      background-repeat: no-repeat;
+      background-position: center center;
+      background-size: contain;
+      border: 0;
+      margin-bottom: 6px;
+      overflow: hidden;
+    }
+    .file-name {
+      font-size: 12px;
+      min-height: 30px;
+      line-height: 1.25;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: var(--name-lines);
+      -webkit-box-orient: vertical;
+      overflow-wrap: anywhere;
+    }
+    .file-meta { display: none; }
+    .empty {
+      grid-column: 1 / -1;
+      align-self: start;
+      color: #435066;
+      border: 1px dashed #7aa7e6;
+      background: #f2f7ff;
+      padding: 22px;
+      text-align: center;
+    }
+
+    .viewer {
+      width: min(760px, calc(100vw - 84px));
+      height: min(560px, calc(100vh - 112px));
+    }
+    .instagram-window {
+      width: min(820px, calc(100vw - 84px));
+      height: min(640px, calc(100vh - 112px));
+    }
+    .instagram-body {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 8px;
+      padding: 10px;
+      background: #ece9d8;
+    }
+    .ig-form {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 7px;
+      align-items: center;
+    }
+    .ig-form input {
+      min-width: 0;
+      height: 28px;
+      border: 1px solid #7f9db9;
+      padding: 3px 6px;
+    }
+    .ig-form button, .ig-actions button {
+      height: 28px;
+      border: 1px solid #aca899;
+      background: linear-gradient(#ffffff, #ece9d8);
+    }
+    .ig-options {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+      margin-top: 8px;
+    }
+    .ig-options label {
+      display: grid;
+      gap: 3px;
+      font-size: 12px;
+    }
+    .ig-options input {
+      width: 100%;
+      height: 26px;
+      border: 1px solid #7f9db9;
+      padding: 3px 6px;
+    }
+    .ig-grid {
+      min-height: 0;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #aca899;
+      padding: 10px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      align-content: start;
+      gap: 10px;
+    }
+    .ig-item {
+      border: 1px solid #c7c3b1;
+      background: #fff;
+      padding: 6px;
+      display: grid;
+      gap: 6px;
+      align-content: start;
+    }
+    .ig-item.selected {
+      background: #dbeaff;
+      border-color: #316ac5;
+    }
+    .ig-thumb {
+      width: 100%;
+      aspect-ratio: 1;
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      background-color: #f5f5f5;
+    }
+    .ig-item label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      min-width: 0;
+    }
+    .ig-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .ig-status {
+      margin-left: auto;
+      color: #1f3763;
+      font-size: 12px;
+    }
+    .viewer .content {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: #111827;
+      color: #f8fafc;
+    }
+    .viewer-toolbar {
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-bottom: 1px solid rgba(255,255,255,.12);
+      background: rgba(17, 24, 39, .96);
+    }
+    .viewer-toolbar button {
+      height: 28px;
+      min-width: 32px;
+      border: 1px solid rgba(255,255,255,.22);
+      background: rgba(255,255,255,.08);
+      color: #f8fafc;
+    }
+    .viewer-toolbar button:hover { background: rgba(255,255,255,.16); }
+    .zoom-label { min-width: 58px; text-align: center; font-size: 12px; color: #cbd5e1; }
+    .stage {
+      min-height: 0;
+      overflow: auto;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      background:
+        linear-gradient(45deg, #0f172a 25%, transparent 25%),
+        linear-gradient(-45deg, #0f172a 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #0f172a 75%),
+        linear-gradient(-45deg, transparent 75%, #0f172a 75%);
+      background-color: #111827;
+      background-size: 28px 28px;
+      background-position: 0 0, 0 14px, 14px -14px, -14px 0;
+    }
+    .stage img {
+      display: block;
+      max-width: none;
+      max-height: none;
+      width: auto;
+      height: auto;
+      box-shadow: 0 8px 28px rgba(0,0,0,.45);
+      background: white;
+    }
+    .viewer-status {
+      min-height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 5px 9px;
+      border-top: 1px solid rgba(255,255,255,.12);
+      font-size: 12px;
+      color: #cbd5e1;
+      background: rgba(17, 24, 39, .96);
+    }
+    .viewer-status span {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .taskbar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: var(--taskbar-h);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      background: rgba(246, 248, 251, .92);
+      background: linear-gradient(#3f9bff 0%, #1669d8 42%, #0b49b5 100%);
+      border-top: 1px solid #5fb1ff;
+      box-shadow: 0 -2px 8px rgba(0,0,0,.28);
+    }
+    .start {
+      width: 92px;
+      height: 36px;
+      border: 1px solid #167421;
+      border-radius: 0 18px 18px 0;
+      background: linear-gradient(#63d45e, #1c9c2f 48%, #0b7620);
+      color: #fff;
+      font-weight: 800;
+      font-size: 14px;
+      text-shadow: 1px 1px 0 rgba(0,0,0,.45);
+    }
+    .task-list {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .task {
+      height: 34px;
+      min-width: 132px;
+      max-width: 230px;
+      border: 1px solid rgba(255,255,255,.38);
+      background: linear-gradient(#5db4ff, #1e73de 52%, #0d55c4);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      color: #fff;
+      text-shadow: 1px 1px 0 rgba(0,0,0,.38);
+    }
+    .task.active {
+      border-color: #ffe082;
+      background: linear-gradient(#9ecbff, #3b82e6 52%, #1d5fc4);
+    }
+    .task.minimized { opacity: .62; }
+    .task span:last-child {
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+    .clock { font-size: 12px; color: #fff; min-width: 86px; text-align: right; text-shadow: 1px 1px 0 rgba(0,0,0,.45); }
+    .resize-handle {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 16px;
+      height: 16px;
+      cursor: nwse-resize;
+    }
+    .resize-handle::after {
+      content: "";
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid rgba(0,0,0,.25);
+      border-bottom: 2px solid rgba(0,0,0,.25);
+    }
+
+    @media (max-width: 760px) {
+      .explorer {
+        left: 8px;
+        top: 8px;
+        width: calc(100vw - 16px);
+        height: calc(100vh - var(--taskbar-h) - 16px);
+      }
+      .explorer-body { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .viewer {
+        left: 8px !important;
+        top: 8px !important;
+        width: calc(100vw - 16px) !important;
+        height: calc(100vh - var(--taskbar-h) - 16px) !important;
+      }
+      .task { min-width: 112px; }
+      .clock { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="desktop" id="desktop" aria-label="画像ビュアーデスクトップ">
+    <div class="desktop-icons">
+      <button type="button" class="desktop-icon" id="browserFullscreenIcon">
+        <span class="icon-box fullscreen">FS</span>
+        <span id="browserFullscreenLabel">全画面</span>
+      </button>
+      <button type="button" class="desktop-icon" id="instagramDesktopIcon">
+        <span class="icon-box">IG</span>
+        <span>Instagram/X取得</span>
+      </button>
+    </div>
+    <section class="desktop-grid" id="desktopGrid">
+      <article class="window explorer active" id="explorerWindow" data-window-id="explorer" data-title="エクスプローラー">
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">EXP</div>
+          <div class="title-text">エクスプローラー - /mnt/mfu/image_viewer_uploads</div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
+          </div>
+        </header>
+        <div class="explorer-body">
+          <aside class="sidebar">
+            <div class="side-title">フォルダー</div>
+            <div id="folderList"></div>
+          </aside>
+          <section class="filepane">
+            <div class="toolbar">
+              <div class="pathbox" id="pathBox">/mnt/mfu/image_viewer_uploads</div>
+              <button type="button" id="refreshBtn" title="更新">更新</button>
+              <button type="button" id="newFolderBtn" title="フォルダー作成">新規</button>
+              <button type="button" id="uploadBtn" title="画像アップロード">追加</button>
+              <button type="button" id="sortBtn" title="名前順 / 逆順">昇順</button>
+              <button type="button" class="view-btn" data-view-size="xl" title="特大表示">特大</button>
+              <button type="button" class="view-btn" data-view-size="lg" title="大表示">大</button>
+              <button type="button" class="view-btn" data-view-size="md" title="中表示">中</button>
+              <button type="button" class="view-btn" data-view-size="sm" title="小表示">小</button>
+              <button type="button" id="thumbBtn" title="不足サムネイル作成">縮小</button>
+              <button type="button" id="tileBtn" title="選択画像を開く">開く</button>
+              <input id="uploadInput" type="file" accept="image/*" multiple hidden>
+            </div>
+            <div class="files" id="fileGrid" aria-label="逕ｻ蜒丈ｸ隕ｧ"></div>
+          </section>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      </article>
+    </section>
+    <footer class="taskbar">
+      <button class="start" type="button" id="showExplorerBtn" title="Explorer">スタート</button>
+      <div class="task-list" id="taskList"></div>
+      <div class="clock" id="clock"></div>
+    </footer>
+  </main>
+
+  <script>
+  (() => {
+    const apiUrl = "{{ url_for('image_viewer.image_list') }}";
+    const createFolderUrl = "{{ url_for('image_viewer.create_folder') }}";
+    const uploadImagesUrl = "{{ url_for('image_viewer.upload_images') }}";
+    const instagramFetchUrl = "{{ url_for('image_viewer.instagram_fetch') }}";
+    const instagramSaveUrl = "{{ url_for('image_viewer.instagram_save') }}";
+    const instagramJobUrlBase = "{{ url_for('image_viewer.instagram_job', job_id='__JOB_ID__') }}";
+    const instagramNextNumberUrl = "{{ url_for('image_viewer.instagram_next_number') }}";
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+    const instagramSettingsKey = 'mfu.imageViewer.instagramSettings';
+    const state = {
+      images: [],
+      folders: [''],
+      currentFolder: '',
+      windows: new Map(),
+      activeId: 'explorer',
+      z: 10,
+      nextViewer: 1,
+      selectedPath: '',
+      fitByWindow: new Map(),
+      zoomByWindow: new Map(),
+      wheelLockByWindow: new Map(),
+      sortByFolder: {},
+      viewSizeByFolder: {},
+      resetFileScrollNext: false,
+      thumbObserver: null,
+      thumbHydrateRaf: 0,
+      thumbSettleTimer: 0,
+      instagram: { shortcode: '', jobId: '', images: [] }
+    };
+
+    const desktopGrid = document.getElementById('desktopGrid');
+    const explorerWindow = document.getElementById('explorerWindow');
+    const folderList = document.getElementById('folderList');
+    const fileGrid = document.getElementById('fileGrid');
+    const pathBox = document.getElementById('pathBox');
+    const sortBtn = document.getElementById('sortBtn');
+    const thumbBtn = document.getElementById('thumbBtn');
+    const viewButtons = Array.from(document.querySelectorAll('[data-view-size]'));
+    const taskList = document.getElementById('taskList');
+    const clock = document.getElementById('clock');
+    const uploadBatchMaxBytes = 80 * 1024 * 1024;
+    const uploadBatchMaxFiles = 20;
+
+    const icons = {
+      explorer: 'EXP',
+      viewer: 'IMG'
+    };
+
+    async function fetchJson(url, options = {}) {
+      const headers = new Headers(options.headers || {});
+      headers.set('Accept', 'application/json');
+      if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+      if (csrfToken && !headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', csrfToken);
+      const resp = await fetch(url, { ...options, headers });
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await resp.text();
+        const preview = text.replace(/\s+/g, ' ').slice(0, 80);
+        if (resp.status === 413) {
+          throw new Error('アップロード容量が大きすぎます。1ファイルが大きすぎる可能性があります。');
+        }
+        throw new Error(`Non-JSON response (${resp.status}) ${preview}`);
+      }
+      const data = await resp.json();
+      if (!resp.ok || data.ok === false) throw new Error(data.error || data.message || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    function sleep(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function waitInstagramJob(jobId, onTick) {
+      const url = instagramJobUrlBase.replace('__JOB_ID__', encodeURIComponent(jobId));
+      const startedAt = Date.now();
+      let count = 0;
+      while (Date.now() - startedAt < 120000) {
+        await sleep(count < 3 ? 700 : 1200);
+        count += 1;
+        if (onTick) onTick(count);
+        const data = await fetchJson(url);
+        if (data.status === 'done') return data;
+        if (data.status === 'error') throw new Error(data.error || '取得に失敗しました。');
+      }
+      throw new Error('取得がタイムアウトしました。もう一度お試しください。');
+    }
+
+    function formatBytes(bytes) {
+      const n = Number(bytes || 0);
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1024 / 1024).toFixed(1)} MB`;
+    }
+
+    function folderLabel(folder) {
+      return folder ? folder.split('/').pop() : 'uploads';
+    }
+
+    function compareNaturalText(a, b) {
+      const ax = String(a || '').match(/\d+|\D+/g) || [''];
+      const bx = String(b || '').match(/\d+|\D+/g) || [''];
+      const len = Math.max(ax.length, bx.length);
+      for (let i = 0; i < len; i += 1) {
+        const av = ax[i] || '';
+        const bv = bx[i] || '';
+        const an = /^\d+$/.test(av);
+        const bn = /^\d+$/.test(bv);
+        if (an && bn) {
+          const diff = Number(av) - Number(bv);
+          if (diff) return diff;
+          if (av.length !== bv.length) return av.length - bv.length;
+          continue;
+        }
+        const diff = av.localeCompare(bv, 'ja', { numeric: true, sensitivity: 'base' });
+        if (diff) return diff;
+      }
+      return 0;
+    }
+
+    function compareFolderPath(a, b) {
+      if ((a || '') === (b || '')) return 0;
+      if (!a) return -1;
+      if (!b) return 1;
+      const ap = String(a).split('/');
+      const bp = String(b).split('/');
+      const len = Math.max(ap.length, bp.length);
+      for (let i = 0; i < len; i += 1) {
+        if (ap[i] === undefined) return -1;
+        if (bp[i] === undefined) return 1;
+        const diff = compareNaturalText(ap[i], bp[i]);
+        if (diff) return diff;
+      }
+      return 0;
+    }
+
+    function setCurrentFolder(folder) {
+      if (folder === state.currentFolder) return;
+      state.currentFolder = folder;
+      state.selectedPath = '';
+      state.resetFileScrollNext = true;
+      renderExplorer();
+    }
+
+    function loadSortState() {
+      try {
+        const raw = localStorage.getItem('imageViewerSortByFolder');
+        state.sortByFolder = raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        state.sortByFolder = {};
+      }
+    }
+
+    function saveSortState() {
+      try {
+        localStorage.setItem('imageViewerSortByFolder', JSON.stringify(state.sortByFolder));
+      } catch (_) {}
+    }
+
+    function sortDirection(folder = state.currentFolder) {
+      return state.sortByFolder[folder || ''] === 'desc' ? 'desc' : 'asc';
+    }
+
+    function setSortDirection(folder, direction) {
+      state.sortByFolder[folder || ''] = direction === 'desc' ? 'desc' : 'asc';
+      saveSortState();
+    }
+
+    function loadViewSizeState() {
+      try {
+        const raw = localStorage.getItem('imageViewerViewSizeByFolder');
+        state.viewSizeByFolder = raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        state.viewSizeByFolder = {};
+      }
+    }
+
+    function saveViewSizeState() {
+      try {
+        localStorage.setItem('imageViewerViewSizeByFolder', JSON.stringify(state.viewSizeByFolder));
+      } catch (_) {}
+    }
+
+    function viewSize(folder = state.currentFolder) {
+      const value = state.viewSizeByFolder[folder || ''];
+      return ['xl', 'lg', 'md', 'sm'].includes(value) ? value : 'lg';
+    }
+
+    function setViewSize(folder, size) {
+      state.viewSizeByFolder[folder || ''] = ['xl', 'lg', 'md', 'sm'].includes(size) ? size : 'lg';
+      saveViewSizeState();
+    }
+
+    function activate(id) {
+      const win = state.windows.get(id);
+      if (!win) return;
+      win.el.classList.remove('minimized');
+      win.minimized = false;
+      state.activeId = id;
+      win.el.style.zIndex = String(++state.z);
+      renderTasks();
+      document.querySelectorAll('.window').forEach(el => el.classList.toggle('active', el.dataset.windowId === id));
+    }
+
+    function minimize(id) {
+      const win = state.windows.get(id);
+      if (!win) return;
+      win.el.classList.add('minimized');
+      win.minimized = true;
+      if (state.activeId === id) {
+        const next = Array.from(state.windows.values()).filter(w => !w.minimized && w.id !== id).pop();
+        if (next) activate(next.id);
+      }
+      renderTasks();
+      if (win.kind === 'viewer' && state.fitByWindow.get(id)) requestAnimationFrame(() => applyZoom(id));
+    }
+
+    function toggleMaximize(id) {
+      const win = state.windows.get(id);
+      if (!win) return;
+      activate(id);
+      const el = win.el;
+      if (!win.maximized) {
+        win.restoreRect = {
+          left: el.style.left || `${el.offsetLeft}px`,
+          top: el.style.top || `${el.offsetTop}px`,
+          width: el.style.width || `${el.offsetWidth}px`,
+          height: el.style.height || `${el.offsetHeight}px`
+        };
+        el.style.left = '0px';
+        el.style.top = '0px';
+        el.style.width = '100vw';
+        el.style.height = 'calc(100vh - var(--taskbar-h))';
+        win.maximized = true;
+        el.querySelector('[data-action="maximize"]')?.setAttribute('title', '元に戻す');
+      } else {
+        const rect = win.restoreRect || {};
+        el.style.left = rect.left || '26px';
+        el.style.top = rect.top || '24px';
+        el.style.width = rect.width || '';
+        el.style.height = rect.height || '';
+        win.maximized = false;
+        el.querySelector('[data-action="maximize"]')?.setAttribute('title', '最大化');
+      }
+      renderTasks();
+      if (win.kind === 'viewer' && state.fitByWindow.get(id)) {
+        requestAnimationFrame(() => applyZoom(id));
+      }
+    }
+
+    function closeWindow(id) {
+      if (id === 'explorer') {
+        minimize(id);
+        return;
+      }
+      const win = state.windows.get(id);
+      if (!win) return;
+      win.el.remove();
+      state.windows.delete(id);
+      state.fitByWindow.delete(id);
+      state.zoomByWindow.delete(id);
+      state.wheelLockByWindow.delete(id);
+      if (state.activeId === id) activate('explorer');
+      renderTasks();
+    }
+
+    function renderTasks() {
+      taskList.innerHTML = '';
+      for (const win of state.windows.values()) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `task${state.activeId === win.id && !win.minimized ? ' active' : ''}${win.minimized ? ' minimized' : ''}`;
+        btn.title = win.title;
+        btn.innerHTML = `<span>${win.kind === 'explorer' ? icons.explorer : icons.viewer}</span><span></span>`;
+        btn.lastElementChild.textContent = win.title;
+        btn.addEventListener('click', () => {
+          if (state.activeId === win.id && !win.minimized) minimize(win.id);
+          else activate(win.id);
+        });
+        taskList.appendChild(btn);
+      }
+    }
+
+    function registerWindow(id, el, title, kind) {
+      state.windows.set(id, { id, el, title, kind, minimized: false });
+      el.dataset.windowId = id;
+      el.style.zIndex = String(++state.z);
+      wireWindow(el);
+      activate(id);
+    }
+
+    function wireWindow(win) {
+      win.addEventListener('pointerdown', () => activate(win.dataset.windowId));
+      win.querySelectorAll('[data-action]').forEach(btn => {
+        btn.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const id = win.dataset.windowId;
+          const action = btn.dataset.action;
+          if (action === 'minimize') minimize(id);
+          if (action === 'close') closeWindow(id);
+          if (action === 'maximize') toggleMaximize(id);
+        });
+      });
+
+      const handle = win.querySelector('[data-drag-handle]');
+      if (handle) {
+        handle.addEventListener('dblclick', (event) => {
+          if (event.target.closest('button')) return;
+          event.preventDefault();
+          toggleMaximize(win.dataset.windowId);
+        });
+        handle.addEventListener('pointerdown', (event) => {
+          if (event.target.closest('button')) return;
+          activate(win.dataset.windowId);
+          const winState = state.windows.get(win.dataset.windowId);
+          if (winState?.maximized) toggleMaximize(win.dataset.windowId);
+          const rect = win.getBoundingClientRect();
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const offsetX = startX - rect.left;
+          const offsetY = startY - rect.top;
+          handle.setPointerCapture(event.pointerId);
+          const move = (e) => {
+            const maxLeft = window.innerWidth - 80;
+            const maxTop = window.innerHeight - 80;
+            const left = Math.max(0, Math.min(maxLeft, e.clientX - offsetX));
+            const top = Math.max(0, Math.min(maxTop, e.clientY - offsetY));
+            win.style.left = `${left}px`;
+            win.style.top = `${top}px`;
+          };
+          const up = () => {
+            handle.removeEventListener('pointermove', move);
+            handle.removeEventListener('pointerup', up);
+            handle.removeEventListener('pointercancel', up);
+          };
+          handle.addEventListener('pointermove', move);
+          handle.addEventListener('pointerup', up);
+          handle.addEventListener('pointercancel', up);
+        });
+      }
+
+      const resize = win.querySelector('[data-resize-handle]');
+      if (resize) {
+        resize.addEventListener('pointerdown', (event) => {
+          activate(win.dataset.windowId);
+          const winState = state.windows.get(win.dataset.windowId);
+          if (winState?.maximized) toggleMaximize(win.dataset.windowId);
+          event.stopPropagation();
+          const rect = win.getBoundingClientRect();
+          const startX = event.clientX;
+          const startY = event.clientY;
+          resize.setPointerCapture(event.pointerId);
+          const move = (e) => {
+            const w = Math.max(280, rect.width + e.clientX - startX);
+            const h = Math.max(190, rect.height + e.clientY - startY);
+            win.style.width = `${Math.min(w, window.innerWidth - rect.left)}px`;
+            win.style.height = `${Math.min(h, window.innerHeight - rect.top - 48)}px`;
+          };
+          const up = () => {
+            resize.removeEventListener('pointermove', move);
+            resize.removeEventListener('pointerup', up);
+            resize.removeEventListener('pointercancel', up);
+            const id = win.dataset.windowId;
+            if (state.windows.get(id)?.kind === 'viewer' && state.fitByWindow.get(id)) {
+              requestAnimationFrame(() => applyZoom(id));
+            }
+          };
+          resize.addEventListener('pointermove', move);
+          resize.addEventListener('pointerup', up);
+          resize.addEventListener('pointercancel', up);
+        });
+      }
+    }
+
+    function imagesInCurrentFolder() {
+      return imagesForFolder(state.currentFolder);
+    }
+
+    function imagesForFolder(folder) {
+      const direction = sortDirection(folder);
+      return state.images
+        .filter(img => (img.folder || '') === (folder || ''))
+        .sort((a, b) => {
+          const result = String(a.name || '').localeCompare(String(b.name || ''), 'ja', { numeric: true, sensitivity: 'base' });
+          return direction === 'desc' ? -result : result;
+        });
+    }
+
+    function renderFolders() {
+      folderList.innerHTML = '';
+      [...state.folders].sort(compareFolderPath).forEach(folder => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `folder${folder === state.currentFolder ? ' active' : ''}`;
+        btn.dataset.folder = folder;
+        btn.style.paddingLeft = `${8 + Math.max(0, folder.split('/').length - 1) * 12}px`;
+        btn.innerHTML = `<span class="label"></span>`;
+        btn.lastElementChild.textContent = folderLabel(folder);
+        btn.title = folder || 'uploads';
+        btn.addEventListener('click', () => {
+          setCurrentFolder(folder);
+        });
+        folderList.appendChild(btn);
+      });
+    }
+
+    function updateSelectedFileElement() {
+      fileGrid.querySelectorAll('.file').forEach(el => {
+        el.classList.toggle('selected', el.dataset.path === state.selectedPath);
+      });
+    }
+
+    function setSelectedFile(path) {
+      state.selectedPath = path;
+      updateSelectedFileElement();
+    }
+
+    function observeThumbnail(el, url) {
+      if (!state.thumbObserver) {
+        state.thumbObserver = new IntersectionObserver((entries) => {
+          entries.forEach(entry => {
+            if (!entry.isIntersecting) return;
+            const thumb = entry.target;
+            hydrateThumbnail(thumb);
+            state.thumbObserver.unobserve(thumb);
+          });
+        }, { root: fileGrid, rootMargin: '1800px 0px' });
+      }
+      el.dataset.bgUrl = url;
+      state.thumbObserver.observe(el);
+    }
+
+    function hydrateThumbnail(thumb) {
+      const imageUrl = thumb?.dataset?.bgUrl;
+      if (!imageUrl) return;
+      thumb.style.backgroundImage = `url(${JSON.stringify(imageUrl)})`;
+      thumb.removeAttribute('data-bg-url');
+    }
+
+    function hydrateThumbnailsInRange(buffer) {
+      const viewport = fileGrid.getBoundingClientRect();
+      const minY = viewport.top - buffer;
+      const maxY = viewport.bottom + buffer;
+      const visible = [];
+      const nearby = [];
+      fileGrid.querySelectorAll('.thumb[data-bg-url]').forEach(thumb => {
+        const rect = thumb.getBoundingClientRect();
+        if (rect.bottom < minY || rect.top > maxY) return;
+        if (rect.bottom >= viewport.top && rect.top <= viewport.bottom) visible.push(thumb);
+        else nearby.push(thumb);
+      });
+      [...visible, ...nearby].forEach(thumb => {
+        hydrateThumbnail(thumb);
+        if (state.thumbObserver) state.thumbObserver.unobserve(thumb);
+      });
+    }
+
+    function hydrateVisibleThumbnails() {
+      state.thumbHydrateRaf = 0;
+      hydrateThumbnailsInRange(1600);
+    }
+
+    function hydrateCurrentViewportThumbnails() {
+      hydrateThumbnailsInRange(0);
+    }
+
+    function scheduleHydrateVisibleThumbnails() {
+      if (state.thumbHydrateRaf) return;
+      state.thumbHydrateRaf = requestAnimationFrame(hydrateVisibleThumbnails);
+    }
+
+    function scheduleHydrateAfterScrollSettles() {
+      clearTimeout(state.thumbSettleTimer);
+      state.thumbSettleTimer = setTimeout(() => {
+        hydrateCurrentViewportThumbnails();
+        scheduleHydrateVisibleThumbnails();
+      }, 80);
+    }
+
+    function renderFiles() {
+      if (state.thumbObserver) state.thumbObserver.disconnect();
+      fileGrid.innerHTML = '';
+      const images = imagesInCurrentFolder();
+      pathBox.textContent = `/mnt/mfu/image_viewer_uploads${state.currentFolder ? '/' + state.currentFolder : ''}`;
+      sortBtn.textContent = sortDirection() === 'desc' ? '逆順' : '昇順';
+      sortBtn.title = sortDirection() === 'desc' ? '名前の逆順' : '名前順';
+      const size = viewSize();
+      fileGrid.classList.remove('view-xl', 'view-lg', 'view-md', 'view-sm');
+      fileGrid.classList.add(`view-${size}`);
+      viewButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.viewSize === size));
+      if (!images.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'このフォルダーに画像がありません。ここにドロップ、または追加してください。';
+        fileGrid.appendChild(empty);
+        resetFileScrollIfNeeded();
+        return;
+      }
+      images.forEach(img => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `file${state.selectedPath === img.path ? ' selected' : ''}`;
+        btn.dataset.path = img.path;
+        btn.title = img.path;
+        btn.innerHTML = `
+          <div class="thumb" aria-hidden="true"></div>
+          <div class="file-name"></div>
+          <div class="file-meta"></div>
+        `;
+        observeThumbnail(btn.querySelector('.thumb'), img.thumbUrl || img.url);
+        btn.querySelector('.file-name').textContent = img.name;
+        btn.querySelector('.file-meta').textContent = formatBytes(img.size);
+        btn.addEventListener('click', () => {
+          setSelectedFile(img.path);
+        });
+        btn.addEventListener('dblclick', () => {
+          const latest = state.images.find(item => item.path === img.path) || img;
+          openViewer(latest);
+        });
+        fileGrid.appendChild(btn);
+      });
+      scheduleHydrateVisibleThumbnails();
+      resetFileScrollIfNeeded();
+    }
+
+    function resetFileScrollIfNeeded() {
+      if (!state.resetFileScrollNext) return;
+      state.resetFileScrollNext = false;
+      fileGrid.scrollTop = 0;
+      fileGrid.scrollLeft = 0;
+      requestAnimationFrame(() => {
+        fileGrid.scrollTop = 0;
+        fileGrid.scrollLeft = 0;
+        hydrateCurrentViewportThumbnails();
+      });
+    }
+
+    function renderExplorer() {
+      renderFolders();
+      renderFiles();
+      renderTasks();
+    }
+
+    async function loadImages() {
+      fileGrid.innerHTML = '<div class="empty">読み込み中...</div>';
+      const data = await fetchJson(apiUrl);
+      state.images = data.images || [];
+      state.folders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
+      if (!state.folders.includes(state.currentFolder)) {
+        state.currentFolder = '';
+        state.resetFileScrollNext = true;
+      }
+      renderExplorer();
+    }
+
+    async function createFolderInCurrentFolder() {
+      const parent = state.currentFolder || '';
+      const parentLabel = `/mnt/mfu/image_viewer_uploads${parent ? '/' + parent : ''}`;
+      const name = prompt(`作成先: ${parentLabel}\nフォルダー名:`);
+      if (!name) return;
+      const data = await fetchJson(createFolderUrl, {
+        method: 'POST',
+        body: JSON.stringify({ parent, name })
+      });
+      state.currentFolder = data.folder || parent;
+      await loadImages();
+    }
+
+    async function uploadFilesToFolder(files, folder = state.currentFolder) {
+      const imageFiles = Array.from(files || []).filter(file => file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name));
+      if (!imageFiles.length) {
+        alert('アップロードできる画像ファイルがありません。');
+        return;
+      }
+      const batches = uploadBatches(imageFiles);
+      let savedCount = 0;
+      let skippedCount = 0;
+      let failedCount = 0;
+      fileGrid.classList.add('drag-over');
+      try {
+        for (let i = 0; i < batches.length; i += 1) {
+          pathBox.textContent = `アップロード中... ${i + 1}/${batches.length}`;
+          const form = new FormData();
+          form.append('folder', folder || '');
+          batches[i].forEach(file => form.append('files', file, file.name));
+          const data = await fetchJson(uploadImagesUrl, { method: 'POST', body: form });
+          savedCount += (data.saved || []).length;
+          skippedCount += (data.skipped || []).length;
+          failedCount += (data.errors || []).length;
+        }
+      } finally {
+        fileGrid.classList.remove('drag-over');
+      }
+      state.currentFolder = folder || '';
+      await loadImages();
+      const message = `${savedCount}件アップロードしました。${skippedCount ? ` ${skippedCount}件スキップ。` : ''}${failedCount ? ` ${failedCount}件エラー。` : ''}`;
+      alert(message);
+    }
+
+    function uploadBatches(files) {
+      const batches = [];
+      let current = [];
+      let currentBytes = 0;
+      files.forEach(file => {
+        const size = Number(file.size || 0);
+        if (current.length && (current.length >= uploadBatchMaxFiles || currentBytes + size > uploadBatchMaxBytes)) {
+          batches.push(current);
+          current = [];
+          currentBytes = 0;
+        }
+        current.push(file);
+        currentBytes += size;
+      });
+      if (current.length) batches.push(current);
+      return batches;
+    }
+
+
+    function currentFolderImagesFor(image) {
+      return imagesForFolder(image.folder || '');
+    }
+
+    function neighborImage(image, delta) {
+      const list = currentFolderImagesFor(image);
+      const index = list.findIndex(item => item.path === image.path);
+      if (index < 0) return image;
+      const nextIndex = index + delta;
+      if (nextIndex < 0 || nextIndex >= list.length) return image;
+      return list[nextIndex] || image;
+    }
+
+    function setViewerImage(id, image) {
+      const win = state.windows.get(id);
+      if (!win) return;
+      win.image = image;
+      win.title = image.name;
+      win.el.querySelector('.title-text').textContent = image.name;
+      const img = win.el.querySelector('.stage img');
+      img.src = image.url;
+      img.alt = image.name;
+      img.onload = () => applyZoom(id);
+      win.el.querySelector('[data-status-name]').textContent = image.path;
+      win.el.querySelector('[data-status-size]').textContent = formatBytes(image.size);
+      renderTasks();
+    }
+
+    function applyZoom(id) {
+      const win = state.windows.get(id);
+      if (!win) return;
+      const stage = win.el.querySelector('.stage');
+      const img = stage.querySelector('img');
+      const fit = state.fitByWindow.get(id);
+      const zoom = state.zoomByWindow.get(id) || 100;
+      const naturalW = img.naturalWidth || 0;
+      const naturalH = img.naturalHeight || 0;
+      if (fit && naturalW > 0 && naturalH > 0) {
+        const stageRect = stage.getBoundingClientRect();
+        const availableW = Math.max(1, stageRect.width - 36);
+        const availableH = Math.max(1, stageRect.height - 36);
+        const scale = Math.min(availableW / naturalW, availableH / naturalH, 1);
+        img.style.width = `${Math.max(1, Math.floor(naturalW * scale))}px`;
+        img.style.height = `${Math.max(1, Math.floor(naturalH * scale))}px`;
+        win.el.querySelector('.zoom-label').textContent = `${Math.round(scale * 100)}%`;
+      } else {
+        img.style.width = `${zoom}%`;
+        img.style.height = 'auto';
+        win.el.querySelector('.zoom-label').textContent = `${zoom}%`;
+      }
+    }
+
+    function openViewer(image) {
+      const id = `viewer-${state.nextViewer++}`;
+      const index = state.nextViewer;
+      const left = Math.min(140 + index * 28, window.innerWidth - 360);
+      const top = Math.min(70 + index * 24, window.innerHeight - 260);
+      const el = document.createElement('article');
+      el.className = 'window viewer';
+      el.style.left = `${Math.max(16, left)}px`;
+      el.style.top = `${Math.max(16, top)}px`;
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">画像</div>
+          <div class="title-text"></div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div class="content">
+          <div class="viewer-toolbar">
+            <button type="button" data-tool="prev" title="前の画像">前</button>
+            <button type="button" data-tool="next" title="次の画像">次</button>
+            <button type="button" data-tool="out" title="縮小">-</button>
+            <span class="zoom-label">Fit</span>
+            <button type="button" data-tool="in" title="拡大">+</button>
+            <button type="button" data-tool="fit" title="画面に合わせる">Fit</button>
+            <button type="button" data-tool="actual" title="100%">100%</button>
+          </div>
+          <div class="stage fit"><img alt=""></div>
+          <div class="viewer-status"><span data-status-name></span><span data-status-size></span></div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      `;
+      desktopGrid.appendChild(el);
+      state.fitByWindow.set(id, true);
+      state.zoomByWindow.set(id, 100);
+      registerWindow(id, el, image.name, 'viewer');
+      setViewerImage(id, image);
+      applyZoom(id);
+
+      el.querySelectorAll('[data-tool]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const tool = btn.dataset.tool;
+          const win = state.windows.get(id);
+          if (!win || !win.image) return;
+          if (tool === 'prev') setViewerImage(id, neighborImage(win.image, -1));
+          if (tool === 'next') setViewerImage(id, neighborImage(win.image, 1));
+          if (tool === 'fit') state.fitByWindow.set(id, true);
+          if (tool === 'actual') {
+            state.fitByWindow.set(id, false);
+            state.zoomByWindow.set(id, 100);
+          }
+          if (tool === 'in' || tool === 'out') {
+            state.fitByWindow.set(id, false);
+            const current = state.zoomByWindow.get(id) || 100;
+            const next = tool === 'in' ? current + 25 : current - 25;
+            state.zoomByWindow.set(id, Math.max(25, Math.min(400, next)));
+          }
+          applyZoom(id);
+        });
+      });
+
+      el.querySelector('.stage').addEventListener('wheel', (event) => {
+        const win = state.windows.get(id);
+        if (!win || !win.image) return;
+        event.preventDefault();
+        const now = Date.now();
+        const lockedUntil = state.wheelLockByWindow.get(id) || 0;
+        if (now < lockedUntil || Math.abs(event.deltaY) < 8) return;
+        state.wheelLockByWindow.set(id, now + 180);
+        setViewerImage(id, neighborImage(win.image, event.deltaY > 0 ? 1 : -1));
+      }, { passive: false });
+    }
+
+    function openInstagramWindow() {
+      const existing = state.windows.get('instagram');
+      if (existing) {
+        activate('instagram');
+        return;
+      }
+      const el = document.createElement('article');
+      el.className = 'window instagram-window';
+      el.style.left = '96px';
+      el.style.top = '72px';
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">IG</div>
+          <div class="title-text">Instagram / X Image Downloader</div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div class="instagram-body">
+          <div>
+            <div class="ig-form">
+              <label for="igUrl">URL</label>
+              <input id="igUrl" type="text" placeholder="https://www.instagram.com/p/... / https://x.com/.../status/...">
+              <button type="button" id="igFetchBtn">取得</button>
+            </div>
+            <div class="ig-options">
+              <label>保存先フォルダー<input id="igFolder" type="text" value="instagram" placeholder="instagram"></label>
+              <label>連番開始<input id="igStart" type="number" min="1" value="1"></label>
+              <label>桁数<input id="igDigits" type="number" min="1" max="6" value="3"></label>
+            </div>
+          </div>
+          <div class="ig-grid" id="igGrid">
+            <div class="empty">InstagramまたはXの投稿URLを入力して取得してください。</div>
+          </div>
+          <div class="ig-actions">
+            <button type="button" id="igSelectAll">全選択</button>
+            <button type="button" id="igClearAll">全解除</button>
+            <button type="button" id="igInvert">反転</button>
+            <button type="button" id="igSaveBtn">選択画像を保存</button>
+            <span class="ig-status" id="igStatus"></span>
+          </div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      `;
+      desktopGrid.appendChild(el);
+      registerWindow('instagram', el, 'Instagram / X Image Downloader', 'instagram');
+      wireInstagramWindow(el);
+    }
+
+    function setInstagramStatus(el, text) {
+      el.querySelector('#igStatus').textContent = text || '';
+    }
+
+    function renderInstagramItems(el) {
+      const grid = el.querySelector('#igGrid');
+      grid.innerHTML = '';
+      if (!state.instagram.images.length) {
+        grid.innerHTML = '<div class="empty">画像がありません。</div>';
+        return;
+      }
+      state.instagram.images.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'ig-item selected';
+        card.innerHTML = `
+          <div class="ig-thumb"></div>
+          <label><input type="checkbox" checked data-ig-index="${item.index}"><span></span></label>
+        `;
+        card.querySelector('.ig-thumb').style.backgroundImage = `url(${JSON.stringify(item.previewUrl || item.url)})`;
+        card.querySelector('span').textContent = item.filename || `${item.index}`;
+        card.querySelector('input').addEventListener('change', (event) => {
+          card.classList.toggle('selected', event.target.checked);
+        });
+        grid.appendChild(card);
+      });
+    }
+
+    function selectedInstagramIndexes(el) {
+      return Array.from(el.querySelectorAll('[data-ig-index]:checked')).map(input => Number(input.dataset.igIndex));
+    }
+
+    function loadInstagramSettings() {
+      try {
+        const raw = localStorage.getItem(instagramSettingsKey);
+        return raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function saveInstagramSettings(el) {
+      const settings = {
+        folder: el.querySelector('#igFolder')?.value || 'instagram',
+        digits: el.querySelector('#igDigits')?.value || '3'
+      };
+      localStorage.setItem(instagramSettingsKey, JSON.stringify(settings));
+    }
+
+    function applyInstagramSettings(el) {
+      const settings = loadInstagramSettings();
+      el.querySelector('#igFolder').value = settings.folder || 'instagram';
+      el.querySelector('#igDigits').value = settings.digits || '3';
+    }
+
+    function debounce(fn, delay = 300) {
+      let timer = 0;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+      };
+    }
+
+    async function updateInstagramNextNumber(el) {
+      const params = new URLSearchParams({
+        folder: el.querySelector('#igFolder').value || ''
+      });
+      const data = await fetchJson(`${instagramNextNumberUrl}?${params.toString()}`);
+      el.querySelector('#igStart').value = data.nextNumber || 1;
+      return data;
+    }
+
+    function wireInstagramWindow(el) {
+      applyInstagramSettings(el);
+      updateInstagramNextNumber(el).catch(err => setInstagramStatus(el, err.message || '連番を取得できませんでした。'));
+      const debouncedNextNumber = debounce(() => {
+        saveInstagramSettings(el);
+        updateInstagramNextNumber(el).catch(err => setInstagramStatus(el, err.message || '連番を取得できませんでした。'));
+      }, 350);
+      ['#igFolder', '#igDigits'].forEach(selector => {
+        el.querySelector(selector).addEventListener('input', debouncedNextNumber);
+        el.querySelector(selector).addEventListener('change', debouncedNextNumber);
+      });
+
+      el.querySelector('#igFetchBtn').addEventListener('click', async () => {
+        const url = el.querySelector('#igUrl').value.trim();
+        const fetchBtn = el.querySelector('#igFetchBtn');
+        fetchBtn.disabled = true;
+        setInstagramStatus(el, '取得中...');
+        try {
+          const data = await fetchJson(instagramFetchUrl, {
+            method: 'POST',
+            body: JSON.stringify({ url })
+          });
+          setInstagramStatus(el, '投稿画像を取得中...');
+          const result = data.jobId
+            ? await waitInstagramJob(data.jobId, (count) => setInstagramStatus(el, `投稿画像を取得中... ${count}`))
+            : data;
+          state.instagram.shortcode = result.shortcode;
+          state.instagram.jobId = data.jobId || '';
+          state.instagram.images = result.images || [];
+          saveInstagramSettings(el);
+          await updateInstagramNextNumber(el);
+          renderInstagramItems(el);
+          setInstagramStatus(el, `${state.instagram.images.length}枚取得しました。`);
+        } catch (err) {
+          state.instagram.images = [];
+          renderInstagramItems(el);
+          setInstagramStatus(el, err.message || '取得に失敗しました。');
+        } finally {
+          fetchBtn.disabled = false;
+        }
+      });
+
+      el.querySelector('#igSelectAll').addEventListener('click', () => {
+        el.querySelectorAll('[data-ig-index]').forEach(input => {
+          input.checked = true;
+          input.closest('.ig-item')?.classList.add('selected');
+        });
+      });
+      el.querySelector('#igClearAll').addEventListener('click', () => {
+        el.querySelectorAll('[data-ig-index]').forEach(input => {
+          input.checked = false;
+          input.closest('.ig-item')?.classList.remove('selected');
+        });
+      });
+      el.querySelector('#igInvert').addEventListener('click', () => {
+        el.querySelectorAll('[data-ig-index]').forEach(input => {
+          input.checked = !input.checked;
+          input.closest('.ig-item')?.classList.toggle('selected', input.checked);
+        });
+      });
+      el.querySelector('#igSaveBtn').addEventListener('click', async () => {
+        const saveBtn = el.querySelector('#igSaveBtn');
+        saveBtn.disabled = true;
+        setInstagramStatus(el, '保存中...');
+        try {
+          const data = await fetchJson(instagramSaveUrl, {
+            method: 'POST',
+            body: JSON.stringify({
+              shortcode: state.instagram.shortcode,
+              jobId: state.instagram.jobId,
+              images: state.instagram.images,
+              selected: selectedInstagramIndexes(el),
+              folder: el.querySelector('#igFolder').value,
+              startNumber: el.querySelector('#igStart').value,
+              digits: el.querySelector('#igDigits').value
+            })
+          });
+          setInstagramStatus(el, `${(data.saved || []).length}枚保存しました。`);
+          saveInstagramSettings(el);
+          await loadImages();
+          await updateInstagramNextNumber(el);
+        } catch (err) {
+          setInstagramStatus(el, err.message || '保存に失敗しました。');
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    }
+
+    function fileListFromDrag(event) {
+      return Array.from(event.dataTransfer?.files || []);
+    }
+
+    function wireUploadInteractions() {
+      const uploadInput = document.getElementById('uploadInput');
+      document.getElementById('newFolderBtn').addEventListener('click', () => {
+        createFolderInCurrentFolder().catch(err => alert(err.message || 'フォルダーを作成できませんでした。'));
+      });
+      document.getElementById('uploadBtn').addEventListener('click', () => {
+        uploadInput.value = '';
+        uploadInput.click();
+      });
+      uploadInput.addEventListener('change', () => {
+        uploadFilesToFolder(uploadInput.files, state.currentFolder).catch(err => alert(err.message || 'アップロードに失敗しました。'));
+      });
+
+      fileGrid.addEventListener('dragover', (event) => {
+        if (!fileListFromDrag(event).length && !event.dataTransfer?.types?.includes('Files')) return;
+        event.preventDefault();
+        fileGrid.classList.add('drag-over');
+      });
+      fileGrid.addEventListener('dragleave', (event) => {
+        if (!fileGrid.contains(event.relatedTarget)) fileGrid.classList.remove('drag-over');
+      });
+      fileGrid.addEventListener('drop', (event) => {
+        event.preventDefault();
+        fileGrid.classList.remove('drag-over');
+        uploadFilesToFolder(event.dataTransfer.files, state.currentFolder).catch(err => alert(err.message || 'アップロードに失敗しました。'));
+      });
+
+      folderList.addEventListener('dragover', (event) => {
+        const folderButton = event.target.closest('.folder');
+        if (!folderButton || !event.dataTransfer?.types?.includes('Files')) return;
+        event.preventDefault();
+        folderButton.classList.add('drag-over');
+      });
+      folderList.addEventListener('dragleave', (event) => {
+        event.target.closest('.folder')?.classList.remove('drag-over');
+      });
+      folderList.addEventListener('drop', (event) => {
+        const folderButton = event.target.closest('.folder');
+        if (!folderButton) return;
+        event.preventDefault();
+        folderButton.classList.remove('drag-over');
+        uploadFilesToFolder(event.dataTransfer.files, folderButton.dataset.folder || '').catch(err => alert(err.message || 'アップロードに失敗しました。'));
+      });
+    }
+
+
+    document.getElementById('refreshBtn').addEventListener('click', loadImages);
+    wireUploadInteractions();
+    fileGrid.addEventListener('scroll', () => {
+      hydrateCurrentViewportThumbnails();
+      scheduleHydrateAfterScrollSettles();
+    }, { passive: true });
+    thumbBtn.addEventListener('click', async () => {
+      const originalText = thumbBtn.textContent;
+      thumbBtn.disabled = true;
+      thumbBtn.textContent = '作成中';
+      try {
+        const data = await fetchJson("{{ url_for('image_viewer.create_thumbnails') }}", { method: 'POST' });
+        thumbBtn.textContent = `${data.created || 0}件作成`;
+        await loadImages();
+        setTimeout(() => { thumbBtn.textContent = originalText; }, 1200);
+      } catch (_) {
+        thumbBtn.textContent = '失敗';
+        setTimeout(() => { thumbBtn.textContent = originalText; }, 1800);
+      } finally {
+        thumbBtn.disabled = false;
+      }
+    });
+    sortBtn.addEventListener('click', () => {
+      setSortDirection(state.currentFolder, sortDirection() === 'desc' ? 'asc' : 'desc');
+      renderExplorer();
+    });
+    viewButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        setViewSize(state.currentFolder, btn.dataset.viewSize);
+        renderFiles();
+      });
+    });
+    document.getElementById('tileBtn').addEventListener('click', () => {
+      const selected = imagesInCurrentFolder().find(img => img.path === state.selectedPath);
+      if (selected) openViewer(selected);
+    });
+    document.getElementById('showExplorerBtn').addEventListener('click', () => activate('explorer'));
+    document.getElementById('instagramDesktopIcon').addEventListener('dblclick', openInstagramWindow);
+
+    const browserFullscreenIcon = document.getElementById('browserFullscreenIcon');
+    const browserFullscreenLabel = document.getElementById('browserFullscreenLabel');
+    function refreshBrowserFullscreenIcon() {
+      browserFullscreenLabel.textContent = document.fullscreenElement ? '解除' : '全画面';
+    }
+    async function toggleBrowserFullscreen() {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        } else {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (_) {
+        setTimeout(() => alert('ブラウザが全画面表示を許可していません。'), 0);
+      } finally {
+        refreshBrowserFullscreenIcon();
+      }
+    }
+    browserFullscreenIcon.addEventListener('dblclick', toggleBrowserFullscreen);
+    document.addEventListener('fullscreenchange', refreshBrowserFullscreenIcon);
+    refreshBrowserFullscreenIcon();
+
+    document.addEventListener('keydown', (event) => {
+      const win = state.windows.get(state.activeId);
+      if (!win || win.kind !== 'viewer' || !win.image) return;
+      if (event.key === 'ArrowLeft') {
+        setViewerImage(win.id, neighborImage(win.image, -1));
+        event.preventDefault();
+      }
+      if (event.key === 'ArrowRight') {
+        setViewerImage(win.id, neighborImage(win.image, 1));
+        event.preventDefault();
+      }
+      if (event.key === 'Escape') closeWindow(win.id);
+    });
+
+    function updateClock() {
+      const now = new Date();
+      clock.textContent = now.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    loadSortState();
+    loadViewSizeState();
+    registerWindow('explorer', explorerWindow, 'エクスプローラー', 'explorer');
+    updateClock();
+    setInterval(updateClock, 15000);
+    loadImages().catch(err => {
+      fileGrid.innerHTML = `<div class="empty">${err.message || '読み込みに失敗しました。'}</div>`;
+    });
+  })();
+  </script>
+</body>
+</html>
+
