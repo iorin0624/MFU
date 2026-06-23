@@ -85,6 +85,10 @@
       background: linear-gradient(135deg, #0ea5e9, #2563eb 52%, #1e3a8a);
       font-size: 16px;
     }
+    .desktop-icon .icon-box.video-download {
+      background: linear-gradient(135deg, #1d4ed8, #0891b2 52%, #16a34a);
+      font-size: 17px;
+    }
     .desktop-icon span:last-child {
       max-width: 82px;
       font-size: 12px;
@@ -297,6 +301,33 @@
       margin-bottom: 6px;
       overflow: hidden;
     }
+    .thumb.video-thumb {
+      border: 1px solid #7f9db9;
+      background: linear-gradient(#2b2b2b, #050505);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      text-shadow: 0 1px 0 #000;
+      position: relative;
+    }
+    .thumb.video-thumb::before {
+      content: "";
+      width: 0;
+      height: 0;
+      border-top: 18px solid transparent;
+      border-bottom: 18px solid transparent;
+      border-left: 28px solid #fff;
+      filter: drop-shadow(0 1px 2px rgba(0,0,0,.6));
+    }
+    .thumb.video-thumb::after {
+      content: "VIDEO";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 10px;
+      text-align: center;
+      letter-spacing: 1px;
+    }
     .file-name {
       font-size: 12px;
       min-height: 30px;
@@ -322,9 +353,119 @@
       width: min(760px, calc(100vw - 84px));
       height: min(560px, calc(100vh - 112px));
     }
+    .video-player {
+      width: min(860px, calc(100vw - 84px));
+      height: min(620px, calc(100vh - 112px));
+    }
+    .video-content {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 1fr auto auto;
+      background: #050505;
+      overflow: hidden;
+    }
+    .video-stage {
+      position: relative;
+      min-height: 0;
+      overflow: hidden;
+      background: #000;
+    }
+    .video-stage video {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      background: #000;
+    }
+    .video-seek {
+      width: calc(100% - 24px);
+      margin: 8px 12px 0;
+    }
+    .video-toolbar {
+      min-height: 44px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px 10px;
+      color: #fff;
+      background: linear-gradient(#292929, #111);
+    }
+    .video-toolbar button {
+      border: 1px solid #6b7280;
+      background: linear-gradient(#ffffff, #d4d4d4);
+      color: #111;
+      min-width: 64px;
+      height: 28px;
+      padding: 0 8px;
+    }
+    .video-volume {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 170px;
+      color: #e5e7eb;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .video-volume input {
+      width: 96px;
+    }
+    .video-volume-value {
+      min-width: 34px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .video-time {
+      margin-left: auto;
+      font-size: 12px;
+      color: #e5e7eb;
+      font-variant-numeric: tabular-nums;
+    }
     .instagram-window {
       width: min(820px, calc(100vw - 84px));
       height: min(640px, calc(100vh - 112px));
+    }
+    .progress-window {
+      width: min(460px, calc(100vw - 84px));
+      height: 210px;
+    }
+    .progress-body {
+      flex: 1;
+      display: grid;
+      align-content: center;
+      gap: 14px;
+      padding: 18px;
+      background: #ece9d8;
+    }
+    .progress-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1f3763;
+    }
+    .progress-bar {
+      height: 24px;
+      border: 1px solid #7f9db9;
+      background: #fff;
+      padding: 2px;
+      box-shadow: inset 1px 1px 2px rgba(0,0,0,.2);
+    }
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(#84c2ff, #0b63dd 52%, #0042a8);
+      transition: width .16s linear;
+    }
+    .progress-detail {
+      min-height: 36px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #24364f;
     }
     .instagram-body {
       flex: 1;
@@ -399,6 +540,21 @@
       background-position: center;
       background-size: contain;
       background-color: #f5f5f5;
+    }
+    .video-download-thumb {
+      width: 100%;
+      aspect-ratio: 1;
+      border: 1px solid #6b8fd6;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.22), rgba(255,255,255,0) 42%),
+        linear-gradient(#163a7d, #061b46);
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-shadow: 1px 1px 2px rgba(0,0,0,.8);
     }
     .ig-item label {
       display: flex;
@@ -597,6 +753,10 @@
         <span class="icon-box">IG</span>
         <span>Instagram/X取得</span>
       </button>
+      <button type="button" class="desktop-icon" id="videoDownloaderDesktopIcon">
+        <span class="icon-box video-download">VD</span>
+        <span>動画DL</span>
+      </button>
     </div>
     <section class="desktop-grid" id="desktopGrid">
       <article class="window explorer active" id="explorerWindow" data-window-id="explorer" data-title="エクスプローラー">
@@ -619,14 +779,16 @@
               <button type="button" id="refreshBtn" title="更新">更新</button>
               <button type="button" id="newFolderBtn" title="フォルダー作成">新規</button>
               <button type="button" id="uploadBtn" title="画像アップロード">追加</button>
+              <button type="button" id="pasteBtn" title="クリップボード画像を保存">貼付</button>
               <button type="button" id="sortBtn" title="名前順 / 逆順">昇順</button>
               <button type="button" class="view-btn" data-view-size="xl" title="特大表示">特大</button>
               <button type="button" class="view-btn" data-view-size="lg" title="大表示">大</button>
               <button type="button" class="view-btn" data-view-size="md" title="中表示">中</button>
               <button type="button" class="view-btn" data-view-size="sm" title="小表示">小</button>
               <button type="button" id="thumbBtn" title="不足サムネイル作成">縮小</button>
+              <button type="button" id="regenThumbBtn" title="サムネイルキャッシュ削除と再生成">再生成</button>
               <button type="button" id="tileBtn" title="選択画像を開く">開く</button>
-              <input id="uploadInput" type="file" accept="image/*" multiple hidden>
+              <input id="uploadInput" type="file" accept="image/*,video/*,.mp4,.webm,.mov,.m4v" multiple hidden>
             </div>
             <div class="files" id="fileGrid" aria-label="逕ｻ蜒丈ｸ隕ｧ"></div>
           </section>
@@ -646,12 +808,19 @@
     const apiUrl = "{{ url_for('image_viewer.image_list') }}";
     const createFolderUrl = "{{ url_for('image_viewer.create_folder') }}";
     const uploadImagesUrl = "{{ url_for('image_viewer.upload_images') }}";
+    const pasteImagesUrl = "{{ url_for('image_viewer.paste_images') }}";
     const instagramFetchUrl = "{{ url_for('image_viewer.instagram_fetch') }}";
     const instagramSaveUrl = "{{ url_for('image_viewer.instagram_save') }}";
     const instagramJobUrlBase = "{{ url_for('image_viewer.instagram_job', job_id='__JOB_ID__') }}";
     const instagramNextNumberUrl = "{{ url_for('image_viewer.instagram_next_number') }}";
+    const videoFetchUrl = "{{ url_for('image_viewer.video_fetch') }}";
+    const videoSaveUrl = "{{ url_for('image_viewer.video_save') }}";
+    const videoJobUrlBase = "{{ url_for('image_viewer.video_job', job_id='__JOB_ID__') }}";
+    const thumbnailJobUrlBase = "{{ url_for('image_viewer.thumbnail_job', job_id='__JOB_ID__') }}";
     const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
     const instagramSettingsKey = 'mfu.imageViewer.instagramSettings';
+    const videoDownloaderSettingsKey = 'mfu.imageViewer.videoDownloaderSettings';
+    const videoSettingsKey = 'mfu.imageViewer.videoSettings';
     const state = {
       images: [],
       folders: [''],
@@ -670,7 +839,8 @@
       thumbObserver: null,
       thumbHydrateRaf: 0,
       thumbSettleTimer: 0,
-      instagram: { shortcode: '', jobId: '', images: [] }
+      instagram: { shortcode: '', jobId: '', images: [] },
+      videoDownloader: { identifier: '', jobId: '', videos: [] }
     };
 
     const desktopGrid = document.getElementById('desktopGrid');
@@ -680,6 +850,7 @@
     const pathBox = document.getElementById('pathBox');
     const sortBtn = document.getElementById('sortBtn');
     const thumbBtn = document.getElementById('thumbBtn');
+    const regenThumbBtn = document.getElementById('regenThumbBtn');
     const viewButtons = Array.from(document.querySelectorAll('[data-view-size]'));
     const taskList = document.getElementById('taskList');
     const clock = document.getElementById('clock');
@@ -688,7 +859,11 @@
 
     const icons = {
       explorer: 'EXP',
-      viewer: 'IMG'
+      viewer: 'IMG',
+      instagram: 'IG',
+      video: 'MOV',
+      downloader: 'VD',
+      progress: '%'
     };
 
     async function fetchJson(url, options = {}) {
@@ -717,6 +892,21 @@
 
     async function waitInstagramJob(jobId, onTick) {
       const url = instagramJobUrlBase.replace('__JOB_ID__', encodeURIComponent(jobId));
+      const startedAt = Date.now();
+      let count = 0;
+      while (Date.now() - startedAt < 120000) {
+        await sleep(count < 3 ? 700 : 1200);
+        count += 1;
+        if (onTick) onTick(count);
+        const data = await fetchJson(url);
+        if (data.status === 'done') return data;
+        if (data.status === 'error') throw new Error(data.error || '取得に失敗しました。');
+      }
+      throw new Error('取得がタイムアウトしました。もう一度お試しください。');
+    }
+
+    async function waitVideoJob(jobId, onTick) {
+      const url = videoJobUrlBase.replace('__JOB_ID__', encodeURIComponent(jobId));
       const startedAt = Date.now();
       let count = 0;
       while (Date.now() - startedAt < 120000) {
@@ -899,6 +1089,7 @@
       }
       const win = state.windows.get(id);
       if (!win) return;
+      win.el.querySelectorAll('video').forEach(video => video.pause());
       win.el.remove();
       state.windows.delete(id);
       state.fitByWindow.delete(id);
@@ -915,7 +1106,7 @@
         btn.type = 'button';
         btn.className = `task${state.activeId === win.id && !win.minimized ? ' active' : ''}${win.minimized ? ' minimized' : ''}`;
         btn.title = win.title;
-        btn.innerHTML = `<span>${win.kind === 'explorer' ? icons.explorer : icons.viewer}</span><span></span>`;
+        btn.innerHTML = `<span>${icons[win.kind] || icons.viewer}</span><span></span>`;
         btn.lastElementChild.textContent = win.title;
         btn.addEventListener('click', () => {
           if (state.activeId === win.id && !win.minimized) minimize(win.id);
@@ -1151,7 +1342,16 @@
           <div class="file-name"></div>
           <div class="file-meta"></div>
         `;
-        observeThumbnail(btn.querySelector('.thumb'), img.thumbUrl || img.url);
+        const thumb = btn.querySelector('.thumb');
+        if (img.mediaType === 'video') {
+          if (img.thumbUrl) {
+            observeThumbnail(thumb, img.thumbUrl);
+          } else {
+            thumb.classList.add('video-thumb');
+          }
+        } else {
+          observeThumbnail(thumb, img.thumbUrl || img.url);
+        }
         btn.querySelector('.file-name').textContent = img.name;
         btn.querySelector('.file-meta').textContent = formatBytes(img.size);
         btn.addEventListener('click', () => {
@@ -1159,7 +1359,7 @@
         });
         btn.addEventListener('dblclick', () => {
           const latest = state.images.find(item => item.path === img.path) || img;
-          openViewer(latest);
+          openMedia(latest);
         });
         fileGrid.appendChild(btn);
       });
@@ -1211,9 +1411,9 @@
     }
 
     async function uploadFilesToFolder(files, folder = state.currentFolder) {
-      const imageFiles = Array.from(files || []).filter(file => file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name));
+      const imageFiles = Array.from(files || []).filter(file => file.type.startsWith('image/') || file.type.startsWith('video/') || /\.(jpe?g|png|gif|webp|mp4|webm|mov|m4v)$/i.test(file.name));
       if (!imageFiles.length) {
-        alert('アップロードできる画像ファイルがありません。');
+        alert('アップロードできる画像または動画ファイルがありません。');
         return;
       }
       const batches = uploadBatches(imageFiles);
@@ -1241,6 +1441,50 @@
       alert(message);
     }
 
+    async function pasteClipboardFiles(files, folder = state.currentFolder) {
+      const imageFiles = Array.from(files || []).filter(file => file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name));
+      if (!imageFiles.length) {
+        alert('貼り付けできる画像がありません。');
+        return;
+      }
+      pathBox.textContent = '貼り付け保存中...';
+      const form = new FormData();
+      form.append('folder', folder || '');
+      imageFiles.forEach((file, index) => {
+        const fallbackName = file.type === 'image/jpeg' ? `clipboard-${index + 1}.jpg` : file.type === 'image/webp' ? `clipboard-${index + 1}.webp` : file.type === 'image/gif' ? `clipboard-${index + 1}.gif` : `clipboard-${index + 1}.png`;
+        form.append('files', file, file.name || fallbackName);
+      });
+      const data = await fetchJson(pasteImagesUrl, { method: 'POST', body: form });
+      state.currentFolder = folder || '';
+      await loadImages();
+      const saved = data.saved || [];
+      if (saved.length) {
+        setSelectedFile(saved[saved.length - 1].path);
+      }
+      const skipped = (data.skipped || []).length;
+      const failed = (data.errors || []).length;
+      alert(`${saved.length}件保存しました。${skipped ? ` ${skipped}件スキップ。` : ''}${failed ? ` ${failed}件エラー。` : ''}`);
+    }
+
+    async function readClipboardImageFiles() {
+      if (!navigator.clipboard || !navigator.clipboard.read) return [];
+      const items = await navigator.clipboard.read();
+      const files = [];
+      for (const item of items) {
+        const imageType = (item.types || []).find(type => type.startsWith('image/'));
+        if (!imageType) continue;
+        const blob = await item.getType(imageType);
+        const ext = imageType === 'image/jpeg' ? 'jpg' : imageType.split('/')[1] || 'png';
+        files.push(new File([blob], `clipboard.${ext}`, { type: imageType }));
+      }
+      return files;
+    }
+
+    async function pasteFromClipboard() {
+      const files = await readClipboardImageFiles();
+      await pasteClipboardFiles(files, state.currentFolder);
+    }
+
     function uploadBatches(files) {
       const batches = [];
       let current = [];
@@ -1261,7 +1505,12 @@
 
 
     function currentFolderImagesFor(image) {
-      return imagesForFolder(image.folder || '');
+      return imagesForFolder(image.folder || '').filter(item => (item.mediaType || 'image') === 'image');
+    }
+
+    function openMedia(item) {
+      if ((item.mediaType || 'image') === 'video') openVideoPlayer(item);
+      else openViewer(item);
     }
 
     function neighborImage(image, delta) {
@@ -1387,6 +1636,147 @@
       }, { passive: false });
     }
 
+    function formatDuration(seconds) {
+      const total = Math.max(0, Math.floor(Number(seconds) || 0));
+      const h = Math.floor(total / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function loadVideoSettings() {
+      try {
+        const raw = localStorage.getItem(videoSettingsKey);
+        const settings = raw ? JSON.parse(raw) : {};
+        const volume = Math.max(0, Math.min(1, Number(settings.volume ?? 1)));
+        return { volume: Number.isFinite(volume) ? volume : 1, muted: Boolean(settings.muted) };
+      } catch (_) {
+        return { volume: 1, muted: false };
+      }
+    }
+
+    function saveVideoSettings(video) {
+      try {
+        localStorage.setItem(videoSettingsKey, JSON.stringify({
+          volume: Math.max(0, Math.min(1, Number(video.volume || 0))),
+          muted: Boolean(video.muted)
+        }));
+      } catch (_) {}
+    }
+
+    function openVideoPlayer(videoItem) {
+      const id = `video-${state.nextViewer++}`;
+      const index = state.nextViewer;
+      const left = Math.min(170 + index * 28, window.innerWidth - 420);
+      const top = Math.min(90 + index * 24, window.innerHeight - 300);
+      const el = document.createElement('article');
+      el.className = 'window video-player';
+      el.style.left = `${Math.max(16, left)}px`;
+      el.style.top = `${Math.max(16, top)}px`;
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">VID</div>
+          <div class="title-text"></div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div class="video-content">
+          <div class="video-stage"><video playsinline preload="metadata"></video></div>
+          <input class="video-seek" type="range" min="0" max="1000" value="0">
+          <div class="video-toolbar">
+            <button type="button" data-video-tool="play">再生</button>
+            <button type="button" data-video-tool="back10">10秒戻し</button>
+            <button type="button" data-video-tool="fwd10">10秒飛ばし</button>
+            <button type="button" data-video-tool="fwd30">30秒飛ばし</button>
+            <button type="button" data-video-tool="mute">ミュート</button>
+            <label class="video-volume">音量
+              <input class="video-volume-slider" type="range" min="0" max="100" value="100">
+              <span class="video-volume-value">100%</span>
+            </label>
+            <span class="video-time">0:00 / 0:00</span>
+          </div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      `;
+      desktopGrid.appendChild(el);
+      registerWindow(id, el, videoItem.name, 'video');
+      const video = el.querySelector('video');
+      const seek = el.querySelector('.video-seek');
+      const playBtn = el.querySelector('[data-video-tool="play"]');
+      const muteBtn = el.querySelector('[data-video-tool="mute"]');
+      const volumeSlider = el.querySelector('.video-volume-slider');
+      const volumeValue = el.querySelector('.video-volume-value');
+      const timeLabel = el.querySelector('.video-time');
+      el.querySelector('.title-text').textContent = videoItem.name;
+      video.src = videoItem.url;
+      const videoSettings = loadVideoSettings();
+      video.volume = videoSettings.volume;
+      video.muted = videoSettings.muted;
+
+      const updateVideoUi = () => {
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        seek.value = duration > 0 ? String(Math.round(current / duration * 1000)) : '0';
+        playBtn.textContent = video.paused ? '再生' : '一時停止';
+        muteBtn.textContent = video.muted || video.volume === 0 ? 'ミュート解除' : 'ミュート';
+        volumeSlider.value = String(Math.round(video.volume * 100));
+        volumeValue.textContent = `${Math.round(video.volume * 100)}%`;
+        timeLabel.textContent = `${formatDuration(current)} / ${formatDuration(duration)}`;
+      };
+      const jump = (seconds) => {
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        const next = Math.max(0, Math.min(duration || Number.MAX_SAFE_INTEGER, video.currentTime + seconds));
+        video.currentTime = next;
+        updateVideoUi();
+      };
+
+      el.querySelectorAll('[data-video-tool]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const tool = btn.dataset.videoTool;
+          if (tool === 'play') {
+            if (video.paused) {
+              try { await video.play(); } catch (_) {}
+            } else {
+              video.pause();
+            }
+          }
+          if (tool === 'back10') jump(-10);
+          if (tool === 'fwd10') jump(10);
+          if (tool === 'fwd30') jump(30);
+          if (tool === 'mute') {
+            video.muted = !(video.muted || video.volume === 0);
+            if (!video.muted && video.volume === 0) video.volume = 0.5;
+            saveVideoSettings(video);
+          }
+          updateVideoUi();
+        });
+      });
+      seek.addEventListener('input', () => {
+        const duration = Number.isFinite(video.duration) ? video.duration : 0;
+        if (duration > 0) video.currentTime = Number(seek.value || 0) / 1000 * duration;
+        updateVideoUi();
+      });
+      volumeSlider.addEventListener('input', () => {
+        const value = Math.max(0, Math.min(100, Number(volumeSlider.value || 0)));
+        video.volume = value / 100;
+        video.muted = value === 0;
+        saveVideoSettings(video);
+        updateVideoUi();
+      });
+      ['loadedmetadata', 'timeupdate', 'play', 'pause', 'ended', 'volumechange'].forEach(eventName => {
+        video.addEventListener(eventName, updateVideoUi);
+      });
+      video.addEventListener('click', () => {
+        if (video.paused) video.play().catch(() => {});
+        else video.pause();
+      });
+      updateVideoUi();
+    }
+
     function openInstagramWindow() {
       const existing = state.windows.get('instagram');
       if (existing) {
@@ -1436,6 +1826,56 @@
       desktopGrid.appendChild(el);
       registerWindow('instagram', el, 'Instagram / X Image Downloader', 'instagram');
       wireInstagramWindow(el);
+    }
+
+    function openProgressWindow(title) {
+      const id = `progress-${Date.now()}`;
+      const el = document.createElement('article');
+      el.className = 'window progress-window';
+      el.style.left = '180px';
+      el.style.top = '130px';
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">%</div>
+          <div class="title-text"></div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div class="progress-body">
+          <div class="progress-title"></div>
+          <div class="progress-bar"><div class="progress-fill"></div></div>
+          <div class="progress-detail"></div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      `;
+      el.querySelector('.title-text').textContent = title;
+      el.querySelector('.progress-title').textContent = title;
+      desktopGrid.appendChild(el);
+      registerWindow(id, el, title, 'progress');
+      return { id, el };
+    }
+
+    function updateProgressWindow(el, job) {
+      const total = Number(job.total || 0);
+      const processed = Number(job.processed || 0);
+      const percent = total > 0 ? Math.min(100, Math.round(processed / total * 100)) : 0;
+      el.querySelector('.progress-fill').style.width = `${percent}%`;
+      const statusText = job.status === 'done' ? '完了' : job.status === 'error' ? 'エラー' : job.status === 'waiting' ? '待機中' : '処理中';
+      el.querySelector('.progress-detail').textContent =
+        `${statusText}: ${processed}/${total || '?'} (${percent}%) / 作成 ${job.created || 0}・スキップ ${job.skipped || 0}・失敗 ${job.failed || 0}`;
+    }
+
+    async function waitThumbnailJob(jobId, progressEl) {
+      const url = thumbnailJobUrlBase.replace('__JOB_ID__', encodeURIComponent(jobId));
+      while (true) {
+        await sleep(700);
+        const job = await fetchJson(url);
+        updateProgressWindow(progressEl, job);
+        if (job.status === 'done') return job;
+        if (job.status === 'error') throw new Error(job.error || 'サムネイル生成に失敗しました。');
+      }
     }
 
     function setInstagramStatus(el, text) {
@@ -1598,6 +2038,182 @@
       });
     }
 
+    function openVideoDownloaderWindow() {
+      const existing = state.windows.get('video-downloader');
+      if (existing) {
+        activate('video-downloader');
+        return;
+      }
+      const el = document.createElement('article');
+      el.className = 'window instagram-window';
+      el.style.left = '128px';
+      el.style.top = '96px';
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">VD</div>
+          <div class="title-text">Instagram / X Video Downloader</div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div class="instagram-body">
+          <div>
+            <div class="ig-form">
+              <label for="vdUrl">URL</label>
+              <input id="vdUrl" type="text" placeholder="https://www.instagram.com/reel/... / https://x.com/.../status/...">
+              <button type="button" id="vdFetchBtn">取得</button>
+            </div>
+            <div class="ig-options" style="grid-template-columns:minmax(0, 1fr);">
+              <label>保存先フォルダー<input id="vdFolder" type="text" value="video" placeholder="video"></label>
+            </div>
+          </div>
+          <div class="ig-grid" id="vdGrid">
+            <div class="empty">InstagramまたはXの投稿URLを入力して動画を取得してください。</div>
+          </div>
+          <div class="ig-actions">
+            <button type="button" id="vdSelectAll">全選択</button>
+            <button type="button" id="vdClearAll">全解除</button>
+            <button type="button" id="vdInvert">反転</button>
+            <button type="button" id="vdSaveBtn">選択動画を保存</button>
+            <span class="ig-status" id="vdStatus"></span>
+          </div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      `;
+      desktopGrid.appendChild(el);
+      registerWindow('video-downloader', el, 'Instagram / X Video Downloader', 'downloader');
+      wireVideoDownloaderWindow(el);
+    }
+
+    function setVideoDownloaderStatus(el, text) {
+      el.querySelector('#vdStatus').textContent = text || '';
+    }
+
+    function renderVideoDownloaderItems(el) {
+      const grid = el.querySelector('#vdGrid');
+      grid.innerHTML = '';
+      if (!state.videoDownloader.videos.length) {
+        grid.innerHTML = '<div class="empty">動画がありません。</div>';
+        return;
+      }
+      state.videoDownloader.videos.forEach(item => {
+        const card = document.createElement('div');
+        card.className = 'ig-item selected';
+        card.innerHTML = `
+          <div class="video-download-thumb">VIDEO</div>
+          <label><input type="checkbox" checked data-vd-index="${item.index}"><span></span></label>
+        `;
+        card.querySelector('span').textContent = item.filename || `${item.index}`;
+        card.querySelector('input').addEventListener('change', (event) => {
+          card.classList.toggle('selected', event.target.checked);
+        });
+        grid.appendChild(card);
+      });
+    }
+
+    function selectedVideoDownloaderIndexes(el) {
+      return Array.from(el.querySelectorAll('[data-vd-index]:checked')).map(input => Number(input.dataset.vdIndex));
+    }
+
+    function loadVideoDownloaderSettings() {
+      try {
+        const raw = localStorage.getItem(videoDownloaderSettingsKey);
+        return raw ? JSON.parse(raw) : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function saveVideoDownloaderSettings(el) {
+      localStorage.setItem(videoDownloaderSettingsKey, JSON.stringify({
+        folder: el.querySelector('#vdFolder')?.value || 'video'
+      }));
+    }
+
+    function applyVideoDownloaderSettings(el) {
+      const settings = loadVideoDownloaderSettings();
+      el.querySelector('#vdFolder').value = settings.folder || 'video';
+    }
+
+    function wireVideoDownloaderWindow(el) {
+      applyVideoDownloaderSettings(el);
+      el.querySelector('#vdFolder').addEventListener('change', () => saveVideoDownloaderSettings(el));
+      el.querySelector('#vdFolder').addEventListener('input', () => saveVideoDownloaderSettings(el));
+
+      el.querySelector('#vdFetchBtn').addEventListener('click', async () => {
+        const url = el.querySelector('#vdUrl').value.trim();
+        const fetchBtn = el.querySelector('#vdFetchBtn');
+        fetchBtn.disabled = true;
+        setVideoDownloaderStatus(el, '取得中...');
+        try {
+          const data = await fetchJson(videoFetchUrl, {
+            method: 'POST',
+            body: JSON.stringify({ url })
+          });
+          setVideoDownloaderStatus(el, '投稿動画を取得中...');
+          const result = data.jobId
+            ? await waitVideoJob(data.jobId, (count) => setVideoDownloaderStatus(el, `投稿動画を取得中... ${count}`))
+            : data;
+          state.videoDownloader.identifier = result.identifier;
+          state.videoDownloader.jobId = data.jobId || '';
+          state.videoDownloader.videos = result.videos || [];
+          saveVideoDownloaderSettings(el);
+          renderVideoDownloaderItems(el);
+          setVideoDownloaderStatus(el, `${state.videoDownloader.videos.length}件取得しました。`);
+        } catch (err) {
+          state.videoDownloader.videos = [];
+          renderVideoDownloaderItems(el);
+          setVideoDownloaderStatus(el, err.message || '取得に失敗しました。');
+        } finally {
+          fetchBtn.disabled = false;
+        }
+      });
+
+      el.querySelector('#vdSelectAll').addEventListener('click', () => {
+        el.querySelectorAll('[data-vd-index]').forEach(input => {
+          input.checked = true;
+          input.closest('.ig-item')?.classList.add('selected');
+        });
+      });
+      el.querySelector('#vdClearAll').addEventListener('click', () => {
+        el.querySelectorAll('[data-vd-index]').forEach(input => {
+          input.checked = false;
+          input.closest('.ig-item')?.classList.remove('selected');
+        });
+      });
+      el.querySelector('#vdInvert').addEventListener('click', () => {
+        el.querySelectorAll('[data-vd-index]').forEach(input => {
+          input.checked = !input.checked;
+          input.closest('.ig-item')?.classList.toggle('selected', input.checked);
+        });
+      });
+      el.querySelector('#vdSaveBtn').addEventListener('click', async () => {
+        const saveBtn = el.querySelector('#vdSaveBtn');
+        saveBtn.disabled = true;
+        setVideoDownloaderStatus(el, '保存中...');
+        try {
+          const data = await fetchJson(videoSaveUrl, {
+            method: 'POST',
+            body: JSON.stringify({
+              jobId: state.videoDownloader.jobId,
+              videos: state.videoDownloader.videos,
+              selected: selectedVideoDownloaderIndexes(el),
+              folder: el.querySelector('#vdFolder').value
+            })
+          });
+          setVideoDownloaderStatus(el, `${(data.saved || []).length}件保存しました。`);
+          saveVideoDownloaderSettings(el);
+          await loadImages();
+        } catch (err) {
+          setVideoDownloaderStatus(el, err.message || '保存に失敗しました。');
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    }
+
     function fileListFromDrag(event) {
       return Array.from(event.dataTransfer?.files || []);
     }
@@ -1610,6 +2226,9 @@
       document.getElementById('uploadBtn').addEventListener('click', () => {
         uploadInput.value = '';
         uploadInput.click();
+      });
+      document.getElementById('pasteBtn').addEventListener('click', () => {
+        pasteFromClipboard().catch(err => alert(err.message || '貼り付け保存に失敗しました。'));
       });
       uploadInput.addEventListener('change', () => {
         uploadFilesToFolder(uploadInput.files, state.currentFolder).catch(err => alert(err.message || 'アップロードに失敗しました。'));
@@ -1645,6 +2264,20 @@
         folderButton.classList.remove('drag-over');
         uploadFilesToFolder(event.dataTransfer.files, folderButton.dataset.folder || '').catch(err => alert(err.message || 'アップロードに失敗しました。'));
       });
+
+      document.addEventListener('paste', (event) => {
+        const target = event.target;
+        if (target && target.closest && target.closest('input, textarea, [contenteditable="true"]')) return;
+        const files = [];
+        for (const item of Array.from(event.clipboardData?.items || [])) {
+          if (!item.type.startsWith('image/')) continue;
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+        if (!files.length) return;
+        event.preventDefault();
+        pasteClipboardFiles(files, state.currentFolder).catch(err => alert(err.message || '貼り付け保存に失敗しました。'));
+      });
     }
 
 
@@ -1654,21 +2287,39 @@
       hydrateCurrentViewportThumbnails();
       scheduleHydrateAfterScrollSettles();
     }, { passive: true });
-    thumbBtn.addEventListener('click', async () => {
-      const originalText = thumbBtn.textContent;
+
+    async function runThumbnailBuild(button, force) {
+      const originalText = button.textContent;
+      const folder = state.currentFolder || '';
+      const folderName = folderLabel(folder);
       thumbBtn.disabled = true;
-      thumbBtn.textContent = '作成中';
+      regenThumbBtn.disabled = true;
+      button.textContent = force ? '再生成中' : '作成中';
+      const progress = openProgressWindow(`${force ? 'サムネイル再生成' : 'サムネイル作成'} - ${folderName}`);
       try {
-        const data = await fetchJson("{{ url_for('image_viewer.create_thumbnails') }}", { method: 'POST' });
-        thumbBtn.textContent = `${data.created || 0}件作成`;
+        const data = await fetchJson("{{ url_for('image_viewer.create_thumbnails') }}", {
+          method: 'POST',
+          body: JSON.stringify({ force, folder })
+        });
+        const result = data.jobId ? await waitThumbnailJob(data.jobId, progress.el) : data;
+        button.textContent = `${result.created || 0}件作成`;
         await loadImages();
-        setTimeout(() => { thumbBtn.textContent = originalText; }, 1200);
-      } catch (_) {
-        thumbBtn.textContent = '失敗';
-        setTimeout(() => { thumbBtn.textContent = originalText; }, 1800);
+        setTimeout(() => { button.textContent = originalText; }, 1200);
+      } catch (err) {
+        progress.el.querySelector('.progress-detail').textContent = err.message || 'サムネイル生成に失敗しました。';
+        button.textContent = '失敗';
+        setTimeout(() => { button.textContent = originalText; }, 1800);
       } finally {
         thumbBtn.disabled = false;
+        regenThumbBtn.disabled = false;
       }
+    }
+
+    thumbBtn.addEventListener('click', () => {
+      runThumbnailBuild(thumbBtn, false);
+    });
+    regenThumbBtn.addEventListener('click', () => {
+      runThumbnailBuild(regenThumbBtn, true);
     });
     sortBtn.addEventListener('click', () => {
       setSortDirection(state.currentFolder, sortDirection() === 'desc' ? 'asc' : 'desc');
@@ -1682,10 +2333,11 @@
     });
     document.getElementById('tileBtn').addEventListener('click', () => {
       const selected = imagesInCurrentFolder().find(img => img.path === state.selectedPath);
-      if (selected) openViewer(selected);
+      if (selected) openMedia(selected);
     });
     document.getElementById('showExplorerBtn').addEventListener('click', () => activate('explorer'));
     document.getElementById('instagramDesktopIcon').addEventListener('dblclick', openInstagramWindow);
+    document.getElementById('videoDownloaderDesktopIcon').addEventListener('dblclick', openVideoDownloaderWindow);
 
     const browserFullscreenIcon = document.getElementById('browserFullscreenIcon');
     const browserFullscreenLabel = document.getElementById('browserFullscreenLabel');
