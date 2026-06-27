@@ -1181,6 +1181,234 @@ def submit_upload():
         date=date, message=message,
     )
 
+
+def _upload_dirs(uid: str):
+    storage_root = current_app.config.get("STORAGE_ROOT", "/mnt/mfu/uploads")
+    base_dir = os.path.join(storage_root, uid)
+    original_dir = os.path.join(base_dir, "original")
+    thumb_dir = os.path.join(base_dir, "thumb")
+    return base_dir, original_dir, thumb_dir
+
+
+def _fetch_upload_mode_and_user(username: str, mode: str):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM upload_modes WHERE username = %s AND mode = %s", (username, mode))
+    mode_config = cursor.fetchone()
+    cursor.execute("SELECT nickname, webhook_url, email, notify_method FROM users WHERE username = %s", (username,))
+    user_info = cursor.fetchone()
+    db.close()
+    return mode_config, user_info
+
+
+def _save_upload_filestorage(file_storage, original_dir: str) -> tuple[bool, str, str]:
+    used_names = set(os.listdir(original_dir)) if os.path.isdir(original_dir) else set()
+    original_name = sanitize_filename(file_storage.filename, used_names)
+    head = file_storage.stream.read(8192)
+    file_storage.stream.seek(0)
+
+    detected_mime = detect_mime_from_bytes(head)
+    allowed_extensions = current_app.config.get("UPLOAD_ALLOWED_EXTENSIONS", DEFAULT_ALLOWED_EXTENSIONS)
+    ok, reason = validate_upload_file(
+        filename=original_name,
+        header_mime=file_storage.mimetype,
+        detected_mime=detected_mime,
+        allowed_extensions=allowed_extensions,
+    )
+    if not ok:
+        return False, original_name, reason
+
+    save_path = os.path.join(original_dir, original_name)
+    try:
+        with open(save_path, "wb") as f:
+            shutil.copyfileobj(file_storage.stream, f, length=1 * 1024 * 1024)
+        os.chmod(save_path, 0o640)
+        return True, original_name, ""
+    except Exception as e:
+        return False, original_name, str(e)
+
+
+@app.route("/submit_upload/start", methods=["POST"])
+def submit_upload_start():
+    if "user" not in session:
+        return jsonify({"ok": False, "error": "login_required"}), 401
+
+    title = request.form.get("title", "")
+    date = request.form.get("date", datetime.now().strftime("%Y-%m-%d"))
+    mode = request.form.get("mode", "")
+    username = session.get("user", "default")
+
+    mode_config, _user_info = _fetch_upload_mode_and_user(username, mode)
+    if not mode_config:
+        return jsonify({"ok": False, "error": f"未定義のモードです: {mode}"}), 400
+
+    uid = uuid.uuid4().hex
+    expire_at = (datetime.now() + timedelta(days=60)).date()
+    password = secrets.token_hex(4) if mode_config.get("require_password") else ""
+    password_hash = hash_upload_password(password) if password else None
+    base_dir, original_dir, thumb_dir = _upload_dirs(uid)
+    os.makedirs(original_dir, exist_ok=True)
+    os.makedirs(thumb_dir, exist_ok=True)
+    os.chmod(base_dir, 0o750)
+    os.chmod(original_dir, 0o750)
+    os.chmod(thumb_dir, 0o750)
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute(
+        """
+        INSERT INTO uploads (uuid, title, date, expire_at, mode, username, zip_filename, password, password_hash)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (uid, title, date, expire_at, mode, username, "", password, password_hash),
+    )
+    db.commit()
+    db.close()
+    return jsonify({"ok": True, "uuid": uid})
+
+
+@app.route("/submit_upload/file", methods=["POST"])
+def submit_upload_file():
+    if "user" not in session:
+        return jsonify({"ok": False, "error": "login_required"}), 401
+
+    uid = (request.form.get("uuid") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+        return jsonify({"ok": False, "error": "invalid uuid"}), 400
+
+    file_storage = request.files.get("photo")
+    if not file_storage:
+        return jsonify({"ok": False, "error": "ファイルが選択されていません"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT id, username FROM uploads WHERE uuid = %s", (uid,))
+    upload_row = cur.fetchone()
+    if not upload_row or upload_row.get("username") != session.get("user"):
+        db.close()
+        return jsonify({"ok": False, "error": "upload not found"}), 404
+
+    _base_dir, original_dir, _thumb_dir = _upload_dirs(uid)
+    os.makedirs(original_dir, exist_ok=True)
+    ok, saved_name, reason = _save_upload_filestorage(file_storage, original_dir)
+    if not ok:
+        db.close()
+        return jsonify({"ok": False, "error": f"{saved_name}: {reason}"}), 400
+
+    cur = db.cursor()
+    cur.execute("INSERT INTO files (upload_id, filename) VALUES (%s, %s)", (upload_row["id"], saved_name))
+    db.commit()
+    db.close()
+    return jsonify({"ok": True, "saved": saved_name})
+
+
+@app.route("/submit_upload/finish", methods=["POST"])
+def submit_upload_finish():
+    if "user" not in session:
+        return jsonify({"ok": False, "error": "login_required"}), 401
+
+    uid = (request.form.get("uuid") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+        return jsonify({"ok": False, "error": "invalid uuid"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT * FROM uploads WHERE uuid = %s", (uid,))
+    upload_row = cur.fetchone()
+    if not upload_row or upload_row.get("username") != session.get("user"):
+        db.close()
+        return jsonify({"ok": False, "error": "upload not found"}), 404
+
+    cur.execute("SELECT filename FROM files WHERE upload_id = %s ORDER BY id", (upload_row["id"],))
+    filenames = [row["filename"] for row in cur.fetchall()]
+    db.close()
+    if not filenames:
+        return jsonify({"ok": False, "error": "保存済みファイルがありません"}), 400
+
+    username = upload_row.get("username") or session.get("user", "default")
+    mode = upload_row.get("mode") or ""
+    mode_config, user_info = _fetch_upload_mode_and_user(username, mode)
+    if not mode_config:
+        return jsonify({"ok": False, "error": f"未定義のモードです: {mode}"}), 400
+
+    template_key = (mode_config.get("template_key") or "").strip() or mode
+    gt_val = mode_config.get("generate_thumbnails", 1)
+    gen_thumbs = str(gt_val).lower() in ("1", "true", "t", "yes", "y")
+    nickname = (user_info or {}).get("nickname") or username
+    expire_at = upload_row.get("expire_at")
+    if hasattr(expire_at, "strftime"):
+        expire_str = expire_at.strftime("%Y年%m月%d日")
+    else:
+        expire_str = str(expire_at or "")
+
+    public_base = current_app.config.get("PUBLIC_BASE_URL")
+    if not public_base:
+        try:
+            public_base = PUBLIC_BASE_URL
+        except NameError:
+            public_base = request.url_root.rstrip("/")
+
+    title = upload_row.get("title") or ""
+    date_value = upload_row.get("date")
+    context = {
+        "uid": uid,
+        "title": title,
+        "date": (date_value.strftime("%Y-%m-%d") if isinstance(date_value, (datetime, date_cls)) else str(date_value or "")),
+        "expire": expire_str,
+        "username": username,
+        "nickname": nickname,
+        "base_url": public_base.rstrip("/"),
+        "link": f"{public_base.rstrip('/')}/view/{uid}" if mode_config.get("enable_download_url") else "",
+        "download_url": f"{public_base.rstrip('/')}/d/{uid}",
+        "manage_url": f"{public_base.rstrip('/')}/m/{uid}",
+        "layer_upload_url": f"{public_base.rstrip('/')}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
+        "password": upload_row.get("password") or "",
+        "count": len(filenames),
+    }
+    try:
+        message = generate_message(template_key, context, username=username)
+    except Exception as e:
+        message = f"[テンプレ生成失敗: {e}]"
+
+    db = get_db()
+    cur = db.cursor()
+    cur.execute("REPLACE INTO messages (uuid, mode, message) VALUES (%s, %s, %s)", (uid, template_key, message))
+    db.commit()
+    db.close()
+
+    _base_dir, original_dir, thumb_dir = _upload_dirs(uid)
+    app_obj = current_app._get_current_object()
+
+    def _runner():
+        try:
+            with app_obj.app_context():
+                background_thumb_and_notify(
+                    uid=uid,
+                    filenames=filenames,
+                    original_dir=original_dir,
+                    thumb_dir=thumb_dir,
+                    mode=template_key,
+                    context=context,
+                    gen_thumbs=gen_thumbs,
+                )
+        except Exception as e:
+            try:
+                app_obj.logger.warning(f"[submit_upload_chunk] background failed: {e}")
+            except Exception:
+                print(f"[submit_upload_chunk] background failed: {e}")
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return render_template(
+        "done.html",
+        uuid=uid,
+        password=upload_row.get("password") or "",
+        title=title,
+        mode=mode,
+        mode_label=mode_config.get("label", mode),
+        date=date_value,
+        message=message,
+    )
+
 # --- サムネ完了待ち → 通知（バックグラウンド） ---
 def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, context, gen_thumbs: bool):
     logger = getattr(app, "logger", None)

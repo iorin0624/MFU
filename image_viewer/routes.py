@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import base64
 import json
 import re
 import shutil
@@ -8,7 +9,9 @@ import subprocess
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from functools import wraps
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,11 +36,21 @@ THUMB_ROOT = UPLOAD_ROOT / THUMB_DIR_NAME
 PREVIEW_ROOT = Path(os.environ.get("IMAGE_VIEWER_PREVIEW_DIR", os.path.join(os.environ.get("TMPDIR", "/tmp"), "mfu_image_viewer_instagram_previews"))).expanduser()
 THUMB_JOB_ROOT = PREVIEW_ROOT / "_thumbnail_jobs"
 VIDEO_JOB_ROOT = PREVIEW_ROOT / "_video_jobs"
+AI_JOB_ROOT = Path(os.environ.get("IMAGE_VIEWER_AI_JOB_DIR", "/mnt/mfu/tmp/mfu_image_viewer_ai_jobs")).expanduser()
 THUMB_SIZE = (360, 360)
 THUMB_QUALITY = 82
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
+DEFAULT_ILLUSTRATION_PROMPT = (
+    "画像を詳細なアニメの美意識で再構成してください。 "
+    "表情豊かな瞳、なめらかな網掛けセルの色使い、はっきりした線画を使用します。"
+    "アニメのシーンに典型的な身ぶりと雰囲気で、心情と登場人物の存在を強調してください。 "
+    "服とアクセサリーを参考にしてイラストを描いてください。背景は白地で、人物は全身を描いてください。 "
+    "服と靴の装飾はできるだけ綺麗にこだわってください。 "
+    "顔は、20代女性を生成して置き換えてください。 "
+    "生成が完了したら完了したと報告をください。"
 )
 EMPTY_GIF_BYTES = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
 _thumb_lock = threading.Lock()
@@ -48,7 +61,12 @@ _instagram_jobs: dict[str, dict] = {}
 _instagram_jobs_lock = threading.Lock()
 _video_jobs: dict[str, dict] = {}
 _video_jobs_lock = threading.Lock()
+_ai_jobs: dict[str, dict] = {}
+_ai_jobs_lock = threading.Lock()
 _INSTAGRAM_JOB_TTL_SECONDS = 15 * 60
+_AI_JOB_TTL_SECONDS = 6 * 60 * 60
+_INSTAGRAM_PREVIEW_WORKERS = 4
+_INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT = 30
 
 
 def _empty_image_response(status: int = 200) -> Response:
@@ -82,6 +100,7 @@ def _ensure_upload_root() -> None:
     PREVIEW_ROOT.mkdir(parents=True, exist_ok=True)
     THUMB_JOB_ROOT.mkdir(parents=True, exist_ok=True)
     VIDEO_JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    AI_JOB_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def _relative_posix(path: Path) -> str:
@@ -398,14 +417,7 @@ def _instagram_image_payload(shortcode: str, items: list[str], job_id: str = "",
             "filename": f"{source}_{shortcode}_{idx:03d}{suffix}",
         }
         if job_id:
-            preview_path = PREVIEW_ROOT / job_id / f"{idx:03d}{suffix}"
-            try:
-                _download_instagram_image(image_url, preview_path)
-                item["previewCache"] = str(preview_path)
-                item["previewReady"] = True
-            except Exception as exc:
-                item["previewReady"] = False
-                item["previewError"] = str(exc)
+            item["previewReady"] = False
         payload.append(item)
     return payload
 
@@ -485,6 +497,10 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
             "shortcode": shortcode,
             "created_at": time.time(),
             "images": [],
+            "total": 0,
+            "processed": 0,
+            "downloaded": 0,
+            "failed": 0,
             "error": "",
         },
     )
@@ -495,7 +511,103 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
             if not items:
                 raise RuntimeError("画像を取得できませんでした。")
             payload = _instagram_image_payload(shortcode, items, job_id, source)
-            _set_instagram_job(job_id, {"status": "done", "images": payload})
+            _set_instagram_job(
+                job_id,
+                {
+                    "status": "downloading",
+                    "images": payload,
+                    "total": len(payload),
+                    "processed": 0,
+                    "downloaded": 0,
+                    "failed": 0,
+                },
+            )
+            downloaded = 0
+            failed = 0
+
+            def download_preview(row: tuple[int, dict]) -> tuple[int, bool, str, str]:
+                idx, item = row
+                image_url = str(item.get("url") or "")
+                suffix = str(item.get("suffix") or _guess_image_suffix(image_url))
+                preview_path = PREVIEW_ROOT / job_id / f"{idx:03d}{suffix}"
+                try:
+                    _download_instagram_image(image_url, preview_path)
+                    return idx, True, str(preview_path), ""
+                except Exception as exc:
+                    return idx, False, "", str(exc)
+
+            future_map = {}
+            processed_indexes = set()
+            executor = ThreadPoolExecutor(max_workers=_INSTAGRAM_PREVIEW_WORKERS)
+            try:
+                future_map = {
+                    executor.submit(download_preview, (idx, item)): idx
+                    for idx, item in enumerate(payload, start=1)
+                }
+                try:
+                    completed_iter = as_completed(future_map, timeout=_INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT)
+                    for future in completed_iter:
+                        idx, ok, cache_path, error = future.result()
+                        processed_indexes.add(idx)
+                        item = payload[idx - 1]
+                        if ok:
+                            item["previewCache"] = cache_path
+                            item["previewReady"] = True
+                            item.pop("previewError", None)
+                            downloaded += 1
+                        else:
+                            item["previewReady"] = False
+                            item["previewError"] = error
+                            failed += 1
+                        _set_instagram_job(
+                            job_id,
+                            {
+                                "status": "downloading",
+                                "images": payload,
+                                "processed": downloaded + failed,
+                                "downloaded": downloaded,
+                                "failed": failed,
+                            },
+                        )
+                except TimeoutError:
+                    pass
+
+                for future, idx in future_map.items():
+                    item = payload[idx - 1]
+                    if idx in processed_indexes:
+                        continue
+                    if future.done():
+                        idx, ok, cache_path, error = future.result()
+                        if ok:
+                            item["previewCache"] = cache_path
+                            item["previewReady"] = True
+                            item.pop("previewError", None)
+                            downloaded += 1
+                        else:
+                            item["previewReady"] = False
+                            item["previewError"] = error
+                            failed += 1
+                        processed_indexes.add(idx)
+                        continue
+                    future.cancel()
+                    item["previewReady"] = False
+                    item["previewError"] = "preview download timeout"
+                    failed += 1
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+            _set_instagram_job(
+                job_id,
+                {
+                    "status": "downloading",
+                    "images": payload,
+                    "processed": len(payload),
+                    "downloaded": downloaded,
+                    "failed": failed,
+                },
+            )
+            if downloaded <= 0:
+                raise RuntimeError("画像をダウンロードできませんでした。")
+            _set_instagram_job(job_id, {"status": "done", "images": payload, "processed": len(payload), "downloaded": downloaded, "failed": failed})
         except Exception as exc:
             _set_instagram_job(job_id, {"status": "error", "error": str(exc)})
 
@@ -585,6 +697,164 @@ def _start_video_fetch_job(identifier: str, source: str = "instagram") -> str:
     return job_id
 
 
+def _ai_job_path(job_id: str) -> Path:
+    safe_job_id = re.sub(r"[^A-Za-z0-9_-]+", "", str(job_id or ""))
+    return AI_JOB_ROOT / f"{safe_job_id}.json"
+
+
+def _write_ai_job(job_id: str, job: dict) -> None:
+    _ensure_upload_root()
+    path = _ai_job_path(job_id)
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _read_ai_job(job_id: str) -> dict:
+    with _ai_jobs_lock:
+        job = dict(_ai_jobs.get(job_id) or {})
+    if job:
+        return job
+    path = _ai_job_path(job_id)
+    if not path.is_file():
+        return {}
+    try:
+        job = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(job, dict):
+        return {}
+    with _ai_jobs_lock:
+        _ai_jobs[job_id] = dict(job)
+    return job
+
+
+def _set_ai_job(job_id: str, updates: dict) -> None:
+    with _ai_jobs_lock:
+        job = dict(_ai_jobs.get(job_id) or {})
+        job.update(updates)
+        job["updated_at"] = time.time()
+        _ai_jobs[job_id] = job
+    _write_ai_job(job_id, job)
+
+
+def _cleanup_ai_jobs() -> None:
+    now = time.time()
+    with _ai_jobs_lock:
+        expired = [
+            job_id
+            for job_id, job in _ai_jobs.items()
+            if now - float(job.get("created_at") or now) > _AI_JOB_TTL_SECONDS
+        ]
+        for job_id in expired:
+            job = _ai_jobs.get(job_id) or {}
+            result_cache = Path(str((job.get("generated") or {}).get("previewCache") or ""))
+            if result_cache:
+                try:
+                    result_cache.resolve().relative_to(AI_JOB_ROOT.resolve())
+                    result_cache.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            _ai_jobs.pop(job_id, None)
+            _ai_job_path(job_id).unlink(missing_ok=True)
+
+
+def _normalized_image_file_for_openai(source_path: Path) -> Path:
+    target_path = PREVIEW_ROOT / f"openai_input_{uuid.uuid4().hex}.png"
+    with Image.open(source_path) as img:
+        img = ImageOps.exif_transpose(img)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        img.save(target_path, "PNG")
+    return target_path
+
+
+def _extract_image_response_bytes(response) -> bytes:
+    data = getattr(response, "data", None) or []
+    if not data:
+        raise RuntimeError("OpenAIから画像データを取得できませんでした。")
+    item = data[0]
+    b64_json = getattr(item, "b64_json", None)
+    if b64_json:
+        return base64.b64decode(b64_json)
+    url = getattr(item, "url", None)
+    if url:
+        download = requests.get(url, headers={"User-Agent": DEFAULT_USER_AGENT}, timeout=90)
+        download.raise_for_status()
+        return download.content
+    raise RuntimeError("OpenAIから画像データを取得できませんでした。")
+
+
+def _image_model_value(value: str) -> str:
+    model = (value or "").strip() or os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1.5")
+    allowed = {"gpt-image-1.5", "gpt-image-2", "gpt-image-1", "gpt-image-1-mini"}
+    return model if model in allowed else "gpt-image-1.5"
+
+
+def _generate_illustration_from_image(source_path: Path, prompt: str, quality: str = "medium", model: str = "") -> dict:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY が未設定です。")
+    model_value = _image_model_value(model)
+    quality_value = quality if quality in {"low", "medium", "high", "auto"} else os.getenv("OPENAI_IMAGE_QUALITY", "medium")
+    if quality_value not in {"low", "medium", "high", "auto"}:
+        quality_value = "medium"
+    prompt_text = (prompt or "").strip() or DEFAULT_ILLUSTRATION_PROMPT
+    normalized_path = _normalized_image_file_for_openai(source_path)
+    result_path = AI_JOB_ROOT / f"illustration_{uuid.uuid4().hex}.png"
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key)
+        with open(normalized_path, "rb") as image_fp:
+            response = client.images.edit(
+                model=model_value,
+                image=image_fp,
+                prompt=prompt_text,
+                size="1024x1536",
+                quality=quality_value,
+                output_format="png",
+                timeout=1800,
+            )
+        result_path.write_bytes(_extract_image_response_bytes(response))
+    finally:
+        normalized_path.unlink(missing_ok=True)
+    return {"previewCache": str(result_path), "model": model_value, "quality": quality_value}
+
+
+def _start_illustration_job(source_rel: str, prompt: str, folder: str, quality: str = "medium", model: str = "") -> str:
+    _cleanup_ai_jobs()
+    source_path = _target_path_for_rel(source_rel)
+    if not source_path.is_file() or source_path.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("画像ファイルを選択してください。")
+    _target_dir_for_folder(folder)
+    job_id = uuid.uuid4().hex
+    _set_ai_job(
+        job_id,
+        {
+            "status": "pending",
+            "created_at": time.time(),
+            "source": source_rel,
+            "folder": folder,
+            "quality": quality,
+            "model": _image_model_value(model),
+            "saved": None,
+            "error": "",
+        },
+    )
+
+    def worker() -> None:
+        try:
+            _set_ai_job(job_id, {"status": "running"})
+            generated = _generate_illustration_from_image(source_path, prompt, quality, model)
+            _set_ai_job(job_id, {"status": "done", "generated": generated})
+        except Exception as exc:
+            _set_ai_job(job_id, {"status": "error", "error": str(exc)})
+
+    threading.Thread(target=worker, daemon=True).start()
+    return job_id
+
+
 def _safe_relative_folder(value: str) -> Path:
     text = str(value or "").replace("\\", "/").strip().strip("/")
     parts = [part for part in text.split("/") if part and part not in {".", ".."}]
@@ -595,6 +865,53 @@ def _target_dir_for_folder(folder_value: str) -> Path:
     target_dir = UPLOAD_ROOT / _safe_relative_folder(folder_value or "")
     target_dir.resolve().relative_to(UPLOAD_ROOT.resolve())
     return target_dir
+
+
+def _target_path_for_rel(path_value: str) -> Path:
+    target_path = UPLOAD_ROOT / _safe_relative_folder(path_value or "")
+    resolved = target_path.resolve()
+    resolved.relative_to(UPLOAD_ROOT.resolve())
+    if _is_inside_hidden_thumb_dir(resolved):
+        raise ValueError("サムネイル管理フォルダーは操作できません。")
+    return resolved
+
+
+def _thumb_path_for_rel(path_value: str) -> Path:
+    return (THUMB_ROOT / _safe_relative_folder(path_value or "")).with_suffix(".webp")
+
+
+def _thumb_dir_for_rel(path_value: str) -> Path:
+    return THUMB_ROOT / _safe_relative_folder(path_value or "")
+
+
+def _delete_thumb_for_path(path: Path) -> None:
+    try:
+        rel = path.relative_to(UPLOAD_ROOT).as_posix()
+    except ValueError:
+        return
+    if path.is_dir():
+        shutil.rmtree(_thumb_dir_for_rel(rel), ignore_errors=True)
+    else:
+        _thumb_path_for_rel(rel).unlink(missing_ok=True)
+
+
+def _move_thumb_for_path(source: Path, target: Path, is_dir: bool) -> None:
+    try:
+        source_rel = source.relative_to(UPLOAD_ROOT).as_posix()
+        target_rel = target.relative_to(UPLOAD_ROOT).as_posix()
+    except ValueError:
+        return
+    source_thumb = _thumb_dir_for_rel(source_rel) if is_dir else _thumb_path_for_rel(source_rel)
+    target_thumb = _thumb_dir_for_rel(target_rel) if is_dir else _thumb_path_for_rel(target_rel)
+    if not source_thumb.exists():
+        return
+    target_thumb.parent.mkdir(parents=True, exist_ok=True)
+    if target_thumb.exists():
+        if target_thumb.is_dir():
+            shutil.rmtree(target_thumb)
+        else:
+            target_thumb.unlink()
+    shutil.move(str(source_thumb), str(target_thumb))
 
 
 def _safe_folder_name(value: str) -> str:
@@ -667,7 +984,7 @@ def _image_request_headers(image_url: str) -> dict:
 def _download_instagram_image(image_url: str, target: Path) -> None:
     headers = _image_request_headers(image_url)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with requests.get(image_url, headers=headers, stream=True, timeout=45) as response:
+    with requests.get(image_url, headers=headers, stream=True, timeout=(5, 10)) as response:
         response.raise_for_status()
         with open(target, "wb") as fp:
             for chunk in response.iter_content(chunk_size=1024 * 128):
@@ -834,6 +1151,106 @@ def index():
     return render_template("image_viewer.html")
 
 
+@image_viewer_bp.get("/manifest.webmanifest")
+def pwa_manifest():
+    manifest = {
+        "name": "MFU Image Viewer Desktop",
+        "short_name": "Image Viewer",
+        "description": "Windows XP style image and media viewer for MFU.",
+        "start_url": url_for("image_viewer.index"),
+        "scope": url_for("image_viewer.index"),
+        "display": "standalone",
+        "orientation": "any",
+        "background_color": "#1f6fbd",
+        "theme_color": "#0b63dd",
+        "icons": [
+            {
+                "src": url_for("image_viewer.pwa_icon", size=192),
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+            {
+                "src": url_for("image_viewer.pwa_icon", size=512),
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any maskable",
+            },
+        ],
+    }
+    return Response(json.dumps(manifest, ensure_ascii=False), mimetype="application/manifest+json")
+
+
+@image_viewer_bp.get("/sw.js")
+def pwa_service_worker():
+    manifest_url = url_for("image_viewer.pwa_manifest")
+    icon_192_url = url_for("image_viewer.pwa_icon", size=192)
+    icon_512_url = url_for("image_viewer.pwa_icon", size=512)
+    script = f"""
+const CACHE_NAME = "mfu-image-viewer-pwa-v1";
+const APP_ASSETS = [{json.dumps(manifest_url)}, {json.dumps(icon_192_url)}, {json.dumps(icon_512_url)}];
+
+self.addEventListener("install", (event) => {{
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_ASSETS)));
+  self.skipWaiting();
+}});
+
+self.addEventListener("activate", (event) => {{
+  event.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
+  );
+  self.clients.claim();
+}});
+
+self.addEventListener("fetch", (event) => {{
+  const request = event.request;
+  if (request.method !== "GET") return;
+  const url = new URL(request.url);
+  if (request.mode === "navigate") {{
+    event.respondWith(
+      fetch(request).catch(() => new Response(
+        "<!doctype html><meta charset='utf-8'><title>Image Viewer</title><body style='font-family:sans-serif;padding:24px'>Image Viewer はオフラインでは起動できません。</body>",
+        {{ headers: {{ "Content-Type": "text/html; charset=utf-8" }} }}
+      ))
+    );
+    return;
+  }}
+  if (url.origin === location.origin && APP_ASSETS.includes(url.pathname)) {{
+    event.respondWith(caches.match(request).then((cached) => cached || fetch(request)));
+  }}
+}});
+"""
+    return Response(script, mimetype="application/javascript")
+
+
+@image_viewer_bp.get("/icon-<int:size>.png")
+def pwa_icon(size: int):
+    if size not in {192, 512}:
+        abort(404)
+    image = Image.new("RGBA", (size, size), (11, 99, 221, 255))
+    inner = Image.new("RGBA", (size - size // 5, size - size // 5), (31, 111, 189, 255))
+    image.alpha_composite(inner, (size // 10, size // 10))
+    draw = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    from PIL import ImageDraw, ImageFont
+
+    canvas = ImageDraw.Draw(draw)
+    try:
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", max(40, size // 4))
+    except Exception:
+        font = ImageFont.load_default()
+    text = "IV"
+    bbox = canvas.textbbox((0, 0), text, font=font)
+    x = (size - (bbox[2] - bbox[0])) // 2
+    y = (size - (bbox[3] - bbox[1])) // 2 - size // 28
+    canvas.text((x + size // 80, y + size // 80), text, font=font, fill=(0, 33, 92, 150))
+    canvas.text((x, y), text, font=font, fill=(255, 255, 255, 255))
+    image.alpha_composite(draw)
+    output = BytesIO()
+    image.save(output, "PNG")
+    output.seek(0)
+    return send_file(output, mimetype="image/png", max_age=86400)
+
+
 @image_viewer_bp.get("/api/images")
 @login_required
 def image_list():
@@ -899,6 +1316,113 @@ def create_folder():
     return jsonify({"ok": True, "folder": target.relative_to(UPLOAD_ROOT).as_posix()})
 
 
+@image_viewer_bp.post("/api/entries/rename")
+@login_required
+def rename_entry():
+    _ensure_upload_root()
+    data = request.get_json(silent=True) or {}
+    entry_type = str(data.get("type") or "file")
+    try:
+        source = _target_path_for_rel(data.get("path") or "")
+        new_name = _safe_folder_name(data.get("name") or "")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "名前を確認してください。"}), 400
+    if source == UPLOAD_ROOT:
+        return jsonify({"ok": False, "error": "uploads直下のルートは名前変更できません。"}), 400
+    if not source.exists():
+        return jsonify({"ok": False, "error": "対象が見つかりません。"}), 404
+    if entry_type == "folder" and not source.is_dir():
+        return jsonify({"ok": False, "error": "フォルダーが見つかりません。"}), 404
+    if entry_type != "folder" and not source.is_file():
+        return jsonify({"ok": False, "error": "ファイルが見つかりません。"}), 404
+    target = source.parent / new_name
+    try:
+        target.resolve().relative_to(UPLOAD_ROOT.resolve())
+    except ValueError:
+        return jsonify({"ok": False, "error": "名前を確認してください。"}), 400
+    if target.exists() and target != source:
+        return jsonify({"ok": False, "error": "同名のファイルまたはフォルダーが既にあります。"}), 409
+    if source.name == new_name:
+        return jsonify({"ok": True, "path": source.relative_to(UPLOAD_ROOT).as_posix()})
+    is_dir = source.is_dir()
+    try:
+        source.rename(target)
+        _move_thumb_for_path(source, target, is_dir)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or "名前変更に失敗しました。"}), 500
+    return jsonify({"ok": True, "path": target.relative_to(UPLOAD_ROOT).as_posix(), "folder": target.relative_to(UPLOAD_ROOT).as_posix() if is_dir else target.parent.relative_to(UPLOAD_ROOT).as_posix()})
+
+
+@image_viewer_bp.post("/api/entries/delete")
+@login_required
+def delete_entry():
+    _ensure_upload_root()
+    data = request.get_json(silent=True) or {}
+    entry_type = str(data.get("type") or "file")
+    try:
+        target = _target_path_for_rel(data.get("path") or "")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "対象を確認してください。"}), 400
+    if target == UPLOAD_ROOT:
+        return jsonify({"ok": False, "error": "uploads直下のルートは削除できません。"}), 400
+    if not target.exists():
+        return jsonify({"ok": False, "error": "対象が見つかりません。"}), 404
+    if entry_type == "folder" and not target.is_dir():
+        return jsonify({"ok": False, "error": "フォルダーが見つかりません。"}), 404
+    if entry_type != "folder" and not target.is_file():
+        return jsonify({"ok": False, "error": "ファイルが見つかりません。"}), 404
+    try:
+        _delete_thumb_for_path(target)
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or "削除に失敗しました。"}), 500
+    return jsonify({"ok": True})
+
+
+@image_viewer_bp.post("/api/entries/move")
+@login_required
+def move_entry():
+    _ensure_upload_root()
+    data = request.get_json(silent=True) or {}
+    entry_type = str(data.get("type") or "file")
+    try:
+        source = _target_path_for_rel(data.get("path") or "")
+        destination_dir = _target_dir_for_folder(data.get("destination") or "")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "移動先を確認してください。"}), 400
+    if source == UPLOAD_ROOT:
+        return jsonify({"ok": False, "error": "uploads直下のルートは移動できません。"}), 400
+    if not source.exists():
+        return jsonify({"ok": False, "error": "対象が見つかりません。"}), 404
+    if not destination_dir.is_dir():
+        return jsonify({"ok": False, "error": "移動先フォルダーが見つかりません。"}), 404
+    if entry_type == "folder" and not source.is_dir():
+        return jsonify({"ok": False, "error": "フォルダーが見つかりません。"}), 404
+    if entry_type != "folder" and not source.is_file():
+        return jsonify({"ok": False, "error": "ファイルが見つかりません。"}), 404
+    is_dir = source.is_dir()
+    if is_dir:
+        try:
+            destination_dir.resolve().relative_to(source.resolve())
+            return jsonify({"ok": False, "error": "フォルダーを自分自身の配下へ移動できません。"}), 400
+        except ValueError:
+            pass
+    target = destination_dir / source.name
+    if target == source:
+        return jsonify({"ok": True, "path": source.relative_to(UPLOAD_ROOT).as_posix()})
+    if target.exists():
+        return jsonify({"ok": False, "error": "移動先に同名のファイルまたはフォルダーが既にあります。"}), 409
+    try:
+        shutil.move(str(source), str(target))
+        _move_thumb_for_path(source, target, is_dir)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or "移動に失敗しました。"}), 500
+    return jsonify({"ok": True, "path": target.relative_to(UPLOAD_ROOT).as_posix(), "folder": target.relative_to(UPLOAD_ROOT).as_posix() if is_dir else target.parent.relative_to(UPLOAD_ROOT).as_posix()})
+
+
 @image_viewer_bp.post("/api/upload")
 @login_required
 def upload_images():
@@ -921,7 +1445,7 @@ def upload_images():
             skipped.append(upload.filename)
             continue
         try:
-            target = _unique_file_path(target_dir, upload.filename)
+            target = _next_numbered_file_path(target_dir, suffix)
             upload.save(target)
             thumb_created = False
             if suffix in MEDIA_EXTENSIONS:
@@ -982,6 +1506,104 @@ def paste_images():
     return jsonify({"ok": True, "saved": saved, "skipped": skipped, "errors": errors})
 
 
+@image_viewer_bp.post("/api/openai/illustration")
+@login_required
+def openai_illustration():
+    data = request.get_json(silent=True) or {}
+    try:
+        job_id = _start_illustration_job(
+            str(data.get("path") or ""),
+            str(data.get("prompt") or ""),
+            str(data.get("folder") or ""),
+            str(data.get("quality") or "medium"),
+            str(data.get("model") or ""),
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "画像ファイルを確認してください。"}), 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or "生成ジョブを開始できませんでした。"}), 500
+    return jsonify({"ok": True, "status": "pending", "jobId": job_id})
+
+
+@image_viewer_bp.get("/api/openai/illustration/jobs/<job_id>")
+@login_required
+def openai_illustration_job(job_id: str):
+    _cleanup_ai_jobs()
+    job = _read_ai_job(job_id)
+    if not job:
+        return jsonify({"ok": False, "error": "生成ジョブが見つかりません。もう一度実行してください。"}), 404
+    if job.get("status") == "error":
+        return jsonify({"ok": False, "status": "error", "error": job.get("error") or "生成に失敗しました。"})
+    result = dict(job)
+    generated = dict(result.get("generated") or {})
+    generated.pop("previewCache", None)
+    if generated:
+        generated["previewUrl"] = url_for("image_viewer.openai_illustration_preview", job_id=job_id)
+        result["generated"] = generated
+    return jsonify({"ok": True, **result})
+
+
+@image_viewer_bp.get("/api/openai/illustration/jobs/<job_id>/preview")
+@login_required
+def openai_illustration_preview(job_id: str):
+    job = _read_ai_job(job_id)
+    generated = job.get("generated") or {}
+    preview_cache = Path(str(generated.get("previewCache") or ""))
+    if not preview_cache:
+        abort(404)
+    try:
+        resolved = preview_cache.resolve()
+        resolved.relative_to(AI_JOB_ROOT.resolve())
+    except ValueError:
+        abort(404)
+    if not resolved.is_file():
+        abort(404)
+    return send_file(resolved, mimetype="image/png", max_age=300)
+
+
+@image_viewer_bp.post("/api/openai/illustration/save")
+@image_viewer_bp.post("/api/openai/illustration/jobs/<job_id>/save")
+@login_required
+def openai_illustration_save(job_id: str | None = None):
+    _ensure_upload_root()
+    data = request.get_json(silent=True) or {}
+    job_id = str(job_id or data.get("jobId") or "")
+    job = _read_ai_job(job_id)
+    if not job or job.get("status") != "done":
+        return jsonify({"ok": False, "error": "保存できる生成結果がありません。"}), 404
+    generated = job.get("generated") or {}
+    preview_cache = Path(str(generated.get("previewCache") or ""))
+    try:
+        resolved = preview_cache.resolve()
+        resolved.relative_to(AI_JOB_ROOT.resolve())
+    except ValueError:
+        return jsonify({"ok": False, "error": "生成結果を確認できません。"}), 400
+    if not resolved.is_file():
+        return jsonify({"ok": False, "error": "生成結果ファイルが見つかりません。"}), 404
+    try:
+        target_dir = _target_dir_for_folder(data.get("folder") or job.get("folder") or "")
+    except ValueError:
+        return jsonify({"ok": False, "error": "保存先フォルダーを確認してください。"}), 400
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = _next_numbered_file_path(target_dir, ".png")
+    try:
+        shutil.copyfile(resolved, target)
+        try:
+            _generate_media_thumbnail(target)
+        except Exception:
+            pass
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) or "保存に失敗しました。"}), 500
+    saved = {
+        "name": target.name,
+        "path": target.relative_to(UPLOAD_ROOT).as_posix(),
+        "model": generated.get("model"),
+        "quality": generated.get("quality"),
+    }
+    _set_ai_job(job_id, {"saved": saved})
+    return jsonify({"ok": True, "saved": saved})
+
+
 @image_viewer_bp.post("/api/instagram/fetch")
 @login_required
 def instagram_fetch():
@@ -1011,9 +1633,13 @@ def instagram_job(job_id: str):
             images.append(next_item)
     return jsonify({
         "ok": True,
-            "status": job.get("status"),
-            "source": job.get("source") or "instagram",
-            "shortcode": job.get("shortcode"),
+        "status": job.get("status"),
+        "source": job.get("source") or "instagram",
+        "shortcode": job.get("shortcode"),
+        "total": job.get("total") or len(images),
+        "processed": job.get("processed") or 0,
+        "downloaded": job.get("downloaded") or 0,
+        "failed": job.get("failed") or 0,
         "images": images,
     })
 
@@ -1037,28 +1663,7 @@ def instagram_preview(job_id: str, index: int):
             resolved_cache = None
         if resolved_cache and resolved_cache.is_file():
             return send_file(resolved_cache, max_age=3600)
-
-    image_url = str(item.get("url") or "")
-    headers = _image_request_headers(image_url)
-    try:
-        upstream = requests.get(image_url, headers=headers, stream=True, timeout=45)
-        upstream.raise_for_status()
-    except Exception:
-        return _empty_image_response()
-
-    def generate():
-        try:
-            for chunk in upstream.iter_content(chunk_size=1024 * 128):
-                if chunk:
-                    yield chunk
-        finally:
-            upstream.close()
-
-    return Response(
-        stream_with_context(generate()),
-        mimetype=upstream.headers.get("content-type") or "image/jpeg",
-        headers={"Cache-Control": "private, max-age=300"},
-    )
+    return _empty_image_response()
 
 
 @image_viewer_bp.get("/api/instagram/next-number")
