@@ -47,6 +47,61 @@
       position: absolute;
       inset: 0 0 var(--taskbar-h) 0;
     }
+    .desktop-message {
+      position: absolute;
+      right: 18px;
+      bottom: calc(var(--taskbar-h) + 16px);
+      z-index: 7000;
+      width: min(360px, calc(100vw - 36px));
+      border: 2px solid #0055e5;
+      border-top-color: #49a3ff;
+      background: var(--panel);
+      box-shadow: 4px 6px 16px rgba(0, 0, 0, .34);
+      display: none;
+      user-select: text;
+    }
+    .desktop-message.visible {
+      display: block;
+    }
+    .desktop-message.error {
+      border-color: #9d2b19;
+      border-top-color: #f07b55;
+    }
+    .desktop-message-title {
+      min-height: 26px;
+      display: flex;
+      align-items: center;
+      padding: 3px 8px;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      background: linear-gradient(#5bb7ff 0%, #0b63dd 48%, #0042a8 100%);
+      text-shadow: 1px 1px 0 rgba(0, 0, 0, .45);
+    }
+    .desktop-message.error .desktop-message-title {
+      background: linear-gradient(#ff9a72, #e9411f 55%, #af1a08);
+    }
+    .desktop-message-body {
+      padding: 12px 12px 10px;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .desktop-message-actions {
+      display: none;
+      justify-content: flex-end;
+      padding: 0 10px 10px;
+    }
+    .desktop-message.error .desktop-message-actions {
+      display: flex;
+    }
+    .desktop-message-actions button {
+      min-width: 72px;
+      height: 28px;
+      border: 1px solid #aca899;
+      background: linear-gradient(#ffffff, #ece9d8);
+    }
     .desktop-icons {
       position: absolute;
       left: 18px;
@@ -190,10 +245,10 @@
       border: 0;
       background: transparent;
       text-align: left;
-      padding: 6px 8px;
+      padding: 4px 8px;
       display: flex;
       align-items: center;
-      gap: 7px;
+      gap: 4px;
       color: #0645ad;
       border-radius: 3px;
     }
@@ -209,11 +264,34 @@
       white-space: nowrap;
       text-overflow: ellipsis;
     }
+    .folder .twisty {
+      width: 16px;
+      height: 18px;
+      flex: 0 0 16px;
+      display: grid;
+      place-items: center;
+      color: #153e75;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .folder .twisty.no-twisty {
+      color: transparent;
+    }
+    .folder .folder-icon {
+      width: 18px;
+      height: 18px;
+      flex: 0 0 18px;
+      display: grid;
+      place-items: center;
+      font-size: 16px;
+      line-height: 1;
+    }
     .folder[draggable="true"], .file[draggable="true"] {
       cursor: default;
     }
 
     .filepane {
+      position: relative;
       min-width: 0;
       min-height: 0;
       display: flex;
@@ -262,6 +340,7 @@
       --tile-h: 176px;
       --thumb-size: 136px;
       --name-lines: 2;
+      position: relative;
       flex: 1;
       min-height: 0;
       overflow: auto;
@@ -276,6 +355,26 @@
       outline: 3px dashed #316ac5;
       outline-offset: -8px;
       background: #f2f7ff;
+    }
+    .filepane.loading::after {
+      content: "Loading...";
+      position: absolute;
+      right: 14px;
+      bottom: 12px;
+      z-index: 2;
+      padding: 3px 8px;
+      border: 1px solid #7f9db9;
+      background: #fffef2;
+      color: #003399;
+      font-size: 12px;
+      box-shadow: 1px 1px 3px rgba(0,0,0,.18);
+      pointer-events: none;
+      animation: loading-dots 1.2s steps(3, end) infinite;
+    }
+    @keyframes loading-dots {
+      0% { content: "Loading."; }
+      33% { content: "Loading.."; }
+      66%, 100% { content: "Loading..."; }
     }
     .files.view-xl { --tile-w: 186px; --tile-h: 220px; --thumb-size: 174px; --name-lines: 2; }
     .files.view-lg { --tile-w: 148px; --tile-h: 176px; --thumb-size: 136px; --name-lines: 2; }
@@ -482,9 +581,41 @@
       padding: 10px;
       background: #ece9d8;
     }
+    .instagram-auth-window {
+      width: min(520px, calc(100vw - 32px));
+      height: 300px;
+      min-width: 420px;
+      min-height: 260px;
+    }
+    .instagram-auth-body {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+      padding: 10px;
+      background: #ece9d8;
+    }
+    .ig-auth-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .instagram-auth-body input {
+      height: 26px;
+      border: 1px solid #7f9db9;
+      background: #fff;
+      padding: 2px 6px;
+    }
+    .instagram-auth-body button {
+      height: 28px;
+      border: 1px solid #aca899;
+      background: linear-gradient(#ffffff, #ece9d8);
+    }
     .ig-form {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: auto 1fr auto auto;
       gap: 7px;
       align-items: center;
     }
@@ -579,10 +710,33 @@
       align-items: center;
       gap: 8px;
     }
+    .ig-auth-password {
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+    .ig-auth-password.visible {
+      display: inline-flex;
+    }
+    .ig-auth-password input {
+      width: 150px;
+      height: 26px;
+      border: 1px solid #7f9db9;
+      background: #fff;
+      padding: 2px 6px;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
     .ig-status {
       margin-left: auto;
       color: #1f3763;
       font-size: 12px;
+    }
+    .ig-auth-status {
+      min-height: 36px;
+      color: #1f3763;
+      font-size: 12px;
+      line-height: 1.45;
     }
     .context-menu {
       position: fixed;
@@ -919,6 +1073,13 @@
         <div class="resize-handle" data-resize-handle></div>
       </article>
     </section>
+    <div class="desktop-message" id="desktopMessage" role="status" aria-live="polite">
+      <div class="desktop-message-title" id="desktopMessageTitle">通知</div>
+      <div class="desktop-message-body" id="desktopMessageBody"></div>
+      <div class="desktop-message-actions">
+        <button type="button" id="desktopMessageOk">OK</button>
+      </div>
+    </div>
     <footer class="taskbar">
       <button class="start" type="button" id="showExplorerBtn" title="Explorer">スタート</button>
       <div class="task-list" id="taskList"></div>
@@ -943,7 +1104,12 @@
     const instagramFetchUrl = "{{ url_for('image_viewer.instagram_fetch') }}";
     const instagramSaveUrl = "{{ url_for('image_viewer.instagram_save') }}";
     const instagramJobUrlBase = "{{ url_for('image_viewer.instagram_job', job_id='__JOB_ID__') }}";
+    const instagramCancelJobUrlBase = "{{ url_for('image_viewer.instagram_job_cancel', job_id='__JOB_ID__') }}";
     const instagramNextNumberUrl = "{{ url_for('image_viewer.instagram_next_number') }}";
+    const instagramBrowserStartUrl = "{{ url_for('image_viewer.instagram_browser_start') }}";
+    const instagramBrowserSaveUrl = "{{ url_for('image_viewer.instagram_browser_save') }}";
+    const instagramBrowserTypeUrl = "{{ url_for('image_viewer.instagram_browser_type') }}";
+    const instagramBrowserOpenUrl = "{{ url_for('image_viewer.instagram_browser_open') }}";
     const videoFetchUrl = "{{ url_for('image_viewer.video_fetch') }}";
     const videoSaveUrl = "{{ url_for('image_viewer.video_save') }}";
     const videoJobUrlBase = "{{ url_for('image_viewer.video_job', job_id='__JOB_ID__') }}";
@@ -976,6 +1142,9 @@
       thumbHydrateRaf: 0,
       thumbSettleTimer: 0,
       explorerClones: new Map(),
+      expandedFolders: new Set(['']),
+      imageLoadSeq: 0,
+      isLoadingImages: false,
       instagram: { shortcode: '', jobId: '', images: [] },
       videoDownloader: { identifier: '', jobId: '', videos: [] }
     };
@@ -985,6 +1154,10 @@
     const folderList = document.getElementById('folderList');
     const fileGrid = document.getElementById('fileGrid');
     const pathBox = document.getElementById('pathBox');
+    const desktopMessage = document.getElementById('desktopMessage');
+    const desktopMessageTitle = document.getElementById('desktopMessageTitle');
+    const desktopMessageBody = document.getElementById('desktopMessageBody');
+    const desktopMessageOk = document.getElementById('desktopMessageOk');
     const sortBtn = document.getElementById('sortBtn');
     const thumbBtn = document.getElementById('thumbBtn');
     const regenThumbBtn = document.getElementById('regenThumbBtn');
@@ -993,6 +1166,7 @@
     const clock = document.getElementById('clock');
     const uploadBatchMaxBytes = 80 * 1024 * 1024;
     const uploadBatchMaxFiles = 20;
+    let desktopMessageTimer = 0;
 
     const icons = {
       explorer: 'EXP',
@@ -1002,6 +1176,34 @@
       downloader: 'VD',
       progress: '%'
     };
+
+    function hideDesktopMessage() {
+      clearTimeout(desktopMessageTimer);
+      desktopMessageTimer = 0;
+      desktopMessage?.classList.remove('visible', 'error');
+      if (desktopMessageBody) desktopMessageBody.textContent = '';
+    }
+
+    function showDesktopMessage(message, options = {}) {
+      if (!desktopMessage || !desktopMessageBody || !desktopMessageTitle) return;
+      clearTimeout(desktopMessageTimer);
+      const isError = options.type === 'error';
+      desktopMessage.classList.toggle('error', isError);
+      desktopMessage.classList.add('visible');
+      desktopMessage.setAttribute('role', isError ? 'alertdialog' : 'status');
+      desktopMessage.setAttribute('aria-live', isError ? 'assertive' : 'polite');
+      desktopMessageTitle.textContent = options.title || (isError ? 'エラー' : '通知');
+      desktopMessageBody.textContent = message || '';
+      if (isError) {
+        desktopMessageOk?.focus();
+      } else {
+        desktopMessageTimer = setTimeout(hideDesktopMessage, Number(options.duration || 3000));
+      }
+    }
+
+    function showDesktopError(message) {
+      showDesktopMessage(message, { type: 'error', title: 'エラー' });
+    }
 
     async function fetchJson(url, options = {}) {
       const headers = new Headers(options.headers || {});
@@ -1031,15 +1233,16 @@
       const url = instagramJobUrlBase.replace('__JOB_ID__', encodeURIComponent(jobId));
       const startedAt = Date.now();
       let count = 0;
-      while (Date.now() - startedAt < 45000) {
+      while (true) {
         await sleep(count < 3 ? 700 : 1200);
         count += 1;
         const data = await fetchJson(url);
+        data.elapsedMs = Date.now() - startedAt;
         if (onTick) onTick(count, data);
         if (data.status === 'done') return data;
+        if (data.status === 'cancelled') return data;
         if (data.status === 'error') throw new Error(data.error || '取得に失敗しました。');
       }
-      throw new Error('取得がタイムアウトしました。もう一度お試しください。');
     }
 
     async function waitVideoJob(jobId, onTick) {
@@ -1414,20 +1617,75 @@
         });
     }
 
-    function renderFolders() {
-      folderList.innerHTML = '';
-      [...state.folders].sort(compareFolderPath).forEach(folder => {
+    function folderDepth(folder) {
+      return folder ? folder.split('/').filter(Boolean).length : 0;
+    }
+
+    function folderParent(folder) {
+      const parts = String(folder || '').split('/').filter(Boolean);
+      parts.pop();
+      return parts.join('/');
+    }
+
+    function childFoldersOf(parent) {
+      const base = parent || '';
+      const depth = folderDepth(base) + 1;
+      return [...state.folders]
+        .filter(folder => folder !== base && folderParent(folder) === base && folderDepth(folder) === depth)
+        .sort(compareFolderPath);
+    }
+
+    function expandFolderAncestors(folder) {
+      let current = folderParent(folder);
+      state.expandedFolders.add('');
+      while (current) {
+        state.expandedFolders.add(current);
+        current = folderParent(current);
+      }
+    }
+
+    function visibleFolderTree() {
+      const ordered = [];
+      const walk = (folder) => {
+        ordered.push(folder);
+        if (!state.expandedFolders.has(folder)) return;
+        childFoldersOf(folder).forEach(walk);
+      };
+      walk('');
+      return ordered;
+    }
+
+    function renderFolderTree(container, activeFolder, onSelect) {
+      expandFolderAncestors(activeFolder || '');
+      container.innerHTML = '';
+      visibleFolderTree().forEach(folder => {
+        const children = childFoldersOf(folder);
+        const hasChildren = children.length > 0;
+        const isExpanded = state.expandedFolders.has(folder);
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = `folder${folder === state.currentFolder ? ' active' : ''}`;
+        btn.className = `folder${folder === activeFolder ? ' active' : ''}`;
         btn.dataset.folder = folder;
         btn.draggable = Boolean(folder);
-        btn.style.paddingLeft = `${8 + Math.max(0, folder.split('/').length - 1) * 12}px`;
-        btn.innerHTML = `<span class="label"></span>`;
-        btn.lastElementChild.textContent = folderLabel(folder);
+        btn.style.paddingLeft = `${6 + folderDepth(folder) * 18}px`;
+        btn.innerHTML = `<span class="twisty${hasChildren ? '' : ' no-twisty'}"></span><span class="folder-icon" aria-hidden="true">📁</span><span class="label"></span>`;
+        btn.querySelector('.twisty').textContent = hasChildren ? (isExpanded ? '⌄' : '›') : ' ';
+        btn.querySelector('.label').textContent = folderLabel(folder);
         btn.title = folder || 'uploads';
-        btn.addEventListener('click', () => {
-          setCurrentFolder(folder);
+        btn.addEventListener('click', (event) => {
+          if (event.target.closest('.twisty') && hasChildren) {
+            if (isExpanded) state.expandedFolders.delete(folder);
+            else state.expandedFolders.add(folder);
+            renderAllExplorers();
+            return;
+          }
+          onSelect(folder);
+        });
+        btn.addEventListener('dblclick', () => {
+          if (!hasChildren) return;
+          if (state.expandedFolders.has(folder)) state.expandedFolders.delete(folder);
+          else state.expandedFolders.add(folder);
+          renderAllExplorers();
         });
         btn.addEventListener('contextmenu', (event) => {
           showContextMenu(event, { type: 'folder', path: folder });
@@ -1440,8 +1698,12 @@
           setSelectedFolder(folder);
           setDragEntry(event, { type: 'folder', path: folder });
         });
-        folderList.appendChild(btn);
+        container.appendChild(btn);
       });
+    }
+
+    function renderFolders() {
+      renderFolderTree(folderList, state.currentFolder, setCurrentFolder);
     }
 
     function updateSelectedFileElement() {
@@ -2170,28 +2432,7 @@
       if (sortButton) sortButton.textContent = sortDirection(folder) === 'desc' ? '逆順' : '昇順';
       ex.el.querySelectorAll('[data-clone-size]').forEach(btn => btn.classList.toggle('active', btn.dataset.cloneSize === viewSize(folder)));
 
-      cloneFolders.innerHTML = '';
-      [...state.folders].sort(compareFolderPath).forEach(nextFolder => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = `folder${nextFolder === folder ? ' active' : ''}`;
-        btn.dataset.folder = nextFolder;
-        btn.draggable = Boolean(nextFolder);
-        btn.style.paddingLeft = `${8 + Math.max(0, nextFolder.split('/').length - 1) * 12}px`;
-        btn.innerHTML = `<span class="label"></span>`;
-        btn.lastElementChild.textContent = folderLabel(nextFolder);
-        btn.title = nextFolder || 'uploads';
-        btn.addEventListener('click', () => setExplorerCloneFolder(id, nextFolder));
-        btn.addEventListener('contextmenu', (event) => showContextMenu(event, { type: 'folder', path: nextFolder }));
-        btn.addEventListener('dragstart', (event) => {
-          if (!nextFolder) {
-            event.preventDefault();
-            return;
-          }
-          setDragEntry(event, { type: 'folder', path: nextFolder });
-        });
-        cloneFolders.appendChild(btn);
-      });
+      renderFolderTree(cloneFolders, folder, nextFolder => setExplorerCloneFolder(id, nextFolder));
 
       const size = viewSize(folder);
       cloneGrid.classList.remove('view-xl', 'view-lg', 'view-md', 'view-sm');
@@ -2244,6 +2485,16 @@
         cloneGrid.scrollLeft = 0;
       }
       renderTasks();
+    }
+
+    function setImageListLoading(loading) {
+      state.isLoadingImages = Boolean(loading);
+      const grids = [fileGrid, ...Array.from(state.explorerClones.values()).map(ex => ex.refs.fileGrid).filter(Boolean)];
+      grids.forEach(grid => {
+        grid.classList.toggle('loading', state.isLoadingImages);
+        grid.closest('.filepane')?.classList.toggle('loading', state.isLoadingImages);
+        grid.setAttribute('aria-busy', state.isLoadingImages ? 'true' : 'false');
+      });
     }
 
     function wireExplorerClone(id) {
@@ -2314,8 +2565,16 @@
     }
 
     async function loadImages() {
-      fileGrid.innerHTML = '<div class="empty">読み込み中...</div>';
-      const data = await fetchJson(apiUrl);
+      const seq = state.imageLoadSeq + 1;
+      state.imageLoadSeq = seq;
+      setImageListLoading(true);
+      renderAllExplorers();
+      const data = await fetchJson(apiUrl).catch((err) => {
+        if (seq === state.imageLoadSeq) setImageListLoading(false);
+        showDesktopError(err.message || 'File list refresh failed.');
+        throw err;
+      });
+      if (seq !== state.imageLoadSeq) return;
       state.images = data.images || [];
       state.folders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
       if (!state.folders.includes(state.currentFolder)) {
@@ -2339,6 +2598,7 @@
         }
       }
       renderAllExplorers();
+      if (seq === state.imageLoadSeq) setImageListLoading(false);
     }
 
     async function createFolderInCurrentFolder() {
@@ -2389,7 +2649,7 @@
     async function pasteClipboardFiles(files, folder = folderForExplorer(), ownerId = activeExplorerId()) {
       const imageFiles = Array.from(files || []).filter(file => file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp)$/i.test(file.name));
       if (!imageFiles.length) {
-        alert('貼り付けできる画像がありません。');
+        showDesktopError('貼り付けできる画像がありません。');
         return;
       }
       setPathStatus(ownerId, '貼り付け保存中...');
@@ -2405,7 +2665,9 @@
       setExplorerFolderAfterWrite(ownerId, folder || '', saved.length ? saved[saved.length - 1].path : '');
       const skipped = (data.skipped || []).length;
       const failed = (data.errors || []).length;
-      alert(`${saved.length}件保存しました。${skipped ? ` ${skipped}件スキップ。` : ''}${failed ? ` ${failed}件エラー。` : ''}`);
+      const message = `${saved.length}件保存しました。${skipped ? ` ${skipped}件スキップ。` : ''}${failed ? ` ${failed}件エラー。` : ''}`;
+      if (failed) showDesktopError(message);
+      else showDesktopMessage(message);
     }
 
     async function readClipboardImageFiles() {
@@ -2745,6 +3007,7 @@
               <label for="igUrl">URL</label>
               <input id="igUrl" type="text" placeholder="https://www.instagram.com/p/... / https://x.com/.../status/...">
               <button type="button" id="igFetchBtn">取得</button>
+              <button type="button" id="igCancelBtn" hidden>キャンセル</button>
             </div>
             <div class="ig-options">
               <label>保存先フォルダー<input id="igFolder" type="text" value="instagram" placeholder="instagram"></label>
@@ -2756,6 +3019,7 @@
             <div class="empty">InstagramまたはXの投稿URLを入力して取得してください。</div>
           </div>
           <div class="ig-actions">
+            <button type="button" id="igLoginBtn">Instagramログイン</button>
             <button type="button" id="igSelectAll">全選択</button>
             <button type="button" id="igClearAll">全解除</button>
             <button type="button" id="igInvert">反転</button>
@@ -2768,6 +3032,52 @@
       desktopGrid.appendChild(el);
       registerWindow('instagram', el, 'Instagram / X Image Downloader', 'instagram');
       wireInstagramWindow(el);
+    }
+
+    function openInstagramAuthWindow() {
+      const existing = state.windows.get('instagram-auth');
+      if (existing) {
+        activate('instagram-auth');
+        return existing;
+      }
+      const el = document.createElement('article');
+      el.className = 'window instagram-auth-window';
+      el.style.left = '160px';
+      el.style.top = '120px';
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">IG</div>
+          <div class="title-text">Instagram Login</div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div class="instagram-auth-body">
+          <div class="ig-auth-row">
+            <button type="button" id="igAuthOpenBtn">noVNCを開く</button>
+            <button type="button" id="igAuthSaveBtn">ログイン保存</button>
+          </div>
+          <div class="ig-auth-row ig-auth-password visible" id="igVncPasswordBox">
+            <input id="igVncPassword" type="text" readonly aria-label="VNC Password" placeholder="VNC Password">
+            <button type="button" id="igCopyVncPassword">コピー</button>
+          </div>
+          <div class="ig-auth-row">
+            <input id="igLoginText" type="text" autocomplete="username" placeholder="Instagram ID / email">
+            <button type="button" id="igTypeLoginText">ID入力</button>
+          </div>
+          <div class="ig-auth-row">
+            <input id="igLoginPassword" type="password" autocomplete="current-password" placeholder="Instagram password">
+            <button type="button" id="igTypeLoginPassword">パスワード入力</button>
+          </div>
+          <div class="ig-auth-status" id="igAuthStatus"></div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>
+      `;
+      desktopGrid.appendChild(el);
+      registerWindow('instagram-auth', el, 'Instagram Login', 'instagram');
+      wireInstagramAuthWindow(el);
+      return el;
     }
 
     function openProgressWindow(title) {
@@ -2824,6 +3134,51 @@
       el.querySelector('#igStatus').textContent = text || '';
     }
 
+    function setInstagramAuthStatus(el, text) {
+      const target = el.querySelector('#igAuthStatus') || el.querySelector('#igStatus');
+      if (target) target.textContent = text || '';
+    }
+
+    function setVncPassword(el, password) {
+      const box = el.querySelector('#igVncPasswordBox');
+      const input = el.querySelector('#igVncPassword');
+      if (!box || !input) return;
+      input.value = password || '';
+      box.classList.toggle('visible', Boolean(password));
+    }
+
+    async function copyVncPassword(el) {
+      const input = el.querySelector('#igVncPassword');
+      const password = input?.value || '';
+      if (!password) return;
+      try {
+        await navigator.clipboard.writeText(password);
+        setInstagramAuthStatus(el, 'VNC Passwordをコピーしました。');
+      } catch (_) {
+        input.focus();
+        input.select();
+        document.execCommand?.('copy');
+        setInstagramAuthStatus(el, 'VNC Passwordを選択しました。コピーできない場合は Ctrl+C を押してください。');
+      }
+    }
+    async function typeIntoInstagramBrowser(el, inputSelector, label) {
+      const input = el.querySelector(inputSelector);
+      const value = input?.value || '';
+      if (!value) {
+        setInstagramAuthStatus(el, `${label}が空です。`);
+        return;
+      }
+      setInstagramAuthStatus(el, `noVNC側で入力欄をクリックしてから少し待ってください。${label}を送信します。`);
+      try {
+        await fetchJson(instagramBrowserTypeUrl, {
+          method: 'POST',
+          body: JSON.stringify({ text: value })
+        });
+        setInstagramAuthStatus(el, `${label}を現在フォーカス中の欄へ入力しました。`);
+      } catch (err) {
+        setInstagramAuthStatus(el, err.message || `${label}を入力できませんでした。`);
+      }
+    }
     function renderInstagramItems(el) {
       const grid = el.querySelector('#igGrid');
       grid.innerHTML = '';
@@ -2898,6 +3253,49 @@
       return data;
     }
 
+    function wireInstagramAuthWindow(el) {
+      async function startLoginBrowser() {
+        const openBtn = el.querySelector('#igAuthOpenBtn');
+        openBtn.disabled = true;
+        setInstagramAuthStatus(el, 'Instagramログイン用ブラウザを起動中...');
+        const popup = window.open('about:blank', 'mfu_instagram_login', 'width=1320,height=980');
+        try {
+          const data = await fetchJson(instagramBrowserStartUrl, { method: 'POST', body: JSON.stringify({}) });
+          if (data.url) {
+            if (popup) popup.location.href = data.url;
+            else window.open(data.url, 'mfu_instagram_login', 'width=1320,height=980');
+          }
+          setVncPassword(el, data.vncPassword || '');
+          setInstagramAuthStatus(el, 'noVNCでInstagramにログインし、完了後に「ログイン保存」を押してください。ID/PW欄はnoVNC側で入力欄をクリックしてから使います。');
+        } catch (err) {
+          if (popup) popup.close();
+          setInstagramAuthStatus(el, err.message || 'Instagramログイン用ブラウザを起動できませんでした。');
+        } finally {
+          openBtn.disabled = false;
+        }
+      }
+
+      el.querySelector('#igAuthOpenBtn').addEventListener('click', startLoginBrowser);
+      el.querySelector('#igCopyVncPassword').addEventListener('click', () => copyVncPassword(el));
+      el.querySelector('#igTypeLoginText').addEventListener('click', () => typeIntoInstagramBrowser(el, '#igLoginText', 'ID'));
+      el.querySelector('#igTypeLoginPassword').addEventListener('click', () => typeIntoInstagramBrowser(el, '#igLoginPassword', 'パスワード'));
+      el.querySelector('#igAuthSaveBtn').addEventListener('click', async () => {
+        const saveAuthBtn = el.querySelector('#igAuthSaveBtn');
+        saveAuthBtn.disabled = true;
+        setInstagramAuthStatus(el, 'Instagramログイン情報を保存中...');
+        try {
+          const data = await fetchJson(instagramBrowserSaveUrl, { method: 'POST', body: JSON.stringify({}) });
+          setInstagramAuthStatus(el, `Instagramログインを保存しました。Cookie ${data.cookieCount || 0}件`);
+        } catch (err) {
+          setInstagramAuthStatus(el, err.message || 'Instagramログイン情報を保存できませんでした。');
+        } finally {
+          saveAuthBtn.disabled = false;
+        }
+      });
+
+      startLoginBrowser();
+    }
+
     function wireInstagramWindow(el) {
       applyInstagramSettings(el);
       updateInstagramNextNumber(el).catch(err => setInstagramStatus(el, err.message || '連番を取得できませんでした。'));
@@ -2910,16 +3308,42 @@
         el.querySelector(selector).addEventListener('change', debouncedNextNumber);
       });
 
+      el.querySelector('#igLoginBtn').addEventListener('click', () => {
+        openInstagramAuthWindow();
+        setInstagramStatus(el, 'Instagramログイン用ウィンドウを開きました。');
+      });
+
+      const fetchBtn = el.querySelector('#igFetchBtn');
+      const cancelBtn = el.querySelector('#igCancelBtn');
+      let activeInstagramJobId = '';
+      cancelBtn.addEventListener('click', async () => {
+        if (!activeInstagramJobId) return;
+        cancelBtn.disabled = true;
+        setInstagramStatus(el, 'キャンセル中...');
+        try {
+          const cancelUrl = instagramCancelJobUrlBase.replace('__JOB_ID__', encodeURIComponent(activeInstagramJobId));
+          await fetchJson(cancelUrl, { method: 'POST', body: JSON.stringify({}) });
+          setInstagramStatus(el, '取得をキャンセルしました。');
+        } catch (err) {
+          cancelBtn.disabled = false;
+          setInstagramStatus(el, err.message || 'キャンセルできませんでした。');
+        }
+      });
+
       el.querySelector('#igFetchBtn').addEventListener('click', async () => {
         const url = el.querySelector('#igUrl').value.trim();
-        const fetchBtn = el.querySelector('#igFetchBtn');
+        activeInstagramJobId = '';
         fetchBtn.disabled = true;
+        cancelBtn.hidden = false;
+        cancelBtn.disabled = true;
         setInstagramStatus(el, '取得中...');
         try {
           const data = await fetchJson(instagramFetchUrl, {
             method: 'POST',
             body: JSON.stringify({ url })
           });
+          activeInstagramJobId = data.jobId || '';
+          cancelBtn.disabled = !activeInstagramJobId;
           setInstagramStatus(el, '投稿画像を取得中...');
           const result = data.jobId
             ? await waitInstagramJob(data.jobId, (count, job) => {
@@ -2927,6 +3351,7 @@
                 const processed = Number(job.processed || 0);
                 const downloaded = Number(job.downloaded || 0);
                 const failed = Number(job.failed || 0);
+                const elapsedSec = Math.floor(Number(job.elapsedMs || 0) / 1000);
                 if (Array.isArray(job.images) && job.images.length) {
                   state.instagram.shortcode = job.shortcode;
                   state.instagram.jobId = data.jobId || '';
@@ -2934,10 +3359,14 @@
                   renderInstagramItems(el);
                 }
                 setInstagramStatus(el, total
-                  ? `画像をダウンロード中... ${processed}/${total}（成功 ${downloaded}・失敗 ${failed}）`
-                  : `投稿画像を取得中... ${count}`);
+                  ? `画像をダウンロード中... ${processed}/${total}（成功 ${downloaded}・失敗 ${failed}） ${elapsedSec}秒`
+                  : `投稿画像を取得中... ${elapsedSec}秒`);
               })
             : data;
+          if (result.status === 'cancelled') {
+            setInstagramStatus(el, '取得をキャンセルしました。');
+            return;
+          }
           state.instagram.shortcode = result.shortcode;
           state.instagram.jobId = data.jobId || '';
           state.instagram.images = result.images || [];
@@ -2951,6 +3380,9 @@
           setInstagramStatus(el, err.message || '取得に失敗しました。');
         } finally {
           fetchBtn.disabled = false;
+          cancelBtn.hidden = true;
+          cancelBtn.disabled = true;
+          activeInstagramJobId = '';
         }
       });
 
@@ -3036,6 +3468,7 @@
             <div class="empty">InstagramまたはXの投稿URLを入力して動画を取得してください。</div>
           </div>
           <div class="ig-actions">
+            <button type="button" id="vdLoginBtn">Instagramログイン</button>
             <button type="button" id="vdSelectAll">全選択</button>
             <button type="button" id="vdClearAll">全解除</button>
             <button type="button" id="vdInvert">反転</button>
@@ -3104,6 +3537,10 @@
       applyVideoDownloaderSettings(el);
       el.querySelector('#vdFolder').addEventListener('change', () => saveVideoDownloaderSettings(el));
       el.querySelector('#vdFolder').addEventListener('input', () => saveVideoDownloaderSettings(el));
+      el.querySelector('#vdLoginBtn').addEventListener('click', () => {
+        openInstagramAuthWindow();
+        setVideoDownloaderStatus(el, 'Instagramログイン用ウィンドウを開きました。');
+      });
 
       el.querySelector('#vdFetchBtn').addEventListener('click', async () => {
         const url = el.querySelector('#vdUrl').value.trim();
@@ -3195,7 +3632,7 @@
         uploadInput.click();
       });
       document.getElementById('pasteBtn').addEventListener('click', () => {
-        pasteFromClipboard(state.currentFolder, 'explorer').catch(err => alert(err.message || '貼り付け保存に失敗しました。'));
+        pasteFromClipboard(state.currentFolder, 'explorer').catch(err => showDesktopError(err.message || '貼り付け保存に失敗しました。'));
       });
       uploadInput.addEventListener('change', () => {
         uploadFilesToFolder(uploadInput.files, state.currentFolder, 'explorer').catch(err => alert(err.message || 'アップロードに失敗しました。'));
@@ -3256,12 +3693,13 @@
         if (!files.length) return;
         event.preventDefault();
         const ownerId = activeExplorerId();
-        pasteClipboardFiles(files, folderForExplorer(ownerId), ownerId).catch(err => alert(err.message || '貼り付け保存に失敗しました。'));
+        pasteClipboardFiles(files, folderForExplorer(ownerId), ownerId).catch(err => showDesktopError(err.message || '貼り付け保存に失敗しました。'));
       });
     }
 
 
     document.getElementById('refreshBtn').addEventListener('click', loadImages);
+    desktopMessageOk?.addEventListener('click', hideDesktopMessage);
     wireUploadInteractions();
     fileGrid.addEventListener('scroll', () => {
       hydrateCurrentViewportThumbnails();
@@ -3419,4 +3857,3 @@
   </script>
 </body>
 </html>
-
