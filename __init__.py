@@ -2438,10 +2438,59 @@ def handle_forbidden(_error):
 # /suc/ アクセス除外表示（SQL＆Python両層で共通管理）
 # =======================================
 _ADMIN_LOGS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_ADMINLOGS_IP_INDEX_EXISTS = None
 
 
 def _admin_logs_html_result_path(job_id: str) -> str:
     return os.path.join(_progress_dir(), f"{job_id}.html")
+
+
+def _adminlogs_parse_iso(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def _adminlogs_is_stale(status_data: dict | None, stale_seconds: int = 1200) -> bool:
+    if not status_data or status_data.get("status") not in ("queued", "running"):
+        return False
+    stamp = _adminlogs_parse_iso(status_data.get("updated_at")) or _adminlogs_parse_iso(status_data.get("started_at")) or _adminlogs_parse_iso(status_data.get("created_at"))
+    if not stamp:
+        return False
+    return (datetime.utcnow() - stamp).total_seconds() > stale_seconds
+
+
+def _adminlogs_like(value: str, mode: str = "contains") -> str:
+    value = (value or "").replace("*", "%")
+    if "%" in value or "_" in value:
+        return value
+    if mode == "prefix":
+        return f"{value}%"
+    return f"%{value}%"
+
+
+def _adminlogs_ip_like(value: str) -> str:
+    value = (value or "").strip().replace("*", "%")
+    if "%" in value or "_" in value:
+        return value
+    if value.endswith((".", ":")) or "/" in value:
+        return f"{value}%"
+    return f"%{value}%"
+
+
+def _adminlogs_has_ip_index(cursor) -> bool:
+    global _ADMINLOGS_IP_INDEX_EXISTS
+    if _ADMINLOGS_IP_INDEX_EXISTS is not None:
+        return _ADMINLOGS_IP_INDEX_EXISTS
+    try:
+        cursor.execute("SHOW INDEX FROM logs WHERE Key_name = 'idx_logs_ip'")
+        _ADMINLOGS_IP_INDEX_EXISTS = bool(cursor.fetchone())
+    except Exception:
+        _ADMINLOGS_IP_INDEX_EXISTS = False
+    return _ADMINLOGS_IP_INDEX_EXISTS
 
 
 def _gc_adminlogs_jobs(ttl_seconds: int = 1800):
@@ -2923,12 +2972,15 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
             where.append(f"({placeholders})")
             params.extend(likes)
 
+    ip_like_value = _adminlogs_ip_like(search_ip) if search_ip else ""
+    has_ip_prefix_filter = bool(ip_like_value and not ip_like_value.startswith(("%", "_")))
+
     if exclude_local and LOCAL_SQL_LIKE_PREFIXES:
         placeholders = " OR ".join(["ip LIKE %s"] * len(LOCAL_SQL_LIKE_PREFIXES))
         where.append(f"NOT ({placeholders})")
         params.extend([p + "%" for p in LOCAL_SQL_LIKE_PREFIXES])
 
-    if exclude_suc and EXCLUDE_PATH_SQL_LIKES:
+    if exclude_suc and EXCLUDE_PATH_SQL_LIKES and not has_ip_prefix_filter:
         placeholders = " OR ".join(["log_text LIKE %s"] * len(EXCLUDE_PATH_SQL_LIKES))
         where.append(f"NOT ({placeholders})")
         params.extend(EXCLUDE_PATH_SQL_LIKES)
@@ -2939,43 +2991,51 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
             or_parts = []
             for term in search_terms:
                 or_parts.append("(log_text LIKE %s OR ip LIKE %s)")
-                params.extend([f"%{term}%", f"%{term}%"])
+                params.extend([_adminlogs_like(term), _adminlogs_like(term)])
             where.append("(" + " OR ".join(or_parts) + ")")
         else:
             for term in search_terms:
                 where.append("(log_text LIKE %s OR ip LIKE %s)")
-                params.extend([f"%{term}%", f"%{term}%"])
+                params.extend([_adminlogs_like(term), _adminlogs_like(term)])
 
     if search_ip:
         where.append("ip LIKE %s")
-        params.append(f"%{search_ip}%")
+        params.append(ip_like_value)
     if search_status:
-        where.append("log_text LIKE %s")
-        params.append(f"%{search_status}%")
+        if search_status.isdigit():
+            where.append("status = %s")
+            params.append(int(search_status))
+        else:
+            where.append("log_text LIKE %s")
+            params.append(_adminlogs_like(search_status))
     if search_method:
-        where.append("log_text LIKE %s")
-        params.append(f"%{search_method}%")
+        where.append("method = %s")
+        params.append(search_method.upper())
     if search_path:
-        where.append("log_text LIKE %s")
-        params.append(f"%{search_path}%")
+        where.append("(path LIKE %s OR log_text LIKE %s)")
+        params.extend([_adminlogs_like(search_path), _adminlogs_like(search_path)])
     if search_endpoint:
-        where.append("log_text LIKE %s")
-        params.append(f"%{search_endpoint}%")
+        where.append("(endpoint LIKE %s OR log_text LIKE %s)")
+        params.extend([_adminlogs_like(search_endpoint), _adminlogs_like(search_endpoint)])
     if search_user:
-        where.append("log_text LIKE %s")
-        params.append(f"%{search_user}%")
+        where.append("(username LIKE %s OR log_text LIKE %s)")
+        params.extend([_adminlogs_like(search_user), _adminlogs_like(search_user)])
     if search_ua:
-        where.append("log_text LIKE %s")
-        params.append(f"%{search_ua}%")
+        where.append("(ua LIKE %s OR log_text LIKE %s)")
+        params.extend([_adminlogs_like(search_ua), _adminlogs_like(search_ua)])
 
     _progress(phase="SQL条件を準備中", percent=5, scanned=0, accepted=0)
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
-    base_sql = "SELECT id, log_date, ip, log_text FROM logs"
+    logs_table_sql = "logs"
+    if has_ip_prefix_filter and _adminlogs_has_ip_index(cursor):
+        logs_table_sql = "logs FORCE INDEX (idx_logs_ip)"
+
+    base_sql = f"SELECT id, log_date, ip, log_text FROM {logs_table_sql}"
     can_count_fast = bool(selected_date or search_date_from or search_date_to)
     sql_total = None
     if can_count_fast:
-        count_sql = "SELECT COUNT(*) AS cnt FROM logs" + where_sql
+        count_sql = f"SELECT COUNT(*) AS cnt FROM {logs_table_sql}" + where_sql
         try:
             cursor.execute(count_sql, params)
             count_row = cursor.fetchone() or {}
@@ -3002,7 +3062,7 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         if last_id is not None:
             chunk_where.append("id < %s")
             chunk_params.append(last_id)
-        chunk_sql = "SELECT id, log_date, ip, log_text FROM logs"
+        chunk_sql = f"SELECT id, log_date, ip, log_text FROM {logs_table_sql}"
         if chunk_where:
             chunk_sql += " WHERE " + " AND ".join(chunk_where)
         chunk_sql += " ORDER BY id DESC LIMIT %s"
@@ -3216,7 +3276,9 @@ def admin_logs_async():
     if existing_job and existing_job.startswith("adminlogs_"):
         st = _progress_read(existing_job)
         same_args = bool(st and (st.get("args") or {}) == args_dict_no_job)
-        if st and st.get("status") in ("queued", "running", "error") and same_args:
+        if st and st.get("status") in ("queued", "running") and same_args and not _adminlogs_is_stale(st):
+            job_id = existing_job
+        elif st and st.get("status") == "error" and same_args:
             job_id = existing_job
         else:
             job_id = f"adminlogs_{secrets.token_hex(16)}"
@@ -3256,6 +3318,17 @@ def admin_logs_status():
     status_data = _progress_read(job_id)
     if not status_data:
         return jsonify({"status": "not_found"}), 404
+
+    if _adminlogs_is_stale(status_data):
+        _progress_update(
+            job_id,
+            status="error",
+            phase="タイムアウト",
+            percent=100,
+            error_message="ログ集計ジョブが一定時間更新されませんでした。再実行してください。",
+            finished_at=datetime.utcnow().isoformat(),
+        )
+        status_data = _progress_read(job_id) or status_data
 
     return jsonify({
         "status": status_data.get("status", "unknown"),
