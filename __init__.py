@@ -33,6 +33,7 @@ import psutil
 import requests
 from dateutil import parser as dateutil_parser
 from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent / ".env")
 from PIL import Image  # （将来の画像操作に備え、既存どおり保持）
 
 # Flask & Werkzeug
@@ -170,7 +171,6 @@ def root_manifest():
 def create_app():
     return app
 
-load_dotenv()
 app.secret_key = os.environ.get("SECRET_KEY")
 
 

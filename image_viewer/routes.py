@@ -6,12 +6,14 @@ import html
 import json
 import re
 import secrets
+import signal
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -19,11 +21,12 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 import requests
 from http.cookiejar import MozillaCookieJar
-from flask import Response, abort, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
+from flask import Response, abort, copy_current_request_context, jsonify, redirect, render_template, request, send_file, send_from_directory, session, stream_with_context, url_for
 from PIL import Image, ImageOps
 from werkzeug.utils import safe_join
 
 from . import image_viewer_bp
+from . import catalog
 
 try:
     import instaloader
@@ -65,6 +68,9 @@ _thumb_lock = threading.Lock()
 _thumb_worker_running = False
 _thumb_jobs: dict[str, dict] = {}
 _thumb_jobs_lock = threading.Lock()
+_image_list_cache_lock = threading.Lock()
+_image_list_cache: dict | None = None
+_image_list_cache_refreshing = False
 _instagram_jobs: dict[str, dict] = {}
 _instagram_jobs_lock = threading.Lock()
 _instagram_log_lock = threading.Lock()
@@ -75,7 +81,11 @@ _ai_jobs_lock = threading.Lock()
 _INSTAGRAM_JOB_TTL_SECONDS = 15 * 60
 _AI_JOB_TTL_SECONDS = 6 * 60 * 60
 _INSTAGRAM_PREVIEW_WORKERS = 4
-_INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT = 30
+_INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT = int(os.environ.get("INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT", "120"))
+_INSTAGRAM_PREVIEW_READY_MIN = int(os.environ.get("INSTAGRAM_PREVIEW_READY_MIN", "4"))
+_INSTAGRAM_PREVIEW_READY_SECONDS = float(os.environ.get("INSTAGRAM_PREVIEW_READY_SECONDS", "45"))
+_IMAGE_LIST_CACHE_TTL_SECONDS = float(os.environ.get("IMAGE_VIEWER_LIST_CACHE_TTL_SECONDS", "8"))
+_IMAGE_LIST_CACHE_MARKER = PREVIEW_ROOT / "_image_list_cache.invalidate"
 INSTAGRAM_FETCH_LOG_FILE = Path(os.environ.get("INSTAGRAM_FETCH_LOG_FILE", "/mnt/mfu/logs/instagram_fetch.log")).expanduser()
 INSTAGRAM_SESSION_FILE = (os.environ.get("INSTAGRAM_SESSION_FILE") or os.environ.get("INSTALOADER_SESSION_FILE") or "").strip()
 INSTAGRAM_USERNAME = (os.environ.get("INSTAGRAM_USERNAME") or os.environ.get("INSTALOADER_USERNAME") or "").strip()
@@ -85,6 +95,7 @@ INSTAGRAM_COOKIES_FILE = (os.environ.get("INSTAGRAM_COOKIES_FILE") or os.environ
 INSTAGRAM_AUTH_DIR = Path(os.environ.get("INSTAGRAM_AUTH_DIR", "/mnt/mfu/secure/instagram_auth")).expanduser()
 INSTAGRAM_BROWSER_STATE_DIR = Path(os.environ.get("INSTAGRAM_BROWSER_STATE_DIR", "/mnt/mfu/tmp/instagram_browser")).expanduser()
 INSTAGRAM_BROWSER_PROFILE_DIR = Path(os.environ.get("INSTAGRAM_BROWSER_PROFILE_DIR", str(INSTAGRAM_AUTH_DIR / "chromium_profile"))).expanduser()
+INSTAGRAM_BROWSER_HOME_DIR = Path(os.environ.get("INSTAGRAM_BROWSER_HOME_DIR", str(INSTAGRAM_AUTH_DIR / "chromium_home"))).expanduser()
 INSTAGRAM_DYNAMIC_SESSION_FILE = INSTAGRAM_AUTH_DIR / "sessionid.txt"
 INSTAGRAM_DYNAMIC_COOKIES_FILE = INSTAGRAM_AUTH_DIR / "cookies.txt"
 INSTAGRAM_VNC_PASSWORD_FILE = INSTAGRAM_AUTH_DIR / "vnc_password.txt"
@@ -668,7 +679,15 @@ def _process_alive(pid: int) -> bool:
 
 def _write_pid(name: str, process: subprocess.Popen) -> None:
     INSTAGRAM_BROWSER_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _pid_path(name).write_text(str(process.pid), encoding="utf-8")
+    path = _pid_path(name)
+    try:
+        path.write_text(str(process.pid), encoding="utf-8")
+    except PermissionError:
+        # The browser may have been started manually by root during recovery.
+        # The state directory belongs to the service user, so replacing only
+        # the stale PID file is safe and prevents subsequent fetch failures.
+        path.unlink(missing_ok=True)
+        path.write_text(str(process.pid), encoding="utf-8")
 
 
 def _start_process(name: str, command: list[str], env: dict | None = None) -> int:
@@ -681,6 +700,37 @@ def _start_process(name: str, command: list[str], env: dict | None = None) -> in
     process = subprocess.Popen(command, stdout=log_fp, stderr=subprocess.STDOUT, env=env or os.environ.copy(), start_new_session=True)
     _write_pid(name, process)
     return process.pid
+
+
+def _stop_instagram_browser() -> None:
+    for name in ("novnc", "x11vnc", "chromium", "xvfb"):
+        pid = _read_pid(name)
+        if pid <= 0:
+            _pid_path(name).unlink(missing_ok=True)
+            continue
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        _pid_path(name).unlink(missing_ok=True)
+
+
+def _wait_instagram_browser_debug(timeout: float = 20.0) -> None:
+    deadline = time.time() + timeout
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            response = requests.get(f"http://127.0.0.1:{INSTAGRAM_BROWSER_DEBUG_PORT}/json/version", timeout=2)
+            if response.ok and response.json().get("webSocketDebuggerUrl"):
+                return
+            last_error = f"HTTP {response.status_code}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(0.5)
+    raise RuntimeError(f"Chromium debug endpoint is not ready: {last_error}")
 
 
 def _instagram_vnc_password() -> str:
@@ -707,8 +757,14 @@ def _start_instagram_browser() -> dict:
     INSTAGRAM_AUTH_DIR.mkdir(parents=True, exist_ok=True)
     INSTAGRAM_BROWSER_STATE_DIR.mkdir(parents=True, exist_ok=True)
     INSTAGRAM_BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    INSTAGRAM_BROWSER_HOME_DIR.mkdir(parents=True, exist_ok=True)
+    browser_config_dir = INSTAGRAM_BROWSER_HOME_DIR / ".config"
+    browser_cache_dir = INSTAGRAM_BROWSER_HOME_DIR / ".cache"
+    browser_data_dir = INSTAGRAM_BROWSER_HOME_DIR / ".local" / "share"
+    for path in (browser_config_dir, browser_cache_dir, browser_data_dir):
+        path.mkdir(parents=True, exist_ok=True)
     vnc_password = _instagram_vnc_password()
-    for path in (INSTAGRAM_AUTH_DIR, INSTAGRAM_BROWSER_PROFILE_DIR):
+    for path in (INSTAGRAM_AUTH_DIR, INSTAGRAM_BROWSER_PROFILE_DIR, INSTAGRAM_BROWSER_HOME_DIR):
         try:
             os.chmod(path, 0o700)
         except Exception:
@@ -721,6 +777,10 @@ def _start_instagram_browser() -> dict:
     )
     env = os.environ.copy()
     env["DISPLAY"] = display_num
+    env["HOME"] = str(INSTAGRAM_BROWSER_HOME_DIR)
+    env["XDG_CONFIG_HOME"] = str(browser_config_dir)
+    env["XDG_CACHE_HOME"] = str(browser_cache_dir)
+    env["XDG_DATA_HOME"] = str(browser_data_dir)
     _start_process(
         "chromium",
         [
@@ -728,6 +788,11 @@ def _start_instagram_browser() -> dict:
             f"--user-data-dir={INSTAGRAM_BROWSER_PROFILE_DIR}",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-crash-reporter",
+            "--disable-breakpad",
+            "--no-first-run",
+            "--no-default-browser-check",
             "--password-store=basic",
             "--window-size=1280,900",
             f"--remote-debugging-port={INSTAGRAM_BROWSER_DEBUG_PORT}",
@@ -761,6 +826,7 @@ def _start_instagram_browser() -> dict:
             f"127.0.0.1:{INSTAGRAM_BROWSER_VNC_PORT}",
         ],
     )
+    _wait_instagram_browser_debug()
     url = INSTAGRAM_BROWSER_PUBLIC_URL
     if "password=" not in url:
         separator = "&" if "?" in url else "?"
@@ -839,12 +905,15 @@ def _browser_open_url(url: str) -> None:
     ws = websocket.create_connection(_browser_page_ws_url(), timeout=8)
     try:
         ws.send(json.dumps({"id": 1, "method": "Page.navigate", "params": {"url": target_url}}))
-        while True:
-            message = json.loads(ws.recv())
-            if message.get("id") == 1:
-                if message.get("error"):
-                    raise RuntimeError(str(message["error"]))
-                return
+        try:
+            while True:
+                message = json.loads(ws.recv())
+                if message.get("id") == 1:
+                    if message.get("error"):
+                        raise RuntimeError(str(message["error"]))
+                    return
+        except websocket.WebSocketTimeoutException:
+            return
     finally:
         ws.close()
 
@@ -916,7 +985,7 @@ def _instagram_browser_image_items(shortcode: str, job_id: str = "") -> list[str
     shortcode_json = json.dumps(shortcode)
     expression = rf"""
 (() => {{
-  const urls = new Set();
+  const items = [];
   const shortcode = {shortcode_json};
   const root = document.querySelector('main') || document.querySelector('[role="dialog"]') || document;
   const isSelfPost = (href) => href && (
@@ -940,37 +1009,97 @@ def _instagram_browser_image_items(shortcode: str, job_id: str = "") -> list[str
     }}
     return false;
   }};
-  const add = (value) => {{
-    if (!value || !/cdninstagram\.com/.test(value)) return;
-    urls.add(value);
-  }};
   for (const img of root.querySelectorAll('img')) {{
     const rect = img.getBoundingClientRect();
     const alt = img.alt || '';
     if (rect.width < 120 || rect.height < 120) continue;
     if (/profile picture/i.test(alt)) continue;
     if (hasOtherPostAncestor(img)) continue;
-    add(img.currentSrc);
-    add(img.src);
+    const originalUrl = img.currentSrc || img.src || '';
+    if (!originalUrl || !/cdninstagram\.com/.test(originalUrl)) continue;
+    let previewUrl = originalUrl;
     if (img.srcset) {{
-      for (const part of img.srcset.split(',')) add(part.trim().split(/\s+/)[0]);
+      const sources = img.srcset.split(',').map((part) => {{
+        const pieces = part.trim().split(/\s+/);
+        const width = Number.parseInt(pieces[1] || '0', 10) || 0;
+        return {{ url: pieces[0] || '', width }};
+      }}).filter((source) => source.url && /cdninstagram\.com/.test(source.url));
+      sources.sort((left, right) => left.width - right.width);
+      previewUrl = (sources.find((source) => source.width >= 480) || sources.at(-1) || {{ url: originalUrl }}).url;
     }}
+    items.push({{
+      url: originalUrl,
+      previewUrl,
+      rect: {{
+        x: rect.left + window.scrollX,
+        y: rect.top + window.scrollY,
+        width: rect.width,
+        height: rect.height
+      }}
+    }});
   }}
-  return Array.from(urls);
+  const hasNext = Array.from(root.querySelectorAll('[aria-label]')).some((node) => {{
+    const label = (node.getAttribute('aria-label') || '').trim().toLowerCase();
+    return label === 'next' || label.includes('次へ');
+  }});
+  return {{ urls: items, hasNext }};
 }})()
 """
-    candidates: list[str] = []
+    next_expression = r"""
+(() => {
+  const node = Array.from(document.querySelectorAll('[aria-label]')).find((candidate) => {
+    const label = (candidate.getAttribute('aria-label') || '').trim().toLowerCase();
+    return label === 'next' || label.includes('次へ');
+  });
+  if (!node) return false;
+  const target = node.closest('button') || node;
+  target.click();
+  return true;
+})()
+"""
+    candidates: list[dict] = []
     seen_keys: set[str] = set()
     empty_or_duplicate_rounds = 0
+    extraction_error_rounds = 0
     for index in range(1, 21):
         index_started_at = time.time()
-        suffix = "" if index == 1 else f"?img_index={index}"
-        target_url = f"https://www.instagram.com/p/{shortcode}/{suffix}"
+        target_url = f"https://www.instagram.com/p/{shortcode}/"
         try:
-            _instagram_log("browser_index_open_start", job_id, shortcode, index=index, url=target_url)
-            _browser_open_url(target_url)
-            time.sleep(6 if index == 1 else 2)
-            value = _browser_evaluate_value_retry(expression, attempts=2, timeout=25)
+            if index == 1:
+                _instagram_log("browser_index_open_start", job_id, shortcode, index=index, url=target_url)
+                _browser_open_url(target_url)
+                time.sleep(6)
+            else:
+                clicked = bool(_browser_evaluate_value(next_expression, timeout=8))
+                if not clicked:
+                    _instagram_log(
+                        "browser_extract_stop_no_next",
+                        job_id,
+                        shortcode,
+                        index=index - 1,
+                        candidate_total=len(candidates),
+                    )
+                    break
+                _instagram_log("browser_next_clicked", job_id, shortcode, index=index)
+                time.sleep(2)
+            value = _browser_evaluate_value_retry(
+                expression,
+                attempts=2 if index == 1 else 1,
+                timeout=25 if index == 1 else 12,
+            )
+            if index == 1 and isinstance(value, dict) and not value.get("urls"):
+                for _ in range(12):
+                    time.sleep(2)
+                    value = _browser_evaluate_value(expression, timeout=12)
+                    if value.get("urls"):
+                        break
+            if (
+                isinstance(value, dict)
+                and not value.get("urls")
+                and candidates
+            ):
+                time.sleep(2)
+                value = _browser_evaluate_value(expression, timeout=12)
         except Exception as exc:
             _instagram_log(
                 "browser_index_error",
@@ -980,15 +1109,48 @@ def _instagram_browser_image_items(shortcode: str, job_id: str = "") -> list[str
                 elapsed=round(time.time() - index_started_at, 3),
                 error=str(exc),
             )
+            if candidates and index >= 2:
+                extraction_error_rounds += 1
+                if extraction_error_rounds < 2:
+                    _instagram_log(
+                        "browser_extract_continue_error_after_candidates",
+                        job_id,
+                        shortcode,
+                        index=index,
+                        candidate_total=len(candidates),
+                        error_rounds=extraction_error_rounds,
+                    )
+                    continue
+                _instagram_log(
+                    "browser_extract_stop_error_after_candidates",
+                    job_id,
+                    shortcode,
+                    index=index,
+                    candidate_total=len(candidates),
+                    error_rounds=extraction_error_rounds,
+                )
+                break
             raise
-        round_urls = value if isinstance(value, list) else []
+        if isinstance(value, dict):
+            round_urls = value.get("urls") if isinstance(value.get("urls"), list) else []
+            has_next = bool(value.get("hasNext"))
+        else:
+            round_urls = value if isinstance(value, list) else []
+            has_next = True
+        extraction_error_rounds = 0
         added = 0
-        for raw_url in round_urls:
-            url = str(raw_url or "")
+        for raw_item in round_urls:
+            if isinstance(raw_item, dict):
+                url = str(raw_item.get("url") or "")
+                preview_url = str(raw_item.get("previewUrl") or url)
+            else:
+                url = str(raw_item or "")
+                preview_url = url
             key = _instagram_browser_url_key(url) if url else ""
             if url and key not in seen_keys:
                 seen_keys.add(key)
-                candidates.append(url)
+                candidate = {"url": url, "previewUrl": preview_url}
+                candidates.append(candidate)
                 added += 1
         _instagram_log(
             "browser_index_done",
@@ -999,17 +1161,35 @@ def _instagram_browser_image_items(shortcode: str, job_id: str = "") -> list[str
             round_urls=len(round_urls),
             added=added,
             candidate_total=len(candidates),
+            has_next=has_next,
         )
+        if candidates and not has_next:
+            _instagram_log(
+                "browser_extract_stop_last_slide",
+                job_id,
+                shortcode,
+                index=index,
+                candidate_total=len(candidates),
+            )
+            break
         if added:
             empty_or_duplicate_rounds = 0
         else:
             empty_or_duplicate_rounds += 1
-            if index >= 2 and empty_or_duplicate_rounds >= 2:
-                _instagram_log("browser_extract_stop_empty", job_id, shortcode, index=index, empty_rounds=empty_or_duplicate_rounds)
+            if candidates and index >= 2 and empty_or_duplicate_rounds >= 2:
+                _instagram_log(
+                    "browser_extract_stop_empty",
+                    job_id,
+                    shortcode,
+                    index=index,
+                    empty_rounds=empty_or_duplicate_rounds,
+                    candidate_total=len(candidates),
+                )
                 break
-    urls: list[str] = []
-    for raw_url in candidates:
-        url = str(raw_url or "")
+    urls: list[dict] = []
+    for candidate in candidates:
+        url = str(candidate.get("url") or "")
+        preview_url = str(candidate.get("previewUrl") or url)
         path = urlparse(url).path
         parsed = urlparse(url)
         if not url or "cdninstagram.com" not in url:
@@ -1018,8 +1198,12 @@ def _instagram_browser_image_items(shortcode: str, job_id: str = "") -> list[str
             continue
         if not re.search(r"\.(?:jpg|jpeg|webp|png)(?:[?#]|$)", parsed.path + "?" + (parsed.query or ""), re.I):
             continue
-        urls.append(url)
-    result = list(dict.fromkeys(urls))
+        result_item = {"url": url, "previewUrl": preview_url}
+        if candidate.get("previewCache"):
+            result_item["previewCache"] = candidate["previewCache"]
+            result_item["previewReady"] = True
+        urls.append(result_item)
+    result = urls
     _instagram_log(
         "browser_extract_done",
         job_id,
@@ -1087,7 +1271,7 @@ def _instagram_browser_video_items(shortcode: str, job_id: str = "") -> list[str
 """
     candidates: list[str] = []
     seen_keys: set[str] = set()
-    empty_or_duplicate_rounds = 0
+    extraction_error_rounds = 0
     for index in range(1, 21):
         index_started_at = time.time()
         suffix = "" if index == 1 else f"?img_index={index}"
@@ -1106,8 +1290,20 @@ def _instagram_browser_video_items(shortcode: str, job_id: str = "") -> list[str
                 elapsed=round(time.time() - index_started_at, 3),
                 error=str(exc),
             )
+            if candidates and index >= 2:
+                extraction_error_rounds += 1
+                _instagram_log(
+                    "browser_video_extract_stop_error_after_candidates",
+                    job_id,
+                    shortcode,
+                    index=index,
+                    candidate_total=len(candidates),
+                    error_rounds=extraction_error_rounds,
+                )
+                break
             raise
         round_urls = value if isinstance(value, list) else []
+        extraction_error_rounds = 0
         added = 0
         for raw_url in round_urls:
             url = _decode_instagram_url(str(raw_url or ""))
@@ -1126,13 +1322,9 @@ def _instagram_browser_video_items(shortcode: str, job_id: str = "") -> list[str
             added=added,
             candidate_total=len(candidates),
         )
-        if added:
-            empty_or_duplicate_rounds = 0
-        else:
-            empty_or_duplicate_rounds += 1
-            if index >= 2 and empty_or_duplicate_rounds >= 2:
-                _instagram_log("browser_video_extract_stop_empty", job_id, shortcode, index=index, empty_rounds=empty_or_duplicate_rounds)
-                break
+        if not added and index >= 2:
+            _instagram_log("browser_video_extract_stop_empty", job_id, shortcode, index=index, candidate_total=len(candidates))
+            break
     urls: list[str] = []
     for raw_url in candidates:
         url = str(raw_url or "")
@@ -1262,19 +1454,29 @@ def _media_video_items(source: str, identifier: str, job_id: str = "") -> list[s
     return _instagram_video_items(identifier, job_id=job_id)
 
 
-def _instagram_image_payload(shortcode: str, items: list[str], job_id: str = "", source: str = "instagram") -> list[dict]:
+def _instagram_image_payload(shortcode: str, items: list, job_id: str = "", source: str = "instagram") -> list[dict]:
     _ensure_upload_root()
     payload = []
-    for idx, image_url in enumerate(items, start=1):
+    for idx, source_item in enumerate(items, start=1):
+        if isinstance(source_item, dict):
+            image_url = str(source_item.get("url") or "")
+            preview_source_url = str(source_item.get("previewUrl") or image_url)
+        else:
+            image_url = str(source_item or "")
+            preview_source_url = image_url
         suffix = _guess_image_suffix(image_url)
         item = {
             "index": idx,
             "url": image_url,
+            "previewSourceUrl": preview_source_url,
             "suffix": suffix,
             "filename": f"{source}_{shortcode}_{idx:03d}{suffix}",
         }
         if job_id:
-            item["previewReady"] = False
+            preview_cache = str(source_item.get("previewCache") or "") if isinstance(source_item, dict) else ""
+            item["previewReady"] = bool(preview_cache)
+            if preview_cache:
+                item["previewCache"] = preview_cache
         payload.append(item)
     return payload
 
@@ -1349,6 +1551,30 @@ def _cleanup_instagram_jobs() -> None:
             shutil.rmtree(_job_dir(job_id), ignore_errors=True)
 
 
+def _cleanup_incomplete_instagram_job_files() -> None:
+    if not PREVIEW_ROOT.is_dir():
+        return
+    now = time.time()
+    for job_dir in PREVIEW_ROOT.iterdir():
+        if not job_dir.is_dir() or job_dir.name.startswith("_"):
+            continue
+        manifest = job_dir / "manifest.json"
+        try:
+            job = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            if now - job_dir.stat().st_mtime > 10 * 60:
+                shutil.rmtree(job_dir, ignore_errors=True)
+            continue
+        status = str(job.get("status") or "")
+        created_at = float(job.get("created_at") or job_dir.stat().st_mtime)
+        stale_incomplete = status in {"pending", "downloading"} and now - created_at > 10 * 60
+        finished = status in {"done", "error", "cancelled"}
+        if finished or stale_incomplete:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            with _instagram_jobs_lock:
+                _instagram_jobs.pop(job_dir.name, None)
+
+
 class _InstagramJobCancelled(RuntimeError):
     pass
 
@@ -1374,6 +1600,7 @@ def _raise_if_instagram_job_cancelled(job_id: str) -> None:
 
 def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str:
     _cleanup_instagram_jobs()
+    _cleanup_incomplete_instagram_job_files()
     job_id = uuid.uuid4().hex
     _instagram_log("job_created", job_id, shortcode, source=source)
     _set_instagram_job(
@@ -1430,6 +1657,9 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
             def download_preview(row: tuple[int, dict]) -> tuple[int, bool, str, str]:
                 idx, item = row
                 preview_started_at = time.time()
+                existing_cache = Path(str(item.get("previewCache") or ""))
+                if item.get("previewReady") and existing_cache.is_file():
+                    return idx, True, str(existing_cache), ""
                 image_url = str(item.get("url") or "")
                 suffix = str(item.get("suffix") or _guess_image_suffix(image_url))
                 preview_path = PREVIEW_ROOT / job_id / f"{idx:03d}{suffix}"
@@ -1467,9 +1697,19 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
                     executor.submit(download_preview, (idx, item)): idx
                     for idx, item in enumerate(payload, start=1)
                 }
-                try:
-                    completed_iter = as_completed(future_map, timeout=_INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT)
-                    for future in completed_iter:
+                pending_futures = set(future_map)
+                preview_deadline = time.time() + _INSTAGRAM_PREVIEW_DOWNLOAD_TIMEOUT
+
+                while pending_futures:
+                    _raise_if_instagram_job_cancelled(job_id)
+                    now = time.time()
+                    if now >= preview_deadline:
+                        break
+                    timeout = max(0.0, min(5.0, preview_deadline - now))
+                    done_futures, pending_futures = wait(pending_futures, timeout=timeout, return_when=FIRST_COMPLETED)
+                    if not done_futures:
+                        continue
+                    for future in done_futures:
                         _raise_if_instagram_job_cancelled(job_id)
                         idx, ok, cache_path, error = future.result()
                         processed_indexes.add(idx)
@@ -1493,8 +1733,6 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
                                 "failed": failed,
                             },
                         )
-                except TimeoutError:
-                    pass
 
                 for future, idx in future_map.items():
                     _raise_if_instagram_job_cancelled(job_id)
@@ -1516,9 +1754,9 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
                         continue
                     future.cancel()
                     item["previewReady"] = False
-                    item["previewError"] = "preview download timeout"
-                    _instagram_log("preview_future_timeout", job_id, shortcode, index=idx)
+                    item["previewError"] = "preview download timed out"
                     failed += 1
+                    _instagram_log("preview_future_deferred", job_id, shortcode, index=idx)
             finally:
                 executor.shutdown(wait=False, cancel_futures=True)
             _set_instagram_job(
@@ -1553,6 +1791,9 @@ def _start_instagram_fetch_job(shortcode: str, source: str = "instagram") -> str
             else:
                 _set_instagram_job(job_id, {"status": "error", "error": str(exc)})
                 _instagram_log("job_error", job_id, shortcode, elapsed=round(time.time() - job_started_at, 3), error=str(exc))
+        finally:
+            if source == "instagram":
+                _instagram_log("browser_kept_ready_after_job", job_id, shortcode, elapsed=round(time.time() - job_started_at, 3))
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
@@ -1638,6 +1879,10 @@ def _start_video_fetch_job(identifier: str, source: str = "instagram") -> str:
         except Exception as exc:
             _set_video_job(job_id, {"status": "error", "error": str(exc)})
             _instagram_log("video_job_error", job_id, identifier, source=source, error=str(exc))
+        finally:
+            if source == "instagram":
+                _stop_instagram_browser()
+                _instagram_log("browser_stopped_after_video_job", job_id, identifier, source=source)
 
     threading.Thread(target=worker, daemon=True).start()
     return job_id
@@ -2139,10 +2384,98 @@ def _media_record(path: Path) -> dict:
     }
 
 
+def _build_image_list_payload() -> dict:
+    scan_started_at = time.time()
+    _ensure_upload_root()
+    folders: set[str] = {""}
+    images = []
+    for path in sorted(UPLOAD_ROOT.rglob("*"), key=lambda p: p.as_posix().lower()):
+        if _is_inside_hidden_thumb_dir(path):
+            continue
+        if path.is_dir():
+            folders.add(_relative_posix(path))
+            continue
+        if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS:
+            folders.add(path.parent.relative_to(UPLOAD_ROOT).as_posix() if path.parent != UPLOAD_ROOT else "")
+            images.append(_media_record(path))
+    return {
+        "ok": True,
+        "root": str(UPLOAD_ROOT),
+        "folders": sorted(folders, key=lambda v: (v.count("/"), v.lower())),
+        "images": images,
+        "thumbnailWorkerRunning": _thumb_worker_running,
+        "generatedAt": scan_started_at,
+        "completedAt": time.time(),
+    }
+
+
+def _set_image_list_cache(payload: dict) -> None:
+    global _image_list_cache
+    with _image_list_cache_lock:
+        _image_list_cache = {**payload, "cached": False, "stale": False}
+
+
+def _cached_image_list_payload() -> dict | None:
+    with _image_list_cache_lock:
+        return dict(_image_list_cache) if _image_list_cache else None
+
+
+def _image_list_cache_marker_mtime() -> float:
+    try:
+        return _IMAGE_LIST_CACHE_MARKER.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+    except OSError:
+        return 0.0
+
+
+def _touch_image_list_cache_marker() -> None:
+    try:
+        _IMAGE_LIST_CACHE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _IMAGE_LIST_CACHE_MARKER.write_text(str(time.time()), encoding="ascii")
+    except OSError:
+        pass
+
+
+def _invalidate_image_list_cache() -> None:
+    _touch_image_list_cache_marker()
+    with _image_list_cache_lock:
+        if _image_list_cache:
+            _image_list_cache["stale"] = True
+            _image_list_cache["invalidatedAt"] = time.time()
+
+
+def _refresh_image_list_cache_async() -> None:
+    global _image_list_cache_refreshing
+    with _image_list_cache_lock:
+        if _image_list_cache_refreshing:
+            return
+        _image_list_cache_refreshing = True
+
+    def worker() -> None:
+        global _image_list_cache_refreshing
+        try:
+            _set_image_list_cache(_build_image_list_payload())
+        finally:
+            with _image_list_cache_lock:
+                _image_list_cache_refreshing = False
+
+    try:
+        worker = copy_current_request_context(worker)
+    except RuntimeError:
+        with _image_list_cache_lock:
+            _image_list_cache_refreshing = False
+        return
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 @image_viewer_bp.get("/")
 @login_required
 def index():
-    _ensure_upload_root()
+    if not catalog.CATALOG_ENABLED:
+        _ensure_upload_root()
+        _refresh_image_list_cache_async()
     return render_template("image_viewer.html")
 
 
@@ -2246,30 +2579,45 @@ def pwa_icon(size: int):
     return send_file(output, mimetype="image/png", max_age=86400)
 
 
-@image_viewer_bp.get("/api/images")
+@image_viewer_bp.route("/api/images", methods=["GET", "POST"])
 @login_required
 def image_list():
-    _ensure_upload_root()
-    folders: set[str] = {""}
-    images = []
-    for path in sorted(UPLOAD_ROOT.rglob("*"), key=lambda p: p.as_posix().lower()):
-        if _is_inside_hidden_thumb_dir(path):
-            continue
-        if path.is_dir():
-            folders.add(_relative_posix(path))
-            continue
-        if path.is_file() and path.suffix.lower() in MEDIA_EXTENSIONS:
-            folders.add(path.parent.relative_to(UPLOAD_ROOT).as_posix() if path.parent != UPLOAD_ROOT else "")
-            images.append(_media_record(path))
-    return jsonify(
-        {
-            "ok": True,
-            "root": str(UPLOAD_ROOT),
-            "folders": sorted(folders, key=lambda v: (v.count("/"), v.lower())),
-            "images": images,
-            "thumbnailWorkerRunning": _thumb_worker_running,
-        }
-    )
+    if catalog.CATALOG_ENABLED:
+        data = request.get_json(silent=True) or {} if request.method == "POST" else {}
+        duplicate_request = (
+            str(request.args.get("duplicates") or "").lower() in {"1", "true", "yes"}
+            or data.get("action") == "duplicates"
+        )
+        if duplicate_request:
+            return jsonify(catalog.duplicate_groups())
+        if request.method == "POST":
+            return jsonify({"ok": False, "error": "Unsupported image list action"}), 400
+        folder = request.args.get("folder")
+        response = jsonify(catalog.list_payload(folder if folder is not None else None))
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return response
+    force_refresh = str(request.args.get("refresh") or request.args.get("force") or "").lower() in {"1", "true", "yes"}
+    if force_refresh:
+        payload = _build_image_list_payload()
+        _set_image_list_cache(payload)
+        return jsonify(payload)
+
+    cached = _cached_image_list_payload()
+    if cached:
+        age = max(0.0, time.time() - float(cached.get("generatedAt") or 0))
+        marker_mtime = _image_list_cache_marker_mtime()
+        changed_by_another_worker = marker_mtime > float(cached.get("generatedAt") or 0)
+        if cached.get("stale") or changed_by_another_worker:
+            payload = _build_image_list_payload()
+            _set_image_list_cache(payload)
+            return jsonify(payload)
+        if age > _IMAGE_LIST_CACHE_TTL_SECONDS:
+            _refresh_image_list_cache_async()
+        return jsonify({**cached, "cached": True, "cacheAge": age})
+
+    payload = _build_image_list_payload()
+    _set_image_list_cache(payload)
+    return jsonify(payload)
 
 
 @image_viewer_bp.post("/api/thumbnails")
@@ -2277,6 +2625,37 @@ def image_list():
 def create_thumbnails():
     data = request.get_json(silent=True) or {}
     folder = str(data.get("folder") or "")
+    if catalog.CATALOG_ENABLED:
+        try:
+            candidates = catalog.thumbnail_candidates(
+                folder, force=bool(data.get("force"))
+            )
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        job_id = uuid.uuid4().hex
+        _write_thumb_job(
+            job_id, status="pending", total=len(candidates), completed=0,
+            created=0, skipped=0, failed=0,
+        )
+
+        def worker() -> None:
+            created = failed = 0
+            _write_thumb_job(job_id, status="running")
+            for completed, file_uuid in enumerate(candidates, start=1):
+                if catalog.generate_thumbnail(file_uuid):
+                    created += 1
+                else:
+                    failed += 1
+                _write_thumb_job(
+                    job_id, completed=completed, created=created, failed=failed
+                )
+            _write_thumb_job(
+                job_id, status="done", completed=len(candidates),
+                created=created, failed=failed,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+        return jsonify({"ok": True, "status": "pending", "jobId": job_id})
     try:
         _target_dir_for_folder(folder)
     except ValueError as exc:
@@ -2298,6 +2677,17 @@ def thumbnail_job(job_id: str):
 @login_required
 def create_folder():
     data = request.get_json(silent=True) or {}
+    if catalog.CATALOG_ENABLED:
+        try:
+            folder = catalog.create_folder(
+                str(data.get("parent") or ""),
+                _safe_folder_name(data.get("name") or ""),
+            )
+            return jsonify({"ok": True, "folder": folder})
+        except catalog.CatalogConflict as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
     try:
         parent_dir = _target_dir_for_folder(data.get("parent") or "")
         folder_name = _safe_folder_name(data.get("name") or "")
@@ -2308,15 +2698,31 @@ def create_folder():
     if target.exists():
         return jsonify({"ok": False, "error": "同名フォルダーが既にあります。"}), 409
     target.mkdir(parents=False, exist_ok=False)
+    _invalidate_image_list_cache()
     return jsonify({"ok": True, "folder": target.relative_to(UPLOAD_ROOT).as_posix()})
 
 
 @image_viewer_bp.post("/api/entries/rename")
 @login_required
 def rename_entry():
-    _ensure_upload_root()
     data = request.get_json(silent=True) or {}
     entry_type = str(data.get("type") or "file")
+    if catalog.CATALOG_ENABLED:
+        try:
+            path = catalog.rename_entry(
+                str(data.get("path") or ""),
+                _safe_folder_name(data.get("name") or ""),
+                entry_type,
+            )
+            parent = path if entry_type == "folder" else str(Path(path).parent).replace("\\", "/")
+            return jsonify({"ok": True, "path": path, "folder": "" if parent == "." else parent})
+        except catalog.CatalogNotFound as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except catalog.CatalogConflict as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    _ensure_upload_root()
     try:
         source = _target_path_for_rel(data.get("path") or "")
         new_name = _safe_folder_name(data.get("name") or "")
@@ -2345,15 +2751,46 @@ def rename_entry():
         _move_thumb_for_path(source, target, is_dir)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc) or "名前変更に失敗しました。"}), 500
-    return jsonify({"ok": True, "path": target.relative_to(UPLOAD_ROOT).as_posix(), "folder": target.relative_to(UPLOAD_ROOT).as_posix() if is_dir else target.parent.relative_to(UPLOAD_ROOT).as_posix()})
+    _invalidate_image_list_cache()
+    payload = {
+        "ok": True,
+        "path": target.relative_to(UPLOAD_ROOT).as_posix(),
+        "folder": target.relative_to(UPLOAD_ROOT).as_posix() if is_dir else target.parent.relative_to(UPLOAD_ROOT).as_posix(),
+    }
+    if not is_dir and target.suffix.lower() in MEDIA_EXTENSIONS:
+        payload["entry"] = _media_record(target)
+    return jsonify(payload)
+
+
+@image_viewer_bp.post("/api/duplicate-groups")
+@login_required
+def duplicate_groups():
+    if not catalog.CATALOG_ENABLED:
+        return jsonify({
+            "ok": False,
+            "error": "MySQL画像カタログが有効になっていません。",
+        }), 503
+    response = jsonify(catalog.duplicate_groups())
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
 
 
 @image_viewer_bp.post("/api/entries/delete")
 @login_required
 def delete_entry():
-    _ensure_upload_root()
     data = request.get_json(silent=True) or {}
     entry_type = str(data.get("type") or "file")
+    if catalog.CATALOG_ENABLED:
+        try:
+            catalog.trash_entry(str(data.get("path") or ""), entry_type)
+            return jsonify({"ok": True})
+        except catalog.CatalogNotFound as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except catalog.CatalogConflict as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    _ensure_upload_root()
     try:
         target = _target_path_for_rel(data.get("path") or "")
     except ValueError as exc:
@@ -2374,15 +2811,31 @@ def delete_entry():
             target.unlink()
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc) or "削除に失敗しました。"}), 500
+    _invalidate_image_list_cache()
     return jsonify({"ok": True})
 
 
 @image_viewer_bp.post("/api/entries/move")
 @login_required
 def move_entry():
-    _ensure_upload_root()
     data = request.get_json(silent=True) or {}
     entry_type = str(data.get("type") or "file")
+    if catalog.CATALOG_ENABLED:
+        try:
+            path = catalog.move_entry(
+                str(data.get("path") or ""),
+                str(data.get("destination") or ""),
+                entry_type,
+            )
+            parent = path if entry_type == "folder" else str(Path(path).parent).replace("\\", "/")
+            return jsonify({"ok": True, "path": path, "folder": "" if parent == "." else parent})
+        except catalog.CatalogNotFound as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except catalog.CatalogConflict as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+    _ensure_upload_root()
     try:
         source = _target_path_for_rel(data.get("path") or "")
         destination_dir = _target_dir_for_folder(data.get("destination") or "")
@@ -2415,12 +2868,77 @@ def move_entry():
         _move_thumb_for_path(source, target, is_dir)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc) or "移動に失敗しました。"}), 500
-    return jsonify({"ok": True, "path": target.relative_to(UPLOAD_ROOT).as_posix(), "folder": target.relative_to(UPLOAD_ROOT).as_posix() if is_dir else target.parent.relative_to(UPLOAD_ROOT).as_posix()})
+    _invalidate_image_list_cache()
+    payload = {
+        "ok": True,
+        "path": target.relative_to(UPLOAD_ROOT).as_posix(),
+        "folder": target.relative_to(UPLOAD_ROOT).as_posix() if is_dir else target.parent.relative_to(UPLOAD_ROOT).as_posix(),
+    }
+    if not is_dir and target.suffix.lower() in MEDIA_EXTENSIONS:
+        payload["entry"] = _media_record(target)
+    return jsonify(payload)
+
+
+def _catalog_upload_response(*, image_only: bool = False):
+    folder = request.form.get("folder") or ""
+    files = request.files.getlist("files")
+    saved = []
+    skipped = []
+    duplicates = []
+    errors = []
+    allowed = IMAGE_EXTENSIONS if image_only else MEDIA_EXTENSIONS
+    for upload in files:
+        if not upload or not upload.filename:
+            continue
+        suffix = Path(upload.filename).suffix.lower()
+        if image_only and suffix not in IMAGE_EXTENSIONS:
+            content_type = (upload.mimetype or "").lower()
+            suffix = {
+                "image/jpeg": ".jpg",
+                "image/webp": ".webp",
+                "image/gif": ".gif",
+            }.get(content_type, ".png")
+        if suffix not in allowed:
+            skipped.append(upload.filename)
+            continue
+        temp_path = None
+        try:
+            fd, temp_name = tempfile.mkstemp(prefix="mfu_catalog_", suffix=suffix)
+            os.close(fd)
+            temp_path = Path(temp_name)
+            upload.save(temp_path)
+            record = catalog.store_file(temp_path, folder, move_source=True)
+            record["thumbCreated"] = catalog.generate_thumbnail(record["uuid"])
+            if record["thumbCreated"]:
+                record["thumbUrl"] = f"/image_viewer/thumbs/{record['uuid']}"
+                record["hasThumb"] = True
+            saved.append(record)
+        except catalog.CatalogDuplicate as exc:
+            duplicates.append(
+                {"name": upload.filename, "existing": exc.record}
+            )
+        except Exception as exc:
+            errors.append({"name": upload.filename, "error": str(exc)})
+        finally:
+            if temp_path:
+                temp_path.unlink(missing_ok=True)
+    status = 400 if image_only and not saved and errors else 200
+    return jsonify(
+        {
+            "ok": status == 200,
+            "saved": saved,
+            "skipped": skipped,
+            "duplicates": duplicates,
+            "errors": errors,
+        }
+    ), status
 
 
 @image_viewer_bp.post("/api/upload")
 @login_required
 def upload_images():
+    if catalog.CATALOG_ENABLED:
+        return _catalog_upload_response()
     _ensure_upload_root()
     try:
         target_dir = _target_dir_for_folder(request.form.get("folder") or "")
@@ -2448,15 +2966,21 @@ def upload_images():
                     thumb_created = _generate_media_thumbnail(target)
                 except Exception as exc:
                     errors.append({"name": upload.filename, "error": f"thumbnail: {exc}"})
-            saved.append({"name": target.name, "path": target.relative_to(UPLOAD_ROOT).as_posix(), "thumbCreated": thumb_created})
+            record = _media_record(target)
+            record["thumbCreated"] = thumb_created
+            saved.append(record)
         except Exception as exc:
             errors.append({"name": upload.filename, "error": str(exc)})
+    if saved:
+        _invalidate_image_list_cache()
     return jsonify({"ok": True, "saved": saved, "skipped": skipped, "errors": errors})
 
 
 @image_viewer_bp.post("/api/paste")
 @login_required
 def paste_images():
+    if catalog.CATALOG_ENABLED:
+        return _catalog_upload_response(image_only=True)
     _ensure_upload_root()
     try:
         target_dir = _target_dir_for_folder(request.form.get("folder") or "")
@@ -2493,11 +3017,15 @@ def paste_images():
                 thumb_created = _generate_media_thumbnail(target)
             except Exception as exc:
                 errors.append({"name": upload.filename, "error": f"thumbnail: {exc}"})
-            saved.append({"name": target.name, "path": target.relative_to(UPLOAD_ROOT).as_posix(), "thumbCreated": thumb_created})
+            record = _media_record(target)
+            record["thumbCreated"] = thumb_created
+            saved.append(record)
         except Exception as exc:
             errors.append({"name": upload.filename, "error": str(exc)})
     if not saved and errors:
         return jsonify({"ok": False, "error": errors[0]["error"], "saved": saved, "skipped": skipped, "errors": errors}), 400
+    if saved:
+        _invalidate_image_list_cache()
     return jsonify({"ok": True, "saved": saved, "skipped": skipped, "errors": errors})
 
 
@@ -2575,6 +3103,25 @@ def openai_illustration_save(job_id: str | None = None):
         return jsonify({"ok": False, "error": "生成結果を確認できません。"}), 400
     if not resolved.is_file():
         return jsonify({"ok": False, "error": "生成結果ファイルが見つかりません。"}), 404
+    if catalog.CATALOG_ENABLED:
+        try:
+            saved = catalog.store_file(
+                resolved,
+                str(data.get("folder") or job.get("folder") or ""),
+                move_source=False,
+            )
+        except catalog.CatalogDuplicate as exc:
+            return jsonify(
+                {"ok": True, "duplicate": True, "saved": None, "existing": exc.record}
+            )
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        saved.update(
+            {"model": generated.get("model"), "quality": generated.get("quality")}
+        )
+        catalog.generate_thumbnail(saved["uuid"])
+        _set_ai_job(job_id, {"saved": saved})
+        return jsonify({"ok": True, "saved": saved})
     try:
         target_dir = _target_dir_for_folder(data.get("folder") or job.get("folder") or "")
     except ValueError:
@@ -2762,17 +3309,91 @@ def instagram_preview(job_id: str, index: int):
 @login_required
 def instagram_next_number():
     try:
-        result = _next_number_for_folder(request.args.get("folder") or "")
+        if catalog.CATALOG_ENABLED:
+            result = catalog.next_number(request.args.get("folder") or "")
+        else:
+            result = _next_number_for_folder(request.args.get("folder") or "")
     except ValueError:
         return jsonify({"ok": False, "error": "保存先フォルダーは画像ビュアーのアップロード配下のみ指定できます。"}), 400
     return jsonify({"ok": True, **result})
 
 
+def _catalog_instagram_save(data: dict):
+    shortcode = _extract_shortcode(data.get("shortcode") or "")
+    images = data.get("images") or []
+    job_id = str(data.get("jobId") or "")
+    selected_indexes = {
+        int(value) for value in (data.get("selected") or [])
+        if str(value).isdigit()
+    }
+    if not shortcode or not isinstance(images, list):
+        return jsonify({"ok": False, "error": "Invalid save data"}), 400
+    if not selected_indexes:
+        return jsonify({"ok": False, "error": "Select at least one image"}), 400
+    start_number = max(1, int(data.get("startNumber") or 1))
+    digits = min(6, max(1, int(data.get("digits") or 3)))
+    job_images = []
+    if job_id:
+        job = _read_instagram_job(job_id)
+        if job.get("shortcode") == shortcode:
+            job_images = job.get("images") or []
+    source_images = job_images if job_images else images
+    by_index = {
+        int(item.get("index") or 0): item
+        for item in source_images if isinstance(item, dict)
+    }
+    saved, duplicates, errors = [], [], []
+    for offset, item_index in enumerate(sorted(selected_indexes)):
+        item = by_index.get(item_index)
+        if not item:
+            continue
+        suffix = _guess_image_suffix(str(item.get("url") or ""))
+        filename = f"{start_number + offset:0{digits}d}{suffix}"
+        fd, temp_name = tempfile.mkstemp(prefix="mfu_instagram_", suffix=suffix)
+        os.close(fd)
+        temp_path = Path(temp_name)
+        try:
+            preview_cache = Path(str(item.get("previewCache") or ""))
+            copied = False
+            if preview_cache:
+                try:
+                    resolved_cache = preview_cache.resolve()
+                    resolved_cache.relative_to(PREVIEW_ROOT.resolve())
+                    if resolved_cache.is_file():
+                        shutil.copyfile(resolved_cache, temp_path)
+                        copied = True
+                except ValueError:
+                    pass
+            if not copied:
+                _download_instagram_image(str(item.get("url") or ""), temp_path)
+            record = catalog.store_file(
+                temp_path,
+                str(data.get("folder") or ""),
+                display_name=filename,
+                move_source=True,
+            )
+            catalog.generate_thumbnail(record["uuid"])
+            saved.append(record)
+        except catalog.CatalogDuplicate as exc:
+            duplicates.append({"index": item_index, "existing": exc.record})
+        except Exception as exc:
+            errors.append({"index": item_index, "error": str(exc)})
+        finally:
+            temp_path.unlink(missing_ok=True)
+    if errors and not saved:
+        return jsonify({"ok": False, "error": errors[0]["error"], "errors": errors})
+    return jsonify(
+        {"ok": True, "saved": saved, "duplicates": duplicates, "errors": errors}
+    )
+
+
 @image_viewer_bp.post("/api/instagram/save")
 @login_required
 def instagram_save():
-    _ensure_upload_root()
     data = request.get_json(silent=True) or {}
+    if catalog.CATALOG_ENABLED:
+        return _catalog_instagram_save(data)
+    _ensure_upload_root()
     shortcode = _extract_shortcode(data.get("shortcode") or "")
     images = data.get("images") or []
     job_id = str(data.get("jobId") or "")
@@ -2867,11 +3488,62 @@ def video_job(job_id: str):
     )
 
 
+def _catalog_video_save(data: dict):
+    selected_indexes = {
+        int(value) for value in (data.get("selected") or [])
+        if str(value).isdigit()
+    }
+    if not selected_indexes:
+        return jsonify({"ok": False, "error": "Select at least one video"}), 400
+    job_id = str(data.get("jobId") or "")
+    job_videos = (_read_video_job(job_id).get("videos") or []) if job_id else []
+    source_videos = job_videos if job_videos else (data.get("videos") or [])
+    by_index = {
+        int(item.get("index") or 0): item
+        for item in source_videos if isinstance(item, dict)
+    }
+    saved, duplicates, errors = [], [], []
+    for item_index in sorted(selected_indexes):
+        item = by_index.get(item_index)
+        if not item:
+            continue
+        suffix = _guess_video_suffix(str(item.get("url") or ""))
+        filename = str(item.get("filename") or f"video_{item_index:03d}{suffix}")
+        if Path(filename).suffix.lower() not in VIDEO_EXTENSIONS:
+            filename = f"{Path(filename).stem or 'video'}{suffix}"
+        fd, temp_name = tempfile.mkstemp(prefix="mfu_video_", suffix=suffix)
+        os.close(fd)
+        temp_path = Path(temp_name)
+        try:
+            _download_video_file(str(item.get("url") or ""), temp_path)
+            record = catalog.store_file(
+                temp_path,
+                str(data.get("folder") or ""),
+                display_name=filename,
+                move_source=True,
+            )
+            catalog.generate_thumbnail(record["uuid"])
+            saved.append(record)
+        except catalog.CatalogDuplicate as exc:
+            duplicates.append({"index": item_index, "existing": exc.record})
+        except Exception as exc:
+            errors.append({"index": item_index, "error": str(exc)})
+        finally:
+            temp_path.unlink(missing_ok=True)
+    if errors and not saved:
+        return jsonify({"ok": False, "error": errors[0]["error"], "errors": errors})
+    return jsonify(
+        {"ok": True, "saved": saved, "duplicates": duplicates, "errors": errors}
+    )
+
+
 @image_viewer_bp.post("/api/video/save")
 @login_required
 def video_save():
-    _ensure_upload_root()
     data = request.get_json(silent=True) or {}
+    if catalog.CATALOG_ENABLED:
+        return _catalog_video_save(data)
+    _ensure_upload_root()
     videos = data.get("videos") or []
     job_id = str(data.get("jobId") or "")
     selected = data.get("selected") or []
@@ -2919,6 +3591,20 @@ def video_save():
 @image_viewer_bp.get("/files/<path:path>")
 @login_required
 def image_file(path: str):
+    if catalog.CATALOG_ENABLED:
+        try:
+            resolved, row = catalog.resolve_file(path)
+        except catalog.CatalogError:
+            abort(404)
+        if not resolved.is_file():
+            abort(404)
+        return send_file(
+            resolved,
+            mimetype=row.get("mime_type"),
+            download_name=row.get("display_name"),
+            as_attachment=False,
+            max_age=3600,
+        )
     _ensure_upload_root()
     safe_path = safe_join(str(UPLOAD_ROOT), path)
     if not safe_path:
@@ -2936,6 +3622,14 @@ def image_file(path: str):
 @image_viewer_bp.get("/thumbs/<path:path>")
 @login_required
 def thumbnail_file(path: str):
+    if catalog.CATALOG_ENABLED:
+        try:
+            resolved = catalog.resolve_thumbnail(path)
+        except catalog.CatalogError:
+            return _empty_image_response()
+        if not resolved.is_file():
+            return _empty_image_response()
+        return send_file(resolved, mimetype="image/webp", max_age=86400)
     _ensure_upload_root()
     safe_path = safe_join(str(THUMB_ROOT), path)
     if not safe_path:

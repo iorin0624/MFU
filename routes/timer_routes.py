@@ -3,7 +3,8 @@ import glob
 import json
 import threading
 import time
-from flask import Blueprint, request, jsonify, render_template
+from functools import wraps
+from flask import Blueprint, request, jsonify, render_template, session, abort
 
 from app.utils.preset_store import load_presets, add_preset, delete_preset
 from app.utils.timer_engine import (
@@ -19,6 +20,33 @@ from app.utils.jan_mapping import (
 )
 
 timer_bp = Blueprint("timer", __name__)
+
+
+def timer_admin_required(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if session.get("user") != "admin":
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "admin_required"}), 403
+            abort(403)
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def _is_loopback_request() -> bool:
+    return (request.remote_addr or "") in {"127.0.0.1", "::1"}
+
+
+def timer_admin_or_loopback_required(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if session.get("user") == "admin" or _is_loopback_request():
+            return func(*args, **kwargs)
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "admin_required"}), 403
+        abort(403)
+    return wrapper
 
 # --------------------
 # pending タイマー一時保存用（QR/バーコードリーダー連携）
@@ -48,6 +76,7 @@ def _save_pending_timer(data: dict) -> None:
 # UIルート
 # --------------------
 @timer_bp.route("/admin/timer")
+@timer_admin_required
 def admin_timer():
     # テンプレート名は変更しない
     return render_template("admin_timer.html")
@@ -56,6 +85,7 @@ def admin_timer():
 # API: タイマー関連
 # --------------------
 @timer_bp.route("/api/timer/start", methods=["POST"])
+@timer_admin_required
 def api_timer_start():
     data = request.get_json(force=True, silent=True) or {}
     try:
@@ -75,6 +105,7 @@ def api_timer_status():
 
 
 @timer_bp.route("/api/timer/cancel", methods=["POST"])
+@timer_admin_required
 def api_timer_cancel():
     data = request.get_json(force=True, silent=True) or {}
     label = (data.get("label") or "").strip()
@@ -87,6 +118,7 @@ def api_timer_cancel():
 # API: pending タイマー制御（MFU本体USBのQR/バーコードリーダー用）
 # --------------------
 @timer_bp.route("/api/timer/pending-set", methods=["POST"])
+@timer_admin_or_loopback_required
 def api_timer_pending_set():
     """
     body: { "seconds": 60, "label": "1分" } など
@@ -112,6 +144,7 @@ def api_timer_pending_set():
 
 
 @timer_bp.route("/api/timer/pending-set-by-jan", methods=["POST"])
+@timer_admin_or_loopback_required
 def api_timer_pending_set_by_jan():
     """
     body: { "jan": "4901234567890" }
@@ -138,6 +171,7 @@ def api_timer_pending_set_by_jan():
 
 
 @timer_bp.route("/api/timer/pending-start", methods=["POST"])
+@timer_admin_or_loopback_required
 def api_timer_pending_start():
     """
     body: {} でOK。
@@ -172,11 +206,13 @@ def api_timer_pending_start():
 # API: プリセット関連
 # --------------------
 @timer_bp.route("/api/preset")
+@timer_admin_required
 def api_get_presets():
     return jsonify(load_presets())
 
 
 @timer_bp.route("/api/preset/add", methods=["POST"])
+@timer_admin_required
 def api_add_preset():
     data = request.get_json(force=True, silent=True) or {}
     try:
@@ -191,6 +227,7 @@ def api_add_preset():
 
 
 @timer_bp.route("/api/preset/delete", methods=["POST"])
+@timer_admin_required
 def api_delete_preset():
     data = request.get_json(force=True, silent=True) or {}
     label = (data.get("label") or "").strip()
@@ -203,6 +240,7 @@ def api_delete_preset():
 # API: アラーム関連
 # --------------------
 @timer_bp.route("/api/alarm/set", methods=["POST"])
+@timer_admin_required
 def api_set_alarm():
     data = request.get_json(force=True, silent=True) or {}
     try:
@@ -221,12 +259,14 @@ def api_set_alarm():
 
 
 @timer_bp.route("/api/alarms")
+@timer_admin_required
 def api_get_alarms():
     # 期限切れは内部で掃除され、未来のみが返る
     return jsonify(get_scheduled_alarms())
 
 
 @timer_bp.route("/api/alarm/cancel", methods=["POST"])
+@timer_admin_required
 def api_alarm_cancel():
     data = request.get_json(force=True, silent=True) or {}
     label = (data.get("label") or "").strip()
@@ -239,6 +279,7 @@ def api_alarm_cancel():
 # API: JAN → タイマー起動
 # --------------------
 @timer_bp.route("/api/timer/jan-start", methods=["POST"])
+@timer_admin_required
 def api_timer_start_by_jan():
     data = request.get_json(force=True, silent=True) or {}
     jan = (data.get("jan") or "").strip()
@@ -254,6 +295,7 @@ def api_timer_start_by_jan():
 
 # （任意）UIから辞書を増やしたいとき
 @timer_bp.route("/api/timer/jan-upsert", methods=["POST"])
+@timer_admin_required
 def api_timer_jan_upsert():
     data = request.get_json(force=True, silent=True) or {}
 
@@ -294,6 +336,7 @@ def api_timer_jan_upsert():
 
 # 情報だけ返す（起動しない）
 @timer_bp.route("/api/timer/jan-info", methods=["POST"])
+@timer_admin_required
 def api_timer_jan_info():
     data = request.get_json(force=True, silent=True) or {}
     jan = (data.get("jan") or "").strip()
@@ -307,6 +350,7 @@ def api_timer_jan_info():
 # API: JAN 一覧・削除（UI用）
 # --------------------
 @timer_bp.route("/api/timer/jan-list")
+@timer_admin_required
 def api_timer_jan_list():
     # 例外時も空オブジェクトを返すとUIが落ちにくい
     try:
@@ -317,6 +361,7 @@ def api_timer_jan_list():
 
 
 @timer_bp.route("/api/timer/jan-delete", methods=["POST"])
+@timer_admin_required
 def api_timer_jan_delete():
     data = request.get_json(force=True, silent=True) or {}
     jan = (data.get("jan") or "").strip()
@@ -329,6 +374,7 @@ def api_timer_jan_delete():
 # API: 設定（通知音＆回数）
 # --------------------
 @timer_bp.route("/api/timer/settings", methods=["GET", "POST"])
+@timer_admin_required
 def api_timer_settings():
     if request.method == "GET":
         return jsonify(get_timer_settings())
@@ -338,6 +384,7 @@ def api_timer_settings():
 
 
 @timer_bp.route("/api/timer/available-sounds", methods=["GET"])
+@timer_admin_required
 def api_timer_available_sounds():
     base = "/mnt/mfu/app/sound"
     exts = (".wav", ".mp3", ".ogg")
@@ -354,6 +401,7 @@ def api_timer_available_sounds():
 # API: VOICEVOX（一覧・テスト）
 # --------------------
 @timer_bp.route("/api/timer/voicevox/speakers", methods=["GET"])
+@timer_admin_required
 def api_timer_voicevox_speakers():
     try:
         data = list_voicevox_speakers()
@@ -365,6 +413,7 @@ def api_timer_voicevox_speakers():
 
 # 既存：TTSのみの単純テスト
 @timer_bp.route("/api/timer/voicevox/test-speak", methods=["POST"])
+@timer_admin_required
 def api_timer_voicevox_test_speak():
     data = request.get_json(force=True, silent=True) or {}
     text = (data.get("text") or "").strip() or "テストです。"
@@ -379,6 +428,7 @@ def api_timer_voicevox_test_speak():
 
 # 新規：チャイム+VOICEVOXの組み合わせまで含めたプレビュー再生
 @timer_bp.route("/api/timer/preview", methods=["POST"])
+@timer_admin_required
 def api_timer_preview():
     """
     受け取るJSON:
@@ -445,6 +495,7 @@ def api_timer_preview():
     })
 
 @timer_bp.route("/api/timer/pending-status", methods=["GET"])
+@timer_admin_required
 def api_timer_pending_status():
     """
     現在の pending タイマー内容を確認するデバッグ用API。
@@ -455,6 +506,7 @@ def api_timer_pending_status():
     return jsonify({"pending": pending})
 
 @timer_bp.route("/api/timer/debug_threads")
+@timer_admin_required
 def api_timer_debug_threads():
     # すでにこのファイルの先頭で
     # from .utils.timer_engine import ... running_threads, ...
@@ -484,6 +536,7 @@ def _save_last_scan(data: dict) -> None:
     os.replace(tmp, LAST_SCAN_FILE)
 
 @timer_bp.route("/api/timer/scan-report", methods=["POST"])
+@timer_admin_or_loopback_required
 def api_timer_scan_report():
     """
     body: { "raw": "4901234567890", "kind": "JAN|MIN|SEC|START|OTHER", "note": "任意" }
@@ -507,8 +560,8 @@ def api_timer_scan_report():
     return jsonify({"status": "ok"})
 
 @timer_bp.route("/api/timer/scan-status", methods=["GET"])
+@timer_admin_required
 def api_timer_scan_status():
     with _last_scan_lock:
         data = _load_last_scan()
     return jsonify({"last_scan": data})
-
