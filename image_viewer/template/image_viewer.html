@@ -147,6 +147,10 @@
       background: linear-gradient(135deg, #1d4ed8, #0891b2 52%, #16a34a);
       font-size: 17px;
     }
+    .desktop-icon .icon-box.duplicates {
+      background: linear-gradient(135deg, #fbbf24, #f97316 52%, #9a3412);
+      font-size: 14px;
+    }
     .desktop-icon span:last-child {
       max-width: 82px;
       font-size: 12px;
@@ -665,10 +669,43 @@
       display: grid;
       gap: 6px;
       align-content: start;
+      position: relative;
+      cursor: pointer;
+      transition: opacity .12s ease, border-color .12s ease, background .12s ease;
     }
     .ig-item.selected {
-      background: #dbeaff;
-      border-color: #316ac5;
+      background: #316ac5;
+      border: 3px solid #ffcc00;
+      padding: 4px;
+      box-shadow: 0 0 0 2px #103d91 inset;
+    }
+    .ig-item.selected::after {
+      content: "選択中";
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      padding: 3px 7px;
+      border: 1px solid #fff;
+      border-radius: 3px;
+      background: #ffcc00;
+      color: #111;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+      box-shadow: 1px 1px 2px rgba(0,0,0,.45);
+    }
+    .ig-item:not(.selected) {
+      opacity: .68;
+    }
+    .ig-item.selected label {
+      color: #fff;
+      font-weight: 700;
+      text-shadow: 1px 1px #103d91;
+    }
+    .ig-item input[type="checkbox"] {
+      width: 17px;
+      height: 17px;
+      accent-color: #ffcc00;
     }
     .ig-thumb {
       width: 100%;
@@ -681,6 +718,12 @@
       place-items: center;
       color: #4b5563;
       font-size: 12px;
+    }
+    .ig-thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
     .video-download-thumb {
       width: 100%;
@@ -1034,12 +1077,16 @@
         <span class="icon-box video-download">VD</span>
         <span>動画DL</span>
       </button>
+      <button type="button" class="desktop-icon" id="duplicatesDesktopIcon">
+        <span class="icon-box duplicates">SHA</span>
+        <span>重複一覧</span>
+      </button>
     </div>
     <section class="desktop-grid" id="desktopGrid">
       <article class="window explorer active" id="explorerWindow" data-window-id="explorer" data-title="エクスプローラー">
         <header class="titlebar" data-drag-handle>
           <div class="title-icon" aria-hidden="true">EXP</div>
-          <div class="title-text">エクスプローラー - /mnt/mfu/image_viewer_uploads</div>
+          <div class="title-text">エクスプローラー - 画像ライブラリ</div>
           <div class="win-actions">
             <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
             <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
@@ -1052,7 +1099,7 @@
           </aside>
           <section class="filepane">
             <div class="toolbar">
-              <div class="pathbox" id="pathBox">/mnt/mfu/image_viewer_uploads</div>
+              <div class="pathbox" id="pathBox">画像ライブラリ</div>
               <button type="button" id="refreshBtn" title="更新">更新</button>
               <button type="button" id="newFolderBtn" title="フォルダー作成">新規</button>
               <button type="button" id="uploadBtn" title="画像アップロード">追加</button>
@@ -1091,6 +1138,7 @@
   <script>
   (() => {
     const apiUrl = "{{ url_for('image_viewer.image_list') }}";
+    const duplicateGroupsUrl = "{{ url_for('image_viewer.duplicate_groups') }}";
     const createFolderUrl = "{{ url_for('image_viewer.create_folder') }}";
     const uploadImagesUrl = "{{ url_for('image_viewer.upload_images') }}";
     const pasteImagesUrl = "{{ url_for('image_viewer.paste_images') }}";
@@ -1145,6 +1193,8 @@
       expandedFolders: new Set(['']),
       imageLoadSeq: 0,
       isLoadingImages: false,
+      imageListSignature: '',
+      backgroundImageRefreshTimer: 0,
       instagram: { shortcode: '', jobId: '', images: [] },
       videoDownloader: { identifier: '', jobId: '', videos: [] }
     };
@@ -2066,7 +2116,9 @@
         method: 'POST',
         body: JSON.stringify({ type: entry.type, path: entry.path, name: nextName })
       });
-      await loadImages();
+      renameEntryLocal(entry, data);
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
       if (entry.type === 'file') setSelectedFile(data.path || entry.path);
       else setCurrentFolder(data.folder || data.path || '');
     }
@@ -2082,9 +2134,9 @@
       if (entry.type === 'folder' && (state.currentFolder === entry.path || state.currentFolder.startsWith(`${entry.path}/`))) {
         state.currentFolder = '';
       }
-      state.selectedPath = '';
-      state.selectedEntry = null;
-      await loadImages();
+      removeEntryLocal(entry);
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
     }
 
     async function moveEntry(entry, destination, ownerId = activeExplorerId()) {
@@ -2093,7 +2145,9 @@
         method: 'POST',
         body: JSON.stringify({ type: entry.type, path: entry.path, destination })
       });
-      await loadImages();
+      renameEntryLocal(entry, data);
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
       if (entry.type === 'file') {
         setExplorerFolderAfterWrite(ownerId, data.folder || destination || '', data.path || '');
       } else {
@@ -2118,7 +2172,7 @@
       pathBox.textContent = message;
       setTimeout(() => {
         if (pathBox.textContent === message) {
-          pathBox.textContent = `/mnt/mfu/image_viewer_uploads${state.currentFolder ? '/' + state.currentFolder : ''}`;
+          pathBox.textContent = `画像ライブラリ${state.currentFolder ? '/' + state.currentFolder : ''}`;
         } else if (!pathBox.textContent) {
           pathBox.textContent = previous;
         }
@@ -2265,7 +2319,7 @@
       if (state.thumbObserver) state.thumbObserver.disconnect();
       fileGrid.innerHTML = '';
       const images = imagesInCurrentFolder();
-      pathBox.textContent = `/mnt/mfu/image_viewer_uploads${state.currentFolder ? '/' + state.currentFolder : ''}`;
+      pathBox.textContent = `画像ライブラリ${state.currentFolder ? '/' + state.currentFolder : ''}`;
       sortBtn.textContent = sortDirection() === 'desc' ? '逆順' : '昇順';
       sortBtn.title = sortDirection() === 'desc' ? '名前の逆順' : '名前順';
       const size = viewSize();
@@ -2350,7 +2404,7 @@
     }
 
     function explorerTitle(folder) {
-      return `エクスプローラー - /mnt/mfu/image_viewer_uploads${folder ? '/' + folder : ''}`;
+      return `エクスプローラー - 画像ライブラリ${folder ? '/' + folder : ''}`;
     }
 
     function openExplorerWindow(folder = state.currentFolder || '') {
@@ -2427,7 +2481,7 @@
       const { folderList: cloneFolders, fileGrid: cloneGrid, pathBox: clonePath, title } = ex.refs;
       const folder = ex.currentFolder || '';
       title.textContent = explorerTitle(folder);
-      clonePath.textContent = `/mnt/mfu/image_viewer_uploads${folder ? '/' + folder : ''}`;
+      clonePath.textContent = `画像ライブラリ${folder ? '/' + folder : ''}`;
       const sortButton = ex.el.querySelector('[data-clone-action="sort"]');
       if (sortButton) sortButton.textContent = sortDirection(folder) === 'desc' ? '逆順' : '昇順';
       ex.el.querySelectorAll('[data-clone-size]').forEach(btn => btn.classList.toggle('active', btn.dataset.cloneSize === viewSize(folder)));
@@ -2501,7 +2555,7 @@
       const ex = state.explorerClones.get(id);
       if (!ex) return;
       const { folderList: cloneFolders, fileGrid: cloneGrid } = ex.refs;
-      ex.el.querySelector('[data-clone-action="refresh"]').addEventListener('click', () => loadImages());
+      ex.el.querySelector('[data-clone-action="refresh"]').addEventListener('click', () => loadImages({ refresh: true }));
       ex.el.querySelector('[data-clone-action="up"]').addEventListener('click', () => {
         const parent = (ex.currentFolder || '').split('/').slice(0, -1).join('/');
         setExplorerCloneFolder(id, parent);
@@ -2564,19 +2618,25 @@
       });
     }
 
-    async function loadImages() {
-      const seq = state.imageLoadSeq + 1;
-      state.imageLoadSeq = seq;
-      setImageListLoading(true);
-      renderAllExplorers();
-      const data = await fetchJson(apiUrl).catch((err) => {
-        if (seq === state.imageLoadSeq) setImageListLoading(false);
-        showDesktopError(err.message || 'File list refresh failed.');
-        throw err;
-      });
-      if (seq !== state.imageLoadSeq) return;
-      state.images = data.images || [];
-      state.folders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
+    function imageListSignature(images, folders) {
+      const folderPart = (folders || []).join('\n');
+      const imagePart = (images || [])
+        .map(img => `${img.path || ''}|${img.mtime || 0}|${img.size || 0}|${img.hasThumb ? 1 : 0}`)
+        .sort()
+        .join('\n');
+      return `${folderPart}\n---\n${imagePart}`;
+    }
+
+    function refreshImageListSignature() {
+      state.imageListSignature = imageListSignature(state.images, state.folders);
+    }
+
+    function applyImageListData(data) {
+      const nextImages = data.images || [];
+      const nextFolders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
+      state.imageListSignature = imageListSignature(nextImages, nextFolders);
+      state.images = nextImages;
+      state.folders = nextFolders;
       if (!state.folders.includes(state.currentFolder)) {
         state.currentFolder = '';
         state.resetFileScrollNext = true;
@@ -2598,12 +2658,106 @@
         }
       }
       renderAllExplorers();
-      if (seq === state.imageLoadSeq) setImageListLoading(false);
+    }
+
+    function ensureFolderState(folder) {
+      const parts = (folder || '').split('/').filter(Boolean);
+      let path = '';
+      const folders = new Set(state.folders.length ? state.folders : ['']);
+      folders.add('');
+      for (const part of parts) {
+        path = path ? `${path}/${part}` : part;
+        folders.add(path);
+      }
+      state.folders = Array.from(folders).sort(compareFolderPath);
+    }
+
+    function replacePathPrefix(value, oldPath, newPath) {
+      if (!value || !oldPath) return value;
+      if (value === oldPath) return newPath;
+      return value.startsWith(`${oldPath}/`) ? `${newPath}${value.slice(oldPath.length)}` : value;
+    }
+
+    function upsertImageRecords(records) {
+      const byPath = new Map(state.images.map(img => [img.path, img]));
+      for (const record of records || []) {
+        if (!record?.path) continue;
+        byPath.set(record.path, record);
+        ensureFolderState(record.folder || '');
+      }
+      state.images = Array.from(byPath.values());
+      refreshImageListSignature();
+    }
+
+    function removeEntryLocal(entry) {
+      if (!entry?.path) return;
+      if (entry.type === 'folder') {
+        state.images = state.images.filter(img => img.path !== entry.path && !img.path.startsWith(`${entry.path}/`));
+        state.folders = state.folders.filter(folder => folder === '' || (folder !== entry.path && !folder.startsWith(`${entry.path}/`)));
+      } else {
+        state.images = state.images.filter(img => img.path !== entry.path);
+      }
+      state.selectedPath = '';
+      state.selectedEntry = null;
+      refreshImageListSignature();
+    }
+
+    function renameEntryLocal(entry, data) {
+      if (!entry?.path) return;
+      const nextPath = data.path || entry.path;
+      if (entry.type === 'folder') {
+        state.folders = Array.from(new Set(state.folders.map(folder => replacePathPrefix(folder, entry.path, nextPath)).concat(['']))).sort(compareFolderPath);
+        state.images = state.images.map(img => ({
+          ...img,
+          path: replacePathPrefix(img.path, entry.path, nextPath),
+          folder: replacePathPrefix(img.folder || '', entry.path, nextPath)
+        }));
+        state.currentFolder = replacePathPrefix(state.currentFolder, entry.path, nextPath);
+        for (const ex of state.explorerClones.values()) {
+          ex.currentFolder = replacePathPrefix(ex.currentFolder, entry.path, nextPath);
+          ex.selectedPath = replacePathPrefix(ex.selectedPath, entry.path, nextPath);
+        }
+      } else if (data.entry) {
+        state.images = state.images.filter(img => img.path !== entry.path);
+        upsertImageRecords([data.entry]);
+      }
+      refreshImageListSignature();
+    }
+
+    function scheduleBackgroundImageRefresh() {
+      clearTimeout(state.backgroundImageRefreshTimer);
+      state.backgroundImageRefreshTimer = setTimeout(() => {
+        loadImages({ silent: true, refresh: true }).catch(() => {});
+      }, 700);
+    }
+
+    async function loadImages(options = {}) {
+      const seq = state.imageLoadSeq + 1;
+      state.imageLoadSeq = seq;
+      const silent = Boolean(options.silent);
+      if (!silent) {
+        setImageListLoading(true);
+        renderAllExplorers();
+      }
+      const url = options.refresh ? `${apiUrl}?refresh=1&_=${Date.now()}` : apiUrl;
+      const data = await fetchJson(url, { cache: 'no-store' }).catch((err) => {
+        if (!silent && seq === state.imageLoadSeq) setImageListLoading(false);
+        showDesktopError(err.message || 'File list refresh failed.');
+        throw err;
+      });
+      if (seq !== state.imageLoadSeq) return;
+      if (silent) {
+        const nextImages = data.images || [];
+        const nextFolders = (data.folders && data.folders.length ? data.folders : ['']).sort(compareFolderPath);
+        if (imageListSignature(nextImages, nextFolders) === state.imageListSignature) return;
+      }
+      applyImageListData(data);
+      if (!silent && seq === state.imageLoadSeq) setImageListLoading(false);
     }
 
     async function createFolderInCurrentFolder() {
       const parent = state.currentFolder || '';
-      const parentLabel = `/mnt/mfu/image_viewer_uploads${parent ? '/' + parent : ''}`;
+      const parentLabel = `画像ライブラリ${parent ? '/' + parent : ''}`;
       const name = prompt(`作成先: ${parentLabel}\nフォルダー名:`);
       if (!name) return;
       const data = await fetchJson(createFolderUrl, {
@@ -2611,7 +2765,10 @@
         body: JSON.stringify({ parent, name })
       });
       state.currentFolder = data.folder || parent;
-      await loadImages();
+      ensureFolderState(state.currentFolder);
+      refreshImageListSignature();
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
     }
 
     async function uploadFilesToFolder(files, folder = folderForExplorer(), ownerId = activeExplorerId()) {
@@ -2624,7 +2781,10 @@
       const batches = uploadBatches(imageFiles);
       let savedCount = 0;
       let skippedCount = 0;
+      let duplicateCount = 0;
       let failedCount = 0;
+      const savedRecords = [];
+      const duplicateRecords = [];
       refs.fileGrid?.classList.add('drag-over');
       try {
         for (let i = 0; i < batches.length; i += 1) {
@@ -2633,17 +2793,24 @@
           form.append('folder', folder || '');
           batches[i].forEach(file => form.append('files', file, file.name));
           const data = await fetchJson(uploadImagesUrl, { method: 'POST', body: form });
-          savedCount += (data.saved || []).length;
+          const saved = data.saved || [];
+          savedRecords.push(...saved);
+          savedCount += saved.length;
           skippedCount += (data.skipped || []).length;
+          duplicateCount += (data.duplicates || []).length;
+          duplicateRecords.push(...(data.duplicates || []));
           failedCount += (data.errors || []).length;
         }
       } finally {
         refs.fileGrid?.classList.remove('drag-over');
       }
-      await loadImages();
+      upsertImageRecords(savedRecords);
       setExplorerFolderAfterWrite(ownerId, folder || '');
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
       const message = `${savedCount}件アップロードしました。${skippedCount ? ` ${skippedCount}件スキップ。` : ''}${failedCount ? ` ${failedCount}件エラー。` : ''}`;
-      alert(message);
+      const duplicatePaths = duplicateRecords.slice(0, 5).map(row => row.existing?.path).filter(Boolean);
+      alert(`${message}${duplicateCount ? ` 重複${duplicateCount}件は保存しませんでした。${duplicatePaths.length ? ` 既存: ${duplicatePaths.join(', ')}` : ''}` : ''}`);
     }
 
     async function pasteClipboardFiles(files, folder = folderForExplorer(), ownerId = activeExplorerId()) {
@@ -2660,14 +2827,19 @@
         form.append('files', file, file.name || fallbackName);
       });
       const data = await fetchJson(pasteImagesUrl, { method: 'POST', body: form });
-      await loadImages();
       const saved = data.saved || [];
+      upsertImageRecords(saved);
       setExplorerFolderAfterWrite(ownerId, folder || '', saved.length ? saved[saved.length - 1].path : '');
+      renderAllExplorers();
+      scheduleBackgroundImageRefresh();
       const skipped = (data.skipped || []).length;
+      const duplicates = data.duplicates || [];
       const failed = (data.errors || []).length;
       const message = `${saved.length}件保存しました。${skipped ? ` ${skipped}件スキップ。` : ''}${failed ? ` ${failed}件エラー。` : ''}`;
-      if (failed) showDesktopError(message);
-      else showDesktopMessage(message);
+      const duplicatePaths = duplicates.slice(0, 5).map(row => row.existing?.path).filter(Boolean);
+      const duplicateMessage = duplicates.length ? ` 重複${duplicates.length}件は保存しませんでした。${duplicatePaths.length ? ` 既存: ${duplicatePaths.join(', ')}` : ''}` : '';
+      if (failed) showDesktopError(message + duplicateMessage);
+      else showDesktopMessage(message + duplicateMessage);
     }
 
     async function readClipboardImageFiles() {
@@ -2981,6 +3153,103 @@
       updateVideoUi();
     }
 
+    function formatDuplicateBytes(value) {
+      const bytes = Number(value || 0);
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+      if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+      return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
+    }
+
+    async function loadDuplicatesWindow(el) {
+      const summary = el.querySelector('[data-duplicate-summary]');
+      const container = el.querySelector('[data-duplicate-groups]');
+      summary.textContent = '重複を検索しています...';
+      container.innerHTML = '';
+      try {
+        const data = await fetchJson(duplicateGroupsUrl, {
+          method: 'POST',
+          cache: 'no-store',
+          body: JSON.stringify({})
+        });
+        if (data.kind !== 'duplicates' || !Array.isArray(data.groups)) {
+          throw new Error('重複一覧ではない応答を受信しました。');
+        }
+        summary.textContent = `${data.groupCount}グループ / 余分なファイル ${data.extraCopies}件 / 整理可能容量 ${formatDuplicateBytes(data.reclaimableBytes)}`;
+        if (!data.groups.length) {
+          const empty = document.createElement('div');
+          empty.className = 'empty';
+          empty.textContent = 'SHA-256が一致する重複ファイルはありません。';
+          container.appendChild(empty);
+          return;
+        }
+        data.groups.forEach(group => {
+          const section = document.createElement('section');
+          section.style.cssText = 'margin-bottom:12px;border:1px solid #739bd3;background:#fff;';
+          const header = document.createElement('div');
+          header.style.cssText = 'padding:7px 9px;background:#dceaff;border-bottom:1px solid #9bb8df;font-size:12px;overflow-wrap:anywhere;';
+          header.textContent = `${group.count}件 / ${formatDuplicateBytes(group.fileSize)} / SHA-256: ${group.sha256}`;
+          const files = document.createElement('div');
+          files.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;padding:8px;';
+          group.files.forEach(file => {
+            const card = document.createElement('article');
+            card.style.cssText = 'min-width:0;padding:6px;border:1px solid #c8d7ec;background:#f8fbff;';
+            const image = document.createElement('img');
+            image.src = file.thumbUrl || file.url;
+            image.alt = '';
+            image.style.cssText = 'display:block;width:100%;height:120px;object-fit:contain;background:#eef1f5;cursor:pointer;';
+            image.addEventListener('dblclick', () => window.open(file.url, '_blank', 'noopener'));
+            const path = document.createElement('div');
+            path.textContent = file.path;
+            path.style.cssText = 'margin-top:5px;font-size:12px;font-weight:700;overflow-wrap:anywhere;';
+            const uuid = document.createElement('div');
+            uuid.textContent = file.uuid;
+            uuid.style.cssText = 'margin-top:3px;color:#53647d;font:10px Consolas,monospace;overflow-wrap:anywhere;';
+            card.append(image, path, uuid);
+            files.appendChild(card);
+          });
+          section.append(header, files);
+          container.appendChild(section);
+        });
+      } catch (error) {
+        summary.textContent = `重複一覧を取得できませんでした: ${error.message || error}`;
+      }
+    }
+
+    function openDuplicatesWindow() {
+      const existing = state.windows.get('duplicates');
+      if (existing) {
+        activate('duplicates');
+        loadDuplicatesWindow(existing);
+        return;
+      }
+      const el = document.createElement('article');
+      el.className = 'window';
+      el.style.cssText = 'left:150px;top:70px;width:min(900px,calc(100vw - 190px));height:min(700px,calc(100vh - 120px));';
+      el.innerHTML = `
+        <header class="titlebar" data-drag-handle>
+          <div class="title-icon" aria-hidden="true">SHA</div>
+          <div class="title-text">SHA-256 重複ファイル一覧</div>
+          <div class="win-actions">
+            <button class="win-btn" type="button" data-action="minimize" title="最小化">_</button>
+            <button class="win-btn" type="button" data-action="maximize" title="最大化">□</button>
+            <button class="win-btn close" type="button" data-action="close" title="閉じる">X</button>
+          </div>
+        </header>
+        <div style="height:calc(100% - 30px);display:grid;grid-template-rows:auto 1fr;gap:8px;padding:10px;background:#ece9d8;">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px;border:1px solid #8aaee0;background:#fff;">
+            <strong data-duplicate-summary>重複を検索しています...</strong>
+            <button type="button" data-duplicate-refresh style="margin-left:auto;">再読込</button>
+          </div>
+          <div data-duplicate-groups style="min-height:0;overflow:auto;padding:8px;border:1px solid #aca899;background:#fff;"></div>
+        </div>
+        <div class="resize-handle" data-resize-handle></div>`;
+      desktopGrid.appendChild(el);
+      registerWindow('duplicates', el, '重複一覧', 'duplicates');
+      el.querySelector('[data-duplicate-refresh]').addEventListener('click', () => loadDuplicatesWindow(el));
+      loadDuplicatesWindow(el);
+    }
+
     function openInstagramWindow() {
       const existing = state.windows.get('instagram');
       if (existing) {
@@ -3182,11 +3451,12 @@
     function renderInstagramItems(el) {
       const grid = el.querySelector('#igGrid');
       grid.innerHTML = '';
-      if (!state.instagram.images.length) {
+      const readyItems = state.instagram.images.filter(item => item.previewReady && item.previewUrl);
+      if (!readyItems.length) {
         grid.innerHTML = '<div class="empty">画像がありません。</div>';
         return;
       }
-      state.instagram.images.forEach(item => {
+      readyItems.forEach(item => {
         const card = document.createElement('div');
         card.className = 'ig-item selected';
         card.innerHTML = `
@@ -3199,11 +3469,17 @@
         } else if (item.previewError) {
           thumb.textContent = '取得失敗';
         } else {
-          thumb.textContent = '取得中...';
+          thumb.textContent = '保存中...';
         }
         card.querySelector('span').textContent = item.filename || `${item.index}`;
-        card.querySelector('input').addEventListener('change', (event) => {
+        const checkbox = card.querySelector('input');
+        checkbox.addEventListener('change', (event) => {
           card.classList.toggle('selected', event.target.checked);
+        });
+        card.addEventListener('click', (event) => {
+          if (event.target.closest('input, label')) return;
+          checkbox.checked = !checkbox.checked;
+          card.classList.toggle('selected', checkbox.checked);
         });
         grid.appendChild(card);
       });
@@ -3421,7 +3697,9 @@
               digits: el.querySelector('#igDigits').value
             })
           });
-          setInstagramStatus(el, `${(data.saved || []).length}枚保存しました。`);
+          const duplicates = data.duplicates || [];
+          const existingPaths = duplicates.slice(0, 3).map(row => row.existing?.path).filter(Boolean);
+          setInstagramStatus(el, `${(data.saved || []).length}枚保存しました。${duplicates.length ? ` 重複${duplicates.length}件は保存しませんでした。${existingPaths.length ? ` 既存: ${existingPaths.join(', ')}` : ''}` : ''}`);
           saveInstagramSettings(el);
           await loadImages();
           await updateInstagramNextNumber(el);
@@ -3603,7 +3881,9 @@
               folder: el.querySelector('#vdFolder').value
             })
           });
-          setVideoDownloaderStatus(el, `${(data.saved || []).length}件保存しました。`);
+          const duplicates = data.duplicates || [];
+          const existingPaths = duplicates.slice(0, 3).map(row => row.existing?.path).filter(Boolean);
+          setVideoDownloaderStatus(el, `${(data.saved || []).length}件保存しました。${duplicates.length ? ` 重複${duplicates.length}件は保存しませんでした。${existingPaths.length ? ` 既存: ${existingPaths.join(', ')}` : ''}` : ''}`);
           saveVideoDownloaderSettings(el);
           await loadImages();
         } catch (err) {
@@ -3698,7 +3978,7 @@
     }
 
 
-    document.getElementById('refreshBtn').addEventListener('click', loadImages);
+    document.getElementById('refreshBtn').addEventListener('click', () => loadImages({ refresh: true }));
     desktopMessageOk?.addEventListener('click', hideDesktopMessage);
     wireUploadInteractions();
     fileGrid.addEventListener('scroll', () => {
@@ -3756,6 +4036,7 @@
     document.getElementById('showExplorerBtn').addEventListener('click', () => openExplorerWindow(state.currentFolder));
     document.getElementById('instagramDesktopIcon').addEventListener('dblclick', openInstagramWindow);
     document.getElementById('videoDownloaderDesktopIcon').addEventListener('dblclick', openVideoDownloaderWindow);
+    document.getElementById('duplicatesDesktopIcon').addEventListener('dblclick', openDuplicatesWindow);
 
     const browserFullscreenIcon = document.getElementById('browserFullscreenIcon');
     const browserFullscreenLabel = document.getElementById('browserFullscreenLabel');
@@ -3845,6 +4126,11 @@
     loadImages().catch(err => {
       fileGrid.innerHTML = `<div class="empty">${err.message || '読み込みに失敗しました。'}</div>`;
     });
+
+    setInterval(() => {
+      if (document.hidden || state.isLoadingImages) return;
+      loadImages({ silent: true }).catch(() => {});
+    }, 10000);
 
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {

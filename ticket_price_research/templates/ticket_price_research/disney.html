@@ -47,6 +47,72 @@
   .ticket-table th {
     vertical-align: middle;
   }
+  .ticket-filter-heading {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+  }
+  .ticket-filter-button {
+    width: 1.8rem;
+    height: 1.8rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #adb5bd;
+    border-radius: .25rem;
+    background: #fff;
+    color: #495057;
+    font-size: .8rem;
+    line-height: 1;
+  }
+  .ticket-filter-button.is-active {
+    border-color: #0d6efd;
+    color: #0d6efd;
+    background: #e7f1ff;
+  }
+  .ticket-filter-popover {
+    position: fixed;
+    z-index: 1060;
+    width: min(320px, calc(100vw - 1.5rem));
+    max-height: min(420px, calc(100vh - 1.5rem));
+    display: none;
+    flex-direction: column;
+    border: 1px solid #adb5bd;
+    border-radius: .35rem;
+    background: #fff;
+    box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .15);
+  }
+  .ticket-filter-popover.is-open {
+    display: flex;
+  }
+  .ticket-filter-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .5rem;
+    padding: .65rem .75rem;
+    border-bottom: 1px solid #dee2e6;
+    font-weight: 700;
+  }
+  .ticket-filter-options {
+    overflow: auto;
+    padding: .5rem .75rem;
+  }
+  .ticket-filter-option {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 2rem;
+    margin: 0;
+    font-weight: 400;
+  }
+  .ticket-filter-popover-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem;
+    padding: .65rem .75rem;
+    border-top: 1px solid #dee2e6;
+  }
   .ticket-title-link,
   .ticket-shop-link {
     display: inline-block;
@@ -86,6 +152,12 @@
     }
     .ticket-table thead {
       display: none;
+    }
+    .ticket-filter-popover {
+      left: .75rem !important;
+      right: .75rem;
+      top: 4.5rem !important;
+      width: auto;
     }
     .ticket-table,
     .ticket-table tbody,
@@ -155,13 +227,36 @@
     <thead>
       <tr>
         <th scope="col">商品名</th>
-        <th scope="col" class="text-end">価格</th>
-        <th scope="col">有効期限</th>
+        <th scope="col" class="text-end">
+          <span class="ticket-filter-heading">
+            <span>価格</span>
+            <button type="button" id="priceFilterButton" class="ticket-filter-button" aria-label="価格でフィルター" aria-expanded="false">▼</button>
+          </span>
+        </th>
+        <th scope="col">
+          <span class="ticket-filter-heading">
+            <span>有効期限</span>
+            <button type="button" id="expiryFilterButton" class="ticket-filter-button" aria-label="有効期限でフィルター" aria-expanded="false">▼</button>
+          </span>
+        </th>
         <th scope="col">店舗名</th>
       </tr>
     </thead>
     <tbody id="ticketRows"></tbody>
   </table>
+</div>
+
+<div id="filterPopover" class="ticket-filter-popover" role="dialog" aria-modal="false" aria-hidden="true">
+  <div class="ticket-filter-popover-header">
+    <span id="filterTitle">フィルター</span>
+    <button type="button" id="filterCloseButton" class="btn-close" aria-label="閉じる"></button>
+  </div>
+  <div id="filterOptions" class="ticket-filter-options"></div>
+  <div class="ticket-filter-popover-actions">
+    <button type="button" id="filterSelectAllButton" class="btn btn-sm btn-outline-secondary">すべて選択</button>
+    <button type="button" id="filterClearButton" class="btn btn-sm btn-outline-secondary">クリア</button>
+    <button type="button" id="filterApplyButton" class="btn btn-sm btn-primary">適用</button>
+  </div>
 </div>
 
 <p class="ticket-notes">
@@ -176,6 +271,15 @@
   const sortPriceButton = document.getElementById("sortPriceButton");
   const sortExpiryButton = document.getElementById("sortExpiryButton");
   const resetSortButton = document.getElementById("resetSortButton");
+  const priceFilterButton = document.getElementById("priceFilterButton");
+  const expiryFilterButton = document.getElementById("expiryFilterButton");
+  const filterPopover = document.getElementById("filterPopover");
+  const filterTitle = document.getElementById("filterTitle");
+  const filterOptions = document.getElementById("filterOptions");
+  const filterCloseButton = document.getElementById("filterCloseButton");
+  const filterSelectAllButton = document.getElementById("filterSelectAllButton");
+  const filterClearButton = document.getElementById("filterClearButton");
+  const filterApplyButton = document.getElementById("filterApplyButton");
   const statusMessage = document.getElementById("statusMessage");
   const fetchedAt = document.getElementById("fetchedAt");
   const ticketCount = document.getElementById("ticketCount");
@@ -184,6 +288,12 @@
   const ticketRows = document.getElementById("ticketRows");
   let initialItems = [];
   let currentItems = [];
+  let activeSort = "initial";
+  let activeFilterType = "";
+  const filters = {
+    price: null,
+    expiry: null
+  };
 
   function isSafeHttpUrl(value) {
     if (!value) return false;
@@ -199,6 +309,37 @@
     const number = Number(price);
     if (!Number.isFinite(number)) return "-";
     return "¥" + number.toLocaleString("ja-JP");
+  }
+
+  function priceFilterKey(item) {
+    const number = Number(item.price);
+    return Number.isFinite(number) ? String(number) : "";
+  }
+
+  function expiryFilterKey(item) {
+    return String(item.expiry_display || "不明");
+  }
+
+  function filterKey(type, item) {
+    return type === "price" ? priceFilterKey(item) : expiryFilterKey(item);
+  }
+
+  function filterLabel(type, key) {
+    if (type === "price") return formatPrice(key);
+    return key || "不明";
+  }
+
+  function filterSortValue(type, key) {
+    if (type === "price") {
+      const number = Number(key);
+      return Number.isFinite(number) ? number : 999999999;
+    }
+    const item = initialItems.find((row) => expiryFilterKey(row) === key);
+    return item ? String(item.expiry_sort || "9999-99-99") : "9999-99-99";
+  }
+
+  function hasActiveFilters() {
+    return Boolean(filters.price || filters.expiry);
   }
 
   function makeLinkOrText(text, href, className) {
@@ -265,9 +406,119 @@
     statusMessage.textContent = message;
   }
 
-  function applyItems(items) {
-    currentItems = items.slice();
+  function sortItems(items) {
+    const sorted = items.slice();
+    if (activeSort === "price") {
+      sorted.sort((a, b) => Number(a.price || 999999999) - Number(b.price || 999999999));
+    } else if (activeSort === "expiry") {
+      sorted.sort((a, b) => String(a.expiry_sort || "9999-99-99").localeCompare(String(b.expiry_sort || "9999-99-99")));
+    }
+    return sorted;
+  }
+
+  function filteredItems() {
+    return initialItems.filter((item) => {
+      if (filters.price && !filters.price.has(priceFilterKey(item))) return false;
+      if (filters.expiry && !filters.expiry.has(expiryFilterKey(item))) return false;
+      return true;
+    });
+  }
+
+  function updateFilterButtons() {
+    priceFilterButton.classList.toggle("is-active", Boolean(filters.price));
+    expiryFilterButton.classList.toggle("is-active", Boolean(filters.expiry));
+  }
+
+  function refreshItems() {
+    currentItems = sortItems(filteredItems());
     renderRows(currentItems);
+    ticketCount.textContent = hasActiveFilters()
+      ? `${currentItems.length} / ${initialItems.length}`
+      : String(initialItems.length);
+    updateFilterButtons();
+  }
+
+  function applyItems(items) {
+    initialItems = items.slice();
+    refreshItems();
+  }
+
+  function filterValues(type) {
+    const map = new Map();
+    initialItems.forEach((item) => {
+      const key = filterKey(type, item);
+      if (!map.has(key)) {
+        map.set(key, filterLabel(type, key));
+      }
+    });
+    return Array.from(map.entries())
+      .map(([key, label]) => ({ key, label }))
+      .sort((a, b) => {
+        const left = filterSortValue(type, a.key);
+        const right = filterSortValue(type, b.key);
+        if (typeof left === "number" && typeof right === "number") return left - right;
+        return String(left).localeCompare(String(right), "ja");
+      });
+  }
+
+  function closeFilterPopover() {
+    filterPopover.classList.remove("is-open");
+    filterPopover.setAttribute("aria-hidden", "true");
+    activeFilterType = "";
+    priceFilterButton.setAttribute("aria-expanded", "false");
+    expiryFilterButton.setAttribute("aria-expanded", "false");
+  }
+
+  function positionFilterPopover(button) {
+    const rect = button.getBoundingClientRect();
+    const margin = 8;
+    const width = Math.min(320, window.innerWidth - 24);
+    const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
+    const top = Math.min(rect.bottom + margin, window.innerHeight - 120);
+    filterPopover.style.left = `${left}px`;
+    filterPopover.style.top = `${top}px`;
+  }
+
+  function renderFilterOptions(type) {
+    const selected = filters[type];
+    filterOptions.replaceChildren();
+    filterValues(type).forEach((entry) => {
+      const label = document.createElement("label");
+      label.className = "ticket-filter-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = entry.key;
+      checkbox.checked = selected ? selected.has(entry.key) : true;
+      const span = document.createElement("span");
+      span.textContent = entry.label;
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      filterOptions.appendChild(label);
+    });
+  }
+
+  function openFilterPopover(type, button) {
+    activeFilterType = type;
+    filterTitle.textContent = type === "price" ? "価格フィルター" : "有効期限フィルター";
+    renderFilterOptions(type);
+    positionFilterPopover(button);
+    filterPopover.classList.add("is-open");
+    filterPopover.setAttribute("aria-hidden", "false");
+    priceFilterButton.setAttribute("aria-expanded", type === "price" ? "true" : "false");
+    expiryFilterButton.setAttribute("aria-expanded", type === "expiry" ? "true" : "false");
+  }
+
+  function selectedFilterValues() {
+    return Array.from(filterOptions.querySelectorAll("input[type='checkbox']:checked")).map((input) => input.value);
+  }
+
+  function applyActiveFilter() {
+    if (!activeFilterType) return;
+    const allValues = filterValues(activeFilterType).map((entry) => entry.key);
+    const selected = selectedFilterValues();
+    filters[activeFilterType] = selected.length === allValues.length ? null : new Set(selected);
+    refreshItems();
+    closeFilterPopover();
   }
 
   fetchButton.addEventListener("click", async () => {
@@ -283,11 +534,13 @@
       });
       const data = await response.json();
 
-      initialItems = Array.isArray(data.items) ? data.items.slice() : [];
+      const items = Array.isArray(data.items) ? data.items.slice() : [];
       fetchedAt.textContent = data.fetched_at || "-";
-      ticketCount.textContent = String(data.count || 0);
       renderWarnings(data.warnings || []);
-      applyItems(initialItems);
+      filters.price = null;
+      filters.expiry = null;
+      activeSort = "initial";
+      applyItems(items);
 
       if (data.ok) {
         setStatus(data.cached ? "直近の取得結果を表示しています。" : "取得しました。", data.cached ? "info" : "success");
@@ -303,16 +556,55 @@
   });
 
   sortPriceButton.addEventListener("click", () => {
-    applyItems(currentItems.slice().sort((a, b) => Number(a.price || 999999999) - Number(b.price || 999999999)));
+    activeSort = "price";
+    refreshItems();
   });
 
   sortExpiryButton.addEventListener("click", () => {
-    applyItems(currentItems.slice().sort((a, b) => String(a.expiry_sort || "9999-99-99").localeCompare(String(b.expiry_sort || "9999-99-99"))));
+    activeSort = "expiry";
+    refreshItems();
   });
 
   resetSortButton.addEventListener("click", () => {
-    applyItems(initialItems);
+    filters.price = null;
+    filters.expiry = null;
+    activeSort = "initial";
+    refreshItems();
   });
+
+  priceFilterButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openFilterPopover("price", priceFilterButton);
+  });
+
+  expiryFilterButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openFilterPopover("expiry", expiryFilterButton);
+  });
+
+  filterCloseButton.addEventListener("click", closeFilterPopover);
+
+  filterSelectAllButton.addEventListener("click", () => {
+    filterOptions.querySelectorAll("input[type='checkbox']").forEach((input) => {
+      input.checked = true;
+    });
+  });
+
+  filterClearButton.addEventListener("click", () => {
+    filterOptions.querySelectorAll("input[type='checkbox']").forEach((input) => {
+      input.checked = false;
+    });
+  });
+
+  filterApplyButton.addEventListener("click", applyActiveFilter);
+
+  document.addEventListener("click", (event) => {
+    if (!filterPopover.contains(event.target) && event.target !== priceFilterButton && event.target !== expiryFilterButton) {
+      closeFilterPopover();
+    }
+  });
+
+  window.addEventListener("resize", closeFilterPopover);
 })();
 </script>
 {% endblock %}
