@@ -1,11 +1,11 @@
 from pathlib import Path
-import os
 import shutil
 
 from flask import Blueprint, abort, current_app, redirect, render_template, send_file, session, url_for
 from werkzeug.utils import secure_filename
 
 from app.utils.db import get_db
+from app.utils.upload_deletion import delete_normal_upload
 
 upload_history_bp = Blueprint("upload_history", __name__)
 
@@ -26,14 +26,22 @@ def _is_admin(username: str) -> bool:
     return username == "admin"
 
 
-def _fetch_uploads_for_user(username: str):
+def _fetch_uploads_for_user(username: str, *, scope: str):
+    active_column = {
+        "upload": "upload_deleted_at",
+        "layer": "layer_deleted_at",
+    }.get(scope)
+    if not active_column:
+        raise ValueError("invalid upload history scope")
     db = get_db()
     cursor = db.cursor(dictionary=True)
     if _is_admin(username):
-        cursor.execute("SELECT * FROM uploads ORDER BY created_at DESC")
+        cursor.execute(
+            f"SELECT * FROM uploads WHERE {active_column} IS NULL ORDER BY created_at DESC"
+        )
     else:
         cursor.execute(
-            "SELECT * FROM uploads WHERE username = %s ORDER BY created_at DESC",
+            f"SELECT * FROM uploads WHERE username = %s AND {active_column} IS NULL ORDER BY created_at DESC",
             (username,),
         )
     uploads = cursor.fetchall()
@@ -41,10 +49,18 @@ def _fetch_uploads_for_user(username: str):
     return uploads
 
 
-def _fetch_upload_by_uuid(uuid: str):
+def _fetch_upload_by_uuid(uuid: str, *, scope: str | None = None):
+    active_column = {
+        "upload": "upload_deleted_at",
+        "layer": "layer_deleted_at",
+        None: None,
+    }.get(scope)
+    if scope is not None and not active_column:
+        raise ValueError("invalid upload history scope")
     db = get_db()
     cursor = db.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM uploads WHERE uuid = %s", (uuid,))
+    where_active = f" AND {active_column} IS NULL" if active_column else ""
+    cursor.execute(f"SELECT * FROM uploads WHERE uuid = %s{where_active}", (uuid,))
     upload = cursor.fetchone()
     db.close()
     return upload
@@ -141,7 +157,7 @@ def upload_list():
         return redirect(url_for("login"))
 
     username = session["user"]
-    uploads = _fetch_uploads_for_user(username)
+    uploads = _fetch_uploads_for_user(username, scope="upload")
 
     return render_template("upload_list.html", uploads=uploads, is_admin=_is_admin(username))
 
@@ -152,7 +168,7 @@ def layer_upload_list():
         return redirect(url_for("login"))
 
     username = session["user"]
-    uploads = _fetch_uploads_for_user(username)
+    uploads = _fetch_uploads_for_user(username, scope="layer")
 
     rows = []
     for upload in uploads:
@@ -167,7 +183,7 @@ def layer_upload_detail(uuid):
         return redirect(url_for("login"))
 
     username = session["user"]
-    upload = _fetch_upload_by_uuid(uuid)
+    upload = _fetch_upload_by_uuid(uuid, scope="layer")
     _ensure_upload_permission(upload, username)
 
     groups = _list_layer_groups(uuid)
@@ -181,7 +197,7 @@ def layer_upload_image(uuid, reply_uuid, filename):
         return redirect(url_for("login"))
 
     username = session["user"]
-    upload = _fetch_upload_by_uuid(uuid)
+    upload = _fetch_upload_by_uuid(uuid, scope="layer")
     _ensure_upload_permission(upload, username)
 
     base = (_layer_root() / secure_filename(uuid) / secure_filename(reply_uuid) / "original").resolve()
@@ -200,7 +216,7 @@ def layer_upload_zip(uuid, reply_uuid, filename):
         return redirect(url_for("login"))
 
     username = session["user"]
-    upload = _fetch_upload_by_uuid(uuid)
+    upload = _fetch_upload_by_uuid(uuid, scope="layer")
     _ensure_upload_permission(upload, username)
 
     base = (_layer_root() / secure_filename(uuid) / secure_filename(reply_uuid) / "zip").resolve()
@@ -223,7 +239,10 @@ def upload_delete(uuid):
     cursor = db.cursor(dictionary=True)
 
     # admin以外は本人のアップロードのみ削除可
-    cursor.execute("SELECT * FROM uploads WHERE uuid = %s", (uuid,))
+    cursor.execute(
+        "SELECT * FROM uploads WHERE uuid = %s AND upload_deleted_at IS NULL",
+        (uuid,),
+    )
     upload = cursor.fetchone()
 
     if not upload:
@@ -234,21 +253,46 @@ def upload_delete(uuid):
         db.close()
         return abort(403)
 
-    # files, messages, uploads テーブルから削除
-    cursor.execute("DELETE FROM files WHERE upload_id = %s", (upload["id"],))
-    cursor.execute("DELETE FROM messages WHERE uuid = %s", (uuid,))
-    cursor.execute("DELETE FROM uploads WHERE id = %s", (upload["id"],))
+    db.close()
+
+    delete_normal_upload(
+        upload_id=upload["id"],
+        uuid=uuid,
+        storage_root=_storage_root(),
+    )
+
+    return redirect(url_for("upload_history.upload_list"))
+
+
+@upload_history_bp.route("/layer_upload_delete/<uuid>", methods=["POST"])
+def layer_upload_delete(uuid):
+    if "user" not in session:
+        return redirect(url_for("login"))
+
+    username = session["user"]
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT * FROM uploads WHERE uuid=%s AND layer_deleted_at IS NULL",
+        (uuid,),
+    )
+    upload = cursor.fetchone()
+    if not upload:
+        db.close()
+        return abort(404)
+    if not _is_admin(username) and upload["username"] != username:
+        db.close()
+        return abort(403)
+
+    cursor.execute(
+        "UPDATE uploads SET layer_deleted_at=COALESCE(layer_deleted_at, NOW()) WHERE id=%s",
+        (upload["id"],),
+    )
     db.commit()
     db.close()
 
-    # 実フォルダ削除
-    target_dir = os.path.join(UPLOAD_BASE_DIR, uuid)
-    if os.path.exists(target_dir):
-        shutil.rmtree(target_dir)
-
-    # layer_uploads 側も削除
-    layer_dir = os.path.join(UPLOAD_BASE_DIR, "layer_uploads", uuid)
-    if os.path.exists(layer_dir):
+    layer_dir = _layer_root() / secure_filename(uuid)
+    if layer_dir.exists() and layer_dir.is_dir():
         shutil.rmtree(layer_dir)
 
-    return redirect(url_for("upload_history.upload_list"))
+    return redirect(url_for("upload_history.layer_upload_list"))

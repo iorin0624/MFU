@@ -1,0 +1,12 @@
+[Unit]
+Description=Run MFU Square reconciliation every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+Persistent=true
+Unit=mfu-square-reconcile.service
+
+[Install]
+WantedBy=timers.target

@@ -38,6 +38,7 @@ from .utils import (
     _require_mfu_login_redirect, _admin_csrf_token, _uuid_bytes_to_str, _event_admin_can_view, update_event_member_status,
 )
 from .albums import create_event_album
+from .album_naming import format_event_album_name
 from .payments import _ensure_payment_uuid_for_event
 from app.utils.db import get_db
 
@@ -769,7 +770,7 @@ def admin_event_new():
     cur.close(); db.close()
 
     # アルバム自動作成
-    album_id = create_event_album(title=title, event_id=new_id)
+    album_id = create_event_album(title=title, event_id=new_id, starts_at=(starts_at or None))
     db = get_db(); cur = db.cursor()
     cur.execute("UPDATE mfu_event SET album_id=%s WHERE id=%s", (album_id, new_id))
     db.commit(); cur.close(); db.close()
@@ -1230,6 +1231,7 @@ def admin_event_edit(event_id: int):
         qr_trademark_notice=QR_TRADEMARK_NOTICE)
 
         # === 保存処理 ===
+        event_album_name = format_event_album_name(title=title, starts_at=starts_at)
         dbu = get_db(); curu = dbu.cursor()
         try:
             curu.execute("""
@@ -1254,6 +1256,13 @@ def admin_event_edit(event_id: int):
                   album_id, memo_all,
                   allow_square, allow_paypay, allow_bank, tip_enabled, paypay_display,
                   event_id))
+
+            curu.execute("""
+                UPDATE albums
+                   SET album_name=%s
+                 WHERE event_id=%s
+                   AND access_mode='event'
+            """, (event_album_name, event_id))
 
             dbu.commit()
         finally:
@@ -1336,6 +1345,7 @@ def _fetch_event_members_in_admin_order(event_id: int):
             u.avatar_file,
             u.avatar_url,
             u.updated_at,
+            COALESCE(u.is_deleted, 0) AS is_deleted,
             COALESCE(m.is_host, 0)              AS is_host,
             COALESCE(m.is_subhost, 0)           AS is_subhost,
             COALESCE(m.participant_role, 'none') AS participant_role,

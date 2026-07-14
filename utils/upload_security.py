@@ -168,7 +168,11 @@ def ensure_upload_password_schema() -> None:
         columns = {row["Field"] for row in cur.fetchall()}
         if "password_hash" not in columns:
             cur.execute("ALTER TABLE uploads ADD COLUMN password_hash VARCHAR(255) NULL AFTER password")
-            db.commit()
+        if "upload_deleted_at" not in columns:
+            cur.execute("ALTER TABLE uploads ADD COLUMN upload_deleted_at DATETIME NULL AFTER created_at")
+        if "layer_deleted_at" not in columns:
+            cur.execute("ALTER TABLE uploads ADD COLUMN layer_deleted_at DATETIME NULL AFTER upload_deleted_at")
+        db.commit()
 
         if "password" not in columns:
             return
@@ -261,7 +265,10 @@ def fetch_upload_access_record(uuid: str) -> Optional[dict]:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT * FROM uploads WHERE uuid=%s", (uuid,))
+        cur.execute(
+            "SELECT * FROM uploads WHERE uuid=%s AND upload_deleted_at IS NULL",
+            (uuid,),
+        )
         upload = cur.fetchone()
         if not upload:
             return None

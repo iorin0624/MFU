@@ -60,16 +60,10 @@
 
 <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
 
-{% if not is_readonly %}
 <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}"
    class="btn btn-primary mb-3 ms-2">
   <span aria-hidden="true">⬆</span> 写真を追加
 </a>
-{% else %}
-<div class="alert alert-warning d-inline-block ms-2 mb-3">
-  このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
-</div>
-{% endif %}
 
 <!-- ✅ ギャラリー -->
 <div class="gallery">
@@ -124,11 +118,7 @@
       ※使用方法<br>
      1️⃣ 上で「加工用画像をダウンロード」を押す<br><br>
       2️⃣ 最新画像が<strong>別タブ</strong>で開くので、右クリック等で<strong>手動保存</strong>して加工<br><br>
-      {% if not is_readonly %}
       3️⃣ 「写真を追加」からアップロード（加工した写真をアップでロック解除）<br><br>
-      {% else %}
-      3️⃣ <strong>HDD保管中のためアップロードはできません。</strong>（解除や差し替えはできない状態です）<br><br>
-      {% endif %}
       4️⃣ 30分経過でも自動解除。間違えてしまった場合でも解除可能
     </p>
 

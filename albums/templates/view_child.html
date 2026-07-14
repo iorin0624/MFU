@@ -123,16 +123,10 @@
 
 <a href="{{ url_for('album.album_home', album_id=album_id) }}" class="btn btn-outline-secondary mb-3">← 親アルバムに戻る</a>
 
-{% if not is_readonly %}
 <a href="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}"
    class="btn btn-primary mb-3 ms-2">
   <span aria-hidden="true">⬆</span> 写真を追加
 </a>
-{% else %}
-<div class="alert alert-warning d-inline-block ms-2 mb-3">
-  このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
-</div>
-{% endif %}
 
 <!-- ✅ ギャラリー -->
 <div class="gallery selectable">
@@ -180,6 +174,7 @@
 {% endif %}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+<script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
 <script>
   /* ====== Lightbox ====== */
   window.addEventListener('DOMContentLoaded', ()=>{
@@ -378,41 +373,15 @@
   updateSelectionUI();
 
   /* 進行率UI */
-  let pollTimer=null;
   function fmtBytes(n){ if(!n&&n!==0) return "-"; const u=["B","KB","MB","GB","TB"]; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (Math.round(n*10)/10)+' '+u[i]; }
   function showProgress(){ document.getElementById('zip-progress')?.removeAttribute('hidden'); setupBottomSpacer(); }
   function hideProgress(){ document.getElementById('zip-progress')?.setAttribute('hidden',''); setProgress(0,"0%"); setupBottomSpacer(); }
   function setProgress(pct,text){ const f=document.getElementById('zip-progress-fill'); const t=document.getElementById('zip-progress-txt'); if(f) f.style.width=Math.max(0,Math.min(100,pct))+'%'; if(t) t.textContent=text; }
 
-  function startProgressPolling(key){
-    const q=encodeURIComponent(key); showProgress(); stopProgressPolling();
-    pollTimer=setInterval(async()=>{
-      try{
-        const res=await fetch(`/api/zip-progress?key=${q}`,{cache:'no-store'}); if(!res.ok) return;
-        const d=await res.json();
-
-        let pct = (typeof d.percent === 'number') ? d.percent : 0;
-        if (typeof d.percent !== 'number') {
-          const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
-          const totalF=d.total_files||0, doneF=d.processed_files||0;
-          pct = totalB?Math.floor(doneB*100/totalB):(totalF?Math.floor(doneF*100/totalF):0);
-        }
-        if (d.status === 'done') pct = 100;
-
-        const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
-        const totalF=d.total_files||0, doneF=d.processed_files||0;
-        const remain=(d.eta_seconds!=null&&isFinite(d.eta_seconds))?`・残り約${Math.max(0,Math.round(d.eta_seconds))}秒`:``;
-        setProgress(pct, `${pct}%（${doneF}/${totalF}・${fmtBytes(doneB)}/${fmtBytes(totalB)}${remain}）`);
-      }catch(_){ }
-    },500);
-  }
-  function stopProgressPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
-
   async function forceProgress100(key){
     try{
-      const res=await fetch(`/api/zip-progress?key=${encodeURIComponent(key)}`,{cache:'no-store'});
-      if (res.ok) {
-        const d=await res.json();
+      const d=await MFUZipDownload.readProgress(key);
+      if (d) {
         setProgress(100, `100%（${d.processed_files||d.total_files||'-'}/${d.total_files||'-'}・${fmtBytes(d.processed_bytes)||'-'}/${fmtBytes(d.total_bytes)||'-'}）`);
       } else {
         setProgress(100, "100%（完了）");
@@ -453,41 +422,34 @@
     setBtnText('ZIP生成中…');
 
     const idKey=(crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
-    startProgressPolling(idKey);
+    showProgress();
 
     const hideAfterMs = 1200;
 
     try{
-      const res=await fetch('/api/zip-stream',{
-        method:'POST',
-        headers:{ 'Content-Type':'application/json', 'X-CSRFToken': csrfToken, 'X-Idempotency-Key': idKey },
-        body: JSON.stringify({ paths })
+      const data=await MFUZipDownload.prepare({
+        paths,
+        csrfToken,
+        key:idKey,
+        onProgress:(d)=>{
+          const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
+          const totalF=d.total_files||0, doneF=d.processed_files||0;
+          const pct=(typeof d.percent==='number')?d.percent:(totalB?Math.floor(doneB*100/totalB):0);
+          const remain=(d.eta_seconds!=null&&isFinite(d.eta_seconds))?`・残り約${Math.max(0,Math.round(d.eta_seconds))}秒`:'';
+          setProgress(pct, `${pct}%（${doneF}/${totalF}・${fmtBytes(doneB)}/${fmtBytes(totalB)}${remain}）`);
+        }
       });
-
-      if(res.status===409){ setBtnText('既にZIP生成中です…'); scheduleReset(5000); return; }
-      if(!res.ok){
-        const text=await res.text().catch(()=>res.statusText);
-        console.error('ZIP error:', text);
-        setBtnText('エラーが発生しました'); scheduleReset(4000); return;
-      }
 
       await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
       setBtnText('生成完了—ダウンロードが始まります');
-
-      const cd=res.headers.get('Content-Disposition')||'';
-      const m=cd.match(/filename=([^;]+)/i);
-      const fn=(m? m[1].trim().replace(/^[\"']|[\"']$/g,'') : (idKey+'.zip'));
-      const blob=await res.blob();
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement('a'); a.href=url; a.download=fn;
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      MFUZipDownload.startDownload(data.download_url);
       scheduleReset(5000);
 
     }catch(e){
       console.error(e);
-      setBtnText('通信エラーが発生しました'); scheduleReset(4000);
+      setBtnText(e?.status===409?'既にZIP生成中です…':'通信エラーが発生しました'); scheduleReset(4000);
     }finally{
-      setTimeout(()=>{ stopProgressPolling(); hideProgress(); }, hideAfterMs);
+      setTimeout(hideProgress, hideAfterMs);
       btnZip.classList.remove('btn-busy');
       [btnAll, btnNone, btnShare].forEach(b=>{ if(b) b.disabled=false; });
       btnZip.disabled=false;

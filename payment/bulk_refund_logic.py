@@ -39,7 +39,7 @@ def build_preview_hash(*, secret: str, payment_event_id: int, payment_event_uuid
 def decide_bulk_refund_status(*, has_member: bool, member_event_match: bool, square_status: str, override_fee: int, diff: int, remaining: int) -> tuple[str, str]:
     if not has_member or not member_event_match:
         return "excluded", "missing_identity"
-    if (square_status or "").upper() not in ("AUTHORIZED", "APPROVED", "COMPLETED"):
+    if (square_status or "").upper() != "COMPLETED":
         return "excluded", "non_success_status"
     if int(override_fee or 0) > 0:
         return "manual", "member_fee_override_present"

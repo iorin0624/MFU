@@ -35,7 +35,14 @@
           <td>{{ item.folder_count }}</td>
           <td>{{ 'あり' if item.has_zip else 'なし' }}</td>
           <td>
-            <a href="{{ url_for('upload_history.layer_upload_detail', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary">詳細表示</a>
+            <div class="d-flex flex-wrap gap-2">
+              <a href="{{ url_for('upload_history.layer_upload_detail', uuid=item.uuid) }}" class="btn btn-sm btn-outline-primary">詳細表示</a>
+              <form action="{{ url_for('upload_history.layer_upload_delete', uuid=item.uuid) }}" method="post"
+                    onsubmit="return confirm('レイヤーアップロード履歴と受付データを削除します。通常アップロード側は削除されません。実行しますか？');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+                <button class="btn btn-sm btn-outline-danger">レイヤー側を削除</button>
+              </form>
+            </div>
           </td>
         </tr>
         {% endfor %}

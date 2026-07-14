@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, uuid, secrets
 from . import bp
+from .album_naming import format_event_album_name
 from app.utils.db import get_db
 
 # MySQL エラーコード（任意）
@@ -40,14 +41,15 @@ def _ensure_album_schema():
     finally:
         cur.close(); db.close()
 
-def create_event_album(*, title: str, event_id: int) -> str:
+def create_event_album(*, title: str, event_id: int, starts_at=None) -> str:
     """イベント専用アルバムを作成し、'event'モードで保護"""
     _ensure_album_schema()
     album_id = str(uuid.uuid4())
     access_token = secrets.token_bytes(32).hex()
+    album_name = format_event_album_name(title=title, starts_at=starts_at)
     db = get_db(); cur = db.cursor()
     cur.execute("""INSERT INTO albums (id, album_name, owner, access_token, event_id, access_mode)
                    VALUES (%s,%s,%s,%s,%s,'event')""",
-                (album_id, f"[イベント] {title}", 'system', access_token, event_id))
+                (album_id, album_name, 'system', access_token, event_id))
     db.commit(); cur.close(); db.close()
     return album_id

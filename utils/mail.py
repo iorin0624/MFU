@@ -51,6 +51,7 @@ def send_mail(
     subject: str,
     body: str,
     *,
+    cc: str | list[str] | tuple[str, ...] | set[str] | None = None,
     event_uuid: str | None = None,    # 後方互換性のため残す
     event_name: str | None = None,
     from_display_name: str | None = None,
@@ -90,13 +91,32 @@ def send_mail(
 
     from_address = "noreply@mail.iori0624.jp"
 
+    def _coerce_addresses(addresses) -> list[str]:
+        if not addresses:
+            return []
+        if isinstance(addresses, (list, tuple, set)):
+            raw_values = [str(x).strip() for x in addresses if str(x).strip()]
+        else:
+            raw_values = [str(addresses).strip()]
+        parsed = getaddresses(raw_values)
+        result: list[str] = []
+        seen: set[str] = set()
+        for _display, addr in parsed:
+            normalized = (addr or "").strip()
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(normalized)
+        return result
+
     # 宛先処理
-    if isinstance(to, (list, tuple, set)):
-        to_list = [str(x).strip() for x in to if str(x).strip()]
-        to_header = ", ".join(to_list)
-    else:
-        to_list = [str(to).strip()] if to else []
-        to_header = to_list[0] if to_list else ""
+    to_list = _coerce_addresses(to)
+    to_header = ", ".join(to_list)
+    cc_list = [addr for addr in _coerce_addresses(cc) if addr.lower() not in {to_addr.lower() for to_addr in to_list}]
+    cc_header = ", ".join(cc_list)
 
     if not to_list:
         _summary_log(False, "(none)", subject or "", "no recipients")
@@ -157,6 +177,8 @@ def send_mail(
     msg["Subject"] = subject or ""
     msg["From"] = formataddr((display_name, from_address))
     msg["To"] = to_header
+    if cc_header:
+        msg["Cc"] = cc_header
     msg["Reply-To"] = "admin@mail.iori0624.jp"  # 固定
     msg["Date"] = formatdate(localtime=True)
     mfu_mail_uuid, message_id = generate_message_id()
@@ -198,7 +220,7 @@ def send_mail(
             if debug:
                 print("[SMTP] EHLO(after TLS):", code, resp.decode() if isinstance(resp, bytes) else resp)
 
-        result = smtp.sendmail(from_address, to_list, msg.as_string())
+        result = smtp.sendmail(from_address, [*to_list, *cc_list], msg.as_string())
         if result:
             detail = "; ".join(f"{rcpt}:{info}" for rcpt, info in result.items())
             _summary_log(False, to_header, subject or "", detail)
@@ -211,6 +233,7 @@ def send_mail(
                 mfu_mail_uuid=mfu_mail_uuid,
                 message_id=message_id,
                 to_addresses=to_header,
+                cc_addresses=cc_list,
                 subject=subject or "",
                 submit_status="sent",
                 last_delivery_status="queued",
@@ -238,6 +261,7 @@ def send_mail(
                     mfu_mail_uuid=mfu_mail_uuid,
                     message_id=message_id,
                     to_addresses=to_header,
+                    cc_addresses=cc_list,
                     subject=subject or "",
                     submit_status="failed",
                     last_delivery_status="failed",
@@ -258,6 +282,7 @@ def send_mail(
                     mfu_mail_uuid=mfu_mail_uuid,
                     message_id=message_id,
                     to_addresses=to_header,
+                    cc_addresses=cc_list,
                     subject=subject or "",
                     submit_status="failed",
                     last_delivery_status="failed",
@@ -306,7 +331,12 @@ def send_mime(
         if extra:
             s += f" detail={extra}"
         log.info(s)
-        print(f"[SMTP] {s}")
+        line = f"[SMTP] {s}"
+        print(line)
+        try:
+            write_smtp_log(line)
+        except Exception:
+            log.warning("write_smtp_log failed", exc_info=True)
 
     envelope_from = parseaddr(msg.get("From", ""))[1] or "noreply@mail.iori0624.jp"
 
@@ -331,6 +361,7 @@ def send_mime(
         addr.strip() for _, addr in getaddresses([msg.get("Bcc")]) if addr and addr.strip()
     ] if msg.get("Bcc") else []
     rcpts: list[str] = [*to_rcpts, *cc_rcpts, *bcc_rcpts]
+    recipient_text = ", ".join(rcpts)
 
     if "Bcc" in msg:
         del msg["Bcc"]
@@ -365,12 +396,10 @@ def send_mime(
 
         result = smtp.sendmail(envelope_from, rcpts, msg.as_string())
         if result:
-            detail = "; ".join(f"{rcpt}:{info}" for rcpt, info in result.items())
-            _summary_log(False, ", ".join(rcpts), subj, detail)
             raise smtplib.SMTPRecipientsRefused(result)
 
         sent_ok = True
-        _summary_log(True, ", ".join(rcpts), subj)
+        _summary_log(True, recipient_text, subj)
         try:
             record_mail_submission(
                 mfu_mail_uuid=mfu_mail_uuid,
@@ -397,7 +426,7 @@ def send_mime(
         if sent_ok and ignore_quit_errors:
             log.info(f"SMTP post-send error ignored: {e}")
         else:
-            _summary_log(False, ", ".join(rcpts), subj, repr(e))
+            _summary_log(False, recipient_text, subj, repr(e))
             try:
                 record_mail_submission(
                     mfu_mail_uuid=mfu_mail_uuid,
@@ -417,7 +446,7 @@ def send_mime(
         if sent_ok and ignore_quit_errors:
             log.info(f"SMTP post-send generic error ignored: {e}")
         else:
-            _summary_log(False, ", ".join(rcpts), subj, repr(e))
+            _summary_log(False, recipient_text, subj, repr(e))
             try:
                 record_mail_submission(
                     mfu_mail_uuid=mfu_mail_uuid,

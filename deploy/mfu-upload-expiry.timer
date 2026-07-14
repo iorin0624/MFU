@@ -1,0 +1,12 @@
+[Unit]
+Description=Run MFU upload expiry and access-log retention every fifteen minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=30
+Persistent=true
+Unit=mfu-upload-expiry.service
+
+[Install]
+WantedBy=timers.target

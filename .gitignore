@@ -1,0 +1,26 @@
+# Secrets
+.env
+**/.env
+
+# Python caches and local environments
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.venv/
+venv/
+
+# Build work directories
+**/build/
+**/build_v*/
+**/_pyinstaller_work/
+
+# Completed applications stay local and are excluded from GitHub.
+tools/**/dist/
+tools/**/dist_v*/
+*.exe
+*.dll
+*.pyd
+*.pkg
+*.pyz

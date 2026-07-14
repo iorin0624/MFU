@@ -349,6 +349,61 @@ def checksum_file(path: Path) -> bytes:
     return digest.digest()
 
 
+def _file_row_for_virtual_path(cursor, path: str) -> tuple[dict, str]:
+    parent_path, name = _split_entry_path(path)
+    folder_id = _folder_id(cursor, parent_path)
+    cursor.execute(
+        "SELECT f.*, UNIX_TIMESTAMP(f.file_mtime) AS mtime_epoch "
+        "FROM image_viewer_files f "
+        "WHERE f.folder_id = %s AND f.display_name = %s AND f.status = 'active'",
+        (folder_id, name),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise CatalogNotFound("File not found")
+    return row, parent_path
+
+
+def file_properties(path: str) -> dict:
+    conn = get_db()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        row, folder_path = _file_row_for_virtual_path(cursor, path)
+        real_path = (ORIGINAL_ROOT / row["storage_relpath"]).resolve()
+        real_path.relative_to(ORIGINAL_ROOT.resolve())
+        stat = real_path.stat()
+        width = height = None
+        if str(row.get("media_type") or "") == "image":
+            try:
+                with Image.open(real_path) as image:
+                    width, height = image.size
+            except Exception:
+                pass
+        record = _record(row, folder_path)
+        suffix = Path(record["name"]).suffix
+        return {
+            "ok": True,
+            "entry": record,
+            "name": record["name"],
+            "stem": Path(record["name"]).stem,
+            "extension": suffix,
+            "virtualFolder": folder_path,
+            "virtualPath": record["path"],
+            "realPath": real_path.as_posix(),
+            "size": int(stat.st_size),
+            "created": int(stat.st_ctime),
+            "modified": int(stat.st_mtime),
+            "accessed": int(stat.st_atime),
+            "mediaType": row.get("media_type") or record.get("mediaType"),
+            "mimeType": row.get("mime_type") or mimetypes.guess_type(record["name"])[0],
+            "width": width,
+            "height": height,
+            "sha256": bytes(row["checksum_sha256"]).hex() if row.get("checksum_sha256") else checksum_file(real_path).hex(),
+        }
+    finally:
+        conn.close()
+
+
 def duplicate_groups() -> dict:
     conn = get_db()
     try:

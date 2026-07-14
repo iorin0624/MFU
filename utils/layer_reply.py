@@ -20,7 +20,16 @@ def layer_upload(uuid):
     db = get_db()
     cursor = db.cursor(dictionary=True)
 
-    cursor.execute("SELECT title, date, username FROM uploads WHERE uuid = %s AND mode = 'layer'", (uuid,))
+    cursor.execute(
+        """
+        SELECT title, date, username
+          FROM uploads
+         WHERE uuid = %s
+           AND mode = 'layer'
+           AND layer_deleted_at IS NULL
+        """,
+        (uuid,),
+    )
     upload = cursor.fetchone()
 
     if not upload:

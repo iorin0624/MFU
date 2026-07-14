@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}決済管理{% endblock %}
+{% block content %}
+<div class="py-3">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+    <div><h1 class="h3 mb-1">決済管理</h1><div class="text-muted small">新しい安全処理の開始日時: {{ health.managed_from or '-' }}</div></div>
+    <form method="post" action="/payment/admin/sync">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token_value }}">
+      <button class="btn btn-outline-primary" type="submit">新処理対象をSquareと同期</button>
+    </form>
+  </div>
+  {% if sync_result %}
+  <div class="alert {{ 'alert-danger' if sync_result.error else 'alert-success' }}">
+    {% if sync_result.error %}同期に失敗しました: {{ sync_result.error }}{% else %}
+    同期完了 — イベント {{ sync_result.event_checked }}件、返金 {{ sync_result.refund_checked }}件、請求書 {{ sync_result.invoice_checked }}件を確認し、{{ sync_result.updated }}件を更新しました。
+    {% if sync_result.errors %}エラー {{ sync_result.errors }}件{% endif %}{% if sync_result.unknown_without_id %} / Square ID未取得 {{ sync_result.unknown_without_id }}件{% endif %}
+    {% endif %}
+  </div>
+  {% endif %}
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">新・処理中決済</div><div class="fs-3 fw-bold">{{ health.managed_event_in_progress + health.managed_invoice_in_progress }}</div></div></div></div>
+    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">新・処理中返金</div><div class="fs-3 fw-bold">{{ health.managed_refund_in_progress }}</div></div></div></div>
+    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">新・返金エラー</div><div class="fs-3 fw-bold {{ 'text-danger' if health.managed_refund_failed else '' }}">{{ health.managed_refund_failed }}</div></div></div></div>
+    <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body"><div class="text-muted small">既存・保護対象</div><div class="fs-3 fw-bold">{{ health.protected_event_in_progress + health.protected_invoice_in_progress + health.protected_refund_in_progress }}</div><div class="small text-muted">自動更新しません</div></div></div></div>
+  </div>
+  <div class="alert alert-info py-2 small">既存の決済・返金は保護対象です。この画面の同期ボタンや自動同期では更新しません。</div>
+  <div class="row g-3">
+    <div class="col-12 col-md-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="h5">イベント決済</h2>
+          <p class="text-muted">イベント参加費・投げ銭・返金状況を確認します。</p>
+          <a class="btn btn-primary" href="/payment/admin/events">イベント決済を開く</a>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6">
+      <div class="card h-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="h5">請求書決済</h2>
+          <p class="text-muted">請求書の発行状況とカード決済状況を確認します。</p>
+          <a class="btn btn-outline-primary" href="/invoice/">請求書管理を開く</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

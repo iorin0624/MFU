@@ -124,6 +124,8 @@ INAPP_BROWSER_SETTINGS_DEFAULTS = {
     INAPP_BROWSER_REFERRER_PREFIXES_KEY: "\n".join(INAPP_BROWSER_DEFAULT_REFERRER_PREFIXES),
     INAPP_BROWSER_SKIP_PATHS_KEY: "\n".join(INAPP_BROWSER_DEFAULT_SKIP_PATHS),
 }
+UPLOAD_MAIL_DEFAULT_SENDER_NAME = "いおりん写真室"
+UPLOAD_MAIL_DEFAULT_CC = "admin@mail.iori0624.jp"
 
 # =====================================
 # 🚀 Flask アプリ構成
@@ -252,6 +254,7 @@ CSRF_SESSION_KEY = "csrf_token"
 _UPLOAD_SECURITY_SCHEMA_LOCK = threading.Lock()
 _upload_security_schema_ready = False
 _CSRF_PROTECTED_PREFIXES = (
+    "/admin/phone-whitelist",
     "/admin/users",
     "/admin/user-features",
     "/admin/features",
@@ -263,20 +266,24 @@ _CSRF_PROTECTED_PREFIXES = (
     "/admin/ticket-price",
     "/admin/restart",
     "/admin/logs/export",
+    "/payment/admin",
+    "/payment/api",
+    "/invoice/api/pay",
     "/templates",
     "/modes",
     "/upload_delete/",
+    "/layer_upload_delete/",
 )
 _CSRF_PROTECTED_PATHS = {
     "/submit_upload",
+    "/submit_upload/mail",
+    "/api/zip-prepare",
     "/api/zip-stream",
+    "/mobile-download/api/jobs",
     "/admin/fw/ban",
 }
 _CSRF_EXEMPT_PATHS = {
     "/login",
-    "/api/albums/upload",
-    "/api/albums/create",
-    "/api/albums/create_child",
 }
 
 
@@ -574,6 +581,16 @@ def _get_setting_value(key, default=None):
         db.close()
 
 
+def _set_setting_value(key, value):
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute("REPLACE INTO settings (`key`, `value`) VALUES (%s, %s)", (key, value))
+        db.commit()
+    finally:
+        db.close()
+
+
 def _get_multiline_setting_list(key, default_list):
     value = _get_setting_value(key)
     if value is None or not str(value).strip():
@@ -856,6 +873,15 @@ def index():
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    def _safe_next_url(value):
+        raw = (value or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        if parsed.scheme or parsed.netloc or not raw.startswith("/"):
+            return ""
+        return raw
+
     def _preauth_active():
         preauth_user = session.get("preauth_user")
         expires_at = session.get("preauth_expires_at")
@@ -872,6 +898,7 @@ def login():
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
+        next_url = _safe_next_url(request.form.get("next") or session.get("post_login_next") or request.args.get("next"))
         client_ip = ip_address(request.remote_addr)
 
         # ローカル判定
@@ -886,6 +913,8 @@ def login():
         cursor = db.cursor(dictionary=True)
 
         session.clear()
+        if next_url:
+            session["post_login_next"] = next_url
         cursor.execute(
             "SELECT password_hash, nickname, webhook_url FROM users WHERE username = %s",
             (username,),
@@ -925,10 +954,14 @@ def login():
                 except Exception:
                     pass
 
-            return redirect(url_for("upload"))
+            session.pop("post_login_next", None)
+            return redirect(next_url or url_for("upload"))
 
         return render_template("login.html", error="ログイン失敗", username=username)
 
+    next_url = _safe_next_url(request.args.get("next"))
+    if next_url:
+        session["post_login_next"] = next_url
     preauth_user = _preauth_active()
     return render_template(
         "login.html",
@@ -1179,6 +1212,7 @@ def submit_upload():
         uuid=uid, password=password, title=title,
         mode=mode, mode_label=mode_config.get("label", mode),
         date=date, message=message,
+        **_build_upload_done_mail_context({"title": title, "date": date}),
     )
 
 
@@ -1199,6 +1233,304 @@ def _fetch_upload_mode_and_user(username: str, mode: str):
     user_info = cursor.fetchone()
     db.close()
     return mode_config, user_info
+
+
+def _fetch_invoice_mail_candidates(limit: int = 500) -> list[dict]:
+    """請求書に登録済みの送付先メールアドレス候補を返す。"""
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    rows: list[dict] = []
+    try:
+        try:
+            cur.execute(
+                """
+                SELECT name, contact_name, email, updated_at
+                  FROM invoice_contacts
+                 WHERE email IS NOT NULL AND TRIM(email) <> ''
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT %s
+                """,
+                (limit,),
+            )
+            for row in cur.fetchall() or []:
+                rows.append({
+                    "source": "contact",
+                    "name": row.get("name") or "",
+                    "person": row.get("contact_name") or "",
+                    "email": row.get("email") or "",
+                })
+        except Exception as exc:
+            current_app.logger.warning("invoice contact mail candidates failed: %s", exc)
+
+        try:
+            cur.execute(
+                """
+                SELECT contact_name_snapshot AS name,
+                       contact_person_snapshot AS contact_name,
+                       contact_email_snapshot AS email,
+                       updated_at
+                  FROM invoice_headers
+                 WHERE contact_email_snapshot IS NOT NULL
+                   AND TRIM(contact_email_snapshot) <> ''
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT %s
+                """,
+                (limit,),
+            )
+            for row in cur.fetchall() or []:
+                rows.append({
+                    "source": "invoice",
+                    "name": row.get("name") or "",
+                    "person": row.get("contact_name") or "",
+                    "email": row.get("email") or "",
+                })
+        except Exception as exc:
+            current_app.logger.warning("invoice header mail candidates failed: %s", exc)
+    finally:
+        db.close()
+
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        email = str(row.get("email") or "").strip()
+        if not email:
+            continue
+        key = email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        name = str(row.get("name") or "").strip()
+        person = str(row.get("person") or "").strip()
+        source_label = "請求先" if row.get("source") == "contact" else "過去請求書"
+        label_parts = [part for part in (name, person) if part]
+        label = " / ".join(label_parts)
+        if label:
+            label = f"{label} <{email}>（{source_label}）"
+        else:
+            label = f"{email}（{source_label}）"
+        candidates.append({"email": email, "label": label})
+    return candidates
+
+
+def _format_upload_shooting_date(value) -> str:
+    if isinstance(value, (datetime, date_cls)):
+        return f"{value.year}年{value.month}月{value.day}日"
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = dateutil_parser.parse(raw)
+        return f"{parsed.year}年{parsed.month}月{parsed.day}日"
+    except Exception:
+        return raw
+
+
+def _build_upload_mail_subject(upload_row: dict) -> str:
+    date_label = _format_upload_shooting_date(upload_row.get("date"))
+    title = str(upload_row.get("title") or "").strip()
+    prefix = f"{date_label}撮影" if date_label else "撮影"
+    return f"{prefix}　{title}".strip()
+
+
+def _upload_mail_setting_key(username: str, field: str) -> str:
+    user_key = hashlib.sha256(str(username or "default").encode("utf-8")).hexdigest()[:16]
+    return f"upload_mail:{user_key}:{field}"
+
+
+def _get_upload_mail_preferences(username: str) -> dict:
+    sender_name = str(
+        _get_setting_value(
+            _upload_mail_setting_key(username, "sender_name"),
+            UPLOAD_MAIL_DEFAULT_SENDER_NAME,
+        )
+        or ""
+    ).strip() or UPLOAD_MAIL_DEFAULT_SENDER_NAME
+    cc_email = str(
+        _get_setting_value(
+            _upload_mail_setting_key(username, "cc"),
+            UPLOAD_MAIL_DEFAULT_CC,
+        )
+        or ""
+    ).strip()
+    return {"sender_name": sender_name, "cc_email": cc_email}
+
+
+def _save_upload_mail_preferences(username: str, *, sender_name: str, cc_email: str) -> None:
+    _set_setting_value(_upload_mail_setting_key(username, "sender_name"), sender_name)
+    _set_setting_value(_upload_mail_setting_key(username, "cc"), cc_email)
+
+
+def _split_upload_mail_addresses(value: str) -> list[str]:
+    addresses: list[str] = []
+    seen: set[str] = set()
+    for item in re.split(r"[,;\n]", str(value or "")):
+        address = item.strip()
+        if not address:
+            continue
+        key = address.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        addresses.append(address)
+    return addresses
+
+
+def _validate_upload_mail_addresses(value: str, *, field_label: str) -> str | None:
+    for address in _split_upload_mail_addresses(value):
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", address):
+            return f"{field_label}に不正なメールアドレスがあります: {address}"
+    return None
+
+
+def _build_upload_done_mail_context(upload_row: dict) -> dict:
+    prefs = _get_upload_mail_preferences(upload_row.get("username") or session.get("user", "default"))
+    return {
+        "mail_contacts": _fetch_invoice_mail_candidates(),
+        "mail_subject": _build_upload_mail_subject(upload_row),
+        "mail_sender_name": prefs["sender_name"],
+        "mail_cc": prefs["cc_email"],
+        "csrf_token_value": _get_csrf_token(),
+    }
+
+
+def _prepare_upload_completion(upload_row: dict, filenames: list[str] | None = None) -> dict:
+    """Web/desktop共通の完了テンプレートを生成し、messagesへ保存する。"""
+    uid = str(upload_row.get("uuid") or "").strip()
+    username = str(upload_row.get("username") or "").strip()
+    mode = str(upload_row.get("mode") or "").strip()
+    if not uid or not username or not mode:
+        raise ValueError("アップロード完了情報が不足しています。")
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            """
+            SELECT *
+              FROM upload_modes
+             WHERE mode = %s
+               AND (username = %s OR username IS NULL OR username = '' OR username = '*')
+             ORDER BY CASE
+                        WHEN username = %s THEN 0
+                        WHEN username = '*' THEN 1
+                        WHEN username = '' THEN 2
+                        WHEN username IS NULL THEN 3
+                        ELSE 9
+                      END
+             LIMIT 1
+            """,
+            (mode, username, username),
+        )
+        mode_config = cur.fetchone() or {}
+        cur.execute("SELECT nickname FROM users WHERE username = %s", (username,))
+        user_row = cur.fetchone() or {}
+        if filenames is None:
+            cur.execute(
+                "SELECT filename FROM files WHERE upload_id = %s ORDER BY id",
+                (upload_row.get("id"),),
+            )
+            filenames = [str(row.get("filename") or "") for row in (cur.fetchall() or [])]
+
+        public_base = (
+            current_app.config.get("PUBLIC_BASE_URL")
+            or os.environ.get("MFU_PUBLIC_BASE_URL")
+            or "https://mfu.iori0624.jp"
+        ).rstrip("/")
+        template_key = str(mode_config.get("template_key") or "").strip() or mode
+        date_value = upload_row.get("date")
+        expire_value = upload_row.get("expire_at")
+        date_text = date_value.strftime("%Y-%m-%d") if isinstance(date_value, (datetime, date_cls)) else str(date_value or "")
+        expire_text = expire_value.strftime("%Y-%m-%d") if isinstance(expire_value, (datetime, date_cls)) else str(expire_value or "")
+        context = {
+            "uid": uid,
+            "title": upload_row.get("title") or "",
+            "date": date_text,
+            "expire": expire_text,
+            "username": username,
+            "nickname": str(user_row.get("nickname") or "").strip() or username,
+            "base_url": public_base,
+            "link": f"{public_base}/view/{uid}" if mode_config.get("enable_download_url") else "",
+            "download_url": f"{public_base}/d/{uid}",
+            "manage_url": f"{public_base}/m/{uid}",
+            "layer_upload_url": f"{public_base}/layer_upload/{uid}" if mode_config.get("enable_layer_upload_url") else "",
+            "password": upload_row.get("password") or "",
+            "count": len(filenames or []),
+        }
+        try:
+            message = generate_message(template_key, context, username=username)
+        except Exception as exc:
+            current_app.logger.exception(
+                "upload completion template generation failed uid=%s template=%s",
+                uid,
+                template_key,
+            )
+            message = f"[テンプレ生成失敗: {exc}]"
+        cur.execute(
+            "REPLACE INTO messages (uuid, mode, message) VALUES (%s, %s, %s)",
+            (uid, template_key, message),
+        )
+        db.commit()
+        return {
+            "message": message,
+            "template_key": template_key,
+            "mode_config": mode_config,
+            "context": context,
+        }
+    finally:
+        cur.close()
+        db.close()
+
+
+@app.route("/upload/done/<uid>")
+def upload_done(uid: str):
+    if "user" not in session:
+        return redirect(url_for("login", next=request.path))
+    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+        abort(404)
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM uploads WHERE uuid = %s LIMIT 1", (uid,))
+        upload_row = cur.fetchone()
+        if not upload_row or upload_row.get("username") != session.get("user"):
+            abort(404)
+        cur.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uid,))
+        message_row = cur.fetchone() or {}
+    finally:
+        cur.close()
+        db.close()
+
+    message = str(message_row.get("message") or "").strip()
+    prepared = None
+    if not message:
+        prepared = _prepare_upload_completion(upload_row)
+        message = str(prepared.get("message") or "")
+    mode_config = (prepared or {}).get("mode_config") or {}
+    if not mode_config:
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        try:
+            cur.execute(
+                "SELECT label FROM upload_modes WHERE mode = %s AND (username = %s OR username IS NULL OR username = '' OR username = '*') ORDER BY CASE WHEN username = %s THEN 0 ELSE 1 END LIMIT 1",
+                (upload_row.get("mode"), upload_row.get("username"), upload_row.get("username")),
+            )
+            mode_config = cur.fetchone() or {}
+        finally:
+            cur.close()
+            db.close()
+
+    return render_template(
+        "done.html",
+        uuid=uid,
+        password=upload_row.get("password") or "",
+        title=upload_row.get("title") or "",
+        mode=upload_row.get("mode") or "",
+        mode_label=mode_config.get("label") or upload_row.get("mode") or "",
+        date=upload_row.get("date"),
+        message=message,
+        **_build_upload_done_mail_context(upload_row),
+    )
 
 
 def _save_upload_filestorage(file_storage, original_dir: str) -> tuple[bool, str, str]:
@@ -1407,7 +1739,89 @@ def submit_upload_finish():
         mode_label=mode_config.get("label", mode),
         date=date_value,
         message=message,
+        **_build_upload_done_mail_context(upload_row),
     )
+
+
+@app.route("/submit_upload/mail", methods=["POST"])
+def submit_upload_mail():
+    if "user" not in session:
+        return jsonify({"ok": False, "error": "login_required"}), 401
+
+    payload = request.get_json(silent=True) if request.is_json else None
+    if payload:
+        uid = str(payload.get("uuid") or "").strip()
+        to_email = str(payload.get("to_email") or "").strip()
+        sender_name = str(payload.get("sender_name") or "").strip()
+        cc_email = str(payload.get("cc_email") or "").strip()
+    else:
+        uid = str(request.form.get("uuid") or "").strip()
+        to_email = str(request.form.get("to_email") or "").strip()
+        sender_name = str(request.form.get("sender_name") or "").strip()
+        cc_email = str(request.form.get("cc_email") or "").strip()
+
+    if not re.fullmatch(r"[0-9a-f]{32}", uid):
+        return jsonify({"ok": False, "error": "invalid uuid"}), 400
+    if not to_email:
+        return jsonify({"ok": False, "error": "送信先メールアドレスを選択してください。"}), 400
+    if not sender_name:
+        sender_name = UPLOAD_MAIL_DEFAULT_SENDER_NAME
+    cc_error = _validate_upload_mail_addresses(cc_email, field_label="Cc")
+    if cc_error:
+        return jsonify({"ok": False, "error": cc_error}), 400
+    cc_list = _split_upload_mail_addresses(cc_email)
+    normalized_cc = ", ".join(cc_list)
+
+    candidates = _fetch_invoice_mail_candidates()
+    allowed_emails = {str(item.get("email") or "").strip().lower() for item in candidates}
+    if to_email.lower() not in allowed_emails:
+        return jsonify({"ok": False, "error": "請求書に登録されているメールアドレスを選択してください。"}), 400
+
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT * FROM uploads WHERE uuid = %s", (uid,))
+        upload_row = cur.fetchone()
+        if not upload_row or upload_row.get("username") != session.get("user"):
+            return jsonify({"ok": False, "error": "upload not found"}), 404
+
+        cur.execute("SELECT message FROM messages WHERE uuid = %s LIMIT 1", (uid,))
+        message_row = cur.fetchone()
+    finally:
+        db.close()
+
+    body = str((message_row or {}).get("message") or "").strip()
+    if not body:
+        return jsonify({"ok": False, "error": "送信する本文が見つかりません。"}), 400
+
+    subject = _build_upload_mail_subject(upload_row)
+    _save_upload_mail_preferences(
+        upload_row.get("username") or session.get("user", "default"),
+        sender_name=sender_name,
+        cc_email=normalized_cc,
+    )
+    try:
+        send_mail(
+            to_email,
+            subject=subject,
+            body=body,
+            cc=cc_list,
+            from_display_name=sender_name,
+            append_signature=False,
+            mail_kind="upload_photo_delivery",
+        )
+    except Exception as exc:
+        current_app.logger.exception("upload completion mail failed uid=%s to=%s", uid, to_email)
+        return jsonify({"ok": False, "error": f"メール送信に失敗しました: {exc}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "message": "メールを送信しました。",
+        "to_email": to_email,
+        "cc_email": normalized_cc,
+        "sender_name": sender_name,
+        "subject": subject,
+    })
 
 # --- サムネ完了待ち → 通知（バックグラウンド） ---
 def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, context, gen_thumbs: bool):
@@ -1455,13 +1869,6 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
             (logger.error if logger else print)(f"[通知] 例外: {e}")
         return
 
-    # ▼ 既存のサムネ生成キュー投入～完了待ち（ON時のみ動作）
-    try:
-        enqueue_thumb_job("upload", uid, "thumb")
-        (logger.info if logger else print)(f"enqueue_thumb_job done: upload/{uid}/thumb")
-    except Exception as e:
-        (logger.warning if logger else print)(f"[thumb] enqueue failed: {e}")
-
     def _count_ready():
         ready = 0
         for name in filenames:
@@ -1473,6 +1880,20 @@ def background_thumb_and_notify(uid, filenames, original_dir, thumb_dir, mode, c
         return ready
 
     expected = len(filenames)
+    ready_at_start = _count_ready()
+    if ready_at_start < expected:
+        try:
+            enqueue_thumb_job("upload", uid, "thumb")
+            (logger.info if logger else print)(
+                f"enqueue_thumb_job done: upload/{uid}/thumb missing={expected - ready_at_start}"
+            )
+        except Exception as e:
+            (logger.warning if logger else print)(f"[thumb] enqueue failed: {e}")
+    else:
+        (logger.info if logger else print)(
+            f"[thumb] client thumbnails already complete {ready_at_start}/{expected} uid={uid}; enqueue skipped"
+        )
+
     timeout_sec = max(120, min(1800, expected * 3))
     start = time.time()
     last_report = -1
@@ -1571,16 +1992,29 @@ def view_upload(uuid):
             base, _ = os.path.splitext(f)
             webp_path = os.path.join(thumb_dir, base + ".webp")
             if os.path.exists(webp_path):
-                thumbnails.append({"webp": base + ".webp", "fallback": f})
+                thumbnails.append({
+                    "webp": base + ".webp",
+                    "fallback": f,
+                    "mobile_jpeg": Path(f).suffix.lower() in {".jpg", ".jpeg"},
+                })
             else:
                 fallback_path = os.path.join(thumb_dir, f)
                 if os.path.exists(fallback_path):
-                    thumbnails.append({"webp": None, "fallback": f})
+                    thumbnails.append({
+                        "webp": None,
+                        "fallback": f,
+                        "mobile_jpeg": Path(f).suffix.lower() in {".jpg", ".jpeg"},
+                    })
 
     # ▼ サムネOFFのときはZIP一括DL（API方式）ボタンを表示
     show_zip_button = (not generate_thumbnails) and len(files) > 0
     # APIに渡す相対パス一覧（zip_stream.resolve_relpath が解決する仕様）
     all_relpaths = [f"uploads/{uuid}/original/{name}" for name in files]
+    jpeg_relpaths = [
+        f"uploads/{uuid}/original/{name}"
+        for name in files
+        if Path(name).suffix.lower() in {".jpg", ".jpeg"}
+    ]
     file_entries = [
         {
             "name": name,
@@ -1599,6 +2033,12 @@ def view_upload(uuid):
         uuid=uuid,
         show_zip_button=show_zip_button,
         all_relpaths=all_relpaths,  # ← 追加
+        jpeg_relpaths=jpeg_relpaths,
+        jpeg_count=len(jpeg_relpaths),
+        mobile_download_enabled=(
+            os.environ.get("MFU_MOBILE_DOWNLOAD_ENABLED", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        ),
         file_entries=file_entries,
     )
 
@@ -1683,17 +2123,23 @@ def download_zip_for_upload(uuid):
     safe_title = (upload["title"] or f"upload_{uuid}")[:60].replace("/", "_").replace("\\", "_")
     zip_path = os.path.join(zip_dir, f"{safe_title}.zip")
 
-    # 既存ZIPがあれば再利用（更新したければ削除してね運用）
+    # 既存ZIPがあれば再利用（写真はアップロード後に基本不変のためキャッシュする）
     if not os.path.exists(zip_path):
         import zipfile
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(zip_path, "w", allowZip64=True) as zf:
             for name in filenames:
                 src = os.path.join(original_dir, name)
                 if os.path.isfile(src):
-                    # ZIP内は素のファイル名で格納
-                    zf.write(src, arcname=name)
+                    # 画像は既に圧縮済みなのでZIP側では圧縮せず高速化する
+                    zf.write(src, arcname=name, compress_type=zipfile.ZIP_STORED)
 
-    return send_file(zip_path, as_attachment=True, download_name=os.path.basename(zip_path))
+    return send_file(
+        zip_path,
+        as_attachment=True,
+        download_name=os.path.basename(zip_path),
+        mimetype="application/zip",
+        conditional=True,
+    )
 
 
 # =======================================
@@ -2439,6 +2885,7 @@ def handle_forbidden(_error):
 # =======================================
 _ADMIN_LOGS_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _ADMINLOGS_IP_INDEX_EXISTS = None
+_ADMINLOGS_PATH_INDEX_EXISTS = None
 
 
 def _admin_logs_html_result_path(job_id: str) -> str:
@@ -2481,6 +2928,14 @@ def _adminlogs_ip_like(value: str) -> str:
     return f"%{value}%"
 
 
+_ADMINLOGS_INVOICE_MAIL_POST_RE = re.compile(r"^POST\s+/invoice/\d+/mail(?:\s|\?)", re.I)
+
+
+def _adminlogs_is_invoice_mail_post(log_text: str | None) -> bool:
+    """Keep successful invoice-mail redirects visible in the access log."""
+    return bool(_ADMINLOGS_INVOICE_MAIL_POST_RE.search(log_text or ""))
+
+
 def _adminlogs_has_ip_index(cursor) -> bool:
     global _ADMINLOGS_IP_INDEX_EXISTS
     if _ADMINLOGS_IP_INDEX_EXISTS is not None:
@@ -2491,6 +2946,18 @@ def _adminlogs_has_ip_index(cursor) -> bool:
     except Exception:
         _ADMINLOGS_IP_INDEX_EXISTS = False
     return _ADMINLOGS_IP_INDEX_EXISTS
+
+
+def _adminlogs_has_path_index(cursor) -> bool:
+    global _ADMINLOGS_PATH_INDEX_EXISTS
+    if _ADMINLOGS_PATH_INDEX_EXISTS is not None:
+        return _ADMINLOGS_PATH_INDEX_EXISTS
+    try:
+        cursor.execute("SHOW INDEX FROM logs WHERE Key_name = 'idx_logs_path'")
+        _ADMINLOGS_PATH_INDEX_EXISTS = bool(cursor.fetchone())
+    except Exception:
+        _ADMINLOGS_PATH_INDEX_EXISTS = False
+    return _ADMINLOGS_PATH_INDEX_EXISTS
 
 
 def _gc_adminlogs_jobs(ttl_seconds: int = 1800):
@@ -2637,6 +3104,10 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
     search_ua = _arg("search_ua")
     search_date_from = _arg("search_date_from")
     search_date_to = _arg("search_date_to")
+    has_path_prefix_filter = bool(
+        search_path.startswith("/")
+        and not any(char in search_path for char in ("*", "%", "_"))
+    )
 
     # 生のクエリ値
     raw_exclude_local = args_dict.get("exclude_local")
@@ -2980,7 +3451,7 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         where.append(f"NOT ({placeholders})")
         params.extend([p + "%" for p in LOCAL_SQL_LIKE_PREFIXES])
 
-    if exclude_suc and EXCLUDE_PATH_SQL_LIKES and not has_ip_prefix_filter:
+    if exclude_suc and EXCLUDE_PATH_SQL_LIKES and not has_ip_prefix_filter and not has_path_prefix_filter:
         placeholders = " OR ".join(["log_text LIKE %s"] * len(EXCLUDE_PATH_SQL_LIKES))
         where.append(f"NOT ({placeholders})")
         params.extend(EXCLUDE_PATH_SQL_LIKES)
@@ -3012,8 +3483,12 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
         where.append("method = %s")
         params.append(search_method.upper())
     if search_path:
-        where.append("(path LIKE %s OR log_text LIKE %s)")
-        params.extend([_adminlogs_like(search_path), _adminlogs_like(search_path)])
+        if has_path_prefix_filter:
+            where.append("path LIKE %s")
+            params.append(_adminlogs_like(search_path, mode="prefix"))
+        else:
+            where.append("(path LIKE %s OR log_text LIKE %s)")
+            params.extend([_adminlogs_like(search_path), _adminlogs_like(search_path)])
     if search_endpoint:
         where.append("(endpoint LIKE %s OR log_text LIKE %s)")
         params.extend([_adminlogs_like(search_endpoint), _adminlogs_like(search_endpoint)])
@@ -3028,7 +3503,9 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     logs_table_sql = "logs"
-    if has_ip_prefix_filter and _adminlogs_has_ip_index(cursor):
+    if has_path_prefix_filter and _adminlogs_has_path_index(cursor):
+        logs_table_sql = "logs FORCE INDEX (idx_logs_path)"
+    elif has_ip_prefix_filter and _adminlogs_has_ip_index(cursor):
         logs_table_sql = "logs FORCE INDEX (idx_logs_ip)"
 
     base_sql = f"SELECT id, log_date, ip, log_text FROM {logs_table_sql}"
@@ -3102,7 +3579,7 @@ def _build_admin_logs_html(args_dict: dict, progress_cb=None) -> str:
 
             if exclude_3xx:
                 st = _parse_status_code(text)
-                if st is not None and 300 <= st < 400:
+                if st is not None and 300 <= st < 400 and not _adminlogs_is_invoice_mail_post(text):
                     continue
 
             if kind == "SMTP" and smtp_filter != "ALL" and not _smtp_match(text, smtp_filter):
@@ -4288,8 +4765,6 @@ def admin_logs_export():
 from app.albums import album_bp
 app.register_blueprint(album_bp, url_prefix='/album')
 
-from app.albums.api_ext import album_api_up   # ← 追加
-app.register_blueprint(album_api_up)          # ← 追加
 
 from app.utils.upload_history import upload_history_bp
 app.register_blueprint(upload_history_bp)
@@ -4311,6 +4786,12 @@ app.register_blueprint(timer_bp)
 
 from app.utils.ext_api_uploads import ext_up; app.register_blueprint(ext_up)
 
+from app.utils.uploader_auth import uploader_auth_bp
+app.register_blueprint(uploader_auth_bp)
+
+from app.utils.mobile_download import mobile_download_bp
+app.register_blueprint(mobile_download_bp)
+
 from app.utils.zip_stream import zip_api
 app.register_blueprint(zip_api)
 
@@ -4319,6 +4800,9 @@ app.register_blueprint(bp_service_logs)
 
 from app.routes.webauthn_routes import webauthn_bp
 app.register_blueprint(webauthn_bp)
+
+from app.utils.media_clipboard_auth import media_clipboard_bp
+app.register_blueprint(media_clipboard_bp)
 
 from app.tickets import tickets_bp
 app.register_blueprint(tickets_bp)
@@ -4369,6 +4853,19 @@ register_bank_account(app)
 
 from app.ticket_price_research import ticket_price_research_bp
 app.register_blueprint(ticket_price_research_bp)
+
+from app.phone_whitelist import (
+    ensure_phone_whitelist_nav_item,
+    ensure_phone_whitelist_schema,
+    phone_whitelist_bp,
+)
+app.register_blueprint(phone_whitelist_bp)
+
+try:
+    ensure_phone_whitelist_schema()
+    ensure_phone_whitelist_nav_item()
+except Exception as exc:
+    app.logger.warning(f"phone whitelist schema/nav init skipped: {exc}")
 
 try:
     _ensure_upload_security_schema_once()

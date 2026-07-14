@@ -33,6 +33,20 @@ CREATE TABLE IF NOT EXISTS external_login_user (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 """
 
+DDL_EXTERNAL_LOGIN_DELETED_IDENTITY = """
+CREATE TABLE IF NOT EXISTS external_login_deleted_identity (
+  provider         VARCHAR(32)     NOT NULL,
+  identity_hash    CHAR(64)        NOT NULL,
+  original_user_id BIGINT UNSIGNED NULL,
+  deleted_at       DATETIME        NOT NULL,
+  deleted_by       VARCHAR(80)     NULL,
+  deletion_reason  VARCHAR(255)    NULL,
+  PRIMARY KEY (provider, identity_hash),
+  KEY idx_ext_deleted_identity_user (original_user_id),
+  KEY idx_ext_deleted_identity_deleted_at (deleted_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+"""
+
 # ★ 支払期間（pay_from / pay_until）をDDLに追加
 DDL_EVENT = """
 CREATE TABLE IF NOT EXISTS mfu_event (
@@ -215,6 +229,7 @@ def _on_bp_registered(state) -> None:
             db = get_db(); cur = db.cursor()
             # ベースDDL
             cur.execute(DDL_EXTERNAL)
+            cur.execute(DDL_EXTERNAL_LOGIN_DELETED_IDENTITY)
             cur.execute(DDL_EVENT)
             cur.execute(DDL_EVENT_MEMBER)
             cur.execute(DDL_ALBUM_PROCESS)

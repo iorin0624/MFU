@@ -29,13 +29,6 @@
     <div class="alert alert-info text-center">👤 所有ユーザー（{{ session.user }}）としてログイン中</div>
   {% endif %}
 
-  {# ★HDD保管中（読み取り専用）向けの注意喚起。is_readonly はビュー側で True を渡す #}
-  {% if is_readonly %}
-    <div class="alert alert-warning text-center mb-3">
-      このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、子アルバムの新規作成はできません。
-    </div>
-  {% endif %}
-
   {% if processing_list %}
   <div class="alert alert-warning mt-3">
     <div class="fw-bold">⏳ 現在加工中の子アルバム：</div>
@@ -50,8 +43,6 @@
   </div>
   {% endif %}
 
-  {# ★HDD保管時は作成UIを非表示 #}
-  {% if not is_readonly %}
   <!-- 作成フォーム表示トグルボタン -->
   <div class="mb-3">
     <button id="toggleCreateFormBtn"
@@ -108,8 +99,6 @@
       </div>
     </form>
   </div>
-  {% endif %}
-
   <!-- 凡例 -->
   <div class="mb-2">
     <span class="badge badge-mode badge-normal">📸 写真</span>

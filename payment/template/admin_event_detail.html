@@ -1,217 +1,112 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <title>イベント詳細（管理）</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>code.small{font-size:.9em}</style>
-</head>
-<body class="container py-4">
-  <div class="d-flex align-items-center justify-content-between mb-2">
-    <h1 class="h4">イベント詳細</h1>
-    <div class="d-flex gap-2">
-      <a class="btn btn-sm btn-outline-secondary" href="/payment/admin/events">一覧へ</a>
-      <a class="btn btn-sm btn-outline-primary" href="/payment/admin/events/{{ event.id }}/export.csv">CSV出力</a>
-      <a class="btn btn-sm btn-warning" href="{{ bulk_refund_url }}">一括差額返金</a>
-    </div>
+{% extends "base.html" %}
+{% block title %}{{ event.title }} - 決済管理{% endblock %}
+{% block head_extra %}
+<style>
+  .payment-detail{--pay-primary:#2563eb;--pay-ink:#172033;--pay-muted:#64748b;--pay-border:#e2e8f0;--pay-bg:#f8fafc}
+  .payment-detail .page-title{font-weight:800;color:var(--pay-ink);letter-spacing:-.02em}
+  .breadcrumb-link{font-size:.85rem;color:var(--pay-muted);text-decoration:none}.breadcrumb-link:hover{color:var(--pay-primary)}
+  .summary-card,.info-card,.filter-card,.payment-panel{border:1px solid var(--pay-border);border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  .summary-card{padding:17px;height:100%}.summary-label{font-size:.76rem;color:var(--pay-muted);font-weight:700}.summary-value{font-size:1.45rem;font-weight:800;color:var(--pay-ink);margin-top:4px}
+  .info-card,.filter-card{padding:18px}.payment-panel{overflow:hidden}
+  .status-pill{display:inline-flex;align-items:center;border-radius:999px;padding:5px 10px;font-size:.76rem;font-weight:750}
+  .status-success{background:#ecfdf5;color:#047857}.status-warning{background:#fffbeb;color:#b45309}.status-danger{background:#fef2f2;color:#b91c1c}.status-secondary{background:#f1f5f9;color:#64748b}
+  .kind-tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}.kind-tab{white-space:nowrap;text-decoration:none;color:#64748b;font-weight:700;font-size:.88rem;padding:9px 14px;border-radius:10px}.kind-tab.active{background:#eff6ff;color:#1d4ed8}
+  .pay-table{margin:0}.pay-table thead th{background:var(--pay-bg);color:#475569;font-size:.76rem;padding:13px 15px;white-space:nowrap}.pay-table td{padding:15px;vertical-align:middle;border-color:#edf2f7}
+  .participant-name{font-weight:750;color:var(--pay-ink)}.subtext{font-size:.78rem;color:var(--pay-muted);line-height:1.5}.amount-main{font-weight:800;color:var(--pay-ink)}
+  .url-box{background:var(--pay-bg);border:1px solid var(--pay-border);border-radius:10px;padding:10px 12px;display:flex;gap:10px;align-items:center}.url-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:ui-monospace,monospace;font-size:.78rem;color:#475569}
+  .mobile-payment-card{border:1px solid var(--pay-border);border-radius:16px;background:#fff;padding:16px;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  @media(max-width:767.98px){.desktop-payments{display:none}.payment-detail{padding-top:.5rem!important}.summary-value{font-size:1.2rem}.header-actions{width:100%}.header-actions .btn{flex:1}.url-box{align-items:stretch;flex-direction:column}.url-text{white-space:normal;overflow-wrap:anywhere}}
+  @media(min-width:768px){.mobile-payments{display:none}}
+</style>
+{% endblock %}
+{% block content %}
+<div class="payment-detail py-4">
+  <a class="breadcrumb-link" href="/payment/admin/events">← 決済イベント一覧</a>
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mt-2 mb-4">
+    <div><div class="d-flex align-items-center gap-2 mb-1"><h1 class="page-title h3 mb-0">{{ event.title }}</h1><span class="status-pill {{ 'status-success' if event.is_active else 'status-secondary' }}">{{ '受付中' if event.is_active else '停止中' }}</span></div><div class="text-muted">{{ event.date or '開催日未設定' }} ・ イベントID {{ event.id }}</div></div>
+    <div class="header-actions d-flex gap-2"><a class="btn btn-outline-secondary" href="/payment/admin/events/{{ event.id }}/export.csv">CSV</a><a class="btn btn-warning" href="{{ bulk_refund_url }}">一括差額返金</a></div>
   </div>
 
-  <!-- イベント基本情報 -->
-  <div class="mb-4">
-    <div><strong>ID:</strong> {{ event.id }}</div>
-    <div><strong>タイトル:</strong> {{ event.title }}</div>
-    <div><strong>日付:</strong> {{ event.date or '-' }}</div>
-    <div><strong>状態:</strong> {{ 'Active' if event.is_active else 'Inactive' }}</div>
-
-    <div class="mt-2">
-      <strong>参加者向けリンク:</strong>
-      <div><a href="{{ pay_url }}" target="_blank">{{ pay_url }}</a></div>
-      <div class="text-muted"><code class="small">{{ pay_url }}</code></div>
-    </div>
-
-    <div class="mt-3 d-flex align-items-center gap-3">
-      <div><strong>既定金額:</strong> ¥<span id="current-amount">{{ event.default_amount }}</span></div>
-      <button type="button" class="btn btn-sm btn-outline-primary"
-              data-bs-toggle="modal" data-bs-target="#amountModal">
-        金額を変更
-      </button>
-    </div>
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg"><div class="summary-card"><div class="summary-label">完了決済</div><div class="summary-value">{{ summary.payment_count }}<span class="fs-6 fw-normal text-muted">件</span></div></div></div>
+    <div class="col-6 col-lg"><div class="summary-card"><div class="summary-label">総決済額</div><div class="summary-value">¥{{ "{:,}".format(summary.gross_yen) }}</div></div></div>
+    <div class="col-6 col-lg"><div class="summary-card"><div class="summary-label">返金額</div><div class="summary-value">¥{{ "{:,}".format(summary.refunded_yen) }}</div></div></div>
+    <div class="col-6 col-lg"><div class="summary-card"><div class="summary-label">差引決済額</div><div class="summary-value text-primary">¥{{ "{:,}".format(summary.net_yen) }}</div></div></div>
+    <div class="col-12 col-lg"><div class="summary-card"><div class="summary-label">要確認</div><div class="summary-value {{ 'text-danger' if summary.pending_count or summary.failed_count else 'text-success' }}">{{ summary.pending_count + summary.failed_count }}<span class="fs-6 fw-normal text-muted">件</span></div><div class="subtext">処理中 {{ summary.pending_count }} / 失敗 {{ summary.failed_count }}</div></div></div>
   </div>
 
-  <!-- 金額変更モーダル（同テンプレ内） -->
-  <div class="modal fade" id="amountModal" tabindex="-1" aria-labelledby="amountModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h2 class="modal-title h6" id="amountModalLabel">既定金額の変更</h2>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
-        </div>
-        <form id="amount-form" action="/payment/admin/events/{{ event.id }}/amount" method="post"
-              data-current="{{ event.default_amount }}">
-          <div class="modal-body">
-            <div class="mb-2 text-muted small">
-              この金額は参加者向けの決済ページに<strong>即時反映</strong>されます（既存の決済レコードは変わりません）。
-            </div>
-            <label for="default_amount" class="form-label">新しい既定金額（円）</label>
-            <input id="default_amount" name="default_amount" type="number" min="1" step="1"
-                   class="form-control" value="{{ event.default_amount }}" required>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">キャンセル</button>
-            <button type="submit" class="btn btn-primary">変更する</button>
-          </div>
-        </form>
-      </div>
+  <section class="info-card mb-4">
+    <div class="row g-3 align-items-center">
+      <div class="col-12 col-lg-4"><div class="subtext">現在の参加費</div><div class="d-flex align-items-center gap-2"><div class="h4 fw-bold mb-0">¥<span id="current-amount">{{ "{:,}".format(event.default_amount|int) }}</span></div><button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="modal" data-bs-target="#amountModal">変更</button></div></div>
+      <div class="col-12 col-lg-8"><div class="subtext mb-1">決済ページ</div><div class="url-box"><span class="url-text flex-grow-1" id="payUrlText">{{ pay_url }}</span><div class="d-flex gap-2"><button class="btn btn-sm btn-outline-primary js-copy-url" type="button" data-copy="{{ pay_url }}">コピー</button><a class="btn btn-sm btn-outline-secondary" href="{{ pay_url }}" target="_blank" rel="noopener">開く</a></div></div></div>
     </div>
-  </div>
+  </section>
 
-  <div class="d-flex flex-wrap justify-content-between align-items-center mt-4 mb-2 gap-2">
-    <h2 class="h5 mb-0">
-      決済一覧
-      {% if kind_filter == 'tip' %}（投げ銭）{% elif kind_filter == 'event_fee' %}（参加費）{% else %}（全て）{% endif %}
-    </h2>
-    <div class="btn-group btn-group-sm" role="group" aria-label="payment kind filters">
-      <a class="btn btn-outline-secondary {% if kind_filter == 'event_fee' %}active{% endif %}" href="/payment/admin/events/{{ event.id }}?kind=event_fee">参加費</a>
-      <a class="btn btn-outline-secondary {% if kind_filter == 'tip' %}active{% endif %}" href="/payment/admin/events/{{ event.id }}?kind=tip">投げ銭</a>
-      <a class="btn btn-outline-secondary {% if kind_filter == 'all' %}active{% endif %}" href="/payment/admin/events/{{ event.id }}?kind=all">全て</a>
+  <section class="filter-card mb-3">
+    <div class="kind-tabs mb-3">
+      <a class="kind-tab {{ 'active' if kind_filter == 'event_fee' }}" href="{{ url_for('payment.admin_event_detail', event_id=event.id, kind='event_fee') }}">参加費 {{ kind_counts.event_fee }}</a>
+      <a class="kind-tab {{ 'active' if kind_filter == 'tip' }}" href="{{ url_for('payment.admin_event_detail', event_id=event.id, kind='tip') }}">投げ銭 {{ kind_counts.tip }}</a>
+      <a class="kind-tab {{ 'active' if kind_filter == 'all' }}" href="{{ url_for('payment.admin_event_detail', event_id=event.id, kind='all') }}">すべて {{ kind_counts.all }}</a>
     </div>
-  </div>
-  <div class="table-responsive">
-    <table class="table table-sm table-striped align-middle">
-      <thead>
-        <tr>
-          <th>日時</th><th>ニックネーム</th><th>金額</th><th>返金済/残</th><th>ステータス</th>
-          <th>決済手段</th><th>ブランド</th><th>下4桁</th><th>X</th><th>Instagram</th><th>レシート</th><th class="text-end">返金</th>
-        </tr>
-      </thead>
+    <form method="get" class="row g-2 align-items-end">
+      <input type="hidden" name="kind" value="{{ kind_filter }}">
+      <div class="col-12 col-lg-5"><label class="form-label small fw-semibold" for="paymentSearch">参加者を検索</label><input id="paymentSearch" class="form-control" name="q" value="{{ search_query }}" placeholder="ニックネーム・X・Instagram・メール"></div>
+      <div class="col-6 col-lg-2"><label class="form-label small fw-semibold" for="paymentStatus">状態</label><select id="paymentStatus" class="form-select" name="status"><option value="all" {% if status_filter == 'all' %}selected{% endif %}>すべて</option><option value="completed" {% if status_filter == 'completed' %}selected{% endif %}>完了</option><option value="pending" {% if status_filter == 'pending' %}selected{% endif %}>処理中</option><option value="failed" {% if status_filter == 'failed' %}selected{% endif %}>失敗</option><option value="refunded" {% if status_filter == 'refunded' %}selected{% endif %}>返金あり</option></select></div>
+      <div class="col-6 col-lg-3"><label class="form-label small fw-semibold" for="paymentMethod">決済方法</label><select id="paymentMethod" class="form-select" name="method"><option value="all" {% if method_filter == 'all' %}selected{% endif %}>すべて</option><option value="card" {% if method_filter == 'card' %}selected{% endif %}>カード</option><option value="apple_pay" {% if method_filter == 'apple_pay' %}selected{% endif %}>Apple Pay</option><option value="google_pay" {% if method_filter == 'google_pay' %}selected{% endif %}>Google Pay</option></select></div>
+      <div class="col-12 col-lg-2 d-grid"><button class="btn btn-primary" type="submit">絞り込む</button></div>
+    </form>
+  </section>
+
+  <div class="d-flex justify-content-between align-items-center mb-2"><h2 class="h5 fw-bold mb-0">決済一覧</h2><span class="text-muted small">{{ total_items }}件</span></div>
+  <div class="payment-panel desktop-payments">
+    <table class="table pay-table">
+      <thead><tr><th>日時・状態</th><th>参加者</th><th>決済方法</th><th>金額</th><th>レシート</th><th class="text-end">操作</th></tr></thead>
       <tbody>
       {% for p in payments %}
         <tr id="p{{ p.id }}">
-          <td>{{ p.created_at }}</td>
-          <td>{{ p.nickname }}</td>
-          <td>{{ p.amount_yen }}</td>
-          <td>{{ p.refunded_yen }} / <strong>{{ p.remaining_yen }}</strong></td>
-          <td>{{ p.square_status }}</td>
-
-          <!-- 決済手段：Apple/Google/手打ち の3分類のみ表示 -->
-          <td>
-            {% set wt = (p.wallet_type or '')|upper %}
-            {% if wt == 'APPLE_PAY' %}
-              Apple Pay
-            {% elif wt == 'GOOGLE_PAY' %}
-              Google Pay
-            {% else %}
-              手動
-            {% endif %}
-          </td>
-
-          <!-- ブランド／下4桁は別列でそのまま -->
-          <td>{{ p.card_brand or '-' }}</td>
-          <td>{{ p.card_last4 or '-' }}</td>
-
-          <td>{{ p.x_id or '-' }}</td>
-          <td>{{ p.instagram_id or '-' }}</td>
-          <td>
-            {% if p.square_receipt_url %}
-              <a href="{{ p.square_receipt_url }}" target="_blank">レシート</a>
-            {% else %}-{% endif %}
-          </td>
-          <td class="text-end" style="min-width:240px;">
-            {% if p.square_status in ['AUTHORIZED','COMPLETED'] and p.remaining_yen > 0 %}
-              <form class="d-flex gap-1 justify-content-end js-refund-form"
-                    action="/payment/admin/refund/{{ p.id }}" method="post"
-                    data-nickname="{{ p.nickname }}" data-remaining="{{ p.remaining_yen }}">
-                <input name="amount_yen" type="number" min="1" max="{{ p.remaining_yen }}"
-                       placeholder="金額" class="form-control form-control-sm" style="width:90px;">
-                <input name="reason" type="text" placeholder="理由(任意)"
-                       class="form-control form-control-sm" style="width:120px;">
-                <button class="btn btn-sm btn-outline-secondary js-fill-all" type="button">全額</button>
-                <button class="btn btn-sm btn-danger" type="submit">返金</button>
-              </form>
-            {% else %}
-              <span class="text-muted">—</span>
-            {% endif %}
-          </td>
+          <td><div class="subtext mb-1">{{ p.created_at }}</div><span class="status-pill status-{{ p.status_class }}">{{ p.status_label }}</span></td>
+          <td><div class="participant-name">{{ p.nickname or '名称未設定' }}</div>{% if p.x_id %}<div class="subtext">X: @{{ p.x_id }}</div>{% endif %}{% if p.instagram_id %}<div class="subtext">Instagram: @{{ p.instagram_id }}</div>{% endif %}</td>
+          <td><div class="fw-semibold">{{ p.method_label }}</div><div class="subtext">{{ p.card_brand or 'ブランド不明' }}{% if p.card_last4 %} •••• {{ p.card_last4 }}{% endif %}</div></td>
+          <td><div class="amount-main">¥{{ "{:,}".format(p.amount_yen|int) }}</div>{% if p.refunded_yen %}<div class="subtext">返金 ¥{{ "{:,}".format(p.refunded_yen|int) }} / 残 ¥{{ "{:,}".format(p.remaining_yen|int) }}</div>{% endif %}</td>
+          <td>{% if p.square_receipt_url %}<a class="btn btn-sm btn-outline-secondary" href="{{ p.square_receipt_url }}" target="_blank" rel="noopener">表示</a>{% else %}<span class="subtext">なし</span>{% endif %}</td>
+          <td class="text-end">{% if p.can_refund %}<button class="btn btn-sm btn-outline-danger js-refund-open" type="button" data-payment-id="{{ p.id }}" data-nickname="{{ p.nickname|e }}" data-remaining="{{ p.remaining_yen }}" data-bs-toggle="modal" data-bs-target="#refundModal">返金</button>{% else %}<span class="subtext">—</span>{% endif %}</td>
         </tr>
-      {% else %}
-        <tr><td colspan="12" class="text-muted">（決済はまだありません）</td></tr>
-      {% endfor %}
+      {% else %}<tr><td colspan="6" class="text-center text-muted py-5">条件に一致する決済はありません。</td></tr>{% endfor %}
       </tbody>
     </table>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-  <script>
-    // 金額変更：確認してから送信、成功後は見出しの数字も即時更新
-    (function () {
-      const form = document.getElementById('amount-form');
-      if (!form) return;
-      const input = document.getElementById('default_amount');
-      const currentSpan = document.getElementById('current-amount');
+  <div class="mobile-payments d-grid gap-3">
+    {% for p in payments %}
+      <article class="mobile-payment-card" id="mp{{ p.id }}">
+        <div class="d-flex justify-content-between gap-2 mb-2"><div><div class="participant-name">{{ p.nickname or '名称未設定' }}</div><div class="subtext">{{ p.created_at }}</div></div><span class="status-pill status-{{ p.status_class }} align-self-start">{{ p.status_label }}</span></div>
+        <div class="row g-2 my-2"><div class="col-6"><div class="subtext">決済方法</div><div class="fw-semibold">{{ p.method_label }}</div><div class="subtext">{{ p.card_brand or '-' }}{% if p.card_last4 %} •••• {{ p.card_last4 }}{% endif %}</div></div><div class="col-6"><div class="subtext">決済額</div><div class="amount-main">¥{{ "{:,}".format(p.amount_yen|int) }}</div>{% if p.refunded_yen %}<div class="subtext">返金 ¥{{ "{:,}".format(p.refunded_yen|int) }}</div>{% endif %}</div></div>
+        {% if p.x_id or p.instagram_id %}<div class="subtext border-top pt-2 mt-2">{% if p.x_id %}X: @{{ p.x_id }}{% endif %}{% if p.x_id and p.instagram_id %}<br>{% endif %}{% if p.instagram_id %}Instagram: @{{ p.instagram_id }}{% endif %}</div>{% endif %}
+        <div class="d-flex gap-2 mt-3">{% if p.square_receipt_url %}<a class="btn btn-outline-secondary flex-grow-1" href="{{ p.square_receipt_url }}" target="_blank" rel="noopener">レシート</a>{% endif %}{% if p.can_refund %}<button class="btn btn-outline-danger flex-grow-1 js-refund-open" type="button" data-payment-id="{{ p.id }}" data-nickname="{{ p.nickname|e }}" data-remaining="{{ p.remaining_yen }}" data-bs-toggle="modal" data-bs-target="#refundModal">返金</button>{% endif %}</div>
+      </article>
+    {% else %}<div class="text-center text-muted py-5">条件に一致する決済はありません。</div>{% endfor %}
+  </div>
 
-      form.addEventListener('submit', function (e) {
-        const current = Number(form.dataset.current || 0);
-        const v = Number(input.value || 0);
-        if (!Number.isInteger(v) || v <= 0) {
-          e.preventDefault();
-          alert('金額は 1 以上の整数で入力してください。');
-          return;
-        }
-        const msg = `既定金額を ¥${v.toLocaleString()} に変更します。\n（現在: ¥${current.toLocaleString()}）\n\nよろしいですか？`;
-        if (!confirm(msg)) {
-          e.preventDefault();
-          return;
-        }
-        try { currentSpan.textContent = v.toLocaleString(); } catch(_) {}
-      });
+  {% if total_pages > 1 %}<nav class="mt-4" aria-label="決済一覧ページ"><ul class="pagination justify-content-center"><li class="page-item {{ 'disabled' if page <= 1 }}"><a class="page-link" href="{{ url_for('payment.admin_event_detail', event_id=event.id, kind=kind_filter, status=status_filter, method=method_filter, q=search_query, page=page-1) }}">前へ</a></li><li class="page-item disabled"><span class="page-link">{{ page }} / {{ total_pages }}</span></li><li class="page-item {{ 'disabled' if page >= total_pages }}"><a class="page-link" href="{{ url_for('payment.admin_event_detail', event_id=event.id, kind=kind_filter, status=status_filter, method=method_filter, q=search_query, page=page+1) }}">次へ</a></li></ul></nav>{% endif %}
 
-      // モーダルを開くたびに最新の値で初期化
-      const modalEl = document.getElementById('amountModal');
-      modalEl.addEventListener('show.bs.modal', () => {
-        const cur = Number(currentSpan.textContent.replace(/[^\d]/g,'') || form.dataset.current);
-        input.value = cur || form.dataset.current;
-      });
-    })();
+  <div class="modal fade" id="amountModal" tabindex="-1" aria-labelledby="amountModalLabel" aria-hidden="true"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><h2 class="modal-title h5" id="amountModalLabel">参加費を変更</h2><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button></div><form id="amount-form" action="/payment/admin/events/{{ event.id }}/amount" method="post" data-current="{{ event.default_amount }}"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><div class="modal-body"><p class="text-muted small">変更後の金額は新しい決済に反映されます。既存の決済額は変わりません。</p><label class="form-label" for="default_amount">新しい参加費</label><div class="input-group"><span class="input-group-text">¥</span><input id="default_amount" name="default_amount" class="form-control" type="number" min="1" step="1" value="{{ event.default_amount }}" required></div></div><div class="modal-footer"><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">キャンセル</button><button class="btn btn-primary" type="submit">変更する</button></div></form></div></div></div>
 
-    // 返金前の確認ダイアログ
-    document.querySelectorAll('.js-refund-form').forEach(form => {
-      const amtInput = form.querySelector('input[name="amount_yen"]');
-      const reasonInput = form.querySelector('input[name="reason"]');
-      const remaining = Number(form.dataset.remaining || 0);
-      const nickname = form.dataset.nickname || '';
+  <div class="modal fade" id="refundModal" tabindex="-1" aria-labelledby="refundModalLabel" aria-hidden="true"><div class="modal-dialog modal-dialog-centered"><div class="modal-content"><div class="modal-header"><div><h2 class="modal-title h5" id="refundModalLabel">返金内容の確認</h2><div class="subtext" id="refundTarget"></div></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button></div><form id="refundForm" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><div class="modal-body"><label class="form-label" for="refundAmount">返金額</label><div class="input-group mb-3"><span class="input-group-text">¥</span><input id="refundAmount" name="amount_yen" class="form-control" type="number" min="1" required><button class="btn btn-outline-secondary" id="refundAll" type="button">全額</button></div><label class="form-label" for="refundReason">返金理由</label><input id="refundReason" name="reason" class="form-control" placeholder="例：参加費変更による差額返金"></div><div class="modal-footer"><button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">キャンセル</button><button class="btn btn-danger" type="submit">この内容で返金</button></div></form></div></div></div>
+</div>
+{% endblock %}
+{% block body_extra %}
+<script>
+  document.querySelectorAll('.js-copy-url').forEach(button=>button.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(button.dataset.copy||'');const before=button.textContent;button.textContent='コピー済み';setTimeout(()=>button.textContent=before,1500)}catch(_){alert('URLをコピーできませんでした。')}}));
 
-      const fillAllBtn = form.querySelector('.js-fill-all');
-      if (fillAllBtn) {
-        fillAllBtn.addEventListener('click', () => {
-          amtInput.value = String(remaining);
-          amtInput.dispatchEvent(new Event('input'));
-        });
-      }
+  const amountForm=document.getElementById('amount-form');
+  amountForm?.addEventListener('submit',event=>{const current=Number(amountForm.dataset.current||0);const value=Number(document.getElementById('default_amount').value||0);if(!Number.isInteger(value)||value<=0||!confirm(`参加費を ¥${value.toLocaleString()} に変更します。\n現在: ¥${current.toLocaleString()}\n\nよろしいですか？`))event.preventDefault()});
 
-      form.addEventListener('submit', (e) => {
-        let amount = Number(amtInput.value || 0);
-        if (!amount || amount <= 0) amount = remaining;
-        if (amount <= 0) {
-          e.preventDefault();
-          alert('返金可能な残額がありません。');
-          return;
-        }
-        const reason = (reasonInput.value || '').trim();
-        const msg =
-`以下の内容で返金します。
-
-対象: ${nickname || '（名称未設定）'}
-金額: ¥${amount.toLocaleString()}
-理由: ${reason || '（なし）'}
-
-よろしいですか？`;
-        if (!confirm(msg)) {
-          e.preventDefault();
-          return;
-        }
-      });
-    });
-  </script>
-</body>
-</html>
+  const refundForm=document.getElementById('refundForm');
+  const refundAmount=document.getElementById('refundAmount');
+  const refundReason=document.getElementById('refundReason');
+  let refundRemaining=0;
+  document.querySelectorAll('.js-refund-open').forEach(button=>button.addEventListener('click',()=>{refundRemaining=Number(button.dataset.remaining||0);refundForm.action=`/payment/admin/refund/${button.dataset.paymentId}`;refundAmount.max=String(refundRemaining);refundAmount.value=String(refundRemaining);refundReason.value='';document.getElementById('refundTarget').textContent=`${button.dataset.nickname||'名称未設定'} / 返金可能額 ¥${refundRemaining.toLocaleString()}`}));
+  document.getElementById('refundAll')?.addEventListener('click',()=>{refundAmount.value=String(refundRemaining)});
+  refundForm?.addEventListener('submit',event=>{const amount=Number(refundAmount.value||0);if(amount<=0||amount>refundRemaining){event.preventDefault();alert('返金可能額の範囲で入力してください。');return}if(!confirm(`¥${amount.toLocaleString()} を返金します。\nこの操作は取り消せません。よろしいですか？`))event.preventDefault()});
+</script>
+{% endblock %}
