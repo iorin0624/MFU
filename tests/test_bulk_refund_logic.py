@@ -30,15 +30,21 @@ class BulkRefundLogicTest(unittest.TestCase):
 
     def test_already_refunded(self):
         status, reason = decide_bulk_refund_status(
-            has_member=True, member_event_match=True, square_status="AUTHORIZED", override_fee=0, diff=300, remaining=0
+            has_member=True, member_event_match=True, square_status="COMPLETED", override_fee=0, diff=300, remaining=0
         )
         self.assertEqual((status, reason), ("excluded", "already_refunded"))
 
     def test_eligible(self):
         status, reason = decide_bulk_refund_status(
-            has_member=True, member_event_match=True, square_status="APPROVED", override_fee=0, diff=200, remaining=500
+            has_member=True, member_event_match=True, square_status="COMPLETED", override_fee=0, diff=200, remaining=500
         )
         self.assertEqual((status, reason), ("eligible", "eligible"))
+
+    def test_approved_payment_is_not_refundable_until_completed(self):
+        status, reason = decide_bulk_refund_status(
+            has_member=True, member_event_match=True, square_status="APPROVED", override_fee=0, diff=200, remaining=500
+        )
+        self.assertEqual((status, reason), ("excluded", "non_success_status"))
 
     def test_preview_hash_stable(self):
         rows = [
@@ -70,17 +76,17 @@ class BulkRefundLogicTest(unittest.TestCase):
 
 class ReceiptTemplateGuardTest(unittest.TestCase):
     def test_receipt_template_uses_receipt_note_not_admin_note(self):
-        tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "receipt_pdf.html").read_text()
+        tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "receipt_pdf.html").read_text(encoding="utf-8")
         self.assertIn("receipt.receipt_note", tpl)
         self.assertNotIn("admin_note", tpl)
 
 
     def test_admin_member_edit_has_receipt_note_input(self):
-        tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "admin_member_edit.html").read_text()
+        tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "admin_member_edit.html").read_text(encoding="utf-8")
         self.assertIn('name="receipt_note"', tpl)
 
     def test_receipt_template_uses_wareki_like_labels(self):
-        tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "receipt_pdf.html").read_text()
+        tpl = (Path(__file__).resolve().parents[1] / "external_login_user" / "template" / "receipt_pdf.html").read_text(encoding="utf-8")
         self.assertIn("issue_date_label", tpl)
         self.assertIn("pay_date_label", tpl)
         self.assertNotIn("%Y-%m-%d", tpl)

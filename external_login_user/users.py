@@ -45,6 +45,7 @@ from . import bp, oauth
 
 from app.utils.db import get_db
 from app.utils.mail import send_mail
+from .identity_lock import is_deleted_identity_locked
 from .utils import (
     LINE_CLIENT_ID, LINE_CLIENT_SECRET, LINE_REDIRECT_URI,
     _require_ext_login, _is_mfu_logged_in, _uuid_bytes_to_str,
@@ -71,6 +72,7 @@ from .utils import (
     _privacy_policy_date_label,
     _sanitize_ext_local_url,
     _is_disallowed_ext_redirect_path,
+    is_withdrawn_ext_user,
 )
 from .admin import (
     _recalc_event_fee_if_auto,
@@ -170,6 +172,7 @@ def _build_participants_png_payload(event_id: int, event_title: str) -> tuple[by
     target_members = [
         r for r in rows
         if str(r.get("status") or "").strip().lower() == "approved" and int(r.get("is_canceled") or 0) == 0
+        and not is_withdrawn_ext_user(r)
     ]
     png_data = _render_participants_png(event_title or "", target_members)
     png_data.seek(0)
@@ -1617,6 +1620,27 @@ def line_callback():
     sub = (prof or {}).get("userId")
     if not sub:
         flash("LINEユーザーIDを取得できませんでした。", "error")
+        return redirect(url_for("external_login_user.index"))
+
+    lock_db = get_db(); lock_cur = lock_db.cursor()
+    try:
+        identity_locked = is_deleted_identity_locked(lock_cur, provider="line", social_id=sub)
+    finally:
+        try: lock_cur.close(); lock_db.close()
+        except Exception: pass
+
+    if identity_locked:
+        for key in (
+            "ext_user_id",
+            "ext_user_social_id",
+            "ext_user_nickname",
+            "ext_user_need_email",
+            "ext_after_login_next",
+            "ext_after_verify_next",
+        ):
+            session.pop(key, None)
+        current_app.logger.warning("deleted LINE identity login blocked")
+        flash("このLINEアカウントは退会済みのため、再登録できません。", "error")
         return redirect(url_for("external_login_user.index"))
 
     session["ext_user_social_id"] = sub
@@ -3390,6 +3414,13 @@ def update_my_process(event_uuid: str):
 # =========================
 @bp.route("/logout")
 def logout():
+    # イベント連携アルバムの閲覧許可だけを破棄（通常のトークン式は維持）
+    try:
+        from app.albums.routes import clear_event_album_auth
+        clear_event_album_auth()
+    except Exception:
+        current_app.logger.warning("failed to clear event album auth on logout", exc_info=True)
+
     # 主要キーを削除
     for k in ("ext_user_id", "ext_user_social_id", "ext_user_nickname",
               "ext_after_login_next", "ext_user_onboarding",
@@ -3440,6 +3471,7 @@ def member_list(event_uuid: str):
               u.avatar_file,
               u.avatar_url,
               u.updated_at,
+              COALESCE(u.is_deleted, 0) AS is_deleted,
               m.participant_role,
               m.costume_label,
               m.is_host,
@@ -3464,7 +3496,7 @@ def member_list(event_uuid: str):
     for r in rows:
         if isinstance(r, tuple):
             (uid, nickname, x_id, ig_id, a_file, a_url, upd_at,
-             role, costume, is_host, is_subhost, checkin_at) = r
+             is_deleted, role, costume, is_host, is_subhost, checkin_at) = r
         else:
             uid        = r["id"]
             nickname   = r["nickname"]
@@ -3473,11 +3505,15 @@ def member_list(event_uuid: str):
             a_file     = r["avatar_file"]
             a_url      = r["avatar_url"]
             upd_at     = r["updated_at"]
+            is_deleted = r["is_deleted"]
             role       = r["participant_role"]
             costume    = r["costume_label"]
             is_host    = r["is_host"]
             is_subhost = r["is_subhost"]
             checkin_at = r["checkin_at"]
+
+        if is_withdrawn_ext_user({"nickname": nickname, "is_deleted": is_deleted}):
+            continue
 
         # キャッシュバスター付きアイコンURL
         try:
@@ -3561,6 +3597,7 @@ def member_sns_clip(event_uuid: str):
               u.avatar_file,
               u.avatar_url,
               u.updated_at,
+              COALESCE(u.is_deleted, 0) AS is_deleted,
               m.participant_role,
               m.costume_label,
               m.is_host,
@@ -3587,7 +3624,7 @@ def member_sns_clip(event_uuid: str):
     for r in rows:
         if isinstance(r, tuple):
             (uid, nickname, x_id, ig_id, a_file, a_url, upd_at,
-             role, costume, is_host, is_subhost, checkin_at) = r
+             is_deleted, role, costume, is_host, is_subhost, checkin_at) = r
         else:
             uid        = r["id"]
             nickname   = r["nickname"]
@@ -3596,11 +3633,15 @@ def member_sns_clip(event_uuid: str):
             a_file     = r["avatar_file"]
             a_url      = r["avatar_url"]
             upd_at     = r["updated_at"]
+            is_deleted = r["is_deleted"]
             role       = r["participant_role"]
             costume    = r["costume_label"]
             is_host    = r["is_host"]
             is_subhost = r["is_subhost"]
             checkin_at = r["checkin_at"]
+
+        if is_withdrawn_ext_user({"nickname": nickname, "is_deleted": is_deleted}):
+            continue
 
         members.append({
             "user_id": uid,

@@ -21,6 +21,7 @@
     <div id="mfa-info" class="alert alert-info text-center d-none"></div>
 
     <form method="post" data-preauth-active="{{ 'true' if preauth_active else 'false' }}" data-preauth-username="{{ preauth_username or '' }}">
+      <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
       <div class="mb-3">
         <label for="username" class="form-label">ユーザー名</label>
         <input type="text" id="username" name="username" class="form-control" required value="{{ preauth_username or username or '' }}">

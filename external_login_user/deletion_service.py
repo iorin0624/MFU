@@ -8,6 +8,7 @@ from typing import Any
 from flask import current_app
 
 from app.utils.db import get_db
+from .identity_lock import lock_deleted_identity
 
 _AVATAR_ROOT = Path("/mnt/mfu/avatars")
 
@@ -38,6 +39,7 @@ def anonymize_external_user(*, user_id: int, executed_by: str, reason: str | Non
     now_token = int(time.time())
     avatar_file_for_delete = None
     changed = {
+        "identity_locked": 0,
         "cards_soft_deleted": 0,
         "push_deleted": 0,
         "resume_tokens_deleted": 0,
@@ -69,8 +71,19 @@ def anonymize_external_user(*, user_id: int, executed_by: str, reason: str | Non
 
         anonymized_nickname = f"退会済みユーザー#{int(user_id)}"
         deleted_social_id = f"deleted:{int(user_id)}:{now_token}"
+        original_social_id = str(user.get("social_id") or "").strip()
         avatar_file_for_delete = (user.get("avatar_file") or "").strip() or None
         deletion_note = f"[anonymized {time.strftime('%Y-%m-%d %H:%M:%S')} by {executed_by}]"
+
+        lock_deleted_identity(
+            cur,
+            provider="line",
+            social_id=original_social_id,
+            user_id=int(user_id),
+            deleted_by=(executed_by or "admin"),
+            reason=reason,
+        )
+        changed["identity_locked"] = 1
 
         set_sql = [
             "nickname=%s",

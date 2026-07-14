@@ -40,14 +40,10 @@
     }
     .zip-toolbar .primary{ background:#28a745; color:#fff; border-color:#1e8a37; }
     .zip-toolbar .primary:hover{ background:#1f933d; }
+    .zip-toolbar .app-action{ background:#1267d6; color:#fff; border-color:#0d56b6; }
+    .zip-toolbar .app-action:hover{ background:#0f5fc9; }
     .zip-toolbar button:hover, .zip-toolbar a.btn:hover{ filter:brightness(.98); }
     .zip-toolbar button:disabled{ opacity:.6; cursor:not-allowed; }
-
-    /* 選択枚数バッジ */
-    .sel-count{
-      font-weight:700; font-size:.95rem; color:#333;
-      background:#f0f0f0; padding:.45em .75em; border-radius:999px;
-    }
 
     /* 進行率バー */
     .zip-progress{ flex:1 1 100%; display:flex; align-items:center; gap:.6em; margin-top:.2em; }
@@ -74,7 +70,6 @@
       .zip-toolbar button, .zip-toolbar a.btn{ font-size:.92rem; padding:.55em .8em; min-width:7.3em; border-radius:8px; }
       .zip-progress .bar{ height:8px; } .zip-progress .txt{ font-size:.8rem; }
       .gallery a img{ width:120px; } .item{ width:130px; }
-      .sel-count{ font-size:.9rem; padding:.35em .65em; }
     }
   </style>
 </head>
@@ -100,7 +95,12 @@
       {% for thumb in thumbnails %}
         <div class="item">
           <label class="pick" title="この写真を選択">
-            <input type="checkbox" class="pick-file" data-path="{{ upload.uuid + '/original/' + thumb.fallback }}">
+            <input
+              type="checkbox"
+              class="pick-file"
+              data-path="{{ upload.uuid + '/original/' + thumb.fallback }}"
+              {% if thumb.mobile_jpeg %}data-mobile-path="{{ upload.uuid + '/original/' + thumb.fallback }}"{% endif %}
+            >
             <span>選択</span>
           </label>
 
@@ -125,9 +125,11 @@
     {# ▼ 下部固定ツールバー #}
     <div class="zip-toolbar" aria-label="ダウンロードツールバー（下部固定）" role="group">
       {% if show_zip_button %}
-        <!-- サムネ無し：API方式のZIP一括ダウンロード（緑のprimaryボタン） -->
-        <button id="btn-zip-all" class="primary" type="button" aria-describedby="zip-status">ZIP一括ダウンロード</button>
-        <button id="btn-share-all" type="button" aria-describedby="zip-status">共有</button>
+        <!-- サムネ無し：ブラウザ標準ダウンロード（サーバー側キャッシュ再利用） -->
+        <a id="btn-zip-all-direct" class="btn primary" href="{{ url_for('download_zip_for_upload', uuid=uuid) }}" aria-describedby="zip-status">ZIP一括ダウンロード</a>
+        {% if mobile_download_enabled and jpeg_count > 0 %}
+        <button id="btn-app-all" class="app-action" type="button">全画像をアプリに保存</button>
+        {% endif %}
         <div id="zip-progress" class="zip-progress" hidden>
           <div class="bar"><span id="zip-progress-fill" class="fill"></span></div>
           <div id="zip-progress-txt" class="txt">0%</div>
@@ -137,9 +139,10 @@
         <!-- サムネ有り：選択UI＋ZIP生成 -->
         <button id="btn-all"  type="button">全選択</button>
         <button id="btn-none" type="button">全解除</button>
-        <span id="sel-count" class="sel-count" aria-live="polite">選択中: 0枚</span>
-        <button id="btn-zip"  class="primary" type="button" aria-describedby="zip-status" disabled>選択した写真をZIPダウンロード</button>
-        <button id="btn-share" type="button" aria-describedby="zip-status" disabled>共有</button>
+        <button id="btn-zip"  class="primary" type="button" aria-describedby="zip-status" disabled>0枚をZIPダウンロード</button>
+        {% if mobile_download_enabled and jpeg_count > 0 %}
+        <button id="btn-app" class="app-action" type="button" disabled>0枚を写真アプリに保存</button>
+        {% endif %}
 
         <div id="zip-progress" class="zip-progress" hidden>
           <div class="bar"><span id="zip-progress-fill" class="fill"></span></div>
@@ -150,6 +153,7 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/baguettebox.js/1.11.1/baguetteBox.min.js"></script>
+    <script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
 
     <script>
       // 下部バーの余白確保は常時
@@ -173,117 +177,29 @@
         if (txt)  txt.textContent = text;
       }
       const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-      const FILE_ENTRIES = {{ file_entries|tojson }};
-      function toAbsoluteUrl(urlLike){
-        if (!urlLike) return '';
-        try { return new URL(urlLike, location.href).href; }
-        catch(_){ return ''; }
-      }
-      function extractFilename(value, fallback='image.jpg'){
-        const raw = (value || '').split('/').pop() || '';
-        const clean = decodeURIComponent(raw).trim();
-        return clean || fallback;
-      }
-      function safeFilename(nameHint, mimeType='image/jpeg'){
-        const fallbackExt = (mimeType.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi,'') || 'jpg';
-        const base = (nameHint || 'image').replace(/[\\/:*?"<>|\u0000-\u001F]/g,'_').trim();
-        const file = base || `image.${fallbackExt}`;
-        return /\.[a-z0-9]{2,5}$/i.test(file) ? file : `${file}.${fallbackExt}`;
-      }
-      function mimeTypeFromName(name=''){
-        const lower = `${name}`.toLowerCase();
-        if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-        if (lower.endsWith('.png')) return 'image/png';
-        if (lower.endsWith('.webp')) return 'image/webp';
-        if (lower.endsWith('.gif')) return 'image/gif';
-        return 'image/jpeg';
-      }
-      function isShareCanceled(error){
-        const msg = `${error?.message || ''}`.toLowerCase();
-        return error?.name === 'AbortError' || error?.name === 'NotAllowedError' || msg.includes('cancel');
-      }
-      async function collectFileForShare(entry){
-        const absoluteUrl = toAbsoluteUrl(entry?.url || '');
-        if (!absoluteUrl) throw new Error('image url not found');
-        const res = await fetch(absoluteUrl, { credentials:'include', cache:'no-store' });
-        if (!res.ok) throw new Error(`fetch failed: ${res.status}`);
-        const blob = await res.blob();
-        const filename = extractFilename(entry?.name || absoluteUrl);
-        const mimeType = blob.type || mimeTypeFromName(filename);
-        return new File([blob], safeFilename(filename, mimeType), { type: mimeType });
-      }
-      async function mapWithConcurrency(items, limit, worker){
-        const out = [];
-        let index = 0;
-        const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-          while (index < items.length) {
-            const i = index++;
-            out[i] = await worker(items[i], i);
-          }
+      const FULL_ZIP_URL = "{{ url_for('download_zip_for_upload', uuid=uuid) }}";
+      const UPLOAD_UUID = {{ uuid|tojson }};
+
+      async function createMobileDownloadJob(paths) {
+        const response = await fetch('/mobile-download/api/jobs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': CSRF_TOKEN,
+          },
+          body: JSON.stringify({ upload_uuid: UPLOAD_UUID, paths }),
         });
-        await Promise.all(runners);
-        return out;
-      }
-      async function shareFileEntries(entries, options = {}){
-        const { fallbackMessage = 'この端末では共有に対応していません。ZIPダウンロードをご利用ください。' } = options;
-        if (!entries.length) {
-          alert('共有する画像がありません');
-          return false;
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data?.ok || !data?.app_url) {
+          throw new Error(data?.error || 'mobile_download_job_failed');
         }
-        if (!navigator.share) {
-          alert(fallbackMessage);
-          return false;
-        }
-        try {
-          const files = await mapWithConcurrency(entries, 3, collectFileForShare);
-          if (files.length && navigator.canShare?.({ files })) {
-            await navigator.share({ files, title:'MFU', text:'' });
-            return true;
-          }
-          if (entries.length === 1) {
-            await navigator.share({ url: toAbsoluteUrl(entries[0].url || ''), title:'MFU' });
-            return true;
-          }
-          alert(fallbackMessage);
-          return false;
-        } catch (error) {
-          if (!isShareCanceled(error)) {
-            console.error('shareFileEntries failed:', error);
-            alert('共有の準備に失敗しました。ZIPダウンロードをご利用ください。');
-          }
-          return false;
-        }
+        return data;
       }
-      let pollTimer = null;
-      function startProgressPolling(key){
-        const q = encodeURIComponent(key);
-        showProgress();
-        stopProgressPolling();
-        pollTimer = setInterval(async () => {
-          try{
-            const res = await fetch(`/api/zip-progress?key=${q}`, {cache:'no-store'});
-            if(!res.ok) return;
-            const d = await res.json();
-            let pct = (typeof d.percent === 'number') ? d.percent : null;
-            if (pct === null) {
-              const totalB = d.total_bytes||0, doneB = d.processed_bytes||0;
-              const totalF = d.total_files||0, doneF = d.processed_files||0;
-              pct = totalB ? Math.floor(doneB*100/totalB) : (totalF ? Math.floor(doneF*100/totalF) : 0);
-            }
-            if (d.status === 'done') pct = 100;
-            const totalB = d.total_bytes||0, doneB = d.processed_bytes||0;
-            const totalF = d.total_files||0, doneF = d.processed_files||0;
-            const remain = (d.eta_seconds!=null && isFinite(d.eta_seconds)) ? `・残り約${Math.max(0,Math.round(d.eta_seconds))}秒` : '';
-            setProgress(pct, `${pct}%（${doneF}/${totalF}・${fmtBytes(doneB)}/${fmtBytes(totalB)}${remain}）`);
-          }catch(_){}
-        }, 500);
-      }
-      function stopProgressPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
+
       async function forceProgress100(key){
         try{
-          const res = await fetch(`/api/zip-progress?key=${encodeURIComponent(key)}`, {cache:'no-store'});
-          if (res.ok) {
-            const d = await res.json();
+          const d = await MFUZipDownload.readProgress(key);
+          if (d) {
             const totalB = d.total_bytes||0, doneB = d.total_bytes||d.processed_bytes||0;
             const totalF = d.total_files||0, doneF = d.total_files||d.processed_files||0;
             setProgress(100, `100%（${doneF}/${totalF}・${fmtBytes(doneB)}/${fmtBytes(totalB)}）`);
@@ -314,26 +230,29 @@
         const btnAll  = document.getElementById('btn-all');
         const btnNone = document.getElementById('btn-none');
         const btnZip  = document.getElementById('btn-zip');
-        const btnShare = document.getElementById('btn-share');
+        const btnApp  = document.getElementById('btn-app');
         const statusEl = document.getElementById('zip-status');
-        const countEl = document.getElementById('sel-count');
 
-        const defaultLabel = btnZip?.textContent || '選択した写真をZIPダウンロード';
         let resetTimer = null;
         let inflight = false;
-
         const setBtnText = (t) => { if(btnZip){ btnZip.textContent = t; announce(t); requestAnimationFrame(setupBottomSpacer); } };
         const announce = (t) => { if(statusEl){ statusEl.textContent = t; } };
         const scheduleReset = (ms=5000) => {
           if(resetTimer) clearTimeout(resetTimer);
-          resetTimer = setTimeout(()=>{ setBtnText(defaultLabel); }, ms);
+          resetTimer = setTimeout(updateSelectedCount, ms);
         };
 
         const updateSelectedCount = () => {
           const cnt = $$('.pick-file:checked').length;
-          if (countEl) countEl.textContent = `選択中: ${cnt}枚`;
+          if (!inflight) {
+            setBtnText(`${cnt}枚をZIPダウンロード`);
+          }
           if (btnZip) btnZip.disabled = inflight || cnt === 0;
-          if (btnShare) btnShare.disabled = inflight || cnt === 0;
+          const jpegCount = $$('.pick-file:checked[data-mobile-path]').length;
+          if (btnApp) {
+            btnApp.textContent = `${jpegCount}枚を写真アプリに保存`;
+            btnApp.disabled = inflight || jpegCount === 0;
+          }
         };
 
         updateSelectedCount();
@@ -342,77 +261,82 @@
         btnAll?.addEventListener('click', () => { $$('.pick-file').forEach(el => el.checked = true); updateSelectedCount(); });
         btnNone?.addEventListener('click', () => { $$('.pick-file').forEach(el => el.checked = false); updateSelectedCount(); });
 
-        btnShare?.addEventListener('click', async () => {
+        btnApp?.addEventListener('click', async () => {
           if (inflight) return;
-          const selectedNames = new Set(
-            $$('.pick-file:checked').map(el => (el.dataset.path || '').split('/').pop()).filter(Boolean)
-          );
-          const entries = FILE_ENTRIES.filter(entry => selectedNames.has(entry.name));
-          await shareFileEntries(entries, {
-            fallbackMessage: 'この端末では複数枚の共有保存が難しいため、ZIPダウンロードをご利用ください。'
-          });
+          const paths = $$('.pick-file:checked[data-mobile-path]').map(el => el.dataset.mobilePath).filter(Boolean);
+          if (!paths.length) { alert('JPEG画像を選択してください'); return; }
+          inflight = true;
+          [btnZip, btnApp, btnAll, btnNone].forEach(b => { if (b) b.disabled = true; });
+          btnApp.classList.add('btn-busy');
+          btnApp.textContent = 'アプリを準備中…';
+          try {
+            const data = await createMobileDownloadJob(paths);
+            btnApp.textContent = 'アプリを開きます';
+            window.location.assign(data.app_url);
+          } catch (error) {
+            console.error(error);
+            alert('アプリ用ダウンロードの準備に失敗しました。');
+          } finally {
+            inflight = false;
+            btnApp.classList.remove('btn-busy');
+            updateSelectedCount();
+            [btnAll, btnNone].forEach(b => { if (b) b.disabled = false; });
+          }
         });
 
         btnZip?.addEventListener('click', async () => {
           if (inflight) return;
           const paths = $$('.pick-file:checked').map(el => el.dataset.path).filter(Boolean);
           if (!paths.length) { alert('ファイルを選択してください'); return; }
+          const totalSelectable = $$('.pick-file').length;
 
           inflight = true;
-          [btnZip, btnShare, btnAll, btnNone].forEach(b=>{ if(b){ b.disabled = true; } });
+          [btnZip, btnApp, btnAll, btnNone].forEach(b=>{ if(b){ b.disabled = true; } });
           if (btnZip) btnZip.classList.add('btn-busy');
-          setBtnText('ZIP生成中…');
+          setBtnText(`${paths.length}枚のZIPを準備中…`);
 
           const idKey = (crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
-          startProgressPolling(idKey);
+          showProgress();
 
           const hideAfterMs = 1200;
 
           try {
-            const res = await fetch('/api/zip-stream', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey, 'X-CSRF-Token': CSRF_TOKEN },
-              body: JSON.stringify({ paths })
-            });
-
-            if (res.status === 409) {
-              setBtnText('既にZIP生成中です…');
+            if (paths.length === totalSelectable) {
+              hideProgress();
+              location.href = FULL_ZIP_URL;
+              setBtnText('ダウンロードを開始しました');
               scheduleReset(5000);
               return;
             }
-            if (!res.ok) {
-              const text = await res.text().catch(() => res.statusText);
-              console.error('ZIP error:', text);
-              setBtnText('エラーが発生しました');
-              scheduleReset(4000);
-              return;
-            }
+
+            const data = await MFUZipDownload.prepare({
+              paths,
+              csrfToken: CSRF_TOKEN,
+              key: idKey,
+              onProgress: (d) => {
+                const totalB=d.total_bytes||0, doneB=d.processed_bytes||0;
+                const totalF=d.total_files||0, doneF=d.processed_files||0;
+                const pct=(typeof d.percent==='number')?d.percent:(totalB?Math.floor(doneB*100/totalB):0);
+                const remain=(d.eta_seconds!=null&&isFinite(d.eta_seconds))?`・残り約${Math.max(0,Math.round(d.eta_seconds))}秒`:'';
+                setProgress(pct, `${pct}%（${doneF}/${totalF}・${fmtBytes(doneB)}/${fmtBytes(totalB)}${remain}）`);
+              }
+            });
 
             await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
             setBtnText('生成完了—ダウンロードが始まります');
-
-            const cd  = res.headers.get('Content-Disposition') || '';
-            const m   = cd.match(/filename=([^;]+)/i);
-            const fn  = (m ? m[1].trim().replace(/^["']|["']$/g, '') : 'download.zip');
-            const blob = await res.blob();
-            const url  = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = fn;
-            document.body.appendChild(a); a.click(); a.remove();
-            URL.revokeObjectURL(url);
+            MFUZipDownload.startDownload(data.download_url);
             scheduleReset(5000);
 
           } catch (e) {
             console.error(e);
-            setBtnText('通信エラーが発生しました');
+            setBtnText(e?.status===409?'既にZIP生成中です…':'通信エラーが発生しました');
             scheduleReset(4000);
           } finally {
-            setTimeout(()=>{ stopProgressPolling(); hideProgress(); }, hideAfterMs);
+            setTimeout(hideProgress, hideAfterMs);
             inflight = false;
             if (btnZip) btnZip.classList.remove('btn-busy');
             [btnAll, btnNone].forEach(b=>{ if(b){ b.disabled = false; } });
             if (btnZip) btnZip.disabled = false;
-            if (btnShare) btnShare.disabled = false;
             updateSelectedCount();
           }
         });
@@ -448,68 +372,26 @@
         }
       }
       {% else %}
-      // ===== サムネ無し時（全ファイル一括）: API方式で進捗表示 =====
+      // ===== サムネ無し時（全ファイル一括）: 標準ダウンロードリンク =====
       const ALL_PATHS = {{ all_relpaths|tojson }};
+      const JPEG_PATHS = {{ jpeg_relpaths|tojson }};
       window.addEventListener('DOMContentLoaded', () => {
         setupBottomSpacer();
-        const btn = document.getElementById('btn-zip-all');
-        const btnShare = document.getElementById('btn-share-all');
-        const statusEl = document.getElementById('zip-status');
-        const setBtnBusy = (busy) => {
-          if (!btn) return;
-          btn.disabled = !!busy;
-          btn.classList.toggle('btn-busy', !!busy);
-        };
-        const announce = (t) => { if(statusEl){ statusEl.textContent = t; } };
-
-        btnShare?.addEventListener('click', async () => {
-          const ok = await shareFileEntries(FILE_ENTRIES, {
-            fallbackMessage: 'この端末では写真の共有保存が難しいため、ZIPダウンロードをご利用ください。'
-          });
-          if (ok) announce('共有メニューを開きました');
-        });
-
-        btn?.addEventListener('click', async () => {
-          if (!ALL_PATHS.length) return;
-          setBtnBusy(true); if (btnShare) btnShare.disabled = true; announce('ZIP生成を開始しました');
-          const idKey = (crypto?.randomUUID?.() || (Date.now()+Math.random().toString(16).slice(2)));
-          startProgressPolling(idKey);
-          const hideAfterMs = 1200;
-
-          try{
-            const res = await fetch('/api/zip-stream', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idKey, 'X-CSRF-Token': CSRF_TOKEN },
-              body: JSON.stringify({ paths: ALL_PATHS })
-            });
-
-            if (res.status === 409) {
-              announce('既にZIP生成中です'); return;
-            }
-            if (!res.ok) {
-              announce('エラーが発生しました'); return;
-            }
-
-            await Promise.race([ forceProgress100(idKey), new Promise(r=>setTimeout(r,250)) ]);
-            announce('生成完了—ダウンロードが始まります');
-
-            const cd  = res.headers.get('Content-Disposition') || '';
-            const m   = cd.match(/filename=([^;]+)/i);
-            const fn  = (m ? m[1].trim().replace(/^["']|["']$/g, '') : 'download.zip');
-            const blob = await res.blob();
-            const url  = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = fn;
-            document.body.appendChild(a); a.click(); a.remove();
-            URL.revokeObjectURL(url);
-
-          }catch(e){
-            announce('通信エラーが発生しました');
-            console.error(e);
-          }finally{
-            setTimeout(()=>{ stopProgressPolling(); hideProgress(); }, hideAfterMs);
-            setBtnBusy(false);
-            if (btnShare) btnShare.disabled = false;
+        const btnAppAll = document.getElementById('btn-app-all');
+        btnAppAll?.addEventListener('click', async () => {
+          btnAppAll.disabled = true;
+          btnAppAll.classList.add('btn-busy');
+          btnAppAll.textContent = 'アプリを準備中…';
+          try {
+            const data = await createMobileDownloadJob(JPEG_PATHS);
+            btnAppAll.textContent = 'アプリを開きます';
+            window.location.assign(data.app_url);
+          } catch (error) {
+            console.error(error);
+            alert('アプリ用ダウンロードの準備に失敗しました。');
+            btnAppAll.disabled = false;
+            btnAppAll.classList.remove('btn-busy');
+            btnAppAll.textContent = '全画像をアプリに保存';
           }
         });
       });

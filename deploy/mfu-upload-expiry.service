@@ -1,0 +1,15 @@
+[Unit]
+Description=MFU upload expiry and access-log retention
+After=network-online.target mfu.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+Environment=UPLOAD_EXPIRY_ENABLED=1
+Environment=ACCESS_LOG_RETENTION_ENABLED=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/mnt/mfu/venv/bin/python -m app.utils.upload_expiry_cli
+NoNewPrivileges=yes

@@ -227,7 +227,7 @@ def verify_totp():
 
     _clear_preauth()
     _establish_login(username, tag="LOGIN_TOTP")
-    return jsonify(ok=True, redirect="/upload")
+    return jsonify(ok=True, redirect=session.get("post_login_next") or "/upload")
 
 
 @mfa_bp.post("/mfa/email/send")
@@ -386,4 +386,4 @@ def verify_email_otp():
 
     _clear_preauth()
     _establish_login(username, tag="LOGIN_EMAIL_OTP")
-    return jsonify(ok=True, redirect="/upload")
+    return jsonify(ok=True, redirect=session.get("post_login_next") or "/upload")

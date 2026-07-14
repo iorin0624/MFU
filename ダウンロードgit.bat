@@ -1,12 +1,11 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "SCRIPT_VERSION=20260314b"
-set "HOST=192.168.103.16"
-set "USER=root"
+set "SCRIPT_VERSION=20260714a"
+set "HOST=server-103-16"
 set "REMOTE_DIR=/mnt/mfu/app"
 set "TMP=C:\mfu_tmp_dl"
-set "MSG=sync from 103.16 (/mnt/mfu/app)"
+set "MSG=backup from server-103-16 (/mnt/mfu/app)"
 set "BRANCH=main"
 set "SSHOPTS=-o StrictHostKeyChecking=accept-new"
 
@@ -26,7 +25,6 @@ if not defined DEST (
 )
 
 echo [INFO] HOST=%HOST%
-echo [INFO] USER=%USER%
 echo [INFO] REMOTE_DIR=%REMOTE_DIR%
 echo [INFO] DEST=%DEST%
 echo [INFO] TMP=%TMP%
@@ -42,6 +40,10 @@ where ssh >nul 2>&1 || (
 )
 where git >nul 2>&1 || (
   echo [ERROR] git not found
+  goto FAIL
+)
+where powershell >nul 2>&1 || (
+  echo [ERROR] powershell not found
   goto FAIL
 )
 where robocopy >nul 2>&1 || (
@@ -61,7 +63,7 @@ mkdir "%TMP%" >nul 2>&1 || (
 )
 
 echo [STEP] Download to TMP
-scp %SSHOPTS% -r %USER%@%HOST%:%REMOTE_DIR% "%TMP%"
+scp %SSHOPTS% -r %HOST%:%REMOTE_DIR% "%TMP%"
 if errorlevel 1 (
   echo [ERROR] scp failed
   goto FAIL
@@ -114,17 +116,15 @@ for /r "%DEST%" %%F in (.env) do (
 )
 
 git diff --cached --quiet
-if not errorlevel 1 (
-  echo [INFO] no staged changes
-  popd
-  goto OK
-)
-
-git commit -m "%MSG%"
 if errorlevel 1 (
-  echo [ERROR] git commit failed
-  popd
-  goto FAIL
+  git commit -m "%MSG%"
+  if errorlevel 1 (
+    echo [ERROR] git commit failed
+    popd
+    goto FAIL
+  )
+) else (
+  echo [INFO] no staged changes
 )
 
 git -c rebase.autoStash=true pull --rebase origin %BRANCH%

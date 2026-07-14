@@ -461,4 +461,4 @@ def auth_verify():
         except Exception as e:
             print(f"Discord通知エラー: {e}")
 
-    return jsonify(ok=True, redirect="/upload")
+    return jsonify(ok=True, redirect=session.get("post_login_next") or "/upload")

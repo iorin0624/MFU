@@ -1,9 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import base64
+import hashlib
 import html
 import json
+import mimetypes
 import re
 import secrets
 import signal
@@ -27,6 +29,7 @@ from werkzeug.utils import safe_join
 
 from . import image_viewer_bp
 from . import catalog
+from app.utils.media_clipboard_auth import verify_media_clipboard_token
 
 try:
     import instaloader
@@ -145,7 +148,7 @@ def _instagram_log(event: str, job_id: str = "", shortcode: str = "", **fields) 
 def login_required(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if not session.get("user"):
+        if not session.get("user") and not verify_media_clipboard_token():
             if request.path.startswith("/image_viewer/api/") or request.accept_mimetypes.accept_json:
                 return jsonify({"ok": False, "error": "ログインが必要です。"}), 401
             return redirect(url_for("login"))
@@ -154,13 +157,17 @@ def login_required(view):
     return wrapper
 
 
-def _ensure_upload_root() -> None:
-    UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
-    THUMB_ROOT.mkdir(parents=True, exist_ok=True)
+def _ensure_cache_roots() -> None:
     PREVIEW_ROOT.mkdir(parents=True, exist_ok=True)
     THUMB_JOB_ROOT.mkdir(parents=True, exist_ok=True)
     VIDEO_JOB_ROOT.mkdir(parents=True, exist_ok=True)
     AI_JOB_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_upload_root() -> None:
+    UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
+    THUMB_ROOT.mkdir(parents=True, exist_ok=True)
+    _ensure_cache_roots()
 
 
 def _relative_posix(path: Path) -> str:
@@ -1455,7 +1462,7 @@ def _media_video_items(source: str, identifier: str, job_id: str = "") -> list[s
 
 
 def _instagram_image_payload(shortcode: str, items: list, job_id: str = "", source: str = "instagram") -> list[dict]:
-    _ensure_upload_root()
+    _ensure_cache_roots()
     payload = []
     for idx, source_item in enumerate(items, start=1):
         if isinstance(source_item, dict):
@@ -1497,7 +1504,7 @@ def _video_payload(identifier: str, items: list[str], source: str = "instagram")
 
 
 def _write_instagram_job(job_id: str, job: dict) -> None:
-    _ensure_upload_root()
+    _ensure_cache_roots()
     path = _job_manifest_path(job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
@@ -1805,7 +1812,7 @@ def _video_job_path(job_id: str) -> Path:
 
 
 def _write_video_job(job_id: str, job: dict) -> None:
-    _ensure_upload_root()
+    _ensure_cache_roots()
     path = _video_job_path(job_id)
     tmp_path = path.with_suffix(".json.tmp")
     tmp_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
@@ -1894,7 +1901,7 @@ def _ai_job_path(job_id: str) -> Path:
 
 
 def _write_ai_job(job_id: str, job: dict) -> None:
-    _ensure_upload_root()
+    _ensure_cache_roots()
     path = _ai_job_path(job_id)
     tmp_path = path.with_suffix(".json.tmp")
     tmp_path.write_text(json.dumps(job, ensure_ascii=False), encoding="utf-8")
@@ -2260,7 +2267,7 @@ def _write_thumb_job(job_id: str, **updates) -> dict:
         job["updatedAt"] = time.time()
         _thumb_jobs[job_id] = job
         snapshot = dict(job)
-    _ensure_upload_root()
+    _ensure_cache_roots()
     path = THUMB_JOB_ROOT / f"{job_id}.json"
     tmp_path = path.with_suffix(".json.tmp")
     tmp_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
@@ -2381,6 +2388,50 @@ def _media_record(path: Path) -> dict:
         "url": url_for("image_viewer.image_file", path=rel),
         "thumbUrl": url_for("image_viewer.thumbnail_file", path=thumb_rel) if has_fresh_thumb else None,
         "hasThumb": has_fresh_thumb,
+    }
+
+
+def _sha256_hex(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fp:
+        for chunk in iter(lambda: fp.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
+    if path.suffix.lower() not in IMAGE_EXTENSIONS:
+        return None, None
+    try:
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return None, None
+
+
+def _file_properties_payload(path: Path) -> dict:
+    stat = path.stat()
+    record = _media_record(path)
+    width, height = _image_dimensions(path)
+    suffix = path.suffix
+    return {
+        "ok": True,
+        "entry": record,
+        "name": path.name,
+        "stem": path.stem,
+        "extension": suffix,
+        "virtualFolder": record["folder"],
+        "virtualPath": record["path"],
+        "realPath": path.resolve().as_posix(),
+        "size": int(stat.st_size),
+        "created": int(stat.st_ctime),
+        "modified": int(stat.st_mtime),
+        "accessed": int(stat.st_atime),
+        "mediaType": record["mediaType"],
+        "mimeType": mimetypes.guess_type(path.name)[0],
+        "width": width,
+        "height": height,
+        "sha256": _sha256_hex(path),
     }
 
 
@@ -2700,6 +2751,73 @@ def create_folder():
     target.mkdir(parents=False, exist_ok=False)
     _invalidate_image_list_cache()
     return jsonify({"ok": True, "folder": target.relative_to(UPLOAD_ROOT).as_posix()})
+
+
+@image_viewer_bp.route("/api/entries/properties", methods=["GET", "POST"])
+@login_required
+def entry_properties():
+    if request.method == "GET":
+        path_value = request.args.get("path") or ""
+        if catalog.CATALOG_ENABLED:
+            try:
+                return jsonify(catalog.file_properties(path_value))
+            except catalog.CatalogNotFound as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 404
+            except catalog.CatalogError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+        _ensure_upload_root()
+        try:
+            target = _target_path_for_rel(path_value)
+        except ValueError as exc:
+            return jsonify({"ok": False, "error": str(exc) or "対象を確認してください。"}), 400
+        if not target.is_file() or target.suffix.lower() not in MEDIA_EXTENSIONS:
+            return jsonify({"ok": False, "error": "ファイルが見つかりません。"}), 404
+        return jsonify(_file_properties_payload(target))
+
+    data = request.get_json(silent=True) or {}
+    path_value = str(data.get("path") or "")
+    try:
+        new_stem = _safe_folder_name(data.get("stem") or "")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "名前を確認してください。"}), 400
+
+    if catalog.CATALOG_ENABLED:
+        try:
+            current = catalog.file_properties(path_value)
+            new_name = f"{new_stem}{current.get('extension') or ''}"
+            next_path = catalog.rename_entry(path_value, new_name, "file")
+            props = catalog.file_properties(next_path)
+            return jsonify({**props, "path": next_path, "folder": props.get("virtualFolder") or ""})
+        except catalog.CatalogNotFound as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+        except catalog.CatalogConflict as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 409
+        except catalog.CatalogError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    _ensure_upload_root()
+    try:
+        source = _target_path_for_rel(path_value)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "対象を確認してください。"}), 400
+    if not source.is_file() or source.suffix.lower() not in MEDIA_EXTENSIONS:
+        return jsonify({"ok": False, "error": "ファイルが見つかりません。"}), 404
+    target = source.with_name(f"{new_stem}{source.suffix}")
+    try:
+        target.resolve().relative_to(UPLOAD_ROOT.resolve())
+    except ValueError:
+        return jsonify({"ok": False, "error": "名前を確認してください。"}), 400
+    if target.exists() and target != source:
+        return jsonify({"ok": False, "error": "同名のファイルが既にあります。"}), 409
+    if target != source:
+        try:
+            source.rename(target)
+            _move_thumb_for_path(source, target, False)
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc) or "名前変更に失敗しました。"}), 500
+        _invalidate_image_list_cache()
+    payload = _file_properties_payload(target)
+    return jsonify({**payload, "path": payload["virtualPath"], "folder": payload["virtualFolder"]})
 
 
 @image_viewer_bp.post("/api/entries/rename")

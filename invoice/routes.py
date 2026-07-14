@@ -2,12 +2,36 @@ from __future__ import annotations
 
 import threading
 import os
+import hashlib
+import hmac
+import secrets
 from functools import wraps
+from pathlib import Path
 
 import requests
-from flask import current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import abort, current_app, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 
 from app.bank_account.integration_service import issue_payout_access_token_for_invoice
+from app.payment.checkout_otp import (
+    CheckoutOtpError,
+    consume_checkout_otp,
+    is_checkout_otp_verified,
+    mask_email,
+    require_checkout_otp,
+    send_checkout_otp,
+    verify_checkout_otp,
+)
+from app.payment.square_gateway import (
+    SquareTransportError,
+    request_square,
+    square_error_info,
+)
+from app.payment.square_state import (
+    is_payment_completed,
+    normalize_square_status,
+    should_apply_square_update,
+    square_datetime,
+)
 
 from . import invoice_bp
 from .freee_csv import build_invoice_freee_csv_response, build_invoice_freee_csv
@@ -15,9 +39,9 @@ from .freee_api import invoice_needs_freee_resync, sync_invoice_to_freee
 from .mail import send_invoice_mail, send_invoice_receipt_mail
 from .pdf import generate_invoice_pdf, generate_invoice_receipt_pdf
 from .services import (
-    CARD_PAYMENT_SUCCESS_STATUSES,
     BANK_INFO_MODE_LABELS,
     BANK_INFO_MODE_PAYOUT_LINK,
+    INVOICE_DELETABLE_STATUSES,
     InvoiceValidationError,
     apply_issuer_template_to_form_data,
     build_default_invoice_mail_body,
@@ -39,12 +63,14 @@ from .services import (
     get_invoice,
     get_invoice_by_card_payment_token,
     get_invoice_card_payment_by_square_payment_id,
+    get_invoice_card_payment_by_id,
     get_issuer_template_by_id,
     get_latest_invoice_sent_mail_log,
     get_latest_invoice_card_payment,
     get_invoice_square_config,
     has_invoice_receipt_mail_sent,
     list_invoices,
+    list_deleted_invoices,
     list_issuer_templates,
     log_csv_export,
     mark_invoice_issued,
@@ -55,6 +81,9 @@ from .services import (
     resolve_invoice_issuer_email,
     save_contact,
     save_invoice,
+    soft_delete_invoice,
+    restore_deleted_invoice,
+    purge_deleted_invoice,
     create_invoice_card_payment_pending,
     save_invoice_payout_token,
     update_invoice_card_payment_result,
@@ -63,6 +92,7 @@ from .services import (
     ensure_invoice_square_customer,
     update_issuer_template,
     update_invoice_status,
+    get_db,
 )
 from .utils import (
     DEFAULT_TAX_CATEGORY,
@@ -80,6 +110,7 @@ from .utils import (
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_INVOICE_DELETE_CSRF_SESSION_KEY = "invoice_delete_csrf"
 
 
 def login_required(view):
@@ -91,6 +122,39 @@ def login_required(view):
         return view(*args, **kwargs)
 
     return wrapper
+
+
+def _invoice_delete_csrf_token() -> str:
+    token = str(session.get(_INVOICE_DELETE_CSRF_SESSION_KEY) or "")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[_INVOICE_DELETE_CSRF_SESSION_KEY] = token
+    return token
+
+
+def _require_invoice_delete_csrf() -> None:
+    expected = str(session.get(_INVOICE_DELETE_CSRF_SESSION_KEY) or "")
+    supplied = str(request.form.get("csrf_token") or "")
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        abort(400)
+
+
+def _delete_stored_invoice_pdf(pdf_storage_path: str | None) -> bool:
+    if not pdf_storage_path:
+        return True
+    storage_root = Path(current_app.config.get("INVOICE_PDF_DIR") or "/tmp/mfu/invoice_pdf").resolve()
+    candidate = Path(pdf_storage_path).resolve()
+    try:
+        candidate.relative_to(storage_root)
+    except ValueError:
+        current_app.logger.error("refused invoice PDF deletion outside storage root: %s", candidate)
+        return False
+    try:
+        candidate.unlink(missing_ok=True)
+        return True
+    except OSError:
+        current_app.logger.exception("invoice PDF deletion failed: %s", candidate)
+        return False
 
 
 @invoice_bp.before_app_request
@@ -147,7 +211,65 @@ def invoice_list():
         start=start,
         end=end,
         status_labels=STATUS_LABELS,
+        deletable_statuses=INVOICE_DELETABLE_STATUSES,
+        delete_csrf_token=_invoice_delete_csrf_token(),
     )
+
+
+@invoice_bp.get("/deleted")
+@login_required
+def invoice_deleted_list():
+    q = (request.args.get("q") or "").strip()
+    return render_template(
+        "invoice_deleted_list.html",
+        invoices=list_deleted_invoices(q=q),
+        q=q,
+        status_labels=STATUS_LABELS,
+        delete_csrf_token=_invoice_delete_csrf_token(),
+    )
+
+
+@invoice_bp.post("/<int:invoice_id>/delete")
+@login_required
+def invoice_delete(invoice_id: int):
+    _require_invoice_delete_csrf()
+    try:
+        soft_delete_invoice(invoice_id, deleted_by=str(session.get("user") or ""))
+        flash("請求書を削除済み一覧へ移動しました。", "success")
+    except InvoiceValidationError as exc:
+        flash(str(exc), "warning")
+    return redirect(url_for("invoice.invoice_list"))
+
+
+@invoice_bp.post("/<int:invoice_id>/restore")
+@login_required
+def invoice_restore(invoice_id: int):
+    _require_invoice_delete_csrf()
+    try:
+        restore_deleted_invoice(invoice_id, restored_by=str(session.get("user") or ""))
+        flash("請求書を復元しました。", "success")
+    except InvoiceValidationError as exc:
+        flash(str(exc), "warning")
+    return redirect(url_for("invoice.invoice_deleted_list"))
+
+
+@invoice_bp.post("/<int:invoice_id>/purge")
+@login_required
+def invoice_purge(invoice_id: int):
+    _require_invoice_delete_csrf()
+    try:
+        invoice = purge_deleted_invoice(
+            invoice_id,
+            confirmed_invoice_no=request.form.get("confirm_invoice_no") or "",
+            purged_by=str(session.get("user") or ""),
+        )
+        if _delete_stored_invoice_pdf(invoice.get("pdf_storage_path")):
+            flash("請求書を完全削除しました。", "success")
+        else:
+            flash("請求書データは完全削除しましたが、保存PDFを削除できませんでした。", "warning")
+    except InvoiceValidationError as exc:
+        flash(str(exc), "warning")
+    return redirect(url_for("invoice.invoice_deleted_list"))
 
 
 @invoice_bp.get("/issuer-templates")
@@ -678,6 +800,8 @@ def invoice_card_payment_page(token: str):
     square = get_invoice_square_config()
     if not square.get("application_id") or not square.get("location_id"):
         return render_template("invoice_card_pay_invalid.html", message="カード決済の設定が未完了です。"), 400
+    buyer_email = (invoice.get("contact_email_snapshot") or "").strip()
+    checkout_key = f"invoice:{token}:{int(invoice.get('total_yen') or 0)}"
     return render_template(
         "pay.html",
         checkout_mode="invoice",
@@ -693,7 +817,60 @@ def invoice_card_payment_page(token: str):
         square_js_url=square.get("js_url"),
         app_id=square.get("application_id"),
         location_id=square.get("location_id"),
+        checkout_email_masked=mask_email(buyer_email),
+        otp_verified=bool(
+            buyer_email
+            and is_checkout_otp_verified(checkout_type="invoice", checkout_key=checkout_key, email=buyer_email)
+        ),
+        otp_send_url=url_for("invoice.invoice_card_otp_send", token=token),
+        otp_verify_url=url_for("invoice.invoice_card_otp_verify", token=token),
     )
+
+
+def _invoice_checkout_otp_context(token: str) -> tuple[dict, str, str]:
+    invoice = get_invoice_by_card_payment_token(token)
+    invoice, err = _card_payment_invoice_error(invoice)
+    if err:
+        raise CheckoutOtpError(err, 400, "invalid_invoice")
+    buyer_email = (invoice.get("contact_email_snapshot") or "").strip()
+    if not buyer_email:
+        raise CheckoutOtpError("請求先メールアドレスが未設定です。", 400, "missing_email")
+    return invoice, f"invoice:{token}:{int(invoice.get('total_yen') or 0)}", buyer_email
+
+
+def _invoice_otp_json_error(exc: CheckoutOtpError):
+    return jsonify(ok=False, error=exc.error_code, message=exc.message), exc.status_code
+
+
+@invoice_bp.post("/api/pay/<token>/otp/send")
+def invoice_card_otp_send(token: str):
+    try:
+        invoice, checkout_key, buyer_email = _invoice_checkout_otp_context(token)
+        result = send_checkout_otp(checkout_type="invoice", checkout_key=checkout_key, email=buyer_email)
+        return jsonify(ok=True, **result)
+    except CheckoutOtpError as exc:
+        return _invoice_otp_json_error(exc)
+
+
+@invoice_bp.post("/api/pay/<token>/otp/verify")
+def invoice_card_otp_verify(token: str):
+    data = request.get_json(silent=True) or {}
+    try:
+        _invoice, checkout_key, buyer_email = _invoice_checkout_otp_context(token)
+        result = verify_checkout_otp(
+            checkout_type="invoice",
+            checkout_key=checkout_key,
+            email=buyer_email,
+            code=data.get("code"),
+        )
+        result["billing_contact"] = {
+            "email": buyer_email,
+            "givenName": (_invoice.get("contact_name_snapshot") or _invoice.get("contact_person_snapshot") or "").strip(),
+            "countryCode": "JP",
+        }
+        return jsonify(ok=True, **result)
+    except CheckoutOtpError as exc:
+        return _invoice_otp_json_error(exc)
 
 
 @invoice_bp.post("/api/pay/<token>/precheck")
@@ -733,6 +910,11 @@ def invoice_card_charge(token: str):
     buyer_email = (invoice.get("contact_email_snapshot") or "").strip()
     if not buyer_email:
         return jsonify({"ok": False, "error": "請求先メールアドレスが未設定のため決済を開始できません。"}), 400
+    checkout_key = f"invoice:{token}:{int(invoice.get('total_yen') or 0)}"
+    try:
+        require_checkout_otp(checkout_type="invoice", checkout_key=checkout_key, email=buyer_email)
+    except CheckoutOtpError as exc:
+        return jsonify({"ok": False, "error": exc.message, "error_code": exc.error_code}), exc.status_code
 
     square = get_invoice_square_config()
     access_token = square.get("access_token")
@@ -749,7 +931,11 @@ def invoice_card_charge(token: str):
     pending = create_invoice_card_payment_pending(invoice, buyer_name=buyer_name, wallet_type=wallet_type)
     idempotency_key = pending["idempotency_key"]
     payment_row_id = int(pending["id"])
-    customer_id = ensure_invoice_square_customer(access_token=access_token, invoice=invoice, buyer_name=buyer_name)
+    try:
+        customer_id = ensure_invoice_square_customer(access_token=access_token, invoice=invoice, buyer_name=buyer_name)
+    except Exception:
+        customer_id = None
+        current_app.logger.exception("invoice_card_charge: Square customer creation failed; continuing without customer_id")
     body = {
         "idempotency_key": idempotency_key,
         "source_id": source_id,
@@ -757,32 +943,59 @@ def invoice_card_charge(token: str):
         "location_id": location_id,
         "reference_id": f"invoice:{invoice.get('id')}:pay:{payment_row_id}",
         "buyer_email_address": buyer_email,
+        "customer_details": {
+            "customer_initiated": True,
+            "seller_keyed_in": False,
+        },
     }
     if customer_id:
         body["customer_id"] = customer_id
     try:
-        resp = requests.post(
+        resp = request_square(
+            "POST",
             f"{square['api_base']}/v2/payments",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"},
-            json=body,
+            access_token=access_token,
+            json_body=body,
             timeout=25,
+            idempotency_key=idempotency_key,
         )
         payload = resp.json() if resp.content else {}
-    except Exception as exc:
-        update_invoice_card_payment_result(payment_row_id, status="FAILED", error_code="REQUEST_ERROR", error_detail=str(exc))
-        return jsonify({"ok": False, "error": "Squareへの接続に失敗しました。"}), 502
+    except SquareTransportError as exc:
+        update_invoice_card_payment_result(
+            payment_row_id,
+            status="UNKNOWN",
+            error_code="TRANSPORT_UNKNOWN",
+            error_detail=str(exc),
+            sync_error=str(exc),
+        )
+        return jsonify({
+            "ok": False,
+            "error": "決済結果を確認中です。再度支払わず、管理者へお問い合わせください。",
+            "error_code": "PAYMENT_RESULT_UNKNOWN",
+            "payment_row_id": payment_row_id,
+        }), 503
 
     if resp.status_code >= 400:
         errors = payload.get("errors") or []
-        code = errors[0].get("code") if errors else "SQUARE_API_ERROR"
-        detail = errors[0].get("detail") if errors else resp.text
-        update_invoice_card_payment_result(payment_row_id, status="FAILED", error_code=code, error_detail=detail)
-        return jsonify({"ok": False, "error": detail or "Square API error", "errors": errors}), 400
+        error_info = square_error_info(resp)
+        uncertain = resp.status_code >= 500
+        update_invoice_card_payment_result(
+            payment_row_id,
+            status="UNKNOWN" if uncertain else "FAILED",
+            error_code=error_info.code,
+            error_detail=error_info.detail,
+            sync_error=error_info.detail if uncertain else None,
+        )
+        return jsonify({
+            "ok": False,
+            "error": "決済結果を確認中です。再度支払わず、管理者へお問い合わせください。" if uncertain else (error_info.detail or "Square API error"),
+            "errors": errors,
+        }), 503 if uncertain else 400
 
     payment = payload.get("payment") or {}
     card = ((payment.get("card_details") or {}).get("card") or {})
-    status = (payment.get("status") or "PENDING").upper()
-    paid_at = now_jst() if status in CARD_PAYMENT_SUCCESS_STATUSES else None
+    status = normalize_square_status(payment.get("status"), default="UNKNOWN")
+    paid_at = now_jst() if is_payment_completed(status) else None
     update_invoice_card_payment_result(
         payment_row_id,
         status=status,
@@ -795,8 +1008,10 @@ def invoice_card_charge(token: str):
         error_code=None,
         error_detail=None,
         paid_at=paid_at,
+        square_updated_at=square_datetime(payment.get("updated_at")),
+        sync_error=None,
     )
-    if status in CARD_PAYMENT_SUCCESS_STATUSES:
+    if is_payment_completed(status):
         mark_invoice_paid_by_card(int(invoice.get("id")), paid_at=paid_at)
         notify_invoice_card_payment_if_needed(payment_row_id)
         try:
@@ -808,6 +1023,8 @@ def invoice_card_charge(token: str):
         except Exception:
             current_app.logger.exception("invoice receipt mail failed after card charge invoice_id=%s", invoice.get("id"))
 
+        consume_checkout_otp(checkout_type="invoice", checkout_key=checkout_key, email=buyer_email)
+
     return jsonify(
         {
             "ok": True,
@@ -815,6 +1032,7 @@ def invoice_card_charge(token: str):
             "status": payment.get("status"),
             "receipt_url": payment.get("receipt_url"),
             "thanks_url": url_for("invoice.invoice_card_thanks", token=token, _external=True),
+            "processing": not is_payment_completed(status),
         }
     )
 
@@ -828,21 +1046,105 @@ def invoice_card_thanks(token: str):
     return render_template("invoice_card_pay_thanks.html", invoice=invoice, latest_card_payment=latest)
 
 
+def _invoice_payment_reference_ids(reference_id: str | None) -> tuple[int | None, int | None]:
+    if not reference_id:
+        return None, None
+    parts = str(reference_id).split(":")
+    if len(parts) != 4 or parts[0] != "invoice" or parts[2] != "pay":
+        return None, None
+    try:
+        invoice_id = int(parts[1])
+        payment_row_id = int(parts[3])
+        return (invoice_id if invoice_id > 0 else None, payment_row_id if payment_row_id > 0 else None)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _invoice_record_is_square_managed(record: dict) -> bool:
+    created_at = record.get("created_at")
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT managed_from FROM square_sync_control WHERE id=1 LIMIT 1")
+        row = cur.fetchone() or {}
+        managed_from = row.get("managed_from")
+        return bool(created_at and managed_from and created_at >= managed_from)
+    finally:
+        cur.close()
+        db.close()
+
+
+def _register_invoice_square_webhook(event: dict, raw_body: str, object_id: str | None) -> tuple[int | None, bool]:
+    raw_event_id = str(event.get("event_id") or "").strip()
+    event_id = f"invoice:{raw_event_id}" if raw_event_id else ""
+    event_type = str(event.get("type") or "").strip()
+    if not event_id or not event_type:
+        return None, False
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            INSERT IGNORE INTO square_webhook_events
+              (square_event_id, event_type, object_id, payload_sha256, processing_status)
+            VALUES (%s,%s,%s,%s,'RECEIVED')
+        """, (event_id, event_type, object_id, hashlib.sha256(raw_body.encode("utf-8")).hexdigest()))
+        if cur.rowcount:
+            row_id = int(cur.lastrowid)
+            db.commit()
+            return row_id, True
+        cur.execute("SELECT id, processing_status FROM square_webhook_events WHERE square_event_id=%s LIMIT 1", (event_id,))
+        row = cur.fetchone()
+        if row and row.get("processing_status") == "FAILED":
+            cur.execute("""
+                UPDATE square_webhook_events
+                   SET processing_status='RECEIVED', error_detail=NULL, processed_at=NULL
+                 WHERE id=%s AND processing_status='FAILED'
+            """, (row["id"],))
+            can_retry = bool(cur.rowcount)
+            db.commit()
+            return int(row["id"]), can_retry
+        return (int(row["id"]) if row else None), False
+    finally:
+        cur.close()
+        db.close()
+
+
+def _finish_invoice_square_webhook(webhook_row_id: int | None, *, status: str, error: str | None = None) -> None:
+    if not webhook_row_id:
+        return
+    db = get_db()
+    cur = db.cursor()
+    try:
+        cur.execute("""
+            UPDATE square_webhook_events
+               SET processing_status=%s, error_detail=%s, processed_at=NOW()
+             WHERE id=%s
+        """, (status, error or None, webhook_row_id))
+        db.commit()
+    finally:
+        cur.close()
+        db.close()
+
+
 @invoice_bp.post("/webhooks/card")
 def invoice_card_webhook():
     square = get_invoice_square_config()
     sig_key = square.get("webhook_signature_key")
-    if sig_key:
-        try:
-            from square.utilities.webhooks_helper import is_valid_webhook_event_signature
+    if not sig_key:
+        current_app.logger.critical("Square invoice webhook signature key is missing env=%s", square.get("env"))
+        return "webhook signature key is not configured", 503
+    raw_body = request.get_data(as_text=True)
+    try:
+        from square.utilities.webhooks_helper import is_valid_webhook_event_signature
 
-            sig_header = request.headers.get("x-square-hmacsha256-signature", "")
-            raw_body = request.get_data(as_text=True)
-            webhook_url = f"{os.environ.get('MFU_PUBLIC_BASE_URL', 'https://mfu.iori0624.jp').rstrip('/')}/invoice/webhooks/card"
-            if not is_valid_webhook_event_signature(raw_body, sig_header, sig_key, webhook_url):
-                return "invalid signature", 403
-        except Exception:
-            return "signature check failed", 403
+        sig_header = request.headers.get("x-square-hmacsha256-signature", "")
+        webhook_url = f"{os.environ.get('MFU_PUBLIC_BASE_URL', 'https://mfu.iori0624.jp').rstrip('/')}/invoice/webhooks/card"
+        if not is_valid_webhook_event_signature(raw_body, sig_header, sig_key, webhook_url):
+            return "invalid signature", 403
+    except Exception:
+        current_app.logger.exception("invoice webhook signature validation failed")
+        return "signature check failed", 403
+
     ev = request.get_json(silent=True) or {}
     if ev.get("type") != "payment.updated":
         return "", 200
@@ -850,38 +1152,60 @@ def invoice_card_webhook():
     square_payment_id = payment.get("id")
     if not square_payment_id:
         return "", 200
-    record = get_invoice_card_payment_by_square_payment_id(square_payment_id)
-    if not record:
+    _ensure_schema_once()
+    webhook_row_id, should_process = _register_invoice_square_webhook(ev, raw_body, square_payment_id)
+    if not should_process:
         return "", 200
-    card = ((payment.get("card_details") or {}).get("card") or {})
-    status = (payment.get("status") or "PENDING").upper()
-    paid_at = now_jst() if status in CARD_PAYMENT_SUCCESS_STATUSES else None
-    update_invoice_card_payment_result(
-        int(record.get("id")),
-        status=status,
-        square_payment_id=square_payment_id,
-        receipt_url=payment.get("receipt_url"),
-        card_brand=card.get("card_brand"),
-        card_last4=card.get("last_4"),
-        card_exp_mm=card.get("exp_month"),
-        card_exp_yyyy=card.get("exp_year"),
-        paid_at=paid_at,
-    )
-    if status in CARD_PAYMENT_SUCCESS_STATUSES:
-        mark_invoice_paid_by_card(int(record.get("invoice_id")), paid_at=paid_at)
-        notify_invoice_card_payment_if_needed(int(record.get("id")))
-        try:
-            _send_invoice_receipt_mail_if_needed(
-                int(record.get("invoice_id")),
-                paid_at=paid_at,
-                payment_method="クレジットカード決済",
-            )
-        except Exception:
-            current_app.logger.exception(
-                "invoice receipt mail failed from card webhook invoice_id=%s payment_row_id=%s",
-                record.get("invoice_id"),
-                record.get("id"),
-            )
+    try:
+        record = get_invoice_card_payment_by_square_payment_id(square_payment_id)
+        ref_invoice_id, ref_payment_row_id = _invoice_payment_reference_ids(payment.get("reference_id"))
+        if not record and ref_payment_row_id:
+            candidate = get_invoice_card_payment_by_id(ref_payment_row_id)
+            if candidate and int(candidate.get("invoice_id") or 0) == int(ref_invoice_id or 0):
+                record = candidate
+        if not record or not _invoice_record_is_square_managed(record):
+            _finish_invoice_square_webhook(webhook_row_id, status="IGNORED", error="legacy_or_unknown_invoice_payment")
+            return "", 200
+        if not should_apply_square_update(record.get("square_updated_at"), payment.get("updated_at")):
+            _finish_invoice_square_webhook(webhook_row_id, status="IGNORED", error="older_payment_update")
+            return "", 200
+
+        card = ((payment.get("card_details") or {}).get("card") or {})
+        status = normalize_square_status(payment.get("status"), default="UNKNOWN")
+        paid_at = now_jst() if is_payment_completed(status) else None
+        update_invoice_card_payment_result(
+            int(record.get("id")),
+            status=status,
+            square_payment_id=square_payment_id,
+            receipt_url=payment.get("receipt_url"),
+            card_brand=card.get("card_brand"),
+            card_last4=card.get("last_4"),
+            card_exp_mm=card.get("exp_month"),
+            card_exp_yyyy=card.get("exp_year"),
+            paid_at=paid_at,
+            square_updated_at=square_datetime(payment.get("updated_at")),
+            sync_error=None,
+        )
+        if is_payment_completed(status):
+            mark_invoice_paid_by_card(int(record.get("invoice_id")), paid_at=paid_at)
+            notify_invoice_card_payment_if_needed(int(record.get("id")))
+            try:
+                _send_invoice_receipt_mail_if_needed(
+                    int(record.get("invoice_id")),
+                    paid_at=paid_at,
+                    payment_method="クレジットカード決済",
+                )
+            except Exception:
+                current_app.logger.exception(
+                    "invoice receipt mail failed from card webhook invoice_id=%s payment_row_id=%s",
+                    record.get("invoice_id"),
+                    record.get("id"),
+                )
+        _finish_invoice_square_webhook(webhook_row_id, status="PROCESSED")
+    except Exception as exc:
+        current_app.logger.exception("invoice Square webhook processing failed")
+        _finish_invoice_square_webhook(webhook_row_id, status="FAILED", error=str(exc)[:1000])
+        return "webhook processing failed", 500
     return "", 200
 
 

@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}着信ホワイトリスト | MFU{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="h3 mb-1">📞 着信ホワイトリスト</h1>
+    <p class="text-muted mb-0">登録番号はRing Group 106、未登録・非通知はVoiceMail_Announceへ接続します。</p>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-success" href="{{ url_for('phone_whitelist.export_csv') }}">CSV書き出し</a>
+    <form method="post" action="{{ url_for('phone_whitelist.sync_now') }}" onsubmit="return confirm('現在の全件をFreePBXへ再反映しますか？');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn-outline-primary" type="submit">全件を再反映</button>
+    </form>
+  </div>
+</div>
+
+{% for category, message in get_flashed_messages(with_categories=true) %}
+  <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+    {{ message }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="閉じる"></button>
+  </div>
+{% endfor %}
+
+<div class="alert alert-light border d-flex flex-wrap gap-4 py-2">
+  <span><strong>登録件数:</strong> {{ total }}件</span>
+  <span><strong>最終反映:</strong> {{ sync_state.last_synced_at or '未反映' }}</span>
+  <span><strong>操作者:</strong> {{ sync_state.updated_by or '-' }}</span>
+  <span><strong>結果:</strong> {{ sync_state.last_result or '-' }}</span>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-6">
+    <section class="card h-100 {% if sync_state.anonymous_allowed_active %}border-warning{% endif %}">
+      <div class="card-body">
+        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('非通知着信の許可設定を変更しますか？');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="setting" value="anonymous_allowed">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="anonymousAllowed" name="enabled" value="1" {% if sync_state.anonymous_allowed_active %}checked{% endif %}>
+            <label class="form-check-label fw-bold" for="anonymousAllowed">非通知着信を許可</label>
+          </div>
+          <p class="small text-muted">ONの間、非通知・通知不能の着信をRing Group 106へ接続します。</p>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <select class="form-select form-select-sm" name="duration" style="max-width:180px">
+              <option value="900">15分</option><option value="1800">30分</option>
+              <option value="3600" selected>1時間</option><option value="10800">3時間</option>
+              <option value="manual">手動で戻すまで</option>
+            </select>
+            <button class="btn btn-sm btn-warning" type="submit">設定を反映</button>
+          </div>
+          {% if sync_state.anonymous_allowed_active %}
+            <div class="mt-2 small text-warning-emphasis">現在ON：{% if sync_state.anonymous_allowed_manual %}手動解除まで{% else %}{{ sync_state.anonymous_allowed_until }}まで{% endif %}</div>
+          {% endif %}
+        </form>
+      </div>
+    </section>
+  </div>
+  <div class="col-lg-6">
+    <section class="card h-100 {% if sync_state.whitelist_disabled_active %}border-danger{% endif %}">
+      <div class="card-body">
+        <form method="post" action="{{ url_for('phone_whitelist.update_setting') }}" onsubmit="return confirm('ホワイトリスト無効化設定を変更しますか？ 無効化中は非通知を含む全着信を許可します。');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="setting" value="whitelist_disabled">
+          <div class="form-check form-switch mb-3">
+            <input class="form-check-input" type="checkbox" role="switch" id="whitelistDisabled" name="enabled" value="1" {% if sync_state.whitelist_disabled_active %}checked{% endif %}>
+            <label class="form-check-label fw-bold" for="whitelistDisabled">ホワイトリストを一時的に無効化</label>
+          </div>
+          <p class="small text-muted">ONの間、登録・未登録・非通知を問わず、全着信をRing Group 106へ接続します。</p>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <select class="form-select form-select-sm" name="duration" style="max-width:180px">
+              <option value="900">15分</option><option value="1800">30分</option>
+              <option value="3600" selected>1時間</option><option value="10800">3時間</option>
+              <option value="manual">手動で戻すまで</option>
+            </select>
+            <button class="btn btn-sm btn-danger" type="submit">設定を反映</button>
+          </div>
+          {% if sync_state.whitelist_disabled_active %}
+            <div class="mt-2 small text-danger">現在ON：{% if sync_state.whitelist_disabled_manual %}手動解除まで{% else %}{{ sync_state.whitelist_disabled_until }}まで{% endif %}</div>
+          {% endif %}
+        </form>
+      </div>
+    </section>
+  </div>
+</div>
+
+{% if preview_entries %}
+<section class="card border-primary mb-4">
+  <div class="card-header bg-primary text-white">CSV取込確認（{{ preview_entries|length }}件）</div>
+  <div class="card-body">
+    <p>同じ電話番号は名称・備考を更新し、CSVにない既存番号は削除しません。</p>
+    <div class="table-responsive" style="max-height: 360px;">
+      <table class="table table-sm table-striped align-middle">
+        <thead class="table-light sticky-top"><tr><th>電話番号</th><th>名称</th><th>備考</th></tr></thead>
+        <tbody>
+          {% for entry in preview_entries %}
+          <tr><td>{{ entry.phone_number }}</td><td>{{ entry.name }}</td><td>{{ entry.note }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="d-flex gap-2 mt-3">
+      <form method="post" action="{{ url_for('phone_whitelist.import_apply') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="csv_payload" value="{{ csv_payload }}">
+        <button class="btn btn-primary" type="submit">この内容を登録・反映</button>
+      </form>
+      <a class="btn btn-outline-secondary" href="{{ url_for('phone_whitelist.index') }}">キャンセル</a>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-7">
+    <section class="card h-100">
+      <div class="card-header">新規登録</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('phone_whitelist.add_entry') }}" class="row g-2">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="col-md-4"><label class="form-label">電話番号</label><input class="form-control" name="phone_number" required maxlength="32" placeholder="08012345678"></div>
+          <div class="col-md-4"><label class="form-label">名称</label><input class="form-control" name="name" maxlength="100"></div>
+          <div class="col-md-4"><label class="form-label">備考</label><input class="form-control" name="note" maxlength="500"></div>
+          <div class="col-12"><button class="btn btn-primary" type="submit">登録して即時反映</button></div>
+        </form>
+      </div>
+    </section>
+  </div>
+  <div class="col-lg-5">
+    <section class="card h-100">
+      <div class="card-header">CSV一括登録</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('phone_whitelist.import_preview') }}" enctype="multipart/form-data">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input class="form-control mb-2" type="file" name="csv_file" accept=".csv,text/csv" required>
+          <div class="form-text mb-2">列: phone_number, name, note（UTF-8／Shift_JIS、最大1MB）</div>
+          <button class="btn btn-outline-primary" type="submit">内容を確認</button>
+        </form>
+      </div>
+    </section>
+  </div>
+</div>
+
+<form class="row g-2 mb-3" method="get" action="{{ url_for('phone_whitelist.index') }}">
+  <div class="col-md-6"><input class="form-control" name="q" value="{{ query }}" placeholder="電話番号・名称・備考を検索"></div>
+  <div class="col-auto"><button class="btn btn-outline-secondary" type="submit">検索</button></div>
+  {% if query %}<div class="col-auto"><a class="btn btn-link" href="{{ url_for('phone_whitelist.index') }}">解除</a></div>{% endif %}
+</form>
+
+<div class="table-responsive">
+  <table class="table table-bordered table-hover align-middle" style="min-width: 860px; table-layout: fixed;">
+    <colgroup>
+      <col style="width: 22%;">
+      <col style="width: 25%;">
+      <col style="width: 33%;">
+      <col style="width: 20%;">
+    </colgroup>
+    <thead class="table-light"><tr><th>電話番号</th><th>名称</th><th>備考</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr>
+        <td class="p-2">
+          <form id="phone-whitelist-entry-{{ entry.id }}" method="post" action="{{ url_for('phone_whitelist.edit_entry', entry_id=entry.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input class="form-control" name="phone_number" value="{{ entry.phone_number }}" required maxlength="32">
+          </form>
+        </td>
+        <td class="p-2"><input class="form-control" form="phone-whitelist-entry-{{ entry.id }}" name="name" value="{{ entry.name }}" maxlength="100"></td>
+        <td class="p-2"><input class="form-control" form="phone-whitelist-entry-{{ entry.id }}" name="note" value="{{ entry.note }}" maxlength="500"></td>
+        <td class="p-2">
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-primary flex-grow-1" form="phone-whitelist-entry-{{ entry.id }}" type="submit">保存</button>
+            <button class="btn btn-sm btn-outline-danger" form="phone-whitelist-entry-{{ entry.id }}" type="submit" formaction="{{ url_for('phone_whitelist.delete_entry', entry_id=entry.id) }}" onclick="return confirm('{{ entry.phone_number }} を削除しますか？');">削除</button>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="text-center text-muted py-4">該当する電話番号はありません</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if pages > 1 %}
+<nav aria-label="ページ"><ul class="pagination">
+  {% for number in range(1, pages + 1) %}
+    <li class="page-item {% if number == page %}active{% endif %}"><a class="page-link" href="{{ url_for('phone_whitelist.index', q=query, page=number) }}">{{ number }}</a></li>
+  {% endfor %}
+</ul></nav>
+{% endif %}
+{% endblock %}

@@ -6,18 +6,21 @@ import json
 import uuid
 import time
 import zipfile
-from datetime import datetime
-from typing import Optional, Iterable, List, Tuple
+import threading
+import unicodedata
+from datetime import datetime, timezone
+from typing import Optional, Iterable, List, Tuple, Sequence
 
 from werkzeug.utils import safe_join
 from flask import (
-    Blueprint, current_app, request, jsonify, send_file, after_this_request
+    Blueprint, current_app, request, jsonify, send_file, after_this_request, session
 )
 from app.utils.upload_security import can_access_upload_record, fetch_upload_access_record, has_view_auth, resolve_upload_subpath
 
 # ------------------------------------------------------------
 # Blueprint（他モジュールで使っていればそのまま生かす）
 zip_api = Blueprint("zip_api", __name__)
+_PROGRESS_IO_LOCK = threading.RLock()
 
 # ------------------------------------------------------------
 # 設定ヘルパ
@@ -67,6 +70,10 @@ def _cfg_progress_ttl() -> int:
     # 進捗JSONを保持する秒数（UIが100%を確実に読めるように）
     return int(current_app.config.get("ZIP_PROGRESS_TTL", 60))
 
+def _cfg_zip_file_ttl() -> int:
+    # 通常ダウンロードへ渡す一時ZIPの保持秒数
+    return int(current_app.config.get("ZIP_FILE_TTL", 6 * 60 * 60))
+
 # ------------------------------------------------------------
 # 進捗保存（使わない場合もあるが互換のため維持）
 def _progress_dir() -> str:
@@ -81,21 +88,23 @@ def _lock_path(key: str) -> str:
     return os.path.join(_progress_dir(), f"{key}.lock")
 
 def _progress_write(key: str, data: dict):
-    p = _progress_path(key)
-    tmp = p + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(tmp, p)
+    with _PROGRESS_IO_LOCK:
+        p = _progress_path(key)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, p)
 
 def _progress_read(key: str):
-    p = _progress_path(key)
-    if not os.path.exists(p):
-        return None
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+    with _PROGRESS_IO_LOCK:
+        p = _progress_path(key)
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
 
 def _progress_clear(key: str):
     for path in (_progress_path(key), _lock_path(key)):
@@ -115,8 +124,9 @@ def _unlock_only(key: str):
         pass
 
 def _cleanup_progress_expired():
-    """TTL超過の進捗JSON/ロックを掃除"""
+    """TTL超過の進捗JSON/ロック/一時ZIPを掃除"""
     ttl = _cfg_progress_ttl()
+    zip_ttl = _cfg_zip_file_ttl()
     now = time.time()
     d = _progress_dir()
     try:
@@ -124,24 +134,27 @@ def _cleanup_progress_expired():
             if not name.endswith(".json"):
                 continue
             p = os.path.join(d, name)
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    info = json.load(f)
-            except Exception:
+            key = name.rsplit(".", 1)[0]
+            info = _progress_read(key)
+            if info is None:
                 # 壊れていたら消す
-                try: os.remove(p)
-                except Exception: pass
+                with _PROGRESS_IO_LOCK:
+                    try: os.remove(p)
+                    except Exception: pass
                 continue
 
-            # 完了 or エラーの古いものを削除（未完了は残す）
+            # 完了ZIPのメタデータには権限・DL名も含むため、ZIP本体と同じ期間保持する。
+            # エラーは画面表示に必要な短時間だけ残す。
             status = (info or {}).get("status")
             if status in ("done", "error"):
                 mtime = os.path.getmtime(p)
-                if now - mtime > ttl:
-                    try: os.remove(p)
-                    except Exception: pass
+                zip_exists = os.path.isfile(_zip_out_path(key))
+                keep_for = zip_ttl if status == "done" and zip_exists else ttl
+                if now - mtime > keep_for:
+                    with _PROGRESS_IO_LOCK:
+                        try: os.remove(p)
+                        except Exception: pass
                     # 対応するロックも掃除
-                    key = name.rsplit(".", 1)[0]
                     lp = _lock_path(key)
                     try:
                         if os.path.exists(lp):
@@ -151,11 +164,31 @@ def _cleanup_progress_expired():
     except Exception:
         pass
 
+    try:
+        tmp_root = _cfg_tmp_root()
+        for name in os.listdir(tmp_root):
+            if not name.endswith(".zip"):
+                continue
+            p = os.path.join(tmp_root, name)
+            try:
+                if os.path.isfile(p) and now - os.path.getmtime(p) > zip_ttl:
+                    os.remove(p)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 # ------------------------------------------------------------
 # パス解決（uploads / albums / tickets）
 _UUID32_RE  = re.compile(r"^[0-9a-f]{32}$")
 _UUID4_RE   = re.compile(r"^[0-9a-fA-F-]{36}$")
 _INT_RE     = re.compile(r"^[0-9]+$")
+_CTRL_RE    = re.compile(r"[\x00-\x1f\x7f]")
+_STORED_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff",
+    ".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi",
+    ".mp3", ".aac", ".ogg", ".flac", ".pdf", ".zip", ".7z", ".rar",
+}
 
 def _resolve_relpath_internal(rel: str) -> Optional[str]:
     """
@@ -244,18 +277,76 @@ def _gather_files(src_list: Iterable[str]) -> List[Tuple[str, int]]:
             continue
     return out
 
-def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]:
-    """
-    絶対パス群から ZIP を作成。出力は TMP_ROOT/<key>.zip に固定。
-    成功時にその絶対パスを返す。失敗時 None。
-    """
-    files = _gather_files(abs_paths)
-    total = len(files)
-    total_bytes = sum(sz for _, sz in files)
+def _safe_archive_name(value: str) -> str:
+    """ZIP内の相対パスを、日本語を保持したまま安全化する。"""
+    raw = unicodedata.normalize("NFC", str(value or "")).replace("\\", "/")
+    parts = []
+    for part in raw.split("/"):
+        part = _CTRL_RE.sub("", part).strip()
+        if not part or part in (".", ".."):
+            continue
+        parts.append(part.replace("..", "‥"))
+    return "/".join(parts) or "file"
 
-    # 進捗：最小限（互換用）
+
+def _unique_archive_entries(entries: Sequence[Tuple[str, str]]) -> List[Tuple[str, str, int]]:
+    """存在するファイルだけを残し、ZIP内の重複名を解消する。"""
+    out: List[Tuple[str, str, int]] = []
+    used: set[str] = set()
+    for arcname, path in entries:
+        try:
+            if not os.path.isfile(path):
+                continue
+            size = os.path.getsize(path)
+        except Exception:
+            continue
+
+        safe_name = _safe_archive_name(arcname)
+        directory, basename = os.path.split(safe_name)
+        stem, ext = os.path.splitext(basename)
+        candidate = safe_name
+        suffix = 1
+        while candidate.casefold() in used:
+            suffix += 1
+            renamed = f"{stem}_{suffix}{ext}"
+            candidate = f"{directory}/{renamed}" if directory else renamed
+        used.add(candidate.casefold())
+        out.append((candidate, path, size))
+    return out
+
+
+def _make_zip_entries_internal(
+    entries: Sequence[Tuple[str, str]],
+    key: str,
+    *,
+    download_name: Optional[str] = None,
+    access: Optional[dict] = None,
+) -> Optional[str]:
+    """(ZIP内パス, 絶対パス) の一覧から共通形式のZIPと進捗を作成する。"""
+    files = _unique_archive_entries(entries)
+    total = len(files)
+    total_bytes = sum(size for _, _, size in files)
+    common_progress = {
+        "download_name": _safe_archive_name(download_name or f"{key}.zip").replace("/", "／"),
+        "access": access or {"type": "bearer"},
+    }
+
+    if not files:
+        _progress_write(key, {
+            **common_progress,
+            "status": "error",
+            "message": "対象ファイルがありません",
+            "total_files": 0,
+            "processed_files": 0,
+            "total_bytes": 0,
+            "processed_bytes": 0,
+            "percent": 0,
+        })
+        return None
+
     started = time.time()
     _progress_write(key, {
+        **common_progress,
         "status": "running",
         "total_files": total,
         "processed_files": 0,
@@ -276,26 +367,15 @@ def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]
     except Exception:
         pass
 
-    # 重複名は末尾に _n を付ける（直下フラット）
-    used = {}
-    def unique_name(path: str) -> str:
-        base = os.path.basename(path)
-        stem, ext = os.path.splitext(base)
-        cand = base
-        n = used.get(base, 0)
-        while cand in used:
-            n += 1
-            cand = f"{stem}_{n}{ext}"
-        used[cand] = 1
-        return cand
-
     processed_files = 0
     processed_bytes = 0
 
     try:
         with zipfile.ZipFile(out_path, "w", allowZip64=True) as zf:
-            for src, sz in files:
-                zf.write(src, arcname=unique_name(src), compress_type=zipfile.ZIP_STORED)
+            for arcname, src, sz in files:
+                extension = os.path.splitext(src)[1].lower()
+                compression = zipfile.ZIP_STORED if extension in _STORED_EXTENSIONS else zipfile.ZIP_DEFLATED
+                zf.write(src, arcname=arcname, compress_type=compression)
 
                 processed_files += 1
                 processed_bytes += sz
@@ -316,6 +396,7 @@ def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]
                 eta = (total_bytes - processed_bytes) / speed if speed > 0 else 0
 
                 _progress_write(key, {
+                    **common_progress,
                     "status": "running",
                     "total_files": total,
                     "processed_files": processed_files,
@@ -327,6 +408,7 @@ def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]
                 })
     except Exception as e:
         _progress_write(key, {
+            **common_progress,
             "status": "error",
             "message": str(e),
             "total_files": total,
@@ -344,6 +426,7 @@ def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]
         return None
 
     _progress_write(key, {
+        **common_progress,
         "status": "done",
         "total_files": total,
         "processed_files": total,
@@ -355,6 +438,12 @@ def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]
         "completed_ts": time.time(),
     })
     return out_path
+
+
+def _make_zip_file_internal(abs_paths: Iterable[str], key: str) -> Optional[str]:
+    """従来の絶対パス一覧を、直下配置の共通ZIPとして作成する。"""
+    entries = [(os.path.basename(path), path) for path in abs_paths]
+    return _make_zip_entries_internal(entries, key)
 
 # ------------------------------------------------------------
 # 連打防止（使っていない場合も互換のため残す）
@@ -369,6 +458,66 @@ def _acquire_lock(key: str) -> bool:
     except Exception:
         return False
 
+def _safe_download_key(value: str) -> str:
+    key = str(value or "").strip()
+    if not re.fullmatch(r"[0-9A-Za-z._:-]{8,}", key):
+        return uuid.uuid4().hex
+    return key
+
+def _has_album_access(album_id: str) -> bool:
+    if session.get("user") == "admin":
+        return True
+    allowed = session.get("album_auth_ids") or []
+    return album_id in allowed or bool(session.get(f"auth_{album_id}"))
+
+
+def _job_access_allowed(progress: Optional[dict]) -> bool:
+    access = (progress or {}).get("access") or {"type": "bearer"}
+    access_type = access.get("type")
+    if access_type == "admin":
+        return session.get("user") == "admin"
+    if access_type == "album":
+        return all(_has_album_access(str(album_id)) for album_id in access.get("album_ids") or [])
+    if access_type == "upload":
+        for upload_id in access.get("upload_ids") or []:
+            upload = fetch_upload_access_record(str(upload_id))
+            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
+                return False
+        return True
+    return True
+
+
+def _resolve_zip_request_paths(relpaths: list) -> tuple[list[str], list[str], dict]:
+    abs_list = []
+    bad_paths = []
+    album_ids: set[str] = set()
+    upload_ids: set[str] = set()
+    for rel in relpaths:
+        rel_value = str(rel).lstrip("/").replace("\\", "/")
+        upload_ref = resolve_upload_subpath(rel_value, allow_zip=True)
+        if upload_ref:
+            upload = fetch_upload_access_record(upload_ref["uuid"])
+            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
+                raise PermissionError(str(rel))
+            upload_ids.add(upload_ref["uuid"])
+        elif rel_value.startswith("albums/"):
+            parts = rel_value.split("/", 3)
+            if len(parts) != 4 or not _has_album_access(parts[1]):
+                raise PermissionError(str(rel))
+            album_ids.add(parts[1])
+        p = resolve_relpath(rel_value)
+        if not p or not os.path.isfile(p):
+            bad_paths.append(rel)
+            continue
+        abs_list.append(p)
+    if album_ids:
+        access = {"type": "album", "album_ids": sorted(album_ids)}
+    elif upload_ids:
+        access = {"type": "upload", "upload_ids": sorted(upload_ids)}
+    else:
+        access = {"type": "bearer"}
+    return abs_list, bad_paths, access
+
 # ------------------------------------------------------------
 # ★公開関数（既存呼び出し互換）-------------------------------
 def resolve_relpath(rel: str) -> Optional[str]:
@@ -382,7 +531,74 @@ def make_zip_file(abs_paths: Iterable[str], key: str):
     """
     return _make_zip_file_internal(abs_paths, key)
 
-__all__ = ["zip_api", "resolve_relpath", "make_zip_file"]
+def make_zip_entries(
+    entries: Sequence[Tuple[str, str]],
+    key: str,
+    *,
+    download_name: Optional[str] = None,
+    access: Optional[dict] = None,
+):
+    """階層付きZIPを作る共通公開関数。"""
+    return _make_zip_entries_internal(
+        entries,
+        _safe_download_key(key),
+        download_name=download_name,
+        access=access,
+    )
+
+
+def start_zip_entries_job(
+    entries: Sequence[Tuple[str, str]],
+    *,
+    key: Optional[str] = None,
+    download_name: Optional[str] = None,
+    access: Optional[dict] = None,
+) -> str:
+    """共通ZIP生成をバックグラウンド開始し、進捗・DL用キーを返す。"""
+    job_key = _safe_download_key(key or uuid.uuid4().hex)
+    if not _acquire_lock(job_key):
+        raise FileExistsError(job_key)
+    app = current_app._get_current_object()
+    frozen_entries = [(str(arcname), str(path)) for arcname, path in entries]
+    progress_base = {
+        "status": "queued",
+        "total_files": len(frozen_entries),
+        "processed_files": 0,
+        "total_bytes": 0,
+        "processed_bytes": 0,
+        "percent": 0,
+        "download_name": download_name or f"{job_key}.zip",
+        "access": access or {"type": "bearer"},
+    }
+    _progress_write(job_key, progress_base)
+
+    def worker():
+        with app.app_context():
+            try:
+                _make_zip_entries_internal(
+                    frozen_entries,
+                    job_key,
+                    download_name=download_name,
+                    access=access,
+                )
+            except Exception as exc:
+                app.logger.exception("ZIP background job failed: key=%s", job_key)
+                _progress_write(job_key, {**progress_base, "status": "error", "message": str(exc)})
+            finally:
+                _unlock_only(job_key)
+
+    threading.Thread(target=worker, name=f"zip-{job_key[:12]}", daemon=True).start()
+    return job_key
+
+
+def read_zip_progress(key: str) -> Optional[dict]:
+    return _progress_read(_safe_download_key(key))
+
+
+__all__ = [
+    "zip_api", "resolve_relpath", "make_zip_file", "make_zip_entries",
+    "start_zip_entries_job", "read_zip_progress",
+]
 
 # ------------------------------------------------------------
 # （任意）/api/zip-stream エンドポイントを使っている場合の互換
@@ -396,18 +612,10 @@ def api_zip_stream():
     if not isinstance(relpaths, list) or not relpaths:
         return "paths が未指定です", 400
 
-    abs_list = []
-    bad_paths = []
-    for rel in relpaths:
-        upload_ref = resolve_upload_subpath(str(rel), allow_zip=True)
-        if upload_ref:
-            upload = fetch_upload_access_record(upload_ref["uuid"])
-            if not upload or not can_access_upload_record(upload, has_view_auth_func=has_view_auth):
-                return jsonify({"ok": False, "error": "unauthorized_upload_path", "path": rel}), 403
-        p = resolve_relpath(str(rel))
-        if not p or not os.path.isfile(p):
-            bad_paths.append(rel); continue
-        abs_list.append(p)
+    try:
+        abs_list, bad_paths, access = _resolve_zip_request_paths(relpaths)
+    except PermissionError as exc:
+        return jsonify({"ok": False, "error": "unauthorized_path", "path": str(exc)}), 403
 
     if not abs_list:
         return jsonify({"ok": False, "error": "no_valid_files", "bad_paths": bad_paths}), 400
@@ -420,7 +628,8 @@ def api_zip_stream():
         prog = _progress_read(key)
         return jsonify({"ok": False, "error": "already_in_progress", "progress": prog}), 409
 
-    path = _make_zip_file_internal(abs_list, key)
+    entries = [(os.path.basename(path), path) for path in abs_list]
+    path = _make_zip_entries_internal(entries, key, access=access)
     if not path:
         _unlock_only(key)  # 失敗時もロック解除
         return jsonify({"ok": False, "error": "zip_failed"}), 500
@@ -438,10 +647,80 @@ def api_zip_stream():
         _unlock_only(key)  # ロックは解除（進捗は残す）
         return resp
 
-    return send_file(
+    response = send_file(
         path, as_attachment=True, download_name=dl_name,
         mimetype="application/zip", conditional=True,
-        max_age=0, etag=False, last_modified=datetime.utcnow()
+        max_age=0, etag=False, last_modified=datetime.now(timezone.utc)
+    )
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</api/zip-prepare>; rel="successor-version"'
+    return response
+
+@zip_api.route("/api/zip-prepare", methods=["POST"])
+def api_zip_prepare():
+    """
+    ZIPを作成し、ブラウザ標準ダウンロード用URLを返す。
+    /api/zip-stream と違い、巨大ZIPを fetch().blob() に載せないため端末側の固まりを避ける。
+    """
+    _cleanup_progress_expired()
+
+    data = request.get_json(silent=True) or {}
+    relpaths = data.get("paths") or []
+    if not isinstance(relpaths, list) or not relpaths:
+        return jsonify({"ok": False, "error": "paths_required"}), 400
+
+    try:
+        abs_list, bad_paths, access = _resolve_zip_request_paths(relpaths)
+    except PermissionError as exc:
+        return jsonify({"ok": False, "error": "unauthorized_path", "path": str(exc)}), 403
+
+    if not abs_list:
+        return jsonify({"ok": False, "error": "no_valid_files", "bad_paths": bad_paths}), 400
+
+    key = _safe_download_key(request.headers.get("X-Idempotency-Key") or uuid.uuid4().hex)
+    if not _acquire_lock(key):
+        prog = _progress_read(key)
+        return jsonify({"ok": False, "error": "already_in_progress", "progress": prog}), 409
+
+    entries = [(os.path.basename(path), path) for path in abs_list]
+    path = _make_zip_entries_internal(entries, key, access=access)
+    _unlock_only(key)
+    if not path:
+        return jsonify({"ok": False, "error": "zip_failed"}), 500
+
+    return jsonify({
+        "ok": True,
+        "key": key,
+        "download_url": f"/api/zip-download/{key}",
+        "download_name": f"{key}.zip",
+        "size": os.path.getsize(path),
+        "bad_paths": bad_paths,
+    })
+
+@zip_api.route("/api/zip-download/<key>", methods=["GET"])
+def api_zip_download(key: str):
+    _cleanup_progress_expired()
+    safe_key = _safe_download_key(key)
+    if safe_key != key:
+        return jsonify({"ok": False, "error": "invalid_key"}), 400
+    path = _zip_out_path(safe_key)
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "zip_not_found"}), 404
+    progress = _progress_read(safe_key)
+    if safe_key.startswith("album-") and not progress:
+        return jsonify({"ok": False, "error": "zip_metadata_not_found"}), 404
+    if not _job_access_allowed(progress):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+    download_name = (progress or {}).get("download_name") or f"{safe_key}.zip"
+    return send_file(
+        path,
+        as_attachment=True,
+        download_name=download_name,
+        mimetype="application/zip",
+        conditional=True,
+        max_age=0,
+        etag=False,
+        last_modified=datetime.now(timezone.utc),
     )
 
 @zip_api.route("/api/zip-progress", methods=["GET"])
@@ -455,6 +734,8 @@ def api_zip_progress():
     prog = _progress_read(key)
     if not prog:
         return jsonify({"ok": False, "error": "not_found"}), 404
+    if not _job_access_allowed(prog):
+        return jsonify({"ok": False, "error": "forbidden"}), 403
     if prog.get("status") == "done":
         prog["processed_bytes"] = prog.get("total_bytes", 0)
         prog["processed_files"] = prog.get("total_files", 0)

@@ -1,26 +1,18 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <title>アップロード完了</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body {
-      font-family: sans-serif;
-      background: #f0f0f0;
-      padding: 2em;
-    }
+{% extends "base.html" %}
+{% block title %}アップロード完了{% endblock %}
 
-    .box {
+{% block head_extra %}
+  <style>
+    .upload-done-box {
       background: white;
       padding: 2em;
       border-radius: 10px;
-      max-width: 700px;
-      margin: auto;
+      max-width: 760px;
+      margin: 0 auto 2em;
       box-shadow: 0 0 10px rgba(0,0,0,0.1);
     }
 
-    h2 {
+    .upload-done-box h2 {
       color: #333;
       margin-top: 0;
     }
@@ -55,37 +47,151 @@
       background-color: #0056b3;
     }
 
-    .actions {
+    .mail-box {
+      margin-top: 1.5em;
+      background: #eef7ff;
+      border: 1px solid #b8dcff;
+      border-radius: 8px;
+      padding: 1em;
+    }
+
+    .mail-box h3 {
+      margin: 0 0 0.75em;
+      font-size: 1.1em;
+      color: #174c7c;
+    }
+
+    .mail-form-row {
+      margin-top: 0.8em;
+    }
+
+    .mail-form-row label {
+      display: block;
+      font-weight: bold;
+      margin-bottom: 0.35em;
+      color: #333;
+    }
+
+    .mail-form-row select,
+    .mail-form-row input,
+    .mail-form-row textarea {
+      box-sizing: border-box;
+      width: 100%;
+      border: 1px solid #aaa;
+      border-radius: 5px;
+      padding: 0.55em;
+      font: inherit;
+      background: #fff;
+    }
+
+    .mail-form-row textarea {
+      min-height: 9em;
+      resize: vertical;
+      white-space: pre-wrap;
+    }
+
+    .mail-actions {
+      margin-top: 1em;
+      display: flex;
+      align-items: center;
+      gap: 0.8em;
+      flex-wrap: wrap;
+    }
+
+    .mail-actions button {
+      padding: 0.6em 1.5em;
+      font-size: 1em;
+      border: none;
+      border-radius: 5px;
+      background-color: #198754;
+      color: white;
+      cursor: pointer;
+    }
+
+    .mail-actions button:disabled {
+      background-color: #8fb99f;
+      cursor: wait;
+    }
+
+    .mail-status {
+      color: #174c7c;
+      font-size: 0.95em;
+    }
+
+    .mail-status.error {
+      color: #b00020;
+    }
+
+    .upload-done-actions {
       margin-top: 2em;
       text-align: center;
     }
 
-    .actions a {
+    .upload-done-actions a {
       text-decoration: none;
       color: #007bff;
       margin: 0 1em;
     }
 
-    .actions a:hover {
+    .upload-done-actions a:hover {
       text-decoration: underline;
     }
   </style>
-</head>
-<body>
-  <div class="box">
-    <h2>✅ アップロードが完了しました！</h2>
+{% endblock %}
 
-    <div class="message-box" id="messageBox">{{ message }}</div>
+{% block content %}
+  <div class="container">
+    <div class="upload-done-box">
+      <h2>✅ アップロードが完了しました！</h2>
 
-    <div class="copy-button">
-      <button onclick="copyToClipboard()">📋 コピー</button>
-    </div>
+      <div class="message-box" id="messageBox">{{ message }}</div>
 
-    <div class="actions">
-      <a href="{{ url_for('upload') }}">⬅ 別のファイルをアップロードする</a>
-      {% if mode == "layer" %}
-        <a href="{{ url_for('layer_reply.layer_upload', uuid=uuid) }}">📤 加工済み写真をアップロード</a>
-      {% endif %}
+      <div class="copy-button">
+        <button onclick="copyToClipboard()">📋 コピー</button>
+      </div>
+
+      <div class="mail-box">
+        <h3>📧 請求書登録メールアドレスへ送付</h3>
+        {% if mail_contacts %}
+          <div class="mail-form-row">
+            <label for="mailTo">送付先</label>
+            <select id="mailTo">
+              {% for contact in mail_contacts %}
+                <option value="{{ contact.email }}">{{ contact.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mail-form-row">
+            <label for="mailSenderName">送信者名</label>
+            <input id="mailSenderName" type="text" value="{{ mail_sender_name or 'いおりん写真室' }}" placeholder="いおりん写真室">
+          </div>
+          <div class="mail-form-row">
+            <label for="mailCc">Cc</label>
+            <input id="mailCc" type="text" value="{{ mail_cc or '' }}" placeholder="admin@mail.iori0624.jp">
+          </div>
+          <div class="mail-form-row">
+            <label for="mailSubject">件名</label>
+            <input id="mailSubject" type="text" value="{{ mail_subject }}" readonly>
+          </div>
+          <div class="mail-form-row">
+            <label for="mailBodyPreview">本文</label>
+            <textarea id="mailBodyPreview" readonly>{{ message }}</textarea>
+          </div>
+          <div class="mail-actions">
+            <button id="sendMailButton" type="button" onclick="sendUploadMail()">送信する</button>
+            <span id="mailStatus" class="mail-status"></span>
+          </div>
+        {% else %}
+          <p class="mail-status error">請求書に登録されているメールアドレスが見つかりません。</p>
+        {% endif %}
+      </div>
+
+      <div class="upload-done-actions">
+        <a href="{{ url_for('upload') }}">⬅ 別のファイルをアップロードする</a>
+        {% if mode == "layer" %}
+          <a href="{{ url_for('layer_reply.layer_upload', uuid=uuid) }}">📤 加工済み写真をアップロード</a>
+        {% endif %}
+      </div>
     </div>
   </div>
 
@@ -98,6 +204,59 @@
         alert("コピーに失敗しました: " + err);
       });
     }
+
+    function csrfToken() {
+      return document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    }
+
+    async function sendUploadMail() {
+      const button = document.getElementById("sendMailButton");
+      const status = document.getElementById("mailStatus");
+      const mailTo = document.getElementById("mailTo");
+      const senderName = document.getElementById("mailSenderName");
+      const mailCc = document.getElementById("mailCc");
+      if (!button || !status || !mailTo || !senderName || !mailCc) return;
+
+      status.classList.remove("error");
+      status.textContent = "";
+      const toEmail = mailTo.value;
+      const ccEmail = mailCc.value.trim();
+      const senderNameValue = senderName.value.trim() || "いおりん写真室";
+      if (!toEmail) {
+        status.classList.add("error");
+        status.textContent = "送付先を選択してください。";
+        return;
+      }
+      const ccLine = ccEmail ? `\nCc: ${ccEmail}` : "";
+      if (!confirm(`${toEmail} へ送信します。\n送信者名: ${senderNameValue}${ccLine}\nよろしいですか？`)) return;
+
+      button.disabled = true;
+      status.textContent = "送信中…";
+      const formData = new FormData();
+      formData.append("uuid", "{{ uuid }}");
+      formData.append("to_email", toEmail);
+      formData.append("sender_name", senderNameValue);
+      formData.append("cc_email", ccEmail);
+
+      try {
+        const res = await fetch("{{ url_for('submit_upload_mail') }}", {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken() },
+          body: formData
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || !data || data.ok === false) {
+          throw new Error((data && (data.error || data.message)) || `HTTP ${res.status}`);
+        }
+        senderName.value = data.sender_name || senderNameValue;
+        mailCc.value = data.cc_email || "";
+        status.textContent = data.message || "メールを送信しました。";
+      } catch (err) {
+        status.classList.add("error");
+        status.textContent = err.message || "メール送信に失敗しました。";
+      } finally {
+        button.disabled = false;
+      }
+    }
   </script>
-</body>
-</html>
+{% endblock %}

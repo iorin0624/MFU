@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 アルバム機能 / 動画モード: 連番保存 + 変換(H.264/AAC) + ポスター生成 + 個別DL 対応フル版
-+ 写真ストレージ(SSD/HDD)のアルバム単位切替（外部リンク変更なし / DB管理 / 物理移動UI付き）
++ 写真ストレージをSSD固定パスで管理
 
 - 動画アップロード: {child_id}_YYYYMMDD_HHMM_NNNN.ext の連番で保存
 - ffmpeg/ffprobe が見つかれば、*.web.mp4（H.264/AAC）と *.poster.jpg をバックグラウンド生成
 - 一覧は .web.mp4 を優先再生（未生成なら converting=True をテンプレ側へ渡す）
 - 画像(通常/加工)と動画のパスはルートで分離:
-    画像:  /mnt/mfu/mfu_albums/<album>/<child>  ← SSD/HDDをDBで切替（物理移動UIあり）
-    動画:  /mnt/maildata/mfu_album_movie/<album>/<child>（固定）
+    画像:  /mnt/mfu/mfu_albums/<album>/<child>（固定）
+    動画:  /mnt/mfu/mfu_album_movie/<album>/<child>（固定）
 """
 
 from flask import (
     Blueprint, render_template, render_template_string, request, redirect,
-    url_for, session, send_from_directory, send_file, abort, current_app, flash, jsonify, Response
+    url_for, session, send_from_directory, send_file, abort, current_app, flash, jsonify
 )
 from werkzeug.utils import secure_filename
 import os
@@ -30,16 +30,15 @@ import shlex
 
 from mysql.connector import errors as MySQLErrors
 from app.utils.db import get_db  #
-from flask import g  # 追加
 
 # 外部ユーティリティ（既存プロジェクトのモジュールを利用）
 from app.albums.photo_namer import get_datetime_from_image
 from app.utils.thumbs import enqueue_thumb_job, get_files_with_thumbs
 from app.utils.push import send_push
-from app.external_login_user.utils import _get_ext_user_by_social
+from app.external_login_user.utils import _get_ext_user_by_social, is_withdrawn_ext_user
 
 album_bp = Blueprint('album', __name__, template_folder='templates')
-print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD/HDD切替) loaded")
+print("✅ album.routes (movie 連番 & 変換 & 個別DL + SSD固定保存) loaded")
 
 
 ALBUM_AUTH_SESSION_KEY = "album_auth_ids"
@@ -53,6 +52,48 @@ def _grant_album_auth(album_id: str) -> None:
         return
     allowed = (allowed + [album_id])[-ALBUM_AUTH_MAX_ITEMS:]
     session[ALBUM_AUTH_SESSION_KEY] = allowed
+
+
+def _revoke_album_auth(album_id: str) -> None:
+    allowed = session.get(ALBUM_AUTH_SESSION_KEY) or []
+    if album_id in allowed:
+        session[ALBUM_AUTH_SESSION_KEY] = [item for item in allowed if item != album_id]
+    session.pop(f"auth_{album_id}", None)
+
+
+def clear_event_album_auth() -> None:
+    """外部ログアウト時にイベント連携分だけをセッションから除去する。"""
+    allowed = [str(item) for item in (session.get(ALBUM_AUTH_SESSION_KEY) or []) if item]
+    legacy_ids = [
+        key[5:]
+        for key in list(session.keys())
+        if key.startswith("auth_") and key[5:]
+    ]
+    candidate_ids = list(dict.fromkeys(allowed + legacy_ids))
+    if not candidate_ids:
+        return
+
+    placeholders = ",".join(["%s"] * len(candidate_ids))
+    event_ids: set[str] = set()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT id FROM albums WHERE access_mode='event' AND id IN ({placeholders})",
+            tuple(candidate_ids),
+        )
+        event_ids = {
+            str(row[0] if isinstance(row, tuple) else row.get("id"))
+            for row in (cur.fetchall() or [])
+        }
+        cur.close()
+    finally:
+        conn.close()
+
+    if event_ids:
+        session[ALBUM_AUTH_SESSION_KEY] = [item for item in allowed if item not in event_ids]
+        for album_id in event_ids:
+            session.pop(f"auth_{album_id}", None)
 
 
 def _has_album_auth(album_id: str) -> bool:
@@ -107,7 +148,8 @@ def _fetch_event_process_members(event_id: int) -> list[dict]:
               m.user_id,
               COALESCE(m.process, 0) AS process,
               u.nickname,
-              u.email
+              u.email,
+              COALESCE(u.is_deleted, 0) AS is_deleted
             FROM mfu_event_member m
             JOIN external_login_user u ON u.id = m.user_id
             WHERE m.event_id=%s
@@ -134,7 +176,7 @@ def _fetch_event_process_members(event_id: int) -> list[dict]:
             pass
     except Exception:
         return []
-    return rows or []
+    return [r for r in (rows or []) if not is_withdrawn_ext_user(r)]
 
 def _fetch_album_process_status_map(album_id: str, child_id: str) -> dict[int, dict]:
     """album_process の request/complete 状態を ext_user_id ごとに取得"""
@@ -265,7 +307,9 @@ def _notify_requester_process_completion(
         return
     requester_row = db_get_one(
         """
-        SELECT u.email
+        SELECT u.email,
+               COALESCE(u.is_deleted, 0) AS is_deleted,
+               u.nickname
           FROM mfu_event_member m
           JOIN external_login_user u ON u.id = m.user_id
          WHERE m.event_id=%s
@@ -276,6 +320,8 @@ def _notify_requester_process_completion(
         """,
         (int(event_meta["event_id"]), int(request_by_id)),
     )
+    if is_withdrawn_ext_user(requester_row):
+        return
     requester_email = (requester_row.get("email") or "").strip() if requester_row else ""
     if not requester_email:
         return
@@ -312,7 +358,7 @@ def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> li
         return []
     placeholders = ",".join(["%s"] * len(user_ids))
     sql = (
-        "SELECT m.user_id, u.nickname, u.email, "
+        "SELECT m.user_id, u.nickname, u.email, COALESCE(u.is_deleted, 0) AS is_deleted, "
         "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
         "  FROM mfu_event_member m "
         "  JOIN external_login_user u ON u.id = m.user_id "
@@ -321,7 +367,10 @@ def _fetch_event_notification_contacts(event_id: int, user_ids: list[int]) -> li
         "   AND COALESCE(m.is_canceled, 0)=0 "
         " ORDER BY u.nickname ASC, m.user_id ASC"
     )
-    rows = db_get_all(sql, (event_id, *user_ids)) or []
+    rows = [
+        r for r in (db_get_all(sql, (event_id, *user_ids)) or [])
+        if not is_withdrawn_ext_user(r)
+    ]
     current_app.logger.info(
         "album process notify contacts loaded event_id=%s requested_user_ids=%s contacts_after_cancel_filter=%s condition=%s",
         event_id,
@@ -367,13 +416,8 @@ def _fetch_push_subscribed_ext_user_ids(user_ids: list[int]) -> set[int]:
 # =============================================================================
 # 定数 / 設定
 # =============================================================================
-# --- 写真(静止画/加工)のルート（切替対象） ---
-SSD_ROOT = '/mnt/mfu/mfu_albums'                 # 従来のSSD保存先
-HDD_ROOT = '/mnt/maildata/mfu_albums'            # 長期保管HDD保存先
-DEFAULT_STORAGE = 'ssd'                           # 新規はSSDに作成
-
-# --- 互換のため残す（直接は使わず、storage_child_dir経由で解決） ---
-ALBUM_ROOT = SSD_ROOT
+# --- 写真（静止画／加工）の保存先 ---
+ALBUM_ROOT = '/mnt/mfu/mfu_albums'
 
 # --- 動画のルート（固定・切替対象外） ---
 MOVIE_ROOT = '/mnt/mfu/mfu_album_movie'
@@ -415,45 +459,17 @@ def allowed_file(filename: str) -> bool:
 def allowed_movie(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_MOVIE_EXTS
 
-# ---------- SSD/HDD 両方を見るためのヘルパ ----------
-def _get_roots_for_album(album_id: str):
-    """アルバムの主ルートと副ルート（フェイルオーバ順）を返す（1リクエスト内キャッシュ）"""
-    cache = getattr(g, "_album_roots_cache", None)
-    if cache is None:
-        cache = g._album_roots_cache = {}
-    roots = cache.get(album_id)
-    if roots:
-        return roots
-    _storage, cur_root = _get_album_storage(album_id)
-    other_root = HDD_ROOT if cur_root == SSD_ROOT else SSD_ROOT
-    roots = (cur_root, other_root)
-    cache[album_id] = roots
-    return roots
-
 def _prefer_existing_child_dir(album_id: str, child_id: str, mode: str):
-    """主ルートに子が無ければ副ルートを返す（view 用ディレクトリ決定）"""
-    if (mode or "").lower() == "movie":
-        return os.path.join(MOVIE_ROOT, album_id, child_id)
-    primary, secondary = _get_roots_for_album(album_id)
-    p = os.path.join(primary, album_id, child_id)
-    if os.path.isdir(p):
-        return p
-    s = os.path.join(secondary, album_id, child_id)
-    if os.path.isdir(s):
-        return s
-    return p  # どちらも無ければ主ルート側を返す（後で作成される）
+    """メディア種別に応じた子アルバムの保存先を返す。"""
+    return storage_child_dir(album_id, child_id, mode)
 
-def _open_path_anyroot(album_id: str, child_id: str, filename: str, mode: str = "normal") -> str | None:
-    """SSD/HDD どちらかで見つかった絶対パスを返す（send_file 用）"""
+def _open_media_path(album_id: str, child_id: str, filename: str, mode: str = "normal") -> str | None:
+    """メディアの絶対パスを安全に解決する（send_file 用）。"""
     if (mode or "").lower() == "movie":
         path = os.path.join(MOVIE_ROOT, album_id, child_id, filename)
         return path if os.path.isfile(path) else None
-    primary, secondary = _get_roots_for_album(album_id)
-    p = os.path.join(primary, album_id, child_id, filename)
-    if os.path.isfile(p):
-        return p
-    s = os.path.join(secondary, album_id, child_id, filename)
-    return s if os.path.isfile(s) else None
+    path = os.path.join(ALBUM_ROOT, album_id, child_id, filename)
+    return path if os.path.isfile(path) else None
 
 def _count_child_media_items(album_id: str, child_id: str, mode: str) -> int:
     """子アルバム内の表示対象メディア件数を返す（親一覧向け）。"""
@@ -471,38 +487,31 @@ def _count_child_media_items(album_id: str, child_id: str, mode: str) -> int:
             and not fname.endswith('.web.mp4')
         )
 
-    roots = _get_roots_for_album(album_id)
-    seen = set()
+    child_path = storage_child_dir(album_id, child_id, mode=normalized_mode)
+    if not os.path.isdir(child_path):
+        return 0
+
     count = 0
-    for root in roots:
-        child_path = os.path.join(root, album_id, child_id)
-        if not os.path.isdir(child_path):
+    for fname in os.listdir(child_path):
+        full = os.path.join(child_path, fname)
+        if not os.path.isfile(full) or not allowed_file(fname):
             continue
-        for fname in os.listdir(child_path):
-            full = os.path.join(child_path, fname)
-            if not os.path.isfile(full) or not allowed_file(fname):
-                continue
 
-            if normalized_mode == "process":
-                if not fname.startswith("latest."):
-                    continue
-            elif fname.startswith("latest."):
+        if normalized_mode == "process":
+            if not fname.startswith("latest."):
                 continue
+        elif fname.startswith("latest."):
+            continue
 
-            if fname in seen:
-                continue
-            seen.add(fname)
-            count += 1
+        count += 1
     return count
 
 def resolve_thumb_url(album_id: str, child_id: str, original_filename: str) -> str:
     base, _ = os.path.splitext(original_filename)
-    roots = _get_roots_for_album(album_id)  # ← 追加：毎回DB行かない
     for cand in (f"{base}.webp", f"{base}.jpg", f"{base}.jpeg"):
-        for root in roots:
-            p = os.path.join(root, album_id, child_id, 'thumbs', cand)
-            if os.path.isfile(p):
-                return url_for('album.album_thumb', album_id=album_id, child_id=child_id, filename=cand)
+        p = os.path.join(ALBUM_ROOT, album_id, child_id, 'thumbs', cand)
+        if os.path.isfile(p):
+            return url_for('album.album_thumb', album_id=album_id, child_id=child_id, filename=cand)
     return url_for('album.image', album_id=album_id, child_id=child_id, filename=original_filename)
 
 # 追加：encoded/original 内の実ファイルを解決（パストラバーサル防止）
@@ -560,11 +569,6 @@ def db_exec(sql, params=()):
     finally:
         conn.close()
 
-def is_album_readonly(album_id: str) -> bool:
-    """HDD保管中（アーカイブ）なら True"""
-    storage, _ = _get_album_storage(album_id)
-    return storage == 'hdd'
-
 def _movie_dir(album_id: str, child_id: str) -> str:
     return os.path.join(MOVIE_ROOT, album_id, child_id)
 
@@ -572,28 +576,6 @@ def _movie_subdir(album_id: str, child_id: str, sub: str) -> str:
     p = os.path.join(_movie_dir(album_id, child_id), sub)
     os.makedirs(p, exist_ok=True)
     return p
-
-# =============================================================================
-# ストレージ保存先(SSD/HDD)のDB管理
-# =============================================================================
-DDL_ALBUM_STORAGE = """
-CREATE TABLE IF NOT EXISTS album_storage (
-  album_id   VARCHAR(64) PRIMARY KEY,
-  storage    ENUM('ssd','hdd') NOT NULL,
-  abs_root   VARCHAR(255) NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"""
-
-def _ensure_album_storage_table():
-    db = get_db()
-    try:
-        with db.cursor() as cur:
-            cur.execute(DDL_ALBUM_STORAGE)
-        db.commit()
-    finally:
-        db.close()
 
 # =============================================================================
 # 加工回し（イベント向け）依頼/完了の状態管理
@@ -627,69 +609,6 @@ def _ensure_album_process_table():
         db.commit()
     finally:
         db.close()
-
-def _set_album_storage(album_id: str, storage: str):
-    """SSD/HDD のどちらかを設定し、abs_root を同期"""
-    root = SSD_ROOT if storage == "ssd" else HDD_ROOT
-    _ensure_album_storage_table()
-    db = get_db()
-    try:
-        with db.cursor() as cur:
-            cur.execute(
-                "REPLACE INTO album_storage (album_id, storage, abs_root) VALUES (%s, %s, %s)",
-                (album_id, storage, root),
-            )
-        db.commit()
-    finally:
-        db.close()
-
-def _get_album_storage(album_id: str):
-    """
-    戻り: (storage, abs_root)
-    - DBが使えれば DB 優先
-    - 使えなければ 実ディレクトリの存在で推定（フォールバック）
-    - 何も無ければ DEFAULT_STORAGE を採用
-    """
-    # まずはDBに触る前に「既にディレクトリがどちらにあるか」を用意
-    ssd_exists = os.path.isdir(os.path.join(SSD_ROOT, album_id))
-    hdd_exists = os.path.isdir(os.path.join(HDD_ROOT, album_id))
-
-    # DBトライ（テーブル作成含む）— 失敗しても絶対に例外を外へ飛ばさない
-    try:
-        # 既存コード踏襲（テーブル作成）
-        _ensure_album_storage_table()
-        db = get_db()
-        try:
-            with db.cursor(dictionary=True) as cur:
-                cur.execute("SELECT storage, abs_root FROM album_storage WHERE album_id=%s", (album_id,))
-                row = cur.fetchone()
-            if row:
-                return row["storage"], row["abs_root"]
-        finally:
-            db.close()
-    except Exception as e:
-        # ログだけ吐いてフォールバック
-        try:
-            current_app.logger.warning("album_storage lookup failed, fallback to FS: %s", e)
-        except Exception:
-            pass
-
-    # ここからフォールバック推定（DBに頼らない）
-    if ssd_exists and not hdd_exists:
-        return ("ssd", SSD_ROOT)
-    if hdd_exists and not ssd_exists:
-        return ("hdd", HDD_ROOT)
-    if ssd_exists and hdd_exists:
-        # 両方にあるならとりあえずSSDを主に（運用上の期待に寄せる）
-        return ("ssd", SSD_ROOT)
-
-    # どこにも無ければデフォルト採用
-    return (DEFAULT_STORAGE, SSD_ROOT if DEFAULT_STORAGE == "ssd" else HDD_ROOT)
-
-def _photos_root(album_id: str) -> str:
-    """写真用の実ルート（album_idごとにDBで解決）"""
-    _, root = _get_album_storage(album_id)
-    return root
 
 # ------------------ メタ情報 ------------------
 _def_token_bytes = 32  # 256bit
@@ -726,13 +645,15 @@ def regenerate_access_token(album_id: str) -> str:
 
 def list_albums_for_user(user: str):
     return db_get_all(
-        "SELECT id, album_name AS name, owner, access_token FROM albums WHERE owner=%s ORDER BY album_name ASC",
+        "SELECT id, album_name AS name, owner, access_token, event_id, access_mode "
+        "FROM albums WHERE owner=%s ORDER BY album_name ASC",
         (user,)
     )
 
 def list_albums_for_admin():
     return db_get_all(
-        "SELECT id, album_name AS name, owner, access_token FROM albums ORDER BY album_name ASC"
+        "SELECT id, album_name AS name, owner, access_token, event_id, access_mode "
+        "FROM albums ORDER BY album_name ASC"
     )
 
 def add_child_row(album_id: str, child_name: str, mode: str):
@@ -751,17 +672,17 @@ def delete_child_row(album_id: str, child_id: str):
 def delete_album_row(album_id: str):
     db_exec("DELETE FROM albums WHERE id=%s", (album_id,))
 
-# ------------------ ストレージルート切替（実解決） ------------------
+# ------------------ メディア保存先 ------------------
 def storage_child_dir(album_id: str, child_id: str, mode: str | None = None) -> str:
     """
     子アルバムのフルパスを返す。
     - movie: MOVIE_ROOT（固定）
-    - その他: album_storage を参照し SSD/HDD を解決
+    - その他: ALBUM_ROOT（固定）
     """
     if (mode or '').lower() == 'movie':
         base = MOVIE_ROOT
     else:
-        base = _photos_root(album_id)
+        base = ALBUM_ROOT
     return os.path.join(base, album_id, child_id)
 
 # ------------------ 加工ロック（DB管理 + lock.json） ------------------
@@ -1044,12 +965,22 @@ def _is_event_member_approved(event_id: int) -> bool:
     if not sid:
         session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
         return False
-    u = db_get_one("SELECT id FROM external_login_user WHERE social_id=%s", (sid,))
-    if not u:
-        session["ext_user_onboarding"] = True
-        session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
-        return False
-    ext_user_id = int(u["id"])
+    ext_user_id = session.get("ext_user_id")
+    if ext_user_id is None:
+        u = db_get_one("SELECT id, nickname FROM external_login_user WHERE social_id=%s", (sid,))
+        if not u:
+            session["ext_user_onboarding"] = True
+            session["after_login_redirect"] = url_for('album.album_access', album_id=session.get("_gate_album_id"), _external=True)
+            return False
+        ext_user_id = int(u["id"])
+        session["ext_user_id"] = ext_user_id
+        session["ext_user_nickname"] = (u.get("nickname") or "").strip()
+    else:
+        try:
+            ext_user_id = int(ext_user_id)
+        except (TypeError, ValueError):
+            session.pop("ext_user_id", None)
+            return False
     mem = db_get_one(
         "SELECT status, COALESCE(is_canceled,0) AS is_canceled FROM mfu_event_member WHERE event_id=%s AND user_id=%s",
         (event_id, ext_user_id),
@@ -1082,188 +1013,6 @@ def event_gate(view_func):
         # tokenモードは既存処理へ
         return view_func(album_id, *args, **kwargs)
     return _wrapped
-
-# =============================================================================
-# 移動進捗トラッキング（JSON）＋ 非同期移動API
-# =============================================================================
-import threading
-
-def _move_progress_dir() -> str:
-    d = os.path.join('/mnt/mfu/tmp', 'mfu-move-progress')  # zip_stream と同じ領域系でOK
-    os.makedirs(d, exist_ok=True)
-    return d
-
-def _move_progress_path(album_id: str) -> str:
-    return os.path.join(_move_progress_dir(), f"{album_id}.json")
-
-def _move_progress_write(album_id: str, data: dict):
-    p = _move_progress_path(album_id)
-    tmp = p + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-        os.replace(tmp, p)
-    except Exception:
-        pass
-
-def _move_progress_read(album_id: str):
-    p = _move_progress_path(album_id)
-    if not os.path.exists(p):
-        return None
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-def _gather_all_files(src: str):
-    """コピー対象の全ファイル一覧と総バイトを先に集計"""
-    files = []
-    total_bytes = 0
-    for base, _dirs, fnames in os.walk(src):
-        for name in fnames:
-            sp = os.path.join(base, name)
-            try:
-                st = os.stat(sp)
-            except FileNotFoundError:
-                continue
-            if os.path.isfile(sp):
-                files.append(sp)
-                total_bytes += st.st_size
-    return files, total_bytes
-
-def _copy_tree_with_progress(src: str, dst_tmp: str, album_id: str):
-    """
-    進捗JSONを書きつつディレクトリをコピーする。
-    - percent は中間最大99、完了で100
-    """
-    files, total_bytes = _gather_all_files(src)
-    total_files = len(files)
-    processed_files = 0
-    processed_bytes = 0
-    started = time.time()
-
-    # 初期進捗
-    _move_progress_write(album_id, {
-        "status": "running",
-        "total_files": total_files,
-        "processed_files": 0,
-        "total_bytes": total_bytes,
-        "processed_bytes": 0,
-        "percent": 0,
-        "started_ts": started,
-    })
-
-    # 実コピー（ディレクトリは mkdir しつつ、ファイルは copy2）
-    for src_file in files:
-        rel = os.path.relpath(src_file, src)
-        dst_file = os.path.join(dst_tmp, rel)
-        os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-        shutil.copy2(src_file, dst_file)
-
-        # 進捗更新
-        try:
-            sz = os.path.getsize(src_file)
-        except Exception:
-            sz = 0
-        processed_files += 1
-        processed_bytes += sz
-
-        if total_bytes > 0:
-            pct = int(processed_bytes * 100 / total_bytes)
-        else:
-            pct = int(processed_files * 100 / max(1, total_files))
-
-        if processed_files < total_files:
-            pct = min(99, pct)
-        else:
-            pct = 100
-
-        _move_progress_write(album_id, {
-            "status": "running",
-            "total_files": total_files,
-            "processed_files": processed_files,
-            "total_bytes": total_bytes,
-            "processed_bytes": processed_bytes,
-            "percent": pct,
-            "started_ts": started,
-        })
-
-def _finalize_move_progress(album_id: str, ok: bool, message: str = ""):
-    info = _move_progress_read(album_id) or {}
-    info.update({
-        "status": "done" if ok else "error",
-        "percent": 100 if ok else info.get("percent", 0),
-        "message": message,
-        "completed_ts": time.time(),
-    })
-    _move_progress_write(album_id, info)
-
-def _move_album_physical_photos_safe_with_progress(album_id: str, dest_storage: str):
-    """
-    _move_album_physical_photos_safe と同等だが、コピー部分を進捗付きで実施。
-    """
-    cur_storage, cur_root = _get_album_storage(album_id)
-    dst_root = SSD_ROOT if dest_storage == "ssd" else HDD_ROOT
-    if cur_root == dst_root:
-        _finalize_move_progress(album_id, False, "すでに目的地にあります")
-        return False, "すでに目的地にあります"
-
-    src_dir = os.path.join(cur_root, album_id)
-    if not os.path.isdir(src_dir):
-        _finalize_move_progress(album_id, False, "移動元が存在しません")
-        return False, "移動元が存在しません"
-
-    os.makedirs(dst_root, exist_ok=True)
-    final_dst = os.path.join(dst_root, album_id)
-    if os.path.exists(final_dst):
-        _finalize_move_progress(album_id, False, "移動先に同名ディレクトリが既に存在します")
-        return False, "移動先に同名ディレクトリが既に存在します"
-
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    dst_tmp = os.path.join(dst_root, f"{album_id}.moving_{ts}")
-    if os.path.exists(dst_tmp):
-        shutil.rmtree(dst_tmp, ignore_errors=True)
-    os.makedirs(dst_tmp, exist_ok=True)
-
-    try:
-        # 1) コピー（進捗出力）
-        _copy_tree_with_progress(src_dir, dst_tmp, album_id)
-
-        # 2) 検証
-        src_count, src_bytes = _count_files_and_bytes(src_dir)
-        dst_count, dst_bytes = _count_files_and_bytes(dst_tmp)
-        if src_count != dst_count or src_bytes != dst_bytes:
-            raise RuntimeError(f"検証NG: files {src_count}->{dst_count}, bytes {src_bytes}->{dst_bytes}")
-
-        # 3) 宛先へ原子的切替
-        os.rename(dst_tmp, final_dst)
-
-        # 4) 旧データ退避
-        backup_name = f"{album_id}.backup_{ts}"
-        backup_path = os.path.join(cur_root, backup_name)
-        os.rename(src_dir, backup_path)
-
-        # 5) DB切替
-        _set_album_storage(album_id, dest_storage)
-
-        msg = f"切替完了。旧データは {backup_path} にバックアップとして残しました。確認後に手動削除してください。"
-        _finalize_move_progress(album_id, True, msg)
-        return True, msg
-
-    except Exception as e:
-        try:
-            if os.path.isdir(dst_tmp):
-                shutil.rmtree(dst_tmp, ignore_errors=True)
-        except Exception:
-            pass
-        _finalize_move_progress(album_id, False, f"移動失敗: {e}")
-        return False, f"移動失敗: {e}"
-
-# ---- 非同期開始APIと進捗取得API ----
-_move_threads: dict[str, threading.Thread] = {}
-
-
 
 # =============================================================================
 # ルート：アクセス/トップ/子作成
@@ -1350,10 +1099,6 @@ def album_home(album_id):
     except Exception as e:
         processing_list = []
 
-    # ★HDD保管中フラグ
-    storage, _ = _get_album_storage(album_id)
-    is_readonly = (storage == 'hdd')
-
     completed_process_children = set()
     event_meta = _fetch_album_meta(album_id)
     if event_meta and event_meta.get("event_id"):
@@ -1381,7 +1126,6 @@ def album_home(album_id):
         'album_home.html',
         album_id=album_id, meta=meta,
         is_admin=is_admin, is_owner=is_owner,
-        is_readonly=is_readonly,
         processing_list=processing_list,   # ★追加
         ext_user_nickname=ext_user_nickname,
         completed_process_children=completed_process_children,
@@ -1393,11 +1137,6 @@ def create_child(album_id):
     meta = load_meta(album_id)
     if not meta:
         return redirect(url_for('album.album_access', album_id=album_id))
-
-    # ★HDD保管中は子作成を禁止（アーカイブ扱い）
-    if is_album_readonly(album_id):
-        flash('このアルバムはHDD保管中（アーカイブ）のため子アルバムを追加できません。', 'warning')
-        return redirect(url_for('album.album_home', album_id=album_id))
 
     if not _has_album_auth(album_id) and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
@@ -1432,15 +1171,6 @@ def upload_child(album_id, child_id):
     meta = load_meta(album_id)
     if not meta:
         return 'アルバムが存在しません', 404
-
-    # ★HDD保管中（アーカイブ）はアップロード画面も処理もブロック
-    try:
-        storage, _ = _get_album_storage(album_id)  # 例: ('ssd' | 'hdd', <path等>)
-    except Exception:
-        storage = None
-    if storage == 'hdd':
-        flash('このアルバムはHDD保管中（アーカイブ）のため写真・動画を追加できません。', 'warning')
-        return redirect(url_for('album.view_child', album_id=album_id, child_id=child_id))
 
     child_meta = next((c for c in meta["children"] if c["folder"] == child_id), None)
     mode = child_meta.get("mode", "normal") if child_meta else "normal"
@@ -1486,6 +1216,7 @@ def upload_child(album_id, child_id):
                 "SELECT m.user_id AS ext_user_id,"
                 "       u.email,"
                 "       COALESCE(u.nickname, '') AS nickname,"
+                "       COALESCE(u.is_deleted, 0) AS is_deleted,"
                 "       COALESCE(u.notify_album_upload, 1)  AS notify_album_upload,"
                 "       COALESCE(u.notify_album_process, 1) AS notify_album_process "
                 "  FROM mfu_event_member m "
@@ -1526,6 +1257,7 @@ def upload_child(album_id, child_id):
                     current_app.logger.warning("notify(db) failed: %s", e2)
                     return
 
+            rows = [r for r in (rows or []) if not is_withdrawn_ext_user(r)]
             recipients_total = len(rows)
             current_app.logger.info(
                 "album notify recipients loaded kind=%s album_id=%s child_id=%s event_id=%s recipients_after_cancel_filter=%s condition=%s",
@@ -2127,7 +1859,7 @@ def view_child(album_id, child_id):
         * .web.mp4 が未生成なら converting=True を渡す（テンプレ側で「変換中…」表示）
         * 一覧は「アップロード順（連番名）」で昇順ソート
           期待ファイル名: {child_id}_YYYYMMDD_HHMM_NNNN.ext
-    - それ以外は静止画/加工。SSD/HDD 両方を探索して表示
+    - それ以外は静止画/加工を固定保存先から表示
     """
     import re
     from datetime import datetime
@@ -2144,14 +1876,6 @@ def view_child(album_id, child_id):
     album_meta = _fetch_album_meta(album_id)
     show_extlogin_nav = bool((album_meta or {}).get("access_mode") == "event" and _is_ext_logged_in())
 
-    # ★HDD保管中フラグ（テンプレ側で作成/追加UIをブロックするために渡す）
-    try:
-        storage, _ = _get_album_storage(album_id)  # 'ssd' or 'hdd'
-    except Exception:
-        storage = None
-    is_readonly = (storage == 'hdd')
-
-    # SSD/HDD のどちらか実体がある方を優先
     child_path = _prefer_existing_child_dir(album_id, child_id, mode)
     os.makedirs(child_path, exist_ok=True)
 
@@ -2176,7 +1900,7 @@ def view_child(album_id, child_id):
         to_delete = request.form.getlist('delete')
         deleted = 0
         for filename in to_delete:
-            file_path = _open_path_anyroot(album_id, child_id, filename, mode='normal')
+            file_path = _open_media_path(album_id, child_id, filename, mode='normal')
             if file_path and os.path.exists(file_path):
                 try:
                     os.remove(file_path)
@@ -2186,14 +1910,12 @@ def view_child(album_id, child_id):
         flash(f"{deleted} 件のファイルを削除しました", "success")
         return redirect(request.url)
 
-    # 🔽 resolve_thumb_url を大量に呼んでも DB を叩かないように、ルート一覧を一度だけ取得して使い回すローカル関数
-    def _thumb_with_cached_roots(_album_id: str, _child_id: str, original_filename: str, _roots: tuple) -> str:
+    def _thumb_url(_album_id: str, _child_id: str, original_filename: str) -> str:
         base, _ = os.path.splitext(original_filename)
         for cand in (f"{base}.webp", f"{base}.jpg", f"{base}.jpeg"):
-            for r in _roots:
-                p = os.path.join(r, _album_id, _child_id, 'thumbs', cand)
-                if os.path.isfile(p):
-                    return url_for('album.album_thumb', album_id=_album_id, child_id=_child_id, filename=cand)
+            p = os.path.join(ALBUM_ROOT, _album_id, _child_id, 'thumbs', cand)
+            if os.path.isfile(p):
+                return url_for('album.album_thumb', album_id=_album_id, child_id=_child_id, filename=cand)
         # サムネが無いときは元画像
         return url_for('album.image', album_id=_album_id, child_id=_child_id, filename=original_filename)
 
@@ -2201,13 +1923,10 @@ def view_child(album_id, child_id):
     files = []
 
     if mode == "process":
-        # 加工専用: latest.* を両ルートから探索 → 一番新しい1枚を表示
+        # 加工専用: latest.* の一番新しい1枚を表示
         candidates = []
-        roots = _get_roots_for_album(album_id)  # ← 1回だけ取得して使い回す
-        for root in roots:
-            p = os.path.join(root, album_id, child_id)
-            if not os.path.isdir(p):
-                continue
+        p = os.path.join(ALBUM_ROOT, album_id, child_id)
+        if os.path.isdir(p):
             for f in os.listdir(p):
                 if f.startswith("latest.") and allowed_file(f):
                     candidates.append((p, f))
@@ -2291,36 +2010,26 @@ def view_child(album_id, child_id):
             session=session,
             is_admin=is_admin,
             is_owner=is_owner,
-            # ★追加：HDD保管中フラグをテンプレへ渡す
-            is_readonly=is_readonly,
             show_extlogin_nav=show_extlogin_nav,
         )
 
     else:
-        # 通常モード（静止画）: 両ルートをマージ
-        seen = set()
+        # 通常モード（静止画）
         merged = []
-        roots = _get_roots_for_album(album_id)  # ← 1回だけ取得して使い回す
-        for root in roots:
-            p = os.path.join(root, album_id, child_id)
-            if not os.path.isdir(p):
-                continue
+        p = os.path.join(ALBUM_ROOT, album_id, child_id)
+        if os.path.isdir(p):
             for f in os.listdir(p):
                 full = os.path.join(p, f)
                 if not os.path.isfile(full):
                     continue
                 if not allowed_file(f) or f.startswith("latest."):
                     continue
-                if f in seen:
-                    continue
-                seen.add(f)
-                # resolve_thumb_url を大量呼び出ししない（roots を使い回す）
-                merged.append({"name": f, "thumb": _thumb_with_cached_roots(album_id, child_id, f, roots)})
+                merged.append({"name": f, "thumb": _thumb_url(album_id, child_id, f)})
         files = sorted(merged, key=lambda x: x["name"])
 
     zip_token = session.pop('zip_token', None)
 
-    # 加工履歴（静止画用）— どちらか存在する側から読む
+    # 加工履歴（静止画用）
     history_list = []
     history_path = os.path.join(child_path, "history.json")
     if os.path.exists(history_path):
@@ -2329,6 +2038,10 @@ def view_child(album_id, child_id):
                 history_list = json.load(f)
         except Exception as e:
             current_app.logger.warning("加工履歴読み込みエラー: %s", e)
+    history_list = [
+        r for r in (history_list or [])
+        if isinstance(r, dict) and not is_withdrawn_ext_user(r)
+    ]
 
     # 画像ビュー（通常/加工）
     event_meta = _fetch_album_meta(album_id)
@@ -2378,8 +2091,6 @@ def view_child(album_id, child_id):
         is_owner=is_owner,
         session=session,
         history_list=history_list,
-        # ★追加：HDD保管中フラグをテンプレへ渡す
-        is_readonly=is_readonly,
         ext_user_nickname=_get_ext_user_nickname(),
         is_event_login=is_event_login,
         event_process_members=event_process_members,
@@ -2395,11 +2106,9 @@ def view_child(album_id, child_id):
 def album_thumb(album_id, child_id, filename):
     if not _has_album_auth(album_id) and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
-    # 両ルートを探索して実体から返す
-    for root in _get_roots_for_album(album_id):
-        p = os.path.join(root, album_id, child_id, 'thumbs', filename)
-        if os.path.isfile(p):
-            return send_file(p, conditional=True)
+    p = os.path.join(ALBUM_ROOT, album_id, child_id, 'thumbs', filename)
+    if os.path.isfile(p):
+        return send_file(p, conditional=True)
     abort(404)
 
 @album_bp.route('/<album_id>/<child_id>/process_status', methods=['POST'])
@@ -2642,7 +2351,7 @@ def request_process(album_id, child_id):
 def image(album_id, child_id, filename):
     if not _has_album_auth(album_id) and session.get('user') != 'admin':
         return redirect(url_for('album.album_access', album_id=album_id))
-    abs_path = _open_path_anyroot(album_id, child_id, filename, mode='normal')
+    abs_path = _open_media_path(album_id, child_id, filename, mode='normal')
     if not abs_path:
         abort(404)
     return send_file(abs_path, conditional=True)
@@ -2695,8 +2404,7 @@ def delete_album(album_id):
     if session.get('user') != 'admin' and session.get('user') != meta.get('owner'):
         return '削除権限がありません', 403
 
-    # 写真はSSD/HDDのどちらにも存在し得る。動画は固定。
-    for root in (SSD_ROOT, HDD_ROOT, MOVIE_ROOT):
+    for root in (ALBUM_ROOT, MOVIE_ROOT):
         album_path = os.path.join(root, album_id)
         if os.path.exists(album_path):
             shutil.rmtree(album_path, ignore_errors=True)
@@ -2719,9 +2427,7 @@ def admin_create_album():
         album_id = str(uuid.uuid4())
         owner = session.get('user')
 
-        # 新規はSSDに作成し、DBへ保存先登録
-        os.makedirs(os.path.join(SSD_ROOT, album_id), exist_ok=True)
-        _set_album_storage(album_id, 'ssd')
+        os.makedirs(os.path.join(ALBUM_ROOT, album_id), exist_ok=True)
 
         # 動画側の親フォルダも用意（空でOK）
         os.makedirs(os.path.join(MOVIE_ROOT, album_id), exist_ok=True)
@@ -2739,18 +2445,28 @@ def admin_create_album():
     user = session.get('user')
     rows = list_albums_for_admin() if user == 'admin' else list_albums_for_user(user)
 
-    album_list = []
+    event_album_list = []
+    normal_album_list = []
     for r in rows:
-        album_list.append({
+        album = {
             "id": r["id"],
             "name": r["name"],
             "owner": r["owner"],
             "password": "(未設定)",
-            "access_token": r.get("access_token", "")
-        })
+            "access_token": r.get("access_token", ""),
+            "event_id": r.get("event_id"),
+            "access_mode": r.get("access_mode") or "token",
+        }
+        is_event_album = album["event_id"] is not None and album["access_mode"] == "event"
+        (event_album_list if is_event_album else normal_album_list).append(album)
 
-    album_list.sort(key=lambda x: x['name'])
-    return render_template('admin_create_album.html', album_list=album_list)
+    event_album_list.sort(key=lambda x: x['name'])
+    normal_album_list.sort(key=lambda x: x['name'])
+    return render_template(
+        'admin_create_album.html',
+        event_album_list=event_album_list,
+        normal_album_list=normal_album_list,
+    )
 
 # =============================================================================
 # 子アルバム削除
@@ -2799,14 +2515,12 @@ def download_latest(album_id, child_id):
     if mode != "process":
         return "このアルバムは加工専用モードではありません", 400
 
-    # 両ルートから最新画像を探索
+    # 固定保存先から最新画像を探索
     latest = None
     latest_mtime = -1
     latest_path = None
-    for root in _get_roots_for_album(album_id):
-        p = os.path.join(root, album_id, child_id)
-        if not os.path.isdir(p):
-            continue
+    p = os.path.join(ALBUM_ROOT, album_id, child_id)
+    if os.path.isdir(p):
         # latest.* 優先
         for f in os.listdir(p):
             if f.startswith('latest.') and allowed_file(f):
@@ -2917,6 +2631,11 @@ def edit_album_name_form(album_id):
     if not (user == 'admin' or user == meta.get('owner')):
         return '編集権限がありません', 403
 
+    event_meta = _fetch_album_meta(album_id)
+    if event_meta and event_meta.get('access_mode') == 'event':
+        flash('イベント連携アルバムの名前はイベント管理画面から変更してください', 'warning')
+        return redirect(url_for('album.admin_create_album'))
+
     return render_template_string("""
 <!doctype html>
 <title>アルバム名の変更</title>
@@ -2942,6 +2661,11 @@ def rename_album(album_id):
     user = session.get('user')
     if not (user == 'admin' or user == meta.get('owner')):
         return '編集権限がありません', 403
+
+    event_meta = _fetch_album_meta(album_id)
+    if event_meta and event_meta.get('access_mode') == 'event':
+        flash('イベント連携アルバムの名前はイベント管理画面から変更してください', 'warning')
+        return redirect(url_for('album.admin_create_album'))
 
     new_name = (request.form.get('album_name') or '').strip()
     if not new_name:
@@ -2982,17 +2706,15 @@ def rename_child(album_id, child_id):
 
 # --- ここから追記: 加工開始(JSON) + 最新画像探索ヘルパ -------------------------
 def find_latest_filename(album_id: str, child_id: str) -> str | None:
-    """processモード用: latest.* があればそれを返し、無ければ child 内で最も新しい静止画を返す（両ルート探索）。"""
+    """processモード用: latest.* があれば返し、無ければ最新の静止画を返す。"""
     meta = load_meta(album_id) or {}
     child_meta = next((c for c in meta.get("children", []) if c.get("folder") == child_id), None)
     mode = child_meta.get("mode", "normal") if child_meta else "normal"
 
     latest = None
     latest_mtime = -1
-    for root in _get_roots_for_album(album_id):
-        child_path = os.path.join(root, album_id, child_id)
-        if not os.path.isdir(child_path):
-            continue
+    child_path = os.path.join(ALBUM_ROOT, album_id, child_id)
+    if os.path.isdir(child_path):
 
         # latest.* を優先
         for f in os.listdir(child_path):
@@ -3076,324 +2798,50 @@ def begin_process(album_id, child_id):
 # --- 追記 ここまで --------------------------------------------------------------
 
 # =============================================================================
-# 写真保存先の切替 UI / API（アルバム単位でSSD⇄HDDを物理移動：安全版）
-# =============================================================================
-def _require_admin() -> Response | None:
-    if session.get("user") != "admin":
-        return Response("管理者のみ利用可能です", 403)
-    return None
-
-def _count_files_and_bytes(root_dir: str) -> tuple[int, int]:
-    files = 0
-    total = 0
-    for base, dirs, fnames in os.walk(root_dir):
-        for name in fnames:
-            p = os.path.join(base, name)
-            try:
-                st = os.stat(p)
-                files += 1
-                total += st.st_size
-            except FileNotFoundError:
-                pass
-    return files, total
-
-def _copy_tree(src: str, dst_tmp: str):
-    for base, dirs, fnames in os.walk(src):
-        rel = os.path.relpath(base, src)
-        target_base = os.path.join(dst_tmp, rel) if rel != "." else dst_tmp
-        os.makedirs(target_base, exist_ok=True)
-        # 元ディレクトリのモードをおおまかに継承
-        try:
-            st = os.stat(base)
-            os.chmod(target_base, st.st_mode & 0o777)
-        except Exception:
-            pass
-        for name in fnames:
-            sp = os.path.join(base, name)
-            dp = os.path.join(target_base, name)
-            shutil.copy2(sp, dp)
-
-def _move_album_physical_photos_safe(album_id: str, dest_storage: str):
-    """
-    安全な写真移動：コピー→検証→原子的切替→旧データを backup_* に退避。DBは切替成功後に更新。
-    """
-    cur_storage, cur_root = _get_album_storage(album_id)
-    dst_root = SSD_ROOT if dest_storage == "ssd" else HDD_ROOT
-    if cur_root == dst_root:
-        return False, "すでに目的地にあります"
-
-    src_dir = os.path.join(cur_root, album_id)
-    if not os.path.isdir(src_dir):
-        return False, "移動元が存在しません"
-
-    os.makedirs(dst_root, exist_ok=True)
-    final_dst = os.path.join(dst_root, album_id)
-    if os.path.exists(final_dst):
-        return False, "移動先に同名ディレクトリが既に存在します"
-
-    # 一時宛先
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    dst_tmp = os.path.join(dst_root, f"{album_id}.moving_{ts}")
-    if os.path.exists(dst_tmp):
-        shutil.rmtree(dst_tmp, ignore_errors=True)
-    os.makedirs(dst_tmp, exist_ok=True)
-
-    try:
-        # コピー
-        src_count, src_bytes = _count_files_and_bytes(src_dir)
-        _copy_tree(src_dir, dst_tmp)
-        dst_count, dst_bytes = _count_files_and_bytes(dst_tmp)
-
-        # 検証
-        if src_count != dst_count or src_bytes != dst_bytes:
-            raise RuntimeError(f"検証NG: files {src_count}->{dst_count}, bytes {src_bytes}->{dst_bytes}")
-
-        # 原子的切替（宛先側）
-        os.rename(dst_tmp, final_dst)
-
-        # 旧データは backup_* へ退避（元側）
-        backup_name = f"{album_id}.backup_{ts}"
-        backup_path = os.path.join(cur_root, backup_name)
-        os.rename(src_dir, backup_path)
-
-        # DB更新（ここで初めて切替）
-        _set_album_storage(album_id, dest_storage)
-
-        msg = f"切替完了。旧データは {backup_path} にバックアップとして残しました。確認後に手動削除してください。"
-        return True, msg
-
-    except Exception as e:
-        try:
-            if os.path.isdir(dst_tmp):
-                shutil.rmtree(dst_tmp, ignore_errors=True)
-        except Exception:
-            pass
-        return False, f"移動失敗: {e}"
-
-@album_bp.route("/admin/storage", methods=["GET"])
-def admin_storage_page():
-    csrf_token = session.get('csrf_token') or secrets.token_urlsafe(32)
-    session['csrf_token'] = csrf_token
-    resp = _require_admin()
-    if resp:
-        return resp
-
-    rows = []
-    for r in list_albums_for_admin():
-        aid = r["id"]
-        meta = load_meta(aid)
-        if not meta:
-            continue
-        storage, _root = _get_album_storage(aid)
-        rows.append((aid, meta.get("album_name", "（無名）"), storage))
-    rows.sort(key=lambda x: x[1])
-
-    html = [
-        f"<!doctype html><meta charset='utf-8'><title>アルバム保存先 管理</title><meta name='csrf-token' content='{csrf_token}'>",
-        "<style>body{font-family:sans-serif} table{border-collapse:collapse} th,td{border:1px solid #ccc;padding:6px} code{background:#f6f6f6;padding:2px 4px;border-radius:4px} .row{margin:6px 0} .bar{width:260px}</style>",
-        "<h1>アルバム保存先 管理（SSD ⇄ HDD）</h1>",
-        "<p>「安全に移動（進行表示）」は <b>コピー→検証→原子的切替</b> を非同期で実行し、下のプログレスバーに進捗を表示します。完了後、元側に <code>*.backup_YYYYmmdd_HHMMSS</code> を残します。</p>",
-        "<table><tr><th>アルバム名</th><th>album_id</th><th>現在</th><th>操作</th><th>進捗</th></tr>",
-    ]
-    for aid, name, storage in rows:
-        # 従来の同期ボタン（残しておく）
-        btn_to_hdd_sync = f"""
-          <form method="post" action="{url_for('album.admin_move_storage')}" style="display:inline">
-            <input type="hidden" name="csrf_token" value="{csrf_token}">
-            <input type="hidden" name="album_id" value="{aid}">
-            <input type="hidden" name="dest" value="hdd">
-            <button type="submit">HDDへ移動（同期）</button>
-          </form>"""
-        btn_to_ssd_sync = f"""
-          <form method="post" action="{url_for('album.admin_move_storage')}" style="display:inline">
-            <input type="hidden" name="csrf_token" value="{csrf_token}">
-            <input type="hidden" name="album_id" value="{aid}">
-            <input type="hidden" name="dest" value="ssd">
-            <button type="submit">SSDへ戻す（同期）</button>
-          </form>"""
-
-        # 非同期ボタン（進捗表示）
-        btn_async = f"""
-          <div class="row">
-            <button onclick="startMove('{aid}','hdd')">HDDへ移動（安全に移動・進行表示）</button>
-            <button onclick="startMove('{aid}','ssd')">SSDへ戻す（安全に移動・進行表示）</button>
-          </div>
-        """
-
-        # 進捗UI（progress + メッセージ）
-        prog_ui = f"""
-          <div id="prog-{aid}">
-            <progress class="bar" id="bar-{aid}" value="0" max="100"></progress>
-            <span id="txt-{aid}">待機中</span>
-          </div>
-        """
-
-        html.append(
-            f"<tr><td>{name}</td><td><code>{aid}</code></td><td>{storage.upper()}</td>"
-            f"<td>{btn_to_hdd_sync} {btn_to_ssd_sync}<br>{btn_async}</td>"
-            f"<td>{prog_ui}</td></tr>"
-        )
-    html.append("</table>")
-
-    # フロントJS：開始→ポーリング→完了
-    html.append(f"""
-<script>
-async function startMove(album_id, dest){{
-  const btns = document.querySelectorAll('button');
-  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-  btns.forEach(b=>b.disabled=true);
-  try {{
-    const res = await fetch('{url_for('album.api_storage_move_async')}', {{
-      method:'POST',
-      headers:{{'Content-Type':'application/json','X-CSRFToken':csrfToken}},
-      body: JSON.stringify({{album_id, dest}})
-    }});
-    const j = await res.json();
-    if(!j.ok){{ alert('開始失敗: '+(j.error||res.status)); btns.forEach(b=>b.disabled=false); return; }}
-    pollProgress(album_id);
-  }} catch(e){{
-    alert('開始エラー: '+e);
-    btns.forEach(b=>b.disabled=false);
-  }}
-}}
-
-async function pollProgress(album_id){{
-  const bar = document.getElementById('bar-'+album_id);
-  const txt = document.getElementById('txt-'+album_id);
-  let timer = null;
-
-  async function once(){{
-    try {{
-      const res = await fetch('{url_for('album.api_storage_progress')}?album_id='+encodeURIComponent(album_id), {{cache:'no-store'}});
-      const j = await res.json();
-      if(!j.ok){{ throw new Error(j.error||res.status); }}
-      const p = j.progress||{{}};
-      const pct = Math.max(0, Math.min(100, p.percent||0));
-      bar.value = pct;
-      txt.textContent = (p.status||'') + ' ' + pct + '% ' + (p.message?(' - '+p.message):'');
-
-      if(p.status==='done' || p.status==='error' || pct>=100){{
-        // 完了 or エラー
-        clearInterval(timer);
-        timer = null;
-        // 完了ならリロードして現在の保存先を反映
-        if(p.status==='done') setTimeout(()=>location.reload(), 800);
-        else {{
-          // エラーはボタンを戻す
-          const btns = document.querySelectorAll('button');
-          btns.forEach(b=>b.disabled=false);
-        }}
-        return;
-      }}
-    }} catch(e){{
-      console.warn('progress error', e);
-    }}
-  }}
-
-  await once();
-  timer = setInterval(once, 1000);
-}}
-</script>
-    """)
-    return "\n".join(html)
-
-@album_bp.route("/api/storage/move_async", methods=["POST"])
-def api_storage_move_async():
-    # 管理者チェック
-    resp = _require_admin()
-    if resp:
-        return resp
-
-    data = request.get_json(silent=True) or {}
-    album_id = (data.get("album_id") or "").strip()
-    dest = (data.get("dest") or "").strip().lower()
-    if not album_id or dest not in ("ssd", "hdd"):
-        return jsonify({"ok": False, "error": "invalid album_id/dest"}), 400
-
-    # 既存スレッド実行中ならそのまま
-    th = _move_threads.get(album_id)
-    if th and th.is_alive():
-        prog = _move_progress_read(album_id)
-        return jsonify({"ok": True, "already_running": True, "progress": prog}), 200
-
-    # 進捗初期化
-    _move_progress_write(album_id, {
-        "status": "starting",
-        "percent": 0,
-        "message": "移動準備中…",
-        "started_ts": time.time(),
-    })
-
-    def _worker():
-        try:
-            _move_album_physical_photos_safe_with_progress(album_id, dest)
-        finally:
-            # 終了したスレッドは辞書から掃除
-            try:
-                _move_threads.pop(album_id, None)
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_worker, name=f"move-{album_id}", daemon=True)
-    _move_threads[album_id] = t
-    t.start()
-    return jsonify({"ok": True, "started": True}), 202
-
-@album_bp.route("/api/storage/progress", methods=["GET"])
-def api_storage_progress():
-    resp = _require_admin()
-    if resp:
-        return resp
-    album_id = (request.args.get("album_id") or "").strip()
-    if not album_id:
-        return jsonify({"ok": False, "error": "missing album_id"}), 400
-    prog = _move_progress_read(album_id)
-    if not prog:
-        return jsonify({"ok": False, "error": "not_found"}), 404
-    return jsonify({"ok": True, "progress": prog})
-
-@album_bp.route("/admin/storage/move", methods=["POST"])
-def admin_move_storage():
-    resp = _require_admin()
-    if resp:
-        return resp
-    album_id = (request.form.get("album_id") or "").strip()
-    dest = (request.form.get("dest") or "hdd").strip().lower()
-    if not album_id or dest not in ("ssd", "hdd"):
-        return "album_id/dest が不正です", 400
-
-    ok, msg = _move_album_physical_photos_safe(album_id, dest)
-    if not ok:
-        return f"移動失敗：{msg}", 400
-    flash(msg, "success")
-    return redirect(url_for("album.admin_storage_page"))
-
-@album_bp.route("/api/storage/status", methods=["GET"])
-def api_storage_status():
-    if session.get("user") != "admin":
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    album_id = (request.args.get("album_id") or "").strip()
-    if not album_id:
-        return jsonify({"ok": False, "error": "missing album_id"}), 400
-    storage, root = _get_album_storage(album_id)
-    exists = os.path.isdir(os.path.join(root, album_id))
-    return jsonify({"ok": True, "album_id": album_id, "storage": storage, "root": root, "exists": exists})
-
-@album_bp.route("/api/storage/move", methods=["POST"])
-def api_storage_move():
-    if session.get("user") != "admin":
-        return jsonify({"ok": False, "error": "forbidden"}), 403
-    data = request.get_json(silent=True) or {}
-    album_id = (data.get("album_id") or "").strip()
-    dest = (data.get("dest") or "hdd").strip().lower()
-    if not album_id or dest not in ("ssd", "hdd"):
-        return jsonify({"ok": False, "error": "invalid album_id/dest"}), 400
-    ok, msg = _move_album_physical_photos_safe(album_id, dest)
-    return jsonify({"ok": ok, "message": msg})
-
-# =============================================================================
 # 既存: トークン禁止（イベントモード）
 # =============================================================================
+_EVENT_ALBUM_JSON_ENDPOINTS = {
+    "album.begin_process",
+    "album.request_process",
+    "album.update_process_status",
+}
+
+
+@album_bp.before_request
+def _enforce_event_album_access():
+    """イベント連携アルバムの全ルートで現在の参加資格を再確認する。"""
+    if request.blueprint != "album":
+        return
+
+    album_id = (request.view_args or {}).get("album_id")
+    if not album_id:
+        return
+
+    meta = _fetch_album_meta(str(album_id))
+    if not meta or meta.get("access_mode") != "event":
+        return
+
+    # 入口は event_gate 側でログイン・参加承認を判定する。
+    if request.endpoint == "album.album_access":
+        return
+
+    user = session.get("user")
+    if user == "admin" or (user and user == meta.get("owner")):
+        return
+
+    session["_gate_album_id"] = str(album_id)
+    event_id = meta.get("event_id")
+    if event_id and _is_event_member_approved(int(event_id)):
+        _grant_album_auth(str(album_id))
+        return
+
+    # 以前の閲覧許可だけでは通さず、ログアウト・取消後は直ちに無効化する。
+    _revoke_album_auth(str(album_id))
+    if request.endpoint in _EVENT_ALBUM_JSON_ENDPOINTS or request.is_json:
+        return jsonify({"ok": False, "error": "event_album_auth_required"}), 403
+    return redirect(url_for("album.album_access", album_id=album_id))
+
+
 @album_bp.before_request
 def _deny_token_when_event_album():
     """/albums/* に ?token= が付いていたら、アルバムが event モードのときは無効化して入口へ誘導"""
@@ -3423,11 +2871,10 @@ def _deny_token_when_event_album():
     if (meta.get("access_mode") == "event"):
         return redirect(url_for("album.album_access", album_id=album_id))
 
-# ===== ここから追記：アルバム全体ZIP（管理者専用・日本語名対応） ==========================
-import os, re, unicodedata, threading, time, json
-from zipfile import ZipFile, ZIP_DEFLATED
-from tempfile import NamedTemporaryFile
+# ===== アルバム全体ZIP（管理者専用・共通ZIP基盤） ==========================
+import unicodedata
 from flask import after_this_request, send_file, abort, request, jsonify
+from app.utils.zip_stream import make_zip_entries, read_zip_progress, start_zip_entries_job
 
 # --- 日本語/絵文字対応のZIP内パス用サニタイズ ----------------------------
 _CTRL = re.compile(r"[\x00-\x1f\x7f]")  # 制御文字除去
@@ -3463,75 +2910,25 @@ def admin_zip_all(album_id):
     構成:
       子アルバム名/静止画ファイル...
       子アルバム名/動画ファイル...
-    ・静止画は album_storage（SSD/HDD）側の実体から
+    ・静止画は ALBUM_ROOT 側から
     ・動画は MOVIE_ROOT 側から
     """
     if session.get('user') != 'admin':
         return abort(403)
 
-    meta = load_meta(album_id)
-    if not meta:
-        return 'アルバムが存在しません', 404
+    entries, album_name = _gather_files_for_album(album_id)
+    if not entries:
+        return '対象ファイルがありません', 404
 
-    album_name = meta.get("album_name") or "album"
-    children = meta.get("children", [])
-
-    # 各子アルバムの実パスを決定
-    try:
-        storage, photos_root = _get_album_storage(album_id)  # ('ssd' or 'hdd', root_path)
-    except Exception:
-        photos_root = _photos_root(album_id)
-
-    # 一時ファイルに作ってから send_file（送信後に削除）
-    tmp = NamedTemporaryFile(prefix=f"zip_{album_id}_", suffix=".zip", delete=False)
-    tmp_path = tmp.name
-    tmp.close()
-
-    def iter_static_files(child_folder: str):
-        """静止画（通常/加工）— 現在の保存先から取り出し。"""
-        base = os.path.join(photos_root, album_id, child_folder)
-        if not os.path.isdir(base):
-            return
-        for fname in os.listdir(base):
-            fp = os.path.join(base, fname)
-            if not os.path.isfile(fp):
-                continue
-            if fname.startswith("latest.") and not allowed_file(fname):
-                # latest.* でも画像以外ならスキップ
-                continue
-            if allowed_file(fname):
-                yield fname, fp
-        # thumbs/ や history/ はZIPに含めない（運用データのため）
-
-    def iter_movie_files(child_folder: str):
-        """動画（元＋互換 .web.mp4 とポスターがあればそれも）。"""
-        base = os.path.join(MOVIE_ROOT, album_id, child_folder)
-        if not os.path.isdir(base):
-            return
-        for fname in os.listdir(base):
-            fp = os.path.join(base, fname)
-            if not os.path.isfile(fp):
-                continue
-            # 元動画・互換mp4・ポスターjpgを許容
-            if allowed_movie(fname) or fname.endswith(".web.mp4") or fname.endswith(".poster.jpg"):
-                yield fname, fp
-
-    # ZIP 作成（日本語名そのまま格納）
-    with ZipFile(tmp_path, mode='w', compression=ZIP_DEFLATED) as zf:
-        for child in children:
-            child_disp = child.get("name") or child.get("folder") or "child"
-            child_name = _sanitize_arcname(child_disp)
-            child_folder = child.get("folder")
-
-            # 静止画
-            for fname, abs_path in iter_static_files(child_folder):
-                arcname = f"{child_name}/{_sanitize_file_component(fname)}"
-                zf.write(abs_path, arcname)
-
-            # 動画
-            for fname, abs_path in iter_movie_files(child_folder):
-                arcname = f"{child_name}/{_sanitize_file_component(fname)}"
-                zf.write(abs_path, arcname)
+    key = f"album-{uuid.uuid4().hex}"
+    tmp_path = make_zip_entries(
+        entries,
+        key,
+        download_name=f"{_sanitize_arcname(album_name)}.zip",
+        access={"type": "admin", "album_id": album_id},
+    )
+    if not tmp_path:
+        return 'ZIP生成に失敗しました', 500
 
     @after_this_request
     def _cleanup(response):
@@ -3546,9 +2943,6 @@ def admin_zip_all(album_id):
                      mimetype="application/zip", conditional=True)
 
 # ===== 非同期版：全体ZIP（管理者・進捗付） ================================
-# メモリ上の簡易ジョブ管理（プロセス再起動で消えます）
-_ZIP_JOBS = {}  # key: (album_id, key)  value: dict(status, percent,..., tmp_path)
-_ZIP_LOCK = threading.Lock()
 
 def _gather_files_for_album(album_id: str):
     """ZIPに含めるファイルを列挙: [(arcname, abs_path), ...]（日本語対応）"""
@@ -3558,11 +2952,7 @@ def _gather_files_for_album(album_id: str):
     album_name = meta.get("album_name") or "album"
     children = meta.get("children", [])
 
-    # 写真の実体root（SSD/HDD）
-    try:
-        _, photos_root = _get_album_storage(album_id)
-    except Exception:
-        photos_root = _photos_root(album_id)
+    photos_root = ALBUM_ROOT
 
     entries = []
     for child in children:
@@ -3571,7 +2961,7 @@ def _gather_files_for_album(album_id: str):
         child_name = _sanitize_arcname(child_disp)
         child_folder = child.get("folder")
 
-        # ---- 静止画（現在の保存先から）----
+        # ---- 静止画 ----
         base = os.path.join(photos_root, album_id, child_folder)
         if os.path.isdir(base):
             for fname in os.listdir(base):
@@ -3599,146 +2989,65 @@ def _gather_files_for_album(album_id: str):
 
     return entries, album_name
 
-def _zip_worker(album_id: str, job_key: str):
-    job_id = (album_id, job_key)
-    with _ZIP_LOCK:
-        job = _ZIP_JOBS.get(job_id)
-    if not job:
-        return
-
-    try:
-        entries, album_name = _gather_files_for_album(album_id)
-        if not entries:
-            with _ZIP_LOCK:
-                job.update(status='error', message='対象ファイルがありません', percent=0)
-            return
-
-        total_files = len(entries)
-        total_bytes = 0
-        for _, p in entries:
-            try:
-                total_bytes += os.path.getsize(p)
-            except Exception:
-                pass
-
-        with _ZIP_LOCK:
-            job.update(status='running', percent=0, total_files=total_files, processed_files=0,
-                       total_bytes=total_bytes, processed_bytes=0, album_name=album_name, started=time.time())
-
-        tmp = NamedTemporaryFile(prefix=f"zip_{album_id}_", suffix=".zip", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-
-        # 進捗粗見積
-        def _eta(proc_bytes, started):
-            dt = max(0.001, time.time() - started)
-            speed = proc_bytes / dt
-            remain = max(0, total_bytes - proc_bytes)
-            return int(remain / speed) if speed > 1 else None
-
-        processed_files = 0
-        processed_bytes = 0
-        started = time.time()
-
-        with ZipFile(tmp_path, mode='w', compression=ZIP_DEFLATED) as zf:
-            for arcname, abs_path in entries:
-                try:
-                    zf.write(abs_path, arcname)
-                    processed_files += 1
-                    try:
-                        processed_bytes += os.path.getsize(abs_path)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    # 1ファイル失敗はスキップして続行
-                    current_app.logger.warning("ZIP書込失敗: %s (%s)", abs_path, e)
-
-                # 0.2秒間隔くらいで進捗更新（過負荷防止）
-                if processed_files % 5 == 0:
-                    percent = int(processed_bytes * 100 / total_bytes) if total_bytes else int(processed_files * 100 / total_files)
-                    with _ZIP_LOCK:
-                        job.update(processed_files=processed_files,
-                                   processed_bytes=processed_bytes,
-                                   percent=min(99, percent),
-                                   eta_seconds=_eta(processed_bytes, started))
-
-        # 完了
-        with _ZIP_LOCK:
-            job.update(status='done',
-                       percent=100,
-                       processed_files=processed_files,
-                       processed_bytes=processed_bytes,
-                       tmp_path=tmp_path,
-                       eta_seconds=0)
-
-    except Exception as e:
-        with _ZIP_LOCK:
-            job.update(status='error', message=str(e), percent=0)
-
 @album_bp.route('/<album_id>/admin_zip_all_async', methods=['POST'])
 def admin_zip_all_async(album_id):
+    """管理画面の互換入口。生成・進捗・配信は共通ZIP基盤へ委譲する。"""
     if session.get('user') != 'admin':
         return abort(403)
-    # 既存ジョブ確認
-    job_key = "default"  # アルバム単位で1ジョブに固定
-    job_id = (album_id, job_key)
-    with _ZIP_LOCK:
-        job = _ZIP_JOBS.get(job_id)
-        if job and job.get('status') in ('running', 'done'):
-            return jsonify(ok=True, already_running=True, key=job_key, progress={
-                k: job.get(k) for k in ('status','percent','total_files','processed_files','total_bytes','processed_bytes','eta_seconds')
-            })
-        # 新規作成
-        _ZIP_JOBS[job_id] = {
-            'status': 'queued', 'percent': 0,
-            'total_files': 0, 'processed_files': 0,
-            'total_bytes': 0, 'processed_bytes': 0,
-            'eta_seconds': None, 'tmp_path': None
-        }
-    # スレッド開始
-    t = threading.Thread(target=_zip_worker, args=(album_id, job_key), daemon=True)
-    t.start()
-    return jsonify(ok=True, key=job_key, already_running=False)
+
+    entries, album_name = _gather_files_for_album(album_id)
+    if not entries:
+        return jsonify(ok=False, error='対象ファイルがありません'), 404
+
+    key = f"album-{uuid.uuid4().hex}"
+    try:
+        start_zip_entries_job(
+            entries,
+            key=key,
+            download_name=f"{_sanitize_arcname(album_name)}.zip",
+            access={"type": "admin", "album_id": album_id},
+        )
+    except FileExistsError:
+        return jsonify(ok=False, error='already_in_progress', key=key), 409
+
+    return jsonify(
+        ok=True,
+        key=key,
+        already_running=False,
+        progress_url=f"/api/zip-progress?key={key}",
+        download_url=f"/api/zip-download/{key}",
+    )
+
 
 @album_bp.route('/<album_id>/admin_zip_all_progress', methods=['GET'])
 def admin_zip_all_progress(album_id):
+    """旧管理画面との互換レスポンス。進捗データは共通ストアから読む。"""
     if session.get('user') != 'admin':
         return abort(403)
-    key = request.args.get('key') or 'default'
-    job_id = (album_id, key)
-    with _ZIP_LOCK:
-        job = _ZIP_JOBS.get(job_id)
-        if not job:
-            return jsonify(ok=False, error='job not found')
-        progress = {k: job.get(k) for k in ('status','percent','total_files','processed_files','total_bytes','processed_bytes','eta_seconds')}
-        dl_ready = (job.get('status') == 'done' and bool(job.get('tmp_path')))
-    return jsonify(ok=True, progress=progress, download_ready=dl_ready)
+    key = request.args.get('key') or ''
+    progress = read_zip_progress(key) if key else None
+    if not progress:
+        return jsonify(ok=False, error='job not found'), 404
+    access = progress.get('access') or {}
+    if access.get('type') != 'admin' or access.get('album_id') != album_id:
+        return jsonify(ok=False, error='job not found'), 404
+    return jsonify(
+        ok=True,
+        progress=progress,
+        download_ready=progress.get('status') == 'done',
+        download_url=f"/api/zip-download/{key}",
+    )
+
 
 @album_bp.route('/<album_id>/admin_zip_all_download', methods=['GET'])
 def admin_zip_all_download(album_id):
+    """旧ダウンロードURLを共通配信URLへ転送する。"""
     if session.get('user') != 'admin':
         return abort(403)
-    key = request.args.get('key') or 'default'
-    job_id = (album_id, key)
-    with _ZIP_LOCK:
-        job = _ZIP_JOBS.get(job_id)
-        if not job or job.get('status') != 'done' or not job.get('tmp_path'):
-            return abort(404)
-        tmp_path = job['tmp_path']
-        album_name = job.get('album_name') or 'album'
-        dl_name = f"{_sanitize_arcname(album_name)}.zip"
-
-    @after_this_request
-    def _cleanup(resp):
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        # ダウンロード後はジョブを消しておく
-        with _ZIP_LOCK:
-            _ZIP_JOBS.pop(job_id, None)
-        return resp
-
-    return send_file(tmp_path, as_attachment=True, download_name=dl_name,
-                     mimetype="application/zip", conditional=True)
+    key = request.args.get('key') or ''
+    progress = read_zip_progress(key) if key else None
+    access = (progress or {}).get('access') or {}
+    if access.get('type') != 'admin' or access.get('album_id') != album_id:
+        return abort(404)
+    return redirect(f"/api/zip-download/{key}")
 # ===== 追記ここまで =============================================================

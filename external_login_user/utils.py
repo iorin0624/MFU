@@ -19,6 +19,30 @@ PWA_RESUME_LOCAL_STORAGE_TOKEN_KEY = "mfu_pwa_resume_token"
 PWA_RESUME_LOCAL_STORAGE_ISSUED_AT_KEY = "mfu_pwa_resume_at"
 PWA_RESUME_LOCAL_STORAGE_CLIENT_ID_KEY = "mfu_pwa_client_id"
 JST = timezone(timedelta(hours=9))
+WITHDRAWN_EXT_USER_NAME_PREFIX = "退会済みユーザー"
+
+
+def is_withdrawn_ext_user(row: dict[str, Any] | None) -> bool:
+    """退会済みの外部ユーザーを、DBフラグと匿名化済み表示名の両方で判定する。"""
+    if not row:
+        return False
+
+    for key in ("is_deleted", "deleted", "is_withdrawn", "withdrawn"):
+        try:
+            if int(row.get(key) or 0) == 1:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    if row.get("deleted_at") or row.get("withdrawn_at") or row.get("anonymized_at"):
+        return True
+
+    for key in ("nickname", "display_name", "displayName", "user", "name"):
+        value = str(row.get(key) or "").strip()
+        if value.startswith(WITHDRAWN_EXT_USER_NAME_PREFIX):
+            return True
+
+    return False
 
 # ---- 環境値 → 関数 ----
 def LINE_CLIENT_ID() -> str:

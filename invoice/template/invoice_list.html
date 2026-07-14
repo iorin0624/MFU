@@ -1,9 +1,36 @@
 {% extends "base.html" %}
 {% block title %}請求書一覧{% endblock %}
+{% block head_extra %}
+<style>
+  .invoice-card-list{display:grid;gap:1rem}
+  .invoice-card{border:1px solid #dee2e6;border-radius:14px;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.05);overflow:hidden}
+  .invoice-card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;padding:1rem 1.1rem;border-bottom:1px solid #edf0f2;background:#fafbfc}
+  .invoice-card-number{font-size:1.1rem;font-weight:700;line-height:1.3;overflow-wrap:anywhere}
+  .invoice-card-amount{font-size:1.25rem;font-weight:800;white-space:nowrap}
+  .invoice-card-details{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr);gap:1rem 1.5rem;padding:1rem 1.1rem}
+  .invoice-card-field{min-width:0}
+  .invoice-card-label{margin-bottom:.2rem;color:#6c757d;font-size:.78rem;font-weight:600}
+  .invoice-card-value{overflow-wrap:anywhere}
+  .invoice-card-value + .invoice-card-value{margin-top:.25rem}
+  .invoice-card-actions{display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;padding:.85rem 1.1rem;border-top:1px solid #edf0f2;background:#fafbfc}
+  .invoice-card-actions form{margin:0}
+  @media (max-width: 991.98px){
+    .invoice-card-details{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+    .invoice-card-details .invoice-card-primary{grid-column:1 / -1}
+  }
+  @media (max-width: 575.98px){
+    .invoice-card-header{align-items:flex-start;flex-direction:column}
+    .invoice-card-details{grid-template-columns:minmax(0,1fr)}
+    .invoice-card-details .invoice-card-primary{grid-column:auto}
+    .invoice-card-actions .btn{flex:1 1 auto}
+  }
+</style>
+{% endblock %}
 {% block content %}
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
   <h1 class="mb-0">請求書一覧</h1>
-  <div class="d-flex gap-2">
+  <div class="d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-danger" href="{{ url_for('invoice.invoice_deleted_list') }}">削除済み</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.contact_list') }}">請求先アドレス帳</a>
     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.issuer_template_list') }}">発行者テンプレート管理</a>
     <a class="btn btn-primary" href="{{ url_for('invoice.invoice_new') }}">新規作成</a>
@@ -26,34 +53,50 @@
     <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">リセット</a>
   </div>
 </form>
-<div class="table-responsive">
-  <table class="table table-striped table-hover align-middle">
-    <thead>
-      <tr>
-        <th>請求書番号</th><th>請求日</th><th>支払期限</th><th>請求先</th><th>件名</th><th class="text-end">合計金額</th><th>ステータス</th><th>メール送付日</th><th>freee出力日</th><th>操作</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for invoice in invoices %}
-      <tr>
-        <td>{{ invoice.invoice_no }}</td>
-        <td>{{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }}</td>
-        <td>{{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date }}</td>
-        <td>{{ invoice.contact_name_snapshot }}</td>
-        <td>{{ invoice.subject }}</td>
-        <td class="text-end">¥{{ invoice.total_yen|yen }}</td>
-        <td><span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span></td>
-        <td>{{ invoice.mailed_at.strftime('%Y-%m-%d %H:%M') if invoice.mailed_at }}</td>
-        <td>{{ invoice.freee_exported_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_exported_at }}</td>
-        <td class="d-flex flex-wrap gap-2">
-          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('invoice.invoice_detail', invoice_id=invoice.id) }}">詳細</a>
-          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice.invoice_edit', invoice_id=invoice.id) }}">編集</a>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="10" class="text-muted">請求書はまだありません。</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="invoice-card-list">
+  {% for invoice in invoices %}
+  <article class="invoice-card">
+    <div class="invoice-card-header">
+      <div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <span class="invoice-card-number">{{ invoice.invoice_no }}</span>
+          <span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span>
+        </div>
+      </div>
+      <div class="invoice-card-amount">¥{{ invoice.total_yen|yen }}</div>
+    </div>
+
+    <div class="invoice-card-details">
+      <div class="invoice-card-field invoice-card-primary">
+        <div class="invoice-card-label">請求先・件名</div>
+        <div class="invoice-card-value fw-semibold">{{ invoice.contact_name_snapshot }}</div>
+        <div class="invoice-card-value">{{ invoice.subject }}</div>
+      </div>
+      <div class="invoice-card-field">
+        <div class="invoice-card-label">請求日・支払期限</div>
+        <div class="invoice-card-value">請求日: {{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date else '---' }}</div>
+        <div class="invoice-card-value">期限: {{ invoice.due_date.strftime('%Y-%m-%d') if invoice.due_date else '---' }}</div>
+      </div>
+      <div class="invoice-card-field">
+        <div class="invoice-card-label">処理履歴</div>
+        <div class="invoice-card-value">メール: {{ invoice.mailed_at.strftime('%Y-%m-%d %H:%M') if invoice.mailed_at else '---' }}</div>
+        <div class="invoice-card-value">freee: {{ invoice.freee_exported_at.strftime('%Y-%m-%d %H:%M') if invoice.freee_exported_at else '---' }}</div>
+      </div>
+    </div>
+
+    <div class="invoice-card-actions">
+      <a class="btn btn-sm btn-outline-primary" href="{{ url_for('invoice.invoice_detail', invoice_id=invoice.id) }}">詳細</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('invoice.invoice_edit', invoice_id=invoice.id) }}">編集</a>
+      {% if invoice.status in deletable_statuses %}
+      <form method="post" action="{{ url_for('invoice.invoice_delete', invoice_id=invoice.id) }}" onsubmit="return confirm('請求書「{{ invoice.invoice_no }}」を削除済み一覧へ移動しますか？');">
+        <input type="hidden" name="csrf_token" value="{{ delete_csrf_token }}">
+        <button class="btn btn-sm btn-outline-danger" type="submit">削除</button>
+      </form>
+      {% endif %}
+    </div>
+  </article>
+  {% else %}
+  <div class="card border-0 shadow-sm"><div class="card-body text-muted">請求書はまだありません。</div></div>
+  {% endfor %}
 </div>
 {% endblock %}

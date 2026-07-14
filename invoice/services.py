@@ -41,7 +41,10 @@ PAYOUT_LINK_BANK_INFO_MESSAGE = "メール本文にて振込先一覧のリン�
 PAYOUT_LINK_MAIL_GUIDANCE = "振込先は下からご確認ください。"
 CARD_PAYMENT_PDF_GUIDANCE = "クレジットカードでのお支払いURLはメール本文をご確認ください。"
 CARD_PAYMENT_MAIL_GUIDANCE = "クレジットカードでのお支払いは下記URLよりお願いいたします。"
-CARD_PAYMENT_SUCCESS_STATUSES = ("AUTHORIZED", "APPROVED", "COMPLETED")
+CARD_PAYMENT_SUCCESS_STATUSES = ("COMPLETED",)
+INVOICE_DELETABLE_STATUSES = ("draft", "cancelled")
+INVOICE_PURGE_SAFE_PAYMENT_STATUSES = ("FAILED", "CANCELED", "CANCELLED", "REJECTED")
+INVOICE_SOFT_DELETE_BLOCKING_PAYMENT_STATUSES = ("PENDING", "UNKNOWN", "APPROVED", "AUTHORIZED")
 
 
 @dataclass
@@ -565,6 +568,11 @@ def _column_exists(cur, table_name: str, column_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _index_exists(cur, table_name: str, index_name: str) -> bool:
+    cur.execute(f"SHOW INDEX FROM {table_name} WHERE Key_name = %s", (index_name,))
+    return bool(cur.fetchall())
+
+
 def _ensure_invoice_item_column(cur, column_name: str, ddl: str) -> None:
     if not _column_exists(cur, "invoice_items", column_name):
         cur.execute(f"ALTER TABLE invoice_items ADD COLUMN {ddl}")
@@ -851,6 +859,16 @@ def ensure_invoice_schema() -> None:
             cur.execute(
                 "ALTER TABLE invoice_headers ADD COLUMN freee_api_error TEXT NULL AFTER freee_api_status"
             )
+        if not _column_exists(cur, "invoice_headers", "deleted_at"):
+            cur.execute("ALTER TABLE invoice_headers ADD COLUMN deleted_at DATETIME NULL AFTER updated_at")
+        if not _column_exists(cur, "invoice_headers", "deleted_by"):
+            cur.execute("ALTER TABLE invoice_headers ADD COLUMN deleted_by VARCHAR(191) NULL AFTER deleted_at")
+        if not _column_exists(cur, "invoice_headers", "deleted_original_status"):
+            cur.execute(
+                "ALTER TABLE invoice_headers ADD COLUMN deleted_original_status VARCHAR(16) NULL AFTER deleted_by"
+            )
+        if not _index_exists(cur, "invoice_headers", "idx_invoice_headers_deleted_at"):
+            cur.execute("ALTER TABLE invoice_headers ADD INDEX idx_invoice_headers_deleted_at (deleted_at, issue_date)")
         ensure_invoice_issuer_templates_table(cur)
         cur.execute(
             """
@@ -877,6 +895,10 @@ def ensure_invoice_schema() -> None:
                 error_code VARCHAR(64) NULL,
                 error_detail TEXT NULL,
                 paid_at DATETIME NULL,
+                square_updated_at DATETIME(6) NULL,
+                last_synced_at DATETIME NULL,
+                sync_attempts INT UNSIGNED NOT NULL DEFAULT 0,
+                sync_error TEXT NULL,
                 INDEX ix_invoice_card_payments_invoice_id (invoice_id, created_at),
                 INDEX ix_invoice_card_payments_status (invoice_id, square_status),
                 INDEX ix_invoice_card_payments_payment_token (payment_token)
@@ -891,6 +913,41 @@ def ensure_invoice_schema() -> None:
             cur.execute(
                 "ALTER TABLE invoice_card_payments ADD COLUMN wallet_type VARCHAR(32) NULL AFTER card_exp_yyyy"
             )
+        for column_name, ddl in (
+            ("square_updated_at", "ALTER TABLE invoice_card_payments ADD COLUMN square_updated_at DATETIME(6) NULL"),
+            ("last_synced_at", "ALTER TABLE invoice_card_payments ADD COLUMN last_synced_at DATETIME NULL"),
+            ("sync_attempts", "ALTER TABLE invoice_card_payments ADD COLUMN sync_attempts INT UNSIGNED NOT NULL DEFAULT 0"),
+            ("sync_error", "ALTER TABLE invoice_card_payments ADD COLUMN sync_error TEXT NULL"),
+        ):
+            if not _column_exists(cur, "invoice_card_payments", column_name):
+                cur.execute(ddl)
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS square_sync_control (
+                id TINYINT UNSIGNED PRIMARY KEY,
+                managed_from DATETIME(6) NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute("INSERT IGNORE INTO square_sync_control (id, managed_from) VALUES (1, NOW(6))")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS square_webhook_events (
+                id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+                square_event_id VARCHAR(96) NOT NULL UNIQUE,
+                event_type VARCHAR(96) NOT NULL,
+                object_id VARCHAR(96) NULL,
+                payload_sha256 CHAR(64) NOT NULL,
+                processing_status ENUM('RECEIVED','PROCESSED','FAILED','IGNORED') NOT NULL DEFAULT 'RECEIVED',
+                error_detail TEXT NULL,
+                received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                processed_at DATETIME NULL,
+                INDEX ix_square_webhook_type_received (event_type, received_at),
+                INDEX ix_square_webhook_processing (processing_status, received_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS invoice_mail_logs (
@@ -923,6 +980,21 @@ def ensure_invoice_schema() -> None:
                 created_at DATETIME NOT NULL,
                 INDEX idx_invoice_csv_logs_invoice_id (invoice_id),
                 INDEX idx_invoice_csv_logs_exported_at (exported_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS invoice_deletion_audit (
+                id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                invoice_id INT NOT NULL,
+                invoice_no VARCHAR(32) NOT NULL,
+                action ENUM('SOFT_DELETE','RESTORE','PURGE') NOT NULL,
+                invoice_status VARCHAR(16) NOT NULL,
+                acted_by VARCHAR(191) NULL,
+                acted_at DATETIME NOT NULL,
+                INDEX idx_invoice_deletion_audit_invoice (invoice_id, acted_at),
+                INDEX idx_invoice_deletion_audit_action (action, acted_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """
         )
@@ -1460,7 +1532,7 @@ def list_invoices(*, q: str = "", status: str = "", start: str = "", end: str = 
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        where: list[str] = []
+        where: list[str] = ["deleted_at IS NULL"]
         params: list[Any] = []
         if q:
             like = f"%{q}%"
@@ -1491,11 +1563,212 @@ def list_invoices(*, q: str = "", status: str = "", start: str = "", end: str = 
         db.close()
 
 
+def list_deleted_invoices(*, q: str = "") -> list[dict[str, Any]]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        where = ["deleted_at IS NOT NULL"]
+        params: list[Any] = []
+        if q:
+            like = f"%{q}%"
+            where.append("(invoice_no LIKE %s OR contact_name_snapshot LIKE %s OR subject LIKE %s)")
+            params.extend([like, like, like])
+        cur.execute(
+            f"""
+            SELECT *
+              FROM invoice_headers
+             WHERE {' AND '.join(where)}
+             ORDER BY deleted_at DESC, id DESC
+            """,
+            params,
+        )
+        return cur.fetchall()
+    finally:
+        cur.close()
+        db.close()
+
+
+def _record_invoice_deletion_audit(cur, invoice: dict[str, Any], action: str, acted_by: str | None) -> None:
+    cur.execute(
+        """
+        INSERT INTO invoice_deletion_audit (
+            invoice_id, invoice_no, action, invoice_status, acted_by, acted_at
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            int(invoice["id"]),
+            invoice.get("invoice_no") or "",
+            action,
+            invoice.get("status") or "",
+            (acted_by or "").strip() or None,
+            now_jst(),
+        ),
+    )
+
+
+def _lock_invoice_for_deletion(cur, invoice_id: int, *, must_be_deleted: bool) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT id, invoice_no, status, deleted_at, pdf_storage_path
+          FROM invoice_headers
+         WHERE id=%s
+         FOR UPDATE
+        """,
+        (invoice_id,),
+    )
+    invoice = cur.fetchone()
+    if not invoice:
+        raise InvoiceValidationError("請求書が見つかりません。")
+    is_deleted = invoice.get("deleted_at") is not None
+    if must_be_deleted and not is_deleted:
+        raise InvoiceValidationError("この請求書は削除済みではありません。")
+    if not must_be_deleted and is_deleted:
+        raise InvoiceValidationError("この請求書は既に削除済みです。")
+    status = str(invoice.get("status") or "").strip().lower()
+    if status not in INVOICE_DELETABLE_STATUSES:
+        raise InvoiceValidationError("発行済み・送付済み・入金済みの請求書は削除できません。")
+    return invoice
+
+
+def _ensure_invoice_has_no_protected_card_payment(cur, invoice_id: int) -> None:
+    safe_statuses = ",".join(["%s"] * len(INVOICE_PURGE_SAFE_PAYMENT_STATUSES))
+    cur.execute(
+        f"""
+        SELECT square_status
+          FROM invoice_card_payments
+         WHERE invoice_id=%s
+           AND UPPER(square_status) NOT IN ({safe_statuses})
+         LIMIT 1
+        """,
+        (invoice_id, *INVOICE_PURGE_SAFE_PAYMENT_STATUSES),
+    )
+    payment = cur.fetchone()
+    if payment:
+        status = str(payment.get("square_status") or "UNKNOWN").upper()
+        raise InvoiceValidationError(
+            f"Square決済履歴（{status}）があるため、この請求書は削除できません。"
+        )
+
+
+def _ensure_invoice_has_no_inflight_card_payment(cur, invoice_id: int) -> None:
+    blocking_statuses = ",".join(["%s"] * len(INVOICE_SOFT_DELETE_BLOCKING_PAYMENT_STATUSES))
+    cur.execute(
+        f"""
+        SELECT square_status
+          FROM invoice_card_payments
+         WHERE invoice_id=%s
+           AND UPPER(square_status) IN ({blocking_statuses})
+         LIMIT 1
+        """,
+        (invoice_id, *INVOICE_SOFT_DELETE_BLOCKING_PAYMENT_STATUSES),
+    )
+    payment = cur.fetchone()
+    if payment:
+        status = str(payment.get("square_status") or "UNKNOWN").upper()
+        raise InvoiceValidationError(
+            f"Square決済が処理中または確認待ち（{status}）のため、この請求書は削除できません。"
+        )
+
+
+def soft_delete_invoice(invoice_id: int, *, deleted_by: str | None = None) -> dict[str, Any]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        invoice = _lock_invoice_for_deletion(cur, invoice_id, must_be_deleted=False)
+        _ensure_invoice_has_no_inflight_card_payment(cur, invoice_id)
+        now = now_jst()
+        cur.execute(
+            """
+            UPDATE invoice_headers
+               SET deleted_at=%s,
+                   deleted_by=%s,
+                   deleted_original_status=status,
+                   updated_at=%s
+             WHERE id=%s AND deleted_at IS NULL
+            """,
+            (now, (deleted_by or "").strip() or None, now, invoice_id),
+        )
+        if cur.rowcount != 1:
+            raise InvoiceValidationError("請求書を削除済みに移動できませんでした。")
+        _record_invoice_deletion_audit(cur, invoice, "SOFT_DELETE", deleted_by)
+        db.commit()
+        return invoice
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+        db.close()
+
+
+def restore_deleted_invoice(invoice_id: int, *, restored_by: str | None = None) -> dict[str, Any]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        invoice = _lock_invoice_for_deletion(cur, invoice_id, must_be_deleted=True)
+        cur.execute(
+            """
+            UPDATE invoice_headers
+               SET deleted_at=NULL,
+                   deleted_by=NULL,
+                   deleted_original_status=NULL,
+                   updated_at=%s
+             WHERE id=%s AND deleted_at IS NOT NULL
+            """,
+            (now_jst(), invoice_id),
+        )
+        if cur.rowcount != 1:
+            raise InvoiceValidationError("請求書を復元できませんでした。")
+        _record_invoice_deletion_audit(cur, invoice, "RESTORE", restored_by)
+        db.commit()
+        return invoice
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+        db.close()
+
+
+def purge_deleted_invoice(
+    invoice_id: int,
+    *,
+    confirmed_invoice_no: str,
+    purged_by: str | None = None,
+) -> dict[str, Any]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        invoice = _lock_invoice_for_deletion(cur, invoice_id, must_be_deleted=True)
+        if (confirmed_invoice_no or "").strip() != str(invoice.get("invoice_no") or ""):
+            raise InvoiceValidationError("確認用の請求書番号が一致しません。")
+        _ensure_invoice_has_no_protected_card_payment(cur, invoice_id)
+        _record_invoice_deletion_audit(cur, invoice, "PURGE", purged_by)
+        for table_name in (
+            "invoice_items",
+            "invoice_mail_logs",
+            "invoice_csv_logs",
+            "invoice_card_payments",
+        ):
+            cur.execute(f"DELETE FROM {table_name} WHERE invoice_id=%s", (invoice_id,))
+        cur.execute("DELETE FROM invoice_headers WHERE id=%s AND deleted_at IS NOT NULL", (invoice_id,))
+        if cur.rowcount != 1:
+            raise InvoiceValidationError("請求書を完全削除できませんでした。")
+        db.commit()
+        return invoice
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        cur.close()
+        db.close()
+
+
 def get_invoice(invoice_id: int) -> dict[str, Any] | None:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT * FROM invoice_headers WHERE id = %s", (invoice_id,))
+        cur.execute("SELECT * FROM invoice_headers WHERE id = %s AND deleted_at IS NULL", (invoice_id,))
         invoice = cur.fetchone()
         if not invoice:
             return None
@@ -1803,7 +2076,7 @@ def get_invoice_square_config() -> dict[str, Any]:
         "application_id": _square_env_value("APPLICATION_ID"),
         "location_id": _square_env_value("LOCATION_ID"),
         "access_token": _square_env_value("ACCESS_TOKEN"),
-        "webhook_signature_key": _square_env_value("WEBHOOK_SIGNATURE_KEY"),
+        "webhook_signature_key": _square_env_value("INVOICE_WEBHOOK_SIGNATURE_KEY") or _square_env_value("WEBHOOK_SIGNATURE_KEY"),
         "api_base": "https://connect.squareupsandbox.com" if env == "SANDBOX" else "https://connect.squareup.com",
         "js_url": "https://sandbox.web.squarecdn.com/v1/square.js" if env == "SANDBOX" else "https://web.squarecdn.com/v1/square.js",
     }
@@ -1818,7 +2091,10 @@ def ensure_invoice_card_payment_token(invoice_id: int) -> str:
     cur = db.cursor(dictionary=True)
     now = now_jst()
     try:
-        cur.execute("SELECT card_payment_public_token, status FROM invoice_headers WHERE id=%s LIMIT 1", (invoice_id,))
+        cur.execute(
+            "SELECT card_payment_public_token, status FROM invoice_headers WHERE id=%s AND deleted_at IS NULL LIMIT 1",
+            (invoice_id,),
+        )
         row = cur.fetchone()
         if not row:
             raise InvoiceValidationError("請求書が見つかりません。")
@@ -1854,7 +2130,10 @@ def get_invoice_by_card_payment_token(token: str) -> dict[str, Any] | None:
     db = get_db()
     cur = db.cursor(dictionary=True)
     try:
-        cur.execute("SELECT * FROM invoice_headers WHERE card_payment_public_token=%s LIMIT 1", (token,))
+        cur.execute(
+            "SELECT * FROM invoice_headers WHERE card_payment_public_token=%s AND deleted_at IS NULL LIMIT 1",
+            (token,),
+        )
         return cur.fetchone()
     finally:
         cur.close()
@@ -1921,7 +2200,7 @@ def create_invoice_card_payment_pending(
         db.close()
 
 
-def update_invoice_card_payment_result(payment_row_id: int, *, status: str, square_payment_id: str | None = None, receipt_url: str | None = None, card_brand: str | None = None, card_last4: str | None = None, card_exp_mm: int | None = None, card_exp_yyyy: int | None = None, error_code: str | None = None, error_detail: str | None = None, paid_at=None) -> None:
+def update_invoice_card_payment_result(payment_row_id: int, *, status: str, square_payment_id: str | None = None, receipt_url: str | None = None, card_brand: str | None = None, card_last4: str | None = None, card_exp_mm: int | None = None, card_exp_yyyy: int | None = None, error_code: str | None = None, error_detail: str | None = None, paid_at=None, square_updated_at=None, sync_error: str | None = None) -> None:
     now = now_jst()
     db = get_db()
     cur = db.cursor()
@@ -1939,7 +2218,11 @@ def update_invoice_card_payment_result(payment_row_id: int, *, status: str, squa
                 card_exp_yyyy=COALESCE(%s, card_exp_yyyy),
                 error_code=%s,
                 error_detail=%s,
-                paid_at=COALESCE(%s, paid_at)
+                paid_at=COALESCE(%s, paid_at),
+                square_updated_at=COALESCE(%s, square_updated_at),
+                last_synced_at=%s,
+                sync_attempts=sync_attempts+1,
+                sync_error=%s
             WHERE id=%s
             """,
             (
@@ -1954,6 +2237,9 @@ def update_invoice_card_payment_result(payment_row_id: int, *, status: str, squa
                 error_code,
                 error_detail,
                 paid_at,
+                square_updated_at,
+                now,
+                sync_error,
                 payment_row_id,
             ),
         )
@@ -2033,7 +2319,7 @@ def notify_invoice_card_payment_if_needed(payment_row_id: int) -> None:
     if int(payment.get("discord_notified") or 0) == 1:
         return
     status = (payment.get("square_status") or "").upper()
-    if status not in {"APPROVED", "COMPLETED"}:
+    if status != "COMPLETED":
         return
 
     invoice_id = int(payment.get("invoice_id") or 0)
@@ -2073,20 +2359,21 @@ def notify_invoice_card_payment_if_needed(payment_row_id: int) -> None:
 
 
 def ensure_invoice_square_customer(*, access_token: str, invoice: dict[str, Any], buyer_name: str) -> str | None:
-    import requests
+    from app.payment.square_gateway import request_square
 
     buyer_email = (invoice.get("contact_email_snapshot") or "").strip()
     if not buyer_email:
         return None
     reference_id = f"invoice_contact:{int(invoice.get('id') or 0)}"
     square = get_invoice_square_config()
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
     try:
-        sresp = requests.post(
+        sresp = request_square(
+            "POST",
             f"{square['api_base']}/v2/customers/search",
-            headers=headers,
-            json={"query": {"filter": {"reference_id": {"exact": reference_id}}}},
+            access_token=access_token,
+            json_body={"query": {"filter": {"reference_id": {"exact": reference_id}}}},
             timeout=15,
+            retry_safe=True,
         )
         if sresp.status_code < 400:
             customers = (sresp.json() or {}).get("customers") or []
@@ -2100,11 +2387,13 @@ def ensure_invoice_square_customer(*, access_token: str, invoice: dict[str, Any]
                     if buyer_name and not (customer.get("given_name") or "").strip():
                         update_payload["given_name"] = buyer_name
                     if update_payload:
-                        uresp = requests.put(
+                        uresp = request_square(
+                            "PUT",
                             f"{square['api_base']}/v2/customers/{customer_id}",
-                            headers=headers,
-                            json=update_payload,
+                            access_token=access_token,
+                            json_body=update_payload,
                             timeout=15,
+                            retry_safe=True,
                         )
                         if uresp.status_code >= 400:
                             logging.warning("invoice customer update failed: %s", uresp.text)
@@ -2113,11 +2402,20 @@ def ensure_invoice_square_customer(*, access_token: str, invoice: dict[str, Any]
         logging.exception("invoice search_customers failed")
 
     try:
-        cresp = requests.post(
+        customer_idempotency_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"square-customer:{reference_id}"))
+        customer_body = {
+            "idempotency_key": customer_idempotency_key,
+            "given_name": buyer_name,
+            "reference_id": reference_id,
+            "email_address": buyer_email,
+        }
+        cresp = request_square(
+            "POST",
             f"{square['api_base']}/v2/customers",
-            headers=headers,
-            json={"given_name": buyer_name, "reference_id": reference_id, "email_address": buyer_email},
+            access_token=access_token,
+            json_body=customer_body,
             timeout=15,
+            idempotency_key=customer_idempotency_key,
         )
         if cresp.status_code >= 400:
             return None

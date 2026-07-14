@@ -1,0 +1,22 @@
+CREATE TABLE IF NOT EXISTS mobile_download_jobs (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  upload_uuid CHAR(32) NOT NULL,
+  upload_title VARCHAR(255) NOT NULL DEFAULT '',
+  files_json LONGTEXT NOT NULL,
+  launch_token_hash CHAR(64) NOT NULL,
+  access_token_hash CHAR(64) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  launch_expires_at DATETIME NOT NULL,
+  exchanged_at DATETIME NULL,
+  session_expires_at DATETIME NULL,
+  last_accessed_at DATETIME NULL,
+  completed_at DATETIME NULL,
+  revoked_at DATETIME NULL,
+  client_platform VARCHAR(32) NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_mobile_download_launch (launch_token_hash),
+  UNIQUE KEY uq_mobile_download_access (access_token_hash),
+  KEY idx_mobile_download_upload (upload_uuid),
+  KEY idx_mobile_download_launch_expiry (launch_expires_at),
+  KEY idx_mobile_download_session_expiry (session_expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

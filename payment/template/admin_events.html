@@ -1,53 +1,95 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8">
-  <title>併せイベント一覧（管理）</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="container py-4">
-  <div class="d-flex align-items-center justify-content-between mb-3">
-    <h1 class="h4">併せイベント一覧</h1>
-    <a class="btn btn-primary" href="/payment/admin/events/new">新規作成</a>
+{% extends "base.html" %}
+{% block title %}決済イベント管理{% endblock %}
+{% block head_extra %}
+<style>
+  .payment-admin{--pay-primary:#2563eb;--pay-ink:#172033;--pay-muted:#64748b;--pay-border:#e2e8f0;--pay-bg:#f8fafc}
+  .payment-admin .page-title{font-weight:800;color:var(--pay-ink);letter-spacing:-.02em}
+  .summary-card{border:1px solid var(--pay-border);border-radius:16px;background:#fff;padding:18px;height:100%;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  .summary-label{font-size:.78rem;color:var(--pay-muted);font-weight:700;letter-spacing:.04em}
+  .summary-value{font-size:1.55rem;font-weight:800;color:var(--pay-ink);margin-top:4px}
+  .filter-card,.event-panel{border:1px solid var(--pay-border);border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(15,23,42,.04)}
+  .filter-card{padding:16px}
+  .event-panel{overflow:hidden}
+  .event-table{margin:0}
+  .event-table thead th{background:var(--pay-bg);color:#475569;font-size:.78rem;text-transform:none;border-bottom:1px solid var(--pay-border);padding:13px 16px;white-space:nowrap}
+  .event-table td{padding:16px;vertical-align:middle;border-color:#edf2f7}
+  .event-title{color:var(--pay-ink);font-weight:750;text-decoration:none}
+  .event-title:hover{color:var(--pay-primary)}
+  .metric-main{font-weight:750;color:var(--pay-ink)}
+  .metric-sub{font-size:.78rem;color:var(--pay-muted)}
+  .status-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 10px;font-size:.78rem;font-weight:700}
+  .status-pill::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .status-active{background:#ecfdf5;color:#047857}.status-inactive{background:#f1f5f9;color:#64748b}
+  .mobile-event-card{border:1px solid var(--pay-border);border-radius:16px;background:#fff;padding:16px;box-shadow:0 5px 18px rgba(15,23,42,.05)}
+  .mobile-metric{background:var(--pay-bg);border-radius:12px;padding:11px}
+  @media(max-width:767.98px){.desktop-events{display:none}.summary-value{font-size:1.25rem}.payment-admin{padding-top:.5rem!important}}
+  @media(min-width:768px){.mobile-events{display:none}}
+</style>
+{% endblock %}
+{% block content %}
+<div class="payment-admin py-4">
+  <div class="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+    <div>
+      <div class="text-primary fw-semibold small mb-1">PAYMENT MANAGEMENT</div>
+      <h1 class="page-title h3 mb-1">決済イベント管理</h1>
+      <p class="text-muted mb-0">イベントごとの参加費・投げ銭・受付状態を確認できます。</p>
+    </div>
+    <a class="btn btn-primary px-4" href="/payment/admin/events/new">＋ 新規イベント</a>
   </div>
 
-  <table class="table table-sm table-striped">
-    <thead>
-      <tr>
-        <th>ID</th><th>タイトル</th><th>日付</th><th>状態</th><th>件数</th><th>売上合計(円)</th><th>リンク</th><th></th>
-      </tr>
-    </thead>
-    <tbody>
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3"><div class="summary-card"><div class="summary-label">受付中イベント</div><div class="summary-value">{{ summary.active_count }}<span class="fs-6 fw-normal text-muted"> / {{ summary.event_count }}</span></div></div></div>
+    <div class="col-6 col-lg-3"><div class="summary-card"><div class="summary-label">完了した決済</div><div class="summary-value">{{ summary.payment_count }}<span class="fs-6 fw-normal text-muted">件</span></div></div></div>
+    <div class="col-6 col-lg-3"><div class="summary-card"><div class="summary-label">総決済額</div><div class="summary-value">¥{{ "{:,}".format(summary.gross_yen) }}</div></div></div>
+    <div class="col-6 col-lg-3"><div class="summary-card"><div class="summary-label">差引決済額</div><div class="summary-value text-primary">¥{{ "{:,}".format(summary.net_yen) }}</div><div class="metric-sub">返金 ¥{{ "{:,}".format(summary.refunded_yen) }}</div></div></div>
+  </div>
+
+  <form class="filter-card mb-4" method="get">
+    <div class="row g-2 align-items-end">
+      <div class="col-12 col-md-7">
+        <label class="form-label small fw-semibold" for="eventSearch">イベント名</label>
+        <input id="eventSearch" class="form-control" name="q" value="{{ search_query }}" placeholder="イベント名を検索">
+      </div>
+      <div class="col-8 col-md-3">
+        <label class="form-label small fw-semibold" for="statusFilter">受付状態</label>
+        <select id="statusFilter" class="form-select" name="status">
+          <option value="all" {% if status_filter == 'all' %}selected{% endif %}>すべて</option>
+          <option value="active" {% if status_filter == 'active' %}selected{% endif %}>受付中</option>
+          <option value="inactive" {% if status_filter == 'inactive' %}selected{% endif %}>停止中</option>
+        </select>
+      </div>
+      <div class="col-4 col-md-2 d-grid"><button class="btn btn-outline-primary" type="submit">絞り込む</button></div>
+    </div>
+  </form>
+
+  <div class="event-panel desktop-events">
+    <table class="table event-table">
+      <thead><tr><th>イベント</th><th>状態</th><th>参加費</th><th>投げ銭</th><th>合計</th><th class="text-end">操作</th></tr></thead>
+      <tbody>
+      {% for e in events %}
+        <tr>
+          <td><a class="event-title" href="/payment/admin/events/{{ e.id }}?kind=event_fee">{{ e.title }}</a><div class="metric-sub mt-1">{{ e.date or '開催日未設定' }} ・ ID {{ e.id }}</div></td>
+          <td><span class="status-pill {{ 'status-active' if e.is_active else 'status-inactive' }}">{{ '受付中' if e.is_active else '停止中' }}</span></td>
+          <td><div class="metric-main">¥{{ "{:,}".format(e.sum_amount|int) }}</div><div class="metric-sub">{{ e.cnt }}件</div></td>
+          <td><div class="metric-main">¥{{ "{:,}".format(e.tip_sum_amount|int) }}</div><div class="metric-sub">{{ e.tip_cnt or 0 }}件</div></td>
+          <td><div class="metric-main text-primary">¥{{ "{:,}".format(e.total_amount|int) }}</div><div class="metric-sub">{{ e.total_count }}件</div></td>
+          <td class="text-end"><div class="d-inline-flex gap-2"><a class="btn btn-sm btn-primary" href="/payment/admin/events/{{ e.id }}?kind=event_fee">詳細</a><form action="/payment/admin/events/{{ e.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><button class="btn btn-sm btn-outline-secondary">{{ '停止' if e.is_active else '再開' }}</button></form></div></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-5">条件に一致するイベントはありません。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="mobile-events d-grid gap-3">
     {% for e in events %}
-      <tr>
-        <td>{{ e.id }}</td>
-        <td><a href="/payment/admin/events/{{ e.id }}?kind=event_fee">{{ e.title }}</a></td>
-        <td>{{ e.date or '-' }}</td>
-        <td>{{ 'Active' if e.is_active else 'Inactive' }}</td>
-        <td>{{ e.cnt }}</td>
-        <td>{{ e.sum_amount }}</td>
-        <td><code>{{ e.uuid }}</code></td>
-        <td>
-          <form action="/payment/admin/events/{{ e.id }}/toggle" method="post">
-            <button class="btn btn-sm btn-outline-secondary">{{ '無効化' if e.is_active else '有効化' }}</button>
-          </form>
-        </td>
-      </tr>
-      <tr class="table-warning">
-        <td>{{ e.id }}</td>
-        <td><a href="/payment/admin/events/{{ e.id }}?kind=tip">{{ e.title }}（投げ銭）</a></td>
-        <td>{{ e.date or '-' }}</td>
-        <td>{{ 'Active' if e.is_active else 'Inactive' }}</td>
-        <td>{{ e.tip_cnt or 0 }}</td>
-        <td>{{ e.tip_sum_amount or 0 }}</td>
-        <td><code>{{ e.uuid }}</code></td>
-        <td></td>
-      </tr>
-    {% else %}
-      <tr><td colspan="8" class="text-muted">（まだイベントがありません）</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-</body>
-</html>
+      <article class="mobile-event-card">
+        <div class="d-flex justify-content-between align-items-start gap-2 mb-3"><div><a class="event-title" href="/payment/admin/events/{{ e.id }}?kind=event_fee">{{ e.title }}</a><div class="metric-sub mt-1">{{ e.date or '開催日未設定' }}</div></div><span class="status-pill {{ 'status-active' if e.is_active else 'status-inactive' }}">{{ '受付中' if e.is_active else '停止中' }}</span></div>
+        <div class="row g-2 mb-3"><div class="col-4"><div class="mobile-metric"><div class="metric-sub">参加費</div><div class="metric-main">¥{{ "{:,}".format(e.sum_amount|int) }}</div><div class="metric-sub">{{ e.cnt }}件</div></div></div><div class="col-4"><div class="mobile-metric"><div class="metric-sub">投げ銭</div><div class="metric-main">¥{{ "{:,}".format(e.tip_sum_amount|int) }}</div><div class="metric-sub">{{ e.tip_cnt or 0 }}件</div></div></div><div class="col-4"><div class="mobile-metric"><div class="metric-sub">合計</div><div class="metric-main text-primary">¥{{ "{:,}".format(e.total_amount|int) }}</div><div class="metric-sub">{{ e.total_count }}件</div></div></div></div>
+        <div class="d-flex gap-2"><a class="btn btn-primary flex-grow-1" href="/payment/admin/events/{{ e.id }}?kind=event_fee">詳細を見る</a><form action="/payment/admin/events/{{ e.id }}/toggle" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token_value }}"><button class="btn btn-outline-secondary">{{ '停止' if e.is_active else '再開' }}</button></form></div>
+      </article>
+    {% else %}<div class="text-center text-muted py-5">条件に一致するイベントはありません。</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}

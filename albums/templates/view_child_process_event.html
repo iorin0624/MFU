@@ -125,7 +125,7 @@
 {% if ns.has_requested %}{% set current_step = 3 %}{% endif %}
 {% if lock and not lock_expired %}{% set current_step = 4 %}{% endif %}
 {% if history_list and not lock and ns.has_requested %}{% set current_step = 5 %}{% endif %}
-{% set can_upload = (not is_readonly) and (not has_image or (lock and not lock_expired)) %}
+{% set can_upload = not has_image or (lock and not lock_expired) %}
 {% set ext_user_id = session.get('ext_user_id') %}
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
@@ -218,13 +218,7 @@
             <h4 class="fw-bold">次にやること</h4>
             {% if not has_image %}
               <p class="mb-2 text-muted">まずは加工回し用の写真を1枚アップしましょう。</p>
-              {% if not is_readonly %}
-                <span class="badge bg-primary">この下のアップロード欄から追加できます</span>
-              {% else %}
-                <div class="alert alert-warning mb-0">
-                  このアルバムは <strong>HDD保管中（アーカイブ）</strong> のため、写真の追加はできません。
-                </div>
-              {% endif %}
+              <span class="badge bg-primary">この下のアップロード欄から追加できます</span>
             {% elif not ns.has_requested %}
               <p class="mb-2 text-muted">依頼する人にチェックを入れてから依頼ボタンを押してください。</p>
               <a href="#request-card" class="btn btn-primary btn-lg w-100">📣 依頼先を選んで送信する</a>
@@ -237,7 +231,7 @@
           <div class="mb-4 upload-panel">
             <h5 class="fw-bold mb-2">ステップ1：加工回し用の写真アップロード</h5>
             <p class="text-muted mb-3">加工回しモードの子アルバムです。写真は最新1枚のみで差し替わります。</p>
-            {% if not is_readonly and not has_image %}
+            {% if not has_image %}
               <form id="requesterUploadForm" method="post" enctype="multipart/form-data" action="{{ url_for('album.upload_child', album_id=album_id, child_id=child_id) }}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div id="requesterDropzone" class="upload-dropzone mb-3">
@@ -254,12 +248,10 @@
                 </div>
               </form>
               <div id="requesterStatus" class="small text-muted mt-2"></div>
-            {% elif not is_readonly and has_image %}
+            {% else %}
               <div class="alert alert-warning mb-0">
                 加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
               </div>
-            {% else %}
-              <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
             {% endif %}
           </div>
 
@@ -413,12 +405,10 @@
                 </div>
               </form>
               <div id="workerStatus" class="small text-muted mt-2"></div>
-            {% elif not is_readonly %}
+            {% else %}
               <div class="alert alert-warning mb-0">
                 加工ロックが必要です。先に加工用画像をダウンロードしてロックを取得してください。
               </div>
-            {% else %}
-              <div class="alert alert-warning mb-0">HDD保管中のためアップロードはできません。</div>
             {% endif %}
           </div>
 

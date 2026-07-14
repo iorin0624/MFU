@@ -1,392 +1,428 @@
 {% extends "base.html" %}
+
 {% block title %}
-  {% if session.get('user') == 'admin' %}
-    親アルバム作成（管理者）
-  {% else %}
-    親アルバム作成
-  {% endif %}
+  {% if session.get('user') == 'admin' %}親アルバム管理{% else %}親アルバム作成{% endif %}
+{% endblock %}
+
+{% block head_extra %}
+<style>
+  .album-admin-shell { max-width: 1440px; }
+  .album-page-heading { letter-spacing: .01em; }
+  .album-create-card,
+  .album-toolbar,
+  .album-card { border: 0; box-shadow: 0 .2rem 1.1rem rgba(15, 23, 42, .08); }
+  .album-card { transition: transform .16s ease, box-shadow .16s ease; }
+  .album-card:hover { transform: translateY(-2px); box-shadow: 0 .45rem 1.4rem rgba(15, 23, 42, .12); }
+  .album-card-event { background: #eef6ff; border: 1px solid #b6d4fe; }
+  .album-card-event .album-danger-zone { border-top-color: #cfe2ff; }
+  .album-card-title { overflow-wrap: anywhere; }
+  .album-card-meta { min-width: 0; }
+  .album-uuid { display: flex; flex-wrap: wrap; gap: .25rem; font-size: .78rem; letter-spacing: .02em; }
+  .album-uuid code { overflow-wrap: anywhere; word-break: break-all; white-space: normal; }
+  .album-actions .btn,
+  .album-admin-actions .btn { white-space: nowrap; }
+  .album-admin-actions form { display: inline-flex; margin: 0; }
+  .album-danger-zone { border-top: 1px solid var(--bs-border-color); }
+  #zip-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 2000; display: none; }
+  #zip-dialog { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw); }
+  #zip-overlay .progress { height: 20px; }
+
+  @media (max-width: 575.98px) {
+    .album-actions .btn,
+    .album-admin-actions .btn,
+    .album-admin-actions form { width: 100%; }
+    .album-admin-actions form .btn { width: 100%; }
+  }
+</style>
 {% endblock %}
 
 {% block content %}
-<div class="container d-flex justify-content-center">
-  <form method="post" class="card p-4 shadow-sm w-100" style="max-width: 500px;">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <h2 class="text-center mb-4">
-      {% if session.get('user') == 'admin' %}
-        🛠️ 親アルバム作成（管理者）
-      {% else %}
-        🛠️ 親アルバム作成
-      {% endif %}
-    </h2>
-    <div class="mb-3">
-      <label class="form-label">アルバム名</label>
-      <input type="text" name="album_name" class="form-control" required>
+{% set total_album_count = (event_album_list|length) + (normal_album_list|length) %}
+<div class="container-fluid album-admin-shell pb-5">
+  <div class="d-flex flex-wrap align-items-end justify-content-between gap-2 mb-4">
+    <div>
+      <h1 class="h3 album-page-heading mb-1">
+        {% if session.get('user') == 'admin' %}親アルバム管理{% else %}親アルバム{% endif %}
+      </h1>
+      <p class="text-muted mb-0">アルバムの作成、共有、編集をこの画面でまとめて行えます。</p>
     </div>
-    <button class="btn btn-primary w-100" type="submit">作成</button>
-  </form>
-</div>
-
-<hr class="my-5">
-
-<div class="container">
-  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-    <h5 class="mb-3 mb-0">📚 現在の親アルバム一覧</h5>
-    {% if session.get('user') == 'admin' %}
-    <div class="text-muted small">
-      💡 写真は <code>/mnt/mfu/mfu_albums</code>（SSD）⇄<code>/mnt/maildata/mfu_albums</code>（HDD）に
-      <b>物理移動</b>します。<u>外部リンク（URL）は変わりません</u>。動画は <code>/mnt/maildata/mfu_album_movie</code> 固定です。
-    </div>
-    {% endif %}
+    <span class="badge rounded-pill text-bg-primary fs-6">
+      <span id="album-visible-count">{{ total_album_count }}</span> / {{ total_album_count }} 件
+    </span>
   </div>
 
-  <ul class="list-group mt-3">
-    {% for album in album_list %}
-      <li class="list-group-item d-flex justify-content-between align-items-start flex-column flex-md-row">
-        <div class="mb-2 mb-md-0 pe-md-3">
-          <strong class="me-2">{{ album.name }}</strong>
-          {% if session.get('user') == 'admin' %}
-            <!-- 保存先バッジ -->
-            <span id="storage-badge-{{ album.id }}" class="badge text-bg-secondary align-middle">読み込み中…</span>
-          {% endif %}
-          <br>
-          <small class="text-muted">👤 作成者: {{ album.owner }}</small><br>
-          🔗 アクセスURL:
-          <a href="{{ url_for('album.album_access', album_id=album.id) }}?token={{ album.access_token }}" target="_blank" rel="noopener">
-            <code>{{ url_for('album.album_access', album_id=album.id, _external=True) }}?token={{ album.access_token }}</code>
-          </a><br>
-          🆔 UUID: <code>{{ album.id }}</code><br>
+  <section class="card album-create-card mb-4" aria-labelledby="album-create-title">
+    <div class="card-body p-3 p-md-4">
+      <h2 id="album-create-title" class="h5 mb-3">新しい親アルバムを作成</h2>
+      <form method="post" class="row g-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="col-12 col-md">
+          <label for="album-name" class="form-label">アルバム名</label>
+          <input id="album-name" type="text" name="album_name" class="form-control" placeholder="例：2026年7月 撮影会" autocomplete="off" required>
         </div>
-
-        <div class="d-flex flex-column align-items-end gap-2 w-100" style="max-width: 420px;">
-          {% if session.get('user') == 'admin' %}
-          <!-- 📦 ストレージ移動：写真のみ（SSD/HDD） -->
-          <div class="d-flex gap-2 w-100 justify-content-end">
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary"
-              id="btn-to-hdd-{{ album.id }}"
-              onclick="moveStorageWithProgress('{{ album.id }}','hdd')"
-            >📦 HDDへ移動（安全・進捗表示）</button>
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary"
-              id="btn-to-ssd-{{ album.id }}"
-              onclick="moveStorageWithProgress('{{ album.id }}','ssd')"
-            >⚡ SSDへ戻す（安全・進捗表示）</button>
-          </div>
-
-          <!-- 🧰 全体ZIP（静止画＋動画） -->
-          <div class="d-flex gap-2 w-100 justify-content-end">
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-primary"
-              id="btn-zip-{{ album.id }}"
-              onclick="startZipWithProgress('{{ album.id }}')"
-            >🧰 全体ZIP（静止画+動画）</button>
-          </div>
-          {% endif %}
-
-          {% if session.get('user') == 'admin' or session.get('user') == album.owner %}
-          <!-- ✏️ 名前変更（ブラウザ標準ダイアログ + 隠しフォーム） -->
-          <form id="rename-form-{{ album.id }}" method="post" action="{{ url_for('album.rename_album', album_id=album.id) }}" class="d-none">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <input type="hidden" name="album_name" value="{{ album.name }}">
-            <input type="hidden" name="from_admin_list" value="1">
-          </form>
-          <div class="d-flex gap-2 w-100 justify-content-end">
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-primary"
-              onclick="
-                (function(){
-                  var current='{{ album.name|e }}';
-                  var next = prompt('新しいアルバム名を入力してください', current);
-                  if (next === null) return;
-                  next = next.trim();
-                  if (!next) { alert('アルバム名は必須です'); return; }
-                  var f = document.getElementById('rename-form-{{ album.id }}');
-                  f.querySelector('input[name=album_name]').value = next;
-                  f.submit();
-                })();
-              "
-            >✏️ 名前変更</button>
-
-            <form method="post" action="{{ url_for('album.regenerate_token', album_id=album.id) }}"
-                  onsubmit="return confirm('このアルバムのアクセストークンを再発行します。既存のURLは無効になります。よろしいですか？');">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-warning">♻️ トークン再発行</button>
-            </form>
-
-            <form method="post" action="{{ url_for('album.delete_album', album_id=album.id) }}"
-                  onsubmit="return confirm('この親アルバムとすべての子アルバムを削除します。よろしいですか？');">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button type="submit" class="btn btn-sm btn-danger">🗑️ 削除</button>
-            </form>
-          </div>
-          {% endif %}
+        <div class="col-12 col-md-auto">
+          <button class="btn btn-primary px-4 w-100" type="submit">作成する</button>
         </div>
-      </li>
-    {% else %}
-      <li class="list-group-item text-muted">親アルバムがまだ存在しません</li>
+      </form>
+    </div>
+  </section>
+
+  <section aria-labelledby="album-list-title">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+      <h2 id="album-list-title" class="h4 mb-0">現在の親アルバム</h2>
+    </div>
+
+    {% if total_album_count %}
+    <div class="card album-toolbar mb-4">
+      <div class="card-body p-3">
+        <div class="row g-2">
+          <div class="col-12 col-lg">
+            <label for="album-search" class="form-label small fw-semibold">検索</label>
+            <input id="album-search" type="search" class="form-control" placeholder="アルバム名・作成者・UUIDで検索">
+          </div>
+          {% if session.get('user') == 'admin' %}
+          <div class="col-12 col-sm-8 col-lg-3">
+            <label for="album-owner-filter" class="form-label small fw-semibold">作成者</label>
+            <select id="album-owner-filter" class="form-select">
+              <option value="">すべての作成者</option>
+            </select>
+          </div>
+          {% endif %}
+          <div class="col-12 col-sm-4 col-lg-auto d-flex align-items-end">
+            <button id="album-filter-reset" type="button" class="btn btn-outline-secondary w-100">条件をクリア</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {% set album_sections = [
+      ('event', 'イベント連携アルバム', event_album_list),
+      ('normal', '通常アルバム', normal_album_list)
+    ] %}
+    {% for section_key, section_title, section_albums in album_sections %}
+    <section class="mb-5" data-album-group="{{ section_key }}" aria-labelledby="album-section-{{ section_key }}">
+      <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+        <h3 id="album-section-{{ section_key }}" class="h5 mb-0">{{ section_title }}</h3>
+        <span class="badge {% if section_key == 'event' %}text-bg-primary{% else %}text-bg-secondary{% endif %}">
+          <span data-section-visible-count>{{ section_albums|length }}</span> / {{ section_albums|length }} 件
+        </span>
+      </div>
+
+      <div class="row g-3" data-album-grid>
+      {% for album in section_albums %}
+        {% set access_url = url_for('album.album_access', album_id=album.id, _external=True) ~ '?token=' ~ album.access_token %}
+        <div class="col-12 col-xl-6"
+             data-album-card
+             data-album-category="{{ section_key }}"
+             data-owner="{{ album.owner|e }}"
+             data-search="{{ (album.name ~ ' ' ~ album.owner ~ ' ' ~ album.id)|lower|e }}">
+          <article class="card album-card {% if section_key == 'event' %}album-card-event{% endif %} h-100">
+            <div class="card-body p-3 p-md-4 d-flex flex-column">
+              <div class="d-flex align-items-start justify-content-between gap-3 mb-3">
+                <div class="album-card-meta">
+                  <h3 class="h5 album-card-title mb-2">{{ album.name }}</h3>
+                  <div class="d-flex flex-wrap align-items-center gap-2 text-muted small">
+                    {% if section_key == 'event' %}<span class="badge text-bg-primary">イベント連携</span>{% endif %}
+                    <span class="badge text-bg-light border">作成者: {{ album.owner }}</span>
+                  </div>
+                  <div class="album-uuid text-muted mt-2">UUID: <code>{{ album.id }}</code></div>
+                </div>
+              </div>
+
+              <div class="album-actions d-flex flex-wrap gap-2 mb-3">
+                <a class="btn btn-primary btn-sm"
+                   href="{{ access_url }}" target="_blank" rel="noopener">アルバムを開く</a>
+                <button type="button" class="btn btn-outline-primary btn-sm js-copy-url" data-copy-url="{{ access_url|e }}">URLをコピー</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm js-copy-uuid" data-copy-uuid="{{ album.id }}">UUIDをコピー</button>
+                {% if session.get('user') == 'admin' %}
+                <button type="button" class="btn btn-outline-primary btn-sm" id="btn-zip-{{ album.id }}" onclick="startZipWithProgress('{{ album.id }}')">全体ZIP</button>
+                {% endif %}
+              </div>
+
+              {% if session.get('user') == 'admin' or session.get('user') == album.owner %}
+              <div class="album-danger-zone mt-auto pt-3">
+                <div class="album-admin-actions d-flex flex-wrap gap-2">
+                  {% if section_key == 'event' %}
+                  <button type="button"
+                          class="btn btn-outline-secondary btn-sm"
+                          title="イベント管理画面から変更してください"
+                          disabled>名前変更</button>
+                  {% else %}
+                  <button type="button"
+                          class="btn btn-outline-secondary btn-sm js-open-rename"
+                          data-bs-toggle="modal"
+                          data-bs-target="#rename-album-modal"
+                          data-album-id="{{ album.id }}"
+                          data-album-name="{{ album.name|e }}">名前変更</button>
+                  {% endif %}
+
+                  <form method="post" action="{{ url_for('album.regenerate_token', album_id=album.id) }}"
+                        onsubmit="return confirm('アクセストークンを再発行します。現在の共有URLは無効になります。よろしいですか？');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline-warning btn-sm">トークン再発行</button>
+                  </form>
+
+                  <form method="post" action="{{ url_for('album.delete_album', album_id=album.id) }}"
+                        onsubmit="return confirm('この親アルバムとすべての子アルバムを削除します。この操作は元に戻せません。よろしいですか？');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn btn-outline-danger btn-sm">削除</button>
+                  </form>
+                </div>
+              </div>
+              {% endif %}
+            </div>
+          </article>
+        </div>
+      {% endfor %}
+      </div>
+
+      <div class="alert alert-light border text-center text-muted mt-3 {% if section_albums %}d-none{% endif %}" data-section-empty role="status">
+        該当するアルバムはありません。
+      </div>
+    </section>
     {% endfor %}
-  </ul>
+    {% else %}
+    <div class="card border-0 shadow-sm">
+      <div class="card-body text-center text-muted py-5">親アルバムがまだ存在しません。</div>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<div class="modal fade" id="rename-album-modal" tabindex="-1" aria-labelledby="rename-album-title" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <form id="rename-album-form" method="post" data-action-template="{{ url_for('album.rename_album', album_id='__album_id__') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="from_admin_list" value="1">
+        <div class="modal-header">
+          <h2 class="modal-title fs-5" id="rename-album-title">アルバム名を変更</h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="閉じる"></button>
+        </div>
+        <div class="modal-body">
+          <label for="rename-album-name" class="form-label">新しいアルバム名</label>
+          <input id="rename-album-name" type="text" name="album_name" class="form-control" required>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">キャンセル</button>
+          <button type="submit" class="btn btn-primary">変更する</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
 
 {% if session.get('user') == 'admin' %}
-<!-- ===== 進捗ポップアップ（画面ロック・写真移動） ===== -->
-<style>
-  #move-overlay, #zip-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 2000; display: none; }
-  #move-dialog,  #zip-dialog  { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw); }
-  .progress { height: 20px; }
-</style>
-<div id="move-overlay" aria-modal="true" role="dialog" aria-labelledby="move-title" aria-hidden="true">
-  <div id="move-dialog" class="card shadow-lg">
-    <div class="card-body">
-      <div class="d-flex align-items-center justify-content-between">
-        <h5 id="move-title" class="card-title mb-0">📦 写真を移動中…</h5>
-        <span id="move-dest-badge" class="badge text-bg-secondary">準備中</span>
-      </div>
-      <p class="text-muted mb-3 small">コピー→検証→原子的切替の順で実行します。完了まで他の操作はできません。</p>
-
-      <div class="mb-2">
-        <div class="progress" role="progressbar" aria-label="move progress" aria-valuemin="0" aria-valuemax="100">
-          <div id="move-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%">0%</div>
-        </div>
-      </div>
-      <div class="d-flex justify-content-between small">
-        <div>
-          <span id="move-status" class="me-2">準備中…</span>
-          <span id="move-count" class="text-muted"></span>
-        </div>
-        <div id="move-eta" class="text-muted"></div>
-      </div>
-
-      <hr>
-      <div class="d-flex justify-content-end gap-2">
-        <button id="move-close" type="button" class="btn btn-secondary" disabled>閉じる</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ===== ZIP進捗ポップアップ（画面ロック・全体ZIP） ===== -->
 <div id="zip-overlay" aria-modal="true" role="dialog" aria-labelledby="zip-title" aria-hidden="true">
   <div id="zip-dialog" class="card shadow-lg">
     <div class="card-body">
       <div class="d-flex align-items-center justify-content-between">
-        <h5 id="zip-title" class="card-title mb-0">🧰 全体ZIPを作成中…</h5>
+        <h2 id="zip-title" class="h5 card-title mb-0">全体ZIPを作成中…</h2>
         <span id="zip-badge" class="badge text-bg-info">圧縮中</span>
       </div>
-      <p class="text-muted mb-3 small">静止画と動画（.web.mp4 やポスター含む）をまとめています。完了後に自動でダウンロードが開始されます。</p>
-
+      <p class="text-muted mb-3 small">静止画と動画をまとめています。完了後に自動でダウンロードします。</p>
       <div class="mb-2">
-        <div class="progress" role="progressbar" aria-label="zip progress" aria-valuemin="0" aria-valuemax="100">
+        <div class="progress" role="progressbar" aria-label="ZIP作成の進捗" aria-valuemin="0" aria-valuemax="100">
           <div id="zip-bar" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 0%">0%</div>
         </div>
       </div>
-      <div class="d-flex justify-content-between small">
-        <div>
-          <span id="zip-status" class="me-2">準備中…</span>
-          <span id="zip-count" class="text-muted"></span>
-        </div>
+      <div class="d-flex justify-content-between small gap-2">
+        <div><span id="zip-status" class="me-2">準備中…</span><span id="zip-count" class="text-muted"></span></div>
         <div id="zip-eta" class="text-muted"></div>
       </div>
-
       <hr>
-      <div class="d-flex justify-content-end gap-2">
+      <div class="d-flex justify-content-end">
         <button id="zip-close" type="button" class="btn btn-secondary" disabled>閉じる</button>
       </div>
     </div>
   </div>
 </div>
+<script src="{{ url_for('static', filename='js/mfu_zip_download.js') }}"></script>
+{% endif %}
 
 <script>
-(function(){
-  // ---- 既存: 保存先バッジ ----
-  function setBadge(albumId, storage, exists) {
-    const el = document.getElementById('storage-badge-' + albumId);
-    if (!el) return;
-    let text = '';
-    let cls = 'badge ';
-    if (storage === 'hdd') { text = 'HDD（長期保管）'; cls += exists ? 'text-bg-success' : 'text-bg-secondary'; }
-    else if (storage === 'ssd') { text = 'SSD（高速）'; cls += exists ? 'text-bg-primary' : 'text-bg-secondary'; }
-    else { text = '不明'; cls += 'text-bg-secondary'; }
-    el.textContent = text; el.className = cls;
+(function () {
+  const cards = Array.from(document.querySelectorAll('[data-album-card]'));
+  const searchInput = document.getElementById('album-search');
+  const ownerFilter = document.getElementById('album-owner-filter');
+  const resetButton = document.getElementById('album-filter-reset');
+  const visibleCount = document.getElementById('album-visible-count');
+  const groups = Array.from(document.querySelectorAll('[data-album-group]'));
+
+  if (ownerFilter) {
+    const owners = [...new Set(cards.map(card => card.dataset.owner).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'ja'));
+    owners.forEach(owner => {
+      const option = document.createElement('option');
+      option.value = owner;
+      option.textContent = owner;
+      ownerFilter.appendChild(option);
+    });
   }
-  async function fetchStatus(albumId) {
+
+  function applyFilters() {
+    const keyword = (searchInput?.value || '').trim().toLocaleLowerCase('ja');
+    const owner = ownerFilter?.value || '';
+    let count = 0;
+    cards.forEach(card => {
+      const matchesKeyword = !keyword || (card.dataset.search || '').includes(keyword);
+      const matchesOwner = !owner || card.dataset.owner === owner;
+      const visible = matchesKeyword && matchesOwner;
+      card.classList.toggle('d-none', !visible);
+      if (visible) count += 1;
+    });
+    if (visibleCount) visibleCount.textContent = count;
+    groups.forEach(group => {
+      const groupCards = Array.from(group.querySelectorAll('[data-album-card]'));
+      const groupVisibleCount = groupCards.filter(card => !card.classList.contains('d-none')).length;
+      const groupCounter = group.querySelector('[data-section-visible-count]');
+      const groupEmpty = group.querySelector('[data-section-empty]');
+      if (groupCounter) groupCounter.textContent = groupVisibleCount;
+      groupEmpty?.classList.toggle('d-none', groupVisibleCount !== 0);
+    });
+  }
+
+  searchInput?.addEventListener('input', applyFilters);
+  ownerFilter?.addEventListener('change', applyFilters);
+  resetButton?.addEventListener('click', () => {
+    if (searchInput) searchInput.value = '';
+    if (ownerFilter) ownerFilter.value = '';
+    applyFilters();
+    searchInput?.focus();
+  });
+  applyFilters();
+
+  async function copyText(value, button) {
     try {
-      const url = "{{ url_for('album.api_storage_status') }}" + "?album_id=" + encodeURIComponent(albumId);
-      const res = await fetch(url, { credentials: 'same-origin' });
-      const data = await res.json();
-      if (data && data.ok) setBadge(albumId, data.storage, data.exists);
-      else setBadge(albumId, 'unknown', false);
-    } catch { setBadge(albumId, 'unknown', false); }
-  }
-
-  // ---- 既存: 移動オーバーレイ（そのまま） ----
-  const overlay   = document.getElementById('move-overlay');
-  const bar       = document.getElementById('move-bar');
-  const statusEl  = document.getElementById('move-status');
-  const countEl   = document.getElementById('move-count');
-  const etaEl     = document.getElementById('move-eta');
-  const closeBtn  = document.getElementById('move-close');
-  const destBadge = document.getElementById('move-dest-badge');
-
-  function openOverlay(dest){
-    overlay.style.display = 'block';
-    document.body.style.overflow = 'hidden';
-    closeBtn.disabled = true;
-    bar.style.width = '0%'; bar.textContent = '0%';
-    statusEl.textContent = '準備中…'; countEl.textContent = ''; etaEl.textContent = '';
-    destBadge.textContent = (dest === 'hdd' ? '→ HDD' : '→ SSD');
-    destBadge.className = 'badge ' + (dest === 'hdd' ? 'text-bg-success' : 'text-bg-primary');
-  }
-  function closeOverlay(){ overlay.style.display = 'none'; document.body.style.overflow = ''; }
-  closeBtn.addEventListener('click', closeOverlay);
-
-  function renderProgress(albumId, p){
-    const pct = Math.max(0, Math.min(100, p.percent||0));
-    bar.style.width = pct + '%'; bar.textContent = pct + '%'; bar.setAttribute('aria-valuenow', pct);
-    const status = p.status || ''; statusEl.textContent = (status === 'running' ? 'コピー中…' : status);
-    const totalF = p.total_files ?? 0, doneF = p.processed_files ?? 0;
-    const totalB = p.total_bytes ?? 0, doneB = p.processed_bytes ?? 0;
-    const fmtB = (n)=> n>=1024*1024 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
-    countEl.textContent = `${doneF}/${totalF} ファイル ・ ${fmtB(doneB)}/${fmtB(totalB)}`;
-    etaEl.textContent = (p.eta_seconds != null && p.status === 'running') ? `残り ~${p.eta_seconds}s` : '';
-    if (status === 'done'){ statusEl.textContent = '完了'; closeBtn.disabled = false; fetchStatus(albumId).finally(()=> setTimeout(()=> location.reload(), 800)); }
-    if (status === 'error'){ statusEl.textContent = 'エラー: ' + (p.message || '失敗しました'); closeBtn.disabled = false; }
-  }
-
-  async function pollProgress(albumId){
-    const url = "{{ url_for('album.api_storage_progress') }}" + '?album_id=' + encodeURIComponent(albumId);
-    let timer = null;
-    async function once(){
-      try{
-        const res = await fetch(url, { cache:'no-store', credentials: 'same-origin' });
-        const j = await res.json();
-        if(!j.ok){ throw new Error(j.error||res.status); }
-        const p = j.progress || {};
-        renderProgress(albumId, p);
-        if(p.status === 'done' || p.status === 'error' || (p.percent||0) >= 100){ clearInterval(timer); timer = null; return; }
-      }catch(_){}
+      await navigator.clipboard.writeText(value);
+    } catch (_) {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
     }
-    await once(); timer = setInterval(once, 1000);
+    const original = button.textContent;
+    button.textContent = 'コピーしました';
+    button.classList.add('btn-success');
+    setTimeout(() => {
+      button.textContent = original;
+      button.classList.remove('btn-success');
+    }, 1400);
   }
 
-  window.moveStorageWithProgress = async function(albumId, dest){
-    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-    const msg = dest === 'hdd'
-      ? '写真をHDDへ物理移動します。処理中はこのアルバムの書き込みを行わないでください。よろしいですか？'
-      : '写真をSSDへ戻します。よろしいですか？';
-    if(!confirm(msg)) return;
-    openOverlay(dest);
-    try{
-      const res = await fetch("{{ url_for('album.api_storage_move_async') }}",{
-        method:'POST',
-        headers:{'Content-Type':'application/json','X-CSRFToken':csrfToken},
-        credentials:'same-origin',
-        body: JSON.stringify({ album_id: albumId, dest: dest })
-      });
-      const j = await res.json();
-      if(!j.ok){
-        renderProgress(albumId, { status:'error', message:(j.error||'開始に失敗しました') , percent:0 });
-        return;
-      }
-      if(j.already_running && j.progress){ renderProgress(albumId, j.progress); }
-      pollProgress(albumId);
-    }catch(_){
-      renderProgress(albumId, { status:'error', message:'通信エラーが発生しました', percent:0 });
-    }
-  }
+  document.querySelectorAll('.js-copy-url').forEach(button => {
+    button.addEventListener('click', () => copyText(button.dataset.copyUrl || '', button));
+  });
+  document.querySelectorAll('.js-copy-uuid').forEach(button => {
+    button.addEventListener('click', () => copyText(button.dataset.copyUuid || '', button));
+  });
 
-  // ===== 全体ZIP：オーバーレイ & 進捗 =====
+  const renameModal = document.getElementById('rename-album-modal');
+  const renameForm = document.getElementById('rename-album-form');
+  const renameInput = document.getElementById('rename-album-name');
+  renameModal?.addEventListener('show.bs.modal', event => {
+    const button = event.relatedTarget;
+    const albumId = button?.dataset.albumId || '';
+    const albumName = button?.dataset.albumName || '';
+    renameForm.action = renameForm.dataset.actionTemplate.replace('__album_id__', encodeURIComponent(albumId));
+    renameInput.value = albumName;
+    setTimeout(() => renameInput.focus(), 150);
+  });
+})();
+</script>
+
+{% if session.get('user') == 'admin' %}
+<script>
+(function () {
   const zipOverlay = document.getElementById('zip-overlay');
-  const zipBar     = document.getElementById('zip-bar');
-  const zipStatus  = document.getElementById('zip-status');
-  const zipCount   = document.getElementById('zip-count');
-  const zipEta     = document.getElementById('zip-eta');
-  const zipClose   = document.getElementById('zip-close');
+  const zipBar = document.getElementById('zip-bar');
+  const zipStatus = document.getElementById('zip-status');
+  const zipCount = document.getElementById('zip-count');
+  const zipEta = document.getElementById('zip-eta');
+  const zipClose = document.getElementById('zip-close');
 
-  function openZipOverlay(){
+  function openZipOverlay() {
     zipOverlay.style.display = 'block';
+    zipOverlay.setAttribute('aria-hidden', 'false');
     document.body.style.overflow = 'hidden';
     zipClose.disabled = true;
-    zipBar.style.width = '0%'; zipBar.textContent = '0%';
-    zipStatus.textContent = '準備中…'; zipCount.textContent = ''; zipEta.textContent = '';
+    zipBar.style.width = '0%';
+    zipBar.textContent = '0%';
+    zipStatus.textContent = '準備中…';
+    zipCount.textContent = '';
+    zipEta.textContent = '';
   }
-  function closeZipOverlay(){ zipOverlay.style.display = 'none'; document.body.style.overflow = ''; }
+  function closeZipOverlay() {
+    zipOverlay.style.display = 'none';
+    zipOverlay.setAttribute('aria-hidden', 'true');
+    document.body.style.overflow = '';
+  }
   zipClose.addEventListener('click', closeZipOverlay);
 
-  function renderZipProgress(p){
-    const pct = Math.max(0, Math.min(100, p.percent||0));
-    zipBar.style.width = pct + '%'; zipBar.textContent = pct + '%'; zipBar.setAttribute('aria-valuenow', pct);
-    const status = p.status || '';
-    zipStatus.textContent = (status === 'running' ? '圧縮中…' : (status||''));
-    const totalF = p.total_files ?? 0, doneF = p.processed_files ?? 0;
-    const totalB = p.total_bytes ?? 0, doneB = p.processed_bytes ?? 0;
-    const fmtB = (n)=> n>=1024*1024 ? (n/1048576).toFixed(1)+' MB' : (n/1024).toFixed(1)+' KB';
-    zipCount.textContent = `${doneF}/${totalF} ファイル ・ ${fmtB(doneB)}/${fmtB(totalB)}`;
-    zipEta.textContent = (p.eta_seconds != null && p.status === 'running') ? `残り ~${p.eta_seconds}s` : '';
-
-    if (status === 'done'){ zipStatus.textContent = '完了'; zipClose.disabled = false; }
-    if (status === 'error'){ zipStatus.textContent = 'エラー: ' + (p.message || '失敗しました'); zipClose.disabled = false; }
+  function renderZipProgress(progress) {
+    const percent = Math.max(0, Math.min(100, progress.percent || 0));
+    zipBar.style.width = percent + '%';
+    zipBar.textContent = percent + '%';
+    zipBar.setAttribute('aria-valuenow', percent);
+    const status = progress.status || '';
+    zipStatus.textContent = status === 'running' ? 'ZIP生成中…' : (status === 'queued' ? '準備中…' : status);
+    const totalFiles = progress.total_files ?? 0;
+    const processedFiles = progress.processed_files ?? 0;
+    const totalBytes = progress.total_bytes ?? 0;
+    const processedBytes = progress.processed_bytes ?? 0;
+    const formatBytes = value => value >= 1048576 ? (value / 1048576).toFixed(1) + ' MB' : (value / 1024).toFixed(1) + ' KB';
+    zipCount.textContent = `${processedFiles}/${totalFiles} ファイル ・ ${formatBytes(processedBytes)}/${formatBytes(totalBytes)}`;
+    zipEta.textContent = progress.eta_seconds != null && status === 'running' ? `残り 約${progress.eta_seconds}秒` : '';
+    if (status === 'done') {
+      zipStatus.textContent = '完了';
+      zipClose.disabled = false;
+    } else if (status === 'error') {
+      zipStatus.textContent = 'エラー: ' + (progress.message || '失敗しました');
+      zipClose.disabled = false;
+    }
   }
 
   let currentZipKey = null;
-  async function pollZipProgress(albumId){
-    if(!currentZipKey) return;
-    const url = "{{ url_for('album.admin_zip_all_progress', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId))
-            + '?key=' + encodeURIComponent(currentZipKey);
-    let timer = null;
-
-    async function once(){
-      try{
-        const res = await fetch(url, { cache:'no-store', credentials:'same-origin' });
-        const j = await res.json();
-        if(!j.ok) throw new Error(j.error||'progress error');
-        renderZipProgress(j.progress||{});
-
-        if (j.download_ready) {
-          // 自動ダウンロード開始
-          const dl = "{{ url_for('album.admin_zip_all_download', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId))
-                   + '?key=' + encodeURIComponent(currentZipKey);
-          // 同タブ遷移でダウンロード（ポップアップ抑止）
-          window.location.href = dl;
-        }
-
-        const st = (j.progress||{}).status;
-        if (st === 'done' || st === 'error' || (j.progress||{}).percent >= 100) {
-          clearInterval(timer); timer = null; return;
-        }
-      }catch(_){}
+  let zipStarting = false;
+  async function pollZipProgress() {
+    if (!currentZipKey) return;
+    try {
+      await MFUZipDownload.waitUntilReady({ key: currentZipKey, intervalMs: 700, onProgress: renderZipProgress });
+      MFUZipDownload.startDownload(`/api/zip-download/${encodeURIComponent(currentZipKey)}`);
+    } catch (error) {
+      renderZipProgress({ status: 'error', message: error?.message || '進捗取得に失敗しました', percent: 0 });
+    } finally {
+      currentZipKey = null;
     }
-    await once(); timer = setInterval(once, 1000);
   }
 
-  window.startZipWithProgress = async function(albumId){
-    if(!confirm('この親アルバム全体（静止画＋動画）をZIP化します。処理中は書き込みを行わないでください。実行しますか？')) return;
+  window.startZipWithProgress = async function (albumId) {
+    if (zipStarting || currentZipKey) return;
+    if (!confirm('この親アルバム全体（静止画＋動画）をZIP化します。実行しますか？')) return;
+    zipStarting = true;
     openZipOverlay();
-    try{
-      const url = "{{ url_for('album.admin_zip_all_async', album_id='__A__') }}".replace('__A__', encodeURIComponent(albumId));
+    try {
+      const url = "{{ url_for('album.admin_zip_all_async', album_id='__album_id__') }}".replace('__album_id__', encodeURIComponent(albumId));
       const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
-      const res = await fetch(url, { method:'POST', credentials:'same-origin', headers:{'X-CSRFToken':csrfToken} });
-      const j = await res.json();
-      if(!j.ok){ renderZipProgress({ status:'error', message:(j.error||'開始に失敗しました'), percent:0 }); return; }
-      currentZipKey = j.key;
-      if (j.already_running && j.progress) renderZipProgress(j.progress);
-      pollZipProgress(albumId);
-    }catch(_){
-      renderZipProgress({ status:'error', message:'通信エラーが発生しました', percent:0 });
+      const response = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'X-CSRFToken': csrfToken } });
+      const data = await response.json();
+      if (!data.ok) {
+        renderZipProgress({ status: 'error', message: data.error || '開始に失敗しました', percent: 0 });
+        return;
+      }
+      currentZipKey = data.key;
+      if (data.already_running && data.progress) renderZipProgress(data.progress);
+      pollZipProgress();
+    } catch (_) {
+      renderZipProgress({ status: 'error', message: '通信エラーが発生しました', percent: 0 });
+    } finally {
+      zipStarting = false;
     }
-  }
-
-  // ---- 初期化：一覧の全アルバムについてステータス取得 ----
-  const albumIds = [
-    {% for album in album_list %}
-      "{{ album.id }}"{% if not loop.last %},{% endif %}
-    {% endfor %}
-  ];
-  albumIds.forEach(id => fetchStatus(id));
+  };
 })();
 </script>
 {% endif %}

@@ -876,6 +876,73 @@
       border: 1px solid #aca899;
       background: linear-gradient(#ffffff, #ece9d8);
     }
+    .xp-dialog.properties-dialog {
+      width: min(660px, calc(100vw - 72px));
+    }
+    .properties-dialog .xp-dialog-body {
+      gap: 10px;
+      padding: 12px;
+    }
+    .properties-header {
+      display: grid;
+      grid-template-columns: 46px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 4px 2px 10px;
+      border-bottom: 1px solid #aca899;
+    }
+    .properties-icon {
+      width: 34px;
+      height: 42px;
+      border: 1px solid #a3a3a3;
+      background: linear-gradient(90deg, #fff 0 74%, #e8eef8 74% 100%);
+      box-shadow: inset 0 0 0 3px #f8fafc;
+    }
+    .properties-name-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+    }
+    .properties-extension {
+      min-width: 58px;
+      padding: 4px 6px;
+      border: 1px solid #c8c4b8;
+      background: #f7f5ea;
+      color: #374151;
+      text-align: center;
+      user-select: text;
+    }
+    .properties-grid {
+      display: grid;
+      grid-template-columns: 122px minmax(0, 1fr);
+      row-gap: 8px;
+      column-gap: 10px;
+      align-items: start;
+    }
+    .properties-grid dt {
+      margin: 0;
+      color: #111827;
+    }
+    .properties-grid dd {
+      margin: 0;
+      min-width: 0;
+      user-select: text;
+      overflow-wrap: anywhere;
+    }
+    .properties-separator {
+      height: 1px;
+      background: #aca899;
+      margin: 2px 0;
+    }
+    .properties-status {
+      min-height: 18px;
+      color: #1f3763;
+      font-size: 12px;
+    }
+    .properties-status.error {
+      color: #b91c1c;
+    }
     .viewer .content {
       flex: 1;
       min-height: 0;
@@ -1041,6 +1108,242 @@
       border-bottom: 2px solid rgba(0,0,0,.25);
     }
 
+    /* Lightweight Windows XP skin. Keeps the current controls and behavior intact. */
+    .desktop {
+      background:
+        radial-gradient(ellipse at 22% 86%, rgba(185, 232, 87, .98) 0 13%, rgba(79, 170, 58, .92) 25%, transparent 43%),
+        radial-gradient(ellipse at 62% 104%, rgba(66, 161, 65, .74) 0 20%, transparent 44%),
+        linear-gradient(180deg, #63b6ff 0%, #2c79d3 42%, #1b5aaa 66%, #245f21 100%);
+    }
+    .desktop::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 var(--taskbar-h) 0;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 44% 28%, rgba(255,255,255,.34), transparent 18%),
+        linear-gradient(110deg, transparent 0 54%, rgba(255,255,255,.18) 55% 56%, transparent 58% 100%);
+      opacity: .72;
+    }
+    .desktop-icon {
+      border-radius: 2px;
+      text-shadow: 1px 1px 2px #00306f, 0 0 2px #00306f;
+    }
+    .desktop-icon:hover,
+    .desktop-icon:focus-visible {
+      background: rgba(49, 106, 197, .62);
+      border-color: rgba(201, 223, 255, .95);
+      outline: 1px dotted rgba(255,255,255,.8);
+      outline-offset: -3px;
+    }
+    .desktop-icon .icon-box {
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,.72);
+      box-shadow:
+        inset 1px 1px 0 rgba(255,255,255,.5),
+        inset -1px -1px 0 rgba(0,0,0,.18),
+        1px 2px 4px rgba(0,0,0,.42);
+    }
+    .window,
+    .xp-dialog,
+    .desktop-message {
+      border: 1px solid #0a3fbd;
+      border-top-color: #4aa0ff;
+      border-radius: 7px 7px 2px 2px;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.55),
+        4px 7px 18px rgba(0,0,0,.35);
+    }
+    .window.active {
+      border-color: #0758e6;
+      border-top-color: #74c4ff;
+    }
+    .titlebar,
+    .desktop-message-title {
+      height: 30px;
+      min-height: 30px;
+      flex-basis: 30px;
+      background:
+        linear-gradient(180deg, #74c8ff 0%, #2373e9 12%, #0758d8 48%, #0042b8 50%, #1d65da 100%);
+      border-bottom: 1px solid #083f9f;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.62);
+    }
+    .window.active .titlebar {
+      background:
+        linear-gradient(180deg, #91d8ff 0%, #2b82ff 12%, #075be5 48%, #0046c7 50%, #1f6bea 100%);
+    }
+    .title-icon {
+      color: #ffe36a;
+      filter: drop-shadow(1px 1px 0 rgba(0,0,0,.38));
+    }
+    .win-btn {
+      width: 24px;
+      height: 22px;
+      border-radius: 3px;
+      border: 1px solid rgba(255,255,255,.86);
+      background:
+        radial-gradient(circle at 32% 24%, rgba(255,255,255,.9), rgba(255,255,255,0) 28%),
+        linear-gradient(#5bb4ff, #0b63df 50%, #003fad);
+      box-shadow:
+        inset 0 -1px 0 rgba(0,0,0,.3),
+        0 1px 0 rgba(0,0,0,.25);
+    }
+    .win-btn.close {
+      background:
+        radial-gradient(circle at 32% 24%, rgba(255,255,255,.86), rgba(255,255,255,0) 28%),
+        linear-gradient(#ffb08b, #eb4b22 50%, #a81705);
+    }
+    .explorer-body {
+      background: #fff;
+    }
+    .sidebar {
+      border-right: 1px solid #7aa7e6;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.64), rgba(255,255,255,0) 84px),
+        linear-gradient(90deg, #6f96df 0%, #9dbcf1 78%, #d8e8ff 100%);
+      padding: 10px 8px;
+    }
+    .side-title {
+      margin: 0 0 8px;
+      padding: 7px 9px;
+      border: 1px solid #91a9df;
+      border-radius: 4px 4px 0 0;
+      color: #1c4aa1;
+      background: linear-gradient(90deg, #ffffff, #dce9ff);
+      box-shadow: 1px 1px 2px rgba(64, 92, 160, .24);
+    }
+    .folder {
+      min-height: 28px;
+      color: #003399;
+      border-radius: 2px;
+    }
+    .folder:hover {
+      background: rgba(255,255,255,.58);
+      color: #001f8f;
+    }
+    .folder.active {
+      background: linear-gradient(#fff, #dce9ff);
+      border: 1px solid #7da2ce;
+      color: #003399;
+      box-shadow: inset 1px 1px 0 rgba(255,255,255,.72);
+    }
+    .toolbar {
+      min-height: 40px;
+      border-bottom: 1px solid #aca899;
+      background:
+        linear-gradient(180deg, #fffef8 0%, #f5f1dd 48%, #e3dcc2 100%);
+      box-shadow: inset 0 1px 0 #fff;
+    }
+    .pathbox {
+      border-color: #7f9db9;
+      box-shadow: inset 1px 1px 2px rgba(0,0,0,.16);
+    }
+    .toolbar button,
+    .xp-dialog-actions button,
+    .instagram-auth-body button,
+    .ig-form button,
+    .ig-actions button,
+    .desktop-message-actions button {
+      border: 1px solid #7f9db9;
+      border-radius: 2px;
+      background: linear-gradient(#ffffff 0%, #f4f1e6 48%, #ded8c0 100%);
+      box-shadow: inset 1px 1px 0 rgba(255,255,255,.75);
+    }
+    .toolbar button:hover,
+    .xp-dialog-actions button:hover,
+    .instagram-auth-body button:hover,
+    .ig-form button:hover,
+    .ig-actions button:hover {
+      border-color: #316ac5;
+      background: linear-gradient(#ffffff, #dcebff);
+    }
+    .files {
+      background: #fff;
+      border-top: 1px solid #f4f4f4;
+    }
+    .file {
+      border-radius: 1px;
+    }
+    .file:hover {
+      background: #eaf2ff;
+      border-color: #b8d6fb;
+    }
+    .file.selected {
+      color: #fff;
+      background: #316ac5;
+      border-color: #0a3fbd;
+      text-shadow: 1px 1px 0 rgba(0,0,0,.35);
+    }
+    .file.selected .thumb {
+      background-color: #fff;
+      box-shadow: 0 0 0 1px rgba(255,255,255,.8);
+    }
+    .empty {
+      border-color: #9bb8e8;
+      background: #f7fbff;
+    }
+    .context-menu {
+      border-color: #8a867a;
+      box-shadow: 2px 2px 3px rgba(0,0,0,.32);
+      padding: 2px;
+    }
+    .context-menu button:hover {
+      background: #316ac5;
+    }
+    .xp-dialog,
+    .desktop-message {
+      background: #ece9d8;
+    }
+    .taskbar {
+      height: 42px;
+      padding: 4px 8px;
+      background:
+        linear-gradient(180deg, #5bb7ff 0%, #1d73e0 11%, #0b5bd3 48%, #0644ad 50%, #0d62d8 100%);
+      border-top: 1px solid #78c7ff;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.45);
+    }
+    :root {
+      --taskbar-h: 42px;
+    }
+    .start {
+      width: 100px;
+      height: 34px;
+      border: 1px solid #0b6f16;
+      border-radius: 0 18px 18px 0;
+      background:
+        radial-gradient(circle at 82% 50%, rgba(255,255,255,.34), transparent 34%),
+        linear-gradient(180deg, #78e66c 0%, #2dae35 48%, #08751d 50%, #16962a 100%);
+      box-shadow:
+        inset 1px 1px 0 rgba(255,255,255,.55),
+        1px 1px 2px rgba(0,0,0,.28);
+      font-style: italic;
+      letter-spacing: .01em;
+    }
+    .start:hover {
+      filter: brightness(1.08);
+    }
+    .task {
+      height: 31px;
+      border-color: rgba(255,255,255,.42);
+      background: linear-gradient(#58aefe, #1e73de 48%, #0d55c4 50%, #0a4bac);
+      box-shadow: inset 1px 1px 0 rgba(255,255,255,.24);
+    }
+    .task.active {
+      border-color: #f9f2a6;
+      background: linear-gradient(#9ccfff, #3d86e9 48%, #1b62ca 50%, #164faf);
+    }
+    .clock {
+      min-width: 78px;
+      padding: 6px 8px;
+      border-left: 1px solid rgba(255,255,255,.34);
+      background: linear-gradient(#4bb6ef, #1492db 48%, #0872c6);
+      box-shadow: inset 1px 0 0 rgba(255,255,255,.28);
+    }
+    .taskbar-fullscreen {
+      height: 28px;
+      background: linear-gradient(#58aefe, #1e73de 48%, #0d55c4 50%, #0a4bac);
+    }
+
     @media (max-width: 760px) {
       .explorer {
         left: 8px;
@@ -1143,6 +1446,7 @@
     const uploadImagesUrl = "{{ url_for('image_viewer.upload_images') }}";
     const pasteImagesUrl = "{{ url_for('image_viewer.paste_images') }}";
     const renameEntryUrl = "{{ url_for('image_viewer.rename_entry') }}";
+    const entryPropertiesUrl = "{{ url_for('image_viewer.entry_properties') }}";
     const deleteEntryUrl = "{{ url_for('image_viewer.delete_entry') }}";
     const moveEntryUrl = "{{ url_for('image_viewer.move_entry') }}";
     const illustrationUrl = "{{ url_for('image_viewer.openai_illustration') }}";
@@ -1331,6 +1635,35 @@
       return `${(n / 1024 / 1024).toFixed(1)} MB`;
     }
 
+    function formatBytesDetailed(bytes) {
+      const n = Number(bytes || 0);
+      return `${formatBytes(n)} (${n.toLocaleString('ja-JP')} バイト)`;
+    }
+
+    function formatDateTime(seconds) {
+      const n = Number(seconds || 0);
+      if (!n) return '-';
+      return new Date(n * 1000).toLocaleString('ja-JP', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+    }
+
+    function fileKindText(props) {
+      const ext = props.extension || '';
+      if (props.mediaType === 'video') return `動画ファイル (${ext || '-'})`;
+      if (props.mediaType === 'image') return `画像ファイル (${ext || '-'})`;
+      return `ファイル (${ext || '-'})`;
+    }
+
+    function imageSizeText(props) {
+      return props.width && props.height ? `${props.width.toLocaleString('ja-JP')} x ${props.height.toLocaleString('ja-JP')} px` : '-';
+    }
+
     function folderLabel(folder) {
       return folder ? folder.split('/').pop() : 'uploads';
     }
@@ -1433,12 +1766,35 @@
     function activate(id) {
       const win = state.windows.get(id);
       if (!win) return;
+      const wasMinimized = Boolean(win.minimized);
       win.el.classList.remove('minimized');
       win.minimized = false;
       state.activeId = id;
       win.el.style.zIndex = String(++state.z);
       renderTasks();
       document.querySelectorAll('.window').forEach(el => el.classList.toggle('active', el.dataset.windowId === id));
+      if (wasMinimized && win.kind === 'viewer') scheduleViewerRefresh(id);
+    }
+
+    function scheduleViewerRefresh(id) {
+      const refresh = () => {
+        const win = state.windows.get(id);
+        if (!win || win.minimized || win.kind !== 'viewer') return;
+        const img = win.el.querySelector('.stage img');
+        if (!img) return;
+        if (state.fitByWindow.get(id) || img.complete) applyZoom(id);
+      };
+      requestAnimationFrame(() => {
+        refresh();
+        requestAnimationFrame(refresh);
+        setTimeout(refresh, 80);
+      });
+    }
+
+    function refreshAllViewers() {
+      for (const win of state.windows.values()) {
+        if (win.kind === 'viewer' && !win.minimized) scheduleViewerRefresh(win.id);
+      }
     }
 
     function activeExplorerId() {
@@ -1489,7 +1845,7 @@
         if (next) activate(next.id);
       }
       renderTasks();
-      if (win.kind === 'viewer' && state.fitByWindow.get(id)) requestAnimationFrame(() => applyZoom(id));
+      if (win.kind === 'viewer') scheduleViewerRefresh(id);
     }
 
     function toggleMaximize(id) {
@@ -1827,6 +2183,7 @@
         <button type="button" data-menu-action="rename" ${locked ? 'disabled' : ''}>名前の変更</button>
         <button type="button" data-menu-action="move" ${locked ? 'disabled' : ''}>移動...</button>
         <button type="button" data-menu-action="delete" ${locked ? 'disabled' : ''}>削除</button>
+        ${canOpen ? '<div class="separator"></div><button type="button" data-menu-action="properties">プロパティ</button>' : ''}
       `;
       document.body.appendChild(menu);
       const x = Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8);
@@ -1844,6 +2201,7 @@
         if (action === 'rename') renameEntry(entry);
         if (action === 'move') chooseMoveEntry(entry);
         if (action === 'delete') deleteEntry(entry);
+        if (action === 'properties') openEntryProperties(entry);
       });
     }
 
@@ -1868,6 +2226,135 @@
       desktopGrid.appendChild(el);
       wireDialogDrag(el);
       return el;
+    }
+
+    async function openEntryProperties(entry = state.selectedEntry) {
+      if (!entry || entry.type !== 'file') return;
+      const initialName = entryName(entry) || 'file';
+      const dialog = openDialog(`${initialName} のプロパティ`, `
+        <div class="properties-header">
+          <div class="properties-icon" aria-hidden="true"></div>
+          <div class="properties-name-row">
+            <input class="properties-name-input" type="text" aria-label="ファイル名">
+            <span class="properties-extension" title="拡張子は変更できません"></span>
+          </div>
+          <button type="button" data-properties-action="reload">再読み込み</button>
+        </div>
+        <dl class="properties-grid">
+          <dt>ファイルの種類:</dt><dd data-prop="kind">読み込み中...</dd>
+          <dt>場所 (仮想上):</dt><dd data-prop="virtualFolder">-</dd>
+          <dt>仮想パス:</dt><dd data-prop="virtualPath">-</dd>
+          <dt>実ファイル:</dt><dd data-prop="realPath">-</dd>
+        </dl>
+        <div class="properties-separator"></div>
+        <dl class="properties-grid">
+          <dt>サイズ:</dt><dd data-prop="size">-</dd>
+          <dt>画像サイズ:</dt><dd data-prop="dimensions">-</dd>
+          <dt>MIMEタイプ:</dt><dd data-prop="mimeType">-</dd>
+          <dt>SHA-256:</dt><dd data-prop="sha256">-</dd>
+        </dl>
+        <div class="properties-separator"></div>
+        <dl class="properties-grid">
+          <dt>作成日時:</dt><dd data-prop="created">-</dd>
+          <dt>更新日時:</dt><dd data-prop="modified">-</dd>
+          <dt>アクセス日時:</dt><dd data-prop="accessed">-</dd>
+        </dl>
+        <div class="properties-status" data-prop="status"></div>
+        <div class="xp-dialog-actions">
+          <button type="button" data-properties-action="ok">OK</button>
+          <button type="button" data-properties-action="cancel">キャンセル</button>
+          <button type="button" data-properties-action="apply" disabled>適用</button>
+        </div>
+      `);
+      dialog.classList.add('properties-dialog');
+      const title = dialog.querySelector('.title-text');
+      const nameInput = dialog.querySelector('.properties-name-input');
+      const extension = dialog.querySelector('.properties-extension');
+      const applyButton = dialog.querySelector('[data-properties-action="apply"]');
+      const status = dialog.querySelector('[data-prop="status"]');
+      let currentEntry = { type: 'file', path: entry.path };
+      let currentProps = null;
+
+      const prop = (name, value) => {
+        const el = dialog.querySelector(`[data-prop="${name}"]`);
+        if (el) el.textContent = value == null || value === '' ? '-' : String(value);
+      };
+      const setStatus = (message, isError = false) => {
+        status.textContent = message || '';
+        status.classList.toggle('error', Boolean(isError));
+      };
+      const refreshApplyState = () => {
+        const changed = currentProps && nameInput.value.trim() !== String(currentProps.stem || '');
+        applyButton.disabled = !changed;
+      };
+      const fill = (props) => {
+        currentProps = props;
+        currentEntry = { type: 'file', path: props.virtualPath || props.path || currentEntry.path };
+        nameInput.value = props.stem || '';
+        extension.textContent = props.extension || '';
+        title.textContent = `${props.name || initialName} のプロパティ`;
+        prop('kind', fileKindText(props));
+        prop('virtualFolder', props.virtualFolder ? `/${props.virtualFolder}` : '/');
+        prop('virtualPath', props.virtualPath || currentEntry.path);
+        prop('realPath', props.realPath);
+        prop('size', formatBytesDetailed(props.size));
+        prop('dimensions', imageSizeText(props));
+        prop('mimeType', props.mimeType);
+        prop('sha256', props.sha256);
+        prop('created', formatDateTime(props.created));
+        prop('modified', formatDateTime(props.modified));
+        prop('accessed', formatDateTime(props.accessed));
+        setStatus('');
+        refreshApplyState();
+      };
+      const load = async () => {
+        setStatus('読み込み中...');
+        const data = await fetchJson(`${entryPropertiesUrl}?path=${encodeURIComponent(currentEntry.path)}`, { cache: 'no-store' });
+        fill(data);
+      };
+      const apply = async (closeAfter = false) => {
+        const stem = nameInput.value.trim();
+        if (!currentProps || stem === String(currentProps.stem || '')) {
+          if (closeAfter) dialog.remove();
+          return;
+        }
+        setStatus('保存中...');
+        const oldEntry = { ...currentEntry };
+        const data = await fetchJson(entryPropertiesUrl, {
+          method: 'POST',
+          body: JSON.stringify({ path: currentEntry.path, stem })
+        });
+        renameEntryLocal(oldEntry, data);
+        currentEntry = { type: 'file', path: data.virtualPath || data.path || currentEntry.path };
+        state.selectedEntry = currentEntry;
+        state.selectedPath = currentEntry.path;
+        renderAllExplorers();
+        scheduleBackgroundImageRefresh();
+        fill(data);
+        setStatus('保存しました。');
+        if (closeAfter) dialog.remove();
+      };
+
+      nameInput.addEventListener('input', refreshApplyState);
+      nameInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          apply(false).catch(err => setStatus(err.message || '保存に失敗しました。', true));
+        }
+        if (event.key === 'Escape') dialog.remove();
+      });
+      dialog.addEventListener('click', (event) => {
+        const action = event.target.closest('[data-properties-action], [data-dialog-action]')?.dataset.propertiesAction
+          || event.target.closest('[data-dialog-action]')?.dataset.dialogAction;
+        if (!action) return;
+        if (action === 'cancel') dialog.remove();
+        if (action === 'reload') load().catch(err => setStatus(err.message || '読み込みに失敗しました。', true));
+        if (action === 'apply') apply(false).catch(err => setStatus(err.message || '保存に失敗しました。', true));
+        if (action === 'ok') apply(true).catch(err => setStatus(err.message || '保存に失敗しました。', true));
+      });
+      await load().catch(err => setStatus(err.message || '読み込みに失敗しました。', true));
+      nameInput.focus();
+      nameInput.select();
     }
 
     function wireDialogDrag(dialog) {
@@ -4062,7 +4549,11 @@
     }
     browserFullscreenIcon.addEventListener('dblclick', toggleBrowserFullscreen);
     taskbarFullscreenBtn.addEventListener('click', toggleBrowserFullscreen);
-    document.addEventListener('fullscreenchange', refreshBrowserFullscreenIcon);
+    document.addEventListener('fullscreenchange', () => {
+      refreshBrowserFullscreenIcon();
+      refreshAllViewers();
+      setTimeout(refreshAllViewers, 180);
+    });
     refreshBrowserFullscreenIcon();
     document.addEventListener('click', closeContextMenu);
     document.addEventListener('contextmenu', (event) => {

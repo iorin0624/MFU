@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}削除済み請求書{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+  <div>
+    <h1 class="mb-1">削除済み請求書</h1>
+    <p class="text-muted mb-0">下書き・取消の請求書のみ、復元または完全削除できます。</p>
+  </div>
+  <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_list') }}">請求書一覧へ戻る</a>
+</div>
+
+<form class="row g-2 mb-3" method="get">
+  <div class="col-md-5">
+    <input class="form-control" type="text" name="q" value="{{ q }}" placeholder="請求先名・請求書番号・件名">
+  </div>
+  <div class="col-md-auto d-flex gap-2">
+    <button class="btn btn-outline-primary" type="submit">検索</button>
+    <a class="btn btn-outline-secondary" href="{{ url_for('invoice.invoice_deleted_list') }}">リセット</a>
+  </div>
+</form>
+
+<div class="alert alert-warning small">
+  完全削除すると元に戻せません。発行済み・送付済み・入金済み、および保護対象のSquare決済履歴がある請求書は完全削除できません。
+</div>
+
+<div class="table-responsive">
+  <table class="table table-striped table-hover align-middle">
+    <thead>
+      <tr>
+        <th>請求書番号</th><th>請求日</th><th>請求先</th><th>件名</th><th class="text-end">合計金額</th><th>元ステータス</th><th>削除日時</th><th>削除者</th><th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for invoice in invoices %}
+      <tr>
+        <td>{{ invoice.invoice_no }}</td>
+        <td>{{ invoice.issue_date.strftime('%Y-%m-%d') if invoice.issue_date }}</td>
+        <td>{{ invoice.contact_name_snapshot }}</td>
+        <td>{{ invoice.subject }}</td>
+        <td class="text-end">¥{{ invoice.total_yen|yen }}</td>
+        <td><span class="badge {{ invoice.status|invoice_status_badge }}">{{ invoice.status|invoice_status_label }}</span></td>
+        <td>{{ invoice.deleted_at.strftime('%Y-%m-%d %H:%M') if invoice.deleted_at }}</td>
+        <td>{{ invoice.deleted_by or '---' }}</td>
+        <td>
+          <div class="d-flex flex-wrap gap-2">
+            <form method="post" action="{{ url_for('invoice.invoice_restore', invoice_id=invoice.id) }}" onsubmit="return confirm('請求書「{{ invoice.invoice_no }}」を復元しますか？');">
+              <input type="hidden" name="csrf_token" value="{{ delete_csrf_token }}">
+              <button class="btn btn-sm btn-outline-primary" type="submit">復元</button>
+            </form>
+            <form method="post" action="{{ url_for('invoice.invoice_purge', invoice_id=invoice.id) }}" data-invoice-no="{{ invoice.invoice_no }}" onsubmit="return confirmInvoicePurge(this);">
+              <input type="hidden" name="csrf_token" value="{{ delete_csrf_token }}">
+              <input type="hidden" name="confirm_invoice_no" value="">
+              <button class="btn btn-sm btn-danger" type="submit">完全削除</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="text-muted">削除済みの請求書はありません。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function confirmInvoicePurge(form) {
+  const expected = form.dataset.invoiceNo || '';
+  const entered = window.prompt(`完全削除すると復元できません。続行するには請求書番号「${expected}」を入力してください。`);
+  if (entered === null) return false;
+  if (entered.trim() !== expected) {
+    window.alert('請求書番号が一致しません。');
+    return false;
+  }
+  form.elements.confirm_invoice_no.value = entered.trim();
+  return true;
+}
+</script>
+{% endblock %}

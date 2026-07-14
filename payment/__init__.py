@@ -19,15 +19,17 @@ import uuid
 import base64
 import logging
 import hmac
+import hashlib
+import threading
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import wraps
 from urllib.parse import urlencode, urlparse, urlunparse, parse_qsl
 
 import requests
 from flask import (
     Blueprint, render_template, request, redirect, jsonify,
-    session, abort, Response
+    session, abort, Response, url_for
 )
 from app.utils.mail import send_mail
 from app.external_login_user.payments import _notify_payment_to_admin_and_acl
@@ -38,6 +40,28 @@ from .bulk_refund_logic import (
     build_refund_note,
     append_note_if_missing,
     recalculate_paid_amount,
+)
+from .checkout_otp import (
+    CheckoutOtpError,
+    consume_checkout_otp,
+    is_checkout_otp_verified,
+    mask_email,
+    require_checkout_otp,
+    send_checkout_otp,
+    verify_checkout_otp,
+)
+from .square_gateway import (
+    SquareTransportError,
+    request_square,
+    square_error_info,
+)
+from .square_state import (
+    PAYMENT_IN_PROGRESS_STATUSES,
+    is_payment_completed,
+    is_refund_completed,
+    normalize_square_status,
+    should_apply_square_update,
+    square_datetime,
 )
 
 
@@ -98,6 +122,7 @@ def admin_required(f):
     def wrapper(*args, **kwargs):
         abort(503)
     return wrapper
+
 
 # ───────────────────────────────────────────────────────────
 # dict化（DictCursor 非依存）
@@ -173,7 +198,7 @@ def _square_access_token() -> str | None:
     return _square_env_value("ACCESS_TOKEN")
 
 def _square_webhook_signature_key() -> str | None:
-    return _square_env_value("WEBHOOK_SIGNATURE_KEY")
+    return _square_env_value("PAYMENT_WEBHOOK_SIGNATURE_KEY") or _square_env_value("WEBHOOK_SIGNATURE_KEY")
 
 def _square_api_base() -> str:
     return "https://connect.squareupsandbox.com" if _env() == "SANDBOX" else "https://connect.squareup.com"
@@ -304,14 +329,19 @@ def _ensure_customer_id_for_user(
     buyer_email: str,
 ) -> str:
     base = _square_api_base()
-    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"}
 
     ref = f"mfu_user:{int(user_id)}"
 
     # 検索
     try:
-        sresp = requests.post(f"{base}/v2/customers/search", headers=headers,
-                              json={"query": {"filter": {"reference_id": {"exact": ref}}}}, timeout=15)
+        sresp = request_square(
+            "POST",
+            f"{base}/v2/customers/search",
+            access_token=access_token,
+            json_body={"query": {"filter": {"reference_id": {"exact": ref}}}},
+            timeout=15,
+            retry_safe=True,
+        )
         if sresp.status_code < 400:
             customers = (sresp.json() or {}).get("customers") or []
             if customers:
@@ -320,11 +350,13 @@ def _ensure_customer_id_for_user(
                 if not customer_id:
                     raise RuntimeError("customer id missing")
                 if buyer_email and not (customer.get("email_address") or "").strip():
-                    uresp = requests.put(
+                    uresp = request_square(
+                        "PUT",
                         f"{base}/v2/customers/{customer_id}",
-                        headers=headers,
-                        json={"email_address": buyer_email},
+                        access_token=access_token,
+                        json_body={"email_address": buyer_email},
                         timeout=15,
+                        retry_safe=True,
                     )
                     uresp.raise_for_status()
                 return customer_id
@@ -332,8 +364,21 @@ def _ensure_customer_id_for_user(
         logging.exception("search_customers failed")
 
     # 作成
-    cresp = requests.post(f"{base}/v2/customers", headers=headers,
-                          json={"given_name": nickname, "reference_id": ref, "email_address": buyer_email}, timeout=15)
+    customer_idempotency_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"square-customer:{ref}"))
+    customer_body = {
+        "idempotency_key": customer_idempotency_key,
+        "given_name": nickname,
+        "reference_id": ref,
+        "email_address": buyer_email,
+    }
+    cresp = request_square(
+        "POST",
+        f"{base}/v2/customers",
+        access_token=access_token,
+        json_body=customer_body,
+        timeout=15,
+        idempotency_key=customer_idempotency_key,
+    )
     cresp.raise_for_status()
     return (cresp.json() or {}).get("customer", {}).get("id")
 
@@ -467,7 +512,7 @@ def _notify_discord_payment_if_needed(conn, square_payment_id: str):
             return
 
         status = (row.get("square_status") or "").upper()
-        if status not in ("APPROVED", "COMPLETED"):
+        if status != "COMPLETED":
             return
 
         webhook = _get_discord_webhook_url(conn)
@@ -578,7 +623,7 @@ def _notify_mfu_payment_completion(
     payment_status: str | None,
 ) -> None:
     status = (payment_status or "").upper()
-    if status not in ("AUTHORIZED", "APPROVED", "COMPLETED"):
+    if status != "COMPLETED":
         return
 
     cur = conn.cursor()
@@ -698,7 +743,7 @@ CREATE TABLE IF NOT EXISTS event_payments (
 
   idempotency_key      CHAR(36) NOT NULL,
   square_payment_id    VARCHAR(64) NULL UNIQUE,
-  square_status        ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING',
+  square_status        ENUM('PENDING','UNKNOWN','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING',
   square_receipt_url   VARCHAR(512) NULL,
   card_brand           VARCHAR(32) NULL,
   card_last4           CHAR(4) NULL,
@@ -707,6 +752,10 @@ CREATE TABLE IF NOT EXISTS event_payments (
 
   error_code           VARCHAR(64) NULL,
   error_detail         TEXT NULL,
+  square_updated_at    DATETIME(6) NULL,
+  last_synced_at       DATETIME NULL,
+  sync_attempts        INT UNSIGNED NOT NULL DEFAULT 0,
+  sync_error           TEXT NULL,
 
   discord_notified     TINYINT(1) NOT NULL DEFAULT 0,
 
@@ -729,7 +778,7 @@ CREATE TABLE IF NOT EXISTS event_refunds (
   payment_row_id    BIGINT UNSIGNED NOT NULL,
   square_refund_id  VARCHAR(64) NULL UNIQUE,
   amount_yen        INT UNSIGNED NOT NULL,
-  status            ENUM('PENDING','APPROVED','REJECTED','FAILED','CANCELED') NOT NULL DEFAULT 'PENDING',
+  status            ENUM('PENDING','UNKNOWN','APPROVED','COMPLETED','REJECTED','FAILED','CANCELED') NOT NULL DEFAULT 'PENDING',
   reason            VARCHAR(255) NULL,
   bulk_refund_run_id CHAR(36) NULL,
   created_by_admin  VARCHAR(64) NULL,
@@ -738,6 +787,11 @@ CREATE TABLE IF NOT EXISTS event_refunds (
   notify_error      TEXT NULL,
   error_code        VARCHAR(64) NULL,
   error_detail      TEXT NULL,
+  square_updated_at DATETIME(6) NULL,
+  last_synced_at    DATETIME NULL,
+  sync_attempts     INT UNSIGNED NOT NULL DEFAULT 0,
+  sync_error        TEXT NULL,
+  accounting_applied_at DATETIME NULL,
   created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   CONSTRAINT fk_event_refunds_payment
@@ -748,81 +802,130 @@ CREATE TABLE IF NOT EXISTS event_refunds (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 """
 
-def _ensure_schema():
-    conn = _get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(DDL_EVENTS)
-        cur.execute(DDL_PAYMENTS)
-        cur.execute(DDL_REFUNDS)
-        # 既存環境向けの微調整（存在すれば失敗→ロールバック）
-        try:
-            cur.execute("ALTER TABLE event_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-        try:
-            cur.execute("ALTER TABLE event_payments ADD COLUMN payment_token CHAR(36) NULL")
-            conn.commit()
-        except Exception:
-            conn.rollback()
+DDL_SQUARE_WEBHOOK_EVENTS = """
+CREATE TABLE IF NOT EXISTS square_webhook_events (
+  id                BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+  square_event_id   VARCHAR(96) NOT NULL UNIQUE,
+  event_type        VARCHAR(96) NOT NULL,
+  object_id         VARCHAR(96) NULL,
+  payload_sha256    CHAR(64) NOT NULL,
+  processing_status ENUM('RECEIVED','PROCESSED','FAILED','IGNORED') NOT NULL DEFAULT 'RECEIVED',
+  error_detail      TEXT NULL,
+  received_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  processed_at      DATETIME NULL,
+  KEY ix_square_webhook_type_received (event_type, received_at),
+  KEY ix_square_webhook_processing (processing_status, received_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
 
+DDL_SQUARE_SYNC_CONTROL = """
+CREATE TABLE IF NOT EXISTS square_sync_control (
+  id           TINYINT UNSIGNED PRIMARY KEY,
+  managed_from DATETIME(6) NOT NULL,
+  last_alert_signature CHAR(64) NULL,
+  last_alert_at DATETIME NULL,
+  created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+"""
+
+_PAYMENT_SCHEMA_READY = False
+_PAYMENT_SCHEMA_LOCK = threading.Lock()
+
+
+def _ensure_schema():
+    global _PAYMENT_SCHEMA_READY
+    if _PAYMENT_SCHEMA_READY:
+        return
+    with _PAYMENT_SCHEMA_LOCK:
+        if _PAYMENT_SCHEMA_READY:
+            return
+        conn = _get_db()
+        cur = conn.cursor()
+        db_lock_acquired = False
         try:
-            cur.execute("""
-                ALTER TABLE event_payments
-                  MODIFY COLUMN payment_token CHAR(36)
-                  CHARACTER SET utf8mb4
-                  COLLATE utf8mb4_unicode_ci
-                  NULL
-            """)
+            cur.execute("SELECT GET_LOCK('payment_schema_migrate', 30)")
+            lock_row = cur.fetchone()
+            lock_value = lock_row[0] if isinstance(lock_row, tuple) else (next(iter(lock_row.values())) if isinstance(lock_row, dict) and lock_row else 0)
+            db_lock_acquired = int(lock_value or 0) == 1
+            if not db_lock_acquired:
+                raise RuntimeError("payment schema migration lock timeout")
+
+            for ddl in (DDL_EVENTS, DDL_PAYMENTS, DDL_REFUNDS, DDL_SQUARE_WEBHOOK_EVENTS, DDL_SQUARE_SYNC_CONTROL):
+                cur.execute(ddl)
+            cur.execute("INSERT IGNORE INTO square_sync_control (id, managed_from) VALUES (1, NOW(6))")
             conn.commit()
-        except Exception:
-            conn.rollback()
-        try:
-            cur.execute("ALTER TABLE event_payments ADD COLUMN event_member_id BIGINT UNSIGNED NULL")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-        try:
-            cur.execute("ALTER TABLE event_payments ADD COLUMN external_login_user_id BIGINT UNSIGNED NULL")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-        try:
-            cur.execute("ALTER TABLE event_payments MODIFY square_status ENUM('PENDING','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING'")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-        for idx_sql in (
-            "CREATE INDEX ix_event_member_id ON event_payments(event_member_id)",
-            "CREATE INDEX ix_external_login_user_id ON event_payments(external_login_user_id)",
-            "CREATE INDEX ix_event_identity ON event_payments(event_id, event_member_id, external_login_user_id)",
-            "CREATE INDEX ix_payment_token ON event_payments(payment_token)",
-            "CREATE INDEX ix_bulk_refund_run ON event_refunds(bulk_refund_run_id)",
-        ):
+
+            def try_ddl(sql: str) -> None:
+                try:
+                    cur.execute(sql)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+
+            for alter_sql in (
+                "ALTER TABLE square_sync_control ADD COLUMN last_alert_signature CHAR(64) NULL",
+                "ALTER TABLE square_sync_control ADD COLUMN last_alert_at DATETIME NULL",
+                "ALTER TABLE event_payments ADD COLUMN discord_notified TINYINT(1) NOT NULL DEFAULT 0",
+                "ALTER TABLE event_payments ADD COLUMN payment_token CHAR(36) NULL",
+                "ALTER TABLE event_payments ADD COLUMN event_member_id BIGINT UNSIGNED NULL",
+                "ALTER TABLE event_payments ADD COLUMN external_login_user_id BIGINT UNSIGNED NULL",
+                "ALTER TABLE event_payments ADD COLUMN square_updated_at DATETIME(6) NULL",
+                "ALTER TABLE event_payments ADD COLUMN last_synced_at DATETIME NULL",
+                "ALTER TABLE event_payments ADD COLUMN sync_attempts INT UNSIGNED NOT NULL DEFAULT 0",
+                "ALTER TABLE event_payments ADD COLUMN sync_error TEXT NULL",
+                "ALTER TABLE event_refunds ADD COLUMN bulk_refund_run_id CHAR(36) NULL",
+                "ALTER TABLE event_refunds ADD COLUMN created_by_admin VARCHAR(64) NULL",
+                "ALTER TABLE event_refunds ADD COLUMN notified_at DATETIME NULL",
+                "ALTER TABLE event_refunds ADD COLUMN notify_to_email VARCHAR(255) NULL",
+                "ALTER TABLE event_refunds ADD COLUMN notify_error TEXT NULL",
+                "ALTER TABLE event_refunds ADD COLUMN square_updated_at DATETIME(6) NULL",
+                "ALTER TABLE event_refunds ADD COLUMN last_synced_at DATETIME NULL",
+                "ALTER TABLE event_refunds ADD COLUMN sync_attempts INT UNSIGNED NOT NULL DEFAULT 0",
+                "ALTER TABLE event_refunds ADD COLUMN sync_error TEXT NULL",
+                "ALTER TABLE event_refunds ADD COLUMN accounting_applied_at DATETIME NULL",
+                "ALTER TABLE mfu_event_member ADD COLUMN receipt_note TEXT NULL",
+            ):
+                try_ddl(alter_sql)
+
+            cur.execute("SHOW COLUMNS FROM event_payments LIKE 'square_status'")
+            payment_status_column = cur.fetchone()
+            payment_status_type = payment_status_column[1] if isinstance(payment_status_column, tuple) else ((payment_status_column or {}).get("Type") or "")
+            if "'UNKNOWN'" not in str(payment_status_type):
+                try_ddl("ALTER TABLE event_payments MODIFY square_status ENUM('PENDING','UNKNOWN','AUTHORIZED','APPROVED','COMPLETED','CANCELED','FAILED') NOT NULL DEFAULT 'PENDING'")
+
+            cur.execute("SHOW COLUMNS FROM event_refunds LIKE 'status'")
+            refund_status_column = cur.fetchone()
+            refund_status_type = refund_status_column[1] if isinstance(refund_status_column, tuple) else ((refund_status_column or {}).get("Type") or "")
+            if "'COMPLETED'" not in str(refund_status_type) or "'UNKNOWN'" not in str(refund_status_type):
+                try_ddl("ALTER TABLE event_refunds MODIFY status ENUM('PENDING','UNKNOWN','APPROVED','COMPLETED','REJECTED','FAILED','CANCELED') NOT NULL DEFAULT 'PENDING'")
+
+            for idx_sql in (
+                "CREATE INDEX ix_event_member_id ON event_payments(event_member_id)",
+                "CREATE INDEX ix_external_login_user_id ON event_payments(external_login_user_id)",
+                "CREATE INDEX ix_event_identity ON event_payments(event_id, event_member_id, external_login_user_id)",
+                "CREATE INDEX ix_payment_token ON event_payments(payment_token)",
+                "CREATE INDEX ix_bulk_refund_run ON event_refunds(bulk_refund_run_id)",
+            ):
+                try_ddl(idx_sql)
+
+            if os.environ.get("SQUARE_ALLOW_LEGACY_BACKFILL", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                _backfill_payment_identity(conn)
+            _PAYMENT_SCHEMA_READY = True
+        finally:
+            if db_lock_acquired:
+                try:
+                    cur.execute("SELECT RELEASE_LOCK('payment_schema_migrate')")
+                    cur.fetchone()
+                except Exception:
+                    logging.exception("payment schema migration lock release failed")
             try:
-                cur.execute(idx_sql)
-                conn.commit()
+                cur.close()
             except Exception:
-                conn.rollback()
-        for alter_sql in (
-            "ALTER TABLE event_refunds ADD COLUMN bulk_refund_run_id CHAR(36) NULL",
-            "ALTER TABLE event_refunds ADD COLUMN created_by_admin VARCHAR(64) NULL",
-            "ALTER TABLE event_refunds ADD COLUMN notified_at DATETIME NULL",
-            "ALTER TABLE event_refunds ADD COLUMN notify_to_email VARCHAR(255) NULL",
-            "ALTER TABLE event_refunds ADD COLUMN notify_error TEXT NULL",
-            "ALTER TABLE mfu_event_member ADD COLUMN receipt_note TEXT NULL",
-        ):
+                pass
             try:
-                cur.execute(alter_sql)
-                conn.commit()
+                conn.close()
             except Exception:
-                conn.rollback()
-        _backfill_payment_identity(conn)
-        conn.commit()
-    finally:
-        try: conn.close()
-        except Exception: pass
+                pass
 
 def _backfill_payment_identity(conn) -> None:
     """曖昧一致なしで埋められる識別子のみ backfill する。"""
@@ -857,6 +960,26 @@ def _backfill_payment_identity(conn) -> None:
             cur.close()
         except Exception:
             pass
+
+
+def _square_managed_from(conn) -> datetime:
+    """Old production rows stay read-only unless a separate migration is run."""
+
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT managed_from FROM square_sync_control WHERE id=1 LIMIT 1")
+        row = cur.fetchone()
+        value = row[0] if isinstance(row, tuple) else (row.get("managed_from") if row else None)
+        return value if isinstance(value, datetime) else datetime.max
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _is_square_managed_record(conn, created_at) -> bool:
+    return isinstance(created_at, datetime) and created_at >= _square_managed_from(conn)
 
 # ───────────────────────────────────────────────────────────
 # MFUイベント連携
@@ -1207,6 +1330,62 @@ def api_precheck(event_uuid: str):
     # ★ 重複決済チェックはイベント管理システム側で実施するため、ここでは常に金額だけ返す
     return jsonify(ok=True, amount_yen=amount)
 
+
+def _event_checkout_otp_context(event_uuid: str, payment_token: str | None) -> tuple[str, str]:
+    token = (payment_token or "").strip()
+    if not token:
+        raise CheckoutOtpError(
+            "支払いトークンが見つかりません。イベントページから開き直してください。",
+            400,
+            "missing_payment_token",
+        )
+    conn = _get_db()
+    try:
+        token_amount = _amount_for_payment(conn, event_uuid, token)
+        if token_amount is None:
+            raise CheckoutOtpError("支払いトークンが無効です。", 400, "invalid_payment_token")
+        _buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, token)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not buyer_email:
+        raise CheckoutOtpError("登録メールアドレスを確認できません。", 400, "missing_email")
+    return f"{event_uuid}:{token}:{int(token_amount)}", buyer_email
+
+
+def _otp_json_error(exc: CheckoutOtpError):
+    return jsonify(ok=False, error=exc.error_code, message=exc.message), exc.status_code
+
+
+@bp.post("/api/otp/send/<event_uuid>")
+def api_otp_send(event_uuid: str):
+    data = request.get_json(silent=True) or {}
+    try:
+        checkout_key, buyer_email = _event_checkout_otp_context(event_uuid, data.get("payment_token"))
+        result = send_checkout_otp(checkout_type="event", checkout_key=checkout_key, email=buyer_email)
+        return jsonify(ok=True, **result)
+    except CheckoutOtpError as exc:
+        return _otp_json_error(exc)
+
+
+@bp.post("/api/otp/verify/<event_uuid>")
+def api_otp_verify(event_uuid: str):
+    data = request.get_json(silent=True) or {}
+    try:
+        checkout_key, buyer_email = _event_checkout_otp_context(event_uuid, data.get("payment_token"))
+        result = verify_checkout_otp(
+            checkout_type="event",
+            checkout_key=checkout_key,
+            email=buyer_email,
+            code=data.get("code"),
+        )
+        result["billing_contact"] = {"email": buyer_email, "countryCode": "JP"}
+        return jsonify(ok=True, **result)
+    except CheckoutOtpError as exc:
+        return _otp_json_error(exc)
+
 # ───────────────────────────────────────────────────────────
 # 参加者向け：決済フォーム & サンクス
 # ───────────────────────────────────────────────────────────
@@ -1218,11 +1397,14 @@ def pay_form(event_uuid: str):
     payment_token = _resolve_payment_token(event_uuid)
     force_square_card = False
     is_tip_payment = False
+    buyer_email = None
     conn = _get_db()
     try:
         amount, evrow = _get_live_amount_and_sync(conn, event_uuid)
         token_amount = _amount_for_payment(conn, event_uuid, payment_token)
         pr_ctx = _payment_request_context(conn, event_uuid, payment_token)
+        if payment_token:
+            _buyer_user_id, buyer_email = _resolve_buyer_identity(conn, event_uuid, payment_token)
         is_tip_payment = bool(pr_ctx.get("is_tip"))
         if token_amount is not None and token_amount > 0:
             amount = token_amount
@@ -1301,6 +1483,13 @@ def pay_form(event_uuid: str):
             if not autofill.get("instagram_id"):
                 autofill["instagram_id"] = _sanitize_handle(pr.get("instagram_id"))
 
+    checkout_key = f"{event_uuid}:{payment_token}:{int(amount)}" if payment_token else ""
+    otp_verified = bool(
+        checkout_key
+        and buyer_email
+        and is_checkout_otp_verified(checkout_type="event", checkout_key=checkout_key, email=buyer_email)
+    )
+
     return render_template(
         "pay.html",
         event=event,
@@ -1313,6 +1502,10 @@ def pay_form(event_uuid: str):
         payment_token=payment_token,
         force_square_card=force_square_card,
         is_tip_payment=is_tip_payment,
+        checkout_email_masked=mask_email(buyer_email),
+        otp_verified=otp_verified,
+        otp_send_url=url_for("payment.api_otp_send", event_uuid=event_uuid),
+        otp_verify_url=url_for("payment.api_otp_verify", event_uuid=event_uuid),
     )
 
 @bp.get("/e/<event_uuid>/thanks")
@@ -1333,13 +1526,14 @@ def pay_thanks(event_uuid: str):
             payment = _fetchone_dict(cur)
             if payment:
                 status_now = (payment.get("square_status") or "").upper()
-                if status_now not in ("APPROVED", "COMPLETED", "AUTHORIZED"):
+                if not is_payment_completed(status_now):
                     access_token = _square_access_token()
                     if access_token:
                         try:
-                            resp = requests.get(
+                            resp = request_square(
+                                "GET",
                                 f"{_square_api_base()}/v2/payments/{pid}",
-                                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                                access_token=access_token,
                                 timeout=10
                             )
                             if resp.status_code < 400:
@@ -1352,12 +1546,16 @@ def pay_thanks(event_uuid: str):
                                            card_brand=COALESCE(%s, card_brand),
                                            card_last4=COALESCE(%s, card_last4),
                                            card_exp_mm=COALESCE(%s, card_exp_mm),
-                                           card_exp_yyyy=COALESCE(%s, card_exp_yyyy)
+                                            card_exp_yyyy=COALESCE(%s, card_exp_yyyy),
+                                            square_updated_at=COALESCE(%s, square_updated_at),
+                                            last_synced_at=NOW(), sync_attempts=sync_attempts+1,
+                                            sync_error=NULL
                                      WHERE square_payment_id=%s
                                 """, (
                                     p.get("status"), p.get("receipt_url"),
                                     card.get("card_brand"), card.get("last_4"),
                                     card.get("exp_month"), card.get("exp_year"),
+                                    square_datetime(p.get("updated_at")),
                                     pid
                                 ))
                                 conn.commit()
@@ -1384,7 +1582,7 @@ def pay_thanks(event_uuid: str):
         ctx_payment_uuid = ctx.get("payment_uuid") if has_ctx else None
         ctx_mfu_event_uuid = ctx.get("mfu_event_uuid") if has_ctx else None
         payment_token = _resolve_payment_token(event_uuid)
-        ok = bool(payment) and ((payment.get("square_status") or "").upper() in ("AUTHORIZED", "APPROVED", "COMPLETED"))
+        ok = bool(payment) and is_payment_completed(payment.get("square_status"))
         payment_row_id = None
         if payment:
             try:
@@ -1487,6 +1685,11 @@ def api_charge(event_uuid: str):
             return jsonify({"message": "イベントが見つからない/無効です"}), 404
         if token_amount is not None and token_amount > 0:
             amount = token_amount
+        checkout_key = f"{event_uuid}:{payment_token}:{int(amount)}"
+        try:
+            require_checkout_otp(checkout_type="event", checkout_key=checkout_key, email=buyer_email)
+        except CheckoutOtpError as exc:
+            return jsonify({"message": exc.message, "error": exc.error_code}), exc.status_code
 
         cur = conn.cursor()
         lock_name = f"payment_charge:{ev['id']}:{payment_token}"
@@ -1502,14 +1705,14 @@ def api_charge(event_uuid: str):
               FROM event_payments
              WHERE event_id=%s
                AND payment_token=%s
-               AND square_status IN ('PENDING','AUTHORIZED','APPROVED','COMPLETED')
+               AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED','COMPLETED')
              ORDER BY id DESC
              LIMIT 1
         """, (ev["id"], payment_token))
         exists = cur.fetchone()
         if exists:
             existing_status = (exists[0] if isinstance(exists, tuple) else exists.get("square_status") or "").upper()
-            if existing_status == "PENDING":
+            if existing_status in PAYMENT_IN_PROGRESS_STATUSES:
                 return jsonify({"message": "この支払いは現在処理中です。時間をおいてご確認ください。"}), 409
             return jsonify({"message": "この支払いはすでに完了しています。"}), 409
 
@@ -1539,7 +1742,8 @@ def api_charge(event_uuid: str):
                 buyer_email=buyer_email,
             )
         except Exception:
-            return jsonify({"message": "顧客の作成に失敗しました"}), 500
+            customer_id = None
+            logging.exception("api_charge: Square customer creation failed; continuing without customer_id")
 
         # CreatePayment
         body = {
@@ -1548,16 +1752,38 @@ def api_charge(event_uuid: str):
             "amount_money": {"amount": int(amount), "currency": "JPY"},
             "location_id": location_id,
             "reference_id": f"event:{event_uuid}:pay:{pay_row_id}",
-            "customer_id": customer_id,
             "buyer_email_address": buyer_email,
+            "customer_details": {
+                "customer_initiated": True,
+                "seller_keyed_in": False,
+            },
         }
+        if customer_id:
+            body["customer_id"] = customer_id
 
-        resp = requests.post(
-            f"{_square_api_base()}/v2/payments",
-            headers={"Authorization": f"Bearer {access_token}",
-                     "Content-Type":"application/json", "Accept":"application/json"},
-            json=body, timeout=25
-        )
+        try:
+            resp = request_square(
+                "POST",
+                f"{_square_api_base()}/v2/payments",
+                access_token=access_token,
+                json_body=body,
+                timeout=25,
+                idempotency_key=idemp,
+            )
+        except SquareTransportError as exc:
+            cur.execute("""
+                UPDATE event_payments
+                   SET square_status='UNKNOWN', error_code='TRANSPORT_UNKNOWN',
+                       error_detail=%s, sync_attempts=sync_attempts+1,
+                       last_synced_at=NOW(), sync_error=%s
+                 WHERE id=%s
+            """, (str(exc), str(exc), pay_row_id))
+            conn.commit()
+            return jsonify({
+                "message": "決済結果を確認中です。再度支払わず、管理者へお問い合わせください。",
+                "error": "PAYMENT_RESULT_UNKNOWN",
+                "payment_row_id": pay_row_id,
+            }), 503
         ok = resp.status_code < 400
         try:
             payload = resp.json()
@@ -1566,7 +1792,9 @@ def api_charge(event_uuid: str):
 
         if ok:
             p = payload.get("payment", {}) or {}
-            status  = p.get("status") or "AUTHORIZED"
+            status = normalize_square_status(p.get("status"))
+            if status not in {"PENDING", "UNKNOWN", "AUTHORIZED", "APPROVED", "COMPLETED", "CANCELED", "FAILED"}:
+                status = "UNKNOWN"
             details = p.get("card_details") or {}
             card    = details.get("card") or {}
             cur.execute("""
@@ -1574,12 +1802,17 @@ def api_charge(event_uuid: str):
                    SET square_payment_id=%s, square_status=%s,
                        card_brand=%s, card_last4=%s, card_exp_mm=%s, card_exp_yyyy=%s,
                        square_receipt_url=%s,
+                       square_updated_at=%s, last_synced_at=NOW(),
+                       sync_attempts=sync_attempts+1, sync_error=NULL,
                        error_code=NULL, error_detail=NULL
                  WHERE id=%s
             """, (p.get("id"), status, card.get("card_brand"), card.get("last_4"),
-                  card.get("exp_month"), card.get("exp_year"), p.get("receipt_url"), pay_row_id))
+                  card.get("exp_month"), card.get("exp_year"), p.get("receipt_url"),
+                  square_datetime(p.get("updated_at")), pay_row_id))
             conn.commit()
-            if payment_token:
+            if is_payment_completed(status):
+                consume_checkout_otp(checkout_type="event", checkout_key=checkout_key, email=buyer_email)
+            if payment_token and is_payment_completed(status):
                 try:
                     _mark_payment_token_used_and_apply_member_status(
                         conn,
@@ -1591,10 +1824,11 @@ def api_charge(event_uuid: str):
                     )
                 except Exception:
                     conn.rollback()
-            try:
-                _notify_discord_payment_if_needed(conn, p.get("id"))
-            except Exception:
-                logging.exception("api_charge: notify failed")
+            if is_payment_completed(status):
+                try:
+                    _notify_discord_payment_if_needed(conn, p.get("id"))
+                except Exception:
+                    logging.exception("api_charge: notify failed")
             return jsonify({
                 "payment_id": p.get("id"),
                 "status": p.get("status"),
@@ -1602,18 +1836,25 @@ def api_charge(event_uuid: str):
                 "receipt_url": p.get("receipt_url"),
                 "payment_row_id": pay_row_id,
                 "amount_yen": int(amount),
+                "processing": not is_payment_completed(status),
             })
         else:
             errs = (payload.get("errors") or [])
-            code = errs[0].get("code") if errs else None
-            detail = errs[0].get("detail") if errs else resp.text
+            error_info = square_error_info(resp)
+            code = error_info.code
+            detail = error_info.detail
+            uncertain = resp.status_code >= 500
+            stored_status = "UNKNOWN" if uncertain else "FAILED"
             cur.execute("""
                 UPDATE event_payments
-                   SET square_status='FAILED', error_code=%s, error_detail=%s
+                   SET square_status=%s, error_code=%s, error_detail=%s,
+                       last_synced_at=NOW(), sync_attempts=sync_attempts+1, sync_error=%s
                  WHERE id=%s
-            """, (code, detail, pay_row_id))
+            """, (stored_status, code, detail, detail if uncertain else None, pay_row_id))
             conn.commit()
-            return jsonify({"message": "Square API error", "errors": errs}), 400
+            status_code = 503 if uncertain else 400
+            message = "決済結果を確認中です。再度支払わず、管理者へお問い合わせください。" if uncertain else "Square API error"
+            return jsonify({"message": message, "errors": errs, "payment_row_id": pay_row_id}), status_code
 
     finally:
         try:
@@ -1627,96 +1868,555 @@ def api_charge(event_uuid: str):
 # ───────────────────────────────────────────────────────────
 # Webhooks
 # ───────────────────────────────────────────────────────────
+def _register_square_webhook(conn, *, event: dict, raw_body: str, object_id: str | None) -> tuple[int | None, bool]:
+    raw_event_id = str(event.get("event_id") or "").strip()
+    event_id = f"payment:{raw_event_id}" if raw_event_id else ""
+    event_type = str(event.get("type") or "").strip()
+    if not event_id or not event_type:
+        return None, False
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT IGNORE INTO square_webhook_events
+              (square_event_id, event_type, object_id, payload_sha256, processing_status)
+            VALUES (%s,%s,%s,%s,'RECEIVED')
+        """, (event_id, event_type, object_id, hashlib.sha256(raw_body.encode("utf-8")).hexdigest()))
+        inserted = bool(cur.rowcount)
+        if inserted:
+            webhook_row_id = int(cur.lastrowid)
+            conn.commit()
+            return webhook_row_id, True
+
+        cur.execute("""
+            SELECT id, processing_status
+              FROM square_webhook_events
+             WHERE square_event_id=%s
+             LIMIT 1
+        """, (event_id,))
+        row = _fetchone_dict(cur)
+        if row and row.get("processing_status") == "FAILED":
+            cur.execute("""
+                UPDATE square_webhook_events
+                   SET processing_status='RECEIVED', error_detail=NULL, processed_at=NULL
+                 WHERE id=%s AND processing_status='FAILED'
+            """, (row["id"],))
+            conn.commit()
+            return int(row["id"]), bool(cur.rowcount)
+        return (int(row["id"]) if row else None), False
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _finish_square_webhook(conn, webhook_row_id: int | None, *, status: str, error: str | None = None) -> None:
+    if not webhook_row_id:
+        return
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE square_webhook_events
+               SET processing_status=%s, error_detail=%s, processed_at=NOW()
+             WHERE id=%s
+        """, (status, (error or None), webhook_row_id))
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _payment_row_id_from_reference(reference_id: str | None) -> int | None:
+    marker = ":pay:"
+    if not reference_id or marker not in reference_id:
+        return None
+    try:
+        value = int(reference_id.rsplit(marker, 1)[1])
+        return value if value > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 @bp.post("/webhooks")
 def webhooks():
     sig_key = _square_webhook_signature_key()
-    if sig_key:
-        try:
-            from square.utilities.webhooks_helper import is_valid_webhook_event_signature
-            sig_header = request.headers.get("x-square-hmacsha256-signature", "")
-            raw_body = request.get_data(as_text=True)
-            url = f"{_app_base_url()}/payment/webhooks"
-            if not is_valid_webhook_event_signature(raw_body, sig_header, sig_key, url):
-                return "invalid signature", 403
-        except Exception:
-            logging.exception("webhook signature check failed")
+    if not sig_key:
+        logging.critical("Square webhook signature key is missing env=%s", _env())
+        return "webhook signature key is not configured", 503
+    raw_body = request.get_data(as_text=True)
+    try:
+        from square.utilities.webhooks_helper import is_valid_webhook_event_signature
+        sig_header = request.headers.get("x-square-hmacsha256-signature", "")
+        url = f"{_app_base_url()}/payment/webhooks"
+        if not is_valid_webhook_event_signature(raw_body, sig_header, sig_key, url):
             return "invalid signature", 403
-    else:
-        # 互換維持: 署名キー未設定時のみ継続（本番では設定必須推奨）
-        pass
+    except Exception:
+        logging.exception("webhook signature check failed")
+        return "invalid signature", 403
 
     ev = request.get_json(silent=True) or {}
     etype = ev.get("type")
+    object_data = (((ev.get("data") or {}).get("object") or {}))
+    square_object = object_data.get("payment") if etype == "payment.updated" else object_data.get("refund")
+    object_id = (square_object or {}).get("id") if isinstance(square_object, dict) else None
+    _ensure_schema()
+    conn = _get_db()
+    webhook_row_id = None
+    try:
+        webhook_row_id, should_process = _register_square_webhook(
+            conn,
+            event=ev,
+            raw_body=raw_body,
+            object_id=object_id,
+        )
+        if not should_process:
+            return "", 200
 
-    if etype == "payment.updated":
-        p = ev["data"]["object"]["payment"]
-        conn = _get_db()
-        try:
+        if etype == "payment.updated" and isinstance(square_object, dict):
+            p = square_object
             cur = conn.cursor()
             card = (p.get("card_details") or {}).get("card") or {}
-            cur.execute("""
-                UPDATE event_payments
-                SET square_status=%s,
-                    square_receipt_url=COALESCE(%s, square_receipt_url),
-                    card_brand=COALESCE(%s, card_brand),
-                    card_last4=COALESCE(%s, card_last4),
-                    card_exp_mm=COALESCE(%s, card_exp_mm),
-                    card_exp_yyyy=COALESCE(%s, card_exp_yyyy)
-                WHERE square_payment_id=%s
-            """, (
-                p.get("status"), p.get("receipt_url"),
-                card.get("card_brand"), card.get("last_4"),
-                card.get("exp_month"), card.get("exp_year"),
-                p.get("id")
-            ))
-            conn.commit()
-            if (p.get("status") or "").upper() in ("AUTHORIZED", "APPROVED", "COMPLETED"):
+            reference_row_id = _payment_row_id_from_reference(p.get("reference_id"))
+            if reference_row_id:
                 cur.execute("""
-                    SELECT id, payment_token, amount_yen, square_receipt_url
+                    SELECT id, created_at, square_updated_at, payment_token, amount_yen, square_receipt_url
+                      FROM event_payments
+                     WHERE square_payment_id=%s
+                        OR (id=%s AND square_payment_id IS NULL)
+                     ORDER BY (square_payment_id=%s) DESC
+                     LIMIT 1
+                     FOR UPDATE
+                """, (p.get("id"), reference_row_id, p.get("id")))
+            else:
+                cur.execute("""
+                    SELECT id, created_at, square_updated_at, payment_token, amount_yen, square_receipt_url
                       FROM event_payments
                      WHERE square_payment_id=%s
                      LIMIT 1
+                     FOR UPDATE
                 """, (p.get("id"),))
-                pay_row = cur.fetchone()
-                if pay_row:
-                    pay_row_id = pay_row[0] if isinstance(pay_row, tuple) else pay_row.get("id")
-                    payment_token = pay_row[1] if isinstance(pay_row, tuple) else pay_row.get("payment_token")
-                    amount_yen = pay_row[2] if isinstance(pay_row, tuple) else pay_row.get("amount_yen")
-                    receipt_url = pay_row[3] if isinstance(pay_row, tuple) else pay_row.get("square_receipt_url")
-                    if payment_token:
-                        _mark_payment_token_used_and_apply_member_status(
-                            conn,
-                            payment_token=payment_token,
-                            amount_yen=amount_yen,
-                            receipt_url=receipt_url,
-                            payment_row_id=pay_row_id,
-                            payment_status=p.get("status"),
-                        )
-            _notify_discord_payment_if_needed(conn, p.get("id"))
-        finally:
-            try: conn.close()
-            except Exception: pass
+            pay_row = _fetchone_dict(cur)
+            if not pay_row or not _is_square_managed_record(conn, pay_row.get("created_at")):
+                _finish_square_webhook(conn, webhook_row_id, status="IGNORED", error="legacy_or_unknown_payment")
+                return "", 200
+            if not should_apply_square_update(pay_row.get("square_updated_at"), p.get("updated_at")):
+                _finish_square_webhook(conn, webhook_row_id, status="IGNORED", error="older_payment_update")
+                return "", 200
 
-    elif etype == "refund.updated":
-        r = ev["data"]["object"]["refund"]
-        conn = _get_db()
-        try:
+            status = normalize_square_status(p.get("status"))
+            if status not in {"PENDING", "UNKNOWN", "AUTHORIZED", "APPROVED", "COMPLETED", "CANCELED", "FAILED"}:
+                status = "UNKNOWN"
+            cur.execute("""
+                UPDATE event_payments
+                   SET square_payment_id=COALESCE(square_payment_id,%s),
+                       square_status=%s,
+                       square_receipt_url=COALESCE(%s, square_receipt_url),
+                       card_brand=COALESCE(%s, card_brand),
+                       card_last4=COALESCE(%s, card_last4),
+                       card_exp_mm=COALESCE(%s, card_exp_mm),
+                       card_exp_yyyy=COALESCE(%s, card_exp_yyyy),
+                       square_updated_at=COALESCE(%s, square_updated_at),
+                       last_synced_at=NOW(), sync_attempts=sync_attempts+1,
+                       sync_error=NULL
+                 WHERE id=%s
+            """, (
+                p.get("id"), status, p.get("receipt_url"),
+                card.get("card_brand"), card.get("last_4"),
+                card.get("exp_month"), card.get("exp_year"),
+                square_datetime(p.get("updated_at")), pay_row["id"],
+            ))
+            conn.commit()
+            if is_payment_completed(status) and pay_row.get("payment_token"):
+                _mark_payment_token_used_and_apply_member_status(
+                    conn,
+                    payment_token=pay_row.get("payment_token"),
+                    amount_yen=pay_row.get("amount_yen"),
+                    receipt_url=p.get("receipt_url") or pay_row.get("square_receipt_url"),
+                    payment_row_id=pay_row["id"],
+                    payment_status=status,
+                )
+            if is_payment_completed(status):
+                _notify_discord_payment_if_needed(conn, p.get("id"))
+            _finish_square_webhook(conn, webhook_row_id, status="PROCESSED")
+
+        elif etype == "refund.updated" and isinstance(square_object, dict):
+            r = square_object
             cur = conn.cursor()
             cur.execute("""
-              UPDATE event_refunds
-              SET status=%s, error_code=NULL, error_detail=NULL
-              WHERE square_refund_id=%s
-            """, (r.get("status"), r.get("id")))
+                SELECT r.id, r.created_at, r.square_updated_at, e.title AS event_title
+                  FROM event_refunds r
+                  JOIN event_payments p ON p.id=r.payment_row_id
+                  JOIN events e ON e.id=p.event_id
+                 WHERE r.square_refund_id=%s
+                 LIMIT 1
+                 FOR UPDATE
+            """, (r.get("id"),))
+            refund_row = _fetchone_dict(cur)
+            if not refund_row or not _is_square_managed_record(conn, refund_row.get("created_at")):
+                _finish_square_webhook(conn, webhook_row_id, status="IGNORED", error="legacy_or_unknown_refund")
+                return "", 200
+            if not should_apply_square_update(refund_row.get("square_updated_at"), r.get("updated_at")):
+                _finish_square_webhook(conn, webhook_row_id, status="IGNORED", error="older_refund_update")
+                return "", 200
+            status = normalize_square_status(r.get("status"))
+            if status not in {"PENDING", "UNKNOWN", "APPROVED", "COMPLETED", "REJECTED", "FAILED", "CANCELED"}:
+                status = "UNKNOWN"
+            cur.execute("""
+                UPDATE event_refunds
+                   SET status=%s, square_updated_at=COALESCE(%s, square_updated_at),
+                       last_synced_at=NOW(), sync_attempts=sync_attempts+1,
+                       sync_error=NULL, error_code=NULL, error_detail=NULL
+                 WHERE id=%s
+            """, (status, square_datetime(r.get("updated_at")), refund_row["id"]))
             conn.commit()
-        finally:
-            try: conn.close()
-            except Exception: pass
+            if is_refund_completed(status):
+                _finalize_completed_refund(
+                    conn,
+                    refund_id=int(refund_row["id"]),
+                    event_title=refund_row.get("event_title") or "イベント",
+                )
+            _finish_square_webhook(conn, webhook_row_id, status="PROCESSED")
+        else:
+            _finish_square_webhook(conn, webhook_row_id, status="IGNORED", error="unsupported_event_type")
+    except Exception as exc:
+        logging.exception("Square webhook processing failed type=%s", etype)
+        try:
+            conn.rollback()
+            _finish_square_webhook(conn, webhook_row_id, status="FAILED", error=str(exc)[:1000])
+        except Exception:
+            logging.exception("Square webhook failure status update failed")
+        return "webhook processing failed", 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     return "", 200
 
 # ───────────────────────────────────────────────────────────
 # 管理UI
 # ───────────────────────────────────────────────────────────
+def _square_health_summary(conn) -> dict:
+    cur = conn.cursor()
+    try:
+        managed_from = _square_managed_from(conn)
+        summary = {"managed_from": managed_from}
+        queries = {
+            "managed_event_in_progress": "SELECT COUNT(*) AS n FROM event_payments WHERE created_at >= %s AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED')",
+            "managed_event_unknown_no_id": "SELECT COUNT(*) AS n FROM event_payments WHERE created_at >= %s AND square_status='UNKNOWN' AND square_payment_id IS NULL",
+            "protected_event_in_progress": "SELECT COUNT(*) AS n FROM event_payments WHERE created_at < %s AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED')",
+            "managed_refund_in_progress": "SELECT COUNT(*) AS n FROM event_refunds WHERE created_at >= %s AND status IN ('PENDING','UNKNOWN','APPROVED')",
+            "managed_refund_failed": "SELECT COUNT(*) AS n FROM event_refunds WHERE created_at >= %s AND status IN ('FAILED','REJECTED')",
+            "protected_refund_in_progress": "SELECT COUNT(*) AS n FROM event_refunds WHERE created_at < %s AND status IN ('PENDING','UNKNOWN','APPROVED')",
+        }
+        for name, sql in queries.items():
+            cur.execute(sql, (managed_from,))
+            row = _fetchone_dict(cur) or {}
+            summary[name] = int(row.get("n") or 0)
+        cur.execute("""
+            SELECT event_type, processing_status, received_at, processed_at, error_detail
+              FROM square_webhook_events
+             ORDER BY received_at DESC
+             LIMIT 1
+        """)
+        summary["last_webhook"] = _fetchone_dict(cur)
+        try:
+            cur.execute("SELECT COUNT(*) AS n FROM invoice_card_payments WHERE created_at >= %s AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED')", (managed_from,))
+            summary["managed_invoice_in_progress"] = int((_fetchone_dict(cur) or {}).get("n") or 0)
+            cur.execute("SELECT COUNT(*) AS n FROM invoice_card_payments WHERE created_at < %s AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED')", (managed_from,))
+            summary["protected_invoice_in_progress"] = int((_fetchone_dict(cur) or {}).get("n") or 0)
+        except Exception:
+            conn.rollback()
+            summary["managed_invoice_in_progress"] = 0
+            summary["protected_invoice_in_progress"] = 0
+        return summary
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _record_sync_error(conn, *, table: str, row_id: int, detail: str) -> None:
+    if table not in {"event_payments", "event_refunds", "invoice_card_payments"}:
+        raise ValueError("unsupported Square sync table")
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"UPDATE {table} SET last_synced_at=NOW(), sync_attempts=sync_attempts+1, sync_error=%s WHERE id=%s",
+            ((detail or "Square sync error")[:2000], row_id),
+        )
+        conn.commit()
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def _notify_square_sync_risk_if_needed(conn, result: dict) -> None:
+    risk = {
+        "errors": int(result.get("errors") or 0),
+        "unknown_without_id": int(result.get("unknown_without_id") or 0),
+    }
+    if not any(risk.values()):
+        return
+    signature = hashlib.sha256(repr(sorted(risk.items())).encode("utf-8")).hexdigest()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT last_alert_signature, last_alert_at FROM square_sync_control WHERE id=1 LIMIT 1")
+        control = _fetchone_dict(cur) or {}
+        last_at = control.get("last_alert_at")
+        if control.get("last_alert_signature") == signature and isinstance(last_at, datetime) and last_at >= datetime.now() - timedelta(hours=1):
+            return
+        webhook = _get_discord_webhook_url(conn)
+        if not webhook:
+            return
+        _discord_notify(
+            webhook,
+            title="⚠️ Square同期で確認が必要です",
+            description="新しい安全処理の対象で同期異常を検出しました。既存の決済・返金は更新していません。",
+            fields=(
+                ("同期エラー", str(risk["errors"]), True),
+                ("Square ID未取得", str(risk["unknown_without_id"]), True),
+                ("確認画面", f"{_app_base_url().rstrip('/')}/payment/", False),
+            ),
+            color=0xE67E22,
+        )
+        cur.execute("UPDATE square_sync_control SET last_alert_signature=%s, last_alert_at=NOW() WHERE id=1", (signature,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logging.exception("Square sync risk notification failed")
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+def reconcile_square_managed_records(*, limit: int = 25) -> dict:
+    """Synchronize only records created after this safety rollout started."""
+
+    _ensure_schema()
+    try:
+        from app.invoice.services import (
+            ensure_invoice_schema,
+            mark_invoice_paid_by_card,
+            notify_invoice_card_payment_if_needed,
+        )
+        from app.invoice.routes import _send_invoice_receipt_mail_if_needed
+        ensure_invoice_schema()
+    except Exception:
+        ensure_invoice_schema = None
+        mark_invoice_paid_by_card = None
+        notify_invoice_card_payment_if_needed = None
+        _send_invoice_receipt_mail_if_needed = None
+        logging.exception("Square reconcile: invoice schema preparation failed")
+
+    access_token = _square_access_token()
+    if not access_token:
+        raise RuntimeError("Square設定が未完了です")
+    conn = _get_db()
+    result = {"event_checked": 0, "refund_checked": 0, "invoice_checked": 0, "updated": 0, "errors": 0, "unknown_without_id": 0}
+    lock_acquired = False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT GET_LOCK('square_reconcile_managed', 0)")
+        lock_row = cur.fetchone()
+        lock_value = lock_row[0] if isinstance(lock_row, tuple) else (next(iter(lock_row.values())) if isinstance(lock_row, dict) and lock_row else 0)
+        lock_acquired = int(lock_value or 0) == 1
+        if not lock_acquired:
+            raise RuntimeError("別のSquare同期処理が実行中です")
+        managed_from = _square_managed_from(conn)
+
+        cur.execute("""
+            SELECT id, square_payment_id, payment_token, amount_yen, square_updated_at
+              FROM event_payments
+             WHERE created_at >= %s
+               AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED')
+             ORDER BY created_at
+             LIMIT %s
+        """, (managed_from, int(limit)))
+        payment_rows = _fetchall_dict(cur)
+        result["unknown_without_id"] += sum(1 for row in payment_rows if not row.get("square_payment_id"))
+        for row in payment_rows:
+            payment_id = row.get("square_payment_id")
+            if not payment_id:
+                continue
+            result["event_checked"] += 1
+            try:
+                resp = request_square("GET", f"{_square_api_base()}/v2/payments/{payment_id}", access_token=access_token, timeout=15)
+                if resp.status_code >= 400:
+                    raise RuntimeError(square_error_info(resp).detail)
+                payment = (resp.json() or {}).get("payment") or {}
+                if not should_apply_square_update(row.get("square_updated_at"), payment.get("updated_at")):
+                    continue
+                status = normalize_square_status(payment.get("status"))
+                card = ((payment.get("card_details") or {}).get("card") or {})
+                cur.execute("""
+                    UPDATE event_payments
+                       SET square_status=%s, square_receipt_url=COALESCE(%s,square_receipt_url),
+                           card_brand=COALESCE(%s,card_brand), card_last4=COALESCE(%s,card_last4),
+                           card_exp_mm=COALESCE(%s,card_exp_mm), card_exp_yyyy=COALESCE(%s,card_exp_yyyy),
+                           square_updated_at=COALESCE(%s,square_updated_at), last_synced_at=NOW(),
+                           sync_attempts=sync_attempts+1, sync_error=NULL
+                     WHERE id=%s
+                """, (status, payment.get("receipt_url"), card.get("card_brand"), card.get("last_4"),
+                      card.get("exp_month"), card.get("exp_year"), square_datetime(payment.get("updated_at")), row["id"]))
+                conn.commit()
+                result["updated"] += 1
+                if is_payment_completed(status) and row.get("payment_token"):
+                    _mark_payment_token_used_and_apply_member_status(
+                        conn,
+                        payment_token=row.get("payment_token"),
+                        amount_yen=row.get("amount_yen"),
+                        receipt_url=payment.get("receipt_url"),
+                        payment_row_id=row["id"],
+                        payment_status=status,
+                    )
+                if is_payment_completed(status):
+                    _notify_discord_payment_if_needed(conn, payment_id)
+            except Exception as exc:
+                result["errors"] += 1
+                _record_sync_error(conn, table="event_payments", row_id=int(row["id"]), detail=str(exc))
+
+        cur.execute("""
+            SELECT r.id, r.square_refund_id, r.square_updated_at, e.title AS event_title
+              FROM event_refunds r
+              JOIN event_payments p ON p.id=r.payment_row_id
+              JOIN events e ON e.id=p.event_id
+             WHERE r.created_at >= %s
+               AND r.status IN ('PENDING','UNKNOWN','APPROVED')
+             ORDER BY r.created_at
+             LIMIT %s
+        """, (managed_from, int(limit)))
+        refund_rows = _fetchall_dict(cur)
+        result["unknown_without_id"] += sum(1 for row in refund_rows if not row.get("square_refund_id"))
+        for row in refund_rows:
+            refund_id = row.get("square_refund_id")
+            if not refund_id:
+                continue
+            result["refund_checked"] += 1
+            try:
+                resp = request_square("GET", f"{_square_api_base()}/v2/refunds/{refund_id}", access_token=access_token, timeout=15)
+                if resp.status_code >= 400:
+                    raise RuntimeError(square_error_info(resp).detail)
+                refund = (resp.json() or {}).get("refund") or {}
+                if not should_apply_square_update(row.get("square_updated_at"), refund.get("updated_at")):
+                    continue
+                status = normalize_square_status(refund.get("status"))
+                cur.execute("""
+                    UPDATE event_refunds
+                       SET status=%s, square_updated_at=COALESCE(%s,square_updated_at),
+                           last_synced_at=NOW(), sync_attempts=sync_attempts+1,
+                           sync_error=NULL, error_code=NULL, error_detail=NULL
+                     WHERE id=%s
+                """, (status, square_datetime(refund.get("updated_at")), row["id"]))
+                conn.commit()
+                result["updated"] += 1
+                if is_refund_completed(status):
+                    _finalize_completed_refund(conn, refund_id=int(row["id"]), event_title=row.get("event_title") or "イベント")
+            except Exception as exc:
+                result["errors"] += 1
+                _record_sync_error(conn, table="event_refunds", row_id=int(row["id"]), detail=str(exc))
+
+        try:
+            cur.execute("""
+                SELECT id, invoice_id, square_payment_id, square_updated_at
+                  FROM invoice_card_payments
+                 WHERE created_at >= %s
+                   AND square_status IN ('PENDING','UNKNOWN','AUTHORIZED','APPROVED')
+                 ORDER BY created_at
+                 LIMIT %s
+            """, (managed_from, int(limit)))
+            invoice_rows = _fetchall_dict(cur)
+        except Exception:
+            conn.rollback()
+            invoice_rows = []
+        result["unknown_without_id"] += sum(1 for row in invoice_rows if not row.get("square_payment_id"))
+        for row in invoice_rows:
+            payment_id = row.get("square_payment_id")
+            if not payment_id:
+                continue
+            result["invoice_checked"] += 1
+            try:
+                resp = request_square("GET", f"{_square_api_base()}/v2/payments/{payment_id}", access_token=access_token, timeout=15)
+                if resp.status_code >= 400:
+                    raise RuntimeError(square_error_info(resp).detail)
+                payment = (resp.json() or {}).get("payment") or {}
+                if not should_apply_square_update(row.get("square_updated_at"), payment.get("updated_at")):
+                    continue
+                status = normalize_square_status(payment.get("status"))
+                card = ((payment.get("card_details") or {}).get("card") or {})
+                paid_at = datetime.now() if is_payment_completed(status) else None
+                cur.execute("""
+                    UPDATE invoice_card_payments
+                       SET square_status=%s, square_receipt_url=COALESCE(%s,square_receipt_url),
+                           card_brand=COALESCE(%s,card_brand), card_last4=COALESCE(%s,card_last4),
+                           card_exp_mm=COALESCE(%s,card_exp_mm), card_exp_yyyy=COALESCE(%s,card_exp_yyyy),
+                           paid_at=COALESCE(%s,paid_at), square_updated_at=COALESCE(%s,square_updated_at),
+                           last_synced_at=NOW(), sync_attempts=sync_attempts+1, sync_error=NULL
+                     WHERE id=%s
+                """, (status, payment.get("receipt_url"), card.get("card_brand"), card.get("last_4"),
+                      card.get("exp_month"), card.get("exp_year"), paid_at, square_datetime(payment.get("updated_at")), row["id"]))
+                conn.commit()
+                result["updated"] += 1
+                if is_payment_completed(status) and mark_invoice_paid_by_card:
+                    mark_invoice_paid_by_card(int(row["invoice_id"]), paid_at=paid_at)
+                    if notify_invoice_card_payment_if_needed:
+                        notify_invoice_card_payment_if_needed(int(row["id"]))
+                    if _send_invoice_receipt_mail_if_needed:
+                        _send_invoice_receipt_mail_if_needed(
+                            int(row["invoice_id"]),
+                            paid_at=paid_at,
+                            payment_method="クレジットカード決済",
+                        )
+            except Exception as exc:
+                result["errors"] += 1
+                _record_sync_error(conn, table="invoice_card_payments", row_id=int(row["id"]), detail=str(exc))
+        _notify_square_sync_risk_if_needed(conn, result)
+        return result
+    finally:
+        try:
+            if lock_acquired:
+                cur.execute("SELECT RELEASE_LOCK('square_reconcile_managed')")
+                cur.fetchone()
+        except Exception:
+            logging.exception("Square reconcile lock release failed")
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@bp.get("/")
+@admin_required
+def payment_home():
+    _ensure_schema()
+    conn = _get_db()
+    try:
+        health = _square_health_summary(conn)
+    finally:
+        conn.close()
+    sync_result = session.pop("payment_sync_result", None)
+    return render_template("admin_home.html", health=health, sync_result=sync_result)
+
+
+@bp.post("/admin/sync")
+@admin_required
+def admin_square_sync():
+    try:
+        session["payment_sync_result"] = reconcile_square_managed_records(limit=25)
+    except Exception as exc:
+        logging.exception("manual Square reconciliation failed")
+        session["payment_sync_result"] = {"error": str(exc)}
+    return redirect("/payment/")
+
+
 def _new_uuid() -> str:
     return base64.urlsafe_b64encode(uuid.uuid4().bytes).decode().rstrip("=\n")[:22]
 
@@ -1732,7 +2432,9 @@ def _normalize_preview_rows(rows: list[dict]) -> list[dict]:
             "paid": int(row.get("paid") or 0),
             "current_fee": int(row.get("current_fee") or 0),
             "refunded_sum": int(row.get("refunded_sum") or 0),
+            "reserved_refund_sum": int(row.get("reserved_refund_sum") or 0),
             "refunded_diff_total": int(row.get("refunded_diff_total") or 0),
+            "reserved_diff_total": int(row.get("reserved_diff_total") or 0),
             "remaining_refundable": int(row.get("remaining_refundable") or 0),
             "diff": int(row.get("diff") or 0),
             "remaining_diff": int(row.get("remaining_diff") or 0),
@@ -1819,15 +2521,17 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
                  p.receipt_email,
                  p.x_id,
                  p.instagram_id,
-                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','APPROVED') THEN r.amount_yen ELSE 0 END),0) AS refunded_sum,
-                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','APPROVED') AND r.reason=%s THEN r.amount_yen ELSE 0 END),0) AS refunded_diff_total
+                 COALESCE(SUM(CASE WHEN r.status='COMPLETED' THEN r.amount_yen ELSE 0 END),0) AS refunded_sum,
+                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','UNKNOWN','APPROVED','COMPLETED') THEN r.amount_yen ELSE 0 END),0) AS reserved_refund_sum,
+                 COALESCE(SUM(CASE WHEN r.status='COMPLETED' AND r.reason=%s THEN r.amount_yen ELSE 0 END),0) AS refunded_diff_total,
+                 COALESCE(SUM(CASE WHEN r.status IN ('PENDING','UNKNOWN','APPROVED','COMPLETED') AND r.reason=%s THEN r.amount_yen ELSE 0 END),0) AS reserved_diff_total
             FROM event_payments p
             LEFT JOIN event_refunds r
               ON r.payment_row_id = p.id
            WHERE p.event_id=%s
            GROUP BY p.id
            ORDER BY p.created_at DESC
-        """, (_BULK_REFUND_REASON_FIXED, payment_event_id))
+        """, (_BULK_REFUND_REASON_FIXED, _BULK_REFUND_REASON_FIXED, payment_event_id))
         payments = _fetchall_dict(cur)
 
         has_member_fee_yen = False
@@ -1846,10 +2550,12 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
 
             paid = int(pay.get("amount_yen") or 0)
             refunded_sum = int(pay.get("refunded_sum") or 0)
+            reserved_refund_sum = int(pay.get("reserved_refund_sum") or 0)
             refunded_diff_total = int(pay.get("refunded_diff_total") or 0)
-            remaining = max(paid - refunded_sum, 0)
+            reserved_diff_total = int(pay.get("reserved_diff_total") or 0)
+            remaining = max(paid - reserved_refund_sum, 0)
             diff = max(0, paid - current_fee)
-            remaining_diff = max(0, diff - refunded_diff_total)
+            remaining_diff = max(0, diff - reserved_diff_total)
 
             member = None
             event_member_id = pay.get("event_member_id")
@@ -1889,7 +2595,9 @@ def _bulk_refund_preview_rows(conn, payment_event_id: int) -> tuple[dict | None,
                 "paid": paid,
                 "current_fee": current_fee,
                 "refunded_sum": refunded_sum,
+                "reserved_refund_sum": reserved_refund_sum,
                 "refunded_diff_total": refunded_diff_total,
+                "reserved_diff_total": reserved_diff_total,
                 "remaining_refundable": remaining_diff,
                 "diff": diff,
                 "remaining_diff": remaining_diff,
@@ -1944,18 +2652,27 @@ def _release_bulk_event_lock(conn, payment_event_id: int) -> None:
 def _create_refund_record(cur, *, payment_row_id: int, amount_yen: int, reason: str | None, payload: dict, ok: bool, resp_text: str, run_id: str, admin_name: str | None) -> int:
     if ok:
         refund_obj = payload.get("refund") or {}
+        refund_status = normalize_square_status(refund_obj.get("status"), default="PENDING")
+        if refund_status not in {"PENDING", "UNKNOWN", "APPROVED", "COMPLETED", "REJECTED", "FAILED", "CANCELED"}:
+            refund_status = "UNKNOWN"
         cur.execute("""
           INSERT INTO event_refunds
-          (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin, error_code, error_detail)
-          VALUES (%s,%s,%s,%s,%s,%s,%s,NULL,NULL)
-        """, (payment_row_id, refund_obj.get("id"), amount_yen, refund_obj.get("status") or "PENDING", reason, run_id, admin_name))
+          (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin,
+           square_updated_at, last_synced_at, sync_attempts, error_code, error_detail, sync_error)
+          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),1,NULL,NULL,NULL)
+        """, (payment_row_id, refund_obj.get("id"), amount_yen, refund_status, reason, run_id, admin_name,
+              square_datetime(refund_obj.get("updated_at"))))
     else:
         err = (payload.get("errors") or [{}])[0]
+        failed_status = "UNKNOWN" if err.get("code") == "TRANSPORT_UNKNOWN" else "FAILED"
         cur.execute("""
           INSERT INTO event_refunds
-          (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin, error_code, error_detail)
-          VALUES (%s,NULL,%s,'FAILED',%s,%s,%s,%s,%s)
-        """, (payment_row_id, amount_yen, reason, run_id, admin_name, err.get("code"), err.get("detail") or resp_text))
+          (payment_row_id, square_refund_id, amount_yen, status, reason, bulk_refund_run_id, created_by_admin,
+           last_synced_at, sync_attempts, error_code, error_detail, sync_error)
+          VALUES (%s,NULL,%s,%s,%s,%s,%s,NOW(),1,%s,%s,%s)
+        """, (payment_row_id, amount_yen, failed_status, reason, run_id, admin_name,
+              err.get("code"), err.get("detail") or resp_text,
+              (err.get("detail") or resp_text) if failed_status == "UNKNOWN" else None))
     return cur.lastrowid
 
 
@@ -2102,6 +2819,7 @@ def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen
             SELECT COALESCE(SUM(amount_yen),0) AS refunded_total
               FROM event_refunds
              WHERE payment_row_id=%s
+               AND status='COMPLETED'
         """, (payment_row_id,))
         rsum = _fetchone_dict(cur) or {}
         refunded_total = int(rsum.get("refunded_total") or 0)
@@ -2136,10 +2854,60 @@ def _update_member_after_refund_success(conn, *, payment_row_id: int, refund_yen
             pass
 
 
+def _finalize_completed_refund(conn, *, refund_id: int, event_title: str) -> dict:
+    """Apply accounting and notification once, and only after COMPLETED."""
+
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, payment_row_id, amount_yen, status, accounting_applied_at, created_at
+              FROM event_refunds
+             WHERE id=%s
+             LIMIT 1
+             FOR UPDATE
+        """, (refund_id,))
+        refund = _fetchone_dict(cur)
+        if not refund:
+            return {"status": "missing"}
+        if not _is_square_managed_record(conn, refund.get("created_at")):
+            return {"status": "legacy_read_only"}
+        if not is_refund_completed(refund.get("status")):
+            return {"status": "not_completed"}
+
+        if not refund.get("accounting_applied_at"):
+            _update_member_after_refund_success(
+                conn,
+                payment_row_id=int(refund["payment_row_id"]),
+                refund_yen=int(refund.get("amount_yen") or 0),
+            )
+            cur.execute("""
+                UPDATE event_refunds
+                   SET accounting_applied_at=NOW()
+                 WHERE id=%s AND accounting_applied_at IS NULL
+            """, (refund_id,))
+            conn.commit()
+
+        mail_result = _send_bulk_refund_mail(
+            conn,
+            refund_id=int(refund_id),
+            event_title=event_title or "イベント",
+        )
+        return {"status": "completed", "mail": mail_result}
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
 @bp.get("/admin/events")
 @admin_required
 def admin_events():
     _ensure_schema()
+    search_query = (request.args.get("q") or "").strip()
+    status_filter = (request.args.get("status") or "all").strip().lower()
+    if status_filter not in ("all", "active", "inactive"):
+        status_filter = "all"
     conn = _get_db()
     try:
         cur = conn.cursor()
@@ -2154,7 +2922,8 @@ def admin_events():
                          WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
                          ORDER BY pr.id DESC
                          LIMIT 1
-                     ),'event_fee')='event_fee') AS cnt,
+                     ),'event_fee')='event_fee'
+                     AND p.square_status='COMPLETED') AS cnt,
                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
                     WHERE p.event_id=e.id
                       AND COALESCE((
@@ -2164,7 +2933,7 @@ def admin_events():
                          ORDER BY pr.id DESC
                          LIMIT 1
                       ),'event_fee')='event_fee'
-                      AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS sum_amount,
+                      AND p.square_status='COMPLETED') AS sum_amount,
                  (SELECT COUNT(*)
                     FROM event_payments p
                    WHERE p.event_id=e.id
@@ -2174,7 +2943,8 @@ def admin_events():
                          WHERE pr.token COLLATE utf8mb4_unicode_ci = p.payment_token COLLATE utf8mb4_unicode_ci
                          ORDER BY pr.id DESC
                          LIMIT 1
-                     ),'event_fee')='tip') AS tip_cnt,
+                     ),'event_fee')='tip'
+                     AND p.square_status='COMPLETED') AS tip_cnt,
                  (SELECT COALESCE(SUM(amount_yen),0) FROM event_payments p
                     WHERE p.event_id=e.id
                       AND COALESCE((
@@ -2184,14 +2954,51 @@ def admin_events():
                          ORDER BY pr.id DESC
                          LIMIT 1
                       ),'event_fee')='tip'
-                      AND p.square_status IN ('AUTHORIZED','APPROVED','COMPLETED')) AS tip_sum_amount
+                      AND p.square_status='COMPLETED') AS tip_sum_amount
           FROM events e ORDER BY created_at DESC
         """)
-        events = _fetchall_dict(cur)
+        all_events = _fetchall_dict(cur)
+        cur.execute("""
+          SELECT COALESCE(SUM(r.amount_yen),0) AS refunded
+            FROM event_refunds r
+           WHERE r.status='COMPLETED'
+        """)
+        refund_row = _fetchone_dict(cur) or {}
     finally:
         try: conn.close()
         except Exception: pass
-    return render_template("admin_events.html", events=events)
+
+    gross_yen = sum(int(e.get("sum_amount") or 0) + int(e.get("tip_sum_amount") or 0) for e in all_events)
+    refunded_yen = int(refund_row.get("refunded") or 0)
+    summary = {
+        "event_count": len(all_events),
+        "active_count": sum(1 for e in all_events if int(e.get("is_active") or 0) == 1),
+        "payment_count": sum(int(e.get("cnt") or 0) + int(e.get("tip_cnt") or 0) for e in all_events),
+        "gross_yen": gross_yen,
+        "refunded_yen": refunded_yen,
+        "net_yen": max(gross_yen - refunded_yen, 0),
+    }
+    normalized_query = search_query.casefold()
+    events = []
+    for event in all_events:
+        is_active = int(event.get("is_active") or 0) == 1
+        if status_filter == "active" and not is_active:
+            continue
+        if status_filter == "inactive" and is_active:
+            continue
+        if normalized_query and normalized_query not in str(event.get("title") or "").casefold():
+            continue
+        event["total_count"] = int(event.get("cnt") or 0) + int(event.get("tip_cnt") or 0)
+        event["total_amount"] = int(event.get("sum_amount") or 0) + int(event.get("tip_sum_amount") or 0)
+        events.append(event)
+
+    return render_template(
+        "admin_events.html",
+        events=events,
+        summary=summary,
+        search_query=search_query,
+        status_filter=status_filter,
+    )
 
 @bp.get("/admin/events/new")
 @admin_required
@@ -2229,6 +3036,18 @@ def admin_event_detail(event_id: int):
     kind_filter = (request.args.get("kind") or "event_fee").strip().lower()
     if kind_filter not in ("event_fee", "tip", "all"):
         kind_filter = "event_fee"
+    status_filter = (request.args.get("status") or "all").strip().lower()
+    if status_filter not in ("all", "completed", "pending", "failed", "refunded"):
+        status_filter = "all"
+    method_filter = (request.args.get("method") or "all").strip().lower()
+    if method_filter not in ("all", "card", "apple_pay", "google_pay"):
+        method_filter = "all"
+    search_query = (request.args.get("q") or "").strip()
+    try:
+        page = max(int(request.args.get("page") or 1), 1)
+    except Exception:
+        page = 1
+    per_page = 50
 
     conn = _get_db()
     try:
@@ -2238,35 +3057,29 @@ def admin_event_detail(event_id: int):
         if not event:
             return "イベントが見つかりません", 404
 
-        if kind_filter == "all":
-            cur.execute("""
-              SELECT * FROM event_payments
-              WHERE event_id=%s
-              ORDER BY created_at DESC
-            """, (event_id,))
-        else:
-            cur.execute("""
-              SELECT * FROM event_payments
-              WHERE event_id=%s
-                AND COALESCE((
-                  SELECT pr.kind
-                    FROM mfu_payment_request pr
-                   WHERE pr.token COLLATE utf8mb4_unicode_ci = event_payments.payment_token COLLATE utf8mb4_unicode_ci
-                   ORDER BY pr.id DESC
-                   LIMIT 1
-                ),'event_fee')=%s
-              ORDER BY created_at DESC
-            """, (event_id, kind_filter))
-        payments = _fetchall_dict(cur)
+        cur.execute("""
+          SELECT event_payments.*,
+                 COALESCE((
+                   SELECT pr.kind
+                     FROM mfu_payment_request pr
+                    WHERE pr.token COLLATE utf8mb4_unicode_ci = event_payments.payment_token COLLATE utf8mb4_unicode_ci
+                    ORDER BY pr.id DESC
+                    LIMIT 1
+                 ),'event_fee') AS payment_kind
+            FROM event_payments
+           WHERE event_id=%s
+           ORDER BY created_at DESC
+        """, (event_id,))
+        all_payments = _fetchall_dict(cur)
 
         # 返金集計
         refunds_map = {}
-        if payments:
-            ids = [p["id"] for p in payments]
+        if all_payments:
+            ids = [p["id"] for p in all_payments]
             placeholders = ",".join(["%s"] * len(ids))
             cur.execute(f"""
               SELECT payment_row_id,
-                     COALESCE(SUM(CASE WHEN status IN ('PENDING','APPROVED')
+                     COALESCE(SUM(CASE WHEN status='COMPLETED'
                            THEN amount_yen ELSE 0 END),0) AS refunded
               FROM event_refunds
               WHERE payment_row_id IN ({placeholders})
@@ -2275,13 +3088,100 @@ def admin_event_detail(event_id: int):
             for r in _fetchall_dict(cur):
                 refunds_map[r["payment_row_id"]] = int(r["refunded"] or 0)
 
-        for p in payments:
+        for p in all_payments:
             refunded = refunds_map.get(p["id"], 0)
             p["refunded_yen"] = refunded
             p["remaining_yen"] = max(int(p["amount_yen"]) - refunded, 0)
     finally:
         try: conn.close()
         except Exception: pass
+
+    success_statuses = {"COMPLETED"}
+    kind_counts = {
+        "event_fee": sum(1 for p in all_payments if p.get("payment_kind") == "event_fee"),
+        "tip": sum(1 for p in all_payments if p.get("payment_kind") == "tip"),
+        "all": len(all_payments),
+    }
+    successful = [p for p in all_payments if str(p.get("square_status") or "").upper() in success_statuses]
+    gross_yen = sum(int(p.get("amount_yen") or 0) for p in successful)
+    refunded_yen = sum(int(p.get("refunded_yen") or 0) for p in all_payments)
+    summary = {
+        "payment_count": len(successful),
+        "gross_yen": gross_yen,
+        "refunded_yen": refunded_yen,
+        "net_yen": max(gross_yen - refunded_yen, 0),
+        "pending_count": sum(1 for p in all_payments if str(p.get("square_status") or "").upper() in PAYMENT_IN_PROGRESS_STATUSES),
+        "failed_count": sum(1 for p in all_payments if str(p.get("square_status") or "").upper() in {"FAILED", "CANCELED"}),
+    }
+
+    normalized_query = search_query.casefold()
+    filtered_payments = []
+    for payment in all_payments:
+        square_status = str(payment.get("square_status") or "").upper()
+        refunded = int(payment.get("refunded_yen") or 0)
+        remaining = int(payment.get("remaining_yen") or 0)
+        wallet_type = str(payment.get("wallet_type") or "").upper()
+
+        if kind_filter != "all" and payment.get("payment_kind") != kind_filter:
+            continue
+        if status_filter == "completed" and square_status not in success_statuses:
+            continue
+        if status_filter == "pending" and square_status not in PAYMENT_IN_PROGRESS_STATUSES:
+            continue
+        if status_filter == "failed" and square_status not in {"FAILED", "CANCELED"}:
+            continue
+        if status_filter == "refunded" and refunded <= 0:
+            continue
+        if method_filter == "apple_pay" and wallet_type != "APPLE_PAY":
+            continue
+        if method_filter == "google_pay" and wallet_type != "GOOGLE_PAY":
+            continue
+        if method_filter == "card" and wallet_type in {"APPLE_PAY", "GOOGLE_PAY"}:
+            continue
+        if normalized_query:
+            haystack = " ".join(
+                str(payment.get(key) or "")
+                for key in ("nickname", "x_id", "instagram_id", "receipt_email")
+            ).casefold()
+            if normalized_query not in haystack:
+                continue
+
+        if refunded > 0 and remaining <= 0:
+            payment["status_label"] = "返金済み"
+            payment["status_class"] = "secondary"
+        elif refunded > 0:
+            payment["status_label"] = "一部返金"
+            payment["status_class"] = "warning"
+        elif square_status in success_statuses:
+            payment["status_label"] = "完了"
+            payment["status_class"] = "success"
+        elif square_status == "UNKNOWN":
+            payment["status_label"] = "要確認"
+            payment["status_class"] = "danger"
+        elif square_status in PAYMENT_IN_PROGRESS_STATUSES:
+            payment["status_label"] = "処理中"
+            payment["status_class"] = "warning"
+        elif square_status == "CANCELED":
+            payment["status_label"] = "キャンセル"
+            payment["status_class"] = "secondary"
+        else:
+            payment["status_label"] = "失敗"
+            payment["status_class"] = "danger"
+
+        if wallet_type == "APPLE_PAY":
+            payment["method_label"] = "Apple Pay"
+        elif wallet_type == "GOOGLE_PAY":
+            payment["method_label"] = "Google Pay"
+        else:
+            payment["method_label"] = "カード"
+        payment["can_refund"] = square_status == "COMPLETED" and remaining > 0
+        filtered_payments.append(payment)
+
+    total_items = len(filtered_payments)
+    total_pages = max((total_items + per_page - 1) // per_page, 1)
+    page = min(page, total_pages)
+    start = (page - 1) * per_page
+    payments = filtered_payments[start:start + per_page]
 
     pay_url = f"{_app_base_url()}/payment/e/{event['uuid']}"
     bulk_refund_url = f"/payment/admin/events/{event_id}/bulk-refund"
@@ -2292,6 +3192,14 @@ def admin_event_detail(event_id: int):
         pay_url=pay_url,
         bulk_refund_url=bulk_refund_url,
         kind_filter=kind_filter,
+        kind_counts=kind_counts,
+        status_filter=status_filter,
+        method_filter=method_filter,
+        search_query=search_query,
+        summary=summary,
+        page=page,
+        total_pages=total_pages,
+        total_items=total_items,
     )
 
 def _bulk_refund_summary(rows: list[dict]) -> dict:
@@ -2464,17 +3372,27 @@ def admin_bulk_refund_execute(event_id: int):
                     "reason": refund_reason,
                 }
 
-                resp = requests.post(
-                    f"{_square_api_base()}/v2/refunds",
-                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json", "Accept": "application/json"},
-                    json=body,
-                    timeout=25,
-                )
-                ok = resp.status_code < 400
+                transport_error = None
                 try:
-                    payload = resp.json()
-                except Exception:
-                    payload = {}
+                    resp = request_square(
+                        "POST",
+                        f"{_square_api_base()}/v2/refunds",
+                        access_token=access_token,
+                        json_body=body,
+                        timeout=25,
+                        idempotency_key=body["idempotency_key"],
+                    )
+                    ok = resp.status_code < 400
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = {}
+                    resp_text = resp.text
+                except SquareTransportError as exc:
+                    transport_error = exc
+                    ok = False
+                    payload = {"errors": [{"code": "TRANSPORT_UNKNOWN", "detail": str(exc)}]}
+                    resp_text = str(exc)
 
                 refund_id = _create_refund_record(
                     cur,
@@ -2483,24 +3401,24 @@ def admin_bulk_refund_execute(event_id: int):
                     reason=refund_reason,
                     payload=payload,
                     ok=ok,
-                    resp_text=resp.text,
+                    resp_text=resp_text,
                     run_id=run_id,
                     admin_name=admin_name,
                 )
-                if ok:
-                    _update_member_after_refund_success(conn, payment_row_id=payment_row_id, refund_yen=amount)
                 conn.commit()
 
                 mail_status = None
-                if ok:
-                    mail_status = _send_bulk_refund_mail(
+                refund_status = normalize_square_status(((payload.get("refund") or {}).get("status")), default="UNKNOWN") if ok else "UNKNOWN"
+                if ok and is_refund_completed(refund_status):
+                    finalize_result = _finalize_completed_refund(
                         conn,
                         refund_id=int(refund_id),
                         event_title=payment_event.get("title") or "イベント",
                     )
+                    mail_status = finalize_result.get("mail")
                 results.append({
                     "payment_row_id": payment_row_id,
-                    "result": "success" if ok else "failed",
+                    "result": ("success" if is_refund_completed(refund_status) else "pending") if ok else ("unknown" if transport_error else "failed"),
                     "reason": None if ok else ((payload.get("errors") or [{}])[0].get("code")),
                     "mail_status": mail_status,
                 })
@@ -2696,7 +3614,7 @@ def admin_refund(payment_row_id: int):
 
         event_id = int(pay["event_id"])
         cur.execute("""
-          SELECT COALESCE(SUM(CASE WHEN status IN ('PENDING','APPROVED')
+          SELECT COALESCE(SUM(CASE WHEN status IN ('PENDING','UNKNOWN','APPROVED','COMPLETED')
                  THEN amount_yen ELSE 0 END),0) AS total_refunded
           FROM event_refunds WHERE payment_row_id=%s
         """, (payment_row_id,))
@@ -2721,31 +3639,48 @@ def admin_refund(payment_row_id: int):
         }
         if reason: body["reason"] = reason
 
-        resp = requests.post(
-            f"{_square_api_base()}/v2/refunds",
-            headers={"Authorization": f"Bearer {access_token}","Content-Type": "application/json","Accept": "application/json"},
-            json=body, timeout=20
-        )
-        ok = resp.status_code < 400
-        payload = {}
-        try: payload = resp.json()
-        except Exception: pass
+        transport_error = None
+        try:
+            resp = request_square(
+                "POST",
+                f"{_square_api_base()}/v2/refunds",
+                access_token=access_token,
+                json_body=body,
+                timeout=20,
+                idempotency_key=body["idempotency_key"],
+            )
+            ok = resp.status_code < 400
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = {}
+            resp_text = resp.text
+        except SquareTransportError as exc:
+            transport_error = exc
+            ok = False
+            payload = {"errors": [{"code": "TRANSPORT_UNKNOWN", "detail": str(exc)}]}
+            resp_text = str(exc)
 
-        if ok:
-            r = payload.get("refund") or {}
-            cur.execute("""
-              INSERT INTO event_refunds
-              (payment_row_id, square_refund_id, amount_yen, status, reason, error_code, error_detail)
-              VALUES (%s,%s,%s,%s,%s,NULL,NULL)
-            """, (payment_row_id, r.get("id"), req_amount, r.get("status") or "PENDING", reason))
-        else:
-            errs = (payload.get("errors") or [{}])
-            cur.execute("""
-              INSERT INTO event_refunds
-              (payment_row_id, square_refund_id, amount_yen, status, reason, error_code, error_detail)
-              VALUES (%s,NULL,%s,'FAILED',%s,%s,%s)
-            """, (payment_row_id, req_amount, reason, errs[0].get("code"), errs[0].get("detail") or resp.text))
+        refund_id = _create_refund_record(
+            cur,
+            payment_row_id=payment_row_id,
+            amount_yen=req_amount,
+            reason=reason,
+            payload=payload,
+            ok=ok,
+            resp_text=resp_text,
+            run_id=str(uuid.uuid4()),
+            admin_name=session.get("user") if isinstance(session.get("user"), str) else "admin",
+        )
         conn.commit()
+        refund_status = normalize_square_status(((payload.get("refund") or {}).get("status")), default="UNKNOWN") if ok else "UNKNOWN"
+        if ok and is_refund_completed(refund_status):
+            cur.execute("SELECT title FROM events WHERE id=%s LIMIT 1", (event_id,))
+            event_row = cur.fetchone()
+            event_title = event_row[0] if isinstance(event_row, tuple) else ((event_row or {}).get("title") if event_row else None)
+            _finalize_completed_refund(conn, refund_id=int(refund_id), event_title=event_title or "イベント")
+        elif transport_error:
+            logging.warning("admin_refund: Square result unknown payment_row_id=%s", payment_row_id)
         return redirect(f"/payment/admin/events/{event_id}#p{payment_row_id}")
     finally:
         try: conn.close()

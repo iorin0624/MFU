@@ -7,7 +7,6 @@
 # - /api/ext/up/thumb    : 生成済みサムネ (webp) を保存（表示は既存の view が利用）
 #
 # 認証:
-#   環境変数 MFU_EXT_API_KEY がセットされている場合のみ Bearer チェックを有効化。
 #   未設定（空文字）の場合は認証をスキップ（LAN 内テスト等）。
 #
 # 既存アプリへの組み込み:
@@ -21,15 +20,19 @@
 # ------------------------------------------------------------
 
 from __future__ import annotations
+import hashlib
 import os
 import uuid as _uuid
 import secrets
 import threading
 import re
+import tempfile
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
-from flask import Blueprint, request, jsonify, abort, current_app
+from flask import Blueprint, request, jsonify, abort, current_app, g
 from app.utils.upload_security import hash_upload_password
+from app.utils.uploader_auth import verify_uploader_token
+from app.utils.thumbs import enqueue_thumb_job
 
 # ---- 可変部: 既存ユーティリティの取り込み（無ければフォールバック） ----
 try:
@@ -54,22 +57,21 @@ except Exception:
 
 # ---- 設定 ----
 UPLOAD_BASE_DIR = "/mnt/mfu/uploads"
-API_KEY = os.environ.get("MFU_EXT_API_KEY", "").strip()
 
 # ---- Blueprint ----
 ext_up = Blueprint("ext_up", __name__, url_prefix="/api/ext/up")
 
 # ---- ユーティリティ ----
-def _auth_required() -> None:
-    """API_KEY が空でなければ Bearer 認証を要求."""
-    if not API_KEY:
-        return  # 認証スキップ（テスト・LAN用途）
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+def _auth_required() -> str:
+    """MFU Windows Uploader 専用トークンを検証し、紐づく username を返す。"""
+    token_row = verify_uploader_token()
+    if not token_row:
         abort(401)
-    token = auth.split(" ", 1)[1]
-    if token != API_KEY:
+    username = (token_row.get("username") or "").strip()
+    if not username:
         abort(403)
+    g.uploader_username = username
+    return username
 
 
 def _mk_dirs(uuid32: str) -> str:
@@ -92,16 +94,73 @@ def _parse_date(d: Optional[str]) -> str:
 
 
 def _unique_path(dst_dir: str, filename: str) -> Tuple[str, str]:
-    """同名が存在したら (n) を付けて衝突回避。"""
+    """同名が存在したら (n) を付け、空ファイルを原子的に予約する。"""
     root, ext = os.path.splitext(filename)
     candidate = filename
-    full = os.path.join(dst_dir, candidate)
     n = 1
-    while os.path.exists(full):
-        candidate = f"{root}({n}){ext}"
+    while True:
         full = os.path.join(dst_dir, candidate)
-        n += 1
-    return full, candidate
+        try:
+            fd = os.open(full, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
+            os.close(fd)
+            return full, candidate
+        except FileExistsError:
+            candidate = f"{root}({n}){ext}"
+            n += 1
+
+
+_transfer_schema_lock = threading.Lock()
+_transfer_schema_ready = False
+
+
+def _ensure_transfer_schema() -> None:
+    global _transfer_schema_ready
+    if _transfer_schema_ready:
+        return
+    with _transfer_schema_lock:
+        if _transfer_schema_ready:
+            return
+        db = get_db()
+        cur = db.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upload_file_transfers (
+                    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    upload_id BIGINT NOT NULL,
+                    client_file_id VARCHAR(64) NOT NULL,
+                    original_filename VARCHAR(255) NOT NULL,
+                    saved_filename VARCHAR(255) NULL,
+                    expected_sha256 CHAR(64) NOT NULL,
+                    actual_sha256 CHAR(64) NULL,
+                    file_size BIGINT UNSIGNED NOT NULL,
+                    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                    error_message VARCHAR(1024) NULL,
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    UNIQUE KEY uq_upload_file_transfer (upload_id, client_file_id),
+                    INDEX ix_upload_file_transfer_status (status, updated_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            db.commit()
+            _transfer_schema_ready = True
+        finally:
+            cur.close()
+            db.close()
+
+
+def _hash_file(path: str) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
 
 
 def _ensure_upload_row(uuid32: str) -> Optional[int]:
@@ -143,18 +202,77 @@ def _resolve_mode_config(username: str, mode: str) -> Optional[dict]:
     cur.close()
     return row
 
+
+def _enabled(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _reconcile_upload_thumbnails(username: str, uuid32: str) -> dict:
+    """原本に対応するWebPの不足を確認し、モード設定ONの場合だけ生成ジョブを登録する。"""
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    try:
+        cur.execute(
+            "SELECT id, mode, username FROM uploads WHERE uuid=%s AND username=%s LIMIT 1",
+            (uuid32, username),
+        )
+        upload_row = cur.fetchone()
+        if not upload_row:
+            return {"ok": False, "error": "unknown uuid", "status": 404}
+        cur.execute("SELECT filename FROM files WHERE upload_id=%s ORDER BY id", (upload_row["id"],))
+        filenames = [str(row.get("filename") or "") for row in (cur.fetchall() or [])]
+    finally:
+        cur.close()
+        db.close()
+
+    thumb_dir = os.path.join(UPLOAD_BASE_DIR, uuid32, "thumb")
+    missing: list[str] = []
+    for filename in filenames:
+        name_wo_ext, _ = os.path.splitext(filename)
+        if not os.path.isfile(os.path.join(thumb_dir, name_wo_ext + ".webp")):
+            missing.append(filename)
+
+    mode_cfg = _resolve_mode_config(username, upload_row["mode"]) or {}
+    server_generation_enabled = _enabled(mode_cfg.get("generate_thumbnails"))
+    queued = False
+    if missing and server_generation_enabled:
+        enqueue_thumb_job("upload", uuid32, "thumb")
+        queued = True
+
+    return {
+        "ok": True,
+        "uuid": uuid32,
+        "original_count": len(filenames),
+        "thumbnail_count": len(filenames) - len(missing),
+        "missing_count": len(missing),
+        "server_generation_enabled": server_generation_enabled,
+        "queued": queued,
+    }
+
 # ---- ルーティング ----
+def _ensure_upload_row(uuid32: str, username: str) -> Optional[dict]:
+    db = get_db()
+    cur = db.cursor(dictionary=True)
+    cur.execute("SELECT id, username FROM uploads WHERE uuid=%s", (uuid32,))
+    row = cur.fetchone()
+    cur.close()
+    if not row:
+        return None
+    if (row.get("username") or "").strip() != username:
+        abort(403)
+    return row
+
+
 @ext_up.route("/create", methods=["POST"])
 def create_upload():
     """アップロード枠の作成"""
-    _auth_required()
+    username = _auth_required()
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
     date_str = _parse_date(data.get("date"))
     mode = (data.get("mode") or "").strip()
-    username = (data.get("username") or "").strip()
-    if not mode or not username:
-        return jsonify({"ok": False, "error": "missing mode/username"}), 400
+    if not mode:
+        return jsonify({"ok": False, "error": "missing mode"}), 400
 
     mode_config = _resolve_mode_config(username, mode)
     if not mode_config:
@@ -183,21 +301,215 @@ def create_upload():
 @ext_up.route("/original", methods=["POST"])
 def push_original():
     """原本ファイルの保存"""
-    _auth_required()
+    username = _auth_required()
     uuid32 = (request.form.get("uuid") or "").strip()
     file = request.files.get("file")
     if not uuid32 or not file:
         return jsonify({"ok": False, "error": "missing uuid/file"}), 400
 
-    upload_id = _ensure_upload_row(uuid32)
-    if upload_id is None:
+    upload_row = _ensure_upload_row(uuid32, username)
+    if upload_row is None:
         return jsonify({"ok": False, "error": "unknown uuid"}), 404
+    upload_id = int(upload_row["id"])
 
     o_dir = os.path.join(UPLOAD_BASE_DIR, uuid32, "original")
     os.makedirs(o_dir, exist_ok=True)
     safe_name = sanitize_filename(file.filename or "file", set())
+
+    client_file_id = str(request.form.get("client_file_id") or "").strip()
+    expected_sha256 = str(request.form.get("sha256") or "").strip().lower()
+    expected_size_raw = str(request.form.get("file_size") or "").strip()
+    verified_request = bool(client_file_id or expected_sha256 or expected_size_raw)
+    if verified_request:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", client_file_id):
+            return jsonify({"ok": False, "error": "invalid client_file_id"}), 400
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            return jsonify({"ok": False, "error": "invalid sha256"}), 400
+        try:
+            expected_size = int(expected_size_raw)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid file_size"}), 400
+        if expected_size < 0:
+            return jsonify({"ok": False, "error": "invalid file_size"}), 400
+
+        _ensure_transfer_schema()
+        lock_name = "mfu_up_{}_{}".format(
+            upload_id,
+            hashlib.sha256(client_file_id.encode("utf-8")).hexdigest()[:24],
+        )
+        db = get_db()
+        cur = db.cursor(dictionary=True)
+        tmp_path = ""
+        lock_acquired = False
+        try:
+            cur.execute("SELECT GET_LOCK(%s, 60) AS acquired", (lock_name,))
+            lock_row = cur.fetchone() or {}
+            lock_acquired = int(lock_row.get("acquired") or 0) == 1
+            if not lock_acquired:
+                return jsonify({"ok": False, "error": "transfer lock timeout"}), 503
+
+            cur.execute(
+                "SELECT * FROM upload_file_transfers WHERE upload_id=%s AND client_file_id=%s LIMIT 1",
+                (upload_id, client_file_id),
+            )
+            transfer = cur.fetchone()
+            if transfer and (
+                str(transfer.get("expected_sha256") or "").lower() != expected_sha256
+                or int(transfer.get("file_size") if transfer.get("file_size") is not None else -1) != expected_size
+                or str(transfer.get("original_filename") or "") != safe_name
+            ):
+                return jsonify({"ok": False, "error": "client_file_id metadata conflict"}), 409
+
+            if not transfer:
+                final_path, saved_name = _unique_path(o_dir, safe_name)
+                now = datetime.now()
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO upload_file_transfers (
+                            upload_id, client_file_id, original_filename, saved_filename,
+                            expected_sha256, file_size, status, created_at, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+                        """,
+                        (upload_id, client_file_id, safe_name, saved_name, expected_sha256, expected_size, now, now),
+                    )
+                    db.commit()
+                except Exception:
+                    try:
+                        os.remove(final_path)
+                    except OSError:
+                        pass
+                    raise
+            else:
+                saved_name = str(transfer.get("saved_filename") or "")
+                if not saved_name:
+                    final_path, saved_name = _unique_path(o_dir, safe_name)
+                    cur.execute(
+                        "UPDATE upload_file_transfers SET saved_filename=%s, status='pending', updated_at=%s WHERE id=%s",
+                        (saved_name, datetime.now(), transfer["id"]),
+                    )
+                    db.commit()
+                else:
+                    final_path = os.path.join(o_dir, saved_name)
+
+            if os.path.isfile(final_path) and os.path.getsize(final_path) == expected_size:
+                actual_sha256, actual_size = _hash_file(final_path)
+                if actual_sha256 == expected_sha256 and actual_size == expected_size:
+                    cur.execute(
+                        "SELECT id FROM files WHERE upload_id=%s AND filename=%s LIMIT 1",
+                        (upload_id, saved_name),
+                    )
+                    if not cur.fetchone():
+                        cur.execute("INSERT INTO files (upload_id, filename) VALUES (%s,%s)", (upload_id, saved_name))
+                    cur.execute(
+                        """
+                        UPDATE upload_file_transfers
+                           SET actual_sha256=%s, status='success', error_message=NULL, updated_at=%s
+                         WHERE upload_id=%s AND client_file_id=%s
+                        """,
+                        (actual_sha256, datetime.now(), upload_id, client_file_id),
+                    )
+                    db.commit()
+                    return jsonify({
+                        "ok": True,
+                        "saved": saved_name,
+                        "uuid": uuid32,
+                        "sha256": actual_sha256,
+                        "file_size": actual_size,
+                        "already_uploaded": True,
+                    })
+
+            fd, tmp_path = tempfile.mkstemp(prefix=".upload-", suffix=".part", dir=o_dir)
+            digest = hashlib.sha256()
+            actual_size = 0
+            with os.fdopen(fd, "wb") as out:
+                while True:
+                    chunk = file.stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    digest.update(chunk)
+                    actual_size += len(chunk)
+                out.flush()
+                os.fsync(out.fileno())
+            actual_sha256 = digest.hexdigest()
+            if actual_size != expected_size or actual_sha256 != expected_sha256:
+                cur.execute(
+                    """
+                    UPDATE upload_file_transfers
+                       SET actual_sha256=%s, status='failed', error_message=%s, updated_at=%s
+                     WHERE upload_id=%s AND client_file_id=%s
+                    """,
+                    (
+                        actual_sha256,
+                        f"checksum mismatch expected_size={expected_size} actual_size={actual_size}",
+                        datetime.now(),
+                        upload_id,
+                        client_file_id,
+                    ),
+                )
+                db.commit()
+                os.remove(tmp_path)
+                tmp_path = ""
+                return jsonify({
+                    "ok": False,
+                    "error": "checksum mismatch",
+                    "expected_sha256": expected_sha256,
+                    "actual_sha256": actual_sha256,
+                    "expected_size": expected_size,
+                    "actual_size": actual_size,
+                }), 422
+
+            os.replace(tmp_path, final_path)
+            tmp_path = ""
+            os.chmod(final_path, 0o640)
+            cur.execute(
+                "SELECT id FROM files WHERE upload_id=%s AND filename=%s LIMIT 1",
+                (upload_id, saved_name),
+            )
+            if not cur.fetchone():
+                cur.execute("INSERT INTO files (upload_id, filename) VALUES (%s,%s)", (upload_id, saved_name))
+            cur.execute(
+                """
+                UPDATE upload_file_transfers
+                   SET actual_sha256=%s, status='success', error_message=NULL, updated_at=%s
+                 WHERE upload_id=%s AND client_file_id=%s
+                """,
+                (actual_sha256, datetime.now(), upload_id, client_file_id),
+            )
+            db.commit()
+            return jsonify({
+                "ok": True,
+                "saved": saved_name,
+                "uuid": uuid32,
+                "sha256": actual_sha256,
+                "file_size": actual_size,
+                "already_uploaded": False,
+            })
+        finally:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            if lock_acquired:
+                try:
+                    cur.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+                    cur.fetchone()
+                except Exception:
+                    pass
+            cur.close()
+            db.close()
+
     full, real_name = _unique_path(o_dir, safe_name)
-    file.save(full)
+    try:
+        file.save(full)
+    except Exception:
+        try:
+            os.remove(full)
+        except OSError:
+            pass
+        raise
 
     db = get_db()
     cur = db.cursor()
@@ -210,15 +522,15 @@ def push_original():
 @ext_up.route("/thumb", methods=["POST"])
 def push_thumb():
     """生成済みサムネの保存（webp 推奨）"""
-    _auth_required()
+    username = _auth_required()
     uuid32 = (request.form.get("uuid") or "").strip()
     base_name = (request.form.get("base") or "").strip()
     file = request.files.get("file")
     if not uuid32 or not base_name or not file:
         return jsonify({"ok": False, "error": "missing uuid/base/file"}), 400
 
-    upload_id = _ensure_upload_row(uuid32)
-    if upload_id is None:
+    upload_row = _ensure_upload_row(uuid32, username)
+    if upload_row is None:
         return jsonify({"ok": False, "error": "unknown uuid"}), 404
 
     t_dir = os.path.join(UPLOAD_BASE_DIR, uuid32, "thumb")
@@ -232,14 +544,24 @@ def push_thumb():
     return jsonify({"ok": True, "saved": save_name, "uuid": uuid32})
 
 
+@ext_up.route("/reconcile-thumbnails", methods=["POST"])
+def reconcile_thumbnails():
+    """通知を発生させず、不足サムネイルのサーバー補完を依頼する。"""
+    username = _auth_required()
+    data = request.get_json(silent=True) or {}
+    uuid32 = str(data.get("uuid") or "").strip()
+    if not uuid32:
+        return jsonify({"ok": False, "error": "missing uuid"}), 400
+    result = _reconcile_upload_thumbnails(username, uuid32)
+    status = int(result.pop("status", 200))
+    return jsonify(result), status
+
+
 @ext_up.route("/modes", methods=["GET"])
 def list_modes():
     """指定ユーザーの upload_modes 一覧を返すAPI。"""
-    _auth_required()
-    username = (request.args.get("username") or "").strip()
+    username = _auth_required()
     include_global = (request.args.get("include_global", "1").lower() in ("1", "true", "yes"))
-    if not username:
-        return jsonify({"ok": False, "error": "missing username"}), 400
 
     db = get_db()
     cur = db.cursor(dictionary=True)
@@ -287,10 +609,9 @@ def list_modes():
     return jsonify({"ok": True, "username": username, "default_mode": default_mode, "modes": modes})
 
 
-@ext_up.route("/dbping", methods=["GET"])
 def db_ping():
     """DB接続確認API"""
-    _auth_required()
+    username = _auth_required()
     try:
         db = get_db()
         cur = db.cursor()
@@ -304,15 +625,14 @@ def db_ping():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# __init__.py 側にある通知関数をインポート（ファイル構成に合わせてパス調整）
-from app import background_thumb_and_notify
+# __init__.py 側にある通知・完了画面用関数をインポート
+from app import _prepare_upload_completion, background_thumb_and_notify
 
 
 @ext_up.route("/done", methods=["POST"])
 def mark_upload_done():
     """アップロード完了通知API"""
-    from datetime import date as date_cls
-    _auth_required()
+    username = _auth_required()
     data = request.get_json(silent=True) or {}
     uuid32 = (data.get("uuid") or "").strip()
     if not uuid32:
@@ -321,8 +641,8 @@ def mark_upload_done():
     db = get_db()
     cur = db.cursor(dictionary=True)
     cur.execute(
-        "SELECT id, mode, username, title, date, expire_at, password FROM uploads WHERE uuid=%s",
-        (uuid32,),
+        "SELECT id, mode, username, title, date, expire_at, password FROM uploads WHERE uuid=%s AND username=%s",
+        (uuid32, username),
     )
     up = cur.fetchone()
     if not up:
@@ -334,36 +654,14 @@ def mark_upload_done():
     rows = cur.fetchall() or []
     filenames = [r["filename"] for r in rows]
 
-    cur.execute("SELECT nickname FROM users WHERE username = %s", (up["username"],))
-    urow = cur.fetchone() or {}
-    nickname = (urow.get("nickname") or "").strip() or up["username"]
-
     cur.close(); db.close()
 
-    mode_cfg = _resolve_mode_config(up["username"], up["mode"]) or {}
-    enable_download_url = bool(mode_cfg.get("enable_download_url"))
-    enable_layer_upload_url = bool(mode_cfg.get("enable_layer_upload_url"))
-    gen_thumbs = bool(mode_cfg.get("generate_thumbnails"))
-
-    d = up.get("date")
-    d_str = d.strftime("%Y-%m-%d") if isinstance(d, (datetime, date_cls)) else str(d or "")
-    ex = up.get("expire_at")
-    expire_str = ex.strftime("%Y-%m-%d") if isinstance(ex, (datetime, date_cls)) else str(ex or "")
-
-    base = "https://mfu.iori0624.jp".rstrip("/")
-    link_url = f"{base}/view/{uuid32}" if enable_download_url else ""
-    layer_url = f"{base}/layer_upload/{uuid32}" if enable_layer_upload_url else ""
-
-    context = {
-        "title": up.get("title") or "",
-        "date": d_str,
-        "link": link_url,
-        "password": up.get("password") or "",
-        "layer_upload_url": layer_url,
-        "expire": expire_str,
-        "username": up.get("username"),
-        "nickname": nickname,
-    }
+    up["uuid"] = uuid32
+    prepared = _prepare_upload_completion(up, filenames)
+    mode_cfg = prepared.get("mode_config") or {}
+    gen_thumbs = _enabled(mode_cfg.get("generate_thumbnails"))
+    context = prepared.get("context") or {}
+    template_key = str(prepared.get("template_key") or up["mode"])
 
     base_dir = os.path.join(UPLOAD_BASE_DIR, uuid32)
     original_dir = os.path.join(base_dir, "original")
@@ -376,7 +674,7 @@ def mark_upload_done():
         try:
             with app_obj.app_context():
                 background_thumb_and_notify(
-                    uuid32, filenames, original_dir, thumb_dir, up["mode"], context, gen_thumbs
+                    uuid32, filenames, original_dir, thumb_dir, template_key, context, gen_thumbs
                 )
         except Exception as e:
             try:
@@ -385,4 +683,8 @@ def mark_upload_done():
                 print(f"[done] background notify failed: {e}")
 
     threading.Thread(target=_runner, daemon=True).start()
-    return jsonify({"ok": True})
+    public_base = str(context.get("base_url") or "https://mfu.iori0624.jp").rstrip("/")
+    return jsonify({
+        "ok": True,
+        "completion_url": f"{public_base}/upload/done/{uuid32}",
+    })

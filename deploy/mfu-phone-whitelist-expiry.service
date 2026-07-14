@@ -1,0 +1,13 @@
+[Unit]
+Description=MFU phone whitelist temporary setting expiry audit
+After=network.target
+
+[Service]
+Type=oneshot
+User=mfu
+Group=mfu
+WorkingDirectory=/mnt/mfu
+ExecStart=/mnt/mfu/venv/bin/python /mnt/mfu/app/phone_whitelist/expiry_cli.py
+NoNewPrivileges=yes
+PrivateTmp=yes
+
